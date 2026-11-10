@@ -296,7 +296,7 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
     let (bindings, declared) = host.declarations();
     registry.declare(bindings, declared);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     let snapshot = thurbox::kernel::snapshot::Snapshot {
         sessions: vec![session_row()],
         ..Default::default()

@@ -424,23 +424,6 @@ pub(crate) fn host_shell_c(host: &HostDef, script: &str) -> Command {
     crate::shell::HostLauncher::for_host(host).shell_c(script)
 }
 
-/// Run a probe on `host` in whichever dialect its
-/// [`HostShell`](crate::shell::HostShell) speaks: `posix` or `windows`
-/// (PowerShell).
-///
-/// The one dispatch point for the platform, so a probe cannot be POSIX-only by
-/// omission — and each pair of scripts is written to emit the **same line
-/// protocol**, which is why every parser below stays transport-neutral and
-/// untouched by the Windows path.
-pub(super) fn host_probe(host: &HostDef, posix: &str, windows: &str) -> Command {
-    let shell = crate::shell::HostShell::for_host(host);
-    let script = match shell {
-        crate::shell::HostShell::Posix => posix,
-        crate::shell::HostShell::PowerShell => windows,
-    };
-    shell.run_script(&crate::shell::HostLauncher::for_host(host), script)
-}
-
 /// Quote `s` as a PowerShell single-quoted literal. Only `'` is special inside
 /// one (doubled to escape); `\` and `$` are literal, which is what makes it the
 /// right quote for a Windows path. The rule lives in

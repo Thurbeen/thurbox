@@ -74,7 +74,7 @@ fn hits_of(plugin: &str, width: u16, height: u16) -> Vec<Hit> {
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &sample(),
@@ -537,7 +537,7 @@ fn published_sessions_pane() -> (LuaHost, usize, RenderContext) {
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &sample(),

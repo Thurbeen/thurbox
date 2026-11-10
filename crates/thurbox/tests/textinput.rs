@@ -119,7 +119,7 @@ fn publish(host: &LuaHost) {
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &Snapshot::default(),

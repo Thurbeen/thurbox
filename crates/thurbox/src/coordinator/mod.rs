@@ -734,7 +734,7 @@ impl App {
                             "no home directory to run it in".to_string(),
                         );
                     };
-                    let command = thurbox::kernel::runs::command_for(&ask.program, &home, None);
+                    let command = thurbox::kernel::runs::command_for(&ask.program, &home);
                     return thurbox::kernel::runs::capture(command, ask.timeout);
                 }
             };
@@ -748,7 +748,7 @@ impl App {
                     "session {session} runs on {name}; a plugin's program runs on this machine only"
                 ));
             }
-            let command = thurbox::kernel::runs::command_for(&ask.program, cwd, None);
+            let command = thurbox::kernel::runs::command_for(&ask.program, cwd);
             thurbox::kernel::runs::capture(command, ask.timeout)
         })
     }

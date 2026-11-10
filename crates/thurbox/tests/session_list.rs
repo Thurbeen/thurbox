@@ -638,7 +638,7 @@ fn clicking_one_host_folds_only_its_own_children() {
 }
 
 #[test]
-fn host_kind_uses_transport_and_platform_independently() {
+fn a_hosts_kind_follows_its_transport() {
     let host = host();
     let mut snapshot = hosted();
     snapshot.sessions[1].remote_host = Some("build-box".into());
@@ -650,19 +650,15 @@ fn host_kind_uses_transport_and_platform_independently() {
     wsl.backend = "wsl:dev-distro:tmux".into();
     snapshot.sessions.push(wsl);
     snapshot.hosts = [
-        ("build-box", "ssh:build-box", "posix"),
-        ("win-desk", "ssh:win-desk", "windows"),
-        ("dev-distro", "wsl:dev-distro", "posix"),
+        ("build-box", "ssh:build-box"),
+        ("win-desk", "ssh:win-desk"),
+        ("dev-distro", "wsl:dev-distro"),
     ]
     .into_iter()
-    .map(|(name, backend, platform)| HostRow {
+    .map(|(name, backend)| HostRow {
         name: name.into(),
         backend: backend.into(),
-        platform: platform.into(),
         detail: String::new(),
-        multiplexer: None,
-        available_multiplexers: vec![],
-        probing: false,
     })
     .collect::<Vec<_>>()
     .into();
@@ -764,7 +760,7 @@ fn publish_full(
     meta: &HashMap<String, AgentMeta>,
 ) {
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,

@@ -208,7 +208,7 @@ fn exec(
         .map(Path::to_path_buf)
         .or_else(crate::paths::home_dir)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let mut process = super::runs::command_for(command, &dir, None);
+    let mut process = super::runs::command_for(command, &dir);
     process
         .envs(env)
         .env("THURBOX_AUTOMATION_NAME", &automation.name);

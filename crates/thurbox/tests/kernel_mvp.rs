@@ -66,7 +66,7 @@ fn publish_full(
     let themes = themes();
     let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&thurbox::kernel::host::Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,

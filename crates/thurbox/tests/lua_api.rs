@@ -244,10 +244,6 @@ fn full() -> Snapshot {
             name: "box".into(),
             detail: "ssh".into(),
             backend: "ssh:box".into(),
-            platform: "posix".into(),
-            multiplexer: Some("tmux".into()),
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
         }]),
         taken_at_ms: 1_700_000_000_000,
         error: Some("a failed refresh".into()),
@@ -289,7 +285,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
     );
     // Every creation-flow read served at once, `branches` as a failure so the
     // `error` field is published too.
-    let mut repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let mut repos = thurbox::kernel::repos::RepoStore::new();
     repos.set_bookmarks_for_test(
         "",
         vec![thurbox::kernel::repos::BookmarkRow {

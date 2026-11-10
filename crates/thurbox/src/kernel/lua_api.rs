@@ -334,12 +334,6 @@ pub static HOST: Class = Class {
         leaf("name", "string"),
         leaf("detail", "string"),
         leaf("backend", "string"),
-        leaf("platform", "\"posix\"|\"windows\""),
-        leaf("multiplexer", "string").opt(),
-        leaf("available_multiplexers", "string[]").doc(
-            "Installed there and native to its platform. While `probing`, only its platform default and `multiplexer`.",
-        ),
-        leaf("probing", "boolean").doc("The host has not yet said which multiplexers it has."),
     ],
 };
 

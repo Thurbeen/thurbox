@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use crate::paths::TestPathGuard;
 use crate::session::HostDef;
-use crate::shell::posix_quote;
 
 #[test]
 fn git_program_scrubs_inherited_location_env() {
@@ -940,30 +939,6 @@ fn a_psmux_host_is_a_windows_host_and_a_wsl_distro_is_not() {
 }
 
 #[test]
-fn a_windows_host_is_probed_with_powershell_not_sh() {
-    // `sh -c …` on a native-Windows host fails with PowerShell's
-    // CommandNotFoundException — which is what stopped the repo picker
-    // listing a directory there at all.
-    let cmd = host_probe(&windows_host(), "test -d /a", "Test-Path /a");
-    let (prog, args) = program_and_args(&cmd);
-    assert_eq!(prog, "ssh");
-    assert!(
-        args.iter().any(|a| a == "powershell"),
-        "expected the powershell transport; got {args:?}"
-    );
-    assert!(
-        !args.iter().any(|a| a.contains("test -d")),
-        "the posix script must not be sent to a windows host: {args:?}"
-    );
-    // And a POSIX host still gets `sh`, untouched.
-    let (_, posix) = program_and_args(&host_probe(&host("me@box", None), "test -d /a", "x"));
-    assert!(
-        posix.iter().any(|a| a == posix_quote("sh").as_str()),
-        "{posix:?}"
-    );
-}
-
-#[test]
 fn the_powershell_payload_is_utf16le_base64_so_no_shell_can_rewrite_it() {
     use base64::Engine as _;
 
@@ -999,52 +974,6 @@ fn the_powershell_payload_is_utf16le_base64_so_no_shell_can_rewrite_it() {
 }
 
 #[test]
-fn the_windows_probe_scripts_quote_a_path_holding_a_quote() {
-    // `'` is the only character special inside a PowerShell single-quoted
-    // literal — `\` and `$` are not, which is what makes it right for a
-    // Windows path.
-    let path = "C:/Users/o'brien/repos";
-    for script in [
-        list_dir_entries_script_windows(path),
-        classify_path_script_windows(path),
-        scan_child_repos_script_windows(path),
-    ] {
-        assert!(
-            script.contains("'C:/Users/o''brien/repos'"),
-            "quote not doubled: {script}"
-        );
-    }
-}
-
-#[test]
-fn the_windows_probe_scripts_emit_the_same_protocol_as_the_posix_ones() {
-    // The point of the pair: every parser below stays transport-neutral.
-    assert_eq!(
-        parse_dir_listing("!missing"),
-        DirListing::Missing,
-        "the windows listing writes the same sentinel"
-    );
-    let listing = list_dir_entries_script_windows("C:/a");
-    assert!(listing.contains("'!missing'"), "{listing}");
-    assert!(listing.contains("'g '"), "{listing}");
-    assert!(listing.contains("'d '"), "{listing}");
-    // Hidden entries are included, matching the POSIX loop's `* .*`.
-    assert!(listing.contains("-Force"), "{listing}");
-
-    let classify = classify_path_script_windows("C:/a");
-    for word in ["'missing'", "'git'", "'dir'"] {
-        assert!(classify.contains(word), "{word} missing from {classify}");
-    }
-
-    // The scan skips `.`-prefixed names (the POSIX `*` glob's rule) and says
-    // why it failed rather than exiting mute.
-    let scan = scan_child_repos_script_windows("C:/a");
-    assert!(scan.contains("StartsWith('.')"), "{scan}");
-    assert!(scan.contains("[Console]::Error.WriteLine"), "{scan}");
-    assert!(!scan.contains("-Force"), "hidden must stay skipped: {scan}");
-}
-
-#[test]
 fn host_shell_c_ssh_posix_quotes_script() {
     // SSH space-joins its trailing args, so the script must be POSIX-quoted
     // to survive as a single `sh -c` argument.
@@ -1060,66 +989,7 @@ fn host_shell_c_ssh_posix_quotes_script() {
 }
 
 #[test]
-fn browse_scripts_posix_quote_the_user_typed_path() {
-    // The dir/path is user-typed and embedded in a `sh -c` script — a
-    // single quote or `$` must arrive literally, never as shell syntax.
-    let tricky = "/srv/it's $HOME";
-    for script in [
-        list_dir_entries_script(tricky),
-        classify_path_script(tricky),
-        scan_child_repos_script(tricky),
-    ] {
-        assert!(
-            script.contains(r#"'/srv/it'\''s $HOME'"#),
-            "path must be posix-quoted in: {script}"
-        );
-    }
-    // The listing script's protocol pieces are present.
-    let script = list_dir_entries_script("/srv");
-    assert!(script.contains("!missing"));
-    assert!(script.contains("printf 'g %s\\n'"));
-    assert!(script.contains("printf 'd %s\\n'"));
-}
-
-#[test]
-fn collect_scanned_children_joins_and_sorts() {
-    let parent = Path::new("/srv/projects");
-    let repos = collect_scanned_children(parent, "web\napi\n\n*\n").unwrap();
-    assert_eq!(
-        repos,
-        vec![
-            PathBuf::from("/srv/projects/api"),
-            PathBuf::from("/srv/projects/web"),
-        ]
-    );
-}
-
-#[test]
-fn parse_dir_listing_reads_the_line_protocol() {
-    // `g`/`d` tagged lines, sorted; unknown lines skipped, not fatal.
-    let listing = parse_dir_listing("g thurbox\nd scratch\nnoise\ng api server\n");
-    assert_eq!(
-        listing,
-        DirListing::Entries(vec![
-            ("api server".into(), true),
-            ("scratch".into(), false),
-            ("thurbox".into(), true),
-        ])
-    );
-    assert_eq!(parse_dir_listing("!missing\n"), DirListing::Missing);
-    assert_eq!(parse_dir_listing(""), DirListing::Entries(Vec::new()));
-}
-
-#[test]
-fn parse_path_class_reads_the_single_word() {
-    assert_eq!(parse_path_class("git\n").unwrap(), PathClass::Git);
-    assert_eq!(parse_path_class("dir\n").unwrap(), PathClass::Dir);
-    assert_eq!(parse_path_class("missing\n").unwrap(), PathClass::Missing);
-    assert!(parse_path_class("garbage").is_err());
-}
-
-#[test]
-fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
+fn list_dir_entries_flags_git_repos_and_follows_symlinks() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("repo").join(".git")).unwrap();
@@ -1129,13 +999,11 @@ fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(root.join("plain"), root.join("link")).unwrap();
 
-    let DirListing::Entries(entries) =
-        list_dir_entries_on(None, &root.display().to_string()).unwrap()
-    else {
+    let DirListing::Entries(entries) = list_dir_entries(&root.display().to_string()) else {
         panic!("existing dir must not be Missing");
     };
     // Hidden entries included (the picker filters); files excluded; a
-    // symlink to a dir is listed (the `ls -p` gap this fixes).
+    // symlink to a dir is listed.
     assert!(entries.contains(&(".hidden".to_string(), false)));
     assert!(entries.contains(&("repo".to_string(), true)));
     assert!(entries.contains(&("plain".to_string(), false)));
@@ -1144,7 +1012,7 @@ fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
     assert!(entries.contains(&("link".to_string(), false)));
 
     assert_eq!(
-        list_dir_entries_on(None, &root.join("nope").display().to_string()).unwrap(),
+        list_dir_entries(&root.join("nope").display().to_string()),
         DirListing::Missing
     );
 }
@@ -2178,12 +2046,12 @@ fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
 fn a_new_directory_is_created_empty_or_initialised() {
     let dir = tempfile::tempdir().expect("tempdir");
     let empty = dir.path().join("deep/er/empty");
-    create_repo_dir(None, &empty, &NewRepo::Empty).expect("empty");
+    create_repo_dir(&empty, &NewRepo::Empty).expect("empty");
     assert!(empty.is_dir());
     assert!(!empty.join(".git").exists());
 
     let init = dir.path().join("fresh");
-    create_repo_dir(None, &init, &NewRepo::Init).expect("init");
+    create_repo_dir(&init, &NewRepo::Init).expect("init");
     assert!(is_git_repo(&init));
 }
 
@@ -2194,7 +2062,6 @@ fn a_clone_lands_in_the_new_directory() {
     seed_repo(&source, "README.md", "hello");
     let target = dir.path().join("code/cloned");
     create_repo_dir(
-        None,
         &target,
         &NewRepo::Clone {
             url: source.to_string_lossy().to_string(),
@@ -2213,7 +2080,7 @@ fn a_failed_clone_takes_away_the_directory_it_created() {
         .join("no-such-repo")
         .to_string_lossy()
         .to_string();
-    let error = create_repo_dir(None, &target, &NewRepo::Clone { url }).unwrap_err();
+    let error = create_repo_dir(&target, &NewRepo::Clone { url }).unwrap_err();
     assert!(format!("{error:#}").contains("clone"), "{error:#}");
     assert!(!target.exists(), "no half-made directory is left behind");
 }
@@ -2224,7 +2091,7 @@ fn a_directory_that_already_holds_something_is_refused_and_kept() {
     let target = dir.path().join("taken");
     std::fs::create_dir_all(&target).expect("mkdir");
     std::fs::write(target.join("keep.txt"), "mine").expect("write");
-    let error = create_repo_dir(None, &target, &NewRepo::Init).unwrap_err();
+    let error = create_repo_dir(&target, &NewRepo::Init).unwrap_err();
     assert!(format!("{error:#}").contains("not empty"), "{error:#}");
     assert!(target.join("keep.txt").is_file());
     assert!(!target.join(".git").exists());
@@ -2235,7 +2102,7 @@ fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
     let dir = tempfile::tempdir().expect("tempdir");
     let target = dir.path().join("mkdir-ed");
     std::fs::create_dir_all(&target).expect("mkdir");
-    create_repo_dir(None, &target, &NewRepo::Init).expect("init into empty");
+    create_repo_dir(&target, &NewRepo::Init).expect("init into empty");
     assert!(is_git_repo(&target));
 
     let other = dir.path().join("also-empty");
@@ -2245,97 +2112,11 @@ fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
         .join("no-such-repo")
         .to_string_lossy()
         .to_string();
-    create_repo_dir(None, &other, &NewRepo::Clone { url }).unwrap_err();
+    create_repo_dir(&other, &NewRepo::Clone { url }).unwrap_err();
     assert!(
         other.is_dir(),
         "a directory the user made is not ours to remove"
     );
-}
-
-/// Run the remote POSIX script here, through `sh -c`, as a host's shell would.
-fn run_new_repo_script(path: &Path, what: &NewRepo) -> std::process::Output {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(create_repo_dir_script(&path.to_string_lossy(), what));
-    scrub_git_location_env(&mut cmd);
-    cmd.output().expect("sh")
-}
-
-#[test]
-fn the_remote_script_creates_initialises_and_clones_as_the_local_path_does() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let init = dir.path().join("with space/init");
-    assert!(run_new_repo_script(&init, &NewRepo::Init).status.success());
-    assert!(is_git_repo(&init));
-
-    let empty = dir.path().join("empty");
-    assert!(run_new_repo_script(&empty, &NewRepo::Empty)
-        .status
-        .success());
-    assert!(empty.is_dir());
-
-    let source = dir.path().join("source");
-    seed_repo(&source, "README.md", "hello");
-    let cloned = dir.path().join("it's cloned");
-    let url = source.to_string_lossy().to_string();
-    assert!(run_new_repo_script(&cloned, &NewRepo::Clone { url })
-        .status
-        .success());
-    assert!(cloned.join("README.md").is_file());
-}
-
-#[test]
-fn the_remote_script_refuses_what_is_taken_and_cleans_up_what_it_made() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let taken = dir.path().join("taken");
-    std::fs::create_dir_all(&taken).expect("mkdir");
-    std::fs::write(taken.join("keep.txt"), "mine").expect("write");
-    let refused = run_new_repo_script(&taken, &NewRepo::Init);
-    assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("not empty"));
-    assert!(taken.join("keep.txt").is_file());
-
-    let target = dir.path().join("cloned");
-    let url = dir
-        .path()
-        .join("no-such-repo")
-        .to_string_lossy()
-        .to_string();
-    assert!(
-        !run_new_repo_script(&target, &NewRepo::Clone { url: url.clone() })
-            .status
-            .success()
-    );
-    assert!(!target.exists());
-
-    // A directory that was already there, empty, was not this script's to make,
-    // so it is not this script's to remove either.
-    let theirs = dir.path().join("theirs");
-    std::fs::create_dir_all(&theirs).expect("mkdir");
-    assert!(!run_new_repo_script(&theirs, &NewRepo::Clone { url })
-        .status
-        .success());
-    assert!(theirs.is_dir());
-}
-
-#[test]
-fn the_windows_script_quotes_the_path_and_the_url() {
-    let script = create_repo_dir_script_windows(
-        "C:/code/it's",
-        &NewRepo::Clone {
-            url: "https://example.com/o'k.git".into(),
-        },
-    );
-    assert!(script.contains("'C:/code/it''s'"), "{script}");
-    assert!(
-        script.contains("'https://example.com/o''k.git'"),
-        "{script}"
-    );
-    assert!(script.contains("clone"), "{script}");
-    // A create that fails must fail loudly rather than pass with no folder, and
-    // must not be told to succeed over something already there.
-    assert!(script.contains("-ErrorAction Stop"), "{script}");
-    assert!(!script.contains("-Force -Path"), "{script}");
 }
 
 #[test]
@@ -2370,75 +2151,6 @@ fn worktree_stats_on_a_host_asks_the_host_and_never_the_local_disk() {
         worktree_stats_on(Some(&unreachable), tmp.path(), None).is_none(),
         "the host was asked, not this machine's disk"
     );
-}
-
-#[test]
-fn worktree_changed_paths_names_what_has_content_to_hash() {
-    let status = "# branch.oid abc\0\
-                  1 .M N... 100644 100644 100644 h1 h1 edited.rs\0\
-                  1 M. N... 100644 100644 100644 h1 h2 staged only.rs\0\
-                  1 .D N... 100644 100644 000000 h1 h1 gone.rs\0\
-                  2 RM N... 100644 100644 100644 h1 h1 R100 new name.rs\0old name.rs\0\
-                  u UU N... 100644 100644 100644 100644 h1 h2 h3 conflict.rs\0\
-                  ? untracked file.txt\0\
-                  ? nested/\0";
-    assert_eq!(
-        worktree_changed_paths(status),
-        [
-            "edited.rs",
-            "new name.rs",
-            "conflict.rs",
-            "untracked file.txt"
-        ]
-    );
-}
-
-#[test]
-fn worktree_changed_paths_hashes_no_more_untracked_files_than_the_diff_reads() {
-    // The diff reads the first UNTRACKED_FILE_CAP untracked files; hashing the
-    // rest every check would cost a read per file for nothing it shows. Their
-    // status lines still move the fingerprint when one comes or goes.
-    let mut status = String::from("1 .M N... 100644 100644 100644 h1 h1 edited.rs\0");
-    for n in 0..UNTRACKED_FILE_CAP + 50 {
-        status.push_str(&format!("? build/out-{n:04}.o\0"));
-    }
-    let paths = worktree_changed_paths(&status);
-    assert_eq!(paths.len(), 1 + UNTRACKED_FILE_CAP);
-    assert_eq!(paths[0], "edited.rs");
-    assert_eq!(
-        paths[UNTRACKED_FILE_CAP],
-        format!("build/out-{:04}.o", UNTRACKED_FILE_CAP - 1)
-    );
-}
-
-#[test]
-fn the_diff_fingerprint_moves_with_content_the_status_cannot_see() {
-    // An already-modified file edited again stays ` M` in the status and keeps
-    // its line counts; only its content says the diff changed.
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path();
-    git_in(dir, &["init", "-q", "--initial-branch=main"]);
-    git_in(dir, &["config", "user.email", "t@example.com"]);
-    git_in(dir, &["config", "user.name", "t"]);
-    git_in(dir, &["config", "commit.gpgsign", "false"]);
-    commit_file(dir, "a.txt", "one\n", "init");
-
-    std::fs::write(dir.join("a.txt"), "two\n").unwrap();
-    let first = diff_fingerprint_on(None, dir, None).expect("fingerprint");
-    assert_eq!(diff_fingerprint_on(None, dir, None).as_ref(), Some(&first));
-
-    std::fs::write(dir.join("a.txt"), "six\n").unwrap();
-    let edited = diff_fingerprint_on(None, dir, None).expect("fingerprint");
-    assert_ne!(edited, first, "an edit with the same counts must move it");
-
-    std::fs::write(dir.join("b.txt"), "new\n").unwrap();
-    let untracked = diff_fingerprint_on(None, dir, None).expect("fingerprint");
-    assert_ne!(untracked, edited, "a new untracked file must move it");
-
-    // Against a base, the range's two ends.
-    let ranged = diff_fingerprint_on(None, dir, Some("main")).expect("fingerprint");
-    commit_file(dir, "c.txt", "c\n", "more");
-    assert_ne!(diff_fingerprint_on(None, dir, Some("main")), Some(ranged));
 }
 
 /// What the Windows stream-copy sends: every line short enough for `$input`

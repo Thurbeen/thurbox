@@ -193,8 +193,11 @@ impl Fleet {
         // A directory that is no git repository (the installed interface the
         // picker offers to edit) has no worktree to make: it runs as it is.
         // Decided from the filesystem, not from asking `git`, so a `git` that
-        // cannot run never passes for a directory with no repository.
-        if !dir.ancestors().any(|at| at.join(".git").exists()) {
+        // cannot run never passes for a directory with no repository. A bare
+        // repository keeps its files where a checkout keeps `.git`.
+        let bare =
+            dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
+        if !bare && !dir.ancestors().any(|at| at.join(".git").exists()) {
             return Ok(json!({"dir": dir}));
         }
         let answer = self.json(&["repositories", "--json"])?;

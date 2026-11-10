@@ -4627,6 +4627,8 @@ fn open_repo_picker(profile: &Profile) -> Tui {
     let mut tui = Tui::spawn(profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
+    tui.wait_for("Run On");
+    tui.send(b"\r");
     tui.wait_for("Select Repo");
     tui
 }
@@ -7004,6 +7006,8 @@ fn create_through_the_flow(map: bool, name: &str) -> Option<(Profile, Tui, PathB
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
+    tui.wait_for("Run On");
+    tui.send(b"\r");
     tui.wait_for("Select Repo");
     tui.send(format!("\t{}", repo.display()).as_bytes());
     tui.wait_until_quiet();

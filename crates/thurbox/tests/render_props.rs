@@ -76,7 +76,7 @@ fn publish(host: &LuaHost, rows: Vec<SessionRow>) {
     let themes = Themes::load(None);
     let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     let snapshot = Snapshot {
         sessions: rows,
         taken_at_ms: 1_700_000_000_000,

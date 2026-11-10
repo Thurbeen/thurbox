@@ -252,21 +252,14 @@ pub struct AgentRow {
     pub name: String,
 }
 
-/// A machine a session can be created on.
-///
-/// The flow uses the name, detail and backend separately; the session list
-/// also needs the host's platform, independent of its transport and mux.
+/// A host Fleet defines, as the creation flow offers it: its name, the
+/// detail shown beside it, and the `backend` a created Task names (empty for
+/// this machine).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostRow {
     pub name: String,
     pub detail: String,
     pub backend: String,
-    pub platform: String,
-    pub multiplexer: Option<String>,
-    pub available_multiplexers: Vec<String>,
-    /// The host's probe has not answered yet, so `available_multiplexers` is
-    /// the platform default and preference only, and may still grow.
-    pub probing: bool,
 }
 
 /// An immutable picture of the engine at one instant.
@@ -568,7 +561,6 @@ fn hosts_from(hosts: &[String]) -> Vec<HostRow> {
             name: host.clone(),
             detail: "Fleet host".to_string(),
             backend: host.clone(),
-            ..HostRow::default()
         })
         .collect();
     if hosts.iter().any(|host| host == "local") {

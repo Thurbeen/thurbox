@@ -204,12 +204,9 @@ const MODULE_RULES: &[ModuleRules] = &[
     // is rule 5 rather than an exception to it. What must not happen is a `git`
     // call from a render path — that is enforced by the loop's shape (a plugin
     // returns a tree; it cannot call Rust), not by this allowlist.
-    //
-    // `shell`: `runs` spells a `cd <dir> && <program>` script for a host, and
-    // POSIX quoting has exactly one home (`shell::posix_quote`).
     ModuleRules {
         name: "kernel",
-        allowed: &["session", "paths", "git", "notifications", "shell", "theme"],
+        allowed: &["session", "paths", "git", "notifications", "theme"],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
         // through the backend contract and paints its vt100 screen. All are
         // reachable by fully-qualified path only (never `use`), the same rule

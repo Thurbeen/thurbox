@@ -45,7 +45,7 @@ fn publish_snapshot(host: &LuaHost, snapshot: &thurbox::kernel::snapshot::Snapsh
     let themes = thurbox::kernel::theme::Themes::load(None);
     let registry = thurbox::kernel::registry::Registry::default();
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&thurbox::kernel::host::Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,

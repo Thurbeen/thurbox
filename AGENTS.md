@@ -323,7 +323,7 @@ backend              session, paths, config::hosts     (the gateway to
 git                  session, paths, shell
 telemetry            session                           (ADR-38 diagnostic logs)
 kernel               session, paths, git,              [agent|config|update::<file>,
-                     notifications, shell, theme        backend]
+                     notifications, theme               backend]
 cli                  session, paths, notifications,    [agent|config|update::<file>,
                      ui_control, theme                  backend, kernel]
 notifications        session, paths, shell

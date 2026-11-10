@@ -159,7 +159,7 @@ impl World {
             themes: themes(),
             registry: registry(host),
             diffs: thurbox::kernel::diff::DiffStore::new(),
-            repos: thurbox::kernel::repos::RepoStore::with_hosts(Default::default()),
+            repos: thurbox::kernel::repos::RepoStore::new(),
             inventory,
         }
     }

@@ -13,8 +13,9 @@
 --   repo → new folder (git init / leave it empty) → repo
 --                     (clone into it)         → clone URL → repo
 --
--- `host` is skipped when Fleet defines no host but `local`, and `agent` is
--- skipped when there is one harness or none. Fleet makes the session's
+-- `host` is always asked: this machine is a choice at once, and the hosts
+-- Fleet names join the open step when they arrive. `agent` is skipped when
+-- there is one harness or none. Fleet makes the session's
 -- workspace, so there is no branch to name. Nothing here waits: every listing
 -- and path check is a READ the kernel serves from a worker (`kernel::repos`),
 -- asked for by leaving a key in `store`.
@@ -301,8 +302,8 @@ end
 --- What has been decided so far, for the title's trail.
 ---
 --- A breadcrumb rather than `step 2 of 4`, because the flow is CONDITIONAL: the
---- host and agent steps are skipped when there is nothing to choose. A count
---- would have to lie about one of those.
+--- agent step is skipped when there is nothing to choose. A count would have
+--- to lie about it.
 local function trail(flow)
   if not flow then
     return ""
@@ -397,6 +398,11 @@ local function render_host(flow)
   local labels = host_labels()
   if hosts() == nil then
     labels = { "Asking Fleet for its hosts…" }
+  end
+  -- Fleet's answer replaces the list under an open step, and can shorten it.
+  if flow.host_index > #labels then
+    flow.host_index = math.max(#labels, 1)
+    save(flow)
   end
   local height = #labels
   return frame("Run On", height + 4, {
@@ -1157,12 +1163,6 @@ return {
         return true
       end
       local flow = fresh()
-      -- Skipped only once Fleet has said its one host is this machine: a
-      -- pending list keeps the step, which shows the wait.
-      local known = hosts()
-      if known and #known == 1 and (known[1].backend or "") == "" then
-        flow.step = "repo"
-      end
       save(flow)
       ask(flow)
       return true

@@ -1328,7 +1328,7 @@ mod tests {
         let themes = crate::kernel::theme::Themes::load(None);
         let registry = crate::kernel::registry::Registry::default();
         let diffs = crate::kernel::diff::DiffStore::new();
-        let repos = crate::kernel::repos::RepoStore::with_hosts(Default::default());
+        let repos = crate::kernel::repos::RepoStore::new();
         let render = |terminals: &Terminals| {
             host.publish(&Published {
                 epoch: Epoch {

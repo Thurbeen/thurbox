@@ -171,7 +171,7 @@ backend              → session, paths, config::hosts  (the gateway to
                        runtime-mux, and what thurbox injects into it)
 git                  → session, paths, shell
 telemetry            → session                    (ADR-38 diagnostic logs)
-kernel               → session, paths, git, notifications, shell, theme
+kernel               → session, paths, git, notifications, theme
                        [path-only: agent::{agent_config, fetch},
                         backend, config::{automations, hosts,
                         interface_state, settings, themes},

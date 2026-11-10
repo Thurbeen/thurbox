@@ -471,10 +471,6 @@
 ---@field name string
 ---@field detail string
 ---@field backend string
----@field platform "posix"|"windows"
----@field multiplexer? string
----@field available_multiplexers string[] Installed there and native to its platform. While `probing`, only its platform default and `multiplexer`.
----@field probing boolean The host has not yet said which multiplexers it has.
 
 ---@class (exact) thurbox.AutomationRun
 ---@field id integer

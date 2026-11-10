@@ -102,9 +102,9 @@ breadcrumb: 'Keybindings'
 </h2>
 <p>
   <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the flow (<code>ui/plugins/70_new_session.lua</code>) &mdash; one
-  float rather than a chain of modals. It walks host &rarr; repository &rarr; name &rarr; agent,
-  skipping the host step when Fleet defines no host but <code>local</code> and the agent step when
-  Fleet offers one harness. Fleet makes each session a git worktree of the chosen repository, which
+  float rather than a chain of modals. It walks host &rarr; repository &rarr; name &rarr; agent. The
+  host step offers this machine at once and adds Fleet's hosts when Fleet names them; the agent
+  step is skipped when Fleet offers one harness. Fleet makes each session a git worktree of the chosen repository, which
   must be mapped in Fleet's <code>[workspaces.repositories]</code>.
 </p>
 <table>

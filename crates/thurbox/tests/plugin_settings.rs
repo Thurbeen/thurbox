@@ -98,7 +98,7 @@ fn session_list_of(host: &LuaHost, registry: &Registry, sessions: Vec<SessionRow
     };
     let themes = Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
@@ -441,7 +441,7 @@ fn the_choices_are_published_to_lua() {
     let snapshot = Snapshot::default();
     let themes = Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,

@@ -559,48 +559,21 @@ impl Captured {
     }
 }
 
-/// The command line a plugin asked for, pointed at the machine it belongs to.
-///
-/// Local runs go through the platform shell in the session's directory; remote
-/// ones through the host launcher, which is the same path `sync` and the diff
-/// take. Building it here means the *decision* about where is made once, and
-/// `capture` never has to know.
-pub fn command_for(
-    program: &str,
-    cwd: &PathBuf,
-    host: Option<&crate::session::HostDef>,
-) -> std::process::Command {
-    match host {
-        None => {
-            let mut command = if cfg!(windows) {
-                let mut c = std::process::Command::new("cmd");
-                c.arg("/C");
-                c
-            } else {
-                let mut c = std::process::Command::new("sh");
-                c.arg("-c");
-                c
-            };
-            command.arg(program).current_dir(cwd);
-            command
-        }
-        Some(host) => {
-            // The directory is on the host, so `cd` is part of the script rather
-            // than a `current_dir` on this machine. Quoted, because a worktree
-            // path can contain anything a filesystem allows.
-            let script = format!(
-                "cd {} && {program}",
-                crate::shell::posix_quote(&cwd.to_string_lossy())
-            );
-            crate::git::host_shell_c(host, &script)
-        }
-    }
-}
-
-/// A sessionless command in the configured host user's home and environment.
-pub fn command_for_host(program: &str, host: &crate::session::HostDef) -> std::process::Command {
-    let script = crate::shell::HostShell::for_host(host).in_home(program);
-    crate::shell::HostShell::run_on_host(host, &script)
+/// The command line a plugin asked for, run on this machine through the
+/// platform shell in `cwd`. thurbox runs nothing on another machine: a
+/// session there is refused before a run is asked for.
+pub fn command_for(program: &str, cwd: &PathBuf) -> std::process::Command {
+    let mut command = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C");
+        c
+    } else {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c");
+        c
+    };
+    command.arg(program).current_dir(cwd);
+    command
 }
 
 #[cfg(test)]
@@ -1008,63 +981,6 @@ mod tests {
             assert!(matches!(store.get("keeper", "same"), Some(Run::Done(_))));
         }
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 129);
-    }
-
-    #[test]
-    fn sessionless_host_commands_use_existing_transport_and_target_shell() {
-        use base64::Engine as _;
-
-        let posix = crate::session::HostDef {
-            name: "example".into(),
-            destination: "fixture-host".into(),
-            share_sessions: false,
-            ..Default::default()
-        };
-        let command = command_for_host("printf probe", &posix);
-        assert_eq!(command.get_program(), "ssh");
-        let args: Vec<_> = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy())
-            .collect();
-        assert!(args.iter().any(|arg| arg == "fixture-host"));
-        assert_eq!(
-            args.last().expect("script").as_ref(),
-            "'cd \"$HOME\" && printf probe'"
-        );
-
-        let windows = crate::session::HostDef {
-            platform: Some(crate::session::Platform::Windows),
-            ..posix
-        };
-        let command = command_for_host("quota-axi --json --no-credential-refresh", &windows);
-        let args: Vec<_> = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy())
-            .collect();
-        assert!(args.iter().any(|arg| arg == "powershell"));
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(args.last().expect("encoded script").as_bytes())
-            .expect("base64");
-        let units: Vec<_> = decoded
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        let script = String::from_utf16(&units).expect("UTF16");
-        assert!(script.starts_with("Set-Location -LiteralPath $HOME -ErrorAction Stop\n"));
-        assert!(script.contains("quota-axi --json --no-credential-refresh"));
-        assert!(script.ends_with("exit $LASTEXITCODE"));
-
-        let command = command_for_host("printf probe", &crate::session::HostDef::wsl("Example"));
-        assert_eq!(command.get_program(), "wsl.exe");
-        let args: Vec<_> = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy())
-            .collect();
-        assert!(args
-            .windows(4)
-            .any(|part| part == ["-e", "sh", "-c", "cd \"$HOME\" && printf probe"]));
     }
 
     #[test]

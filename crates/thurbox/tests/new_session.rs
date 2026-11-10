@@ -91,7 +91,7 @@ fn offered() -> BookmarkRow {
 
 /// A store holding the three reads, as if every worker had already answered.
 fn store_with(rows: Vec<BookmarkRow>) -> RepoStore {
-    let mut repos = RepoStore::with_hosts(Default::default());
+    let mut repos = RepoStore::new();
     repos.set_bookmarks_for_test("", rows);
     repos
 }
@@ -386,23 +386,19 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
     }
 }
 
+/// Open the flow and take the host step's first row, for tests of later steps.
 fn open(host: &LuaHost, world: &World) {
     press(host, world, "ctrl+n");
-    if drawn(host, world).contains("Multiplexer") {
+    if drawn(host, world).contains("Run On") {
         press(host, world, "enter");
     }
 }
 
-#[cfg(unix)]
-fn devbox(platform: &str, available: &[&str]) -> HostRow {
+fn devbox() -> HostRow {
     HostRow {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
-        platform: platform.into(),
-        multiplexer: None,
-        available_multiplexers: available.iter().map(ToString::to_string).collect(),
-        probing: false,
     }
 }
 
@@ -419,45 +415,51 @@ fn the_flow_draws_nothing_until_it_is_opened() {
     );
 }
 
+/// The host step is never skipped: this machine is a choice at once, and the
+/// hosts Fleet names later join the same open form, so a form opened before
+/// Fleet answers neither waits nor loses them.
 #[test]
-fn opening_with_no_hosts_starts_at_the_repositories() {
-    // The helper accepts the default multiplexer for tests of later steps.
+fn the_host_step_offers_this_machine_at_once_and_fleets_hosts_when_they_arrive() {
     let host = host();
-    let world = World::default();
-    open(&host, &world);
+    let mut world = World::default();
+    press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Select Repo"), "{screen}");
+    assert!(screen.contains("Run On"), "{screen}");
+    assert!(screen.contains("this machine"), "{screen}");
+    world.snapshot.hosts = Some(vec![local_host(), devbox()]);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("devbox"), "{screen}");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Select Repo"));
 }
 
-/// Opened before Fleet has said which hosts it defines, the flow waits on the
-/// host step instead of skipping it, and offers the hosts once they arrive.
-#[cfg(unix)]
+/// With no host list published at all, the step says it is asking rather than
+/// offering nothing, and the hosts appear once they arrive.
 #[test]
-fn opening_before_fleet_names_its_hosts_waits_for_them() {
+fn a_host_list_not_yet_published_shows_the_wait() {
     let host = host();
     let mut world = World::default();
     world.snapshot.hosts = None;
-    open(&host, &world);
+    press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Asking Fleet for its hosts"), "{screen}");
-    world.snapshot.hosts = Some(vec![local_host(), devbox("posix", &["tmux"])]);
+    world.snapshot.hosts = Some(vec![local_host(), devbox()]);
     let screen = drawn(&host, &world);
     assert!(screen.contains("devbox"), "{screen}");
 }
 
 /// A Fleet that defines no `local` host offers none.
-#[cfg(unix)]
 #[test]
 fn local_is_offered_only_when_fleet_defines_it() {
     let host = host();
     let mut world = World::default();
-    world.snapshot.hosts = Some(vec![devbox("posix", &["tmux"]), {
-        let mut other = devbox("posix", &["tmux"]);
+    world.snapshot.hosts = Some(vec![devbox(), {
+        let mut other = devbox();
         other.name = "build".into();
         other.backend = "build".into();
         other
     }]);
-    open(&host, &world);
+    press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(screen.contains("devbox"), "{screen}");
     assert!(!screen.contains("local"), "{screen}");
@@ -467,19 +469,8 @@ fn local_is_offered_only_when_fleet_defines_it() {
 fn opening_with_hosts_asks_where_to_run_first() {
     let host = host();
     let mut world = World::default();
-    world.snapshot.hosts = Some(vec![
-        local_host(),
-        HostRow {
-            name: "devbox".into(),
-            detail: "me@devbox".into(),
-            backend: "ssh:devbox".into(),
-            platform: "posix".into(),
-            multiplexer: None,
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
-        },
-    ]);
-    open(&host, &world);
+    world.snapshot.hosts = Some(vec![local_host(), devbox()]);
+    press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Run On"), "{screen}");
     assert!(
@@ -1822,7 +1813,7 @@ fn a_session_on_a_host_names_the_fleet_host() {
     let flow = || {
         let host = host();
         let mut world = World::default();
-        world.snapshot.hosts = Some(vec![local_host(), devbox("posix", &["tmux"])]);
+        world.snapshot.hosts = Some(vec![local_host(), devbox()]);
         press(&host, &world, "ctrl+n");
         press(&host, &world, "down");
         press(&host, &world, "enter");
@@ -1892,6 +1883,28 @@ fn a_directory_that_is_no_repository_runs_as_it_is() {
         fleet.applied()["spec"]["workspace"],
         serde_json::json!({ "dir": path })
     );
+}
+
+/// A bare repository is a repository: it has no `.git` beside its files, but
+/// its session still needs a worktree, so an unmapped one is refused rather
+/// than run inside the bare repository.
+#[cfg(unix)]
+#[test]
+fn a_bare_repository_is_not_run_as_a_plain_directory() {
+    let fleet = StubFleet::new("[\"local\"]");
+    let bare = tempfile::tempdir().expect("a bare repository");
+    std::fs::write(bare.path().join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
+    std::fs::create_dir_all(bare.path().join("objects")).expect("objects");
+    std::fs::create_dir_all(bare.path().join("refs")).expect("refs");
+    let refused = fleet.run(vec![Command::Create {
+        name: "bare".into(),
+        repo: bare.path().to_string_lossy().into_owned(),
+        agent: Some("claude".into()),
+        host: None,
+    }]);
+    let error = refused.expect_err("an unmapped bare repository is refused");
+    assert!(error.contains("Fleet maps no repository"), "{error}");
+    assert!(!fleet.asked(), "nothing was applied");
 }
 
 /// Only an agent Fleet has a harness profile for becomes a Task: `shell`
@@ -2000,17 +2013,13 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
-            platform: "posix".into(),
-            multiplexer: None,
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
         },
     ]);
     // The memory that matters here is the HOST's, not the local machine's.
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
-    open(&host, &world);
+    press(&host, &world, "ctrl+n");
     press(&host, &world, "j"); // local → devbox
     press(&host, &world, "enter");
 
@@ -2173,16 +2182,12 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
-            platform: "posix".into(),
-            multiplexer: None,
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
         },
     ]);
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
-    open(&host, &world);
+    press(&host, &world, "ctrl+n");
     press(&host, &world, "j");
     press(&host, &world, "enter");
     press(&host, &world, "tab");
@@ -2249,22 +2254,14 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
-            platform: "posix".into(),
-            multiplexer: None,
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
         },
         HostRow {
             name: "builder".into(),
             detail: "me@builder".into(),
             backend: "ssh:builder".into(),
-            platform: "posix".into(),
-            multiplexer: None,
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
         },
     ]);
-    open(&host, &world);
+    press(&host, &world, "ctrl+n");
 
     // The cursor starts on the local machine; one step down reaches the first
     // host, whichever key does the stepping.
@@ -2525,16 +2522,12 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
-            platform: "posix".into(),
-            multiplexer: None,
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
         },
     ]);
     world.repos.set_bookmarks_for_test("ssh:devbox", Vec::new());
-    open(&h, &world);
+    press(&h, &world, "ctrl+n");
     press(&h, &world, "j"); // local → devbox
-    press(&h, &world, "enter"); // one multiplexer on devbox: straight to repositories
+    press(&h, &world, "enter"); // devbox: on to its repositories
     world.wants.bookmarks = Some("ssh:devbox".into());
 
     let empty = drawn(&h, &world);
@@ -2806,10 +2799,6 @@ fn a_hovered_host_row_is_banded() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
-            platform: "posix".into(),
-            multiplexer: None,
-            available_multiplexers: vec!["tmux".into()],
-            probing: false,
         },
     ]);
     let host = host();

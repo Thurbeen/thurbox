@@ -117,7 +117,7 @@ fn publish_rows(host: &LuaHost, sessions: Vec<SessionRow>) {
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     let snapshot = Snapshot {
         sessions,
         ..Snapshot::default()
