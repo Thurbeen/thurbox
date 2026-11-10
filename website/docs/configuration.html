@@ -223,8 +223,8 @@ thurbox-cli config show       # effective config + where each value came from</c
                 <td>a harness profile in Fleet (<a href="agents.html">Agents</a>)</td>
               </tr>
               <tr>
-                <td>Run sessions on a remote machine over SSH</td>
-                <td><a href="#hosts-toml"><code>hosts.toml</code></a></td>
+                <td>Run sessions on another machine</td>
+                <td>a <code>[hosts.&lt;name&gt;]</code> in Fleet's config; <a href="#hosts-toml"><code>hosts.toml</code></a> for how runtime-mux reaches it</td>
               </tr>
               <tr>
                 <td>Turn a whole TUI feature on/off (mouse, notifications&hellip;)</td>
@@ -277,12 +277,14 @@ thurbox-cli config show       # effective config + where each value came from</c
             <a href="#hosts-toml" class="heading-anchor">#</a>
           </h2>
           <p>
-            Declares remote SSH hosts; each
+            runtime-mux's host config: each
             <code>[[hosts]]</code>
-            entry registers a session backend named
+            entry says how to reach an SSH machine as
             <code>ssh:&lt;name&gt;</code>
-            . Seeded fully commented-out (fresh installs are local-only). A malformed file means
-            zero remote hosts and shows the error.
+            (WSL distros are discovered). Which host runs a session is Fleet's
+            <code>[hosts.&lt;name&gt;]</code>
+            ; thurbox reads this file only to reattach a companion shell on such a host. Seeded
+            fully commented-out. A malformed file means zero remote hosts and shows the error.
           </p>
           <table>
             <thead>
@@ -298,7 +300,7 @@ thurbox-cli config show       # effective config + where each value came from</c
                 <td><code>name</code></td>
                 <td>yes</td>
                 <td>&mdash;</td>
-                <td>backend id <code>ssh:&lt;name&gt;</code>; what <code>--host</code> expects</td>
+                <td>route <code>ssh:&lt;name&gt;</code></td>
               </tr>
               <tr>
                 <td><code>destination</code></td>
@@ -326,12 +328,6 @@ thurbox-cli config show       # effective config + where each value came from</c
                 <td>no</td>
                 <td><code>thurbox</code></td>
                 <td>remote tmux session name</td>
-              </tr>
-              <tr>
-                <td><code>worktrees_dir</code></td>
-                <td>no</td>
-                <td>remote <code>$HOME/.local/share/thurbox/worktrees</code></td>
-                <td>absolute remote worktrees dir</td>
               </tr>
             </tbody>
           </table>

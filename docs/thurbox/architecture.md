@@ -751,6 +751,12 @@ server does not know expands to nothing and reads as off; when only
 
 ## ADR-13: Off-local sessions via an SSH / WSL tmux transport
 
+> **Superseded in v3 (ADR-41).** thurbox runs no session and reads no other
+> machine: Fleet chooses a session's host and runtime, and a session on
+> another host runs in its directory there, with no worktree. The transport
+> below lives in `crates/runtime-mux`, which owns `hosts.toml`; thurbox uses
+> it only to reattach a companion shell on such a host.
+
 **Choice**: Run agent sessions on a remote host (over SSH) or in a
 local WSL distro (via `wsl.exe`) by launching the same tmux
 control-mode protocol behind a launch prefix. The local tmux backend is

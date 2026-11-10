@@ -277,57 +277,41 @@ breadcrumb: 'Features'
           </ul>
 
           <h2 id="remote-ssh-sessions">
-            Remote SSH Sessions
+            Sessions on Other Machines
             <a href="#remote-ssh-sessions" class="heading-anchor">#</a>
           </h2>
           <p>
-            Run an agent on a remote machine over SSH while the TUI stays local. The agent process,
-            its tmux window, and any git worktrees all live on the remote host.
+            Fleet decides where a session runs. Each host in Fleet's config names the runtime that
+            runs its sessions, and the new-session flow's host step lists the hosts Fleet defines.
           </p>
           <ul>
             <li>
-              Declare hosts in
+              A session on another host runs in its directory there, with no worktree: Fleet makes
+              worktrees on this machine only
+            </li>
+            <li>
+              thurbox reads this machine only. Diffs, git stats and plugin runs refuse a session on
+              another machine, and a path typed for another host is remembered as typed
+            </li>
+            <li>
               <code>~/.config/thurbox/hosts.toml</code>
-              (seeded commented-out, so a fresh install has none); each entry registers a selectable
-              backend named
-              <code>ssh:&lt;name&gt;</code>
+              belongs to runtime-mux: it says how to reach an SSH machine or a WSL distro (target,
+              ssh options, multiplexer). thurbox reads it to reattach a companion shell on such a
+              host
             </li>
             <li>
-              The new-session flow (
-              <code>Ctrl+N</code>
-              ) shows a host picker first; remote sessions are marked with a
-              <code>☁</code>
-              glyph in the session list
-            </li>
-            <li>
-              Thurbox shells out to your system
+              Connections go through your system
               <code>ssh</code>
               , so authentication, keys, and connection multiplexing come from
               <code>~/.ssh/config</code>
               &mdash; thurbox never handles credentials
             </li>
-            <li>
-              Remote sessions get the same persistence, multi-instance sharing, and
-              restore-on-startup as local ones
-            </li>
-            <li>
-              The remote host needs
-              <strong>tmux &ge; 3.2</strong>
-              and
-              <strong>git</strong>
-            </li>
           </ul>
           <pre data-title="~/.config/thurbox/hosts.toml"><code class="language-toml">[[hosts]]
-name = "devbox"            # backend "ssh:devbox"; what --host expects
+name = "devbox"            # route "ssh:devbox"
 destination = "me@devbox"  # ssh target or a ~/.ssh/config alias
 ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
-# socket / session  — optional remote tmux -L / session-name overrides
-# worktrees_dir      — optional absolute remote worktrees dir</code></pre>
-          <p>
-            Spawn remotely from the CLI with
-            <code>thurbox-cli session create --host devbox …</code>
-            .
-          </p>
+# socket / session  — optional remote tmux -L / session-name overrides</code></pre>
 
                     <h2 id="parent-sessions">
             Parent Sessions (Lead / Worker)

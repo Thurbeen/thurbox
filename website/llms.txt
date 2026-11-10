@@ -36,7 +36,7 @@
 - [Documentation hub](https://thurbox.thurbeen.eu/docs/index.html): entry point to all Thurbox documentation.
 - [Tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html): onboarding walkthrough with screenshots — adding a repository to the picker, creating a first session in a repository, the everyday keybindings, and the equivalent fleet commands.
 - [FAQ](https://thurbox.thurbeen.eu/docs/faq.html): short answers to the most common questions (what it is, how it differs, install, platforms, license).
-- [Features](https://thurbox.thurbeen.eu/docs/features.html): the customizable interface, sessions, agent definitions, git worktrees, remote SSH and WSL hosts, automations, global search, headless CLI.
+- [Features](https://thurbox.thurbeen.eu/docs/features.html): the customizable interface, sessions, agent definitions, git worktrees, sessions on other Fleet hosts, automations, global search, headless CLI.
 - [Agents](https://thurbox.thurbeen.eu/docs/agents.html): the agents are Fleet's harness profiles (claude, codex); thurbox keeps no agent registry and reads no agents.toml.
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
 - [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, Nix/NixOS, winget, Chocolatey, or from source; prerequisites; running it; how to pin a specific version.

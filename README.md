@@ -16,8 +16,8 @@
   today, and any agent Fleet gains a harness profile for.
 - **A persistent multiplexer session behind every agent** — they survive crashes, restarts
   and reboots, so quit thurbox and every agent keeps working.
-- **Agents on other machines too** — sessions on a remote host over SSH, or in a WSL
-  distro, sit in the same list under their own host, beside the ones running here.
+- **Agents on other machines too** — a session on another Fleet host sits in the same
+  list under its own host, beside the ones running here.
 - **A worktree per session** — Fleet gives each session on this machine a git worktree of its
   own, so agents never fight over your checkout. The repository is mapped once in Fleet's config.
 - **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
@@ -105,9 +105,9 @@ For the same walkthrough with screenshots, see the
 - **[Global search](https://thurbox.thurbeen.eu/docs/features.html#global-search)**
   (`Ctrl+/`) — find a session by name, agent, branch or repo, *and* by the text
   on its screen, which is the half that finds it by the error in it.
-- **[Remote SSH and WSL sessions](https://thurbox.thurbeen.eu/docs/features.html#remote-ssh-sessions)**
-  — declare hosts in `hosts.toml` and sessions run there while the TUI stays
-  local.
+- **[Sessions on other machines](https://thurbox.thurbeen.eu/docs/features.html#remote-ssh-sessions)**
+  — Fleet's config names the hosts and the runtime that runs each; the TUI
+  stays local and reads this machine only.
 - **[A headless CLI](https://thurbox.thurbeen.eu/docs/features.html#headless-cli)**
   — every session is a Fleet Task, so `fleet` creates, drives and deletes
   sessions from a script while the TUI shows them. `thurbox-cli` covers the

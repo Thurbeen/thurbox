@@ -1,6 +1,6 @@
 ---
 name: thurbox-remote-hosts
-description: Remote SSH and WSL hosts in thurbox: the hosts.toml schema and WSL discovery, how a picked host reaches Fleet, what thurbox itself runs on a host (repository listings, branches, diffs, companion shells), the TmuxTransport abstraction in crates/runtime-mux, the host's PATH probe, psmux/Windows-host divergences, and the failure classifiers. Use when working on remote/WSL/Windows hosts, ssh transport, psmux or hosts.toml.
+description: Remote SSH and WSL hosts: the hosts.toml schema (runtime-mux's) and WSL discovery, how a picked host reaches Fleet, why thurbox reads this machine only and runs only companion shells on a host, the TmuxTransport abstraction in crates/runtime-mux, the host's PATH probe, psmux/Windows-host divergences, and the failure classifiers. Use when working on remote/WSL/Windows hosts, ssh transport, psmux or hosts.toml.
 ---
 
 # Thurbox remote SSH and WSL hosts
@@ -11,26 +11,28 @@ description: Remote SSH and WSL hosts in thurbox: the hosts.toml schema and WSL 
 
 An off-local host is a **remote machine over SSH** or a **local WSL distro**
 (`wsl.exe`). Every session is a Fleet Task, and Fleet runs it on the host its
-spec names. thurbox reaches a host for its own reads and for companion shells:
+spec names, through the runtime Fleet's `[hosts.<name>]` names. thurbox
+itself reads this machine only:
 
-- **Creating a session.** The new-session flow shows a host picker (skipped
-  when no host is configured or discovered). The picked route (`ssh:devbox`)
-  becomes the Task's `spec.host` (`devbox`); no route is `local`
-  (`Fleet::host`, `src/kernel/command/fleet.rs`). A host that
-  `fleet runtime hosts --json` does not list is refused, with a hint to add
-  `[hosts.<name>]` to Fleet's config. So a host must be defined in both
-  `hosts.toml` and Fleet's config.
-- **The creation flow's reads.** Bookmarks, directory listings, child
-  repositories and branch lists are read on the picked host
-  (`src/kernel/repos.rs`, through `git::*_on`). A bookmark on a host resolves
-  through `hosts.toml` (`src/kernel/command/execute.rs`).
-- **Diffs and git stats.** `src/kernel/diff.rs` reads a remote route's diff on
-  its host. A Fleet Task on another host is neither diffed nor given git stats
-  (`SessionRow::workspace_reachable`).
+- **Creating a session.** The host step of the new-session flow is always
+  shown: it offers this machine at once and adds the hosts
+  `fleet runtime hosts --json` lists when Fleet answers. The picked host
+  becomes the Task's `spec.host`; this machine is `local`
+  (`Fleet::host`, `src/kernel/command/fleet.rs`). A host Fleet does not list
+  is refused, with a hint to add `[hosts.<name>]` to Fleet's config. A
+  session on another host gets a `dir` workspace: Fleet makes worktrees on
+  this machine only.
+- **The creation flow's reads** happen on this machine only
+  (`src/kernel/repos.rs`). A path typed for another host is remembered and
+  forgotten as typed (`src/kernel/command/execute.rs`).
+- **Diffs, git stats and plugin runs** refuse a session on another machine
+  (`src/kernel/diff.rs`, `SessionRow::workspace_reachable`,
+  `kernel::runs::command_for`).
 - **Companion shells** (`Ctrl+T`). A Fleet session's shell runs on the
   multiplexer of the `hosts.toml` host its Fleet host is named as, on that
   host's default route (`Terminals::shell_route`,
-  `src/kernel/terminal/shells.rs`). No such host means no shell.
+  `src/kernel/terminal/shells.rs`). No such host means no shell. This is the
+  one place thurbox reads `hosts.toml`.
 - **Image drops** onto a remote session are refused with a message
   (`refuses_a_remote_image_drop`, `src/coordinator/input.rs`).
 
@@ -53,14 +55,10 @@ ssh_opts = ["-o", "ServerAliveInterval=15"]
                               # optional (default []) — extra ssh flags; no ~ expansion
 socket = "thurbox"            # optional — the host's `tmux -L` socket
 session = "thurbox"           # optional — the host's tmux session name
-worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
-                              # optional — absolute worktrees dir on the host
 multiplexer = "tmux"          # optional (default: the platform's — tmux on POSIX, psmux on Windows)
 platform = "windows"          # optional — "posix"/"windows"; unset = windows iff multiplexer is psmux
 path_prepend = ["~/.local/bin"]
                               # optional — put in front of the host's PATH
-otel_endpoint = "http://localhost:4318"
-                              # optional — the host's OTLP collector, as the host reaches it (ADR-36)
 
 # A WSL distro (only needed to override auto-discovery):
 [[hosts]]
@@ -71,7 +69,8 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 
 Only `name` (plus `destination` for ssh, `kind` for wsl) is required. A host
 name may not contain `:`. `share_sessions` (default `true`) still parses; its
-one effect is on socket resolution (see *Sockets* below).
+one effect is on socket resolution (see *Sockets* below). `worktrees_dir` and
+`otel_endpoint` still parse and have no effect since 3.0.
 `thurbox-cli config` validates the file, and `thurbox-cli doctor` reads the
 cached registry.
 
