@@ -400,12 +400,30 @@ fn a_timed_out_exec_takes_its_children_with_it() {
     let run = instance.run(&["automation", "run", "hang"]);
     assert!(!run.status.success(), "{}", describe(&run));
     let pid = std::fs::read_to_string(&pid_file).expect("the child's pid");
-    let alive = Command::new("kill")
-        .args(["-0", pid.trim()])
-        .status()
-        .is_ok_and(|status| status.success());
+    let pid = pid.trim();
+    // A killed process lingers for a moment, and an orphan stays a zombie
+    // until whatever adopted it reaps it (a hook runner can be that
+    // subreaper): neither is a child that outlived the run.
+    let running = || {
+        let signalled = Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .is_ok_and(|status| status.success());
+        let zombie = std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit(')')
+                .next()
+                .is_some_and(|rest| rest.trim_start().starts_with('Z'))
+        });
+        signalled && !zombie
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut alive = running();
+    while alive && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        alive = running();
+    }
     if alive {
-        let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+        let _ = Command::new("kill").args(["-9", pid]).status();
     }
     assert!(!alive, "the background child outlived its run");
 }

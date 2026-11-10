@@ -256,7 +256,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         clipboard: arboard::Clipboard::new().ok(),
         image_probe: thurbox::clipboard::ImageProbe::default(),
         paste_targets: Vec::new(),
-        remote_drop: None,
+        held_input: std::collections::VecDeque::new(),
         probed_presses: 0,
         perf: Counters::default(),
         timings: thurbox::kernel::perf::Timings::default(),

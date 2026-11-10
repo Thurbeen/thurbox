@@ -7195,6 +7195,52 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     assert!(tui.quit().success());
 }
 
+/// Input that follows a held remote paste waits behind it: an `Enter` in the
+/// same batch submits the pasted path, and a second paste neither overtakes
+/// nor replaces the first.
+#[test]
+fn input_after_a_held_remote_paste_keeps_its_order() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let fleet_toml = profile.path("fleet.toml");
+    let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+    std::fs::write(
+        &fleet_toml,
+        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
+    )
+    .expect("a second host");
+    let repo = repo(profile.root.path());
+    let task = format!(
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        repo.display()
+    );
+    profile.fleet(&["apply", "-f", "-"], &task);
+    profile.fleet(&["reconcile"], "");
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("far");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    // Two pastes of paths only the remote machine has, then Enter, in one
+    // write: the shell runs the two paths as one word, in order.
+    tui.send(
+        b"\x1b[200~/tb-remote-only/far-a.png\x1b[201~\x1b[200~/tb-remote-only/far-b.png\x1b[201~\r",
+    );
+    tui.wait_for("far-a.png/tb-remote-only/far-b.png:");
+    assert!(tui.quit().success());
+}
+
 /// A Fleet session's id is its Task's name, not a UUID: `session.focus`
 /// (what a notification click runs) still finds it.
 #[test]

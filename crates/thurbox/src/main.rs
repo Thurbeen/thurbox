@@ -300,10 +300,11 @@ struct App {
     /// avoid. Bounded, because key auto-repeat makes presses faster than
     /// answers.
     paste_targets: Vec<String>,
-    /// A paste of image paths into a remote session, held while a worker
-    /// asks whether the files are this machine's: the surface, the text, and
-    /// where the answer arrives.
-    remote_drop: Option<(String, String, std::sync::mpsc::Receiver<bool>)>,
+    /// Terminal input held behind a paste of image paths into a remote
+    /// session, oldest first, while a worker asks whether the files are this
+    /// machine's. Everything typed or pasted meanwhile queues behind it, so an
+    /// `Enter` cannot overtake the paste it follows.
+    held_input: std::collections::VecDeque<coordinator::input::HeldInput>,
     /// How many of [`Self::paste_targets`] the question now out was asked for.
     ///
     /// The answer describes the clipboard at the moment it was asked, so it is

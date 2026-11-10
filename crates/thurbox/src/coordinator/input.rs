@@ -608,6 +608,11 @@ impl App {
         let Some(bytes) = key_to_bytes(key.code, key.modifiers) else {
             return false;
         };
+        if !self.held_input.is_empty() {
+            self.held_input
+                .push_back(HeldInput::Bytes { surface, bytes });
+            return true;
+        }
         let delivered = self.send_to_surface(&surface, bytes);
         // Delivered means consumed, which is what the rule above says and what
         // this now enforces. Falling through sent `Esc` to a program AND
@@ -806,6 +811,14 @@ impl App {
         if self.holds_a_remote_image_paste(&surface, &text) {
             return;
         }
+        if !self.held_input.is_empty() {
+            self.held_input.push_back(HeldInput::Paste {
+                surface,
+                text,
+                answer: None,
+            });
+            return;
+        }
         self.paste_text_into(&surface, &text);
     }
 
@@ -833,30 +846,40 @@ impl App {
         std::thread::spawn(move || {
             let _ = tx.send(paths.iter().all(|path| path.is_file()));
         });
-        self.remote_drop = Some((surface.to_string(), text.to_string(), rx));
+        self.held_input.push_back(HeldInput::Paste {
+            surface: surface.to_string(),
+            text: text.to_string(),
+            answer: Some(rx),
+        });
         true
     }
 
-    /// The answer about a held remote paste: this machine's files are refused
-    /// on the error line and never typed; anything else is typed as the text
-    /// it is.
+    /// Release held input in the order it came, up to the first paste whose
+    /// answer is still out: this machine's files are refused on the error
+    /// line and never typed; anything else is typed as the text it is.
     pub(crate) fn poll_remote_drop(&mut self) {
-        let Some((_, _, rx)) = &self.remote_drop else {
-            return;
-        };
-        let local = match rx.try_recv() {
-            Ok(local) => local,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
-        };
-        let (surface, text, _) = self.remote_drop.take().expect("held");
-        if local {
-            self.report(
-                "image drop isn't supported for remote sessions yet",
-                Level::Error,
-            );
-        } else {
-            self.paste_text_into(&surface, &text);
+        while let Some(front) = self.held_input.front() {
+            let local = match front {
+                HeldInput::Paste {
+                    answer: Some(rx), ..
+                } => match rx.try_recv() {
+                    Ok(local) => local,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+                },
+                _ => false,
+            };
+            match self.held_input.pop_front().expect("a front") {
+                HeldInput::Paste { .. } if local => self.report(
+                    "image drop isn't supported for remote sessions yet",
+                    Level::Error,
+                ),
+                HeldInput::Paste { surface, text, .. } => self.paste_text_into(&surface, &text),
+                HeldInput::Bytes { surface, bytes } => {
+                    self.send_to_surface(&surface, bytes);
+                }
+            }
+            self.dirty = true;
         }
     }
 
@@ -1351,6 +1374,20 @@ impl Holds {
     pub(crate) fn clear(&mut self) {
         self.held.clear();
     }
+}
+
+/// Terminal input waiting behind a held remote paste
+/// (`poll_remote_drop`).
+pub(crate) enum HeldInput {
+    /// A paste; `answer` is out while a worker asks whether its paths are
+    /// this machine's files, and absent for a paste that only waits its turn.
+    Paste {
+        surface: String,
+        text: String,
+        answer: Option<std::sync::mpsc::Receiver<bool>>,
+    },
+    /// A keystroke's bytes.
+    Bytes { surface: String, bytes: Vec<u8> },
 }
 
 #[cfg(test)]
