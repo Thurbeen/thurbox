@@ -3797,6 +3797,15 @@ drop it — so thurbox sends the literal `Ctrl+V` byte the agent watches for.
 Written from the encoding rules rather than from a Mac: the decision is covered
 by a test, the round trip on real hardware is not.
 
+**A dropped image on a remote session is refused (a v3 gap).** A terminal
+delivers a dropped file as a paste of its local path, which names nothing on
+the machine a remote Task runs on. v2 copied the file there over thurbox's own
+ssh; in v3 neither the runtime protocol (its `exec` takes no input) nor Fleet's
+command line carries a file to a Task's host. So a paste that is nothing but
+the paths of existing local image files, on either surface of a session whose
+Task runs on another host, is not typed: the error line says "image drop isn't
+supported for remote sessions yet". A local session takes the paths as before.
+
 **What the agent reads, thurbox has not seen.** This is the one paste path where
 what you copied reaches the agent as content it fetches itself, rather than as
 text thurbox brackets and sends — and an image carries instructions as readily

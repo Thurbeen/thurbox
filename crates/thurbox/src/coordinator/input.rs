@@ -803,7 +803,31 @@ impl App {
             self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return;
         };
+        if self.refuses_a_remote_image_drop(&surface, &text) {
+            return;
+        }
         self.paste_text_into(&surface, &text);
+    }
+
+    /// Refuse a drop of local image files on a session on another machine:
+    /// the paste is their local paths, which name nothing there, and nothing
+    /// yet carries a file to a Fleet Task's host. Said on the error line; the
+    /// paths are never typed.
+    fn refuses_a_remote_image_drop(&mut self, surface: &str, text: &str) -> bool {
+        let session = surface.strip_suffix("#shell").unwrap_or(surface);
+        let remote = self
+            .snapshots
+            .current()
+            .session(session)
+            .is_some_and(|row| row.remote_host.is_some());
+        if !remote || super::image_drop::dropped_images(text).is_none() {
+            return false;
+        }
+        self.report(
+            "image drop isn't supported for remote sessions yet",
+            Level::Error,
+        );
+        true
     }
 
     /// Send `text` to one surface as a paste, made safe by [`paste_safe`].
