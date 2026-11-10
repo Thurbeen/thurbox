@@ -314,7 +314,11 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
         Command::Editor { action } => editor::run(action)?,
         Command::Automation { action } => automation::run(action, &settings.fleet.program)?,
         Command::Config { action } => config::run(action, settings)?,
-        Command::Version(args) => version::run(args, settings.features.version_check),
+        Command::Version(args) => version::run(
+            args,
+            settings.features.version_check,
+            &settings.fleet.program,
+        ),
         Command::Update(args) => update::run(args, settings.features.auto_update),
         Command::Notify(args) => notify::run(args, settings)?,
         Command::Perf(args) => perf::run(args.plugins)?,
@@ -323,7 +327,7 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
         Command::Schema { instance } => ui::schema(instance)?,
         // Reads the machine: what is installed is not something thurbox
         // recorded.
-        Command::Doctor => doctor::run()?,
+        Command::Doctor => doctor::run(&settings.fleet.program)?,
     })
 }
 

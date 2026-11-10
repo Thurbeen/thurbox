@@ -258,6 +258,17 @@ fn render_show(report: &Value) -> String {
         output::kv(&[("active", output::dash(report["theme"].as_str()))])
     ));
 
+    let fleet = &report["fleet"];
+    sections.push(format!(
+        "Fleet\n{}",
+        output::kv(&[
+            ("program", output::dash(fleet["program"].as_str())),
+            ("version", output::dash(fleet["version"].as_str())),
+            ("config", output::dash(fleet["config"].as_str())),
+            ("data dir", output::dash(fleet["data_dir"].as_str())),
+        ])
+    ));
+
     sections.push(format!(
         "Sessions\n{}",
         output::kv(&[("tmux socket", output::dash(report["tmux_socket"].as_str()))])
@@ -306,6 +317,8 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
         "agents": { "default": agents.default_name(), "names": agents.names() },
         "hosts": { "names": hosts.names() },
         "settings": settings,
+        // Fleet runs every session (ADR-41): which one, and what it reads.
+        "fleet": super::doctor::FleetFacts::read(&settings.fleet.program).document(),
         "editor": { "command": editor, "source": editor_source, "mode": state.editor_mode.as_db_value() },
         "theme": state.theme,
         "custom_themes": custom_themes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),

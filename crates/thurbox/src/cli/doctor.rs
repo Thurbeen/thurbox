@@ -48,18 +48,21 @@ struct Finding {
 
 /// Report on this machine's readiness to run a session.
 ///
-/// Exits non-zero only when something that must work does not: no multiplexer,
-/// or no registered agent that resolves anywhere. A partially-installed
-/// registry is a `warn` and exits 0 — having `claude` but not `aider` is an
-/// ordinary machine, not breakage.
-pub fn run() -> Result<CommandOutput, CommandError> {
-    let mut findings = vec![multiplexer_finding()];
+/// Exits non-zero only when something that must work does not: no Fleet, no
+/// multiplexer, or no registered agent that resolves anywhere. A
+/// partially-installed registry is a `warn` and exits 0 — having `claude` but
+/// not `aider` is an ordinary machine, not breakage.
+pub fn run(fleet_program: &str) -> Result<CommandOutput, CommandError> {
+    let fleet = FleetFacts::read(fleet_program);
+    let mut findings = fleet.findings();
+    findings.push(multiplexer_finding());
     findings.extend(agent_findings());
     findings.extend(host_findings());
 
     let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
     let human = render(&findings, verdict);
-    let json = document(&findings, verdict);
+    let mut json = document(&findings, verdict);
+    json["fleet"] = fleet.document();
 
     Ok(match verdict {
         Level::Fail => CommandOutput::failed(
@@ -157,15 +160,8 @@ fn agent_finding(agent: &crate::session::AgentDef) -> Finding {
     }
 }
 
-/// One row per configured host about the launcher, and for a host that
-/// shares sessions a second about the `thurbox-cli` there.
-///
-/// The multiplexer and agents on a host are not probed here: `session doctor`
-/// reports on a session once one exists there. The CLI is, because sharing
-/// rests on it and nothing else says when it cannot work — the mirror skips the
-/// host and logs why at debug level, and the host's sessions simply never
-/// appear. That costs one round trip per shareable host, bounded by the ssh
-/// connect timeout.
+/// One row per configured host about the launcher. The multiplexer and agents
+/// on a host are not probed from here.
 fn host_findings() -> Vec<Finding> {
     let (hosts, _warnings) = crate::config::hosts::cached_registry();
     let mut findings = Vec::new();
@@ -205,7 +201,6 @@ fn render(findings: &[Finding], verdict: Level) -> String {
     for dir in &dirs {
         human.push_str(&format!("  {}\n", dir.display()));
     }
-    human.push_str("\nWiring of an existing session: thurbox-cli session doctor");
     human
 }
 
@@ -249,6 +244,175 @@ fn version_suffix(mux: &str) -> String {
     }
 }
 
+/// What Fleet, which runs every session (ADR-41), answers about itself on
+/// this machine: the program, its version and harness profiles, and the config
+/// and data directory it reads. thurbox links no Fleet crate, so this is
+/// Fleet's command line and its documented config rule.
+pub(super) struct FleetFacts {
+    pub(super) program: String,
+    /// `fleet version --json`, or why it could not be read.
+    pub(super) version: Result<serde_json::Value, String>,
+    /// The config file Fleet reads, and what named it.
+    pub(super) config: Option<(std::path::PathBuf, &'static str)>,
+}
+
+impl FleetFacts {
+    pub(super) fn read(program: &str) -> Self {
+        let version = std::process::Command::new(program)
+            .args(["version", "--json"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("could not start {program}: {e}"))
+            .and_then(|out| {
+                if out.status.success() {
+                    serde_json::from_slice(&out.stdout)
+                        .map_err(|e| format!("{program} version --json answered no JSON: {e}"))
+                } else {
+                    Err(format!(
+                        "{program} version --json: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ))
+                }
+            });
+        Self {
+            program: program.to_string(),
+            version,
+            config: fleet_config_path(),
+        }
+    }
+
+    fn harnesses(&self) -> Vec<String> {
+        self.version
+            .as_ref()
+            .ok()
+            .and_then(|v| v["harnesses"].as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|h| h.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The Fleet data directory: the config's `[data] dir`, relative to the
+    /// config's own directory, else Fleet's per-user default.
+    pub(super) fn data_dir(&self) -> Option<std::path::PathBuf> {
+        let configured = self.config.as_ref().and_then(|(path, _)| {
+            let text = std::fs::read_to_string(path).ok()?;
+            let doc: toml::Table = toml::from_str(&text).ok()?;
+            let dir = doc.get("data")?.get("dir")?.as_str()?.to_string();
+            Some(path.parent()?.join(dir))
+        });
+        configured.or_else(|| {
+            if cfg!(windows) {
+                return std::env::var_os("LOCALAPPDATA")
+                    .filter(|d| !d.is_empty())
+                    .map(|d| std::path::PathBuf::from(d).join("fleet"));
+            }
+            std::env::var_os("XDG_DATA_HOME")
+                .filter(|d| !d.is_empty())
+                .map(|d| std::path::PathBuf::from(d).join("fleet"))
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|h| std::path::PathBuf::from(h).join(".local/share/fleet"))
+                })
+        })
+    }
+
+    fn findings(&self) -> Vec<Finding> {
+        let mut findings = vec![match &self.version {
+            Ok(v) => Finding {
+                key: "fleet".into(),
+                level: Level::Ok,
+                detail: format!(
+                    "{} {} runs every session; harnesses: {}",
+                    self.program,
+                    v["version"].as_str().unwrap_or("?"),
+                    self.harnesses().join(", ")
+                ),
+            },
+            Err(why) => Finding {
+                key: "fleet".into(),
+                level: Level::Fail,
+                detail: format!(
+                    "{why} — Fleet runs every session; install it, or set [fleet] program in \
+                     settings.toml"
+                ),
+            },
+        }];
+        findings.push(match &self.config {
+            Some((path, from)) if path.is_file() => Finding {
+                key: "fleet-config".into(),
+                level: Level::Ok,
+                detail: format!("{} ({from})", path.display()),
+            },
+            Some((path, from)) => Finding {
+                key: "fleet-config".into(),
+                level: Level::Warn,
+                detail: format!(
+                    "{} ({from}) does not exist — run `{} init`",
+                    path.display(),
+                    self.program
+                ),
+            },
+            None => Finding {
+                key: "fleet-config".into(),
+                level: Level::Warn,
+                detail: "no Fleet config path: set FLEET_CONFIG".into(),
+            },
+        });
+        let mux = "runtime-mux";
+        findings.push(match crate::backend::preflight::look_up(mux) {
+            crate::backend::preflight::Presence::Missing => Finding {
+                key: mux.into(),
+                level: Level::Warn,
+                detail: format!(
+                    "{mux} is not on PATH — Fleet's local runtime runs it unless its \
+                         config names another program"
+                ),
+            },
+            _ => Finding {
+                key: mux.into(),
+                level: Level::Ok,
+                detail: format!("{mux} is installed"),
+            },
+        });
+        findings
+    }
+
+    /// The facts as one JSON object, for `doctor`, `config show` and
+    /// `version --json`.
+    pub(super) fn document(&self) -> Value {
+        json!({
+            "program": self.program,
+            "version": self.version.as_ref().ok().and_then(|v| v["version"].as_str()),
+            "harnesses": self.harnesses(),
+            "config": self.config.as_ref().map(|(path, _)| path.display().to_string()),
+            "config_from": self.config.as_ref().map(|(_, from)| *from),
+            "data_dir": self.data_dir().map(|d| d.display().to_string()),
+            "error": self.version.as_ref().err(),
+        })
+    }
+}
+
+/// The config file Fleet reads, by its documented rule (docs/fleet): the file
+/// `FLEET_CONFIG` names, else the native per-user one.
+fn fleet_config_path() -> Option<(std::path::PathBuf, &'static str)> {
+    if let Some(path) = std::env::var_os("FLEET_CONFIG").filter(|p| !p.is_empty()) {
+        return Some((std::path::PathBuf::from(path), "FLEET_CONFIG"));
+    }
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA")
+            .filter(|d| !d.is_empty())?
+            .into()
+    } else if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
+        std::path::PathBuf::from(d)
+    } else {
+        std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config")
+    };
+    Some((base.join("fleet/config.toml"), "the per-user file"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +438,44 @@ mod tests {
             "{}",
             finding.detail
         );
+    }
+
+    /// `doctor` names the Fleet that runs every session, its harnesses and
+    /// the config it reads.
+    #[cfg(unix)]
+    #[test]
+    fn doctor_reports_the_fleet_in_force() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fleet = dir.path().join("fleet");
+        std::fs::write(
+            &fleet,
+            "#!/bin/sh\necho '{\"version\":\"9.9.9\",\"harnesses\":[\"claude-code\",\"codex\"]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "[data]\ndir = \"store\"\n").unwrap();
+        std::env::set_var("FLEET_CONFIG", &config);
+
+        let facts = FleetFacts::read(&fleet.to_string_lossy());
+        let findings = facts.findings();
+        assert_eq!(findings[0].level, Level::Ok, "{}", findings[0].detail);
+        assert!(
+            findings[0].detail.contains("9.9.9"),
+            "{}",
+            findings[0].detail
+        );
+        assert!(findings[0].detail.contains("claude-code, codex"));
+        assert_eq!(findings[1].level, Level::Ok, "{}", findings[1].detail);
+        assert!(findings[1].detail.contains("FLEET_CONFIG"));
+        assert_eq!(
+            facts.document()["data_dir"],
+            json!(dir.path().join("store"))
+        );
+
+        let gone = FleetFacts::read("definitely-not-a-fleet-xyz");
+        assert_eq!(gone.findings()[0].level, Level::Fail);
     }
 
     #[test]

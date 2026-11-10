@@ -785,6 +785,12 @@ database:
 
 - Fleet reads its own config (`FLEET_CONFIG`, then its per-user file). Run
   `fleet init` before the first `fleet up`.
+- `thurbox-cli doctor` checks the Fleet in force: the program and its
+  version, the harnesses it has profiles for, the config it reads (and which
+  rule named it), and `runtime-mux` on `PATH`. A Fleet that does not answer
+  `fleet version --json` fails the report. `thurbox-cli config show` and
+  `thurbox-cli version --json` report the same under `fleet`, with Fleet's
+  data directory.
 - A `fleet up` the interface started runs in a process group of its own and
   outlives the interface: Tasks keep reconciling with no interface open.
 - A session row's status is the Task's `sessionState`: `Running`, `Idle`,

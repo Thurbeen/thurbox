@@ -60,7 +60,7 @@ Ten entries ship pre-seeded — nine coding agents and a plain shell.
 applied only while `[telemetry]` is on; `copilot`, `omp` and `opencode` need
 only the spec's `OTEL_EXPORTER_OTLP_*` variables, which every session gets, and
 `antigravity`, `pi` and `aider` have no native OTel. See
-[config.md](config.md#telemetry--opentelemetry-for-sessions).
+[config.md](config.md#telemetry--opentelemetry-for-the-interface).
 
 ### Several Claude accounts
 
