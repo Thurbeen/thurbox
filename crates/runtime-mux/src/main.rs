@@ -37,9 +37,10 @@ fn main() {
         .unwrap_or_else(|| SOCKET.to_string());
     // A start looks the key up and then makes its window, so two at once
     // could each make one; a stop between them could remove the one the
-    // other just adopted. Both run one at a time per server.
+    // other just adopted. Both run one at a time per server, and so does a
+    // workspace call, which makes or adopts by key the same way.
     let mut _turn = None;
-    if matches!(verb.as_str(), "start" | "stop") {
+    if matches!(verb.as_str(), "start" | "stop" | "workspace") {
         match lock(&socket) {
             Ok(file) => _turn = Some(file),
             Err(e) => {

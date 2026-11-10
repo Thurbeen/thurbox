@@ -39,6 +39,7 @@ pub mod tmux_compat;
 pub mod toml_file;
 pub mod view;
 pub mod wiring;
+pub mod workspace;
 
 pub use contract::{
     AdoptedSession, BackendError, BackendLiveness, BackendResult, Capabilities, DiscoveredSession,

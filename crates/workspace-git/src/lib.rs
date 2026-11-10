@@ -208,7 +208,30 @@ pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
     remove_dir(&dir)
 }
 
-/// The directory a release would remove, and the paths it holds.
+/// Undo a workspace no session has worked in, such as one whose runtime's
+/// setup failed: its worktrees go with nothing preserved. A `file://`
+/// directory is left as it is.
+pub fn discard(cfg: &Config, key: &str) -> Result<(), String> {
+    check_key(key)?;
+    rollback(cfg, key)
+}
+
+/// A whole workspace: its URLs, and the directories made for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    pub urls: Vec<String>,
+    pub dirs: Vec<String>,
+}
+
+/// The key's whole workspace, or `None` when the key holds none.
+pub fn inspect(cfg: &Config, key: &str) -> Result<Option<Workspace>, String> {
+    check_key(key)?;
+    Ok(read_record(&cfg.root.join(key))?.map(|r| Workspace {
+        urls: r.urls,
+        dirs: r.dirs,
+    }))
+}
+
 fn remove_dir(dir: &Path) -> Result<(), String> {
     match fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),

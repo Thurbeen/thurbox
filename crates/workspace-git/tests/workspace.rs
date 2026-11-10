@@ -407,3 +407,36 @@ fn the_program_answers_a_make_and_a_release_as_json() {
     assert_eq!(released, serde_json::json!("released"));
     assert!(!s.cfg.root.join("t.cli").exists());
 }
+
+#[test]
+fn a_discard_removes_the_workspace_and_preserves_nothing() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    let (dirs, _) = s.made("t.discard", &[url("git+file", &origin)]);
+    fs::write(Path::new(&dirs[0]).join("setup.txt"), "made by setup").unwrap();
+    workspace_git::discard(&s.cfg, "t.discard").expect("discard");
+    assert!(!s.cfg.root.join("t.discard").exists());
+    assert_eq!(
+        git(&s.source(), &["for-each-ref", "refs/fleet/preserved"]),
+        ""
+    );
+}
+
+#[test]
+fn inspect_answers_the_urls_and_directories_of_a_whole_workspace() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    let urls = [url("git+file", &origin)];
+    assert_eq!(
+        workspace_git::inspect(&s.cfg, "t.seen").expect("inspect"),
+        None
+    );
+    let (dirs, _) = s.made("t.seen", &urls);
+    assert_eq!(
+        workspace_git::inspect(&s.cfg, "t.seen").expect("inspect"),
+        Some(workspace_git::Workspace {
+            urls: urls.to_vec(),
+            dirs
+        })
+    );
+}

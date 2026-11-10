@@ -21,13 +21,23 @@ use serde_json::{json, Value};
 
 use crate::contract::{Located, Owner, SessionBackend, WindowRole, WindowSpec};
 use crate::identity::window_name_for;
+use crate::workspace::{Workspaces, SCHEMES};
 
 /// The protocol version this program speaks.
 pub const PROTOCOL: u64 = 1;
 
 /// The verbs it answers, `manifest` first.
 pub const VERBS: &[&str] = &[
-    "manifest", "start", "inspect", "stop", "list", "input", "capture", "exec", "attach",
+    "manifest",
+    "start",
+    "inspect",
+    "stop",
+    "list",
+    "input",
+    "capture",
+    "exec",
+    "attach",
+    "workspace",
 ];
 
 /// The tmux socket the program's server runs on when [`SOCKET_ENV`] names
@@ -65,7 +75,13 @@ fn unknown(why: impl std::fmt::Display) -> Value {
 /// `attach` answers with the key after it.
 pub fn serve(backend: &dyn SessionBackend, verb: &str, request: &[u8], view: &[String]) -> Value {
     if verb == "manifest" {
-        return known(json!({ "protocol": PROTOCOL, "verbs": VERBS }));
+        // The files a workspace holds are on the host, so they outlive the
+        // process: a stop without release keeps them.
+        return known(json!({
+            "protocol": PROTOCOL,
+            "verbs": VERBS,
+            "workspace": { "schemes": SCHEMES, "survivesStop": true },
+        }));
     }
     let request: Value = match serde_json::from_slice(request) {
         Ok(value) => value,
@@ -83,7 +99,22 @@ pub fn serve(backend: &dyn SessionBackend, verb: &str, request: &[u8], view: &[S
     let result = match verb {
         "start" => parse(request).map(|r| start(backend, r)),
         "inspect" => parse(request).map(|r: Keyed| inspect(backend, &r.key)),
-        "stop" => parse(request).map(|r: Stop| stop(backend, &r.key)),
+        "stop" => parse(request).map(|r: Stop| {
+            let stopped = stop(backend, &r.key);
+            if !r.release || stopped.get("known").is_none() {
+                return stopped;
+            }
+            match Workspaces::load().and_then(|w| w.release(&r.key)) {
+                Ok(()) => stopped,
+                Err(why) => unknown(format!(
+                    "the process stopped; the workspace was not released: {why}"
+                )),
+            }
+        }),
+        "workspace" => parse(request).map(|r: Workspace| match Workspaces::load() {
+            Ok(workspaces) => workspaces.make(&r.key, &r.urls),
+            Err(why) => known(json!({ "failed": { "why": why } })),
+        }),
         "list" => Ok(list(backend)),
         "input" => parse(request).map(|r| input(backend, r)),
         "capture" => parse(request).map(|r| capture(backend, r)),
@@ -135,14 +166,24 @@ impl Validate for Keyed {
 #[derive(Deserialize)]
 struct Stop {
     key: String,
-    /// Removes the key's workspace too; this runtime makes none, so there is
-    /// nothing more to remove.
+    /// Releases the key's workspace too, after the process.
     #[serde(default)]
-    #[allow(dead_code)]
     release: bool,
 }
 
 impl Validate for Stop {
+    fn validate(&self) -> Result<(), String> {
+        check_key(&self.key)
+    }
+}
+
+#[derive(Deserialize)]
+struct Workspace {
+    key: String,
+    urls: Vec<String>,
+}
+
+impl Validate for Workspace {
     fn validate(&self) -> Result<(), String> {
         check_key(&self.key)
     }
@@ -215,7 +256,7 @@ impl Validate for Exec {
     fn validate(&self) -> Result<(), String> {
         if self.place != "host" {
             return Err(format!(
-                "exec in {:?}: this runtime makes no workspace, so it runs only `in: host`",
+                "exec in {:?}: this runtime runs exec only `in: host`",
                 self.place
             ));
         }

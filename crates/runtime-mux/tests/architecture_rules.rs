@@ -128,7 +128,13 @@ const MODULE_RULES: &[ModuleRules] = &[
     // nothing that builds one.
     ModuleRules {
         name: "protocol",
-        allowed: &["contract", "identity"],
+        allowed: &["contract", "identity", "workspace"],
+    },
+    // The `workspace` verb's side: the runtime's config, the workspace-git
+    // program it runs, and its setup and teardown steps.
+    ModuleRules {
+        name: "workspace",
+        allowed: &[],
     },
     // One pane as a terminal stream, over one backend it is handed.
     ModuleRules {

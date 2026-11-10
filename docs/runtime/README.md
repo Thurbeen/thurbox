@@ -47,8 +47,9 @@ each host in `[hosts.<name>]`, the runtime serving it, so a Task's
 
 Built: `runtime-mux` and the reference script answer it, Fleet's `exec`
 runtime kind speaks it, and `fleet runtime check` holds both to it in CI.
-`workspace` is not built yet: no runtime declares it, and Fleet makes no
-call to it. `attach` is built: Fleet asks it in `fleet attach`, once the
+`workspace` is built in `runtime-mux`, which declares it, and
+`fleet runtime check` tests it; Fleet makes no call to it yet.
+`attach` is built: Fleet asks it in `fleet attach`, once the
 runtime's `manifest` declares it, and `runtime-mux` and the reference script
 answer it.
 
@@ -62,7 +63,7 @@ Unknown.
 
 | Verb | Request (besides `protocol`) | Known answer |
 | --- | --- | --- |
-| `manifest` | — | `{"protocol": 1, "verbs": [...]}` |
+| `manifest` | — | `{"protocol": 1, "verbs": [...]}`, and `workspace: {schemes, survivesStop}` with the `workspace` verb |
 | `start` | `key`, `argv`, `env` (object), `dir` (absolute, optional) | `{"started": {"id", "adopted"}}`, or `{"failed": {"why"}}` when nothing can have started, such as a missing multiplexer |
 | `inspect` | `key` | `"none"`, `{"running": {"id"}}` or `{"exited": {"id", "code"}}`, `code` null for a signal |
 | `stop` | `key`, `release` (optional) | `"stopped"`, whether or not a process was there |
@@ -71,6 +72,7 @@ Unknown.
 | `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground"}}`, or `"none"` |
 | `exec` | `argv`, `in` (`host`), `dir`, `timeoutMs`, `outputCap` | `{"exited": {"code", "stdout", "stderr"}}`, `{"timedOut": {"stdout", "stderr"}}` or `{"failed": {"why"}}` |
 | `attach` | `key` | `{"stream": {"argv"}}`, `{"tty": {"argv"}}`, or `"none"` when no process holds the key |
+| `workspace` | `key`, `urls` | `{"made": {"dirs", "adopted"}}`, `{"unsupported": {"url"}}` or `{"failed": {"why"}}` ([Workspaces](#workspaces)) |
 
 `runtime-mux` answers every verb above. It runs its windows on a tmux
 server of its own, socket `runtime-mux` (`RUNTIME_MUX_SOCKET` names
@@ -87,6 +89,9 @@ each stream to its end and keeps `outputCap` bytes, so a long output does
 not change how the command ends; a child that left the group and holds a
 stream open does not hold the answer past the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
+It makes workspaces by running `workspace-git` on this machine
+([its workspaces](#runtime-muxs-workspaces)); a workspace call takes the
+same lock as a start.
 
 thurbox's stream pane (`stream_panes` in its `settings.toml`) is a view: it
 opens a local tmux pane through `runtime-mux view --scrollback <lines> --pane
@@ -406,6 +411,8 @@ The program takes one JSON request on stdin and prints one answer:
 | --- | --- | --- |
 | `workspace-git make` | `{root, key, urls, preserveDays?}` | `{"made": {dirs, adopted}}`, `{"unsupported": {url}}` or `{"failed": {why}}` |
 | `workspace-git release` | `{root, key}` | `"released"` |
+| `workspace-git discard` | `{root, key}` | `"discarded"`: the worktrees go, nothing is preserved, for a workspace no session worked in |
+| `workspace-git inspect` | `{root, key}` | `{"workspace": {urls, dirs}}`, or `"none"` |
 
 Any other answer is `{"unknown": {why}}`, such as a rollback that did not
 finish, and the caller concludes nothing from it. `root` is an absolute
@@ -431,3 +438,40 @@ A failing setup step fails the whole `workspace` call, which rolls back. A
 need no configuration covers is a runtime of one's own: a script that answers
 the protocol, starting from the runtime template, held to the same rules by
 `fleet runtime check`.
+
+### runtime-mux's workspaces
+
+`runtime-mux` runs the `workspace-git` program on this machine, so a session
+sees the same paths. Its own config file holds the settings: the file at
+`RUNTIME_MUX_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/runtime-mux/config.toml`.
+A missing file gives the defaults. An unknown key is refused.
+
+```toml
+[workspace]
+root = "/home/me/.local/share/runtime-mux/workspaces"
+program = "workspace-git"
+preserve.days = 30
+
+[[workspace.setup]]
+match = "git+https://github.com/acme/app.git"
+run = ["npm ci"]
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `workspace.root` | `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/workspaces` | where `workspace-git` makes workspaces; an absolute path |
+| `workspace.program` | `workspace-git` beside the `runtime-mux` program, else on `PATH` | the program it runs |
+| `workspace.preserve.days` | 30 | how long preserved work is kept |
+| `workspace.setup`, `workspace.teardown` | none | steps, as above |
+
+- A step matches a URL as written, or the URL without its query and fragment.
+  Its commands run in order, through `sh -c`, in the directory made for that
+  URL.
+- Setup runs only in a workspace the call made, not in one it adopted. A
+  failing command discards the workspace, with nothing preserved, and the
+  call answers `failed`, naming the command and its exit code.
+- `stop {release: true}` stops the process first, then runs the teardown
+  steps, then releases the workspace. A failing teardown command does not
+  stop the release.
+- A `workspace-git` that does not start answers `failed`: nothing was made.
+  One that starts and gives no answer is Unknown.

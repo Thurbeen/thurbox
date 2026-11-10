@@ -134,7 +134,9 @@ fn runtime_mux_passes_the_conformance_suite() {
         .stdout_has("ok   concurrent starts with one key leave one process")
         .stdout_has("ok   a protocol mismatch answers Unknown")
         .stdout_has("ok   an error answers Unknown, never None")
-        .stdout_has("ok   a stop of an absent process succeeds");
+        .stdout_has("ok   a stop of an absent process succeeds")
+        .stdout_has("ok   workspace: idempotent by key")
+        .stdout_has("ok   workspace: release never removes what it did not make");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
 }
 
