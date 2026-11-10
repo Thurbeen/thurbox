@@ -128,6 +128,12 @@ fn trigger_of(schedule: &Schedule) -> Result<Option<String>, CommandError> {
         check_timezone(timezone).map_err(usage)?;
     }
     let Some(trigger) = &schedule.trigger else {
+        if schedule.time.is_some() || schedule.weekday.is_some() {
+            return Err(usage(
+                "--time and --weekday say when within a --trigger preset; give the trigger too"
+                    .into(),
+            ));
+        }
         return Ok(None);
     };
     let parsed =
@@ -239,6 +245,8 @@ fn show(name: &str) -> Result<CommandOutput, CommandError> {
 fn edit(args: EditArgs, now: u64) -> Result<CommandOutput, CommandError> {
     let trigger = trigger_of(&args.schedule)?;
     let name = args.name.clone();
+    let rescheduled =
+        trigger.is_some() || args.schedule.timezone.is_some() || args.enable || args.disable;
     let edited = crate::config::automations::update(move |all| {
         let automation = all
             .automations
@@ -266,7 +274,11 @@ fn edit(args: EditArgs, now: u64) -> Result<CommandOutput, CommandError> {
         if args.enable || args.disable {
             automation.enabled = args.enable;
         }
-        automation.next_run_at = automation.next_after(now);
+        // Only a change of when it fires moves the next run: an edit of what it
+        // does must not cancel a run that is due, or skip one.
+        if rescheduled {
+            automation.next_run_at = automation.next_after(now);
+        }
         Ok(automation.clone())
     })?;
     Ok(record(&edited, format!("Updated automation {name}.")))

@@ -1697,8 +1697,17 @@ things:
   second it fired, then queue its prompt for it;
 - **exec**: run a command headlessly on this machine (`sh -c`, `cmd /C` on
   Windows), in its `--cwd` or the home directory, with its `--env` variables
-  and `THURBOX_AUTOMATION_NAME`, killed at its deadline. Its exit code and the
-  end of its output are the run's detail.
+  and `THURBOX_AUTOMATION_NAME`. It runs as the leader of a process group (in
+  a job object on Windows), and the whole group is killed once it exits or its
+  deadline passes, so a child it left in the background does not outlive the
+  run. Each stream is read to its end, so a command that prints a lot still
+  runs to its end; its exit code and the last 4096 characters of its output
+  are the run's detail.
+
+`edit` moves the next run only when it changes when the automation fires (its
+trigger, timezone, or enabled state): an edit of the prompt, command or
+deadline never cancels a run that is due. `--time` and `--weekday` say when
+within a `--trigger` preset, so either one without a trigger is refused.
 
 The trigger is a preset (`hourly`, `daily`, `weekdays`, `weekly`, with
 `--time HH:MM` and `--weekday`), `cron:"<expr>"` or `at:<unix millis>`,

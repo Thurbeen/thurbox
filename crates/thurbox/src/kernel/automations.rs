@@ -213,48 +213,149 @@ fn exec(
         .envs(env)
         .env("THURBOX_AUTOMATION_NAME", &automation.name);
     let timeout = automation.timeout();
-    match super::runs::capture(process, timeout) {
-        super::runs::Run::Done(output) => {
-            let (stdout, stderr) = (tail(&output.stdout), tail(&output.stderr));
-            let said = [stdout, stderr]
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            run.exit_code = output.status;
-            let head = match (output.timed_out, output.status) {
-                (true, _) => {
-                    run.status = crate::config::automations::RunStatus::TimedOut;
-                    format!("timed out after {}s", timeout.as_secs())
-                }
-                (false, Some(0)) => {
-                    run.detail = if said.is_empty() { "ok".into() } else { said };
-                    return run;
-                }
-                (false, Some(code)) => {
-                    run.status = crate::config::automations::RunStatus::Error;
-                    format!("exit {code}")
-                }
-                (false, None) => {
-                    run.status = crate::config::automations::RunStatus::Error;
-                    "exit signal".into()
-                }
-            };
-            run.detail = match said.is_empty() {
-                true => head,
-                false => format!("{head}: {said}"),
-            };
-        }
-        super::runs::Run::Failed(error) => {
+    let ended = match bounded(process, timeout) {
+        Ok(ended) => ended,
+        Err(error) => {
             run.status = crate::config::automations::RunStatus::Error;
-            run.detail = error;
+            run.detail = format!("could not start it: {error}");
+            return run;
         }
-        super::runs::Run::Pending => {
+    };
+    let said = [ended.stdout, ended.stderr]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    run.exit_code = ended.code;
+    let head = match (ended.timed_out, ended.code) {
+        (true, _) => {
+            run.status = crate::config::automations::RunStatus::TimedOut;
+            format!("timed out after {}s", timeout.as_secs())
+        }
+        (false, Some(0)) => {
+            run.detail = if said.is_empty() { "ok".into() } else { said };
+            return run;
+        }
+        (false, Some(code)) => {
             run.status = crate::config::automations::RunStatus::Error;
-            run.detail = "it did not run".into();
+            format!("exit {code}")
         }
-    }
+        (false, None) => {
+            run.status = crate::config::automations::RunStatus::Error;
+            "exit signal".into()
+        }
+    };
+    run.detail = match said.is_empty() {
+        true => head,
+        false => format!("{head}: {said}"),
+    };
     run
+}
+
+/// How an exec ended: its exit code (`None` when a signal or its deadline
+/// ended it) and the end of each stream.
+struct Ended {
+    code: Option<i32>,
+    timed_out: bool,
+    stdout: String,
+    stderr: String,
+}
+
+/// Run `command` to its exit or `timeout`, whichever is first.
+///
+/// Its own runner rather than `runs::capture`, whose plugin programs keep the
+/// head of their output and stop reading at the cap. An automation keeps the
+/// tail, so each pipe is drained to its end and only the last
+/// [`TAIL_CHARS`] kept: a command that prints a lot still runs to its end
+/// instead of dying on a closed pipe. It runs as the leader of a process
+/// group (in a job object on Windows), and the whole group is killed once it
+/// exits or its deadline passes, so a child it left in the background does
+/// not outlive the run, and no grandchild holds a pipe open past the bound.
+fn bounded(
+    mut command: std::process::Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<Ended> {
+    use std::process::Stdio;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut wrap = process_wrap::std::CommandWrap::from(command);
+    #[cfg(unix)]
+    wrap.wrap(process_wrap::std::ProcessGroup::leader());
+    #[cfg(windows)]
+    wrap.wrap(process_wrap::std::JobObject);
+    let mut child = wrap.spawn()?;
+    let stdout = drain(child.stdout().take());
+    let stderr = drain(child.stderr().take());
+    let deadline = std::time::Instant::now() + timeout;
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status.code()),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => break Err(()),
+            Err(_) => break Ok(None),
+        }
+    };
+    // Whatever is left in the group goes with it.
+    let _ = child.start_kill();
+    let _ = child.wait();
+    // The pipes close once the group is gone; a reader still waiting on a
+    // child that escaped the group is left behind after a short grace.
+    let grace = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    Ok(Ended {
+        timed_out: code.is_err(),
+        code: code.unwrap_or(None),
+        stdout: stdout.take_by(grace),
+        stderr: stderr.take_by(grace),
+    })
+}
+
+/// One pipe drained to its end on a thread of its own, keeping the tail.
+struct Drained {
+    kept: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+/// Bytes kept from the end of a stream: enough for [`TAIL_CHARS`] characters
+/// of up to four bytes each.
+const TAIL_BYTES: usize = TAIL_CHARS * 4;
+
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> Drained {
+    let kept = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let (finished, done) = std::sync::mpsc::channel();
+    let into = std::sync::Arc::clone(&kept);
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut chunk = [0u8; 64 * 1024];
+            while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+                if let Ok(mut kept) = into.lock() {
+                    kept.extend(&chunk[..n]);
+                    let excess = kept.len().saturating_sub(TAIL_BYTES);
+                    kept.drain(..excess);
+                }
+            }
+        }
+        let _ = finished.send(());
+    });
+    Drained { kept, done }
+}
+
+impl Drained {
+    /// The tail kept, once the pipe ended or `by` passed.
+    fn take_by(self, by: std::time::Instant) -> String {
+        let _ = self
+            .done
+            .recv_timeout(by.saturating_duration_since(std::time::Instant::now()));
+        let bytes: Vec<u8> = self
+            .kept
+            .lock()
+            .map(|kept| kept.iter().copied().collect())
+            .unwrap_or_default();
+        tail(&String::from_utf8_lossy(&bytes))
+    }
 }
 
 /// The trailing [`TAIL_CHARS`] of a stream, trimmed.

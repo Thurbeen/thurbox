@@ -360,7 +360,7 @@ growth would bloat the database over months of use.
 > its deadline is recorded as timed out by the next tick. What a fire does to
 > a session goes through Fleet's command line. The rest of this record is the
 > v2 design. See features.md → Automations.
-
+>
 > **Amended (issue #1468).** There is no TUI tick loop: the interface runs no
 > scheduler, and automations fire from the heartbeat, an OS timer, or
 > `automation run --wait`. Every verb — save, fire, tick — has one owner,

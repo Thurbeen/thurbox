@@ -333,3 +333,106 @@ fn a_create_needs_one_action_a_trigger_and_a_free_name() {
     let again = instance.run(&create);
     assert!(!again.status.success(), "{}", describe(&again));
 }
+
+/// An edit of what an automation does leaves when it next fires alone: a
+/// one-shot that came due before the edit still fires at the next tick.
+#[test]
+fn an_edit_of_the_prompt_keeps_a_due_run_due() {
+    let instance = Instance::new();
+    let out = instance.path("out.txt");
+    let at = format!("at:{}", now_ms() + 1_000);
+    instance.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "job",
+        "--trigger",
+        &at,
+        "--command",
+        &format!("echo ran >> '{}'", out.display()),
+    ]);
+    std::thread::sleep(Duration::from_millis(1_300));
+    let edited = instance.ok(&["automation", "edit", "job", "--prompt", "now"]);
+    assert!(edited["next_run_at"].is_u64(), "still due: {edited}");
+    instance.ok(&["automation", "tick"]);
+    assert_eq!(lines(&out), 1, "the due run fired");
+}
+
+/// A time or a weekday says when within a preset, so one without a trigger
+/// to apply it to is refused rather than dropped.
+#[test]
+fn an_edit_of_the_time_alone_is_refused() {
+    let instance = Instance::new();
+    instance.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "job",
+        "--trigger",
+        "daily",
+        "--command",
+        "true",
+    ]);
+    for args in [&["--time", "09:30"][..], &["--weekday", "2"][..]] {
+        let out = instance.run(&[&["automation", "edit", "job"][..], args].concat());
+        assert_eq!(out.status.code(), Some(2), "{args:?}:\n{}", describe(&out));
+    }
+}
+
+/// A run past its deadline takes what it started with it: a child the
+/// command left in the background does not outlive the run.
+#[test]
+fn a_timed_out_exec_takes_its_children_with_it() {
+    let instance = Instance::new();
+    let pid_file = instance.path("child.pid");
+    instance.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "hang",
+        "--trigger",
+        "hourly",
+        "--command",
+        &format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+        "--timeout-secs",
+        "1",
+    ]);
+    let run = instance.run(&["automation", "run", "hang"]);
+    assert!(!run.status.success(), "{}", describe(&run));
+    let pid = std::fs::read_to_string(&pid_file).expect("the child's pid");
+    let alive = Command::new("kill")
+        .args(["-0", pid.trim()])
+        .status()
+        .is_ok_and(|status| status.success());
+    if alive {
+        let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+    }
+    assert!(!alive, "the background child outlived its run");
+}
+
+/// A command that prints more than a run keeps still runs to its end, and
+/// the run keeps the end of what it printed.
+#[test]
+fn a_verbose_exec_runs_to_its_end_and_keeps_its_tail() {
+    let instance = Instance::new();
+    instance.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "loud",
+        "--trigger",
+        "hourly",
+        "--command",
+        "i=0; while [ $i -lt 20000 ]; do echo line-$i-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; i=$((i+1)); done; echo finished",
+    ]);
+    let run = instance.ok(&["automation", "run", "loud"]);
+    assert_eq!(run["run"]["status"], "success", "{run}");
+    assert!(
+        run["run"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("finished"),
+        "{}",
+        run["run"]["detail"]
+    );
+}
