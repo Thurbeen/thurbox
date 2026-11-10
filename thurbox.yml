@@ -312,15 +312,11 @@ globals:
     property: read-only
   thurbox.sessions:
     property: read-only
-  thurbox.deleted:
-    property: read-only
   thurbox.repos:
     property: read-only
   thurbox.agents:
     property: read-only
   thurbox.agent_default:
-    property: read-only
-  thurbox.settings.features.tasks:
     property: read-only
   thurbox.settings.features.automations:
     property: read-only
@@ -340,15 +336,11 @@ globals:
     property: read-only
   thurbox.settings.features.notifications:
     property: read-only
-  thurbox.settings.features.soft_delete:
-    property: read-only
   thurbox.settings.features.version_check:
     property: read-only
   thurbox.settings.features.auto_update:
     property: read-only
   thurbox.settings.two_panel_min_cols:
-    property: read-only
-  thurbox.settings.three_panel_min_cols:
     property: read-only
   thurbox.settings.scrollback_lines:
     property: read-only
@@ -368,39 +360,7 @@ globals:
     property: read-only
   thurbox.browse.entries:
     property: read-only
-  thurbox.branches.host:
-    property: read-only
-  thurbox.branches.repo:
-    property: read-only
-  thurbox.branches.loading:
-    property: read-only
-  thurbox.branches.error:
-    property: read-only
-  thurbox.branches.list:
-    property: read-only
-  thurbox.worktrees.host:
-    property: read-only
-  thurbox.worktrees.repo:
-    property: read-only
-  thurbox.worktrees.loading:
-    property: read-only
-  thurbox.worktrees.error:
-    property: read-only
-  thurbox.worktrees.list:
-    property: read-only
   thurbox.hosts:
-    property: read-only
-  thurbox.preflight.mux.binary:
-    property: read-only
-  thurbox.preflight.mux.configured:
-    property: read-only
-  thurbox.preflight.mux.available:
-    property: read-only
-  thurbox.preflight.mux.presence:
-    property: read-only
-  thurbox.preflight.mux.advice:
-    property: read-only
-  thurbox.tasks:
     property: read-only
   thurbox.automations:
     property: read-only

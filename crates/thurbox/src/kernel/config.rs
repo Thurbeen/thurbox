@@ -187,9 +187,9 @@ mod tests {
     fn a_live_flag_is_taken_into_force() {
         let mut config = Config::detached(settings());
         let mut edited = settings();
-        edited.features.soft_delete = false;
+        edited.features.shell_pane = false;
         assert_eq!(config.adopt(edited), Reloaded::Live);
-        assert!(!config.features().soft_delete);
+        assert!(!config.features().shell_pane);
     }
 
     #[test]
@@ -245,25 +245,21 @@ mod tests {
         // Flipping every live flag must change every one of them.
         let mut config = Config::detached(settings());
         let mut edited = settings();
-        edited.features.tasks = false;
         edited.features.file_viewer = false;
         edited.features.info_panel = false;
         edited.features.global_search = false;
         edited.features.shell_pane = false;
         edited.features.code_review = false;
         edited.features.perf_hud = false;
-        edited.features.soft_delete = false;
         assert_eq!(config.adopt(edited), Reloaded::Live);
         let live = config.features();
         for (name, value) in [
-            ("tasks", live.tasks),
             ("file_viewer", live.file_viewer),
             ("info_panel", live.info_panel),
             ("global_search", live.global_search),
             ("shell_pane", live.shell_pane),
             ("code_review", live.code_review),
             ("perf_hud", live.perf_hud),
-            ("soft_delete", live.soft_delete),
         ] {
             assert!(!value, "{name} was not taken into force");
         }

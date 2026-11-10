@@ -1319,7 +1319,7 @@ fn addressed_text_cannot_answer_a_destructive_confirmation() {
     let instance: thurbox::ui_control::Instance =
         serde_json::from_value(instances["instances"][0].clone()).unwrap();
     tui.send(b"\x08");
-    tui.send(b"D");
+    tui.send(b"\x04");
     tui.wait_for("Confirm");
     let reply = thurbox::ui_control::send(
         &instance,
@@ -3692,21 +3692,6 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 #[test]
-fn configured_unavailable_multiplexer_is_named_in_the_tui_create_flow() {
-    let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/settings.toml"),
-        "multiplexer = \"herdr\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
-    )
-    .expect("set unavailable backend");
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
-    tui.send(b"\x0e");
-    tui.wait_for("herdr is unavailable");
-    assert!(tui.quit().success());
-}
-
-#[test]
 fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
     // The failure search was rebuilt for: a prompt typed earlier has scrolled
     // off the screen, and searching for it found nothing, because only the
@@ -4863,14 +4848,7 @@ fn open_repo_picker(profile: &Profile) -> Tui {
     let mut tui = Tui::spawn(profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    // The multiplexer step is asked only where more than one is installed.
-    tui.wait_until("the new-session wizard to be up", |frame| {
-        frame.contains("Multiplexer") || frame.contains("Select Repos")
-    });
-    if tui.frame().contains("Multiplexer") {
-        tui.send(b"\r");
-    }
-    tui.wait_for("Select Repos");
+    tui.wait_for("Select Repo");
     tui
 }
 
@@ -4878,7 +4856,7 @@ fn repo_picker_selected(frame: &str, path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap();
     frame
         .lines()
-        .any(|line| line.contains("[x]") && line.contains(name))
+        .any(|line| line.contains("▸ ") && line.contains(name))
 }
 
 fn repo_picker_fixture(profile: &Profile) {
@@ -5040,31 +5018,7 @@ fn repo_picker_enter_selects_a_plain_directory_from_the_dropdown() {
         repo_picker_selected(frame, "plain")
     });
     tui.send(b"\r");
-    tui.wait_gone("Select Repos");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn repo_picker_existing_worktrees_are_collapsed_until_right_and_closed_with_left() {
-    let profile = Profile::new();
-    repo_picker_fixture(&profile);
-    let mut tui = open_repo_picker(&profile);
-    tui.send(b"\t~/repo\r");
-    tui.wait_until("the repository to be selected", |frame| {
-        repo_picker_selected(frame, "repo")
-    });
-    tui.wait_until_quiet();
-    assert!(
-        !tui.frame().contains("linked"),
-        "existing worktrees start collapsed: {}",
-        tui.frame()
-    );
-    tui.send(b"\x1b[Z\x1b[C");
-    tui.wait_for("linked");
-    tui.send(b"\x1b[B\x1b[D");
-    tui.wait_gone("linked");
-    tui.send(b"\x1b[C");
-    tui.wait_for("linked");
+    tui.wait_gone("Select Repo");
     assert!(tui.quit().success());
 }
 
@@ -5096,7 +5050,7 @@ fn repo_picker_shows_a_refused_path_inside_the_modal() {
     let frame = tui.frame();
     let top = frame
         .lines()
-        .position(|line| line.contains("Select Repos"))
+        .position(|line| line.contains("Select Repo"))
         .unwrap();
     let bottom = frame
         .lines()

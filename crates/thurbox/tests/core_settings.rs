@@ -47,7 +47,7 @@ fn the_file_is_what_is_in_force() {
     let _home = isolate();
     write_settings(
         "[features]\n\
-         soft_delete = false\n\
+         shell_pane = false\n\
          perf_hud = false\n\
          mouse = false\n\
          \n\
@@ -58,7 +58,7 @@ fn the_file_is_what_is_in_force() {
 
     let (config, warnings) = Config::load();
     assert!(warnings.is_empty(), "{warnings:?}");
-    assert!(!config.features().soft_delete);
+    assert!(!config.features().shell_pane);
     assert!(!config.features().perf_hud);
     assert!(!config.features().mouse);
     assert!(!config.in_force().notifications.sound);
@@ -81,16 +81,16 @@ fn a_restart_only_value_is_in_force_as_loaded() {
 #[test]
 fn a_live_change_on_disk_applies_without_a_restart() {
     let _home = isolate();
-    write_settings("[features]\nsoft_delete = true\n");
+    write_settings("[features]\nshell_pane = true\n");
     let (mut config, _) = Config::load();
-    assert!(config.features().soft_delete);
+    assert!(config.features().shell_pane);
 
-    write_settings("[features]\nsoft_delete = false\n");
+    write_settings("[features]\nshell_pane = false\n");
     // The poll is throttled and mtime-based; a fresh read is what the loop would
     // eventually do, so drive `adopt` with what the file now says.
     let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::Live);
-    assert!(!config.features().soft_delete);
+    assert!(!config.features().shell_pane);
 }
 
 #[test]
@@ -130,19 +130,19 @@ fn a_restart_only_change_is_reported_rather_than_implied() {
 #[test]
 fn an_unreadable_file_keeps_what_was_in_force() {
     let _home = isolate();
-    write_settings("[features]\nsoft_delete = false\n");
+    write_settings("[features]\nshell_pane = false\n");
     let (mut config, _) = Config::load();
-    assert!(!config.features().soft_delete);
+    assert!(!config.features().shell_pane);
 
     // Not valid TOML at all.
-    write_settings("[features\nsoft_delete = ???\n");
+    write_settings("[features\nshell_pane = ???\n");
     let outcome = config.poll();
     assert!(
         matches!(outcome, None | Some(Reloaded::Failed(_))),
         "{outcome:?}"
     );
     assert!(
-        !config.features().soft_delete,
+        !config.features().shell_pane,
         "a broken file must not silently reset a switch to its default"
     );
 }
@@ -150,11 +150,11 @@ fn an_unreadable_file_keeps_what_was_in_force() {
 #[test]
 fn our_own_write_is_not_reported_as_an_outside_edit() {
     let _home = isolate();
-    write_settings("[features]\nsoft_delete = true\n");
+    write_settings("[features]\nshell_pane = true\n");
     let (mut config, _) = Config::load();
 
     let mut edited = Settings::default();
-    edited.features.soft_delete = false;
+    edited.features.shell_pane = false;
     thurbox::config::settings::save_settings(&edited).expect("save");
     config.mark_saved();
 
@@ -188,7 +188,7 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     // The next visit, with the modal (and its draft) long since dropped: change
     // something else entirely.
     let mut draft = config.on_disk().clone();
-    draft.features.soft_delete = false;
+    draft.features.shell_pane = false;
     // Still `NeedsRestart`: the earlier change is pending until the next launch,
     // and saying otherwise would report it as applied.
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
@@ -199,7 +199,7 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
         !next_launch.features.mouse,
         "the restart-only change was reverted by an unrelated later save"
     );
-    assert!(!next_launch.features.soft_delete, "and the live one landed");
+    assert!(!next_launch.features.shell_pane, "and the live one landed");
 }
 
 /// The other half of the same rule: what is *in force* still refuses the
@@ -230,7 +230,7 @@ fn saving_preserves_the_files_comments() {
          git_poll_secs = 30\n",
     );
     let mut edited = Settings::default();
-    edited.features.soft_delete = false;
+    edited.features.shell_pane = false;
     thurbox::config::settings::save_settings(&edited).expect("save");
 
     let written = read_settings();
@@ -402,36 +402,10 @@ fn confirmation(host: &thurbox::kernel::host::LuaHost, settings: &Settings) -> O
     )
 }
 
-fn with_soft_delete(on: bool) -> Settings {
-    let mut settings = Settings::default();
-    settings.features.soft_delete = on;
-    settings
-}
-
 #[test]
-fn deleting_with_soft_delete_on_asks_and_remains_reversible() {
+fn deleting_confirms_and_itemises_the_loss() {
     let host = host();
-    let settings = with_soft_delete(true);
-    publish_with(&host, &settings);
-    press(&host, "sessions", "ctrl+d");
-
-    assert!(host.drain_commands().is_empty());
-    assert!(confirmation(&host, &settings).is_some());
-    press(&host, "confirm", "y");
-    assert_eq!(
-        host.drain_commands(),
-        vec![thurbox::kernel::command::Command::Delete {
-            session: "11111111-1111-1111-1111-111111111111".into(),
-            force: false,
-        }],
-    );
-    assert!(confirmation(&host, &settings).is_none());
-}
-
-#[test]
-fn deleting_with_soft_delete_off_confirms_and_itemises_the_loss() {
-    let host = host();
-    let settings = with_soft_delete(false);
+    let settings = Settings::default();
     publish_with(&host, &settings);
     press(&host, "sessions", "ctrl+d");
 
@@ -468,7 +442,7 @@ fn deleting_with_soft_delete_off_confirms_and_itemises_the_loss() {
 #[test]
 fn declining_the_confirmation_deletes_nothing() {
     let host = host();
-    let settings = with_soft_delete(false);
+    let settings = Settings::default();
     publish_with(&host, &settings);
     press(&host, "sessions", "ctrl+d");
     assert!(confirmation(&host, &settings).is_some());

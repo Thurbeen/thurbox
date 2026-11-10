@@ -191,45 +191,6 @@ impl SessionRow {
     }
 }
 
-/// A session that was deleted but not purged.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeletedRow {
-    pub id: String,
-    pub name: String,
-    /// The agent it ran, which is what tells two same-named rows apart.
-    pub agent: String,
-    /// Epoch milliseconds, the same unit `taken_at_ms` carries: a plugin has no
-    /// clock, so an age is only computable against the snapshot's own instant.
-    pub deleted_at: u64,
-    /// Worktrees the row still carries, so a restore that has checkouts to
-    /// reattach can say so before it is chosen.
-    pub worktrees: usize,
-    /// True when the worktree directory was removed as well, so restoring
-    /// recovers committed work only. The distinction has to be visible *before*
-    /// the choice, not after.
-    pub partial: bool,
-    /// Why restoring this row will be refused without `best_effort`, if it will
-    /// be, carried so the restore surface asks exactly when the kernel would
-    /// object.
-    pub restore_refusal: Option<String>,
-}
-
-/// A task, flattened for rendering.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TaskRow {
-    pub id: i64,
-    pub title: String,
-    pub description: Option<String>,
-    /// `todo` / `in_progress` / `done`.
-    pub status: String,
-    /// `local`, or the tracker an imported task came from.
-    pub source: String,
-    pub external_url: Option<String>,
-    /// Epoch seconds. The detail view dates a task, which needs both.
-    pub created_at: u64,
-    pub updated_at: u64,
-}
-
 /// One recorded run of an automation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunRow {
@@ -312,35 +273,6 @@ pub struct AgentRow {
     pub presence: crate::backend::preflight::Presence,
 }
 
-/// The local multiplexer every session's window is created in.
-///
-/// One row rather than a bare flag because the name differs by platform
-/// (`psmux` on native Windows) and the fix differs with it: a Windows user
-/// told to install tmux has been sent to the wrong project.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MuxRow {
-    pub binary: String,
-    pub configured: Option<String>,
-    pub available: Vec<String>,
-    pub presence: crate::backend::preflight::Presence,
-    /// What to do about it, empty when there is nothing to do.
-    pub advice: String,
-}
-
-impl Default for MuxRow {
-    /// What a snapshot with no store behind it reports: the binary this
-    /// platform would use, and no claim about whether it is there.
-    fn default() -> Self {
-        Self {
-            binary: crate::backend::preflight::local_multiplexer().to_string(),
-            configured: None,
-            available: vec![crate::backend::preflight::local_multiplexer().to_string()],
-            presence: crate::backend::preflight::Presence::Unknown,
-            advice: String::new(),
-        }
-    }
-}
-
 /// A machine a session can be created on.
 ///
 /// The flow uses the name, detail and backend separately; the session list
@@ -362,8 +294,6 @@ pub struct HostRow {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub sessions: Vec<SessionRow>,
-    /// Deleted-but-restorable sessions.
-    pub deleted: Vec<DeletedRow>,
     /// Repositories a new session can be created against.
     pub repos: Vec<RepoRow>,
     /// Agents, from the same registry the launcher uses.
@@ -373,10 +303,6 @@ pub struct Snapshot {
     pub agent_default: String,
     /// Configured and discovered hosts; empty means local only.
     pub hosts: Vec<HostRow>,
-    /// Whether the local multiplexer is installed, for a flow that wants to
-    /// say so before the user commits to a session.
-    pub mux: MuxRow,
-    pub tasks: Vec<TaskRow>,
     pub automations: Vec<AutomationRow>,
     /// Epoch milliseconds this snapshot represents. Readable by plugins so
     /// they can render staleness.
@@ -443,12 +369,7 @@ pub struct SnapshotStore {
     /// The routes the process's registry serves, read once from it: which
     /// multiplexers the create flow may offer, here and on each host.
     served: std::collections::HashSet<crate::session::Route>,
-    /// Whether the local multiplexer is installed. Beside `agents` because it
-    /// is refreshed with them and for the same reason.
-    mux: MuxRow,
-    /// `settings.toml`'s `multiplexer`, as the store was built with it.
-    configured_mux: Option<String>,
-    /// When the multiplexer and the agent commands were last looked for.
+    /// When the agent commands were last looked for.
     /// Gates [`Self::poll_preflight`]; see [`PREFLIGHT_TTL`].
     preflight_at: Instant,
     current: Snapshot,
@@ -505,7 +426,6 @@ impl SnapshotStore {
         let agents = read_agents(&registry);
         let agent_default = registry.default_name().to_string();
         let hosts = read_hosts(&served, false);
-        let mux = read_mux(&served, settings.multiplexer.clone());
         Self {
             source: None,
             source_reads: 0,
@@ -516,7 +436,6 @@ impl SnapshotStore {
                 agents: agents.clone(),
                 agent_default: agent_default.clone(),
                 hosts: hosts.clone(),
-                mux: mux.clone(),
                 taken_at_ms: taken_at_stamp(),
                 ..Snapshot::default()
             },
@@ -527,8 +446,6 @@ impl SnapshotStore {
             registry_polled_at: None,
             hosts,
             probe_hosts: false,
-            mux,
-            configured_mux: settings.multiplexer.clone(),
             served,
             preflight_at: Instant::now(),
             last_refresh: None,
@@ -718,7 +635,7 @@ impl SnapshotStore {
         moved
     }
 
-    /// Look for the multiplexer and each agent's command again, at most once
+    /// Look for each agent's command again, at most once
     /// per [`PREFLIGHT_TTL`]. Returns whether any answer moved.
     ///
     /// The whole cost model of this feature lives here: the create-session flow
@@ -729,9 +646,7 @@ impl SnapshotStore {
             return false;
         }
         self.preflight_at = Instant::now();
-        let mux = read_mux(&self.served, self.configured_mux.clone());
-        let mut moved = mux != self.mux;
-        self.mux = mux;
+        let mut moved = false;
         for row in &mut self.agents {
             let presence = crate::backend::preflight::look_up(&row.command);
             if presence != row.presence {
@@ -742,7 +657,6 @@ impl SnapshotStore {
         if moved {
             // `refresh` may not run for minutes on an idle database, and until
             // it does `current` is what every reader sees.
-            self.current.mux = self.mux.clone();
             self.current.agents = self.agents.clone();
         }
         moved
@@ -797,37 +711,6 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
             presence: crate::backend::preflight::look_up(&agent.command),
         })
         .collect()
-}
-
-/// Which multiplexers this machine can run sessions in, and the one a create
-/// uses when nothing names one — what to do when there is none.
-fn read_mux(
-    served: &std::collections::HashSet<crate::session::Route>,
-    configured: Option<String>,
-) -> MuxRow {
-    use crate::session::{Multiplexer, Route};
-    let available: Vec<Multiplexer> = crate::backend::preflight::local_multiplexers()
-        .into_iter()
-        .filter(|mux| served.contains(&Route::local(*mux)))
-        .collect();
-    // What a bare local create would run: the configured one, else the one
-    // the picker preselects. Named here so the warning names it too.
-    let binary = configured
-        .as_deref()
-        .and_then(|name| Multiplexer::parse(name).ok())
-        .or_else(|| Multiplexer::preferred(crate::shell::local_platform(), &available))
-        .unwrap_or_else(Multiplexer::platform_default);
-    let presence = crate::backend::preflight::look_up(binary.name());
-    MuxRow {
-        binary: binary.name().to_string(),
-        configured,
-        available: available.iter().map(|mux| mux.name().to_string()).collect(),
-        presence,
-        advice: match presence {
-            crate::backend::preflight::Presence::Present => String::new(),
-            _ => crate::backend::preflight::Dependency::Multiplexer(binary.name()).fix(),
-        },
-    }
 }
 
 /// Configured and discovered hosts. Empty means local only, and the flow skips
@@ -942,94 +825,6 @@ mod tests {
         assert_eq!(repo_name(&cwd, Some(&repo)).as_deref(), Some("thurbox"));
         assert_eq!(repo_name(&cwd, None).as_deref(), Some("feature-x"));
         assert_eq!(repo_name(&None, None), None);
-    }
-
-    #[test]
-    fn the_preflight_answer_is_cached_rather_than_probed_on_every_tick() {
-        // The cost model of the whole feature. `refresh_if_due` runs on the
-        // event loop, so a probe there is a `PATH` walk per tick; the answer
-        // must come from the window instead. Removing the binary and finding
-        // the store still says `Present` is what proves nothing looked again.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mux = dir
-            .path()
-            .join(crate::backend::preflight::local_multiplexer());
-        std::fs::write(&mux, b"#!/bin/sh\n").expect("write");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-        }
-
-        crate::paths::with_path(dir.path(), || {
-            let mut store = SnapshotStore::without_sessions(
-                &crate::backend::registry::inert(),
-                &Settings::default(),
-            );
-            assert_eq!(
-                store.current().mux.presence,
-                crate::backend::preflight::Presence::Present,
-                "the probe at construction must find the binary that is there"
-            );
-
-            std::fs::remove_file(&mux).expect("remove");
-            // Each tick has to clear REFRESH_INTERVAL, or `refresh_if_due`
-            // returns before reaching the probe at all and the assertion below
-            // would hold whether or not the window exists. Well inside
-            // PREFLIGHT_TTL, which is what is being pinned.
-            for _ in 0..3 {
-                std::thread::sleep(REFRESH_INTERVAL + Duration::from_millis(50));
-                store.refresh_if_due();
-            }
-            assert_eq!(
-                store.current().mux.presence,
-                crate::backend::preflight::Presence::Present,
-                "the answer moved inside the TTL, so something probed on the tick"
-            );
-        });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn the_local_picker_offers_only_the_multiplexers_installed_here() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let install = |name: &str| {
-            let binary = dir.path().join(name);
-            std::fs::write(&binary, "#!/bin/sh\n").expect("write stand-in");
-            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700))
-                .expect("chmod");
-        };
-        let served = [
-            crate::session::Route::local(crate::session::Multiplexer::Tmux),
-            crate::session::Route::local(crate::session::Multiplexer::Psmux),
-            crate::session::Route::local(crate::session::Multiplexer::Rmux),
-        ]
-        .into_iter()
-        .collect();
-        crate::paths::with_path(dir.path(), || {
-            let none = read_mux(&served, None);
-            assert!(none.available.is_empty(), "{none:?}");
-            assert_eq!(none.presence, crate::backend::preflight::Presence::Missing);
-
-            install("rmux");
-            let only_rmux = read_mux(&served, None);
-            assert_eq!(only_rmux.available, vec!["rmux"]);
-            assert_eq!(only_rmux.binary, "rmux", "the one installed is the default");
-            assert_eq!(
-                only_rmux.presence,
-                crate::backend::preflight::Presence::Present
-            );
-
-            // psmux is native Windows: a binary of that name on a POSIX PATH
-            // does not make it a choice here.
-            install("psmux");
-            install("tmux");
-            let both = read_mux(&served, None);
-            assert_eq!(both.available, vec!["tmux", "rmux"]);
-            assert_eq!(both.binary, "tmux");
-        });
     }
 
     #[test]

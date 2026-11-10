@@ -5,7 +5,7 @@
 # `file` below is where the pane lands by default. `--as plugins/NN_tasks.lua`
 # moves it, since the number is load order and yours to choose.
 name = "tasks"
-description = "A todo pane: read the snapshot, send or spawn"
+description = "A to-do list pane, kept in its own state"
 requires_thurbox = ">=2.0"
 
 pane = { source = "tasks.lua", path = "plugins/80_tasks.lua" }

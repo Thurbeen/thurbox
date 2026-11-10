@@ -116,24 +116,6 @@ local function agent_status(session)
   return nil, nil
 end
 
---- The multiplexer that is not installed, as short lines, or nil when it is.
----
---- Already an answer: the kernel probes on its own schedule behind a TTL, so
---- this is a table lookup on the render path rather than a `which`.
----
---- Deliberately short, and deliberately not the advice itself: this is drawn in
---- a sidebar around twenty-six cells wide, where the full sentence is truncated
---- to its first clause and says less than nothing. The command it names prints
---- the whole thing, with the search path — and the create-session flow, which
---- has the width for it, states the advice in full.
-local function missing_multiplexer()
-  local mux = (thurbox and thurbox.preflight and thurbox.preflight.mux) or nil
-  if not mux or mux.presence ~= "missing" then
-    return nil
-  end
-  return { "⚠ " .. mux.binary .. " is not installed", "run: thurbox-cli doctor" }
-end
-
 --- The live search query, or nil when nothing is being searched.
 ---
 --- Read from `store` rather than handed over by the search pane: the pane
@@ -544,14 +526,6 @@ local function sessions()
   return thurbox and thurbox.sessions or {}
 end
 
---- Is deleting reversible?
----
---- `[features] soft_delete` off means the TUI deletes for real — v1's own
---- behaviour, and why the confirmation below exists: there is no Ctrl+Z for it.
-local function soft_delete()
-  return plugin_settings.feature("soft_delete", false) == true
-end
-
 --- Does a session this interface just created take the cursor and the keyboard?
 ---
 --- Off by default, because a spawn finishes on a worker seconds after the flow
@@ -897,21 +871,17 @@ end
 --- The right-press menu: the actions that target one session, in the order
 --- the spec settled. Actions only -- each runs back through `on_action`, so an
 --- entry and its chord cannot come to mean different things, and delete still
---- asks first when there is work to lose. Sort, the panel toggle and undo are
---- not here: none of them is about the session that was pressed.
+--- asks first when there is work to lose. Sort and the panel toggle are not
+--- here: neither is about the session that was pressed.
 local SESSION_MENU = {
   { label = "Open", action = "sessions.open" },
   { label = "Rename", action = "sessions.rename" },
-  { label = "Fork", action = "sessions.fork" },
   { label = "Open in editor", action = "sessions.editor" },
   "sep",
-  { label = "Restart", action = "sessions.restart" },
-  { label = "Sync", action = "sessions.sync" },
   { label = "Move up", action = "sessions.move_up" },
   { label = "Move down", action = "sessions.move_down" },
   "sep",
   { label = "Delete", action = "sessions.delete" },
-  { label = "Delete + worktree", action = "sessions.force_delete" },
 }
 
 --- Whether some plugin declares `action`, in `keys` or in `commands`. An
@@ -1042,9 +1012,6 @@ local function pane_menu(items)
   for _, entry in ipairs(fold_menu_entries()) do
     middle[#middle + 1] = entry
   end
-  if store["sessions.deleted"] then
-    middle[#middle + 1] = { label = "Undo delete", action = "sessions.undo" }
-  end
   if #middle > 0 then
     menu[#menu + 1] = "sep"
     for _, entry in ipairs(middle) do
@@ -1139,7 +1106,7 @@ pane = {
     },
     {
       id = "focus_new_session",
-      desc = "Select and open a session when you create or fork it",
+      desc = "Select and open a session when you create it",
       default = false,
     },
     {
@@ -1162,7 +1129,7 @@ pane = {
     },
   },
 
-  -- The one event this pane needs: a create or a fork THIS interface finished.
+  -- The one event this pane needs: a create THIS interface finished.
   -- A session `thurbox-cli`, an automation or another instance made arrives as
   -- `session.created` instead, and subscribing to that would let a background
   -- spawn take the keyboard out from under you — so it deliberately is not
@@ -1212,14 +1179,6 @@ pane = {
     { key = "enter", action = "sessions.open", desc = "open the session", group = "Navigation" },
     -- Delete has no unmodified chord on purpose: `d` sits next to `j`/`k`, and
     -- a stray keystroke on a focused list should not tear a session down.
-    -- `ctrl+d` below is the way in; `D` takes the worktree with it.
-    {
-      key = "D",
-      action = "sessions.force_delete",
-      desc = "delete session and its worktree",
-      group = "Sessions",
-    },
-    { key = "r", action = "sessions.restart", desc = "restart session", group = "Sessions" },
     { key = "J", action = "sessions.move_down", desc = "move session down", group = "Sessions" },
     { key = "K", action = "sessions.move_up", desc = "move session up", group = "Sessions" },
     { key = "S", action = "sessions.sort", desc = "sort sessions by name", group = "Sessions" },
@@ -1233,30 +1192,6 @@ pane = {
       key = "ctrl+d",
       action = "sessions.delete",
       desc = "delete session",
-      scope = "global",
-      passthrough = true,
-      group = "Sessions",
-    },
-    {
-      key = "ctrl+r",
-      action = "sessions.restart",
-      desc = "restart session",
-      scope = "global",
-      passthrough = true,
-      group = "Sessions",
-    },
-    {
-      key = "ctrl+f",
-      action = "sessions.fork",
-      desc = "fork session",
-      scope = "global",
-      passthrough = true,
-      group = "Sessions",
-    },
-    {
-      key = "ctrl+s",
-      action = "sessions.sync",
-      desc = "sync worktree with its base branch",
       scope = "global",
       passthrough = true,
       group = "Sessions",
@@ -1280,15 +1215,8 @@ pane = {
       passthrough = true,
       group = "Sessions",
     },
-    -- Not passthrough, matching v1: undo and session navigation are how you
-    -- act on the list without leaving the terminal you are watching.
-    {
-      key = "ctrl+z",
-      action = "sessions.undo",
-      desc = "undo the last delete",
-      scope = "global",
-      group = "Sessions",
-    },
+    -- Not passthrough, matching v1: session navigation is how you act on the
+    -- list without leaving the terminal you are watching.
     {
       key = "ctrl+j",
       action = "sessions.next",
@@ -1421,12 +1349,6 @@ pane = {
           width = inner_width,
           hint = "Press %s to create one",
           hint_action = "new_session.open",
-          -- The empty list is the one screen a first run always reaches, and
-          -- the multiplexer is what a session's window is made of: saying it is
-          -- missing here is the difference between reading it now and finding
-          -- out from a pane that died. Nil on any machine that has it.
-          note = missing_multiplexer(),
-          note_colour = theme.bad,
         }),
       }),
     })
@@ -1554,29 +1476,12 @@ pane = {
   end,
 
   on_action = function(action, args)
-    -- The two that own no row, handled before the "is there a session" guard:
-    -- hiding the column and undoing a delete both work on an empty list.
+    -- The one that owns no row, handled before the "is there a session" guard:
+    -- hiding the column works on an empty list.
     if action == "sessions.toggle_panel" then
       panels.toggle("sessions")
       return true
-    elseif action == "sessions.undo" then
-      -- v1's Ctrl+Z undoes the delete YOU just did — `App::undo_delete`
-      -- restores its own `pending_delete` — rather than reaching for the most
-      -- recently deleted row, which may belong to another instance.
-      local deleted = store["sessions.deleted"]
-      if not deleted then
-        -- Said out loud rather than swallowed. Ctrl+Z is global: it fires
-        -- from a focused terminal, and with the column hidden (F9) there is
-        -- nothing on screen to tell "there was nothing to undo" from a chord
-        -- that never arrived.
-        command("message", { text = "nothing to undo" })
-        return true
-      end
-      command("restore", { session = deleted })
-      store["sessions.deleted"] = nil
-      return true
     end
-
     local items = model()
     if #items == 0 then
       return false
@@ -1790,66 +1695,15 @@ pane = {
     -- Every state change below is a COMMAND: accepted instantly, its effect
     -- appearing in a later snapshot. Nothing here waits for anything.
     elseif action == "sessions.delete" and id then
-      if soft_delete() then
-        -- The shared confirmation records the undo target only on yes.
-        local session = items[at].session
-        store.confirm = {
-          question = "Delete " .. (session.name or "this session") .. "?",
-          lines = {},
-          command = "delete",
-          options = {
-            session = id,
-            remember = { key = "sessions.deleted", value = id },
-          },
-        }
-      else
-        -- The switch is off, so this key deletes for good.
-        local session = items[at].session
-        delete_for_good(session, "Delete " .. (session.name or "this session") .. " for good?")
-      end
-    elseif action == "sessions.force_delete" and id then
-      -- Destructive, and undone by nothing. Risk lines explain what can be lost.
+      -- Fleet deletes a session at once, with no undo, so this asks first and
+      -- itemises what is at risk.
       local session = items[at].session
-      delete_for_good(
-        session,
-        "Delete " .. (session.name or "this session") .. " and its worktree?"
-      )
-    elseif action == "sessions.restart" and id then
-      local session = items[at].session
-      store.confirm = {
-        question = "Restart " .. (session.name or "this session") .. "?",
-        lines = { "the current agent process will stop" },
-        command = "restart",
-        options = { session = id },
-      }
-    elseif action == "sessions.fork" and id then
-      -- v1 asked for the name first: `fork_active_session` prepared the spawn and
-      -- opened its shared Session Name modal prefilled `<source>-fork`, so the
-      -- fork was named before it existed and could be renamed on the spot. Forking
-      -- silently was a v2 divergence, not a decision.
-      --
-      -- The naming UI lives in the creation float, so hand it the job through
-      -- `store`, exactly as an irreversible change hands its question to
-      -- `confirm`. This pane keeps owning what it knows (which session, and what
-      -- the derived name is) and decides nothing about how it is asked.
-      local source = items[at].session
-      store.fork = {
-        session = id,
-        name = ((source and source.name) or "session") .. "-fork",
-      }
+      delete_for_good(session, "Delete " .. (session.name or "this session") .. " for good?")
     elseif action == "sessions.rename" and id then
       -- The field lives in the rename float, handed over through `store` as a
       -- question is handed to `confirm`: this pane knows which session and what
       -- it is called, and decides nothing about how the new name is asked for.
       store.rename = { session = id, name = items[at].session.name or "" }
-    elseif action == "sessions.sync" and id then
-      local session = items[at].session
-      store.confirm = {
-        question = "Sync " .. (session.name or "this session") .. "?",
-        lines = { "its worktree will be updated" },
-        command = "sync",
-        options = { session = id },
-      }
     elseif action == "sessions.editor" and id then
       command("editor", { session = id })
     -- A move is computed over the RENDERED items and sent whole, so a root row

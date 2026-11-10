@@ -350,9 +350,7 @@ impl App {
                 .tracked_commands
                 .iter()
                 .filter(|(id, tracked)| {
-                    !live.contains(id)
-                        && !tracked.failed
-                        && matches!(tracked.kind, "create" | "fork")
+                    !live.contains(id) && !tracked.failed && tracked.kind == "create"
                 })
                 .filter_map(|(_, tracked)| tracked.name.clone())
                 .collect();
@@ -426,22 +424,6 @@ impl App {
             if tracked.failed {
                 continue;
             }
-            // A repair that relaunched nothing — its session deleted meanwhile,
-            // or a delete or restart holding the row — replaced no pane and
-            // has nothing to announce. "restarted <name>" and a
-            // `session.post_restart` for a session a driver just deleted would
-            // be as wrong as the error this used to be.
-            if self.commands.take_did_nothing(id) {
-                continue;
-            }
-            // A command that replaced the session's pane must be followed by
-            // letting go of the old one, or the interface keeps painting a pane
-            // that no longer exists — a session that looks restarted and takes no
-            // keys. This is told rather than detected: see `Terminals::forget`.
-            if matches!(tracked.kind, "restart" | "restore") && !tracked.session.is_empty() {
-                self.terminals.forget(&tracked.session);
-                self.dirty = true;
-            }
             if let Some(message) =
                 thurbox::kernel::messages::done(tracked.kind, tracked.label.as_deref())
             {
@@ -474,19 +456,11 @@ impl App {
             .current()
             .session(&session)
             .map(|row| row.name.clone())
-            .filter(|label| !label.is_empty())
-            // An automation names no session; its own `#<id>` or name is what
-            // the message band and `command.failed`'s `subject` should carry.
-            .or_else(|| match &command {
-                Command::Automation { .. } | Command::AutomationSave { .. } => command.subject(),
-                _ => None,
-            });
+            .filter(|label| !label.is_empty());
         // What `session.post_*` will need once the command has finished and its
         // row is gone (a delete) or only just arrived (a create).
         let name = match &command {
-            Command::Create { name, .. } | Command::Fork { name, .. } => {
-                Some(name.clone()).filter(|n| !n.is_empty())
-            }
+            Command::Create { name, .. } => Some(name.clone()).filter(|n| !n.is_empty()),
             _ => None,
         };
         let force = matches!(command, Command::Delete { force: true, .. });

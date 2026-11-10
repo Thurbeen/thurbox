@@ -1,9 +1,8 @@
 //! What the creation flow needs to know, computed off the render path.
 //!
-//! Three reads, all of them parameterised by something only the flow knows —
-//! which host, which directory, which repository — and none of them cheap: a
-//! bookmark list is a query, a directory listing is a readdir or an ssh round
-//! trip, and a branch list is a `git fetch` followed by two more git calls. So
+//! Two reads, both parameterised by something only the flow knows — which
+//! host, which directory — and neither of them cheap: a bookmark list is a
+//! query, and a directory listing is a readdir or an ssh round trip. So
 //! this is the fifth worker-backed store, after terminals, commands, diffs and
 //! metrics, and it follows [`crate::kernel::diff`]'s shape exactly: **requests
 //! are keyed and idempotent, work happens on a thread, and the result is
@@ -84,30 +83,6 @@ pub enum Listing {
     Failed(String),
 }
 
-/// What is known about a repository's branches.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Branches {
-    Pending,
-    /// Ordered as the flow should offer them: the remote default first, then
-    /// the local default, then the rest.
-    Ready(Vec<String>),
-    Failed(String),
-}
-
-/// What is known about the worktrees a repository already has.
-///
-/// Separate from [`Branches`] rather than folded into it: the picker needs this
-/// while the cursor moves over repo rows, long before the branch step exists,
-/// and a branch list is about what you could *create* while this is about what
-/// is already checked out.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Worktrees {
-    Pending,
-    /// In the order git reported them, main checkout already dropped.
-    Ready(Vec<crate::git::ExistingWorktree>),
-    Failed(String),
-}
-
 /// A host key as the flow spells it: `""` for local, else a backend name
 /// (`ssh:<name>` / `wsl:<name>`) — the same key `repo_bookmarks.host` uses.
 pub type HostKey = String;
@@ -115,8 +90,6 @@ pub type HostKey = String;
 /// The keys a plugin asks through, in `store`.
 pub const WANT_BOOKMARKS: &str = "want_bookmarks";
 pub const WANT_BROWSE: &str = "want_browse";
-pub const WANT_BRANCHES: &str = "want_branches";
-pub const WANT_WORKTREES: &str = "want_worktrees";
 
 /// What the flow is asking about right now.
 ///
@@ -132,24 +105,15 @@ pub const WANT_WORKTREES: &str = "want_worktrees";
 pub struct Wants {
     pub bookmarks: Option<HostKey>,
     pub browse: Option<(HostKey, String)>,
-    pub branches: Option<(HostKey, String)>,
-    pub worktrees: Option<(HostKey, String)>,
 }
 
 impl Wants {
-    /// Build from the three raw store values, dropping any that is malformed
+    /// Build from the two raw store values, dropping one that is malformed
     /// rather than guessing what a plugin meant.
-    pub fn new(
-        bookmarks: Option<String>,
-        browse: Option<String>,
-        branches: Option<String>,
-        worktrees: Option<String>,
-    ) -> Self {
+    pub fn new(bookmarks: Option<String>, browse: Option<String>) -> Self {
         Self {
             bookmarks,
             browse: browse.as_deref().and_then(split_want),
-            branches: branches.as_deref().and_then(split_want),
-            worktrees: worktrees.as_deref().and_then(split_want),
         }
     }
 }
@@ -208,15 +172,6 @@ const BOOKMARKS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 /// repository cloned on the host appears while you are still looking for it.
 const REMOTE_RESCAN_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long a branch list is trusted, and how soon a failed fetch is retried.
-///
-/// A settled list expires so reopening the flow sees a branch someone pushed
-/// meanwhile, as v1's fetch-on-open does. A *failure* is retried sooner and, above
-/// all, is retried at all: held forever, one unreachable moment left the picker
-/// empty until thurbox was restarted.
-const BRANCHES_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-const BRANCHES_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
-
 /// A host's remembered repositories and when they were read.
 struct Remembered {
     at: std::time::Instant,
@@ -237,40 +192,6 @@ impl Remembered {
     }
 }
 
-/// A branch list and when it arrived.
-struct Fetched {
-    at: std::time::Instant,
-    branches: Branches,
-}
-
-impl Fetched {
-    fn stale(&self) -> bool {
-        match self.branches {
-            // Still on its way. However long it has taken, asking again would only
-            // start a second fetch of the same repository.
-            Branches::Pending => false,
-            Branches::Failed(_) => self.at.elapsed() >= BRANCHES_RETRY,
-            Branches::Ready(_) => self.at.elapsed() >= BRANCHES_TTL,
-        }
-    }
-}
-
-/// A worktree list and when it arrived.
-struct Checked {
-    at: std::time::Instant,
-    worktrees: Worktrees,
-}
-
-impl Checked {
-    fn stale(&self) -> bool {
-        match self.worktrees {
-            Worktrees::Pending => false,
-            Worktrees::Failed(_) => self.at.elapsed() >= BRANCHES_RETRY,
-            Worktrees::Ready(_) => self.at.elapsed() >= BRANCHES_TTL,
-        }
-    }
-}
-
 enum Done {
     Bookmarks {
         host: HostKey,
@@ -279,14 +200,6 @@ enum Done {
     Listing {
         key: PathKey,
         listing: Listing,
-    },
-    Branches {
-        key: PathKey,
-        branches: Branches,
-    },
-    Worktrees {
-        key: PathKey,
-        worktrees: Worktrees,
     },
     /// A remote folder was scanned on its host. `rewrote` says whether what it
     /// found differed from what was remembered, and so whether the file
@@ -305,8 +218,6 @@ pub struct RepoStore {
     /// not queue a thread per frame.
     bookmarks_inflight: std::collections::HashSet<HostKey>,
     listings: HashMap<PathKey, Listed>,
-    branches: HashMap<PathKey, Fetched>,
-    worktrees: HashMap<PathKey, Checked>,
     /// When each remote folder bookmark was last scanned on its host, so
     /// [`REMOTE_RESCAN_TTL`] can decide whether to ask again.
     rescans: HashMap<PathKey, std::time::Instant>,
@@ -333,8 +244,6 @@ impl RepoStore {
             bookmarks: HashMap::new(),
             bookmarks_inflight: std::collections::HashSet::new(),
             listings: HashMap::new(),
-            branches: HashMap::new(),
-            worktrees: HashMap::new(),
             rescans: HashMap::new(),
             rescans_inflight: std::collections::HashSet::new(),
             tx,
@@ -351,8 +260,8 @@ impl RepoStore {
         self.hosts.resolve(key)
     }
 
-    /// Whether any read is still on its way — a bookmark refresh, a pending
-    /// listing, or a pending branch fetch.
+    /// Whether any read is still on its way — a bookmark refresh or a pending
+    /// listing.
     ///
     /// The animation clock asks: the creation flow draws a spinner over each of
     /// these, and a clock that moved only for in-flight *commands* would freeze
@@ -368,10 +277,6 @@ impl RepoStore {
                 .listings
                 .values()
                 .any(|held| matches!(held.listing, Listing::Pending))
-            || self
-                .branches
-                .values()
-                .any(|held| matches!(held.branches, Branches::Pending))
     }
 
     /// The rows for `host`, once they have been asked for.
@@ -384,13 +289,6 @@ impl RepoStore {
         self.listings
             .get(&(host.to_string(), dir.to_string()))
             .map(|listed| &listed.listing)
-    }
-
-    /// What is known about `repo`'s branches on `host`.
-    pub fn branches(&self, host: &str, repo: &str) -> Option<&Branches> {
-        self.branches
-            .get(&(host.to_string(), repo.to_string()))
-            .map(|held| &held.branches)
     }
 
     /// Ask for a host's remembered repositories.
@@ -501,59 +399,6 @@ impl RepoStore {
         });
     }
 
-    /// What is known about `repo`'s existing worktrees on `host`.
-    pub fn worktrees(&self, host: &str, repo: &str) -> Option<&Worktrees> {
-        self.worktrees
-            .get(&(host.to_string(), repo.to_string()))
-            .map(|held| &held.worktrees)
-    }
-
-    /// Ask for the worktrees `repo` already has on `host`, unless known or in
-    /// flight.
-    ///
-    /// No `git fetch` here, unlike [`request_branches`](Self::request_branches):
-    /// a worktree is local state, and the picker asks about whichever repo the
-    /// cursor is on, so this has to stay cheap enough to run on a keypress.
-    pub fn request_worktrees(&mut self, host: &str, repo: &str) {
-        let key = (host.to_string(), repo.to_string());
-        if self.worktrees.get(&key).is_some_and(|held| !held.stale()) {
-            return;
-        }
-        self.remember_worktrees(key.clone(), Worktrees::Pending);
-
-        let remote = self.host_for(host).cloned();
-        let repo_path = crate::paths::expand_tilde(repo);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let worktrees = match crate::git::list_worktrees_on(remote.as_ref(), &repo_path) {
-                Ok(found) => Worktrees::Ready(found),
-                Err(e) => Worktrees::Failed(format!("Failed to list worktrees: {e:#}")),
-            };
-            let _ = tx.send(Done::Worktrees { key, worktrees });
-        });
-    }
-
-    /// Ask for `repo`'s branches on `host`, unless known or in flight.
-    ///
-    /// The fetch is part of the request rather than a separate step: a branch
-    /// list that omits a branch someone else pushed is the reason v1 fetches
-    /// here too.
-    pub fn request_branches(&mut self, host: &str, repo: &str) {
-        let key = (host.to_string(), repo.to_string());
-        if self.branches.get(&key).is_some_and(|held| !held.stale()) {
-            return;
-        }
-        self.remember_branches(key.clone(), Branches::Pending);
-
-        let remote = self.host_for(host).cloned();
-        let repo_path = crate::paths::expand_tilde(repo);
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let branches = list_branches(remote.as_ref(), &repo_path);
-            let _ = tx.send(Done::Branches { key, branches });
-        });
-    }
-
     /// Hold a listing, stamped so [`LISTING_TTL`] can retire it.
     fn remember_listing(&mut self, key: PathKey, listing: Listing) {
         self.listings.insert(
@@ -561,28 +406,6 @@ impl RepoStore {
             Listed {
                 at: std::time::Instant::now(),
                 listing,
-            },
-        );
-    }
-
-    /// Hold a branch list, stamped so [`Fetched::stale`] can retire it.
-    fn remember_branches(&mut self, key: PathKey, branches: Branches) {
-        self.branches.insert(
-            key,
-            Fetched {
-                at: std::time::Instant::now(),
-                branches,
-            },
-        );
-    }
-
-    /// Hold a worktree list, stamped so [`Checked::stale`] can retire it.
-    fn remember_worktrees(&mut self, key: PathKey, worktrees: Worktrees) {
-        self.worktrees.insert(
-            key,
-            Checked {
-                at: std::time::Instant::now(),
-                worktrees,
             },
         );
     }
@@ -608,12 +431,6 @@ impl RepoStore {
                 }
                 Done::Listing { key, listing } => {
                     self.remember_listing(key, listing);
-                }
-                Done::Branches { key, branches } => {
-                    self.remember_branches(key, branches);
-                }
-                Done::Worktrees { key, worktrees } => {
-                    self.remember_worktrees(key, worktrees);
                 }
                 Done::Rescan { key, rewrote } => {
                     self.rescans_inflight.remove(&key);
@@ -646,7 +463,7 @@ impl RepoStore {
     /// Ask for everything the flow is currently asking about.
     ///
     /// One call from the loop per iteration. Every request underneath is
-    /// idempotent, so this costs three hash lookups once the answers are in.
+    /// idempotent, so this costs two hash lookups once the answers are in.
     pub fn serve(&mut self, wants: &Wants) {
         // Cloned rather than borrowed: each request takes `&mut self`, and the
         // wants are the loop's, not the store's.
@@ -656,12 +473,6 @@ impl RepoStore {
         }
         if let Some((host, dir)) = wants.browse {
             self.request_listing(&host, &dir);
-        }
-        if let Some((host, repo)) = wants.branches {
-            self.request_branches(&host, &repo);
-        }
-        if let Some((host, repo)) = wants.worktrees {
-            self.request_worktrees(&host, &repo);
         }
     }
 
@@ -683,19 +494,6 @@ impl RepoStore {
     #[doc(hidden)]
     pub fn set_listing_for_test(&mut self, host: &str, dir: &str, listing: Listing) {
         self.remember_listing((host.to_string(), dir.to_string()), listing);
-    }
-
-    /// Seed a branch list directly, so a test can render the step without git.
-    #[doc(hidden)]
-    pub fn set_branches_for_test(&mut self, host: &str, repo: &str, branches: Branches) {
-        self.remember_branches((host.to_string(), repo.to_string()), branches);
-    }
-
-    /// Seed a worktree list directly, so a test can render the picker without
-    /// a repository to have worktrees in.
-    #[doc(hidden)]
-    pub fn set_worktrees_for_test(&mut self, host: &str, repo: &str, worktrees: Worktrees) {
-        self.remember_worktrees((host.to_string(), repo.to_string()), worktrees);
     }
 }
 
@@ -958,70 +756,6 @@ fn row(path: &Path, parent: Option<String>, is_parent: bool, is_git: Option<bool
     }
 }
 
-/// Fetch, list and order a repository's branches. Called on a worker.
-fn list_branches(host: Option<&HostDef>, repo: &Path) -> Branches {
-    // Non-fatal, exactly as in v1: a repository with no reachable remote still
-    // has branches worth offering.
-    if let Err(e) = crate::git::git_fetch_on(host, repo) {
-        tracing::warn!("git fetch origin failed (continuing): {e:#}");
-    }
-    match crate::git::list_branches_on(host, repo) {
-        Ok(branches) if branches.is_empty() => {
-            Branches::Failed("No branches found in repository".to_string())
-        }
-        Ok(branches) => Branches::Ready(ordered(host, repo, branches)),
-        Err(e) => Branches::Failed(format!("Failed to list branches: {e:#}")),
-    }
-}
-
-/// v1's `ordered_branch_list`: ask git which branch is the default, locally and
-/// on the remote, and let [`promote`] do the ordering.
-fn ordered(host: Option<&HostDef>, repo: &Path, branches: Vec<String>) -> Vec<String> {
-    // One `symbolic-ref` probe answers both questions: the local default checks
-    // the same remote name for a local twin, and the remote default is its
-    // `origin/`-prefixed form.
-    let remote_name = crate::git::default_branch_from_remote_on(host, repo);
-    let local_default = crate::git::default_branch_with_remote(remote_name.as_deref(), &branches);
-    let remote_default = remote_name
-        .map(|name| format!("origin/{name}"))
-        .or_else(|| {
-            ["origin/main", "origin/master"]
-                .into_iter()
-                .find(|candidate| crate::git::branch_exists_on(host, repo, candidate))
-                .map(str::to_string)
-        });
-    promote(
-        branches,
-        local_default.as_deref(),
-        remote_default.as_deref(),
-    )
-}
-
-/// The local default branch first, then the remote's pinned above it — because
-/// branching off the remote is the common case and pre-selecting it saves a
-/// keystroke.
-///
-/// Pure, and separate from the git calls above, so the ordering is testable
-/// without a repository to be default *in*.
-fn promote(
-    mut branches: Vec<String>,
-    local_default: Option<&str>,
-    remote_default: Option<&str>,
-) -> Vec<String> {
-    if let Some(default) = local_default {
-        if let Some(at) = branches.iter().position(|branch| branch == default) {
-            let branch = branches.remove(at);
-            branches.insert(0, branch);
-        }
-    }
-    if let Some(remote) = remote_default {
-        if !branches.iter().any(|branch| branch == remote) {
-            branches.insert(0, remote.to_string());
-        }
-    }
-    branches
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1031,7 +765,6 @@ mod tests {
         let store = RepoStore::with_hosts(HostRegistry::default());
         assert!(store.bookmarks("").is_none());
         assert!(store.listing("", "/tmp").is_none());
-        assert!(store.branches("", "/tmp").is_none());
     }
 
     #[test]
@@ -1442,99 +1175,22 @@ mod tests {
     }
 
     #[test]
-    fn the_remote_default_branch_leads_the_local_one() {
-        // v1's order, and the reason for it: a new worktree is usually cut from
-        // the remote's tip, so `origin/main` is what should be pre-selected.
-        let ordered = promote(
-            vec!["feat/x".into(), "main".into(), "old".into()],
-            Some("main"),
-            Some("origin/main"),
-        );
-        assert_eq!(ordered, ["origin/main", "main", "feat/x", "old"]);
-    }
-
-    #[test]
-    fn a_remote_branch_already_listed_is_not_listed_twice() {
-        let ordered = promote(
-            vec!["origin/main".into(), "main".into()],
-            Some("main"),
-            Some("origin/main"),
-        );
-        assert_eq!(ordered, ["main", "origin/main"]);
-    }
-
-    #[test]
-    fn with_no_defaults_the_order_is_left_alone() {
-        // A repository whose default cannot be established still offers its
-        // branches, in the order git listed them.
-        let ordered = promote(vec!["a".into(), "b".into()], None, None);
-        assert_eq!(ordered, ["a", "b"]);
-    }
-
-    #[test]
     fn a_want_carries_a_host_and_a_path() {
-        let wants = Wants::new(
-            Some(String::new()),
-            Some("\0/srv/repos".into()),
-            Some("ssh:box\0/srv/thing".into()),
-            None,
-        );
+        let wants = Wants::new(Some(String::new()), Some("ssh:box\0/srv/repos".into()));
         // The local machine is an empty host, which is not the same as no
         // request at all.
         assert_eq!(wants.bookmarks.as_deref(), Some(""));
-        assert_eq!(wants.browse, Some((String::new(), "/srv/repos".into())));
-        assert_eq!(
-            wants.branches,
-            Some(("ssh:box".into(), "/srv/thing".into()))
-        );
+        assert_eq!(wants.browse, Some(("ssh:box".into(), "/srv/repos".into())));
     }
 
     #[test]
     fn a_malformed_or_empty_want_asks_for_nothing() {
         // No separator at all, and a separator with nothing after it — the
         // second is what a flow leaves while its input is still empty.
-        let wants = Wants::new(
-            None,
-            Some("/srv/repos".into()),
-            Some("ssh:box\0".into()),
-            None,
-        );
+        assert_eq!(Wants::new(None, Some("/srv/repos".into())).browse, None);
+        let wants = Wants::new(None, Some("ssh:box\0".into()));
         assert_eq!(wants.bookmarks, None);
         assert_eq!(wants.browse, None);
-        assert_eq!(wants.branches, None);
-    }
-
-    #[test]
-    fn a_want_carries_the_repo_whose_worktrees_are_wanted() {
-        let wants = Wants::new(None, None, None, Some("\0/srv/thing".into()));
-        assert_eq!(wants.worktrees, Some((String::new(), "/srv/thing".into())));
-    }
-
-    #[test]
-    fn nothing_is_known_about_worktrees_before_they_are_asked_for() {
-        let store = RepoStore::with_hosts(HostRegistry::default());
-        assert!(store.worktrees("", "/tmp").is_none());
-    }
-
-    #[test]
-    fn requesting_worktrees_returns_at_once_and_reads_pending() {
-        // Same property the listing request has: the cursor moving over a repo
-        // row must not block the render on a git call.
-        let mut store = RepoStore::with_hosts(HostRegistry::default());
-        let started = std::time::Instant::now();
-        store.request_worktrees("", "/definitely/not/here");
-        assert!(started.elapsed() < std::time::Duration::from_millis(200));
-        assert_eq!(
-            store.worktrees("", "/definitely/not/here"),
-            Some(&Worktrees::Pending)
-        );
-    }
-
-    #[test]
-    fn serving_a_worktree_want_asks_for_it() {
-        let mut store = RepoStore::with_hosts(HostRegistry::default());
-        store.serve(&Wants::new(None, None, None, Some("\0/nope".into())));
-        assert_eq!(store.worktrees("", "/nope"), Some(&Worktrees::Pending));
     }
 
     #[test]

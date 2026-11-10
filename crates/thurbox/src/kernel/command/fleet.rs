@@ -56,31 +56,12 @@ impl super::Executor for Fleet {
                 }
                 return self.execute(inner, _id, _progress);
             }
-            // Fleet's runtime keeps the terminal, so the multiplexer the
-            // create flow settles on is dropped.
             Command::Create {
                 name,
                 repo,
-                branch,
-                base,
-                worktree_path,
                 agent,
                 host,
-                multiplexer: _,
-                extras,
             } => {
-                let asked = [
-                    (branch.is_some(), "a branch"),
-                    (base.is_some(), "a base branch"),
-                    (worktree_path.is_some(), "an existing worktree"),
-                    (!extras.is_empty(), "further repositories"),
-                ];
-                if let Some((_, what)) = asked.iter().find(|(asked, _)| *asked) {
-                    return Err(format!(
-                        "the Fleet engine takes no {what}: Fleet makes a Task's workspace, and \
-                         its runtime runs the terminal"
-                    ));
-                }
                 let host = self.host(host.as_deref())?;
                 if let Some(agent) = agent {
                     self.harness(agent)?;
@@ -115,17 +96,10 @@ impl super::Executor for Fleet {
             }
             Command::Send { session, text } => self.run(&["send", session, text], None)?,
             Command::Rename { session, name } => self.rename(session, name)?,
-            // Fleet has no undo window: a soft delete is a delete.
+            // Fleet has no undo window: a delete is for good.
             Command::Delete { session, .. } => self.run(&["delete", "task", session], None)?,
-            // Fleet revives a lost session itself; the interface's relaunch of
-            // a pane-less row has nothing to do.
-            Command::Restart {
-                fresh: false,
-                if_missing: true,
-                ..
-            } => return Ok(Outcome::Nothing),
-            // Everything else is a file of thurbox's, or something no
-            // engine runs any more: refused by name, never dropped.
+            // Everything else is a file of thurbox's, or a command no engine
+            // runs: refused by name, never dropped.
             _ => {
                 return super::execute::local(command).unwrap_or_else(|| {
                     Err(format!(

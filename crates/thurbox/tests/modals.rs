@@ -817,7 +817,7 @@ fn settings_renders_what_the_bundled_plugins_declare() {
     // The kernel's own settings are listed first, so `settings.toml` is editable
     // from the same screen as everything a plugin declared.
     assert!(screen.contains("CORE"), "{screen}");
-    assert!(screen.contains("features.soft_delete"), "{screen}");
+    assert!(screen.contains("features.shell_pane"), "{screen}");
     // Grouped by the declaring plugin, which is the only grouping the registry
     // knows about.
     assert!(screen.contains(&first.plugin.to_uppercase()), "{screen}");
@@ -908,7 +908,7 @@ fn a_long_value_stays_in_its_column_and_every_other_value_stays_visible() {
                 .unwrap_or_else(|| panic!("no `{id}` row at {width} columns:\n{joined}"))
         };
 
-        for id in ["features.soft_delete", "features.mouse", "group_by_repo"] {
+        for id in ["features.shell_pane", "features.mouse", "group_by_repo"] {
             let line = row(id);
             let value = line.trim_end();
             assert!(

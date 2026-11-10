@@ -353,13 +353,8 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
         Command::Create {
             name: "gamma".into(),
             repo: repo.to_string_lossy().into_owned(),
-            branch: None,
-            base: None,
-            worktree_path: None,
             agent: Some("claude-code".into()),
             host: None,
-            multiplexer: None,
-            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -383,25 +378,6 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     .expect("send");
     let inbox = fleet.get("gamma").unwrap()["status"]["inbox"].clone();
     assert_eq!(inbox[0]["text"], "hello there", "{inbox:#}");
-
-    // What Fleet cannot do is refused by name, never dropped.
-    let refused = run_command(
-        &mut bus,
-        Command::Create {
-            name: "delta".into(),
-            repo: repo.to_string_lossy().into_owned(),
-            branch: Some("feature".into()),
-            base: None,
-            worktree_path: None,
-            agent: None,
-            host: None,
-            multiplexer: None,
-            extras: Vec::new(),
-        },
-    )
-    .expect_err("a branch is the workspace's to make");
-    assert!(refused.contains("branch"), "{refused}");
-    assert!(fleet.get("delta").is_none());
 
     run_command(
         &mut bus,
@@ -442,13 +418,8 @@ fn a_created_session_keeps_the_name_it_was_given() {
         Command::Create {
             name: "Read the code".into(),
             repo: fleet.root.path().to_string_lossy().into_owned(),
-            branch: None,
-            base: None,
-            worktree_path: None,
             agent: Some("claude-code".into()),
             host: None,
-            multiplexer: None,
-            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -474,13 +445,8 @@ fn a_name_already_taken_is_refused_and_the_task_left_alone() {
     let create = |name: &str| Command::Create {
         name: name.into(),
         repo: fleet.root.path().to_string_lossy().into_owned(),
-        branch: None,
-        base: None,
-        worktree_path: None,
         agent: Some("claude-code".into()),
         host: None,
-        multiplexer: None,
-        extras: Vec::new(),
     };
     run_command(&mut bus, create("Review")).expect("the first");
     let refused = run_command(&mut bus, create("review")).expect_err("the same Task");

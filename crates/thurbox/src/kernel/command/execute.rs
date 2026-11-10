@@ -10,9 +10,6 @@ use super::{BookmarkEdit, Command};
 pub(super) enum Outcome {
     /// What it was asked to do.
     Done,
-    /// Nothing, and rightly: a repair Fleet makes itself. The interface
-    /// announces it as neither a success nor a failure.
-    Nothing,
 }
 
 /// Run `command` when it is one no session owns; `None` for any other.

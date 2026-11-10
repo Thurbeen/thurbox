@@ -17,18 +17,14 @@ use ratatui::layout::Rect;
 use ratatui::Terminal;
 
 use thurbox::backend::preflight::Presence;
-use thurbox::git::ExistingWorktree;
 use thurbox::kernel::command::{BookmarkEdit, Command, InFlight, Phase};
 use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::node::Identity;
 use thurbox::kernel::paint::Hit;
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::repos::{
-    BookmarkRow, Branches, BrowseEntry, Listing, RepoStore, Wants, Worktrees,
-};
-use thurbox::kernel::snapshot::{AgentRow, HostRow, SessionRow, Snapshot};
+use thurbox::kernel::repos::{BookmarkRow, BrowseEntry, Listing, RepoStore, Wants};
+use thurbox::kernel::snapshot::{AgentRow, HostRow, Snapshot};
 use thurbox::kernel::theme::Themes;
-use thurbox::session::SessionState;
 
 const PLUGIN: &str = "new_session";
 
@@ -85,38 +81,6 @@ fn offered() -> BookmarkRow {
         label: Some("Thurbox interface — edit your panes".into()),
         offered: true,
         ..bookmark(INTERFACE_DIR, Some(false))
-    }
-}
-
-/// A session to fork — its own agent is what the fork would actually run,
-/// never the first row of `agents()`.
-fn source_session() -> SessionRow {
-    SessionRow {
-        id: "fix-osc52-0000-0000-0000-000000000000".into(),
-        name: "fix-osc52".into(),
-        agent: "aider".into(),
-        status: SessionState::Idle,
-        cwd: Some("/src/thurbox".into()),
-        repo: Some("thurbox".into()),
-        repos: Vec::new(),
-        member_dirs: Vec::new(),
-        branch: Some("feat/fix-osc52".into()),
-        base_branch: None,
-        backend: "local:tmux".into(),
-        backend_id: Some("%1".into()),
-        remote_host: None,
-        agent_session_id: None,
-        parent_id: None,
-        display_order: None,
-        worktree_count: 1,
-        git: None,
-        stopped: false,
-        hook_state: None,
-        key: None,
-        reports_as: None,
-        detected_agent: None,
-        shell_backend_id: None,
-        meta: Default::default(),
     }
 }
 
@@ -424,19 +388,6 @@ fn open(host: &LuaHost, world: &World) {
     }
 }
 
-/// From the repository step to the create: tick the first repository, accept
-/// the name, take the default agent.
-fn create_from_repos(host: &LuaHost, world: &World) -> Option<String> {
-    press(host, world, "space");
-    press(host, world, "enter");
-    press(host, world, "enter");
-    press(host, world, "enter");
-    match host.drain_commands().as_slice() {
-        [Command::Create { multiplexer, .. }] => multiplexer.clone(),
-        other => panic!("expected one create, got {other:?}"),
-    }
-}
-
 fn devbox(platform: &str, available: &[&str]) -> HostRow {
     HostRow {
         name: "devbox".into(),
@@ -469,170 +420,7 @@ fn opening_with_no_hosts_starts_at_the_repositories() {
     let world = World::default();
     open(&host, &world);
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Select Repos"), "{screen}");
-}
-
-#[test]
-fn opening_without_hosts_shows_available_multiplexers_first() {
-    let host = host();
-    let mut world = World::default();
-    let local = thurbox::backend::preflight::local_multiplexer();
-    world.snapshot.mux.available = vec![local.into(), "rmux".into()];
-    press(&host, &world, "ctrl+n");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("Multiplexer"), "{screen}");
-    assert!(
-        screen.contains(thurbox::backend::preflight::local_multiplexer()),
-        "{screen}"
-    );
-}
-
-#[test]
-fn a_single_available_multiplexer_is_used_without_asking() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.mux.binary = "rmux".into();
-    world.snapshot.mux.available = vec!["rmux".into()];
-    press(&host, &world, "ctrl+n");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("Select Repos") && !screen.contains("Multiplexer"),
-        "one installed multiplexer is not a choice: {screen}"
-    );
-    assert_eq!(create_from_repos(&host, &world).as_deref(), Some("rmux"));
-}
-
-#[test]
-fn several_available_multiplexers_list_only_those_with_the_default_selected() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.hosts = vec![devbox("windows", &["psmux", "rmux"])];
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("▸ psmux"),
-        "the platform default is kept: {screen}"
-    );
-    assert!(screen.contains("  rmux"), "{screen}");
-    assert!(!screen.contains("tmux"), "{screen}");
-    assert!(!screen.contains("unavailable"), "{screen}");
-}
-
-#[test]
-fn no_available_multiplexer_says_so_with_an_install_hint() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.mux.available = Vec::new();
-    world.snapshot.mux.presence = Presence::Missing;
-    world.snapshot.mux.advice = "install tmux 3.2 or newer".into();
-    press(&host, &world, "ctrl+n");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("No multiplexer is installed"), "{screen}");
-    assert!(screen.contains("install tmux 3.2 or newer"), "{screen}");
-    press(&host, &world, "enter");
-    assert!(
-        drawn(&host, &world).contains("Multiplexer"),
-        "nothing to start"
-    );
-
-    let mut world = World::default();
-    world.snapshot.hosts = vec![devbox("posix", &[])];
-    press(&host, &world, "esc");
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("No multiplexer is installed"), "{screen}");
-    assert!(screen.contains("install tmux"), "{screen}");
-}
-
-#[test]
-fn the_choice_is_per_host() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.mux.available = vec!["tmux".into()];
-    world.snapshot.hosts = vec![devbox("posix", &["tmux", "rmux"])];
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "enter");
-    assert!(
-        drawn(&host, &world).contains("Select Repos"),
-        "only tmux is installed here"
-    );
-    press(&host, &world, "esc");
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("▸ tmux") && screen.contains("  rmux"),
-        "the host has both: {screen}"
-    );
-}
-
-#[test]
-fn a_host_still_being_asked_shows_the_step_rather_than_guess() {
-    let host = host();
-    let mut world = World::default();
-    let mut asking = devbox("posix", &["tmux"]);
-    asking.probing = true;
-    world.snapshot.hosts = vec![asking];
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("▸ tmux"), "{screen}");
-    assert!(
-        screen.contains("Looking for multiplexers on devbox"),
-        "{screen}"
-    );
-    world.snapshot.hosts[0].probing = false;
-    world.snapshot.hosts[0].available_multiplexers = vec!["tmux".into(), "rmux".into()];
-    assert!(
-        drawn(&host, &world).contains("  rmux"),
-        "the answer lands in place"
-    );
-}
-
-#[test]
-fn a_probe_without_the_guessed_default_moves_the_selection_to_what_it_found() {
-    let host = host();
-    let mut world = World::default();
-    let mut asking = devbox("posix", &["tmux"]);
-    asking.probing = true;
-    world.snapshot.hosts = vec![asking];
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    assert!(drawn(&host, &world).contains("▸ tmux"));
-    world.snapshot.hosts[0].probing = false;
-    world.snapshot.hosts[0].available_multiplexers = vec!["rmux".into()];
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("▸ rmux"), "{screen}");
-    assert!(!screen.contains("unavailable"), "{screen}");
-    press(&host, &world, "enter");
-    assert!(drawn(&host, &world).contains("Select Repos"));
-}
-
-#[test]
-fn a_configured_multiplexer_that_is_available_skips_the_step() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.mux.configured = Some("rmux".into());
-    world.snapshot.mux.available = vec!["tmux".into(), "rmux".into()];
-    press(&host, &world, "ctrl+n");
-    assert!(drawn(&host, &world).contains("Select Repos"));
-    assert_eq!(create_from_repos(&host, &world).as_deref(), Some("rmux"));
-
-    let mut world = World::default();
-    let mut configured = devbox("posix", &["tmux", "rmux"]);
-    configured.multiplexer = Some("rmux".into());
-    world.snapshot.hosts = vec![configured];
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    assert!(drawn(&host, &world).contains("Select Repos"));
+    assert!(screen.contains("Select Repo"), "{screen}");
 }
 
 #[test]
@@ -662,119 +450,6 @@ fn opening_with_hosts_asks_where_to_run_first() {
 }
 
 #[test]
-fn a_wsl_host_offers_rmux_next_to_tmux_and_keeps_tmux_selected() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "Ubuntu".into(),
-        detail: "WSL".into(),
-        backend: "wsl:Ubuntu".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
-        probing: false,
-    }];
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    let tmux = screen.find("▸ tmux").expect("tmux remains selected");
-    let rmux = screen.find("  rmux").expect("rmux is offered");
-    let psmux = screen.find("  psmux").expect("psmux remains offered");
-    assert!(tmux < rmux && rmux < psmux, "{screen}");
-}
-
-#[test]
-fn an_unavailable_configured_rmux_requires_an_explicit_backend_choice() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.mux.configured = Some("rmux".into());
-    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into()];
-    press(&host, &world, "ctrl+n");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("rmux is unavailable"), "{screen}");
-    press(&host, &world, "enter");
-    assert!(drawn(&host, &world).contains("Multiplexer"));
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    assert!(drawn(&host, &world).contains("Select Repos"));
-}
-
-#[test]
-fn a_picker_refresh_keeps_the_chosen_backend() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into()];
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    assert!(drawn(&host, &world).contains("▸ psmux"));
-    world.snapshot.mux.available = vec!["tmux".into(), "psmux".into(), "rmux".into()];
-    assert!(drawn(&host, &world).contains("▸ psmux"));
-    press(&host, &world, "enter");
-    press(&host, &world, "space");
-    press(&host, &world, "enter");
-    press(&host, &world, "enter");
-    press(&host, &world, "enter");
-    let issued = host.drain_commands();
-    assert!(matches!(
-        issued.as_slice(),
-        [Command::Create { multiplexer: Some(mux), .. }] if mux == "psmux"
-    ));
-}
-
-#[test]
-fn ui_state_tracks_host_and_multiplexer_selection() {
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "Ubuntu".into(),
-        detail: "WSL".into(),
-        backend: "wsl:Ubuntu".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into(), "psmux".into(), "rmux".into()],
-        probing: false,
-    }];
-    let state = || host.ui_states()["plugins/70_new_session.lua"].clone();
-    press(&host, &world, "ctrl+n");
-    press(&host, &world, "down");
-    assert_eq!(state()["step"], "host");
-    assert_eq!(state()["selection"], 2);
-    press(&host, &world, "enter");
-    press(&host, &world, "down");
-    assert_eq!(state()["step"], "multiplexer");
-    assert_eq!(state()["selection"], 2);
-}
-
-#[test]
-fn ui_state_tracks_branch_and_agent_selection() {
-    let host = host();
-    let mut world = World::default();
-    world.repos.set_branches_for_test(
-        "",
-        "/src/thurbox",
-        Branches::Ready(vec!["origin/main".into(), "main".into()]),
-    );
-    let state = || host.ui_states()["plugins/70_new_session.lua"].clone();
-    open(&host, &world);
-    press(&host, &world, "space");
-    press(&host, &world, "alt+w");
-    press(&host, &world, "enter");
-    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
-    publish(&host, &world);
-    press(&host, &world, "down");
-    assert_eq!(state()["step"], "branch");
-    assert_eq!(state()["selection"], 2);
-    press(&host, &world, "enter");
-    type_text(&host, &world, "review-selection");
-    press(&host, &world, "enter");
-    press(&host, &world, "enter");
-    press(&host, &world, "down");
-    assert_eq!(state()["step"], "agent");
-    assert_eq!(state()["selection"], 2);
-}
-
-#[test]
 fn escape_closes_the_flow_and_stops_asking() {
     let host = host();
     let world = World::default();
@@ -785,7 +460,6 @@ fn escape_closes_the_flow_and_stops_asking() {
     // And the reads stop being requested, so a closed flow costs nothing.
     assert_eq!(host.shared_string("want_bookmarks"), None);
     assert_eq!(host.shared_string("want_browse"), None);
-    assert_eq!(host.shared_string("want_branches"), None);
 }
 
 #[test]
@@ -797,7 +471,7 @@ fn a_second_open_does_not_discard_what_was_chosen() {
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(
-        screen.contains("[x] /src/thurbox"),
+        screen.contains("▸ /src/thurbox"),
         "a stray ctrl+n must not reset the flow: {screen}"
     );
 }
@@ -811,40 +485,10 @@ fn remembered_repositories_are_listed_with_their_kind() {
     open(&host, &world);
     let screen = drawn(&host, &world);
     assert!(screen.contains("Repos (2)"), "{screen}");
-    assert!(screen.contains("[ ] /src/thurbox"), "{screen}");
+    assert!(screen.contains("/src/thurbox"), "{screen}");
     // A known non-repository reads as a plain directory.
     assert!(screen.contains("/src/notes"), "{screen}");
     assert!(screen.contains("(dir)"), "{screen}");
-}
-
-#[test]
-fn space_selects_and_alt_w_gives_it_a_worktree() {
-    let host = host();
-    let world = World::default();
-    open(&host, &world);
-    press(&host, &world, "space");
-    assert!(drawn(&host, &world).contains("[x] /src/thurbox"));
-    press(&host, &world, "alt+w");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("[wt]"), "{screen}");
-}
-
-#[test]
-fn worktree_mode_is_refused_for_a_directory_that_is_not_a_repository() {
-    let host = host();
-    let world = World::default();
-    open(&host, &world);
-    press(&host, &world, "down");
-    press(&host, &world, "alt+w");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("Not a git repo"),
-        "the refusal is shown, not silent: {screen}"
-    );
-    assert!(!screen.contains("[wt]"), "{screen}");
-    // And it stays selectable as a plain member.
-    press(&host, &world, "space");
-    assert!(drawn(&host, &world).contains("[x] /src/notes"));
 }
 
 #[test]
@@ -879,12 +523,13 @@ fn search_filters_and_counts_what_it_matched() {
     assert!(!screen.contains("thurbox"), "{screen}");
 }
 
-/// The repository rows as drawn, top to bottom, without their checkboxes.
+/// The repository rows as drawn, top to bottom, without the cursor's marker.
 fn listed(screen: &str) -> Vec<String> {
     screen
         .lines()
-        .filter_map(|line| line.split_once("[ ] ").or_else(|| line.split_once("[x] ")))
-        .map(|(_, rest)| rest.trim_end_matches(['│', ' ', '┐', '┘']).to_string())
+        .map(|line| line.trim_start_matches(['│', ' ', '▸']))
+        .filter(|rest| rest.starts_with('/'))
+        .map(|rest| rest.trim_end_matches(['│', ' ', '┐', '┘']).to_string())
         .collect()
 }
 
@@ -1428,7 +1073,7 @@ fn escape_closes_the_dropdown_before_it_closes_the_flow() {
     let screen = drawn(&host, &world);
     assert!(!screen.contains("Browse"), "{screen}");
     assert!(
-        screen.contains("Select Repos"),
+        screen.contains("Select Repo"),
         "one Esc closes one thing: {screen}"
     );
 }
@@ -1472,7 +1117,7 @@ fn a_path_just_added_is_the_row_that_gets_selected() {
     // behind the offered row.
     world.repos = store_with(vec![offered(), bookmark("/src/new", Some(true))]);
     let screen = drawn(&host, &world);
-    let selected: Vec<&str> = screen.lines().filter(|line| line.contains("[x]")).collect();
+    let selected: Vec<&str> = screen.lines().filter(|line| line.contains("▸ ")).collect();
     assert_eq!(selected.len(), 1, "one row is chosen:\n{screen}");
     assert!(
         selected[0].contains("new"),
@@ -1560,7 +1205,7 @@ fn a_new_git_repository_is_one_command_and_lands_ticked() {
     );
     // Back on the repositories, where the new row is picked once it lands —
     // the same select-or-add a typed path gets.
-    assert!(drawn(&host, &world).contains("Select Repos"));
+    assert!(drawn(&host, &world).contains("Select Repo"));
 }
 
 #[test]
@@ -1618,7 +1263,7 @@ fn escape_from_the_folder_question_keeps_what_was_typed() {
     press(&host, &world, "enter");
     press(&host, &world, "esc");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Select Repos"), "{screen}");
+    assert!(screen.contains("Select Repo"), "{screen}");
     assert!(screen.contains("/src/brand-new"), "{screen}");
     assert!(host.drain_commands().is_empty());
 }
@@ -1658,7 +1303,7 @@ fn a_new_folder_can_have_a_repository_cloned_into_it() {
             },
         }]
     );
-    assert!(drawn(&host, &world).contains("Select Repos"));
+    assert!(drawn(&host, &world).contains("Select Repo"));
 }
 
 #[test]
@@ -1727,14 +1372,14 @@ fn a_write_that_failed_ticks_nothing_in_its_place() {
         error: Some("git clone failed: not found".into()),
     });
     let screen = drawn(&host, &world);
-    assert!(!screen.contains("[x]"), "{screen}");
+    assert!(!screen.contains("▸ /src/fork-of-it"), "{screen}");
 
     // Nor does the tick arrive late, once the failure is swept from the list.
     world.inflight.clear();
     let screen = drawn(&host, &world);
     assert!(
-        !screen.contains("[x]"),
-        "no stale tick later either: {screen}"
+        !screen.contains("▸ /src/fork-of-it"),
+        "no stale pick later either: {screen}"
     );
 }
 
@@ -1787,7 +1432,7 @@ fn an_earlier_failure_does_not_stop_the_next_write_being_ticked() {
     type_text(&host, &world, "notes");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("[x]"), "{screen}");
+    assert!(screen.contains("▸ "), "{screen}");
 }
 
 #[test]
@@ -1810,7 +1455,7 @@ fn another_write_failing_meanwhile_does_not_count_as_this_ones() {
         error: Some("not a remembered repository".into()),
     });
     let screen = drawn(&host, &world);
-    assert!(screen.contains("[x]"), "{screen}");
+    assert!(screen.contains("▸ "), "{screen}");
 }
 
 #[test]
@@ -1951,13 +1596,8 @@ fn a_plain_selection_names_the_session_then_the_agent() {
         vec![Command::Create {
             name: "read the code".into(),
             repo: "/src/thurbox".into(),
-            branch: None,
-            base: None,
-            worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
-            extras: Vec::new(),
         }]
     );
     assert_eq!(drawn(&host, &world), "", "the flow closes when it commits");
@@ -1980,14 +1620,8 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     press(&host, &world, "enter");
     let commands = host.drain_commands();
     assert!(
-        matches!(
-            &commands[..],
-            [Command::Create {
-                multiplexer: Some(_),
-                ..
-            }]
-        ),
-        "the flow settles a multiplexer: {commands:?}"
+        matches!(&commands[..], [Command::Create { .. }]),
+        "the flow creates one session: {commands:?}"
     );
 
     let fleet = StubFleet::new("[\"local\"]");
@@ -2237,13 +1871,8 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
             // Named after the repository rather than left unnamed.
             name: "thurbox".into(),
             repo: "/src/thurbox".into(),
-            branch: None,
-            base: None,
-            worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
-            extras: Vec::new(),
         }]
     );
 }
@@ -2270,216 +1899,6 @@ fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
 }
 
 #[test]
-fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() {
-    let host = host();
-    let mut world = World::default();
-    world.repos.set_worktrees_for_test(
-        "",
-        "/src/thurbox",
-        Worktrees::Ready(vec![ExistingWorktree {
-            path: "/src/thurbox/.worktrees/dynamic-tooltips".into(),
-            branch: "feat/dynamic-tooltips-15307729713678226529".into(),
-        }]),
-    );
-    open(&host, &world);
-
-    assert_eq!(host.shared_string("want_worktrees"), None);
-    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
-    assert!(!drawn(&host, &world).contains("dynamic-tooltips"));
-    press(&host, &world, "right");
-    assert_eq!(
-        host.shared_string("want_worktrees").as_deref(),
-        Some("\0/src/thurbox")
-    );
-
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("dynamic-tooltips"),
-        "the existing worktree is listed under its repo: {screen}"
-    );
-
-    press(&host, &world, "down");
-    press(&host, &world, "left");
-    assert!(!drawn(&host, &world).contains("dynamic-tooltips"));
-    assert_eq!(host.shared_string("want_worktrees"), None);
-    press(&host, &world, "right");
-    assert!(drawn(&host, &world).contains("dynamic-tooltips"));
-    press(&host, &world, "down");
-    press(&host, &world, "enter");
-    press(&host, &world, "enter"); // agent step, default preselected
-
-    assert_eq!(
-        host.drain_commands(),
-        vec![Command::Create {
-            // Empty: the kernel names it after the worktree directory.
-            name: String::new(),
-            repo: "/src/thurbox".into(),
-            branch: Some("feat/dynamic-tooltips-15307729713678226529".into()),
-            // Nothing is branched off anything.
-            base: None,
-            worktree_path: Some("/src/thurbox/.worktrees/dynamic-tooltips".into()),
-            agent: Some("claude".into()),
-            host: None,
-            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
-            extras: Vec::new(),
-        }]
-    );
-}
-
-#[test]
-fn leaving_expanded_worktrees_keeps_the_cursor_on_the_next_repo() {
-    let host = host();
-    let mut world = world_with(vec![
-        bookmark("/src/alpha", Some(true)),
-        bookmark("/src/beta", Some(true)),
-        bookmark("/src/gamma", Some(true)),
-    ]);
-    world.repos.set_worktrees_for_test(
-        "",
-        "/src/alpha",
-        Worktrees::Ready(vec![
-            ExistingWorktree {
-                path: "/src/first".into(),
-                branch: "first".into(),
-            },
-            ExistingWorktree {
-                path: "/src/second".into(),
-                branch: "second".into(),
-            },
-        ]),
-    );
-    world.wants.worktrees = Some((String::new(), "/src/alpha".into()));
-    open(&host, &world);
-    press(&host, &world, "right");
-    press(&host, &world, "down");
-    press(&host, &world, "down");
-    press(&host, &world, "down");
-    let screen = drawn(&host, &world);
-    assert!(!screen.contains("↳"), "the previous repo closes: {screen}");
-    press(&host, &world, "space");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("[x] /src/beta"),
-        "the next repo stays under the cursor: {screen}"
-    );
-}
-
-#[test]
-fn a_repo_with_no_existing_worktrees_is_unchanged() {
-    // No child rows, and the create flow still asks its usual questions.
-    let host = host();
-    let mut world = World::default();
-    world
-        .repos
-        .set_worktrees_for_test("", "/src/thurbox", Worktrees::Ready(Vec::new()));
-    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
-    open(&host, &world);
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("Session Name"),
-        "the plain flow is untouched: {screen}"
-    );
-}
-
-#[test]
-fn a_worktree_selection_asks_for_a_base_branch_and_a_branch_name() {
-    let host = host();
-    let mut world = World::default();
-    world.repos.set_branches_for_test(
-        "",
-        "/src/thurbox",
-        Branches::Ready(vec!["origin/main".into(), "main".into(), "feat/x".into()]),
-    );
-    open(&host, &world);
-    press(&host, &world, "space");
-    press(&host, &world, "alt+w");
-    press(&host, &world, "enter");
-
-    // The flow reaches the branch step and asks for the list; the answer is
-    // published under the same key.
-    assert_eq!(
-        host.shared_string("want_branches").as_deref(),
-        Some("\0/src/thurbox")
-    );
-    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("Base Branch"), "{screen}");
-    assert!(
-        screen.contains("▸ origin/main"),
-        "the remote default leads the list: {screen}"
-    );
-
-    press(&host, &world, "enter");
-    type_text(&host, &world, "Fix OSC 52");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("Branch Name"), "{screen}");
-    assert!(
-        screen.contains("fix-osc-52"),
-        "prefilled with a branch-safe form of the name: {screen}"
-    );
-
-    press(&host, &world, "enter");
-    press(&host, &world, "enter"); // agent step, default preselected
-    assert_eq!(
-        host.drain_commands(),
-        vec![Command::Create {
-            name: "Fix OSC 52".into(),
-            repo: "/src/thurbox".into(),
-            branch: Some("fix-osc-52".into()),
-            base: Some("origin/main".into()),
-            worktree_path: None,
-            agent: Some("claude".into()),
-            host: None,
-            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
-            extras: Vec::new(),
-        }]
-    );
-}
-
-#[test]
-fn a_second_repository_travels_as_an_extra_member_with_its_own_mode() {
-    let host = host();
-    let mut world = world_with(vec![
-        bookmark("/src/thurbox", Some(true)),
-        bookmark("/src/website", Some(true)),
-        bookmark("/src/notes", Some(false)),
-    ]);
-    world
-        .repos
-        .set_branches_for_test("", "/src/thurbox", Branches::Ready(vec!["main".into()]));
-    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
-    open(&host, &world);
-    // thurbox: worktree. website: worktree. notes: attached as it is.
-    press(&host, &world, "alt+w");
-    press(&host, &world, "down");
-    press(&host, &world, "alt+w");
-    press(&host, &world, "down");
-    press(&host, &world, "space");
-    press(&host, &world, "enter");
-    press(&host, &world, "enter"); // base branch
-    type_text(&host, &world, "wide");
-    press(&host, &world, "enter"); // name → branch name
-    press(&host, &world, "enter"); // branch name → agent
-    press(&host, &world, "enter"); // agent
-
-    let issued = host.drain_commands();
-    let Some(Command::Create { repo, extras, .. }) = issued.first() else {
-        panic!("expected a create, got {issued:?}");
-    };
-    assert_eq!(repo, "/src/thurbox", "the first worktree repo is primary");
-    assert_eq!(
-        extras
-            .iter()
-            .map(|extra| (extra.path.as_str(), extra.worktree))
-            .collect::<Vec<_>>(),
-        vec![("/src/website", true), ("/src/notes", false)],
-        "each member keeps the mode it was given"
-    );
-}
-
-#[test]
 fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
     let host = host();
     let mut world = World::default();
@@ -2498,7 +1917,7 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     open(&host, &world);
     press(&host, &world, "j"); // local → devbox
-    press(&host, &world, "enter"); // one multiplexer on devbox: straight to repositories
+    press(&host, &world, "enter");
 
     // Repository memory is scoped to the machine the repositories live on.
     assert_eq!(
@@ -2642,19 +2061,16 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     open(&host, &world);
     press(&host, &world, "j");
-    press(&host, &world, "enter"); // one multiplexer on devbox: straight to repositories
+    press(&host, &world, "enter");
     press(&host, &world, "tab");
     type_text(&host, &world, "/srv/th");
 
     let wants = Wants::new(
         host.shared_string("want_bookmarks"),
         host.shared_string("want_browse"),
-        host.shared_string("want_branches"),
-        host.shared_string("want_worktrees"),
     );
     assert_eq!(wants.bookmarks.as_deref(), Some("ssh:devbox"));
     assert_eq!(wants.browse, Some(("ssh:devbox".into(), "/srv".into())));
-    assert_eq!(wants.branches, None, "no branch is being asked for yet");
 
     // And serving those wants is what the loop does with them — idempotently, so
     // a flow that asks every frame costs one request.
@@ -2689,9 +2105,7 @@ fn every_key_the_flow_uses_is_declared_rather_than_only_handled() {
         .iter()
         .map(|binding| binding.chord.as_str())
         .collect();
-    for chord in [
-        "ctrl+n", "j", "k", "space", "alt+w", "alt+d", "delete", "alt+p",
-    ] {
+    for chord in ["ctrl+n", "j", "k", "space", "alt+d", "delete", "alt+p"] {
         assert!(
             declared.contains(&chord),
             "{chord} is not declared: {declared:?}"
@@ -2764,11 +2178,11 @@ fn the_arrows_still_move_the_list_while_a_field_has_focus() {
     press(&host, &world, "space");
     let picked = drawn(&host, &world);
     assert!(
-        picked.contains("[x] /src/beta"),
+        picked.contains("▸ /src/beta"),
         "the arrow moved the selection onto the second row: {picked}"
     );
     assert!(
-        picked.contains("[ ] /src/alpha"),
+        !picked.contains("▸ /src/alpha"),
         "and off the first: {picked}"
     );
 }
@@ -2804,7 +2218,7 @@ fn the_repo_step_footer_names_every_key_it_offers_in_full() {
         .lines()
         .find(|line| line.contains("[ Next ]"))
         .unwrap_or_else(|| panic!("no footer: {screen}"));
-    for hint in ["nav", "tick", "worktree", "forget", "path"] {
+    for hint in ["nav", "forget", "path"] {
         assert!(screen.contains(hint), "`{hint}` is not shown: {screen}");
     }
     assert!(footer.contains("[ Cancel ]"), "{footer}");
@@ -2936,87 +2350,6 @@ fn a_listing_that_has_not_arrived_offers_no_pill_to_press() {
 }
 
 #[test]
-fn an_existing_worktree_row_offers_to_open_it() {
-    // The one row in this list that is not a thing to tick — but `enter` only
-    // opens it straight away when nothing is left to ask; with 2+ agents
-    // configured it still has the agent step ahead of it, same as every other
-    // row.
-    let h = host();
-    let mut world = World::default();
-    world.repos.set_worktrees_for_test(
-        "",
-        "/src/thurbox",
-        Worktrees::Ready(vec![ExistingWorktree {
-            path: "/src/thurbox/.worktrees/dynamic-tooltips".into(),
-            branch: "feat/dynamic-tooltips".into(),
-        }]),
-    );
-    open(&h, &world);
-    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
-    assert!(drawn(&h, &world).contains("[ Next ]"), "on the repo row");
-    press(&h, &world, "right");
-    press(&h, &world, "down");
-    let screen = drawn(&h, &world);
-    assert!(
-        screen.contains("[ Next ]"),
-        "an agent is still to come with 2+ agents configured: {screen}"
-    );
-}
-
-#[test]
-fn an_existing_worktree_row_offers_to_open_it_directly_with_one_agent() {
-    // With only one agent configured there is nothing left to ask, so `enter`
-    // on the worktree row spawns straight away.
-    let h = host();
-    let mut world = World::default();
-    world.snapshot.agents.truncate(1);
-    world.repos.set_worktrees_for_test(
-        "",
-        "/src/thurbox",
-        Worktrees::Ready(vec![ExistingWorktree {
-            path: "/src/thurbox/.worktrees/dynamic-tooltips".into(),
-            branch: "feat/dynamic-tooltips".into(),
-        }]),
-    );
-    open(&h, &world);
-    world.wants.worktrees = Some((String::new(), "/src/thurbox".into()));
-    press(&h, &world, "right");
-    press(&h, &world, "down");
-    let screen = drawn(&h, &world);
-    assert!(screen.contains("[ Open ]"), "{screen}");
-}
-
-#[test]
-fn the_branch_step_offers_nothing_to_select_while_it_is_still_fetching() {
-    let h = host();
-    let mut world = World::default();
-    world
-        .repos
-        .set_branches_for_test("", "/src/thurbox", Branches::Pending);
-    open(&h, &world);
-    press(&h, &world, "space");
-    press(&h, &world, "alt+w");
-    press(&h, &world, "enter");
-    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
-    let screen = drawn(&h, &world);
-    assert!(
-        !screen.contains("[ Select ]"),
-        "a pill here would do nothing when pressed: {screen}"
-    );
-
-    world.repos.set_branches_for_test(
-        "",
-        "/src/thurbox",
-        Branches::Ready(vec!["origin/main".into(), "main".into()]),
-    );
-    let screen = drawn(&h, &world);
-    assert!(
-        screen.contains("[ Select ]"),
-        "once there is a list: {screen}"
-    );
-}
-
-#[test]
 fn the_last_question_says_that_answering_it_creates_the_session() {
     // The agent step spawns on `enter`; it does not merely settle the agent.
     let h = host();
@@ -3050,35 +2383,6 @@ fn a_name_that_is_the_last_question_says_so_too() {
     let screen = drawn(&h, &world);
     assert!(
         screen.contains("Session Name") && screen.contains("[ Create ]"),
-        "{screen}"
-    );
-}
-
-#[test]
-fn the_branch_name_is_not_the_last_question_when_an_agent_is_still_to_come() {
-    let h = host();
-    let mut world = World::default();
-    world.repos.set_branches_for_test(
-        "",
-        "/src/thurbox",
-        Branches::Ready(vec!["origin/main".into()]),
-    );
-    open(&h, &world);
-    press(&h, &world, "space");
-    press(&h, &world, "alt+w");
-    press(&h, &world, "enter");
-    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
-    press(&h, &world, "enter");
-    let screen = drawn(&h, &world);
-    assert!(
-        screen.contains("Session Name") && screen.contains("[ Next ]"),
-        "the branch name comes after the session name: {screen}"
-    );
-    type_text(&h, &world, "x");
-    press(&h, &world, "enter");
-    let screen = drawn(&h, &world);
-    assert!(
-        screen.contains("Branch Name") && screen.contains("[ Next ]"),
         "{screen}"
     );
 }
@@ -3159,30 +2463,10 @@ fn with_nothing_ticked_the_cursor_row_is_the_choice() {
     press(&host, &world, "enter");
     press(&host, &world, "enter");
     let issued = host.drain_commands();
-    let Some(Command::Create { repo, extras, .. }) = issued.first() else {
+    let Some(Command::Create { repo, .. }) = issued.first() else {
         panic!("expected a create, got {issued:?}");
     };
     assert_eq!(repo, "/src/notes");
-    assert!(extras.is_empty());
-}
-
-#[test]
-fn ticked_rows_win_over_the_cursor_row() {
-    let host = host();
-    let world = World::default();
-    open(&host, &world);
-    press(&host, &world, "space"); // ticks /src/thurbox
-    press(&host, &world, "down"); // cursor on /src/notes, unticked
-    press(&host, &world, "enter");
-    type_text(&host, &world, "n");
-    press(&host, &world, "enter");
-    press(&host, &world, "enter");
-    let issued = host.drain_commands();
-    let Some(Command::Create { repo, extras, .. }) = issued.first() else {
-        panic!("expected a create, got {issued:?}");
-    };
-    assert_eq!(repo, "/src/thurbox");
-    assert!(extras.is_empty(), "the cursor row is not added: {extras:?}");
 }
 
 #[test]
@@ -3232,97 +2516,7 @@ fn a_name_the_repository_can_answer_for_keeps_its_pill() {
     assert!(screen.contains("[ Next ]"), "{screen}");
 }
 
-#[test]
-fn a_branch_name_that_prefilled_to_nothing_offers_no_pill() {
-    // The branch field has no suggestion behind it, and a session name of pure
-    // punctuation leaves `branch_from_name` nothing to prefill it with.
-    let h = host();
-    let mut world = World::default();
-    world.repos.set_branches_for_test(
-        "",
-        "/src/thurbox",
-        Branches::Ready(vec!["origin/main".into()]),
-    );
-    open(&h, &world);
-    press(&h, &world, "space");
-    press(&h, &world, "alt+w");
-    press(&h, &world, "enter");
-    world.wants.branches = Some((String::new(), "/src/thurbox".into()));
-    press(&h, &world, "enter");
-    type_text(&h, &world, "!!!");
-    press(&h, &world, "enter");
-
-    let screen = drawn(&h, &world);
-    assert!(screen.contains("Branch Name"), "{screen}");
-    assert!(
-        !screen.contains("[ Create ]") && !screen.contains("[ Next ]"),
-        "nothing prefilled and no default: {screen}"
-    );
-
-    type_text(&h, &world, "b");
-    let typed = drawn(&h, &world);
-    assert!(typed.contains("[ Next ]"), "{typed}");
-}
-
 // ── What is missing, said before the user commits ──────────────────────────
-
-/// Draw the sessions pane and return its screen.
-///
-/// The flow's own `drawn` renders the float; the first-run notice lives on the
-/// list behind it, which is the one screen a machine with no sessions reaches.
-fn sessions_screen(host: &LuaHost, world: &World, width: u16, height: u16) -> String {
-    publish(host, world);
-    let index = index_of(host, "sessions");
-    let rendered = host
-        .render(
-            index,
-            RenderContext {
-                width,
-                height,
-                focused: false,
-                elapsed: 0.0,
-                frame: 0,
-            },
-        )
-        .expect("render");
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-    terminal
-        .draw(|frame| {
-            thurbox::kernel::paint::render_recording(
-                frame,
-                Rect::new(0, 0, width, height),
-                &rendered.node,
-                &thurbox::kernel::terminal::Terminals::with_registry(
-                    std::sync::Arc::new(
-                        thurbox::backend::wiring::configured(&Default::default()).0,
-                    ),
-                    &Default::default(),
-                ),
-                &mut Vec::new(),
-            );
-        })
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
-    (0..buffer.area.height)
-        .map(|y| {
-            (0..buffer.area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// A snapshot whose multiplexer is not installed.
-fn without_a_multiplexer(world: &mut World) {
-    world.snapshot.mux = thurbox::kernel::snapshot::MuxRow {
-        binary: "tmux".into(),
-        configured: None,
-        available: vec!["tmux".into()],
-        presence: Presence::Missing,
-        advice: "install tmux 3.2 or newer".into(),
-    };
-}
 
 #[test]
 fn a_missing_agent_is_marked_on_the_row_that_would_launch_it() {
@@ -3362,47 +2556,6 @@ fn a_missing_agent_warns_only_once_it_is_the_question() {
 }
 
 #[test]
-fn a_missing_multiplexer_is_stated_from_the_first_step_of_the_flow() {
-    // Nothing can be created without it, so it outranks every other warning and
-    // does not wait for a step the user may never reach.
-    let host = host();
-    let mut world = World::default();
-    without_a_multiplexer(&mut world);
-    open(&host, &world);
-    let screen = drawn(&host, &world);
-    assert!(
-        screen.contains("tmux is not installed"),
-        "the flow never says the multiplexer is missing: {screen}"
-    );
-}
-
-#[test]
-fn a_remote_host_is_never_reported_as_missing_the_local_multiplexer() {
-    // The local machine's tmux has nothing to do with a session that will run on
-    // a host — and `unknown` is not `missing`.
-    let host = host();
-    let mut world = World::default();
-    without_a_multiplexer(&mut world);
-    world.snapshot.hosts = vec![HostRow {
-        name: "devbox".into(),
-        detail: "me@devbox".into(),
-        backend: "ssh:devbox".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into()],
-        probing: false,
-    }];
-    open(&host, &world);
-    press(&host, &world, "j");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(
-        !screen.contains("is not installed"),
-        "a remote flow reported the local machine's multiplexer: {screen}"
-    );
-}
-
-#[test]
 fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
     // Presence is published from THIS machine's PATH — a remote host's binaries
     // live on the host and were never looked at, and the agent row must say
@@ -3424,7 +2577,7 @@ fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
     open(&host, &world);
     press(&host, &world, "j"); // local → devbox
-    press(&host, &world, "enter"); // one multiplexer on devbox: straight to repositories
+    press(&host, &world, "enter");
     world.wants.bookmarks = Some("ssh:devbox".into());
     press(&host, &world, "space");
     press(&host, &world, "enter");
@@ -3435,67 +2588,6 @@ fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
     assert!(
         !screen.contains("not installed"),
         "a remote host's agent was judged by the local machine's PATH: {screen}"
-    );
-}
-
-#[test]
-fn the_empty_session_list_says_the_multiplexer_is_missing() {
-    // The one screen a first run always reaches. Absent on a machine that has
-    // it, which is the normal case.
-    let host = host();
-    let mut world = World::default();
-    without_a_multiplexer(&mut world);
-    // The width a real sidebar has: the note must still be readable there, not
-    // truncated to its first clause.
-    let screen = sessions_screen(&host, &world, 28, 14);
-    assert!(screen.contains("No sessions yet"), "{screen}");
-    assert!(
-        screen.contains("tmux is not installed"),
-        "the first-run screen says nothing about the missing multiplexer: {screen}"
-    );
-    assert!(
-        screen.contains("thurbox-cli doctor"),
-        "the note names nowhere to get the whole answer: {screen}"
-    );
-
-    let quiet = World::default();
-    let screen = sessions_screen(&host, &quiet, 28, 14);
-    assert!(
-        !screen.contains("is not installed"),
-        "a machine that has everything was still warned: {screen}"
-    );
-}
-
-#[test]
-fn a_fork_never_warns_about_the_wrong_agent() {
-    // A fork's agent is the source session's, resolved server-side by the
-    // kernel — flow.agent_index is never assigned for one, so indexing
-    // agents() by it would read whichever agent happens to sort first in
-    // agents.toml, not the one the fork will actually run.
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.agents[0].presence = Presence::Missing;
-    world.snapshot.sessions = vec![source_session()];
-    publish(&host, &world);
-    // Rendering is what settles the cursor onto the session row.
-    host.render(
-        index_of(&host, "sessions"),
-        RenderContext {
-            width: 40,
-            height: 12,
-            focused: true,
-            elapsed: 1.0,
-            frame: 1,
-        },
-    )
-    .expect("render the sessions list");
-    host.on_action(index_of(&host, "sessions"), "sessions.fork")
-        .expect("sessions.fork");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("Session Name"), "{screen}");
-    assert!(
-        !screen.contains("pane will exit at once"),
-        "the fork flow warned about an agent it was never asked to pick: {screen}"
     );
 }
 

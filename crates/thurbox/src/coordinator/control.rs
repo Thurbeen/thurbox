@@ -517,24 +517,10 @@ impl App {
             return json!({"ok": false, "error": {"code": "audit_unavailable", "message": "cannot record destructive action"}});
         }
         let result: Result<(), (&'static str, String)> = match pending.action.as_str() {
-            "sessions.force_delete" | "sessions.delete" | "sessions.restart" | "sessions.sync" => {
-                let inner = match pending.action.as_str() {
-                    "sessions.force_delete" => Command::Delete {
-                        session: pending.target.clone(),
-                        force: true,
-                    },
-                    "sessions.delete" => Command::Delete {
-                        session: pending.target.clone(),
-                        force: false,
-                    },
-                    "sessions.restart" => Command::Restart {
-                        session: pending.target.clone(),
-                        if_missing: false,
-                        fresh: false,
-                    },
-                    _ => Command::Sync {
-                        session: pending.target.clone(),
-                    },
+            "sessions.force_delete" | "sessions.delete" => {
+                let inner = Command::Delete {
+                    session: pending.target.clone(),
+                    force: pending.action == "sessions.force_delete",
                 };
                 self.dispatch_tracked(Command::Guarded {
                     inner: Box::new(inner),

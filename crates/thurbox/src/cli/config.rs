@@ -134,9 +134,11 @@ fn validate() -> (Value, Vec<String>) {
     let (hosts, hosts_ok) = validate_file(crate::config::hosts::hosts_config_path(), |c| {
         crate::config::hosts::parse_hosts(c).map(|(_, warnings)| warnings)
     });
-    let (settings, settings_ok) = validate_toml::<crate::session::settings::Settings>(
+    // A key thurbox retired is reported at startup, never a failure here: a v2
+    // file stays valid.
+    let (settings, settings_ok) = validate_file(
         crate::config::settings::settings_config_path(),
-        "settings.toml",
+        crate::config::settings::unknown_keys,
     );
     let (themes, themes_ok) = validate_toml::<crate::theme::ThemesFile>(
         crate::config::themes::themes_config_path(),
@@ -451,7 +453,7 @@ mod tests {
             json!("interface.json (editor_command)")
         );
         assert!(v["settings"]["scrollback_lines"].is_number());
-        assert_eq!(v["settings"]["features"]["tasks"], json!(true));
+        assert_eq!(v["settings"]["features"]["mouse"], json!(true));
         assert_eq!(v["agents"]["default"], json!("claude"));
     }
 }

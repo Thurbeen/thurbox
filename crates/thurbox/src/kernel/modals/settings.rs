@@ -111,16 +111,6 @@ impl CoreField {
 /// Every core row, in the order the file reads.
 const CORE_FIELDS: &[CoreField] = &[
     CoreField {
-        id: "features.soft_delete",
-        description: "delete is reversible; off deletes for good, after asking",
-        get: |s| Value::Bool(s.features.soft_delete),
-        set: |s, v| {
-            if let Value::Bool(on) = v {
-                s.features.soft_delete = *on;
-            }
-        },
-    },
-    CoreField {
         id: "features.shell_pane",
         description: "a shell beside each agent",
         get: |s| Value::Bool(s.features.shell_pane),
@@ -1381,7 +1371,7 @@ mod tests {
         let modal = SettingsModal::default();
         let rows = modal.rows(&registry, &on_disk);
         assert_eq!(rows.len(), CORE_FIELDS.len() + 1);
-        assert!(rows.iter().any(|row| row.id == "features.soft_delete"));
+        assert!(rows.iter().any(|row| row.id == "features.shell_pane"));
         assert!(
             rows.last().is_some_and(|row| row.plugin == "a"),
             "a plugin's rows follow the core ones"
@@ -1397,7 +1387,7 @@ mod tests {
             "{}",
             mouse.description
         );
-        let soft = &rows[core_row("features.soft_delete")];
+        let soft = &rows[core_row("features.shell_pane")];
         assert!(
             !soft.description.starts_with(RESTART_MARK),
             "{}",
@@ -1411,7 +1401,7 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(dir.path());
         let on_disk = Settings::default();
         let mut registry = registry_with(Vec::new());
-        let mut modal = on_core_row("features.soft_delete");
+        let mut modal = on_core_row("features.shell_pane");
 
         assert!(!modal.dirty(&on_disk));
         let reported =
@@ -1421,12 +1411,12 @@ mod tests {
             "the row says the change has not landed yet"
         );
         assert!(modal.dirty(&on_disk));
-        assert!(!on_disk.features.soft_delete, "and the file has not moved");
+        assert!(on_disk.features.shell_pane, "and the file has not moved");
 
         // Saving hands the whole draft over; the file and the live half are the
         // loop's business, not the modal's.
         match modal.on_key(&ctrl(KeyCode::Char('s')), &mut registry, &on_disk, &[]) {
-            Outcome::Save(draft) => assert!(draft.features.soft_delete),
+            Outcome::Save(draft) => assert!(!draft.features.shell_pane),
             other => panic!(
                 "expected a save, got {}",
                 message(other).unwrap_or_default()
@@ -1637,7 +1627,8 @@ mod tests {
                 .any(|field| field.id == "three_panel_min_cols"),
             "a setting for a column the interface does not have must not be offered"
         );
-        for id in ["features.shell_pane", "features.soft_delete"] {
+        {
+            let id = "features.shell_pane";
             assert!(!marker(id), "{id} is read every frame, so it applies live");
         }
     }

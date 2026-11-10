@@ -157,16 +157,6 @@ pub const KERNEL_EVENTS: &[EventSpec] = &[
         fields: &["session", "name", "force"],
     },
     EventSpec {
-        name: "session.post_restart",
-        when: "this interface finished restarting a session",
-        fields: &["session", "name", "agent", "repo", "cwd", "branch"],
-    },
-    EventSpec {
-        name: "session.post_restore",
-        when: "this interface finished restoring a session",
-        fields: &["session", "name", "agent", "repo", "cwd", "branch"],
-    },
-    EventSpec {
         name: "focus.session",
         when: "the selected session changes",
         fields: &["from", "to"],

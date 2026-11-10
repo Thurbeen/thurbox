@@ -10,7 +10,7 @@ use super::load::{BUDGET_EXCEEDED, BUDGET_UNARMED};
 use super::{
     instruction_budget, memory_limit, Persisted, Private, Queue, Roots, Shared, StateVersion,
 };
-use crate::kernel::command::{Args, Command, ExtraMember};
+use crate::kernel::command::{Args, Command};
 use crate::kernel::events::Field;
 
 /// Install what every plugin shares into a fresh VM: `store`, `text`, the
@@ -871,11 +871,7 @@ fn command_for(
             target: get_string("target"),
             text: get_string("text"),
             value: get_string("value"),
-            delta: opts
-                .as_ref()
-                .and_then(|t| t.get::<Option<i64>>("delta").ok().flatten()),
             force: get_bool("force").unwrap_or(false),
-            fresh: get_bool("fresh").unwrap_or(false),
             toggle: get_bool("toggle").unwrap_or(false),
             flag: get_bool("flag"),
             number: opts
@@ -883,13 +879,8 @@ fn command_for(
                 .and_then(|t| t.get::<Option<f64>>("number").ok().flatten()),
             reset: get_bool("reset").unwrap_or(false),
             repo: get_string("repo"),
-            branch: get_string("branch"),
-            base: get_string("base"),
-            worktree_path: get_string("worktree_path"),
             agent: get_string("agent"),
             host: get_string("host"),
-            multiplexer: get_string("multiplexer"),
-            status: get_string("status"),
             level: get_string("level"),
             file: get_string("file"),
             action: get_string("action"),
@@ -913,27 +904,6 @@ fn command_for(
                     table
                         .sequence_values::<String>()
                         .filter_map(Result::ok)
-                        .collect()
-                })
-                .unwrap_or_default(),
-            // A Lua array of `{ path = …, worktree = … }`: the further
-            // repositories a create spans. A row with no path is dropped rather
-            // than creating a member of nowhere.
-            extras: opts
-                .as_ref()
-                .and_then(|t| t.get::<Option<Table>>("extras").ok().flatten())
-                .map(|table| {
-                    table
-                        .sequence_values::<Table>()
-                        .filter_map(Result::ok)
-                        .filter_map(|entry| {
-                            let path: String = entry.get("path").ok()?;
-                            (!path.is_empty()).then(|| ExtraMember {
-                                path,
-                                worktree: entry.get::<Option<bool>>("worktree").ok().flatten()
-                                    == Some(true),
-                            })
-                        })
                         .collect()
                 })
                 .unwrap_or_default(),

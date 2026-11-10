@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::settings::{NotificationBackend, Settings};
+use crate::session::settings::{retired_key, NotificationBackend, Settings, IGNORED_KEYS};
 
 /// Seed contents for `settings.toml` on first run: every knob documented with
 /// its default, all commented out.
@@ -17,14 +17,12 @@ pub const SEED_SETTINGS_TOML: &str = r#"# Thurbox settings  —  ~/.config/thurb
 # default; uncomment to change. Read once at startup.
 #
 # Unknown keys are reported on startup (and fail `thurbox-cli config
-# validate`) but don't break the load.
+# validate`) but don't break the load. A key thurbox 2.x read and 3.0 no
+# longer does (`multiplexer`, `[remote]`, `[features] soft_delete`, and the
+# agent keys of `[telemetry]`) is reported on startup as no longer read, and
+# passes `config validate`.
 
 config_version = 1
-
-# Multiplexer for new local sessions. Explicit per-create choice wins.
-# Names: tmux, psmux, rmux, herdr. Only one with an adapter can create a
-# session — today tmux, and psmux on Windows.
-# multiplexer = "tmux"
 
 # Scrollback lines kept per session terminal.
 # scrollback_lines = 1000
@@ -55,13 +53,11 @@ config_version = 1
 # git_poll_secs = 5
 
 # Feature flags: turn whole TUI features off. All default to true.
-# Disabling `automations` also stops the TUI firing schedules and arming
-# the heartbeat on startup; explicit `thurbox-cli automation`
-# commands (and an already-armed heartbeat window) keep working. Data is
-# never touched, so re-enabling a flag is lossless.
+# Disabling `automations` stops the TUI firing the schedules in
+# automations.json; `thurbox-cli automation` keeps working. Data is never
+# touched, so re-enabling a flag is lossless.
 # [features]
-# tasks = true            # F5/Ctrl+W tasks panel
-# automations = true      # automations pane, Ctrl+P, schedule firing
+# automations = true      # the TUI fires automation schedules
 # file_viewer = true      # F3 file viewer column
 # global_search = true    # Ctrl+/ search strip
 # info_panel = true       # F2 info panel
@@ -70,7 +66,6 @@ config_version = 1
 # perf_hud = true         # F12 perf HUD overlay (live counters + timing)
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
 # notifications = true    # OS desktop notifications when a session needs attention
-# soft_delete = false     # TUI + CLI delete immediately; true = undo window (CLI --soft overrides)
 #
 # `version_check` and `auto_update` are ON by default for 1.0: both reach the
 # network (GitHub) on startup. `version_check` only *notifies* (TUI header
@@ -117,42 +112,29 @@ config_version = 1
 # provider = "auto"             # auto | native | osc52 | none
 # copy_on_select = true
 
-# Sessions on remote hosts (hosts.toml). Each host's own sessions are listed
-# here. A shareable host that mirrors hosts of its own also lists theirs; set
-# this to `true` to list those transitive sessions too, once each, on the most
-# direct path this instance has to them (a host you reach directly wins over
-# the same session seen through another), with every action on one going to
-# the host that owns it. Applies on the next mirror pass.
-# [remote]
-# transitive_sessions = false
-
-# OpenTelemetry: turn on each agent's own exporter for the sessions thurbox
-# spawns — the spec's OTEL_EXPORTER_OTLP_* variables, OTEL_RESOURCE_ATTRIBUTES
-# naming the thurbox session, and each agent's telemetry_env / telemetry_args
-# from agents.toml. A session on a remote host exports to that host's
-# otel_endpoint in hosts.toml instead; read at every spawn and restart.
-# `automation tick` also exports thurbox's own thurbox.* session metrics and
-# one log record per session event, over plain HTTP (point an https backend's
-# endpoint at a local Collector). export_diagnostic_logs also sends the
-# interface's own WARN-and-above logs, which can name paths, sessions and hosts.
+# OpenTelemetry for the interface itself: export_diagnostic_logs bridges its
+# own WARN-and-above logs, which can name paths, sessions and hosts, to an OTLP
+# collector over plain HTTP (point an https backend's endpoint at a local
+# Collector). Restart-only. The agents' own telemetry is Fleet's to configure.
 # [telemetry]
 # enabled = false
 # endpoint = "http://localhost:4318"
 # protocol = "http/protobuf"
 # headers = {}                  # e.g. { authorization = "Bearer ..." }
-# configure_agents = true
-# export_thurbox_metrics = true
-# export_session_events = true
-# export_diagnostic_logs = false  # the interface's own WARN+ logs; restart-only
-# per_session = false           # thurbox.session.id on thurbox's own metrics
+# export_diagnostic_logs = false
 
 # Fleet, the session engine. Every session is a Fleet Task: the interface
 # follows them with `fleet watch`, creates, sends to and deletes them with
 # `fleet apply`, `send` and `delete`, and starts `fleet up` whenever no
-# manager holds the lease. Fleet reads its own config. Restart-only.
+# manager holds the lease. Restart-only.
+#
+# Fleet reads its own config, as `fleet` does anywhere: the file named by
+# FLEET_CONFIG, else its per-user file (~/.config/fleet/config.toml). The
+# hosts sessions run on, the harnesses (agents) they run and the runtimes
+# that keep their terminals are all set there. `thurbox-cli doctor` and
+# `thurbox-cli config show` name the config in force.
 # [fleet]
 # program = "fleet"             # a name on PATH or a path
-
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
 # ──────────────────────────────────────────────────────────────────────────
@@ -167,8 +149,6 @@ config_version = 1
 #
 # Minimal / focused TUI — turn off panels you don't use (frees key chords too):
 # [features]
-# tasks = false
-# automations = false
 # file_viewer = false
 # global_search = false
 #
@@ -200,19 +180,46 @@ pub fn settings_config_path() -> Option<PathBuf> {
 /// defaults; warnings are returned for the TUI status bar and logged by
 /// headless callers.
 pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
-    super::file::load_or_seed("settings.toml", SEED_SETTINGS_TOML, "using defaults")
+    let (settings, warnings) =
+        super::file::load_or_seed("settings.toml", SEED_SETTINGS_TOML, "using defaults");
+    let warnings = warnings
+        .into_iter()
+        .filter(|warning| !reported_key(warning).is_some_and(|key| IGNORED_KEYS.contains(&key)))
+        .map(name_retired)
+        .collect();
+    (settings, warnings)
 }
 
-/// The settings as the file holds them right now, for a caller that re-reads
-/// them on every use rather than once at startup (the mirror's
-/// `[remote] transitive_sessions`). Never seeds the file and never warns: an
-/// absent, unreadable or malformed file is the defaults, and the startup load
-/// is where a bad file gets reported.
-pub fn load_quiet() -> Settings {
-    settings_config_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|contents| toml::from_str(&contents).ok())
-        .unwrap_or_default()
+/// The unknown keys of `contents` that are not retired ones: what makes the
+/// file invalid for `thurbox-cli config validate`.
+pub fn unknown_keys(contents: &str) -> Result<Vec<String>, String> {
+    super::file::parse_toml_reporting_unknown::<Settings>(contents, "settings.toml")
+        .map(|(_, warnings)| {
+            warnings
+                .into_iter()
+                .filter(|warning| {
+                    reported_key(warning).is_none_or(|key| {
+                        retired_key(key).is_none() && !IGNORED_KEYS.contains(&key)
+                    })
+                })
+                .collect()
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// The key an unknown-field warning names (between its backticks).
+fn reported_key(warning: &str) -> Option<&str> {
+    let (_, rest) = warning.split_once("unknown field `")?;
+    rest.split_once('`').map(|(key, _)| key)
+}
+
+/// An unknown-field warning about a retired key, reworded to say why the key
+/// is no longer read; any other warning as it is.
+fn name_retired(warning: String) -> String {
+    match reported_key(&warning).and_then(retired_key) {
+        Some((key, why)) => format!("settings.toml: `{key}` is no longer read: {why} (ignored)"),
+        None => warning,
+    }
 }
 
 /// Set a boolean key on a `toml_edit` table.
@@ -256,11 +263,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
 
     // Top-level scalars (cast to i64 — TOML's only integer type).
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
-    if let Some(multiplexer) = &settings.multiplexer {
-        doc["multiplexer"] = value(multiplexer.as_str());
-    } else {
-        doc.remove("multiplexer");
-    }
     doc["scrollback_lines"] = value(settings.scrollback_lines as i64);
     doc["hidden_terminal_secs"] = value(settings.hidden_terminal_secs as i64);
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));
@@ -272,7 +274,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     }
     if let Some(features) = doc["features"].as_table_mut() {
         let f = &settings.features;
-        set_table_bool(features, "tasks", f.tasks);
         set_table_bool(features, "automations", f.automations);
         set_table_bool(features, "file_viewer", f.file_viewer);
         set_table_bool(features, "global_search", f.global_search);
@@ -282,7 +283,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         set_table_bool(features, "perf_hud", f.perf_hud);
         set_table_bool(features, "mouse", f.mouse);
         set_table_bool(features, "notifications", f.notifications);
-        set_table_bool(features, "soft_delete", f.soft_delete);
         set_table_bool(features, "version_check", f.version_check);
         set_table_bool(features, "auto_update", f.auto_update);
     }
@@ -337,7 +337,6 @@ mod tests {
             "three_panel_min_cols",
             "git_poll_secs",
             "[features]",
-            "tasks",
             "automations",
             "file_viewer",
             "global_search",
@@ -353,10 +352,11 @@ mod tests {
             "min_interval_secs",
             "backend",
             "on_automation_failure",
-            "[remote]",
-            "transitive_sessions",
+            "[telemetry]",
+            "export_diagnostic_logs",
             "[fleet]",
             "program",
+            "FLEET_CONFIG",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
@@ -436,7 +436,7 @@ mod tests {
         let (mut s, _) = load_or_seed_with_warnings();
         s.scrollback_lines = 4000;
         s.git_poll_secs = 7;
-        s.features.tasks = false;
+        s.features.file_viewer = false;
         s.features.version_check = true;
         s.features.auto_update = true;
         s.notifications.min_interval_secs = 30;
@@ -533,7 +533,7 @@ mod tests {
         let (s, warnings) = load_or_seed_with_warnings();
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert!(!s.features.automations);
-        assert!(s.features.tasks, "untouched flags stay enabled");
+        assert!(s.features.file_viewer, "untouched flags stay enabled");
     }
 
     #[test]
@@ -550,23 +550,45 @@ mod tests {
         assert_eq!(names, vec!["settings.toml".to_string()]);
     }
 
+    /// A v2 `settings.toml` keeps loading: each key 3.0 no longer reads is
+    /// named as such on startup, and `config validate` passes the file.
     #[test]
-    fn load_quiet_reads_the_file_without_seeding_it() {
+    fn a_retired_key_loads_with_a_warning_naming_it_and_validates() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::config::file::isolate(temp.path());
         let path = settings_config_path().unwrap();
-
-        assert!(!load_quiet().remote.transitive_sessions, "absent = default");
-        assert!(!path.exists(), "and nothing was seeded");
-
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "[remote]\ntransitive_sessions = true\n").unwrap();
-        assert!(load_quiet().remote.transitive_sessions);
+        let v2 = "multiplexer = \"tmux\"\nscrollback_lines = 7\n\
+                  [features]\ntasks = false\nsoft_delete = true\n\
+                  [remote]\ntransitive_sessions = true\n\
+                  [telemetry]\nper_session = true\nconfigure_agents = false\n";
+        std::fs::write(&path, v2).unwrap();
 
-        std::fs::write(&path, "[remote\n").unwrap();
+        let (settings, warnings) = load_or_seed_with_warnings();
+        assert_eq!(settings.scrollback_lines, 7, "the rest of the file applies");
+        for key in [
+            "multiplexer",
+            "features.soft_delete",
+            "remote",
+            "telemetry.per_session",
+            "telemetry.configure_agents",
+        ] {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains(&format!("`{key}` is no longer read"))),
+                "{key} not named: {warnings:?}"
+            );
+        }
         assert!(
-            !load_quiet().remote.transitive_sessions,
-            "malformed = default"
+            !warnings.iter().any(|w| w.contains("tasks")),
+            "a key ignored since 2.0 stays quiet: {warnings:?}"
+        );
+        assert_eq!(unknown_keys(v2), Ok(vec![]), "and the file validates");
+        assert_eq!(
+            unknown_keys("stale = 1\n").unwrap().len(),
+            1,
+            "an unknown key still fails"
         );
     }
 }

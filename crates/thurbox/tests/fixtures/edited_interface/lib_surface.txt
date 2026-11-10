@@ -36,12 +36,10 @@ pathpicker.entries function
 pathpicker.split_typed function
 pathpicker.start function
 pathpicker.suggestion function
-repo_picker.chosen function
 repo_picker.current function
 repo_picker.index_of function
 repo_picker.newest function
 repo_picker.rows function
-repo_picker.with_worktrees function
 scroll.window_variable function
 session_model.build function
 session_model.pending function

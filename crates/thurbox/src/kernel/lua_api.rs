@@ -23,9 +23,15 @@
 /// API 2 makes `files.read` asynchronous: `nil` means pending.
 /// API 3 removes `thurbox.metrics.sessions[id].usage`: account quotas belong
 /// to a plugin that fetches them through `run`, such as `thurbox-info-panel`.
+/// API 4 is thurbox 3.0's, on Fleet (ADR-41). It removes what no engine
+/// serves any more: `thurbox.deleted`, `thurbox.tasks`, `thurbox.preflight`,
+/// `thurbox.branches`, `thurbox.worktrees`, the `tasks` and `soft_delete`
+/// feature flags and `settings.three_panel_min_cols`, and the commands
+/// `restore`, `restart`, `fork`, `sync`, `reorder`, `task`, `dispatch` and
+/// `automation`.
 /// Additions never bump it: a plugin reads a newer field defensively, as it
 /// reads any optional one.
-pub const API: u32 = 3;
+pub const API: u32 = 4;
 
 /// The prefix of the session meta keys published as `session.meta`.
 ///
@@ -298,23 +304,6 @@ pub static SESSION: Class = Class {
     ],
 };
 
-pub static DELETED_SESSION: Class = Class {
-    name: "thurbox.DeletedSession",
-    doc: &[],
-    exact: true,
-    fields: &[
-        leaf("id", "string"),
-        leaf("name", "string"),
-        leaf("agent", "string"),
-        leaf("deleted_at", "integer").doc("Epoch millis, against `thurbox.taken_at_ms`."),
-        leaf("worktrees", "integer"),
-        leaf("partial", "boolean").doc("Restoring recovers committed work only."),
-        leaf("restore_refusal", "string")
-            .opt()
-            .doc("Set when the restore would refuse, and why."),
-    ],
-};
-
 pub static REPO: Class = Class {
     name: "thurbox.Repo",
     doc: &[],
@@ -355,48 +344,6 @@ pub static HOST: Class = Class {
             "Installed there and native to its platform. While `probing`, only its platform default and `multiplexer`.",
         ),
         leaf("probing", "boolean").doc("The host has not yet said which multiplexers it has."),
-    ],
-};
-
-pub static MUX: Class = Class {
-    name: "thurbox.Mux",
-    doc: &["The local multiplexer every session's window is created in."],
-    exact: true,
-    fields: &[
-        leaf("binary", "string").doc(
-            "What a create here runs when nothing names one: the configured multiplexer, else the platform default when installed, else the one that is.",
-        ),
-        leaf("configured", "string").opt(),
-        leaf("available", "string[]"),
-        leaf("presence", "thurbox.Presence"),
-        leaf("advice", "string").doc("What to do about it; empty when there is nothing to do."),
-    ],
-};
-
-pub static PREFLIGHT: Class = Class {
-    name: "thurbox.Preflight",
-    doc: &[
-        "Whether the binaries a session needs are installed, as the kernel last",
-        "looked. Probed on the kernel's schedule behind a TTL — reading it is a table",
-        "lookup, never a `which`.",
-    ],
-    exact: true,
-    fields: &[field("mux", Ty::Record(&MUX))],
-};
-
-pub static TASK: Class = Class {
-    name: "thurbox.Task",
-    doc: &[],
-    exact: true,
-    fields: &[
-        leaf("id", "integer"),
-        leaf("title", "string"),
-        leaf("description", "string").opt(),
-        leaf("status", "string"),
-        leaf("source", "string"),
-        leaf("url", "string").opt(),
-        leaf("created_at", "integer").doc("Epoch seconds."),
-        leaf("updated_at", "integer"),
     ],
 };
 
@@ -588,7 +535,6 @@ pub static FEATURES: Class = Class {
     doc: &[],
     exact: true,
     fields: &[
-        leaf("tasks", "boolean"),
         leaf("automations", "boolean"),
         leaf("file_viewer", "boolean"),
         leaf("global_search", "boolean"),
@@ -598,7 +544,6 @@ pub static FEATURES: Class = Class {
         leaf("perf_hud", "boolean"),
         leaf("mouse", "boolean"),
         leaf("notifications", "boolean"),
-        leaf("soft_delete", "boolean"),
         leaf("version_check", "boolean"),
         leaf("auto_update", "boolean"),
     ],
@@ -614,7 +559,6 @@ pub static SETTINGS: Class = Class {
     fields: &[
         field("features", Ty::Record(&FEATURES)),
         leaf("two_panel_min_cols", "integer"),
-        leaf("three_panel_min_cols", "integer"),
         leaf("scrollback_lines", "integer"),
     ],
 };
@@ -662,39 +606,6 @@ pub static BROWSE: Class = Class {
         leaf("loading", "boolean"),
         leaf("error", "string").opt(),
         field("entries", Ty::List(&BROWSE_ENTRY)),
-    ],
-};
-
-pub static BRANCHES: Class = Class {
-    name: "thurbox.Branches",
-    doc: &["Base branches, served only while `store.want_branches` asks."],
-    exact: true,
-    fields: &[
-        leaf("host", "string"),
-        leaf("repo", "string"),
-        leaf("loading", "boolean"),
-        leaf("error", "string").opt(),
-        leaf("list", "string[]"),
-    ],
-};
-
-pub static WORKTREE_ENTRY: Class = Class {
-    name: "thurbox.WorktreeEntry",
-    doc: &[],
-    exact: true,
-    fields: &[leaf("path", "string"), leaf("branch", "string")],
-};
-
-pub static WORKTREES: Class = Class {
-    name: "thurbox.Worktrees",
-    doc: &["The worktrees a repo already has, served while `store.want_worktrees` asks."],
-    exact: true,
-    fields: &[
-        leaf("host", "string"),
-        leaf("repo", "string"),
-        leaf("loading", "boolean"),
-        leaf("error", "string").opt(),
-        field("list", Ty::List(&WORKTREE_ENTRY)),
     ],
 };
 
@@ -926,18 +837,13 @@ pub static API_ROOT: Class = Class {
             "The plugin API contract number. It moves only when a field is removed or changes meaning; declare `requires_api` to need a newer one.",
         ),
         field("sessions", Ty::List(&SESSION)),
-        field("deleted", Ty::List(&DELETED_SESSION)),
         field("repos", Ty::List(&REPO)),
         field("agents", Ty::List(&AGENT)),
         leaf("agent_default", "string").doc("What a bare launch would use."),
         field("settings", Ty::Record(&SETTINGS)),
         field("bookmarks", Ty::Record(&BOOKMARKS)),
         field("browse", Ty::Record(&BROWSE)),
-        field("branches", Ty::Record(&BRANCHES)),
-        field("worktrees", Ty::Record(&WORKTREES)),
         field("hosts", Ty::List(&HOST)),
-        field("preflight", Ty::Record(&PREFLIGHT)),
-        field("tasks", Ty::List(&TASK)),
         field("automations", Ty::List(&AUTOMATION)),
         field("commands", Ty::List(&IN_FLIGHT)),
         field("diffs", Ty::Map(&DIFF)),
@@ -978,14 +884,10 @@ pub static ITEMS: &[Item] = &[
     Item::Alias(&STATUS),
     Item::Class(&GIT_STATS),
     Item::Class(&SESSION),
-    Item::Class(&DELETED_SESSION),
     Item::Class(&REPO),
     Item::Alias(&PRESENCE),
     Item::Class(&AGENT),
     Item::Class(&HOST),
-    Item::Class(&MUX),
-    Item::Class(&PREFLIGHT),
-    Item::Class(&TASK),
     Item::Class(&AUTOMATION_RUN),
     Item::Class(&AUTOMATION),
     Item::Class(&IN_FLIGHT),
@@ -1001,9 +903,6 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&BOOKMARKS),
     Item::Class(&BROWSE_ENTRY),
     Item::Class(&BROWSE),
-    Item::Class(&BRANCHES),
-    Item::Class(&WORKTREE_ENTRY),
-    Item::Class(&WORKTREES),
     Item::Class(&SYSTEM_METRICS),
     Item::Class(&AGENT_METRICS),
     Item::Class(&SESSION_METRICS),

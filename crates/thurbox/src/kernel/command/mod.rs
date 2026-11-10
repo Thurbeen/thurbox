@@ -51,23 +51,8 @@ pub enum Command {
     },
     /// Soft-delete unless `force`; the interface chooses from the deletion preference.
     Delete { session: String, force: bool },
-    Restore {
-        session: String,
-        /// A force-deleted session lost its worktree, so restoring recovers
-        /// committed work only. Refused unless the caller says it knows.
-        best_effort: bool,
-    },
-    // Kill and relaunch; with `if_missing`, relaunch only when the window is gone,
-    // with `fresh` on a new conversation (refused mid-turn).
-    Restart {
-        session: String,
-        if_missing: bool,
-        fresh: bool,
-    },
     /// Paste text into a running session's agent.
     Send { session: String, text: String },
-    /// Move a session up (-1) or down (+1) in the manual order.
-    Reorder { session: String, delta: i64 },
     /// Persist an explicit manual order, densely renumbered.
     ///
     /// The permutation is computed by the pane that *renders* the list, because
@@ -80,32 +65,14 @@ pub enum Command {
     Order { list: Vec<String> },
     /// Bring a new session into existence.
     ///
-    /// The slowest thing thurbox does — a fetch, a worktree checkout, possibly
-    /// an ssh connect and a process launch — which is exactly why it is a
-    /// command and why its phases are published.
+    /// A Fleet Task (ADR-41): the name, the repository its workspace is made
+    /// from, the harness and the Fleet host. Fleet makes the workspace and
+    /// starts the agent, so the command returns once the Task is applied.
     Create {
         name: String,
         repo: String,
-        branch: Option<String>,
-        base: Option<String>,
-        /// A worktree that already exists, to **open** instead of creating one.
-        ///
-        /// Set together with `branch` (the branch checked out there) and
-        /// without `base`: there is nothing to branch off. The path is git's
-        /// own, so a checkout anywhere — `.worktrees/`, a sibling directory —
-        /// is openable, not just one at thurbox's derived location.
-        worktree_path: Option<String>,
         agent: Option<String>,
         host: Option<String>,
-        multiplexer: Option<String>,
-        /// Further repositories this session spans, each either taking its own
-        /// worktree on `branch` or attached as it is.
-        ///
-        /// One command carries every member rather than the flow issuing one
-        /// per repository: the pipeline builds them together and rolls the
-        /// whole thing back on failure, and a session half-created by three
-        /// commands has no owner.
-        extras: Vec<ExtraMember>,
     },
     /// Remember, forget, or import a folder of repositories.
     ///
@@ -122,42 +89,12 @@ pub enum Command {
         path: String,
         edit: BookmarkEdit,
     },
-    /// Fork a session, recording it as the new session's parent.
-    Fork { session: String, name: String },
-    /// Bring a session's worktree up to date with the branch it came from.
-    Sync { session: String },
     /// Give a session a new name, and its windows with it.
     ///
     /// The name is judged on the worker, not at parse time: whether it collides
     /// is a database read, and one place judging all of it keeps a refusal in
     /// the same words the CLI uses. It arrives as `command.failed`.
     Rename { session: String, name: String },
-    /// Create a task, or change one that exists.
-    Task {
-        /// `None` creates; `Some` edits.
-        id: Option<i64>,
-        title: Option<String>,
-        status: Option<String>,
-        delete: bool,
-    },
-    /// Hand a task to an agent — an existing session, or a new one.
-    DispatchTask {
-        task: i64,
-        /// `None` creates a session for it.
-        session: Option<String>,
-    },
-    /// Enable, disable, run or delete an automation.
-    Automation {
-        id: i64,
-        enabled: Option<bool>,
-        run_now: bool,
-        delete: bool,
-    },
-    /// Create an automation (`id` is `None`) or edit one.
-    AutomationSave {
-        id: Option<i64>,
-        draft: AutomationDraft,
-    },
     /// Copy a surface's terminal contents to the clipboard.
     ///
     /// `session` is a SURFACE name: a bare id is the agent's pane and
@@ -347,41 +284,6 @@ pub enum Command {
     },
 }
 
-/// The fields an `automation` create or edit carries, each as the plugin
-/// passed it. The interface does not edit automations: they are
-/// `thurbox-cli automation`'s (`config::automations`), so the command is
-/// parsed and then refused by name.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AutomationDraft {
-    pub owner_session: Option<String>,
-    pub name: Option<String>,
-    pub trigger: Option<String>,
-    pub time: Option<String>,
-    pub weekday: Option<i64>,
-    pub timezone: Option<String>,
-    pub prompt: Option<String>,
-    pub enabled: Option<bool>,
-    pub session: Option<String>,
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub base: Option<String>,
-    pub agent: Option<String>,
-    pub command: Option<String>,
-    pub timeout_secs: Option<u64>,
-    pub cwd: Option<String>,
-    pub env: Option<Vec<(String, String)>>,
-}
-
-/// A further repository a new session spans.
-///
-/// A plugin names a path and whether it takes a worktree. The Fleet engine
-/// refuses a create that asks for one: Fleet makes a Task's workspace.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExtraMember {
-    pub path: String,
-    pub worktree: bool,
-}
-
 /// What to do to a remembered repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BookmarkEdit {
@@ -419,13 +321,8 @@ impl Command {
         match self {
             Command::Guarded { inner, .. } => inner.kind(),
             Command::Delete { .. } => "delete",
-            Command::Restore { .. } => "restore",
-            Command::Restart { .. } => "restart",
             Command::Send { .. } => "send",
-            Command::Reorder { .. } => "reorder",
             Command::Create { .. } => "create",
-            Command::Fork { .. } => "fork",
-            Command::Sync { .. } => "sync",
             Command::Rename { .. } => "rename",
             Command::Copy { .. } => "copy",
             Command::Diff { .. } => "diff",
@@ -434,9 +331,6 @@ impl Command {
             Command::Editor { .. } => "editor",
             Command::Focus { .. } => "focus",
             Command::OpenLink { .. } => "open",
-            Command::Task { .. } => "task",
-            Command::DispatchTask { .. } => "dispatch",
-            Command::Automation { .. } | Command::AutomationSave { .. } => "automation",
             Command::Theme { .. } => "theme",
             Command::Plugin { .. } => "plugin",
             Command::Bookmark { .. } => "bookmark",
@@ -454,12 +348,7 @@ impl Command {
         match self {
             Command::Guarded { session, .. } => session,
             Command::Delete { session, .. }
-            | Command::Restore { session, .. }
-            | Command::Restart { session, .. }
             | Command::Send { session, .. }
-            | Command::Reorder { session, .. }
-            | Command::Fork { session, .. }
-            | Command::Sync { session }
             | Command::Rename { session, .. }
             | Command::Copy { session }
             | Command::Diff { session }
@@ -469,9 +358,6 @@ impl Command {
             Command::ActionTarget { .. } => "",
             // Names no session yet — that is the point of creating one.
             Command::Create { .. } => "",
-            // A dispatch may name one, when it is sending rather than creating.
-            Command::DispatchTask { session, .. } => session.as_deref().unwrap_or(""),
-            Command::Task { .. } | Command::Automation { .. } | Command::AutomationSave { .. } => "",
             // Global, not per-session.
             Command::Theme { .. }
             | Command::Plugin { .. }
@@ -530,40 +416,24 @@ impl Command {
     /// written down here rather than a default nobody made.
     ///
     /// `sessions` covers what drives an agent or loses something for good:
-    /// `send`, `create`, `fork`, `restart`, a dispatched task, an automation run
-    /// or written with a prompt the heartbeat types, a force `delete`, and
-    /// restoring or removing a file of the interface. `run` covers what reaches
-    /// the outside world as the user: an exec automation's command line, and a
-    /// URL opened without anyone clicking it. `program` covers a plugin's own
+    /// `send`, `create`, `delete`, and restoring or removing a file of
+    /// the interface. `run` covers what reaches the outside world as the user:
+    /// a URL opened without anyone clicking it. `program` covers a plugin's own
     /// program pane.
     pub fn requires(&self) -> Option<super::host::Capability> {
         use super::host::Capability;
         match self {
             Command::Guarded { inner, .. } => inner.requires(),
-            Command::AutomationSave { draft, .. } if draft.command.is_some() => {
-                Some(Capability::Run)
-            }
             Command::OpenLink { .. } => Some(Capability::Run),
             Command::Program { .. } => Some(Capability::Program),
             Command::Send { .. }
             | Command::Create { .. }
-            | Command::Fork { .. }
-            | Command::Restart { .. }
-            | Command::DispatchTask { .. }
-            | Command::Automation { .. }
-            | Command::AutomationSave { .. }
             | Command::Plugin { .. }
-            | Command::Delete { force: true, .. } => Some(Capability::Sessions),
-            // Undone from the restore list, or by deleting again.
-            Command::Delete { force: false, .. } | Command::Restore { .. } => None,
-            // Arrange, name or bring up to date what already exists; nothing is
-            // typed into an agent and nothing is lost.
-            Command::Reorder { .. }
-            | Command::Order { .. }
-            | Command::Rename { .. }
-            | Command::Sync { .. }
-            | Command::Task { .. }
-            | Command::Bookmark { .. } => None,
+            // Fleet has no undo window, so every delete is for good.
+            | Command::Delete { .. } => Some(Capability::Sessions),
+            // Arrange or name what already exists; nothing is typed into an
+            // agent and nothing is lost.
+            Command::Order { .. } | Command::Rename { .. } | Command::Bookmark { .. } => None,
             // The interface's own state, or something the user then drives
             // themselves: a pane focused, a shell or editor opened beside a
             // session, a theme, a setting, a message, a screen copied.
@@ -633,13 +503,8 @@ impl Command {
             owner
         };
         let doing = match self.kind() {
-            "automation" if need == super::host::Capability::Run => "write an automation's command",
-            "automation" => "run or change an automation",
             "send" => "type into a session",
             "create" => "create a session",
-            "fork" => "fork a session",
-            "restart" => "restart a session",
-            "dispatch" => "dispatch a task to an agent",
             "plugin" => "change a file of the interface",
             "open" => "open a link",
             "program" => "run a program in a pane",
@@ -669,15 +534,6 @@ impl Command {
                 .map(|name| name.to_string_lossy().to_string())
                 .or_else(|| Some(repo.clone())),
             Command::Bookmark { path, .. } => Some(path.clone()),
-            // `#<id>`, or a create's name: what a pane managing automations
-            // matches a `command.failed` against to show the error by the row
-            // or form it came from.
-            Command::Automation { id, .. } | Command::AutomationSave { id: Some(id), .. } => {
-                Some(format!("#{id}"))
-            }
-            Command::AutomationSave {
-                id: None, draft, ..
-            } => draft.name.clone(),
             _ => None,
         }
     }
@@ -722,9 +578,6 @@ impl Command {
             "plugin" => Self::parse_plugin(args),
             "set" => Self::parse_setting(args),
             // Tasks and automations name a numeric id, not a session.
-            "task" => Self::parse_task(args),
-            "dispatch" => Self::parse_dispatch(args),
-            "automation" => Self::parse_automation(args),
             // Creation names a repository, not a session.
             "create" => Self::parse_create(args),
             "bookmark" => Self::parse_bookmark(args),
@@ -862,67 +715,6 @@ impl Command {
         Ok(Command::Setting { key, value })
     }
 
-    fn parse_task(args: Args) -> Result<Self, String> {
-        let id = args.number.map(|n| n as i64);
-        if id.is_none() && args.text.is_none() {
-            return Err(
-                "command \"task\" needs a title to create, or a number to change".to_string(),
-            );
-        }
-        Ok(Command::Task {
-            id,
-            title: args.text,
-            status: args.status,
-            delete: args.reset,
-        })
-    }
-
-    fn parse_dispatch(args: Args) -> Result<Self, String> {
-        let Some(task) = args.number.map(|n| n as i64) else {
-            return Err("command \"dispatch\" needs a task number".to_string());
-        };
-        Ok(Command::DispatchTask {
-            task,
-            session: Some(args.session).filter(|s| !s.is_empty()),
-        })
-    }
-
-    fn parse_automation(args: Args) -> Result<Self, String> {
-        let id = args.number.map(|n| n as i64);
-        match args.action.as_deref() {
-            None | Some("") => {}
-            Some("create") => {
-                return Ok(Command::AutomationSave {
-                    id: None,
-                    draft: automation_draft(&args),
-                })
-            }
-            Some("edit") => {
-                let Some(id) = id else {
-                    return Err("command \"automation\" needs an id".to_string());
-                };
-                return Ok(Command::AutomationSave {
-                    id: Some(id),
-                    draft: automation_draft(&args),
-                });
-            }
-            Some(other) => {
-                return Err(format!(
-                    "command \"automation\" has no action \"{other}\" (create or edit)"
-                ))
-            }
-        }
-        let Some(id) = id else {
-            return Err("command \"automation\" needs an id".to_string());
-        };
-        Ok(Command::Automation {
-            id,
-            enabled: args.flag,
-            run_now: args.force,
-            delete: args.reset,
-        })
-    }
-
     fn parse_create(args: Args) -> Result<Self, String> {
         let Some(repo) = args.repo.filter(|r| !r.is_empty()) else {
             return Err("command \"create\" needs a repo".to_string());
@@ -930,13 +722,8 @@ impl Command {
         Ok(Command::Create {
             name: args.text.unwrap_or_default(),
             repo,
-            branch: args.branch.filter(|b| !b.is_empty()),
-            base: args.base.filter(|b| !b.is_empty()),
-            worktree_path: args.worktree_path.filter(|p| !p.is_empty()),
             agent: args.agent.filter(|a| !a.is_empty()),
             host: args.host.filter(|h| !h.is_empty()),
-            multiplexer: args.multiplexer.filter(|m| !m.is_empty()),
-            extras: args.extras,
         })
     }
 
@@ -1016,9 +803,7 @@ impl Command {
         let Args {
             session,
             text,
-            delta,
             force,
-            fresh,
             ..
         } = args;
         if session.is_empty() {
@@ -1026,28 +811,11 @@ impl Command {
         }
         match kind {
             "delete" => Ok(Command::Delete { session, force }),
-            "restore" => Ok(Command::Restore {
-                session,
-                best_effort: force,
-            }),
-            "restart" => Ok(Command::Restart {
-                session,
-                if_missing: false,
-                fresh,
-            }),
             "send" => match text {
                 Some(text) => Ok(Command::Send { session, text }),
                 None => Err("command \"send\" needs text".to_string()),
             },
-            "reorder" => match delta {
-                Some(delta) if delta != 0 => Ok(Command::Reorder { session, delta }),
-                _ => Err("command \"reorder\" needs a non-zero delta".to_string()),
-            },
-            "fork" => Ok(Command::Fork {
-                session,
-                name: text.unwrap_or_default(),
-            }),
-            "sync" => Ok(Command::Sync { session }),
+
             // An empty name is still a rename: the worker refuses it with the
             // reason the CLI gives, which a parse error here could not match.
             "rename" => Ok(Command::Rename {
@@ -1059,52 +827,10 @@ impl Command {
             "shell" => Ok(Command::Shell { session }),
             "editor" => Ok(Command::Editor { session }),
             other => Err(format!(
-                "unknown command {other:?} — try create, fork, rename, sync, copy, diff, \
-                 delete, restore, restart, send, reorder, theme, set, emit, \
-                 action or message"
+                "unknown command {other:?} — try create, rename, copy, diff, delete, \
+                 send, order, theme, set, emit, action or message"
             )),
         }
-    }
-}
-
-/// An automation draft out of a command's options.
-///
-/// The fields the shared [`Args`] already reads keep their meaning (`session`,
-/// `repo`, `branch`, `base`, `agent`, `flag`); the rest are read by name from the
-/// payload, where every scalar the plugin passed is kept.
-fn automation_draft(args: &Args) -> AutomationDraft {
-    use super::events::Field;
-    let field = |key: &str| {
-        args.payload
-            .iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, v)| v)
-    };
-    let text = |key: &str| match field(key) {
-        Some(Field::Text(value)) => Some(value.clone()),
-        _ => None,
-    };
-    let filled = |value: &Option<String>| value.clone().filter(|v| !v.is_empty());
-    AutomationDraft {
-        name: text("name"),
-        trigger: text("trigger"),
-        time: text("time"),
-        weekday: match field("weekday") {
-            Some(Field::Number(n)) if n.fract() == 0.0 => Some(*n as i64),
-            Some(Field::Text(text)) => Some(text.trim().parse().unwrap_or(-1)),
-            Some(_) => Some(-1),
-            None => None,
-        },
-        timezone: text("timezone"),
-        prompt: text("prompt"),
-        enabled: args.flag,
-        session: (!args.session.is_empty()).then(|| args.session.clone()),
-        repo: filled(&args.repo),
-        branch: filled(&args.branch),
-        base: filled(&args.base),
-        agent: filled(&args.agent),
-        command: text("command"),
-        ..AutomationDraft::default()
     }
 }
 
@@ -1119,33 +845,21 @@ pub struct Args {
     pub target: Option<String>,
     pub text: Option<String>,
     pub value: Option<String>,
-    pub delta: Option<i64>,
     pub force: bool,
-    /// `restart`: on a new conversation.
-    pub fresh: bool,
     pub flag: Option<bool>,
     /// `focus`: return to the previous pane when the named one already has focus.
     pub toggle: bool,
     pub number: Option<f64>,
     pub reset: bool,
     pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub base: Option<String>,
-    /// An existing worktree's path, for a create that opens rather than makes one.
-    pub worktree_path: Option<String>,
     pub agent: Option<String>,
     pub host: Option<String>,
-    pub multiplexer: Option<String>,
-    /// A task status name, for the task command.
-    pub status: Option<String>,
     /// An ordered list of session ids, for the order command.
     pub list: Vec<String>,
     /// A path within the interface directory, for the plugin command.
     pub file: Option<String>,
     /// A verb: the plugin and bookmark commands each take one.
     pub action: Option<String>,
-    /// Further repositories a create spans, in the order they were chosen.
-    pub extras: Vec<ExtraMember>,
     /// The plugin that issued this command, by path.
     ///
     /// **Stamped by the kernel**, never read from the options table — a plugin
@@ -1205,48 +919,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_create_can_name_a_worktree_to_open() {
-        let args = Args {
-            repo: Some("/srv/repo".into()),
-            branch: Some("feat/tooltips".into()),
-            worktree_path: Some("/srv/repo/.worktrees/tooltips".into()),
-            ..Default::default()
-        };
-        let Command::Create {
-            worktree_path,
-            branch,
-            base,
-            name,
-            ..
-        } = Command::parse("create", args).expect("parse")
-        else {
-            panic!("expected a create");
-        };
-        assert_eq!(
-            worktree_path.as_deref(),
-            Some("/srv/repo/.worktrees/tooltips")
-        );
-        assert_eq!(branch.as_deref(), Some("feat/tooltips"));
-        // Opening one needs no base: nothing is branched off anything.
-        assert_eq!(base, None);
-        assert_eq!(name, "");
-    }
-
-    #[test]
-    fn an_empty_worktree_path_is_no_worktree_at_all() {
-        let args = Args {
-            repo: Some("/srv/repo".into()),
-            worktree_path: Some(String::new()),
-            ..Default::default()
-        };
-        let Command::Create { worktree_path, .. } = Command::parse("create", args).expect("parse")
-        else {
-            panic!("expected a create");
-        };
-        assert_eq!(worktree_path, None);
-    }
-
     use super::*;
 
     #[test]
@@ -1276,20 +948,6 @@ mod tests {
             Ok(Command::Send {
                 session: "s1".into(),
                 text: "hi".into()
-            })
-        );
-        assert_eq!(
-            Command::parse(
-                "reorder",
-                Args {
-                    session: "s1".into(),
-                    delta: Some(-1),
-                    ..Args::default()
-                }
-            ),
-            Ok(Command::Reorder {
-                session: "s1".into(),
-                delta: -1
             })
         );
         // No name at all still parses: the worker's refusal carries the reason.
@@ -1465,111 +1123,10 @@ mod tests {
                 err("command \"set\" needs a plugin.setting key"),
             ),
             (
-                "task",
-                Args {
-                    number: Some(3.0),
-                    status: text("done"),
-                    ..Args::default()
-                },
-                Ok(Command::Task {
-                    id: Some(3),
-                    title: None,
-                    status: Some("done".into()),
-                    delete: false,
-                }),
-            ),
-            (
-                "task",
-                Args {
-                    text: text("write it"),
-                    reset: true,
-                    ..Args::default()
-                },
-                Ok(Command::Task {
-                    id: None,
-                    title: Some("write it".into()),
-                    status: None,
-                    delete: true,
-                }),
-            ),
-            (
-                "task",
-                Args::default(),
-                err("command \"task\" needs a title to create, or a number to change"),
-            ),
-            (
-                "dispatch",
-                Args {
-                    number: Some(4.0),
-                    session: "s1".into(),
-                    ..Args::default()
-                },
-                Ok(Command::DispatchTask {
-                    task: 4,
-                    session: Some("s1".into()),
-                }),
-            ),
-            (
-                "dispatch",
-                Args {
-                    number: Some(4.0),
-                    ..Args::default()
-                },
-                Ok(Command::DispatchTask {
-                    task: 4,
-                    session: None,
-                }),
-            ),
-            (
-                "dispatch",
-                Args::default(),
-                err("command \"dispatch\" needs a task number"),
-            ),
-            (
-                "automation",
-                Args {
-                    number: Some(5.0),
-                    flag: Some(false),
-                    force: true,
-                    reset: true,
-                    ..Args::default()
-                },
-                Ok(Command::Automation {
-                    id: 5,
-                    enabled: Some(false),
-                    run_now: true,
-                    delete: true,
-                }),
-            ),
-            (
-                "automation",
-                Args::default(),
-                err("command \"automation\" needs an id"),
-            ),
-            (
-                "automation",
-                Args {
-                    action: text("edit"),
-                    ..Args::default()
-                },
-                err("command \"automation\" needs an id"),
-            ),
-            (
-                "automation",
-                Args {
-                    action: text("rename"),
-                    number: Some(1.0),
-                    ..Args::default()
-                },
-                err("command \"automation\" has no action \"rename\" (create or edit)"),
-            ),
-            (
                 "create",
                 Args {
                     repo: text("/srv/repo"),
                     text: text("named"),
-                    branch: text(""),
-                    base: text("main"),
                     agent: text(""),
                     host: text("box"),
                     ..Args::default()
@@ -1577,13 +1134,8 @@ mod tests {
                 Ok(Command::Create {
                     name: "named".into(),
                     repo: "/srv/repo".into(),
-                    branch: None,
-                    base: Some("main".into()),
-                    worktree_path: None,
                     agent: None,
                     host: Some("box".into()),
-                    multiplexer: None,
-                    extras: Vec::new(),
                 }),
             ),
             (
@@ -1776,53 +1328,6 @@ mod tests {
                 err("a program pane needs a name"),
             ),
             (
-                "restore",
-                Args {
-                    force: true,
-                    ..session("s1")
-                },
-                Ok(Command::Restore {
-                    session: "s1".into(),
-                    best_effort: true,
-                }),
-            ),
-            (
-                "restart",
-                session("s1"),
-                Ok(Command::Restart {
-                    session: "s1".into(),
-                    if_missing: false,
-                    fresh: false,
-                }),
-            ),
-            (
-                "restart",
-                Args {
-                    fresh: true,
-                    ..session("s1")
-                },
-                Ok(Command::Restart {
-                    session: "s1".into(),
-                    if_missing: false,
-                    fresh: true,
-                }),
-            ),
-            (
-                "fork",
-                session("s1"),
-                Ok(Command::Fork {
-                    session: "s1".into(),
-                    name: String::new(),
-                }),
-            ),
-            (
-                "sync",
-                session("s1"),
-                Ok(Command::Sync {
-                    session: "s1".into(),
-                }),
-            ),
-            (
                 "copy",
                 session("s1"),
                 Ok(Command::Copy {
@@ -1855,15 +1360,6 @@ mod tests {
                 }),
             ),
             ("send", session("s1"), err("command \"send\" needs text")),
-            (
-                "reorder",
-                Args {
-                    delta: Some(0),
-                    ..session("s1")
-                },
-                err("command \"reorder\" needs a non-zero delta"),
-            ),
-            ("sync", Args::default(), err("command \"sync\" needs a session")),
         ];
         for (kind, args, expected) in cases {
             assert_eq!(
@@ -1872,102 +1368,6 @@ mod tests {
                 "{kind} {args:?}"
             );
         }
-    }
-
-    /// Writing an exec automation's command is writing a command line the
-    /// heartbeat runs, so it needs the capability that running one needs.
-    #[test]
-    fn writing_an_automation_command_needs_run() {
-        use super::super::events::Field;
-        use super::super::host::Capability;
-        let save = |action: &str, number: Option<f64>, payload: Vec<(&str, Field)>| {
-            Command::parse(
-                "automation",
-                Args {
-                    action: Some(action.into()),
-                    number,
-                    owner: "plugins/30_x.lua".into(),
-                    payload: payload
-                        .into_iter()
-                        .map(|(k, v)| (k.to_string(), v))
-                        .collect(),
-                    ..Args::default()
-                },
-            )
-            .expect("parse")
-        };
-        let command = || ("command", Field::Text("make sync".into()));
-        let name = || ("name", Field::Text("x".into()));
-        assert_eq!(
-            save("create", None, vec![name(), command()]).requires(),
-            Some(Capability::Run)
-        );
-        assert_eq!(
-            save("edit", Some(3.0), vec![command()]).requires(),
-            Some(Capability::Run)
-        );
-        assert_eq!(
-            save("edit", Some(3.0), vec![name()]).requires(),
-            Some(Capability::Sessions),
-            "a prompt-only automation is typed into an agent by the heartbeat"
-        );
-        assert_eq!(
-            Command::parse(
-                "automation",
-                Args {
-                    number: Some(3.0),
-                    force: true,
-                    ..Args::default()
-                }
-            )
-            .expect("parse")
-            .requires(),
-            Some(Capability::Sessions),
-            "running one types its prompt or runs its command now"
-        );
-    }
-
-    /// The coordinator's decision, testable without a running interface: an
-    /// owner that may not hold what the command requires is refused with a
-    /// sentence naming it, and anything else passes.
-    #[test]
-    fn an_untrusted_exec_write_is_refused_and_a_trusted_one_passes() {
-        use super::super::events::Field;
-        use super::super::host::Capability;
-        let create = Command::parse(
-            "automation",
-            Args {
-                action: Some("create".into()),
-                owner: "plugins/30_x.lua".into(),
-                payload: vec![("command".into(), Field::Text("make sync".into()))],
-                ..Args::default()
-            },
-        )
-        .expect("parse");
-        let refused = create
-            .refusal("plugins/30_x.lua", |_, _| false)
-            .expect("refused");
-        assert!(refused.contains("plugins/30_x.lua"), "{refused}");
-        assert_eq!(
-            create.refusal("plugins/30_x.lua", |owner, need| owner
-                == "plugins/30_x.lua"
-                && need == Capability::Run),
-            None
-        );
-        let rename = Command::parse(
-            "automation",
-            Args {
-                action: Some("edit".into()),
-                number: Some(3.0),
-                payload: vec![("name".into(), Field::Text("x".into()))],
-                ..Args::default()
-            },
-        )
-        .expect("parse");
-        let refused = rename
-            .refusal("plugins/30_x.lua", |_, _| false)
-            .expect("an automation drives an agent");
-        assert!(refused.contains("\"sessions\""), "{refused}");
     }
 
     /// Every verb a plugin can issue, and what it needs. `requires` has no
@@ -1999,8 +1399,6 @@ mod tests {
                 }),
                 Some(Sessions),
             ),
-            ("fork", with(Args::default()), Some(Sessions)),
-            ("restart", with(Args::default()), Some(Sessions)),
             (
                 "delete",
                 with(Args {
@@ -2009,23 +1407,7 @@ mod tests {
                 }),
                 Some(Sessions),
             ),
-            ("delete", with(Args::default()), None),
-            (
-                "dispatch",
-                with(Args {
-                    number: Some(1.0),
-                    ..Args::default()
-                }),
-                Some(Sessions),
-            ),
-            (
-                "automation",
-                with(Args {
-                    number: Some(1.0),
-                    ..Args::default()
-                }),
-                Some(Sessions),
-            ),
+            ("delete", with(Args::default()), Some(Sessions)),
             (
                 "plugin",
                 with(Args {
@@ -2052,15 +1434,6 @@ mod tests {
                 }),
                 Some(Program),
             ),
-            ("restore", with(Args::default()), None),
-            (
-                "reorder",
-                with(Args {
-                    delta: Some(1),
-                    ..Args::default()
-                }),
-                None,
-            ),
             (
                 "order",
                 with(Args {
@@ -2073,15 +1446,6 @@ mod tests {
                 "rename",
                 with(Args {
                     text: Some("n".into()),
-                    ..Args::default()
-                }),
-                None,
-            ),
-            ("sync", with(Args::default()), None),
-            (
-                "task",
-                with(Args {
-                    text: Some("t".into()),
                     ..Args::default()
                 }),
                 None,
@@ -2300,7 +1664,7 @@ mod tests {
     }
 
     #[test]
-    fn send_needs_text_and_reorder_needs_a_delta() {
+    fn send_needs_text_and_a_removed_verb_is_refused() {
         assert!(Command::parse(
             "send",
             Args {
@@ -2309,24 +1673,26 @@ mod tests {
             }
         )
         .is_err());
-        assert!(Command::parse(
+        // A verb no engine runs any more is no command at all.
+        for gone in [
             "reorder",
-            Args {
-                session: "s1".into(),
-                ..Args::default()
-            }
-        )
-        .is_err());
-        // A zero delta would be a no-op that still renumbered every row.
-        assert!(Command::parse(
-            "reorder",
-            Args {
-                session: "s1".into(),
-                delta: Some(0),
-                ..Args::default()
-            }
-        )
-        .is_err());
+            "restore",
+            "restart",
+            "fork",
+            "sync",
+            "task",
+            "automation",
+        ] {
+            assert!(Command::parse(
+                gone,
+                Args {
+                    session: "s1".into(),
+                    number: Some(1.0),
+                    ..Args::default()
+                }
+            )
+            .is_err());
+        }
     }
 
     #[test]
@@ -2410,9 +1776,9 @@ mod tests {
         });
         bus.finish_for_test(failed, Some("bad session id".into()));
         bus.poll();
-        let running = bus.dispatch(Command::Restore {
+        let running = bus.dispatch(Command::Rename {
             session: "s1".into(),
-            best_effort: false,
+            name: "renamed".into(),
         });
 
         let found = bus.first_running().expect("the running command");
@@ -2455,22 +1821,22 @@ mod tests {
         // still drive the progress line.
         let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         assert!(bus.first_running().is_none(), "nothing dispatched yet");
-        let id = bus.dispatch(Command::Restore {
+        let id = bus.dispatch(Command::Rename {
             session: "s1".into(),
-            best_effort: false,
+            name: "renamed".into(),
         });
         let found = bus.first_running().expect("the dispatched command");
         assert_eq!(found.id, id);
-        assert_eq!(found.kind, "restore");
+        assert_eq!(found.kind, "rename");
     }
 
     #[test]
     fn a_session_with_work_in_flight_reads_as_busy() {
         let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         assert!(!bus.is_busy("s1"));
-        bus.dispatch(Command::Restore {
+        bus.dispatch(Command::Rename {
             session: "s1".into(),
-            best_effort: false,
+            name: "renamed".into(),
         });
         assert!(bus.is_busy("s1"));
         assert!(!bus.is_busy("other"));
@@ -2528,43 +1894,6 @@ mod tests {
             .find(|item| item.id == id)
             .expect("a failure stays visible");
         assert_eq!(item.error.as_deref(), Some("no such pane"));
-    }
-
-    /// A repair that relaunched nothing leaves the list like any success, and
-    /// the loop can still learn that it did nothing, once. Without that, the
-    /// interface announced "restarted" for a session a driver had just deleted.
-    #[test]
-    fn a_command_that_did_nothing_says_so_once() {
-        let mut bus = CommandBus::fleet("thurbox-test-no-fleet".into());
-        let (quiet, done) = (
-            bus.dispatch(Command::Focus {
-                plugin: "agent".into(),
-                toggle: false,
-            }),
-            bus.dispatch(Command::Focus {
-                plugin: "other".into(),
-                toggle: false,
-            }),
-        );
-        bus.finish_doing_nothing_for_test(quiet);
-        bus.finish_for_test(done, None);
-        assert!(bus.poll());
-
-        assert!(
-            !bus.inflight()
-                .iter()
-                .any(|item| item.id == quiet || item.id == done),
-            "both left the list as successes"
-        );
-        assert!(
-            bus.take_did_nothing(quiet),
-            "the one that did nothing says so"
-        );
-        assert!(!bus.take_did_nothing(quiet), "and only once");
-        assert!(
-            !bus.take_did_nothing(done),
-            "a command that did its work does not"
-        );
     }
 
     // ── a plugin's program is not a session ────────────────────────────────

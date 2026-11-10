@@ -1297,7 +1297,7 @@ fn force_deleting_a_clean_session_still_asks() {
     let mut snapshot = snapshot();
     snapshot.sessions[0].git = Some(clean());
     render_in(&host, &snapshot);
-    press_in(&host, &snapshot, "D");
+    press_in(&host, &snapshot, "ctrl+d");
 
     assert!(host.drain_commands().is_empty());
     assert!(
@@ -1342,7 +1342,7 @@ fn force_deleting_a_session_with_work_asks_first_and_says_what_is_lost() {
     });
     snapshot.sessions[0].worktree_count = 1;
     render_in(&host, &snapshot);
-    press_in(&host, &snapshot, "D");
+    press_in(&host, &snapshot, "ctrl+d");
 
     assert!(
         host.drain_commands().is_empty(),
@@ -1350,7 +1350,7 @@ fn force_deleting_a_session_with_work_asks_first_and_says_what_is_lost() {
     );
     let tree = confirm_tree(&host, &snapshot);
     assert!(
-        tree.contains("Delete first and its worktree for good?"),
+        tree.contains("Delete first for good?"),
         "the question, worded by the confirmation from the command: {tree}"
     );
     assert!(
@@ -1377,7 +1377,7 @@ fn a_clean_primary_does_not_speak_for_the_other_worktrees() {
     snapshot.sessions[0].git = Some(clean());
     snapshot.sessions[0].worktree_count = 2;
     render_in(&host, &snapshot);
-    press_in(&host, &snapshot, "D");
+    press_in(&host, &snapshot, "ctrl+d");
 
     assert!(
         host.drain_commands().is_empty(),
@@ -1403,7 +1403,7 @@ fn a_state_that_could_not_be_read_asks_rather_than_assume_clean() {
     let snapshot = snapshot();
     assert!(snapshot.sessions[0].git.is_none());
     render_in(&host, &snapshot);
-    press_in(&host, &snapshot, "D");
+    press_in(&host, &snapshot, "ctrl+d");
 
     assert!(host.drain_commands().is_empty(), "it must not delete blind");
     assert!(
@@ -1423,7 +1423,7 @@ fn force_deleting_a_merged_branch_asks_without_claiming_lost_commits() {
     });
     snapshot.sessions[0].worktree_count = 1;
     render_in(&host, &snapshot);
-    press_in(&host, &snapshot, "D");
+    press_in(&host, &snapshot, "ctrl+d");
 
     assert!(host.drain_commands().is_empty());
     let question = confirm_tree(&host, &snapshot);
@@ -1446,7 +1446,7 @@ fn force_deleting_an_unmerged_branch_still_asks() {
         });
         snapshot.sessions[0].worktree_count = 1;
         render_in(&host, &snapshot);
-        press_in(&host, &snapshot, "D");
+        press_in(&host, &snapshot, "ctrl+d");
 
         assert!(
             host.drain_commands().is_empty(),

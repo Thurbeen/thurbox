@@ -45,8 +45,8 @@ registry in force and reports the error; correcting it is picked up by the
 next poll.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
-`settings.toml` the values that apply live are the `shell_pane`, `perf_hud`
-and `soft_delete` flags, `[clipboard]` and `[remote]`; the restart-only values stay
+`settings.toml` the values that apply live are the `shell_pane` and
+`perf_hud` flags and `[clipboard]`; the restart-only values stay
 published through a write-once global (so they can't drift mid-frame),
 and the reload toast says when a restart is needed. `hosts.toml` (SSH
 backends register at startup) and `themes.toml` need a restart.
@@ -523,12 +523,11 @@ all commented so defaults still apply out of the box.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `multiplexer` | platform default | local multiplexer preference; see [Multiplexer choice](#multiplexer-choice-and-existing-sessions) |
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
 | `stream_panes` | `false` | open each local tmux session's pane through `runtime-mux view`, a [terminal stream](../runtime/README.md#the-terminal-stream), instead of thurbox's own control-mode connection; restart to apply. A stream pane keeps its grid while hidden, so `hidden_terminal_secs` does not apply. Off until it measures as fast as control mode ([performance](performance.md)) |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
-| `three_panel_min_cols` | `120` | width unlocking the optional third column |
+| `three_panel_min_cols` | `120` | accepted and ignored (v1's third column) |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
 | `[fleet] program` | `fleet` | the Fleet that runs every session; see [`[fleet]`](#fleet--the-session-engine) |
 
@@ -537,7 +536,6 @@ this, uncomment what you want to change, and restart:
 
 ```toml
 config_version = 1
-multiplexer = "tmux"     # use "psmux" on native Windows; "rmux" is opt-in
 
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
@@ -550,7 +548,6 @@ git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 [features]
 shell_pane    = true
 perf_hud      = true
-soft_delete   = false
 automations   = true
 mouse         = true
 notifications = true
@@ -567,9 +564,6 @@ on_automation_failure = false  # accepted and ignored
 [clipboard]
 provider       = "auto"        # auto | native | osc52 | none
 copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies a selection
-
-[remote]
-transitive_sessions = false    # accepted and ignored
 
 [fleet]
 program = "fleet"              # the fleet binary: a name on PATH or a path (restart-only)
@@ -638,7 +632,7 @@ startup, so a change applies on the next launch.
 Switch off behaviour that reaches outside the interface. All default to
 `true` — as of 1.0 that includes `version_check` and `auto_update`, which
 both reach the network (they were opt-in before 1.0). `shell_pane`,
-`perf_hud` and `soft_delete` apply **live** on save; `automations`,
+and `perf_hud` apply **live** on save; `automations`,
 `mouse`, `notifications`, `version_check` and `auto_update` take effect on
 the next launch. Data is never touched, so re-enabling a flag is lossless.
 
@@ -664,7 +658,6 @@ keeps loading instead of failing on an unknown key. Same for
 | `automations` | `true` | the interface firing due automations while it runs (the CLI, `automation tick` included, stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
-| `soft_delete` | `false` | published to plugins; a delete is final either way (see below) |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 | `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update` |
 
@@ -680,8 +673,21 @@ URL handling, etc.) and no click/wheel/hover handling runs in the TUI.
 ever starting (zero overhead) and silently no-ops every transition;
 the session status display itself is unaffected.
 
-`soft_delete` changes nothing about a delete. A session is a Fleet Task, and
-`fleet delete task` has no undo window, so every delete is final.
+A delete is final: a session is a Fleet Task, and `fleet delete task` has no
+undo window.
+
+### Keys 3.0 no longer reads
+
+A `settings.toml` written for 2.x keeps loading. Each key below is named on
+startup as no longer read, and `thurbox-cli config validate` passes the file:
+
+| Key | Why |
+|-----|-----|
+| `multiplexer` | Fleet's runtime runs every session's terminal |
+| `[remote]` (`transitive_sessions`) | thurbox lists no sessions through other hosts |
+| `[features] soft_delete` | Fleet deletes a session at once |
+| `[telemetry] configure_agents` | Fleet's harness profiles configure the agents |
+| `[telemetry] export_thurbox_metrics`, `export_session_events`, `per_session` | thurbox exports no session metrics or events |
 
 `version_check` (on by default for 1.0) enables the update check — it
 makes a network call. On launch the TUI reads a cached result
@@ -756,11 +762,6 @@ crossing would hand someone a different program under the same binary name.
 `update::version_check::RELEASE_LINE`, and the release workflow refuses to cut a
 version off it — `docs/thurbox/releasing.md`, "v2 and v3".
 
-### `[remote]` — sessions on hosts of hosts
-
-`transitive_sessions` is accepted and ignored. The session list is Fleet's
-Tasks, whatever host each runs on.
-
 ### `[fleet]` — the session engine
 
 ```toml
@@ -796,10 +797,10 @@ database:
   `Review`) is refused, and the Task already there is left as it was: the
   create is `fleet apply --create-only`, whose exclusive create gives two
   interfaces racing for one name one Task and one refusal.
-- A creation that names a branch, a base, a worktree or further repositories
-  is refused: Fleet makes a Task's workspace. The multiplexer the create flow
-  settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
-  delete is checked against the Task as it is then.
+- The creation flow asks for what a Task takes: the host, the repository
+  directory, the name and the agent. Fleet makes the Task's workspace, so
+  there is no branch, base or worktree to choose. A confirmed delete is
+  checked against the Task as it is then.
 - The host picker's route names the Fleet host: `ssh:devbox` is `devbox`,
   this machine is `local`. A host Fleet's config does not define
   (`fleet runtime hosts`) is refused.
@@ -811,10 +812,11 @@ database:
   manual order and each session's companion shell pane are `interface.json`.
   A saved shell is re-adopted on the multiplexer it was opened on; a host's
   `multiplexer` in `hosts.toml` applies to the shells opened after it.
-- Restore, restart, fork, sync, the task list and dispatching a task have no
-  engine and are refused by name, as are the interface's automation verbs: an
-  automation is `thurbox-cli automation`'s, in `automations.json`. A todo is a Fleet Task
-  that is not dispatched (`fleet apply`). Settings are `settings.toml`; the
+- There is no restore, restart, fork, sync, task list or task dispatch: Fleet
+  runs none of them, and the interface no longer offers them. Fleet revives a
+  session whose terminal is lost. An automation is `thurbox-cli automation`'s,
+  in `automations.json`. A todo is a Fleet Task that is not dispatched
+  (`fleet apply`). Settings are `settings.toml`; the
   repositories and folders the creation flow remembers are `bookmarks.json`.
 - A Task's terminal is the stream `fleet attach` names, opened as a stream
   pane. A Task with no session yet has no pane; a stream that ends is opened
@@ -848,7 +850,7 @@ database:
 
 Read at startup only.
 
-### `[telemetry]` — OpenTelemetry for sessions
+### `[telemetry]` — OpenTelemetry for the interface
 
 Configures the interface's own diagnostic logs over OTLP (ADR-38). Session
 metrics and session event logs are Fleet's (`fleet-telemetry`).
@@ -859,15 +861,11 @@ enabled = false
 endpoint = "http://localhost:4318"
 protocol = "http/protobuf"
 headers = {}                 # e.g. { authorization = "Bearer …" }
-configure_agents = true
-export_thurbox_metrics = true
-export_session_events = true
 export_diagnostic_logs = false
-per_session = false
 ```
 
-`configure_agents`, `export_thurbox_metrics`, `export_session_events` and
-`per_session` are accepted, and thurbox reads none of them.
+The agents' own telemetry is Fleet's to configure. The keys thurbox 2.x read
+for it are listed under [Keys 3.0 no longer reads](#keys-30-no-longer-reads).
 
 #### thurbox's own diagnostic logs
 

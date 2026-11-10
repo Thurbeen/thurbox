@@ -80,22 +80,15 @@ pub(super) struct Progress {
 struct Done {
     id: u64,
     error: Option<String>,
-    /// Succeeded having done nothing ([`Outcome::Nothing`]).
-    did_nothing: bool,
 }
 
 impl Done {
     fn from_result(id: u64, result: Result<Outcome, String>) -> Self {
         match result {
-            Ok(outcome) => Self {
-                id,
-                error: None,
-                did_nothing: outcome == Outcome::Nothing,
-            },
+            Ok(Outcome::Done) => Self { id, error: None },
             Err(error) => Self {
                 id,
                 error: Some(error),
-                did_nothing: false,
             },
         }
     }
@@ -117,10 +110,6 @@ pub struct CommandBus {
     pending: Arc<Mutex<SessionQueues>>,
     /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
-    /// Commands that succeeded having done nothing, until the loop asks
-    /// ([`Self::take_did_nothing`]). A success leaves the in-flight list at
-    /// once, so this is the only place that fact survives to be reported.
-    did_nothing: std::collections::HashSet<u64>,
     /// What runs each command: Fleet, through its command line.
     executor: Arc<dyn Executor>,
 }
@@ -145,7 +134,6 @@ impl CommandBus {
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed_at: Vec::new(),
-            did_nothing: std::collections::HashSet::new(),
             executor,
         }
     }
@@ -222,27 +210,7 @@ impl CommandBus {
     /// thread.
     #[doc(hidden)]
     pub fn finish_for_test(&self, id: u64, error: Option<String>) {
-        let _ = self.finished_tx.send(Done {
-            id,
-            error,
-            did_nothing: false,
-        });
-    }
-
-    /// [`Self::finish_for_test`] for a command that succeeded having done
-    /// nothing.
-    #[doc(hidden)]
-    pub fn finish_doing_nothing_for_test(&self, id: u64) {
-        let _ = self
-            .finished_tx
-            .send(Done::from_result(id, Ok(Outcome::Nothing)));
-    }
-
-    /// Whether a finished command succeeded having done nothing — a repair
-    /// whose session was deleted, or that stood down. Answered once: the fact
-    /// is forgotten as it is read.
-    pub fn take_did_nothing(&mut self, id: u64) -> bool {
-        self.did_nothing.remove(&id)
+        let _ = self.finished_tx.send(Done { id, error });
     }
 
     /// Fold finished commands into the in-flight list.
@@ -288,9 +256,6 @@ impl CommandBus {
                 // nothing left to say.
                 None => {
                     list.retain(|entry| entry.id != done.id);
-                    if done.did_nothing {
-                        self.did_nothing.insert(done.id);
-                    }
                 }
                 Some(error) => {
                     if let Some(entry) = list.iter_mut().find(|entry| entry.id == done.id) {

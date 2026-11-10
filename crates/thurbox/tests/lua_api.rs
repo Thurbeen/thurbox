@@ -19,9 +19,7 @@ use std::path::{Path, PathBuf};
 use thurbox::kernel::host::{LuaHost, Published, RenderContext};
 use thurbox::kernel::lua_api::{self, Class, Ty, API, API_ROOT};
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::snapshot::{
-    AutomationRow, DeletedRow, GitState, HostRow, RunRow, SessionRow, Snapshot, TaskRow,
-};
+use thurbox::kernel::snapshot::{AutomationRow, GitState, HostRow, RunRow, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
@@ -209,25 +207,6 @@ fn row(name: &str) -> SessionRow {
 fn full() -> Snapshot {
     Snapshot {
         sessions: vec![row("lead")],
-        deleted: vec![DeletedRow {
-            id: "gone".into(),
-            name: "gone".into(),
-            agent: "claude".into(),
-            deleted_at: 1,
-            worktrees: 1,
-            partial: true,
-            restore_refusal: Some("borrowed directory removed".into()),
-        }],
-        tasks: vec![TaskRow {
-            id: 1,
-            title: "t".into(),
-            description: Some("d".into()),
-            status: "todo".into(),
-            source: "local".into(),
-            external_url: Some("https://example.com".into()),
-            created_at: 1,
-            updated_at: 2,
-        }],
         automations: vec![AutomationRow {
             id: 1,
             name: "nightly".into(),
@@ -334,24 +313,9 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
             is_git: true,
         }]),
     );
-    repos.set_branches_for_test(
-        "",
-        "/src/a",
-        thurbox::kernel::repos::Branches::Failed("no remote".into()),
-    );
-    repos.set_worktrees_for_test(
-        "",
-        "/src/a",
-        thurbox::kernel::repos::Worktrees::Ready(vec![thurbox::git::ExistingWorktree {
-            path: PathBuf::from("/src/a-wt"),
-            branch: "b".into(),
-        }]),
-    );
     let wants = thurbox::kernel::repos::Wants {
         bookmarks: Some(String::new()),
         browse: Some((String::new(), "/src".into())),
-        branches: Some((String::new(), "/src/a".into())),
-        worktrees: Some((String::new(), "/src/a".into())),
     };
     let search = thurbox::kernel::search::Answer {
         request: thurbox::kernel::search::Request {
