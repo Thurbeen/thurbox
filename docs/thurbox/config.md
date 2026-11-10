@@ -155,10 +155,10 @@ configured hosts, error shown.
 | `ssh_opts` | no | `[]` | extra ssh flags, one token per element (ssh only) |
 | `socket` | no | `thurbox` | host `tmux -L` socket name. The socket file lives under the host's thurbox data dir, `~/.local/share/thurbox/tmux/tmux-<uid>/<socket>` — see [Where the tmux socket lives](#where-the-tmux-socket-lives) |
 | `session` | no | `thurbox` | host tmux session name |
-| `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
+| `worktrees_dir` | no | — | accepted and has no effect since 3.0: Fleet makes worktrees on this machine only |
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
-| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands and the panes they open on a POSIX host (not git or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
+| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands and the panes they open on a POSIX host — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
 
 **The `PATH` on a host.** ssh and `wsl.exe` hand a command a
 non-login environment — `wsl.exe -e` skips the user's shell entirely, so
@@ -171,8 +171,7 @@ tmux in `/opt/homebrew/bin`, which only a macOS login shell puts on the
 `PATH`, is found) and the panes they open
 run there on `path_prepend`, then the login shells' `PATH`, then the
 launcher's own (on WSL that includes the Windows `PATH` WSL appends unless
-`appendWindowsPath = false`), each directory once. git
-and an image drop keep the launcher's `PATH`. A host whose shells cannot be read keeps
+`appendWindowsPath = false`), each directory once. A host whose shells cannot be read keeps
 the launcher's `PATH` with a warning in the log.
 
 **SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
@@ -180,7 +179,7 @@ handles credentials. **WSL** distros are reached with
 `wsl.exe -d <distro>` and need no config entry at all — they are
 **auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
 automatically; add a `kind = "wsl"` entry only to override
-a default (e.g. `worktrees_dir`). Discovery also works from *inside* a
+a default (e.g. `socket`). Discovery also works from *inside* a
 distro (interop puts `wsl.exe` on `PATH` there), and excludes the distro
 thurbox is itself running in: that one is this machine. An entry whose
 `distro` is that one is ignored with a startup warning, and an entry merely
@@ -210,22 +209,12 @@ multiplexer reports a closed window (tmux does; psmux and RMUX need polling).
 
 ### Multiplexer choice and existing sessions
 
-Host and multiplexer are separate choices. `hosts.toml` names a host's
-preference; top-level `multiplexer` in `settings.toml` names the local
-preference; otherwise the platform default applies (`tmux` on POSIX, `psmux`
-on native Windows). A Fleet session's terminal is its runtime's, so the
-multiplexer the create flow settles on is dropped. The preference decides the
-multiplexer a companion shell (`Ctrl+T`) opens on.
-
-The TUI offers only the multiplexers **available** on the chosen host:
-registered, native to its platform (tmux on POSIX and WSL, psmux on native
-Windows, RMUX on either), and installed there. Locally that is a `PATH`
-lookup. For an SSH or WSL host it is the probe that already reads the host's
-login `PATH` (see `path_prepend` above), which also names each multiplexer it
-finds there; it runs in the background only while the new-session flow is
-open, and is asked again once its answer is a minute old. Until it answers,
-and on a native-Windows host, which is not probed, a host offers its platform
-default and its configured `multiplexer`.
+A Fleet session's terminal is its runtime's: `runtime-mux` starts it on this
+platform's default multiplexer (`tmux` on POSIX, `psmux` on native Windows).
+Nothing in thurbox chooses another one for a session. The top-level
+`multiplexer` key in `settings.toml` is accepted and ignored since 3.0, with a
+notice at load. A `hosts.toml` entry's `multiplexer` names that host's
+preference for the companion shell (`Ctrl+T`) opened there.
 Names are `tmux`, `psmux`, `rmux`, and `herdr`.
 
 The resolved choice is a session's **route**. One parser (`session::Route`)
@@ -308,17 +297,10 @@ crate; check `rmux -V` afterwards. Release archives need their complete
 package layout: on Unix run the archive's `./install.sh --prefix ~/.local`,
 and keep its `bin/` and `libexec/`; do not copy just the executable.
 
-RMUX appears in the TUI's multiplexer picker only where an `rmux` binary
-is found — on `PATH` locally, by the host probe on a host. To make it the
-local preference, set this top-level value in `settings.toml`:
-
-```toml
-multiplexer = "rmux"
-```
-
-For an SSH host, add `multiplexer = "rmux"` to its `[[hosts]]` entry. For WSL,
-add a configured `kind = "wsl"` entry matching the discovered distro and set
-that same preference; install RMUX inside the distro.
+Since 3.0 no setting starts a session on RMUX: `runtime-mux` starts every
+session on the platform default (see *Multiplexer choice and existing
+sessions*). The top-level `multiplexer = "rmux"` that 2.x read from
+`settings.toml` is accepted and ignored.
 
 | RMUX placement | Thurbox integration evidence |
 | --- | --- |
@@ -335,8 +317,8 @@ therefore relies on RMUX rather than tmux's pause/resume mechanism. See
 [ADR-31](architecture.md#adr-31-tmux-and-psmux-are-peer-adapters-over-one-tmux-protocol-server)
 and [#1320](https://github.com/Thurbeen/thurbox/pull/1320).
 
-If RMUX is absent from the local picker, check `rmux -V` in the environment
-that launches thurbox. For a host, check it on that host or inside the WSL
+If RMUX is not found, check `rmux -V` in the environment that launches
+thurbox. For a host, check it on that host or inside the WSL
 distro. A version rejection needs an upgrade on the session machine.
 RMUX 0.9.x daemons cannot talk to a 0.10.0 client: stop the old server before
 upgrading, using `rmux -L <socket> kill-server` for each affected socket.

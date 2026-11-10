@@ -164,11 +164,11 @@ The default shell and the `/bin/sh -lc` login wrap follow the platform, never
 `cfg(windows)` or the multiplexer's name. Tests simulate the Windows build with
 `shell::simulate_local`.
 
-A Windows host has no POSIX shell. Each remote probe ships two scripts that
-emit one line protocol: `git::host_probe` picks `sh -c` or
-`powershell -EncodedCommand` (UTF-16LE base64). `git::remote_home` resolves
-`%USERPROFILE%` rather than `$HOME`. `git::reportable_stderr` drops OpenSSH's
-post-quantum advisory and decodes PowerShell's `#< CLIXML` envelope.
+A Windows host has no POSIX shell: runtime-mux's `HostShell` sends a script
+as `powershell -EncodedCommand` (UTF-16LE base64), so no outer shell can
+rewrite it. thurbox runs no git on a host. `git::reportable_stderr` drops
+OpenSSH's post-quantum advisory from a local git that reaches a remote over
+ssh.
 
 psmux is a native-Windows tmux clone (ConPTY) that speaks the same control-mode
 protocol, `%N` pane ids and `-L` sockets. Its divergences are each a body in

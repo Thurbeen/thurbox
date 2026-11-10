@@ -500,7 +500,7 @@ impl SnapshotStore {
             .collect();
         self.git.retain(&present);
 
-        let mut wanted: Vec<(String, PathBuf, Option<crate::session::HostDef>)> = Vec::new();
+        let mut wanted: Vec<(String, PathBuf)> = Vec::new();
         let mut moved = false;
         for row in &mut self.current.sessions {
             let stats = self.git.state(&row.id);
@@ -519,11 +519,11 @@ impl SnapshotStore {
                 if crate::session::Route::is_remote_key(&row.backend) {
                     continue;
                 }
-                wanted.push((row.id.clone(), cwd, None));
+                wanted.push((row.id.clone(), cwd));
             }
         }
-        for (id, cwd, host) in wanted {
-            self.git.request(&id, cwd, host);
+        for (id, cwd) in wanted {
+            self.git.request(&id, cwd);
         }
         moved
     }

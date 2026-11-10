@@ -434,8 +434,6 @@ pub enum PathKind {
     NotifyDedupe,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
     MetricsDir,
-    /// Git worktrees: `~/.local/share/thurbox/worktrees/`
-    WorktreesDir,
     /// Per-session multi-repo symlink workspaces:
     /// `~/.local/share/thurbox/workspaces/`
     WorkspacesDir,
@@ -479,7 +477,6 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
         PathKind::NotifyDedupe => xdg_data_subpath(&["notify-dedupe.json"]),
         PathKind::LogDir => xdg_data_subpath(&[]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
-        PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
         PathKind::WorkspacesDir => xdg_data_subpath(&["workspaces"]),
     }
 }
@@ -493,7 +490,6 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::Bookmarks => base.join("bookmarks.json"),
         PathKind::NotifyDedupe => base.join("notify-dedupe.json"),
         PathKind::MetricsDir => base.join("metrics"),
-        PathKind::WorktreesDir => base.join("worktrees"),
         PathKind::WorkspacesDir => base.join("workspaces"),
     }
 }
@@ -556,13 +552,6 @@ pub fn validate_safe_name(name: &str) -> Result<(), String> {
 /// Returns: `$XDG_DATA_HOME/thurbox/metrics/` or `$HOME/.local/share/thurbox/metrics/`
 pub fn metrics_directory() -> Option<PathBuf> {
     resolve(PathKind::MetricsDir)
-}
-
-/// Resolve the worktrees directory path.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/worktrees/` or `$HOME/.local/share/thurbox/worktrees/`
-pub fn worktrees_directory() -> Option<PathBuf> {
-    resolve(PathKind::WorktreesDir)
 }
 
 /// The data directory this instance actually resolved — the override when one

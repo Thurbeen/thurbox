@@ -512,7 +512,7 @@ documents each field inline:
 | `ssh_opts` | no | `[]` | extra `ssh` flags, one token per array element; no `~` expansion (use absolute paths) |
 | `socket` | no | `thurbox` | host `tmux -L` socket name |
 | `session` | no | `thurbox` | host tmux session name |
-| `worktrees_dir` | no | `$HOME/.local/share/thurbox/worktrees` | absolute dir on the host/distro for git worktrees |
+| `worktrees_dir` | no | — | accepted and has no effect since 3.0: Fleet makes worktrees on this machine only |
 
 Each host becomes a route named `ssh:<name>` / `wsl:<name>`. A session
 created on it is a Task whose `spec.host` is `<name>`, which must be a host

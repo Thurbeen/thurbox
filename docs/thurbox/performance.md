@@ -340,7 +340,7 @@ about it are worth stating because each was wrong once:
   a coding agent produces — so a session with **no** base branch, which is exactly
   the scratch worktree someone watches an agent work in, reported "no changes" after
   three files had been written. v1 had the same gap; the consequence is worse here
-  because that is the default target. `git::working_diff_on` now folds each
+  because that is the default target. `git::working_diff` now folds each
   untracked file in as `git diff --no-index -- /dev/null <path>`, which emits an
   ordinary `new file mode` patch and needed nothing downstream to change: the
   numstat record arrives in the *rename* shape (empty path, `/dev/null`, real name),

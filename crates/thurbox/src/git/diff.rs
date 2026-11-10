@@ -10,54 +10,24 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use anyhow::{Context, Result};
 use tracing::warn;
 
-use super::{
-    git_command, reportable_stderr, resolve_base_ref, run_git_capture, run_git_capture_env,
-    run_git_capture_on,
-};
-use crate::session::HostDef;
-
-/// List local branch names for a repo.
-pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
-    list_branches_on(None, repo_path)
-}
-
-/// [`list_branches`], optionally on a remote `host`.
-pub fn list_branches_on(host: Option<&HostDef>, repo_path: &Path) -> Result<Vec<String>> {
-    let output = git_command(host, repo_path, &["branch", "--format=%(refname:short)"])
-        .output()
-        .context("failed to run git branch")?;
-
-    if !output.status.success() {
-        let stderr = reportable_stderr(&output.stderr);
-        anyhow::bail!("git branch failed: {stderr}");
-    }
-
-    let branches = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    Ok(branches)
-}
+use super::{git_command, reportable_stderr, run_git_capture, run_git_capture_env};
 
 /// Raw unified `git diff <base>..HEAD` output for a worktree, for the native
-/// code-review view, optionally on a remote `host` (via `ssh <dest> git …`).
+/// code-review view.
 /// Returns `None` on failure (not a git dir, bad base, …); the caller falls
 /// back to a narrower range or surfaces a status.
 ///
 /// `--no-color` keeps the output parseable; the result is fed to
 /// [`crate::session::review::parse_unified_diff`].
-pub fn diff_against_on(host: Option<&HostDef>, worktree: &Path, base: &str) -> Option<String> {
+pub fn diff_against(worktree: &Path, base: &str) -> Option<String> {
     let range = format!("{base}..HEAD");
-    run_diff(host, worktree, &["diff", "--no-color", &range])
+    run_diff(worktree, &["diff", "--no-color", &range])
 }
 
-// The "working changes" target is [`working_diff_on`], below. There is
-// deliberately no diff-body-only counterpart to [`diff_against_on`] for it: one
+// The "working changes" target is [`working_diff`], below. There is
+// deliberately no diff-body-only counterpart to [`diff_against`] for it: one
 // would be `git diff HEAD`, which silently omits untracked files, and having it
 // available is how that omission happened.
 
@@ -73,14 +43,9 @@ pub fn diff_against_on(host: Option<&HostDef>, worktree: &Path, base: &str) -> O
 /// `-z` rather than the human format: a rename in `--numstat` otherwise arrives as
 /// `old => new` (or a brace form) and has to be un-guessed. NUL-separated, a rename
 /// is an empty path field followed by two more records.
-pub fn diff_numstat_on(
-    host: Option<&HostDef>,
-    worktree: &Path,
-    base: Option<&str>,
-) -> Option<String> {
+pub fn diff_numstat(worktree: &Path, base: Option<&str>) -> Option<String> {
     let range = base.map_or_else(|| "HEAD".to_string(), |base| format!("{base}..HEAD"));
     run_diff(
-        host,
         worktree,
         &["diff", "--no-color", "--numstat", "-M", "-z", &range],
     )
@@ -88,46 +53,14 @@ pub fn diff_numstat_on(
 
 /// Each changed file's status (`M`/`A`/`D`/`R…`) as `--name-status -M -z`.
 ///
-/// The companion to [`diff_numstat_on`]: `--numstat` carries the counts and cannot
+/// The companion to [`diff_numstat`]: `--numstat` carries the counts and cannot
 /// tell a deletion from a rewrite. Cheap — a fraction of the cost of the diff itself.
-pub fn diff_name_status_on(
-    host: Option<&HostDef>,
-    worktree: &Path,
-    base: Option<&str>,
-) -> Option<String> {
+pub fn diff_name_status(worktree: &Path, base: Option<&str>) -> Option<String> {
     let range = base.map_or_else(|| "HEAD".to_string(), |base| format!("{base}..HEAD"));
     run_diff(
-        host,
         worktree,
         &["diff", "--no-color", "--name-status", "-M", "-z", &range],
     )
-}
-
-/// Raw unified diff of a single commit (`git show`), for the review view's
-/// per-commit target. `--format=` suppresses the log message, leaving the patch.
-pub fn show_commit_on(host: Option<&HostDef>, worktree: &Path, sha: &str) -> Option<String> {
-    run_diff(host, worktree, &["show", "--no-color", "--format=", sha])
-}
-
-/// List the commits in `<base>..HEAD` as `(short-sha, subject)`, newest first —
-/// the choices for the review view's per-commit target picker.
-pub fn list_commits_on(
-    host: Option<&HostDef>,
-    worktree: &Path,
-    base: &str,
-) -> Vec<(String, String)> {
-    let range = format!("{base}..HEAD");
-    let Some(out) = run_diff(
-        host,
-        worktree,
-        &["log", "--no-color", "--format=%h%x09%s", &range],
-    ) else {
-        return Vec::new();
-    };
-    out.lines()
-        .filter_map(|l| l.split_once('\t'))
-        .map(|(sha, subj)| (sha.to_string(), subj.to_string()))
-        .collect()
 }
 
 /// Run a `git` command and capture stdout, logging + returning `None` on
@@ -136,10 +69,10 @@ pub fn list_commits_on(
 /// `core.quotepath=false` keeps non-ASCII paths verbatim (git otherwise
 /// C-quotes them, e.g. `"caf\303\251.rs"`), so the parser keys comments/marks on
 /// the real UTF-8 path.
-pub(super) fn run_diff(host: Option<&HostDef>, worktree: &Path, args: &[&str]) -> Option<String> {
+pub(super) fn run_diff(worktree: &Path, args: &[&str]) -> Option<String> {
     let mut full = vec!["-c", "core.quotepath=false"];
     full.extend_from_slice(args);
-    let output = git_command(host, worktree, &full).output().ok()?;
+    let output = git_command(worktree, &full).output().ok()?;
     if !output.status.success() {
         let stderr = reportable_stderr(&output.stderr);
         warn!("git {args:?} failed: {stderr}");
@@ -194,19 +127,18 @@ pub struct WorkingDiff {
 /// eventually gives up into `.git/gc.log`, which then suppresses auto-gc
 /// repo-wide — the failure `PROBE_IDENT` records below, at one blob per changed
 /// file per refresh rather than one commit per poll.
-pub fn working_diff_on(host: Option<&HostDef>, worktree: &Path) -> Option<WorkingDiff> {
-    let mut body = run_diff(host, worktree, &["diff", "--no-color", "HEAD"])?;
-    let mut numstat_z = diff_numstat_on(host, worktree, None)?;
-    let mut name_status_z = diff_name_status_on(host, worktree, None)?;
+pub fn working_diff(worktree: &Path) -> Option<WorkingDiff> {
+    let mut body = run_diff(worktree, &["diff", "--no-color", "HEAD"])?;
+    let mut numstat_z = diff_numstat(worktree, None)?;
+    let mut name_status_z = diff_name_status(worktree, None)?;
 
-    let untracked = untracked_files_on(host, worktree)?;
+    let untracked = untracked_files(worktree)?;
     let mut shown = 0;
     for path in untracked.iter().take(UNTRACKED_FILE_CAP) {
         // Counts and patch from one invocation — `--numstat --patch` prints the
         // stat records first, split back apart below — where asking for each
         // shape separately cost two processes per untracked file.
-        let Some(combined) = untracked_diff_on(
-            host,
+        let Some(combined) = untracked_diff(
             worktree,
             path,
             &["--no-color", "--numstat", "-z", "--patch"],
@@ -245,9 +177,8 @@ pub fn working_diff_on(host: Option<&HostDef>, worktree: &Path) -> Option<Workin
 /// The worktree's untracked, non-ignored files. `--exclude-standard` is what
 /// keeps `.gitignore`d build output out; `-z` is what keeps a path with a space
 /// or a newline in it whole.
-pub(super) fn untracked_files_on(host: Option<&HostDef>, worktree: &Path) -> Option<Vec<String>> {
+pub(super) fn untracked_files(worktree: &Path) -> Option<Vec<String>> {
     let out = run_diff(
-        host,
         worktree,
         &["ls-files", "--others", "--exclude-standard", "-z"],
     )?;
@@ -260,7 +191,7 @@ pub(super) fn untracked_files_on(host: Option<&HostDef>, worktree: &Path) -> Opt
 }
 
 /// One untracked file's diff against nothing, with `extra` selecting the shape
-/// ([`working_diff_on`] asks for `--numstat` and `--patch` together and splits
+/// ([`working_diff`] asks for `--numstat` and `--patch` together and splits
 /// the result with [`split_untracked_diff`]).
 ///
 /// `--no-index` exits **1** whenever the two paths differ, which for a file
@@ -270,19 +201,14 @@ pub(super) fn untracked_files_on(host: Option<&HostDef>, worktree: &Path) -> Opt
 /// handling beyond ignoring an empty patch. Anything above 1 is a real error
 /// (128 = not a repository) and drops the file.
 ///
-/// `/dev/null` is understood by Git for Windows too (verified against a psmux
-/// host), so this needs no platform branch.
-pub(super) fn untracked_diff_on(
-    host: Option<&HostDef>,
-    worktree: &Path,
-    path: &str,
-    extra: &[&str],
-) -> Option<String> {
+/// `/dev/null` is understood by Git for Windows too, so this needs no platform
+/// branch.
+pub(super) fn untracked_diff(worktree: &Path, path: &str, extra: &[&str]) -> Option<String> {
     let mut args = vec!["-c", "core.quotepath=false", "diff", "--no-index"];
     args.extend_from_slice(extra);
     // `--` so a path that begins with a dash is a path, not a flag.
     args.extend_from_slice(&["--", "/dev/null", path]);
-    let output = git_command(host, worktree, &args).output().ok()?;
+    let output = git_command(worktree, &args).output().ok()?;
     match output.status.code() {
         Some(0 | 1) => Some(String::from_utf8_lossy(&output.stdout).into_owned()),
         _ => {
@@ -403,7 +329,7 @@ pub fn merged_into_default(cwd: &Path) -> Option<bool> {
 /// documents, `None` for anything else, since git failing to answer must not
 /// read as "unmerged".
 fn git_predicate(cwd: &Path, args: &[&str]) -> Option<bool> {
-    let status = git_command(None, cwd, args)
+    let status = git_command(cwd, args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -487,22 +413,14 @@ fn squashed_upstream(cwd: &Path, default: &str, base: &str) -> Option<bool> {
 
 /// Commits the worktree's HEAD is `(ahead, behind)` relative to its base ref,
 /// resolved by `resolve_base_ref` (upstream → `origin/HEAD` → `origin/main` →
-/// `origin/master`) — the same chain [`sync_worktree`](super::sync_worktree) rebases onto, so the
-/// "behind" count is measured against the ref sync would use. Returns `(0, 0)`
-/// when no base can be resolved.
+/// `origin/master`). Returns `(0, 0)` when no base can be resolved.
 pub fn ahead_behind(cwd: &Path) -> (usize, usize) {
-    ahead_behind_on(None, cwd)
-}
-
-/// [`ahead_behind`], on `host` when the worktree lives off this machine.
-pub fn ahead_behind_on(host: Option<&HostDef>, cwd: &Path) -> (usize, usize) {
-    let Some(base) = resolve_base_ref(host, cwd) else {
+    let Some(base) = resolve_base_ref(cwd) else {
         return (0, 0);
     };
     // `--left-right --count <base>...HEAD` → "<behind>\t<ahead>".
     let range = format!("{base}...HEAD");
-    let Some(out) = run_git_capture_on(host, &["rev-list", "--left-right", "--count", &range], cwd)
-    else {
+    let Some(out) = run_git_capture(&["rev-list", "--left-right", "--count", &range], cwd) else {
         return (0, 0);
     };
     let mut parts = out.split_whitespace();
@@ -622,27 +540,10 @@ pub fn worktree_stats(
     cwd: &Path,
     known: Option<KnownMerge<'_>>,
 ) -> Option<crate::session::GitStats> {
-    worktree_stats_on(None, cwd, known)
-}
-
-/// [`worktree_stats`], on `host` when the session's worktree lives off this
-/// machine. Its `cwd` is a path on that host, so running `git` here would find
-/// no such directory and answer `None` — which every consumer reads as "state
-/// could not be read" (the delete confirmation among them).
-///
-/// The merge answer is the one thing not asked of a host: it needs
-/// `commit-tree` under a pinned identity, which the remote form cannot carry
-/// (see `run_git_capture_env`). It stays `None` — "not known" — and a caller
-/// treats that as work that may not have landed, never as landed.
-pub fn worktree_stats_on(
-    host: Option<&HostDef>,
-    cwd: &Path,
-    known: Option<KnownMerge<'_>>,
-) -> Option<crate::session::GitStats> {
     // One status call carries dirty, the untracked count AND — via the
     // `# branch.ab` header — ahead/behind, and doubles as the "is this a work
     // tree" probe: outside one it fails, exactly as a `rev-parse` would.
-    let status = run_git_capture_on(host, &["status", "--porcelain=v2", "--branch"], cwd)?;
+    let status = run_git_capture(&["status", "--porcelain=v2", "--branch"], cwd)?;
     let status = parse_status_v2(&status);
     // The second subprocess, and the status above already decides whether it
     // can say anything: `diff HEAD` reports on tracked files, so with no
@@ -650,8 +551,7 @@ pub fn worktree_stats_on(
     // known answer. Worth skipping because this path is polled — see
     // `StatusV2::tracked`.
     let (files_changed, insertions, deletions) = if status.tracked {
-        let numstat =
-            run_git_capture_on(host, &["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
+        let numstat = run_git_capture(&["diff", "--numstat", "HEAD"], cwd).unwrap_or_default();
         parse_numstat(&numstat)
     } else {
         (0, 0, 0)
@@ -660,9 +560,7 @@ pub fn worktree_stats_on(
     // probe chain would pick first. Only a branch without one (no upstream, or
     // its ref gone) pays for [`ahead_behind`]'s resolution (`origin/HEAD` →
     // `origin/main` → `origin/master`), preserving the old answer there.
-    let (ahead, behind) = status
-        .ahead_behind
-        .unwrap_or_else(|| ahead_behind_on(host, cwd));
+    let (ahead, behind) = status.ahead_behind.unwrap_or_else(|| ahead_behind(cwd));
     // Only a branch that *is* ahead has commits whose fate is in question, and
     // the check costs several `git` runs — so nothing ahead pays nothing, and
     // reports `None` rather than an answer nobody asked for. A worktree still
@@ -671,7 +569,6 @@ pub fn worktree_stats_on(
     let settled = known.filter(|k| Some(k.head) == status.head.as_deref());
     let merged = match settled {
         Some(known) => Some(known.merged),
-        None if host.is_some() => None,
         None => (ahead > 0).then(|| merged_into_default(cwd)).flatten(),
     };
     Some(crate::session::GitStats {
@@ -685,4 +582,41 @@ pub fn worktree_stats_on(
         merged,
         head: status.head,
     })
+}
+
+/// The base ref a worktree's ahead/behind counts are measured against.
+///
+/// Prefers the branch's configured upstream (`@{upstream}`), then the remote's
+/// advertised default branch (`origin/HEAD`, e.g. `origin/main` or
+/// `origin/master` — whatever the repo actually uses), then the conventional
+/// `origin/main` / `origin/master`. `None` when none resolve.
+pub(super) fn resolve_base_ref(worktree_path: &Path) -> Option<String> {
+    // A branch with an explicit upstream rebases onto exactly that.
+    if run_git_capture(
+        &["rev-parse", "--verify", "--quiet", "@{upstream}"],
+        worktree_path,
+    )
+    .is_some()
+    {
+        return Some("@{upstream}".to_string());
+    }
+
+    // The remote's advertised HEAD (origin/HEAD → e.g. "origin/main").
+    if let Some(out) = run_git_capture(
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        worktree_path,
+    ) {
+        let advertised = out.trim();
+        if !advertised.is_empty() {
+            return Some(advertised.to_string());
+        }
+    }
+
+    // Conventional fallbacks.
+    ["origin/main", "origin/master"]
+        .into_iter()
+        .find(|r| {
+            run_git_capture(&["rev-parse", "--verify", "--quiet", r], worktree_path).is_some()
+        })
+        .map(str::to_string)
 }

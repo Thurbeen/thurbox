@@ -36,13 +36,12 @@ breadcrumb: 'Configuration'
           <p>
             Adapters are available for tmux (minimum 3.2), psmux (minimum 3.3.8),
             and opt-in <a href="installation.html#rmux">RMUX (minimum 0.10.0)</a>.
-            Set top-level <code>multiplexer = "rmux"</code> in
-            <code>settings.toml</code> for new local sessions, or on a
-            <code>[[hosts]]</code> entry for that SSH host or WSL distro.
-            Install the binary on the session machine; for WSL it belongs inside
-            the distro. An explicit picker choice or
-            <code>session create --multiplexer rmux</code> overrides the preference.
-            Existing sessions keep their recorded routes.
+            A session's terminal belongs to Fleet's runtime: <code>runtime-mux</code>
+            starts it on this platform's default multiplexer, tmux on Linux and
+            macOS and psmux on Windows. The top-level <code>multiplexer</code> key in
+            <code>settings.toml</code> is accepted and ignored since 3.0. A
+            <code>[[hosts]]</code> entry's <code>multiplexer</code> names the
+            multiplexer of the companion shell opened on that host.
           </p>
           <p>
             RMUX integration was tested locally on Linux with 0.10.0; macOS,

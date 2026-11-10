@@ -402,7 +402,7 @@ struct Sources {
 /// which is what a session with no base branch has to show. The two are gathered
 /// differently: `base..HEAD` is committed history, so its body and file list are
 /// independent commands, while the working tree has to fold in **untracked
-/// files** and therefore comes back from [`crate::git::working_diff_on`] as one
+/// files** and therefore comes back from [`crate::git::working_diff`] as one
 /// consistent set. Asking for them separately there would let the body describe a
 /// file the list omitted.
 ///
@@ -411,8 +411,7 @@ struct Sources {
 /// commands failed after the expensive one worked, which is worth telling apart.
 fn read_sources(worktree: &Path, base: Option<&str>) -> Result<Sources, &'static str> {
     let Some(base) = base else {
-        let working =
-            crate::git::working_diff_on(None, worktree).ok_or("could not read the diff")?;
+        let working = crate::git::working_diff(worktree).ok_or("could not read the diff")?;
         return Ok(Sources {
             raw: working.body,
             numstat: working.numstat_z,
@@ -422,9 +421,9 @@ fn read_sources(worktree: &Path, base: Option<&str>) -> Result<Sources, &'static
                 .saturating_sub(working.untracked_shown),
         });
     };
-    let raw = crate::git::diff_against_on(None, worktree, base).ok_or("could not read the diff")?;
-    let (numstat, name_status) = crate::git::diff_numstat_on(None, worktree, Some(base))
-        .zip(crate::git::diff_name_status_on(None, worktree, Some(base)))
+    let raw = crate::git::diff_against(worktree, base).ok_or("could not read the diff")?;
+    let (numstat, name_status) = crate::git::diff_numstat(worktree, Some(base))
+        .zip(crate::git::diff_name_status(worktree, Some(base)))
         .ok_or("could not list the changed files")?;
     Ok(Sources {
         raw,
@@ -751,7 +750,7 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", "everything"]);
 
-        let raw = crate::git::diff_against_on(None, &repo, "main").expect("a diff");
+        let raw = crate::git::diff_against(&repo, "main").expect("a diff");
         assert!(
             raw.len() > MAX_DIFF_BYTES,
             "the fixture must exceed the cap to be testing anything: {} bytes",

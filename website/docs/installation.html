@@ -74,11 +74,11 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             for packages and archive layout, then check <code>rmux -V</code>.
           </p>
           <p>
-            Press <kbd>Ctrl</kbd>+<kbd>N</kbd> and choose RMUX immediately after tmux
-            in the multiplexer picker. Locally it appears when <code>rmux</code>
-            resolves on <code>PATH</code>. It was tested with thurbox on Linux;
-            macOS, real SSH, WSL execution and native Windows integration remain
-            unverified. Defaults stay tmux on POSIX and psmux on native Windows.
+            Since 3.0 the new-session flow offers no multiplexer: Fleet's
+            <code>runtime-mux</code> starts every session on the platform default,
+            tmux on POSIX and psmux on native Windows. RMUX was tested with thurbox
+            on Linux; macOS, real SSH, WSL execution and native Windows
+            integration remain unverified.
             See <a href="configuration.html#multiplexers">multiplexer configuration</a>
             and the <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup">verified version table and troubleshooting</a>.
           </p>

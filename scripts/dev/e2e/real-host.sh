@@ -29,9 +29,6 @@
 #   run             run the deployed thurbox.exe interactively over `ssh -t`
 #                   (native-Windows manual testing; WSL distros appear in its
 #                   host picker)
-#   transfer-test   ship a 1 MiB binary to the host the way session sharing
-#                   provisions its thurbox-cli, and check it arrived intact
-#                   (tests/windows_host_transfer.rs; fails rather than hangs)
 #   test-suite      run the full nextest suite on the host (cross-built
 #                   archive; installs cargo-nextest.exe there if missing)
 #   wsl-setup [distro]   install WSL + <distro> (default Debian) and provision
@@ -322,13 +319,6 @@ EOF
   printf '  (WSL distros on the machine appear in its host picker as wsl:<distro>)\n'
 }
 
-cmd_transfer_test() {
-  require_windows
-  log "shipping a 1 MiB payload to $DEST through thurbox's own Windows copy"
-  (cd "$REPO_ROOT" && THURBOX_E2E_WINDOWS_HOST="$DEST" \
-    cargo test -q --test windows_host_transfer -- --ignored)
-}
-
 cmd_run() {
   require_windows
   ssh_host 'powershell -NoProfile -Command "Test-Path C:/Tools/thurbox/thurbox.exe"' 2> /dev/null \
@@ -500,7 +490,6 @@ case "$VERB" in
   clean)      cmd_clean ;;
   deploy)     cmd_deploy ;;
   run)        cmd_run ;;
-  transfer-test) cmd_transfer_test ;;
   test-suite) cmd_test_suite ;;
   wsl-setup)  cmd_wsl_setup "$@" ;;
   wsl-check)  cmd_wsl_check "$@" ;;

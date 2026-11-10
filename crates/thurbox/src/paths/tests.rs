@@ -257,10 +257,6 @@ fn all_path_kinds_resolve_in_override() {
         Some(base.join("perf.json"))
     );
     assert_eq!(resolve(PathKind::MetricsDir), Some(base.join("metrics")));
-    assert_eq!(
-        resolve(PathKind::WorktreesDir),
-        Some(base.join("worktrees"))
-    );
 
     reset_to_xdg();
 }
@@ -368,10 +364,6 @@ fn resolve_override_all_kinds() {
         resolve_override(base, PathKind::MetricsDir),
         PathBuf::from("/data/metrics")
     );
-    assert_eq!(
-        resolve_override(base, PathKind::WorktreesDir),
-        PathBuf::from("/data/worktrees")
-    );
 }
 
 #[test]
@@ -381,17 +373,6 @@ fn metrics_directory_convenience() {
 
     let path = metrics_directory().unwrap();
     assert!(path.ends_with("metrics"));
-
-    reset_to_xdg();
-}
-
-#[test]
-fn worktrees_directory_convenience() {
-    let base = PathBuf::from("/custom");
-    set_test_dir(&base);
-
-    let path = worktrees_directory().unwrap();
-    assert!(path.ends_with("worktrees"));
 
     reset_to_xdg();
 }

@@ -14,8 +14,6 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 
 use super::reportable_stderr;
-use crate::session::HostDef;
-use crate::shell::posix_quote;
 
 /// The ambient `GIT_*` variables that pin git to a specific repo/index/worktree,
 /// overriding the path we point it at via `current_dir`/`-C`. Git exports these
@@ -93,33 +91,20 @@ pub(super) fn run_git(mut cmd: Command, what: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run `git <args>` in `cwd` locally, returning stdout on success (`None`
-/// otherwise).
+/// Run `git <args>` in `cwd`, returning stdout on success (`None` otherwise).
 pub(super) fn run_git_capture(args: &[&str], cwd: &Path) -> Option<String> {
-    run_git_capture_on(None, args, cwd)
+    capture(git_command(cwd, args))
 }
 
-/// [`run_git_capture`], optionally on a remote `host`.
-pub(super) fn run_git_capture_on(
-    host: Option<&HostDef>,
-    args: &[&str],
-    cwd: &Path,
-) -> Option<String> {
-    capture(git_command(host, cwd, args))
-}
-
-/// [`run_git_capture`] with `env` set on the invocation.
-///
-/// Local only: the remote form hands its arguments to a login shell, which an
-/// environment would have to be quoted into as well, and the one caller —
-/// git's own `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (see `git::diff::PROBE_IDENT`) —
-/// asks about the local worktree.
+/// [`run_git_capture`] with `env` set on the invocation — git's own
+/// `GIT_AUTHOR_*`/`GIT_COMMITTER_*` for the one caller (see
+/// `git::diff::PROBE_IDENT`).
 pub(super) fn run_git_capture_env(
     args: &[&str],
     cwd: &Path,
     env: &[(&str, &str)],
 ) -> Option<String> {
-    let mut cmd = git_command(None, cwd, args);
+    let mut cmd = git_command(cwd, args);
     cmd.envs(env.iter().copied());
     capture(cmd)
 }
@@ -137,36 +122,10 @@ fn capture(mut cmd: Command) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Build the launcher [`Command`] for an off-local host — the git-side name
-/// for [`crate::shell::HostLauncher`], which owns the construction.
-pub(super) fn host_launcher(h: &HostDef) -> Command {
-    crate::shell::HostLauncher::for_host(h).command()
-}
-
-/// Build a `git` [`Command`] targeting `cwd`, run locally, over SSH, or inside
-/// a WSL distro.
-///
-/// For an off-local host the command becomes
-/// `<launcher> git -C <cwd> <args…>` (launcher = `ssh <opts> <dest>` or
-/// `wsl.exe -d <distro>`), with each token shell-escaped so it survives the
-/// host login shell's re-splitting.
-pub(super) fn git_command(host: Option<&HostDef>, cwd: &Path, args: &[&str]) -> Command {
-    match host {
-        None => {
-            let mut cmd = git_program();
-            cmd.current_dir(cwd);
-            cmd.args(args);
-            cmd
-        }
-        Some(h) => {
-            let mut cmd = host_launcher(h);
-            cmd.arg(posix_quote("git"));
-            cmd.arg(posix_quote("-C"));
-            cmd.arg(posix_quote(&cwd.to_string_lossy()));
-            for a in args {
-                cmd.arg(posix_quote(a));
-            }
-            cmd
-        }
-    }
+/// Build a `git` [`Command`] that runs `args` in `cwd`.
+pub(super) fn git_command(cwd: &Path, args: &[&str]) -> Command {
+    let mut cmd = git_program();
+    cmd.current_dir(cwd);
+    cmd.args(args);
+    cmd
 }

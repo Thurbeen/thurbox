@@ -226,15 +226,14 @@ alias and re-export laundering, and test-only edges.
   rendering crate (`session_is_pure_data`).
 - **`theme/`** — the 36 presets and the custom-theme overrides, as `ratatui`
   colours: `session` cannot name a rendering crate, so the palettes live here.
-- **`git/`** — every `git` invocation, split by concern: `command` (the one
-  place a `git` process is built, and where the inherited `GIT_*` scrub lives),
-  `plugin` (clone/checkout of a plugin working copy), `remote` (running a command
-  over ssh/`wsl.exe`, the PowerShell encoding, and decoding what came back —
-  ADR-13's psmux divergences), `discovery` (listings, path classification,
-  child-repo scans, each a POSIX/PowerShell script pair over one line protocol),
-  `diff` (diffs, branches, commits, worktree stats) and `worktree` (create, list,
-  sync, remove — and the stale-lock/stash/transient-error retries). `git::*` is still
-  one flat surface; no caller names a submodule.
+- **`git/`** — every `git` invocation, all on this machine, split by concern:
+  `command` (the one place a `git` process is built, and where the inherited
+  `GIT_*` scrub lives), `plugin` (clone/checkout of a plugin working copy),
+  `stderr` (OpenSSH's advisory kept out of a reported error), `discovery`
+  (listings, path classification, child-repo scans), `newrepo` (a directory for
+  a repository that does not exist yet) and `diff` (diffs and worktree stats).
+  Fleet creates, syncs and removes worktrees. `git::*` is still one flat
+  surface; no caller names a submodule.
 - **`coordinator/`** — `main`'s own body. `App` and its state stay in
   `main.rs`; its behaviour is here, grouped by what it is for: the loop and its
   workers (`mod`), then `commands`, `publish`, `draw`, `input`, `mouse`, `focus`,

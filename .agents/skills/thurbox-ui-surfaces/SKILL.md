@@ -291,7 +291,7 @@ The data layer a review pane builds on:
 
 - **`session::review`** — the pure diff types and `parse_unified_diff`, which is
   why they live in `session` rather than beside a renderer.
-- **`git::diff_against{,_on}`** (a base branch) / **`git::working_diff_on`** (the
+- **`git::diff_against`** (a base branch) / **`git::working_diff`** (the
   uncommitted changes) and **`kernel::diff`** — diffs are produced on a worker and
   published into the snapshot, bounded at `MAX_DIFF_BYTES`. A Fleet Task on
   another host is not diffed. The working-tree diff folds in **untracked files**

@@ -266,7 +266,7 @@ pub fn load_all(config: &dyn HostsConfig) -> HostRegistry {
 /// distro, where interop puts it on `PATH` — and the callers on the TUI's hot
 /// paths (the snapshot rebuild, `session_ops::resolve_host` per diff request,
 /// the metrics/usage sampler, the command drain) were each paying that per
-/// call. The same reasoning as `git::remote::remote_home_cache`: `hosts.toml`
+/// call. `hosts.toml`
 /// is read once at startup — the backend registry is built from it then — so
 /// repointing a host already requires a restart, and this cache can never be
 /// staler than the registry it feeds.

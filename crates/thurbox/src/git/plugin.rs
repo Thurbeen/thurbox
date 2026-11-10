@@ -143,21 +143,21 @@ pub fn clone_plugin(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<()>
 /// Checking out the result means checking out `FETCH_HEAD`, not the ref's name: a
 /// fetch does not move the local branch a `--branch` clone left checked out.
 pub fn fetch_ref(repo: &Path, git_ref: &str) -> Result<()> {
-    let mut cmd = git_command(None, repo, &["fetch", "--depth", "1", "origin", git_ref]);
+    let mut cmd = git_command(repo, &["fetch", "--depth", "1", "origin", git_ref]);
     non_interactive(&mut cmd);
     run_git(cmd, "git fetch")
 }
 
 /// Fetch whatever the remote's default branch now points at.
 pub fn fetch_tip(repo: &Path) -> Result<()> {
-    let mut cmd = git_command(None, repo, &["fetch", "--depth", "1", "origin"]);
+    let mut cmd = git_command(repo, &["fetch", "--depth", "1", "origin"]);
     non_interactive(&mut cmd);
     run_git(cmd, "git fetch")
 }
 
 /// Check out a revision in a working copy.
 pub fn checkout_plugin(repo: &Path, rev: &str) -> Result<()> {
-    let cmd = git_command(None, repo, &["checkout", "--detach", rev]);
+    let cmd = git_command(repo, &["checkout", "--detach", rev]);
     run_git(cmd, "git checkout")
 }
 
@@ -166,7 +166,7 @@ pub fn checkout_plugin(repo: &Path, rev: &str) -> Result<()> {
 /// Recorded in the lock instead of the ref that was asked for: `main` moves, and a
 /// spec that reproduces "whatever main is now" reproduces nothing.
 pub fn head_commit(repo: &Path) -> Result<String> {
-    let output = git_command(None, repo, &["rev-parse", "HEAD"])
+    let output = git_command(repo, &["rev-parse", "HEAD"])
         .output()
         .context("failed to run git rev-parse")?;
     if !output.status.success() {
@@ -182,7 +182,7 @@ pub fn head_commit(repo: &Path) -> Result<String> {
 /// delivery matrix's: a dirty copy is never moved, and the caller reports it as
 /// kept.
 pub fn is_dirty(repo: &Path) -> Result<bool> {
-    let output = git_command(None, repo, &["status", "--porcelain"])
+    let output = git_command(repo, &["status", "--porcelain"])
         .output()
         .context("failed to run git status")?;
     if !output.status.success() {
