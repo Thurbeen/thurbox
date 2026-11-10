@@ -43,23 +43,23 @@ status-digest shows these labels and how to change them.
 
 Give each Task its own workspace, in exactly one of two forms:
 
-- `{"repositories": [{"name", "url", "ref"}]}` for every Task. The runtime
-  owns the checkout: it materializes the repositories for this Task alone, on a
-  branch it names, and cleans them up when the Task's session is deleted. Never
+- `{"repositories": [{"name", "url", "ref"}]}` for every Task. Fleet owns the
+  checkout: it makes a git worktree of each repository for this Task alone, on
+  a branch it names, and removes the worktrees when the Task is deleted. Never
   clone, add a worktree or prepare a checkout yourself, and never name a branch
   in the spec; Fleet has no branch, base, worktree or cleanup field.
   - Use the exact URL mapped in the Mission Control config's
-    `runtime.repositories`, for example the canonical
+    `workspaces.repositories`, for example the canonical
     `https://github.com/OWNER/REPO`; Fleet matches it byte for byte, with no
     `.git` or SSH normalization. An unmapped URL leaves the Task Pending with
     `NeedsAttention`/`RepositoryUnmapped`, without spending a spawn attempt, so
     add the mapping yourself, never a checkout or a directory in its place:
-    1. Find an existing source checkout on the target host whose `origin` is that
+    1. Find an existing source checkout on this machine whose `origin` is that
        URL (`git -C PATH remote get-url origin`) and which has no branch named
-       after `runtime.keyPrefix`. If there is none, several, or the mapping needs
-       anything else, ask the user and wait.
+       after `workspaces.branchPrefix` (`fleet` by default). If there is none,
+       several, or the mapping needs anything else, ask the user and wait.
     2. Write a candidate copy of the config that adds
-       `"URL" = "/absolute/source/path"` under `[runtime.repositories]` and
+       `"URL" = "/absolute/source/path"` under `[workspaces.repositories]` and
        changes nothing else. Check it against a new empty scratch directory
        outside Fleet's data, which opens the runtime the way `fleet up` does
        without touching the live store:
@@ -67,23 +67,22 @@ Give each Task its own workspace, in exactly one of two forms:
        Only when it exits 0, keep the old config as a backup and put the
        candidate in its place; then remove the scratch directory. A
        `fleet list` passing proves nothing: it does not open the runtime.
-    3. A running `fleet up` re-reads `runtime.repositories` before each sweep,
-       so the mapping applies without a restart and a waiting Task then spawns.
-       An invalid edit leaves the last valid mapping in force. Other config
-       settings need a restart: leave those to the user, and never stop the
-       engine yourself.
-  - `ref` is optional and opaque to Fleet. Thurbox uses it as the base of a
-    worktree created in the mapped source checkout, and it does not fetch, so
-    name a remote-tracking ref such as `origin/main` and have the worker confirm
-    its base against the forge before relying on it.
-  - The first repository is the primary. With one repository the worker starts
-    in its worktree; with several, Thurbox starts it in a directory holding one
-    entry per repository, named after each source checkout's directory. Say in
-    the brief which repository each part of the work belongs to.
-  - The runtime's cleanup applies when the Task is deleted: with Thurbox's
-    default `delete` it removes its worktrees, its branch and any unpushed
-    commits. Brief workers to push, declare or record anything that must
-    survive before they record their result.
+    3. A running `fleet up` re-reads `workspaces.repositories` before each
+       sweep, so the mapping applies without a restart and a waiting Task then
+       spawns. An invalid edit leaves the last valid mapping in force. Other
+       config settings need a restart: leave those to the user, and never stop
+       the engine yourself.
+  - `ref` is optional: the base of the worktree, read in the mapped source
+    checkout. Fleet does not fetch, so name a remote-tracking ref such as
+    `origin/main` and have the worker confirm its base against the forge
+    before relying on it.
+  - The first repository is the primary, and the worker starts in its
+    worktree. Say in the brief which repository each part of the work belongs
+    to.
+  - Deleting the Task removes its worktrees. Changes their branch does not
+    hold are first committed onto a preserved ref in the source checkout, and
+    branches are kept. Brief workers to push, declare or record anything that
+    must survive before they record their result.
 - `{"dir": PATH}` only when the user explicitly asks for that exception, for
   example for work that has no repository: an existing absolute directory on the
   target host, outside Fleet's data directory and outside this workspace.
@@ -202,8 +201,8 @@ Apply a provider, then its config, then the Task, for example:
 ```
 
 TaskConfig supports harness, host, model, ordered `envFrom` and string `env`;
-explicit Task fields override it, and model selection needs a matching
-`runtime.modelEnv` mapping. EnvProvider supports string `data` and ordered file
+explicit Task fields override it. No runtime passes a model to its harness
+yet, so leave `model` unset. EnvProvider supports string `data` and ordered file
 or command `sources`, read on the manager. Resolution freezes privately before
 launch, so later edits affect only future launches. Literal values are visible
 in resource reads and snapshots are plaintext: keep credentials in external

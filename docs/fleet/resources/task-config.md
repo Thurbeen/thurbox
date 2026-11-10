@@ -27,11 +27,11 @@ Save this manifest as `task-config.json`:
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `harness` | no | Default harness. The Task or this config must supply one. |
-| `host` | no | Default Thurbox host name; ultimately defaults to `local`. |
-| `model` | no | Default model; requires a matching harness variable in native `runtime.modelEnv`. |
+| `host` | no | Default runtime host name; ultimately defaults to `local`. |
+| `model` | no | Default model. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
 | `envFrom` | no | Ordered references to [EnvProvider](env-provider.md), each `{"name":"provider"}`. |
 | `env` | no | String environment map; overrides all referenced provider values. |
-| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. A thurbox that does not report activity never pauses either. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
+| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. A session on a runtime that cannot pause, or whose hooks report no activity, never pauses either. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 
 All fields are optional; unknown fields are refused. Harness/host/model must
 be nonempty, contain no NUL and not start with `-`. References use the same
@@ -76,7 +76,7 @@ Environment precedence, lowest to highest:
 ```text
 provider.data -> provider.sources (list order)
               -> TaskConfig.envFrom (list order)
-              -> TaskConfig.env -> Task.env -> runtime.modelEnv selection
+              -> TaskConfig.env -> Task.env
 ```
 
 Later sources win, including case variants, retaining the winning spelling.
@@ -120,9 +120,10 @@ writes are cleaned on store open.
 
 A missing/corrupt snapshot for an already frozen Task blocks re-resolution.
 Restore a protected backup or deliberately release/delete and recreate the
-Task. Do not delete its snapshot to refresh credentials mid-run. Thurbox must
-support `session create --env-stdin`; values never enter Task status, effect
-intents, error output or process arguments. The session receives this
+Task. Do not delete its snapshot to refresh credentials mid-run. The exec
+runtime passes the environment in the `start` request on the program's
+stdin. Values never enter Task status, effect intents, error output or
+process arguments. The session receives this
 environment, not the manager's `OTEL_*` variables; see
 [telemetry](../configuration.md#opentelemetry-export).
 

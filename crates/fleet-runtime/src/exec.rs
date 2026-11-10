@@ -317,7 +317,7 @@ impl ExecRuntime {
         if spec.model.is_some() {
             return Observation::Known(Started::Failed {
                 why: format!(
-                    "runtime {} has no harness-to-variable mapping for spec.model; drop the model or use the thurbox runtime",
+                    "runtime {} passes no model to its harness; drop spec.model",
                     rt.name
                 ),
             });

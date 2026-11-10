@@ -1072,9 +1072,9 @@ its own directory below it: `<dir>/<conversation name>`, for example
   keys](#effect-and-recovery-keys). No Task names a missing directory.
 - The directory is created on the Task's host: the Task's `host`, else
   its TaskConfig's `host`, else `local`. A TaskConfig that is absent makes
-  the create fail, because the directory's host is not known. The thurbox
-  runtime creates directories on the local host only. On another host,
-  the create fails and says why.
+  the create fail, because the directory's host is not known. The exec
+  runtime creates the directory through the `exec` verb of the runtime that
+  serves the host.
 
 Threads never wait for each other. The manager refuses the create with
 `WorkspaceBusy` only while another Task already has the thread's own

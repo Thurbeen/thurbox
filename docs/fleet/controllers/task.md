@@ -56,15 +56,15 @@ for the distinction between bounded sends and continuing recovery attempts.
 | Resource and effect types | [Task types](../../../crates/fleet-api/src/task.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
 | Lease, status, intent and receipt ordering | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
 | Session definition and observed state | [Session](../../../crates/fleet-api/src/session.rs), [TaskController](../../../crates/fleet-controllers/src/task.rs) | [Session unit tests](../../../crates/fleet-api/src/session.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs), [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
-| Session identity and delivery journal | [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime.rs) |
-| Workspace trust before the brief | [Runtime port](../../../crates/fleet-api/src/runtime.rs), [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Workspace trust E2E](../../../crates/fleet-cli/tests/e2e_workspace_trust.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
-| Pausing an idle session and resuming it | [TaskController](../../../crates/fleet-controllers/src/task.rs), [runtime port](../../../crates/fleet-api/src/runtime.rs), [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Pause E2E](../../../crates/fleet-cli/tests/e2e_task_pause.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Session identity and the runtime protocol | [Exec runtime](../../../crates/fleet-runtime/src/exec.rs) | [Exec runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime_exec.rs) |
+| Workspace trust before the brief | [Runtime port](../../../crates/fleet-api/src/runtime.rs), [Exec runtime](../../../crates/fleet-runtime/src/exec.rs), [harness profiles](../../../crates/fleet-api/src/harness.rs) | [Workspace trust E2E](../../../crates/fleet-cli/tests/e2e_workspace_trust.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Pausing an idle session and resuming it | [TaskController](../../../crates/fleet-controllers/src/task.rs), [runtime port](../../../crates/fleet-api/src/runtime.rs), [Fake runtime](../../../crates/fleet-runtime/src/fake.rs) | [Pause E2E](../../../crates/fleet-cli/tests/e2e_task_pause.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 | Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../../crates/fleet-api/src/inbox.rs), [verbs](../../../crates/fleet-manager/src/verbs.rs), [store](../../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 
 The lifecycle E2E suite drives the built CLI from apply to result and release,
-including crashes, failed attempts and Unknown observations. The runtime E2E
-suite also covers replacement session identities, lost release answers and
-brief delivery against a bounded `thurbox-cli` stub.
+including crashes, failed attempts and Unknown observations. The exec runtime
+E2E suite drives `runtime-mux` and a reference script: start and release,
+signals, a revive on the reported conversation, and brief delivery.
 
 ## Task state machine
 
@@ -186,8 +186,8 @@ These are controller constants, not extra configuration resources.
 
 A single brief key is reused so retrying a proven-undelivered brief does not
 create a new delivery identity, and each inbox entry's key is reused the same
-way. The thurbox pending journal prevents another
-send when the first might already have typed text. A key reused by a different
+way. A send whose answer is lost is never repeated until a proof says that
+the text did not arrive. A key reused by a different
 session is not proof that the original worker is alive and does not transfer
 at-rest proof to that replacement.
 
@@ -241,10 +241,10 @@ delivered amendment also re-opens a Concluded Task, with `Concluded=False/Amende
 
 ### After a host reboot
 
-A host reboot ends every agent process. The Thurbox runtime keeps each
-session's row, id, key, worktree and conversation. The Task keeps its
-session, brief record and counters. Fleet resumes the work in the same
-session:
+A host reboot ends every agent process. The Task keeps its session, brief
+record, counters and conversation. Its workspace stays on disk. When the
+runtime still holds the session's key with its process exited, `lost`
+answers true. Fleet then resumes the work in the same session:
 
 ```text
 fleet up starts ──> sweep ──> Lost? ─yes─> Revive (same id, same worktree, conversation resumed)
@@ -299,7 +299,7 @@ The controller plans a pause when all of these hold:
 - The phase is Briefed, or Concluded.
 - The inbox holds no entry to deliver, and no catch-up note is owed.
 - No brief, revive or resume waits for its outcome.
-- The runtime can pause.
+- The runtime can pause. The fake runtime can. The exec runtime cannot.
 - The agent's own hooks reported Idle (`fleet signal idle`) on every pass
   for `pauseAfterMs`, and on the pass that plans the pause. `status.idleSince`
   records the first Idle answer. Active, Unknown, a pass that sent something, a recorded result or
@@ -393,9 +393,7 @@ that report, the `exec` kind reads its screen: the empty composer under its
 welcome screen, with Codex in the foreground, is ready and trusted (its
 launch override trusts the workspace).
 
-The `exec` runtime kind and the fake runtime run the profile's argv. The
-thurbox runtime keeps launching through thurbox's own agent registry, and
-receives the profile's hooks and trust as `--agent-arg`s.
+The `exec` runtime kind and the fake runtime run the profile's argv.
 
 ### Deletion protocol
 
@@ -406,9 +404,7 @@ interrupted before its receipt, the controller first looks up its key so it
 cannot orphan an unknown session.
 
 For a recorded session, the controller requires Known at-rest or readable
-absence before planning Release. Thurbox checks that the current key holder
-still has the recorded id before deleting it; a replacement yields Unknown.
-The finalizer remains while release is failed or ambiguous. It is removed
+absence before planning Release. The finalizer remains while release is failed or ambiguous. It is removed
 only after Known Released, or when there is no session to release.
 
 When Fleet made the workspace, the release is followed by `CleanWorkspace`:
@@ -585,7 +581,7 @@ return `Observation<T>`; a refused effect is
 | Method | Input | Answer |
 | --- | --- | --- |
 | `operation_bound` | None | Worst-case duration of one session operation, including timeout and cleanup grace, in milliseconds. |
-| `prepare_execution` | Resolved execution | Freeze the runtime model-variable mapping into its private environment, or Unknown. |
+| `prepare_execution` | Resolved execution | The execution to freeze, unchanged by default, or Unknown. |
 | `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
 | `spawn` | `SpawnSpec`, with `ready` when Fleet made the workspace | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
@@ -605,37 +601,18 @@ return `Observation<T>`; a refused effect is
 | `create_dir` | Host and directory | `Ok(true)` when made, `Ok(false)` when it existed, `Err` with why, or Unknown. Used for a conversation Task's thread directory. |
 | `remove_dir` | Host and directory | `Ok(())` when removed or absent, `Err` with why, or Unknown. |
 
-The thurbox adapter executes bounded `thurbox-cli` calls via `fleet-exec`.
-Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
-session metadata as pending before sending and delivered afterward. A pending
-journal entry is ambiguous, so it is never a license to resend. A text over
-16 000 bytes is a Known failure, refused before the journal and the send.
-The adapter gives every text to the agent's own inbox with `thurbox-cli
-message send --kind fleet`. It never types into the terminal composer.
-Thurbox chooses the route and reports it as `delivered_via`:
-`claude-socket` and `codex-queue` reach a working turn. Thurbox answers
-`mailbox`, with exit 0 and a `delivery_note`, when it cannot reach the
-agent. Thurbox 2.81 answers `mailbox` for these sessions:
-
-- a session on a remote host,
-- a Codex session that no hook has bound to its conversation yet,
-- a Claude Code session whose inbox socket failed,
-- a session of any other harness.
-
-The adapter returns a `mailbox` answer as `Queued` with the note, and
-journals the key as queued. A queued key is never sent again. A failed
-`message send` can still have queued the text, so the adapter never
-repeats it. A refused call's reason is the first
-line of its stderr, else of its stdout, where `thurbox-cli` prints runtime
-errors. On release, a different id holding the key returns Unknown and is
-not deleted.
-`lost` reads `session get`: `hook_corroboration` `missing` is lost. Any
-window that is there, even a dead one, is not lost. `revive` runs
-`session restart --if-missing`. A session with no window is at rest.
-`paused` reads `stopped` and `activity` from `session get`: either one
-saying stopped is Known true. `pause` runs `session stop` and
-`resume` runs `session start`. Both first check that the key still belongs
-to the recorded id, as `release` does. A stopped session is at rest.
+The exec adapter runs each call as one bounded `<program> <verb>` of the
+[runtime protocol](../../runtime/README.md#the-runtime-protocol) through
+`fleet-exec`. Its session key and id are `<keyPrefix>.<uid>`, so a restart
+keeps the id. `brief` is `input` of the text with a submit, answered as
+`Delivered` with the route `input`, which may hold the text behind a dialog.
+The adapter cannot read a brief back: `brief_delivered` is Unknown, and the
+agent's prompt hook proves the delivery. `lost` is a key whose process
+exited. A key the runtime no longer holds is Unknown, since a `stop` also
+leaves none. `revive` and `resume` start the harness profile's resume argv
+under the same key. A running agent is at rest once its hooks last
+reported idle. An exited or absent one is at rest. `release` is `stop` with
+`release: true`. The adapter cannot pause.
 
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor
@@ -673,10 +650,9 @@ only the port's answer and knows no harness.
 - `Untrusted` holds the brief and asks a person, with the adapter's `why`.
 - Unknown holds the brief. It asks nobody, because it proves nothing.
 
-The thurbox adapter reads the harness from the session row's `agent`. It
-takes the harness's interface from `runtime.workspaceTrust`. The
-[runtime contract](../contracts.md#workspace-trust) lists each
-interface and what it proves. The fake adapter answers from each session's
+The exec adapter reads the agent's signals, then its screen. The
+[runtime contract](../contracts.md#workspace-trust) lists what each answer
+proves. The fake adapter answers from each session's
 `trusted` flag and its `workspaceTrust` fault.
 
 ### Store port and write ownership

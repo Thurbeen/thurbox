@@ -1,14 +1,12 @@
 mod support;
 
+use fleet_runtime::Fault;
 use serde_json::json;
 use support::{Env, object, task};
 
 #[test]
 fn task_config_is_passive_and_launch_defaults_are_frozen_across_restart() {
-    let e = Env::thurbox("config-freeze");
-    let mut cfg = std::fs::read_to_string(&e.config).unwrap();
-    cfg.push_str("\n[runtime.modelEnv]\ncodex = \"CODEX_MODEL\"\n");
-    std::fs::write(&e.config, cfg).unwrap();
+    let e = Env::new("config-freeze");
     let config = object(
         "TaskConfig",
         "shared",
@@ -27,12 +25,10 @@ fn task_config_is_passive_and_launch_defaults_are_frozen_across_restart() {
     let mut t = task("inherited", false);
     t["spec"].as_object_mut().unwrap().remove("harness");
     t["spec"].as_object_mut().unwrap().remove("host");
-    // Below the test's HOME: a home directory is never trusted automatically.
-    t["spec"]["workspace"]["dir"] = json!(e.root.join("work").to_string_lossy());
     t["spec"]["configRef"] = json!({"name":"shared"});
     e.apply(t.clone()).ok();
     e.reconcile().ok();
-    assert!(e.stub_sessions().is_empty());
+    assert!(e.host().state().unwrap().sessions.is_empty());
     let mut changed = config.clone();
     changed["spec"]["model"] = json!("dispatch-model");
     e.apply(changed.clone()).ok();
@@ -50,22 +46,15 @@ fn task_config_is_passive_and_launch_defaults_are_frozen_across_restart() {
     e.apply(config).ok();
     e.reconcile().ok();
     assert_eq!(e.status("inherited")["execution"], snapshot);
-    assert_eq!(e.stub_calls_of("create"), 1);
-    assert_eq!(e.stub_calls_of("message send"), 1);
-    let create = e
-        .stub_calls()
-        .into_iter()
-        .find(|c| c["argv"][1] == "create")
-        .unwrap();
-    let args = create["argv"].as_array().unwrap();
-    assert!(args.contains(&json!("--env-stdin")));
-    assert!(!create.to_string().contains("bonjour"));
-    assert!(
-        e.stub_sessions()[0]["env"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("CODEX_MODEL"))
-    );
+    assert_eq!((e.calls("spawn"), e.calls("brief")), (1, 1));
+    let session = e
+        .host()
+        .session(&e.session_key("inherited"))
+        .unwrap()
+        .expect("a session");
+    assert_eq!(session.harness, "codex");
+    assert_eq!(session.model.as_deref(), Some("dispatch-model"));
+    assert_eq!(session.env["GREETING"], "bonjour = 🌍");
 }
 
 #[test]
@@ -133,7 +122,7 @@ fn references_overrides_validation_and_missing_source_do_not_launch_wrong_worker
 
 #[test]
 fn providers_resolve_before_launch_and_keep_values_private_on_restart() {
-    let e = Env::thurbox("provider-private");
+    let e = Env::new("provider-private");
     let secret = "private-provider-value";
     let file = e.root.join("vars.json");
     std::fs::write(&file, json!({"TOKEN":secret,"WIN_CASE":"file"}).to_string()).unwrap();
@@ -152,15 +141,9 @@ fn providers_resolve_before_launch_and_keep_values_private_on_restart() {
     let mut t = task("private", true);
     t["spec"]["configRef"] = json!({"name":"shared"});
     t["spec"]["env"] = json!({"win_case":"task"});
-    t["spec"]["workspace"]["dir"] = json!(e.root.to_string_lossy());
     e.apply(t).ok();
     e.reconcile().ok();
     assert!(!e.get("private").to_string().contains(secret));
-    assert!(
-        !serde_json::to_string(&e.stub_calls())
-            .unwrap()
-            .contains(secret)
-    );
     let private_dir = e.data.join("launches");
     let snapshots: Vec<_> = std::fs::read_dir(&private_dir).unwrap().flatten().collect();
     assert_eq!(snapshots.len(), 1);
@@ -172,8 +155,7 @@ fn providers_resolve_before_launch_and_keep_values_private_on_restart() {
     std::fs::write(&file, "invalid changed content").unwrap();
     e.fleet(&["delete", "envprovider", "file"]).ok();
     e.reconcile().ok();
-    assert_eq!(e.stub_calls_of("create"), 1);
-    assert_eq!(e.stub_calls_of("message send"), 1);
+    assert_eq!((e.calls("spawn"), e.calls("brief")), (1, 1));
     assert_eq!(
         e.status("private")["execution"]["sources"]
             .as_array()
@@ -195,7 +177,7 @@ fn launch(e: &Env) -> serde_json::Value {
 
 #[test]
 fn external_errors_never_launch_or_echo_values_and_can_recover() {
-    let e = Env::thurbox("provider-errors");
+    let e = Env::new("provider-errors");
     let file = e.root.join("source.json");
     let provider = |source| object("EnvProvider", "external", json!({"sources":[source]}));
     let source = json!({"type":"file","path":file});
@@ -207,7 +189,6 @@ fn external_errors_never_launch_or_echo_values_and_can_recover() {
     ))
     .ok();
     let mut t = task("blocked", true);
-    t["spec"]["workspace"]["dir"] = json!(e.root.to_string_lossy());
     t["spec"]["configRef"] = json!({"name":"shared"});
     e.apply(t).ok();
     e.reconcile()
@@ -227,26 +208,21 @@ fn external_errors_never_launch_or_echo_values_and_can_recover() {
     let command = json!({"type":"command","program":support::stub_exe(),"args":["sleep"],"cwd":e.root,"timeoutMs":30});
     e.apply(provider(command)).ok();
     e.reconcile().code(1).stdout_has("timed out");
-    assert_eq!(e.stub_calls_of("create"), 0);
+    assert_eq!(e.calls("spawn"), 0);
     std::fs::write(&file, json!({"TOKEN":"private-good-value"}).to_string()).unwrap();
     let command = json!({"type":"command","program":support::stub_exe(),"args":["env-output",file],"cwd":e.root,"timeoutMs":1000});
     e.apply(provider(command)).ok();
     e.reconcile().ok();
     assert_eq!(launch(&e)["env"]["TOKEN"], "private-good-value");
     assert!(!e.get("blocked").to_string().contains("private-good-value"));
-    assert!(
-        !serde_json::to_string(&e.stub_calls())
-            .unwrap()
-            .contains("private-good-value")
-    );
     std::fs::write(&file, "invalid changed command output").unwrap();
     e.reconcile().ok();
-    assert_eq!(e.stub_calls_of("create"), 1);
+    assert_eq!(e.calls("spawn"), 1);
 }
 
 #[test]
 fn failed_spawn_restarts_from_private_snapshot_and_missing_snapshot_blocks() {
-    let e = Env::thurbox("private-retry");
+    let e = Env::new("private-retry");
     let file = e.root.join("vars.json");
     std::fs::write(&file, json!({"TOKEN":"first-value"}).to_string()).unwrap();
     e.apply(object(
@@ -262,17 +238,21 @@ fn failed_spawn_restarts_from_private_snapshot_and_missing_snapshot_blocks() {
     ))
     .ok();
     let mut t = task("retry", true);
-    t["spec"]["workspace"]["dir"] = json!(e.root.to_string_lossy());
     t["spec"]["configRef"] = json!({"name":"shared"});
     e.apply(t).ok();
-    e.stub_fault("create", "fail", 1);
+    e.fault(Fault::new("spawn", "fail"));
     e.reconcile().ok();
     std::fs::write(&file, json!({"TOKEN":"changed-value"}).to_string()).unwrap();
     e.expire_wait("retry");
     e.reconcile().ok();
     assert_eq!(launch(&e)["env"]["TOKEN"], "first-value");
-    assert_eq!(e.stub_sessions().len(), 1);
-    assert_eq!(e.stub_calls_of("message send"), 1);
+    let session = e
+        .host()
+        .session(&e.session_key("retry"))
+        .unwrap()
+        .expect("a session");
+    assert_eq!(session.env["TOKEN"], "first-value");
+    assert_eq!((e.calls("spawn"), e.calls("brief")), (2, 1));
     let launch_path = std::fs::read_dir(e.data.join("launches"))
         .unwrap()
         .flatten()
@@ -301,7 +281,7 @@ fn failed_spawn_restarts_from_private_snapshot_and_missing_snapshot_blocks() {
     }
     std::fs::remove_file(launch_path).unwrap();
     e.reconcile().code(1).stdout_has("private launch missing");
-    assert_eq!(e.stub_sessions().len(), 1);
+    assert_eq!(e.host().state().unwrap().sessions.len(), 1);
 }
 
 #[cfg(unix)]
@@ -353,7 +333,7 @@ fn escaped_environment_values_survive_snapshot_restart_and_final_deletion() {
 
 #[test]
 fn all_references_are_validated_before_any_provider_command_runs() {
-    let e = Env::thurbox("source-preflight");
+    let e = Env::new("source-preflight");
     let file = e.root.join("env.json");
     let marker = e.root.join("command-called");
     std::fs::write(&file, "{}").unwrap();

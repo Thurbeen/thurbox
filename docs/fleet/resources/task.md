@@ -37,7 +37,7 @@ except `dispatch` and `forge`. `amendments` grows only through
 | --- | --- | --- |
 | `harness` | unless inherited | The agent harness, such as `claude-code`, passed to the runtime as is. |
 | `host` | no | The runtime host the session runs on. Default `local`. |
-| `model` | no | The model the harness runs; it reaches the harness through the variable `runtime.modelEnv` names for it. |
+| `model` | no | The model the harness runs. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
 | `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
@@ -78,7 +78,7 @@ A workspace has exactly one of two forms. Unknown fields are refused.
 - Fleet has no branch, base, worktree or cleanup field. The maker makes the
   checkout for this Task alone and names its branch. The worker reports the
   change it opened through `fleet declare`.
-- `workspaces.repositories` (or `runtime.repositories`) in
+- `workspaces.repositories` in
   [`fleet.toml`](../configuration.md#fields) maps each `url` to its source
   checkout. A Task with an unmapped `url`
   waits with `RepositoryUnmapped`.
@@ -291,9 +291,8 @@ entries are still delivered. An entry whose journal stays unreadable for 3 reads
 raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
 again, stays in `status.inbox`, and holds back no later entry. An entry the
 runtime only queued, where the agent does not read it, raises
-`NeedsAttention/DeliveryQueued` naming it, with the same outcome. The Thurbox
-runtime refuses an entry over 16 000 bytes before it types anything, because
-tmux refuses a longer command. More than 20 entries still to deliver raise
+`NeedsAttention/DeliveryQueued` naming it, with the same outcome. More than
+20 entries still to deliver raise
 `NeedsAttention/InboxFull`. An entry given up on does not count. Such an entry
 can never be delivered, so it can never make room. A Concluded Task with a
 nonempty inbox is due again for delivery, and at rest for a session recheck

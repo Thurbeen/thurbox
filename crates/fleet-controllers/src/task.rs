@@ -520,14 +520,12 @@ impl Pass<'_, '_> {
             Some(Observation::Known(EffectOutcome::Failed { why })) => self.spawn_retry(&why),
             Some(Observation::Known(EffectOutcome::Unmapped { url })) => self.spawn_unmapped(
                 UNMAPPED,
-                format!("repository {url} is not in runtime.repositories"),
+                format!("repository {url} is not in workspaces.repositories"),
             ),
             Some(Observation::Known(EffectOutcome::TrustUnmapped { harness })) => self
                 .spawn_unmapped(
                     TRUST_UNMAPPED,
-                    format!(
-                        "harness {harness} is not in runtime.workspaceTrust; set runtime.workspaceTrust.{harness} to codex, claude or none"
-                    ),
+                    format!("the runtime knows no workspace-trust interface for harness {harness}"),
                 ),
             Some(Observation::Known(other)) => {
                 self.spawn_retry(&format!("unexpected outcome {other:?}"))
@@ -1302,8 +1300,7 @@ impl Pass<'_, '_> {
 
     /// Send the catch-up note owed to a revived or resumed session, under
     /// its own key, as an inbox entry is sent. Returns true while it is
-    /// owed: nothing else is delivered before it. A note a record kept
-    /// under an older `resume/<n>` key is sent under that key.
+    /// owed: nothing else is delivered before it.
     fn catch_up(&mut self, session: SessionRef) -> bool {
         let Some(key) = self.st.catch_up.clone() else {
             return false;
@@ -1706,7 +1703,7 @@ impl Pass<'_, '_> {
                     self.st.receipts.remove(&key);
                     self.st.materialize_attempts = attempt - 1;
                     self.wait_from(self.now());
-                    let why = format!("repository {url} is not in runtime.repositories");
+                    let why = format!("repository {url} is not in workspaces.repositories");
                     self.cond(
                         WORKSPACE_READY,
                         ConditionStatus::False,
@@ -1978,9 +1975,7 @@ fn in_flight(obj: &Object, st: &TaskStatus) -> bool {
         || effect_in_flight(st, &key(RESUME, st.resumes), RESUME)
 }
 
-/// Whether `key` holds an intent of the effect `action`. A record from
-/// before catch-up notes keeps its note's Brief intent under a
-/// `resume/<n>` key: that is a note, never a resume effect.
+/// Whether `key` holds an intent of the effect `action`.
 fn effect_in_flight(st: &TaskStatus, key: &str, action: &str) -> bool {
     st.intents.get(key).is_some_and(|i| i.action == action)
 }

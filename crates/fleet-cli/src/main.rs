@@ -27,8 +27,8 @@ use fleet_manager::{
     receive, record_result, send,
 };
 use fleet_runtime::{
-    ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals, Repositories, ThurboxConfig,
-    ThurboxRuntime, TrustInterface, WorktreeConfig, WorktreeWorkspaces,
+    ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals, Repositories, WorktreeConfig,
+    WorktreeWorkspaces,
 };
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
@@ -1112,7 +1112,7 @@ fn cmd_up(
                             let startup = matches!(condition["type"].as_str(), Some("HostReachable" | "Spawned" | "Briefed"));
                             let attention = matches!(condition["type"].as_str(), Some("NeedsAttention" | "Stalled" | "WorkerGone"));
                             if (startup && matches!(status, "False" | "Unknown")) || (attention && status == "True") {
-                                diagnostics.push(format!("Task/vega {}: {} {}. Inspect the Thurbox session and authenticated harness if readiness or startup is blocked", condition["type"].as_str().unwrap_or(""), condition["reason"].as_str().unwrap_or(""), condition["message"].as_str().unwrap_or("")));
+                                diagnostics.push(format!("Task/vega {}: {} {}. Inspect the session and authenticated harness if readiness or startup is blocked", condition["type"].as_str().unwrap_or(""), condition["reason"].as_str().unwrap_or(""), condition["message"].as_str().unwrap_or("")));
                             }
                         }
                     }
@@ -1199,7 +1199,7 @@ fn version(json: bool) -> Result<(), Failure> {
             "kinds": fleet_api::kinds::BUILT_IN,
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
-            "runtimes": ["exec", "thurbox", "fake"],
+            "runtimes": ["exec", "fake"],
             "harnesses": fleet_api::harness::PROFILED,
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
@@ -1212,8 +1212,7 @@ fn version(json: bool) -> Result<(), Failure> {
 }
 
 /// What `fleet up` re-reads from its config file between sweeps: the
-/// repository map (`workspaces.repositories` and `runtime.repositories`),
-/// and nothing else. Every other setting, the store
+/// repository map (`workspaces.repositories`), and nothing else. Every other setting, the store
 /// and the runtime's identity among them, stays as the process started.
 struct Reload<'a> {
     path: &'a Path,
@@ -1273,45 +1272,30 @@ impl<'a> Reload<'a> {
 
 fn without_repositories(text: &str) -> Option<toml::Value> {
     let mut value: toml::Value = toml::from_str(text).ok()?;
-    for section in ["runtime", "workspaces"] {
-        if let Some(t) = value.get_mut(section).and_then(toml::Value::as_table_mut) {
-            t.remove("repositories");
-        }
+    if let Some(t) = value
+        .get_mut("workspaces")
+        .and_then(toml::Value::as_table_mut)
+    {
+        t.remove("repositories");
     }
     Some(value)
 }
 
-/// `runtime.repositories`, each source an absolute path.
-fn repositories(rt: &config::RuntimeConfig) -> Result<BTreeMap<String, String>, String> {
-    for (url, source) in &rt.repositories {
-        if !fleet_api::validate::is_absolute_path(source) {
-            return Err(format!(
-                "runtime.repositories: the source {source:?} of {url} must be an absolute path"
-            ));
-        }
-    }
-    Ok(rt.repositories.clone())
-}
-
-/// Each repository URL's source checkout: `workspaces.repositories`, and a
-/// `[runtime]` section's `repositories`, each source an absolute path. The
-/// two name one map, so a URL in both is refused.
+/// Each repository URL's source checkout: `workspaces.repositories`, each
+/// source an absolute path.
 fn source_map(config: &Config) -> Result<BTreeMap<String, String>, String> {
-    let mut map = match &config.runtime {
-        Some(rt) => repositories(rt)?,
-        None => BTreeMap::new(),
-    };
-    for (url, source) in config.workspaces.iter().flat_map(|ws| &ws.repositories) {
-        if !fleet_api::validate::is_absolute_path(source) {
-            return Err(format!(
-                "workspaces.repositories: the source {source:?} of {url} must be an absolute path"
-            ));
-        }
-        if map.insert(url.clone(), source.clone()).is_some() {
-            return Err(format!(
-                "{url} is mapped in both runtime.repositories and workspaces.repositories; keep one"
-            ));
-        }
+    let map: BTreeMap<String, String> = config
+        .workspaces
+        .iter()
+        .flat_map(|ws| ws.repositories.clone())
+        .collect();
+    if let Some((url, source)) = map
+        .iter()
+        .find(|(_, source)| !fleet_api::validate::is_absolute_path(source))
+    {
+        return Err(format!(
+            "workspaces.repositories: the source {source:?} of {url} must be an absolute path"
+        ));
     }
     Ok(map)
 }
@@ -1391,7 +1375,8 @@ fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
     FileSignals::open(&dir).map_err(|e| fail(format!("{}: {e}", dir.display())))
 }
 
-/// The runtime, and for thurbox the handle to its repository map.
+/// The runtime, and for programs under `[runtimes]` the handle to the
+/// repository map, which `fleet up` reloads.
 fn open_reloadable_runtime(
     config: &Config,
     signals: &FileSignals,
@@ -1435,40 +1420,8 @@ fn open_reloadable_runtime(
                 .map_err(|e| fail(format!("fake host {}: {e}", dir.display())))?;
             Ok((Box::new(FakeRuntime::new(host)), None))
         }
-        "thurbox" => {
-            let default_cli = if cfg!(windows) {
-                "thurbox-cli.exe"
-            } else {
-                "thurbox-cli"
-            };
-            let mut cfg = ThurboxConfig::new(rt.cli.clone().unwrap_or_else(|| default_cli.into()));
-            cfg.call_timeout = std::time::Duration::from_millis(
-                rt.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS),
-            );
-            if let Some(p) = &rt.key_prefix {
-                if p.len() > 32 || fleet_api::validate::validate_name(p).is_err() || p.contains('.')
-                {
-                    return Err(fail(format!(
-                        "runtime.keyPrefix {p:?}: use at most 32 lowercase letters, digits and '-'"
-                    )));
-                }
-                cfg.key_prefix = p.clone();
-            }
-            cfg.model_env.extend(rt.model_env.clone());
-            // The worktree adapter reads the map; `fleet up` reloads it.
-            let handle = Repositories::new(source_map(config).map_err(fail)?);
-            for (harness, name) in &rt.workspace_trust {
-                let Some(interface) = TrustInterface::parse(name) else {
-                    return Err(fail(format!(
-                        "runtime.workspaceTrust.{harness} {name:?}: use codex, claude or none"
-                    )));
-                };
-                cfg.workspace_trust.insert(harness.clone(), interface);
-            }
-            Ok((Box::new(ThurboxRuntime::new(cfg)), Some(handle)))
-        }
         other => Err(fail(format!(
-            "unknown runtime kind {other:?}; this build has thurbox and fake"
+            "unknown runtime kind {other:?}; [runtime] is the fake, and a real runtime is a program under [runtimes]"
         ))),
     }
 }
@@ -1635,7 +1588,7 @@ fn lease_for(bound: u64, asked: Option<u64>) -> Result<u64, Failure> {
 
 const DEFAULT_LEASE_MS: u64 = 30_000;
 
-/// thurbox-cli and forge CLI calls are bounded at half the default lease.
+/// Runtime program and forge CLI calls are bounded at half the default lease.
 const DEFAULT_CALL_TIMEOUT_MS: u64 = 15_000;
 
 /// `task`, `tasks` and `Task` all name Task. Unsupported kinds are refused

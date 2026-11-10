@@ -1,5 +1,5 @@
 //! The one place fleet starts a process. Every adapter that runs a program
-//! (the thurbox runtime, the gate's tools) goes through [`run`], and `crates/architecture.toml` lets no other crate name
+//! (a runtime program, the gate's tools) goes through [`run`], and `crates/architecture.toml` lets no other crate name
 //! `std::process::Command`.
 //!
 //! What a run promises:

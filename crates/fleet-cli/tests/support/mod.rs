@@ -146,28 +146,6 @@ impl Env {
         }
     }
 
-    /// An environment whose runtime is the thurbox adapter driving the stub
-    /// thurbox-cli (`tests/stubs/stub.rs`).
-    pub fn thurbox(name: &str) -> Env {
-        let mut env = Env::new(name);
-        let stub_dir = env.root.join("stub");
-        fs::create_dir_all(&stub_dir).expect("stub dir");
-        let stub = stub_exe();
-        let stub = stub.to_string_lossy();
-        fs::write(
-            &env.config,
-            format!(
-                "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"thurbox\"\ncli = '{stub}'\ncallTimeoutMs = 3000\n"
-            ),
-        )
-        .expect("config");
-        env.vars.push((
-            "FLEET_STUB_DIR".into(),
-            stub_dir.to_string_lossy().into_owned(),
-        ));
-        env
-    }
-
     /// An environment with a fake forge under `forge.test` beside the fake
     /// runtime, with short retention defaults a test can still wait out.
     pub fn forge(name: &str) -> Env {
@@ -303,8 +281,8 @@ impl Env {
         .expect("write stub state");
     }
 
-    /// Arm a stub fault: `call` is a thurbox subcommand (`create`, `send`,
-    /// `meta-get`, `delete`, ...), `relay`, or `watch-stream`.
+    /// Arm a stub fault: `call` is the role the stub runs as (`gh`, `glab`,
+    /// `az`, `curl`).
     pub fn stub_fault(&self, call: &str, mode: &str, times: u32) {
         self.stub_fault_after(call, mode, times, 0);
     }
@@ -331,18 +309,6 @@ impl Env {
             .lines()
             .map(|l| serde_json::from_str(l).expect("call line"))
             .collect()
-    }
-
-    /// How many calls were `sub`: `"message send"`, or a `session` subcommand.
-    pub fn stub_calls_of(&self, sub: &str) -> usize {
-        self.stub_calls().iter().filter(|c| is_call(c, sub)).count()
-    }
-
-    pub fn stub_sessions(&self) -> Vec<Value> {
-        self.stub()["sessions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
     }
 
     /// Pids of the grandchildren a hanging stub left behind.
@@ -373,8 +339,8 @@ impl Env {
         out
     }
 
-    /// An environment with no program on PATH at all: no thurbox-cli, no
-    /// fleet extension, no shell. The core must not need any of them.
+    /// An environment with no program on PATH at all: no runtime program,
+    /// no fleet extension, no shell. The core must not need any of them.
     pub fn without_tools(name: &str) -> Env {
         let mut env = Env::new(name);
         let empty = env.root.join("empty-path");
@@ -718,12 +684,6 @@ fn alive(pid: u32) -> bool {
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
 }
 
-/// What a thurbox scenario applies besides its Tasks: nothing, as a Task
-/// names its runtime host itself.
-pub fn runtime_config() -> Value {
-    base_config()
-}
-
 pub fn object(kind: &str, name: &str, spec: Value) -> Value {
     json!({"apiVersion": "fleet/v1alpha1", "kind": kind, "metadata": {"name": name}, "spec": spec})
 }
@@ -795,10 +755,4 @@ pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
-}
-
-/// Whether a stub call is `sub`: `"message send"`, or a `session` subcommand.
-pub fn is_call(c: &serde_json::Value, sub: &str) -> bool {
-    let (top, sub) = sub.split_once(' ').unwrap_or(("session", sub));
-    c["argv"][0] == top && c["argv"][1] == sub
 }

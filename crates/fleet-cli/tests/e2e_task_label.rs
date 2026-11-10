@@ -23,11 +23,11 @@ fn with_task(name: &str) -> Env {
 fn a_label_is_set_and_nothing_else_of_the_task_changes() {
     let env = with_task("label-set");
     let before = env.get("t1");
-    env.fleet(&["label", "task", "t1", "thurbox.dev/name=Review main"])
+    env.fleet(&["label", "task", "t1", "example.test/name=Review main"])
         .ok();
     let after = env.get("t1");
     assert_eq!(
-        after["metadata"]["labels"]["thurbox.dev/name"],
+        after["metadata"]["labels"]["example.test/name"],
         "Review main"
     );
     assert_eq!(after["spec"], before["spec"]);
@@ -98,10 +98,10 @@ fn a_task_a_conversation_made_keeps_its_labels() {
     std::fs::write(&file, stored.to_string()).unwrap();
     let before = env.get("t2")["metadata"]["labels"].clone();
 
-    env.fleet(&["label", "task", "t2", "thurbox.dev/name=thread"])
+    env.fleet(&["label", "task", "t2", "example.test/name=thread"])
         .ok();
     let labels = &env.get("t2")["metadata"]["labels"];
-    assert_eq!(labels["thurbox.dev/name"], "thread");
+    assert_eq!(labels["example.test/name"], "thread");
     for key in [
         CONVERSATION_LABEL,
         CONVERSATION_UID_LABEL,

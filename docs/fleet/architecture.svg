@@ -38,7 +38,7 @@
       <text x="260" y="401">TaskController</text><text x="540" y="401">ChangeRequestController</text><text x="820" y="401">ForgeController</text>
       <text x="260" y="423">session lifecycle</text><text x="540" y="423">forge mirror lifecycle</text><text x="820" y="423">follow · relay · mark-ready plan</text>
       <text x="540" y="539">pure decisions → gate · manager writes → fleet-plugin observe / perform</text>
-      <text x="152" y="679">CAS · lease · resources</text><text x="540" y="679">Thurbox or fake host</text><text x="928" y="674">GitHub · GitLab · Azure DevOps</text><text x="928" y="692">Bitbucket Cloud · fake</text>
+      <text x="152" y="679">CAS · lease · resources</text><text x="540" y="679">runtime programs · fake host</text><text x="928" y="674">GitHub · GitLab · Azure DevOps</text><text x="928" y="692">Bitbucket Cloud · fake</text>
     </g>
   </g>
   <g class="arrow">

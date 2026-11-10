@@ -1,7 +1,7 @@
 //! The Task inbox end to end: `fleet send` through the real binary, the
 //! file store's typed mutations, TaskController's delivery and the runtime's
-//! journal, against the fake host and the stub `thurbox-cli`, across
-//! process restarts and injected faults.
+//! journal, against the fake host, across process restarts and injected
+//! faults.
 
 mod support;
 
@@ -421,99 +421,31 @@ fn a_manager_crash_between_send_and_delivery_is_recovered_without_a_resend() {
     env.assert_no_temp();
 }
 
-// --- The same, against thurbox-cli. ----------------------------------------
-
-/// A Task whose workspace is an absolute path, as thurbox requires.
-fn thurbox_task(name: &str) -> Value {
-    let mut t = task(name, true);
-    let dir = if cfg!(windows) {
-        format!("C:\\work\\{name}")
-    } else {
-        format!("/work/{name}")
-    };
-    t["spec"]["workspace"]["dir"] = json!(dir);
-    t
-}
-
-/// Every message Fleet gave a session, on the agent's own inbox.
-fn sends(env: &Env) -> Vec<Vec<String>> {
-    env.stub_calls()
-        .iter()
-        .filter(|c| support::is_call(c, "message send"))
-        .map(|c| {
-            c["argv"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|a| a.as_str().unwrap().to_string())
-                .collect()
-        })
-        .collect()
-}
-
 #[test]
-fn on_thurbox_cli_a_message_is_sent_once_and_journaled_under_its_key() {
-    let mut env = Env::thurbox("inbox-thurbox");
-    env.set_var("USER", "tester");
-    env.apply(thurbox_task("t1")).ok();
-    env.reconcile().ok();
-    assert_eq!(env.status("t1")["phase"], "Briefed");
-    // The brief left the session working; it is ready again now.
-    env.edit_stub(|s| s["sessions"][0]["state"] = json!("idle"));
-
-    let entry = send(&env, "- also run the linter");
-    let key = entry["key"].as_str().unwrap().to_string();
-    env.reconcile().ok();
-    let session = &env.stub_sessions()[0];
-    assert_eq!(
-        session["sent"],
-        json!(["Do the work for t1.", "- also run the linter"]),
-        "sent once, as text even when it starts with a dash"
-    );
-    let journal: Value =
-        serde_json::from_str(session["meta"]["fleet.brief"].as_str().unwrap()).unwrap();
-    assert_eq!(journal[&key], "delivered", "{journal:#}");
-    assert_eq!(delivered_keys(&full_status(&env)), vec![key.clone()]);
-    assert_eq!(sends(&env).len(), 2);
-
-    // The delivered mark landed but its answer was lost: the next pass reads
-    // the journal and recovers the receipt without typing again.
-    env.edit_stub(|s| s["sessions"][0]["state"] = json!("idle"));
-    env.stub_fault_after("meta-set", "hang-after", 1, 1);
-    let second = send(&env, "Second message.");
-    env.reconcile().ok();
-    let st = full_status(&env);
-    assert_eq!(
-        delivered_keys(&st),
-        vec![key.clone(), second["key"].as_str().unwrap().to_string()]
-    );
-    assert_eq!(st["deliveries"]["receipts"][1]["recovered"], true);
-    assert_eq!(sends(&env).len(), 3, "never sent twice");
-
-    // A send that never answered may have enqueued the text: never
-    // repeated; after three passes with no report from the agent's prompt
-    // hook a person is asked.
-    env.edit_stub(|s| {
-        s["sessions"][0]["state"] = json!("idle");
-        s["promptHookSilent"] = json!(true);
-    });
-    env.stub_fault("message-send", "hang-after", 1);
-    let third = send(&env, "Third message.");
-    env.reconcile().ok();
-    for _ in 0..3 {
+fn a_message_whose_send_never_answered_is_never_resent_and_later_entries_go_past_it() {
+    // The send may have typed the text: only the agent's prompt hook could
+    // prove it, and it reports nothing. Fleet never types it again, asks a
+    // person, and delivers the entries behind it.
+    let env = briefed("inbox-unconfirmed");
+    env.fault(Fault::new("brief", "unknown"));
+    let first = send(&env, "first");
+    let second = send(&env, "second");
+    for _ in 0..6 {
         env.expire_wait("t1");
         env.reconcile().ok();
     }
     let st = env.status("t1");
     assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
     assert_eq!(
-        sends(&env).len(),
-        4,
-        "never a second attempt at the same text"
+        env.calls("brief"),
+        3,
+        "the brief, one send of each entry, never a second of the first"
     );
+    let full = full_status(&env);
     assert_eq!(
-        inbox_keys(&full_status(&env)),
-        vec![third["key"].as_str().unwrap()],
-        "it stays queued until the journal answers"
+        inbox_keys(&full),
+        vec![first["key"].as_str().unwrap()],
+        "the unconfirmed entry is kept"
     );
+    assert_eq!(delivered_keys(&full), vec![second["key"].as_str().unwrap()]);
 }

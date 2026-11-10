@@ -21,8 +21,8 @@ pub struct Config {
     pub version: u32,
     #[serde(default)]
     pub data: Data,
-    /// The `[runtime]` section: the thurbox and fake adapters, linked into
-    /// Fleet. Exclusive with `[runtimes]`.
+    /// The `[runtime]` section: the fake runtime, linked into Fleet for
+    /// tests and trials. Exclusive with `[runtimes]`.
     #[serde(default)]
     pub runtime: Option<RuntimeConfig>,
     /// The `[runtimes.<name>]` sections: programs that speak the runtime
@@ -117,28 +117,10 @@ pub struct Data {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeConfig {
-    /// `thurbox`, or `fake` for tests and trials.
+    /// `fake`, for tests and trials.
     pub kind: String,
     /// The fake host's directory.
     pub dir: Option<PathBuf>,
-    /// thurbox: the `thurbox-cli` executable, a path or a name on PATH.
-    pub cli: Option<String>,
-    /// thurbox: the bound on every call.
-    pub call_timeout_ms: Option<u64>,
-    /// thurbox: the prefix of every session key; give a second fleet on the
-    /// same hosts its own.
-    pub key_prefix: Option<String>,
-    /// thurbox: the variable each harness reads `Task.spec.model` from.
-    #[serde(default)]
-    pub model_env: BTreeMap<String, String>,
-    /// Each repository URL a Task may name, and its source checkout, an
-    /// absolute path on this machine: the worktree adapter's sources.
-    #[serde(default)]
-    pub repositories: BTreeMap<String, String>,
-    /// thurbox: how each harness is trusted in its workspace: `codex`,
-    /// `claude` or `none`, over the built-in entries for those harnesses.
-    #[serde(default)]
-    pub workspace_trust: BTreeMap<String, String>,
 }
 
 /// One `[runtimes.<name>]` section: a program that speaks the runtime
@@ -179,8 +161,7 @@ pub struct WorkspacesConfig {
     /// host, relative to this file.
     pub root: Option<PathBuf>,
     /// worktree: each repository URL a Task may name, and its source
-    /// checkout on this machine, whatever the runtime. A `[runtime]`
-    /// section's `repositories` adds to it.
+    /// checkout on this machine, whatever the runtime.
     #[serde(default)]
     pub repositories: BTreeMap<String, String>,
     /// worktree: the `git` executable, a path or a name on PATH.

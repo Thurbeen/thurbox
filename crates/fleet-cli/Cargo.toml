@@ -12,9 +12,9 @@ publish.workspace = true
 name = "fleet"
 path = "src/main.rs"
 
-# The end-to-end tests' stand-in for thurbox-cli, a relay and a secret
-# command. Built with the tests; the release builds and ships `--bin fleet`
-# only.
+# The end-to-end tests' stand-in for the forge and chat CLIs, a plugin and
+# an environment command. Built with the tests; the release builds and ships
+# `--bin fleet` only.
 [[bin]]
 name = "fleet-test-stub"
 path = "tests/stubs/stub.rs"
