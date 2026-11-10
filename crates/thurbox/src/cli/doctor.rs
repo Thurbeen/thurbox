@@ -258,12 +258,8 @@ pub(super) struct FleetFacts {
 
 impl FleetFacts {
     pub(super) fn read(program: &str) -> Self {
-        let version = std::process::Command::new(program)
-            .args(["version", "--json"])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("could not start {program}: {e}"))
-            .and_then(|out| {
+        let version =
+            bounded_output(program, &["version", "--json"], PROBE_TIMEOUT).and_then(|out| {
                 if out.status.success() {
                     serde_json::from_slice(&out.stdout)
                         .map_err(|e| format!("{program} version --json answered no JSON: {e}"))
@@ -395,6 +391,48 @@ impl FleetFacts {
     }
 }
 
+/// How long `fleet version --json` may take: a wrapper that stalls must not
+/// hang `doctor`, `config show` or `version`.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `program args`'s output, or why there is none: it could not start, or it
+/// ran past `timeout` and was stopped.
+fn bounded_output(
+    program: &str,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start {program}: {e}"))?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| format!("{program}: {e}"))
+            }
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{program} {} did not answer within {}s",
+                    args.join(" "),
+                    timeout.as_secs()
+                ));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(e) => return Err(format!("{program}: {e}")),
+        }
+    }
+}
+
 /// The config file Fleet reads, by its documented rule (docs/fleet): the file
 /// `FLEET_CONFIG` names, else the native per-user one.
 fn fleet_config_path() -> Option<(std::path::PathBuf, &'static str)> {
@@ -476,6 +514,19 @@ mod tests {
 
         let gone = FleetFacts::read("definitely-not-a-fleet-xyz");
         assert_eq!(gone.findings()[0].level, Level::Fail);
+
+        // A Fleet that never answers is stopped and reported, not waited on.
+        let stuck = dir.path().join("stuck");
+        std::fs::write(&stuck, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let out = bounded_output(
+            &stuck.to_string_lossy(),
+            &["version"],
+            std::time::Duration::from_millis(300),
+        );
+        assert!(out.unwrap_err().contains("did not answer"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

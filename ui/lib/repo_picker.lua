@@ -177,4 +177,22 @@ function repo_picker.current(entries, cursor)
   return entries[math.max(1, math.min(cursor or 1, #entries))]
 end
 
+--- Kept for an edited pane that still calls it: thurbox 3.0 has no existing
+--- worktree rows, so the entries come back as they went in.
+function repo_picker.with_worktrees(entries, _expanded, _published)
+  return entries
+end
+
+--- Kept for an edited pane that still calls it: thurbox 3.0 takes no
+--- worktree mode, so every chosen repository is a plain one.
+function repo_picker.chosen(published, selected, _worktree)
+  local plain = {}
+  for _, row in ipairs(published or {}) do
+    if not row.is_parent and (selected or {})[row.path] then
+      plain[#plain + 1] = row.path
+    end
+  end
+  return {}, plain
+end
+
 return repo_picker
