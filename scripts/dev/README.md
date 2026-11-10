@@ -5,58 +5,38 @@ environment (its own tmux socket, scoped `THURBOX_*_DIR` / temp `HOME`, private
 `-L` sockets). Build output stays under `target/` (gitignored); host probes use
 disposable profiles on the host.
 
-## e2e — session-backend end-to-end family (`e2e/`)
+## e2e — remote and Windows hosts (`e2e/`)
 
-The three harnesses share one concept — **provision (or point at) a host, create
-a session on it over the session backend, assert it landed there** — and differ
-only in *where the host comes from*. They share `e2e/lib/e2e-common.sh` (colour
-logging, the PASS/FAIL contract, an in-shell JSON extractor, the `[[hosts]]`
-emitter, and the create → get → assert core).
+The three harnesses provision a host, or point at one, for testing thurbox and
+its runtimes on it. They differ only in *where the host comes from*. They share
+`e2e/lib/e2e-common.sh` (colour logging, the PASS/FAIL contract and the
+`[[hosts]]` emitter).
 
 | Script | Target host | Ephemeral? | Deps | In CI? |
 |---|---|---|---|---|
-| `e2e/linux-container.sh` | throwaway Podman/Linux SSH container | yes | podman, ssh, cargo | no (manual) |
+| `e2e/linux-container.sh` | throwaway Podman/Linux SSH container | yes | podman, ssh | no (manual) |
 | `e2e/windows-vm.sh` | throwaway dockur/Windows psmux VM | yes (KVM) | podman+kvm, ssh, curl | the VM run is manual (the native `windows` CI job mirrors it); its gate probes are unit-tested by `e2e/windows-vm.bats` |
 | `e2e/real-host.sh` | a real Linux/Windows/WSL machine you own | no | ssh, cargo | no (manual) |
 
-`e2e/windows-vm.sh test` also decides whether thurbox's psmux hook-status gate
-(as `thurbox-cli runtime status --json` reports it, `hook_status`) still
-matches what psmux does, and
-**fails** when the two disagree either way round — see issue #1170, where the
-probe reported on its own `ok` branch whichever way the measurement went.
+None of them creates a session: sessions are Fleet Tasks, and Fleet's own tests
+and `fleet runtime check` cover the runtime on a host.
+
+`e2e/windows-vm.sh test` checks psmux itself on the VM, and decides whether
+runtime-mux's psmux hook-status gate (`HOOK_STATUS` in
+`crates/runtime-mux/src/psmux.rs`) still matches what psmux does. It **fails**
+when the two disagree either way round — see issue #1170, where the probe
+reported on its own `ok` branch whichever way the measurement went.
 `e2e/windows-vm.bats` drives those helpers with no VM, so the failing branch is
 exercised in CI (`just test-scripts`).
 
-Shared verbs across the trio: `up` (provision) · `test` (headless e2e) · `ssh`
-(shell) · `hosts` (print the `hosts.toml` block) · `clean` / `down` (teardown).
-`e2e/windows-vm.sh` and `e2e/real-host.sh` add host-specific extras (`deploy`,
-`test-suite`, `wait`, `wsl-setup`, …) — run a script with no args for its full
-usage.
-
-On native Windows with psmux installed, the lifetime suite also runs
-`e2e/psmux-exit-control.ps1`. It drives real CLI relaunches into the crash-loop
-hold, boots the TUI, and checks its message and plugin completion events. It
-uses a random socket and disposable config and data directories, removed in
-`finally`, and opts out of agent wiring in that fresh profile. To run it against
-a built binary pair directly:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev/e2e/psmux-exit-control.ps1 -BinaryDir target/debug
-```
-
-`e2e/psmux-pane-routing.ps1` runs beside it (#1557): every session's input must
-reach that session and a stop end only its window, unless thurbox refuses the
-psmux as too old — and only one older than 3.3.8. `-PsmuxDir <dir>` tests the
-psmux.exe in that directory instead of the one on `PATH`; `-ServerPsmuxDir <dir>`
-first starts thurbox's server with an older one, the server an upgrade of the
-psmux on `PATH` leaves running.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev/e2e/psmux-pane-routing.ps1 -BinaryDir target/debug -PsmuxDir C:\psmux-3.3.7
-```
+Shared verbs across the trio: `ssh` (shell) · `hosts` (print the `hosts.toml`
+block) · `clean` (teardown). `e2e/linux-container.sh` and `e2e/windows-vm.sh`
+add `up` and `down`; `e2e/windows-vm.sh` and `e2e/real-host.sh` add
+host-specific extras (`deploy`, `test-suite`, `wait`, `wsl-setup`, …) — run a
+script with no args for its full usage.
 
 ```bash
-scripts/dev/e2e/linux-container.sh up      # then: … test
+scripts/dev/e2e/linux-container.sh up      # then: … hosts
 scripts/dev/e2e/windows-vm.sh up           # first run installs Windows (~10-20 min)
 scripts/dev/e2e/real-host.sh devbox check  # readiness probe on a real host
 ```

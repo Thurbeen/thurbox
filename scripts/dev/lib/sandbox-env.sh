@@ -18,11 +18,12 @@
 # Source it (don't execute) AFTER setting REPO_ROOT (or TBX_REPO_ROOT). Written
 # in POSIX sh so both the bash caller (sandbox.sh) and the
 # /usr/bin/env sh caller (record.sh) can source it. Both flavors prepend the
-# repo's target/debug to PATH so an agent hook's `thurbox-cli` resolves to *this*
-# dev binary (and writes to the sandbox DB the dev TUI reads).
+# repo's target/debug to PATH, so `fleet` and `runtime-mux` resolve to this
+# checkout's. Sessions are Fleet's: tbx_sandbox_fleet gives the sandbox a Fleet
+# of its own, and tbx_fleet_session creates one.
 #
-# Build the binaries BEFORE calling init so cargo still resolves your ~/.cargo
-# (the full flavor overrides $HOME).
+# Build the binaries (thurbox, thurbox-cli, fleet, runtime-mux) BEFORE calling
+# init so cargo still resolves your ~/.cargo (the full flavor overrides $HOME).
 
 : "${TBX_REPO_ROOT:=${REPO_ROOT:-}}"
 if [ -z "$TBX_REPO_ROOT" ]; then
@@ -128,24 +129,113 @@ tbx_sandbox_init_full() {
         "$XDG_CACHE_HOME"
 }
 
-# tbx_sandbox_teardown — kill the sandbox's tmux server (safe: private
-# TMUX_TMPDIR) and, for a `fresh` sandbox, remove the whole root. Persistent
-# sandboxes are left intact (use tbx_sandbox_clean to wipe them).
+# tbx_sandbox_fleet — give the sandbox a Fleet of its own (ADR-41): every
+# session is a Fleet Task, and thurbox reads them through `fleet watch` and
+# starts `fleet up` itself. Without this, `fleet` would read the operator's own
+# config — their real Tasks in a sandbox's interface. Exports FLEET_CONFIG and
+# writes the config once, under the sandbox root:
+#
+#   - `runtime-mux` (target/debug, on PATH after an init) serves `local`, on
+#     the sandbox's tmux directory and socket, which it inherits.
+#   - `fleet up` refuses to start without a starter Task/vega. The starter
+#     here is one that is never dispatched, so no agent runs for it; it does
+#     show as a row named `vega`.
+#
+# Call it after an init flavor.
+tbx_sandbox_fleet() {
+    fleet_dir="$TBX_SANDBOX_ROOT/fleet"
+    FLEET_CONFIG="$fleet_dir/config.toml"
+    export FLEET_CONFIG
+    [ -f "$FLEET_CONFIG" ] && return 0
+    mkdir -p "$fleet_dir/starter"
+    printf '[{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"vega"},"spec":{"harness":"sh","host":"local","workspace":{"dir":"%s"},"dispatch":false}}]\n' \
+        "$TBX_SANDBOX_ROOT" > "$fleet_dir/starter/task.json"
+    cat > "$FLEET_CONFIG" <<'EOF'
+version = 1
+
+[data]
+dir = "store"
+
+[runtimes.mux]
+program = "runtime-mux"
+callTimeoutMs = 10000
+keyPrefix = "tbx-sandbox"
+
+[hosts.local]
+runtime = "mux"
+
+[starter]
+workspace = "starter"
+EOF
+}
+
+# tbx_fleet_task_name <name> — the Task name thurbox gives a session called
+# <name>: lowercase, each run of other characters one `-`.
+tbx_fleet_task_name() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+        | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-$//'
+}
+
+# tbx_fleet_session <name> <dir> [harness] — an interactive session over <dir>,
+# as thurbox's create flow makes one: a dispatched Task with no brief, its
+# given name in the `thurbox.dev/name` label. <harness> defaults to
+# claude-code; Fleet runs any other name (or an absolute path) as the program,
+# with no hooks. Skips a Task that already exists. Nothing spawns until a
+# `fleet up` (thurbox starts one) or a `fleet reconcile` runs. <name> and <dir>
+# go into JSON as they are: keep quotes and backslashes out of them.
+tbx_fleet_session() {
+    task="$(tbx_fleet_task_name "$1")"
+    fleet get task "$task" >/dev/null 2>&1 && return 0
+    printf '{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},"spec":{"harness":"%s","host":"local","workspace":{"dir":"%s"},"dispatch":true}}\n' \
+        "$task" "$1" "${3:-claude-code}" "$2" | fleet apply --create-only -f - >/dev/null
+}
+
+# _tbx_stop_fleet <root> — stop the `fleet up` thurbox started for the sandbox
+# under <root>. It runs in a process group of its own and outlives the TUI, so
+# nothing else ends it. thurbox names its log after it, `fleet-up-<pid>.log` in
+# its data directory: that file names the process, rather than a search for
+# one. SIGTERM finishes its sweep and releases the lease.
+_tbx_stop_fleet() {
+    find "$1" -name 'fleet-up-*.log' 2>/dev/null | while read -r log; do
+        pid="${log##*/fleet-up-}"
+        pid="${pid%.log}"
+        case "$pid" in
+            *[!0-9]*|"") ;; # named before its manager started: no manager
+            *) kill "$pid" 2>/dev/null || true ;;
+        esac
+    done
+}
+
+# _tbx_kill_servers — kill the tmux servers of the private TMUX_TMPDIR in
+# force: thurbox's own socket, and `runtime-mux`, the one runtime-mux keeps
+# Fleet's sessions on. Safe: that directory is the sandbox's alone.
+_tbx_kill_servers() {
+    for socket in "$TBX_DEV_SOCKET" runtime-mux; do
+        tmux -L "$socket" kill-server >/dev/null 2>&1 || true
+    done
+}
+
+# tbx_sandbox_teardown — stop the sandbox's `fleet up`, kill its tmux servers
+# and, for a `fresh` sandbox, remove the whole root. Persistent sandboxes are
+# left intact (use tbx_sandbox_clean to wipe them).
 tbx_sandbox_teardown() {
-    tmux -L "$TBX_DEV_SOCKET" kill-server >/dev/null 2>&1 || true
+    [ -n "$TBX_SANDBOX_ROOT" ] && _tbx_stop_fleet "$TBX_SANDBOX_ROOT"
+    _tbx_kill_servers
     if [ "$TBX_SANDBOX_FRESH" = "1" ] && [ -n "$TBX_SANDBOX_ROOT" ]; then
         rm -rf "$TBX_SANDBOX_ROOT"
     fi
 }
 
-# tbx_sandbox_clean [profile] — kill a persistent profile's tmux server and
-# remove its root + short tmux dir. Default profile "default".
+# tbx_sandbox_clean [profile] — stop a persistent profile's `fleet up`, kill
+# its tmux servers and remove its root + short tmux dir. Default profile
+# "default".
 tbx_sandbox_clean() {
     profile="${1:-default}"
     root="$TBX_REPO_ROOT/target/dev-sandbox/$profile"
     tdir="$(tbx_sandbox_tmux_dir "$profile")"
+    _tbx_stop_fleet "$root"
     if [ -d "$tdir" ]; then
-        TMUX_TMPDIR="$tdir" tmux -L "$TBX_DEV_SOCKET" kill-server >/dev/null 2>&1 || true
+        (TMUX_TMPDIR="$tdir" && export TMUX_TMPDIR && _tbx_kill_servers)
     fi
     rm -rf "$root" "$tdir"
 }

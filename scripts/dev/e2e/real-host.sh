@@ -4,11 +4,10 @@
 # linux-container.sh and windows-vm.sh — the real-host member of the e2e family
 # (see scripts/dev/README.md). Linux and Windows hosts are auto-detected.
 #
-# Safe for machines that also run regular thurbox sessions: the e2e test uses a
-# private multiplexer socket (thurbox-lab-test), keeps ALL remote state under
-# one scoped directory, and runs the local CLI against an isolated
-# THURBOX_CONFIG_DIR/THURBOX_DATA_DIR — your real config/sessions and the
-# host's default tmux/psmux server are never touched.
+# Safe for machines that also run regular thurbox sessions: the verbs keep ALL
+# remote state under one scoped directory and a private multiplexer socket
+# (thurbox-lab-test), so your real sessions and the host's default tmux/psmux
+# server are never touched.
 #
 # Usage:
 #   scripts/dev/e2e/real-host.sh <host> <verb> [args...]
@@ -19,12 +18,10 @@
 # Verbs (any host):
 #   check           readiness probe: OS, git, tmux/psmux, agent CLI, WSL state
 #   hosts [name]    print the hosts.toml [[hosts]] block for this machine
-#   test            headless e2e: create an ssh:<name> session in a scoped
-#                   test repo on the machine, assert it landed there, clean up
 #   tui [name]      add the host to the persistent "lab" dev sandbox profile
 #                   and launch the TUI for manual testing
 #   ssh [cmd...]    interactive shell (or run a command) on the host
-#   clean           remove everything `test` may have left on the host
+#   clean           remove everything `test-suite` may have left on the host
 #
 # Verbs (Windows hosts):
 #   deploy          cross-build thurbox/thurbox-cli (x86_64-pc-windows-gnu) and
@@ -32,15 +29,6 @@
 #   run             run the deployed thurbox.exe interactively over `ssh -t`
 #                   (native-Windows manual testing; WSL distros appear in its
 #                   host picker)
-#   native-test [agent]  headless e2e of the DEPLOYED binaries on the host:
-#                   thurbox-cli.exe creates a local psmux session (agent argv +
-#                   THURBOX_* env asserted intact) and thurbox.exe boots to a
-#                   frame that shows it. Scoped via THURBOX_SOCKET (needs a
-#                   deploy of a build that supports it). Default agent: claude
-#   cmd-login-test  `test`, then `session delete --force` with share_sessions
-#                   = false, with every ssh command thurbox-cli sends run
-#                   through `cmd.exe /c` — Windows OpenSSH's default login
-#                   shell — whatever the host's own DefaultShell is (#1460)
 #   transfer-test   ship a 1 MiB binary to the host the way session sharing
 #                   provisions its thurbox-cli, and check it arrived intact
 #                   (tests/windows_host_transfer.rs; fails rather than hangs)
@@ -54,12 +42,12 @@
 # Env overrides:
 #   THURBOX_LAB_DIR      remote scoped state dir (default ~/thurbox-lab-test on
 #                        Linux, C:/thurbox-lab-test on Windows). Must contain
-#                        "thurbox-lab" — `test`/`clean` rm -rf this path.
+#                        "thurbox-lab" — `clean` rm -rf this path.
 #   THURBOX_WSL_DISTRO   default distro for the wsl-* verbs (default: Debian)
 #
-# Requires: ssh/scp; `test`/`tui` need cargo; `deploy`/`test-suite` need the
+# Requires: ssh/scp; `tui` needs cargo; `deploy`/`test-suite` need the
 # x86_64-pc-windows-gnu target + mingw-w64 (test-suite also needs cargo-nextest
-# on this machine). JSON is parsed in-shell — no python3.
+# on this machine).
 
 set -euo pipefail
 
@@ -74,13 +62,11 @@ WIN_TARGET="x86_64-pc-windows-gnu"
 NEXTEST_VERSION="${NEXTEST_VERSION:-latest}"
 NEXTEST_ZIP_URL="https://get.nexte.st/${NEXTEST_VERSION}/windows"
 
-# Everything the e2e test creates on the host is scoped to this socket/session
+# Everything test-suite creates on the host is scoped to this socket/session
 # name and to LAB_DIR — private to this script, so killing/removing it can
 # never reach a real thurbox (release socket "thurbox") or a dev sandbox
 # session (socket "thurbox-dev") on the same machine.
 LAB_SOCKET="thurbox-lab-test"
-E2E_NAME="lab-e2e"
-E2E_BRANCH="test/lab-e2e"
 # ssh_opts for a regular/manual hosts.toml block (default socket + session, so
 # sessions land where a normal thurbox on this machine expects them).
 LAB_SSH_OPTS='["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]'
@@ -105,11 +91,8 @@ SSH_OPTS=(
   -o ControlMaster=auto -o "ControlPath=$CM_DIR/%C" -o ControlPersist=60
   -o ConnectTimeout=8
 )
-# Resolved once: `cmd-login-test` puts a stand-in `ssh` first on PATH for
-# thurbox-cli, and the harness's own calls must not go through it.
-SSH_BIN="$(command -v ssh)"
 # shellcheck disable=SC2029 # client-side expansion builds the remote command
-ssh_host() { "$SSH_BIN" "${SSH_OPTS[@]}" "$DEST" "$@"; }
+ssh_host() { ssh "${SSH_OPTS[@]}" "$DEST" "$@"; }
 scp_host() { scp -q "${SSH_OPTS[@]}" "$@"; }
 # Probe-style query: remote stdout, CR-stripped, empty (not fatal) on failure.
 remote_out() { ssh_host "$@" 2> /dev/null | tr -d '\r' || true; }
@@ -148,7 +131,7 @@ detect_os() {
     LAB_DIR="${THURBOX_LAB_DIR:-$rhome/thurbox-lab-test}"
     MUX="tmux"
   fi
-  # `test`/`clean` rm -rf LAB_DIR on a real machine — insist on a marker so a
+  # `clean` rm -rf LAB_DIR on a real machine — insist on a marker so a
   # stray THURBOX_LAB_DIR override can't point them at a directory that
   # matters, and reject whitespace: the path is embedded in remote command
   # strings that would split on it.
@@ -291,10 +274,9 @@ cmd_tui() {
   exec "$REPO_ROOT/scripts/dev/sandbox.sh" --profile lab
 }
 
-# ---- headless e2e --------------------------------------------------------
+# ---- cleanup -------------------------------------------------------------
 
-# Tear down ONLY what the e2e test creates: its private -L server and LAB_DIR
-# (repo + worktrees both live under it). Never touches other sockets.
+# Tear down ONLY what this script creates: its private -L server and LAB_DIR. Never touches other sockets.
 remote_cleanup() {
   ssh_host "$MUX -L $LAB_SOCKET kill-server" > /dev/null 2>&1 || true
   if [ "$HOST_OS" = windows ]; then
@@ -302,125 +284,6 @@ remote_cleanup() {
   else
     ssh_host "rm -rf '$LAB_DIR'" || true
   fi
-}
-
-cmd_test() {
-  command -v cargo > /dev/null || die "cargo not found"
-  detect_os
-  ssh_host 'git --version' > /dev/null 2>&1 \
-    || die "git not found on $DEST — provision the host first ('$0 $DEST check')"
-  if [ "$HOST_OS" = windows ]; then
-    ssh_host 'psmux -V' > /dev/null 2>&1 \
-      || die "psmux not found on $DEST — provision the host first ('$0 $DEST check')"
-  fi
-
-  local repo="$LAB_DIR/repo" agent_cmd="bash"
-  [ "$HOST_OS" = windows ] && agent_cmd="powershell"
-
-  log "seeding a scoped test repo at $DEST:$repo"
-  remote_cleanup
-  remote_mkdir "$repo"
-  # Plain git invocations run identically under sh, cmd, and powershell — one
-  # call per step because Windows PowerShell 5.1 has no `&&`.
-  ssh_host "git -C $repo init -qb main"
-  ssh_host "git -C $repo config user.email test@thurbox"
-  ssh_host "git -C $repo config user.name thurbox-lab"
-  ssh_host "git -C $repo commit -qm init --allow-empty"
-  ssh_host "git -C $repo branch -f feature/example main"
-
-  # Isolated local config/data (THURBOX_*_DIR, honored ahead of XDG) so the
-  # e2e run never sees — or is seen by — your real thurbox database.
-  local tmp
-  tmp="$(mktemp -d "$WORKDIR/e2e.XXXXXX")"
-  # EXIT (not RETURN) so aborts via die/set -e still tear down the remote
-  # server + LAB_DIR; cmd_test is the terminal action of the dispatch.
-  # shellcheck disable=SC2064 # expand now: tmp is gone when the trap fires
-  trap "rm -rf '$tmp'; remote_cleanup" EXIT
-  mkdir -p "$tmp/config" "$tmp/data"
-  {
-    echo 'config_version = 1'
-    echo
-    lab_hosts_block lab
-    echo "socket = \"$LAB_SOCKET\""
-    echo "session = \"$LAB_SOCKET\""
-    echo "worktrees_dir = \"$LAB_DIR/worktrees\""
-    [ -n "${LAB_HOSTS_EXTRA:-}" ] && echo "$LAB_HOSTS_EXTRA"
-  } > "$tmp/config/hosts.toml"
-  cat > "$tmp/config/agents.toml" <<EOF
-default = "shell"
-[[agents]]
-name = "shell"
-command = "$agent_cmd"
-EOF
-
-  log "creating an ssh:lab session via thurbox-cli (isolated DB)"
-  export THURBOX_CONFIG_DIR="$tmp/config" THURBOX_DATA_DIR="$tmp/data"
-  local result backend id
-  result="$(e2e_create_and_get \
-    --name "$E2E_NAME" --host lab --repo-path "$repo" \
-    --agent shell --worktree-branch "$E2E_BRANCH" --base-branch main)" || exit 1
-  read -r id backend <<<"$result"
-
-  # Confirm the artifacts really live on the machine, inside our private server.
-  local windows worktrees
-  windows="$(ssh_host "$MUX -L $LAB_SOCKET list-windows -t $LAB_SOCKET -F \"#{window_name}\"" 2> /dev/null \
-    | tr -d '\r' | grep -c "^tb-$E2E_NAME\$" || true)"
-  worktrees="$(ssh_host "git -C $repo worktree list" 2> /dev/null | grep -c "$E2E_NAME" || true)"
-
-  e2e_assert "ssh:lab:$MUX" "$backend" "$windows" "$worktrees" \
-    "remote SSH session created on $DEST ($HOST_OS)" \
-    "expected ssh:lab:$MUX + a remote window + a remote worktree" || return 1
-  [ -n "${LAB_FORCE_DELETE:-}" ] || return 0
-
-  log "force-deleting it (share_sessions = false: thurbox-cli tears down itself)"
-  local deleted
-  deleted="$(e2e_cli session delete --force "$id")" || die "session delete failed"
-  windows="$(ssh_host "$MUX -L $LAB_SOCKET list-windows -t $LAB_SOCKET -F \"#{window_name}\"" 2> /dev/null \
-    | tr -d '\r' | grep -c "^tb-$E2E_NAME\$" || true)"
-  log "delete said: $deleted"
-  log "remote windows left = $windows"
-  if [ "$windows" -eq 0 ] && ! printf '%s' "$deleted" | grep -q '"remote_teardown_owed":true'; then
-    pass "force delete tore the session down on $DEST"
-  else
-    fail "expected no window left and no remote teardown owed"
-  fi
-}
-
-# A Windows host whose OpenSSH login shell is cmd.exe, the default, without
-# changing the host: a stand-in `ssh` first on thurbox-cli's PATH joins the
-# remote words as ssh does and hands the line to `cmd.exe /c`, as sshd does.
-# The line rides as a PowerShell literal and goes to cmd.exe verbatim through
-# ProcessStartInfo — PowerShell 5.1's own native-argument quoting would alter
-# it. Handles are inherited, so stdin, stdout, stderr and the status are
-# cmd.exe's.
-cmd_cmd_login_test() {
-  require_windows
-  local bin="$WORKDIR/cmd-login-bin"
-  mkdir -p "$bin"
-  cat > "$bin/ssh" <<'SHIM'
-#!/usr/bin/env bash
-set -euo pipefail
-opts=()
-while [ $# -gt 0 ] && [ "$1" != "$CMD_LOGIN_DEST" ]; do opts+=("$1"); shift; done
-[ $# -gt 0 ] || exec "$CMD_LOGIN_SSH" "${opts[@]}"
-shift
-[ $# -gt 0 ] || exec "$CMD_LOGIN_SSH" "${opts[@]}" "$CMD_LOGIN_DEST"
-line="$*"
-script="\$ProgressPreference = 'SilentlyContinue'
-\$s = New-Object System.Diagnostics.ProcessStartInfo
-\$s.FileName = 'cmd.exe'
-\$s.Arguments = '/c ' + '${line//\'/\'\'}'
-\$s.UseShellExecute = \$false
-\$p = [System.Diagnostics.Process]::Start(\$s)
-\$p.WaitForExit()
-exit \$p.ExitCode"
-encoded="$(printf '%s' "$script" | iconv -f utf-8 -t utf-16le | base64 -w0)"
-exec "$CMD_LOGIN_SSH" "${opts[@]}" "$CMD_LOGIN_DEST" \
-  powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand "$encoded"
-SHIM
-  chmod +x "$bin/ssh"
-  export CMD_LOGIN_SSH="$SSH_BIN" CMD_LOGIN_DEST="$DEST" PATH="$bin:$PATH"
-  LAB_HOSTS_EXTRA="share_sessions = false" LAB_FORCE_DELETE=1 cmd_test
 }
 
 cmd_clean() {
@@ -472,89 +335,6 @@ cmd_run() {
     | grep -qi true || die "thurbox.exe not deployed — run '$0 $DEST deploy' first"
   log "running thurbox.exe on $DEST (quit the TUI to return)"
   exec ssh -t "$DEST" "C:/Tools/thurbox/thurbox.exe"
-}
-
-# Native e2e of the DEPLOYED binaries, entirely on the host: thurbox-cli.exe
-# creates a local (psmux) session whose agent must come up with its argv and
-# THURBOX_* env intact, then thurbox.exe boots inside a scoped psmux pane and
-# must adopt that session. Fully isolated via THURBOX_SOCKET (the deployed
-# build must support it) + THURBOX_CONFIG_DIR/THURBOX_DATA_DIR under LAB_DIR —
-# psmux has no TMUX_TMPDIR-style socket-dir isolation, so the env override is
-# the only thing keeping this off the machine's real thurbox/thurbox-dev
-# servers.
-cmd_native_test() {
-  require_windows
-  ssh_host 'powershell -NoProfile -Command "Test-Path C:/Tools/thurbox/thurbox-cli.exe"' 2> /dev/null \
-    | grep -qi true || die "thurbox-cli.exe not deployed — run '$0 $DEST deploy' first"
-  local agent="${1:-claude}"
-  log "native e2e on $DEST: agent '$agent', scoped socket $LAB_SOCKET, state $LAB_DIR/native"
-  run_ps "$LAB_DIR" "$LAB_SOCKET" "$agent" <<'EOF'
-param([string]$LabDir, [string]$Socket, [string]$Agent)
-$ErrorActionPreference = 'Stop'
-$cli = 'C:/Tools/thurbox/thurbox-cli.exe'
-$tui = 'C:/Tools/thurbox/thurbox.exe'
-$name = 'lab-native'
-$fails = 0
-function Assert([bool]$ok, [string]$what) {
-  if ($ok) { Write-Output "  ok   $what" } else { Write-Output "  FAIL $what"; $script:fails++ }
-}
-
-# Scoped env for every thurbox child below. THURBOX_SOCKET keeps the whole run
-# off the machine's real psmux servers.
-$env:THURBOX_SOCKET = $Socket
-$env:THURBOX_CONFIG_DIR = "$LabDir/native/config"
-$env:THURBOX_DATA_DIR = "$LabDir/native/data"
-
-psmux -L $Socket kill-server 2>$null
-Remove-Item -Recurse -Force "$LabDir/native" -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path "$LabDir/native/repo" | Out-Null
-git -C "$LabDir/native/repo" init -qb main
-git -C "$LabDir/native/repo" config user.email test@thurbox
-git -C "$LabDir/native/repo" config user.name thurbox-lab
-git -C "$LabDir/native/repo" commit -qm init --allow-empty
-
-Write-Output "== thurbox-cli session create (local psmux backend) =="
-$out = & $cli --json session create --name $name --repo-path "$LabDir/native/repo" --agent $Agent 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) { Write-Output $out; Write-Output "FAIL session create exited $LASTEXITCODE"; exit 1 }
-$json = $out | ConvertFrom-Json
-Assert ($json.name -eq $name) "session created (id $($json.id))"
-Start-Sleep 8
-
-# The scoped server (NOT thurbox-dev) must own the agent window, alive.
-$panes = (psmux -L $Socket list-panes -a -F '#{window_name} #{pane_dead}') -join "`n"
-Assert ($panes -match "tb-$name 0") "agent window alive on scoped socket ($Socket)"
-
-# The window process must carry the folded env + argv (psmux drops -e and
-# joined tokens; the deployed build must route around both). The window runs
-# `powershell.exe -EncodedCommand <base64 of UTF-16LE>`, so the script is only
-# readable once decoded.
-$procs = (Get-CimInstance Win32_Process | ForEach-Object {
-  if ($_.CommandLine -match '-EncodedCommand\s+([A-Za-z0-9+/=]+)') {
-    [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Matches[1]))
-  }
-} | Where-Object { $_ -match 'Set-Item Env:THURBOX_SESSION' }) -join "`n"
-Assert ($procs -match [regex]::Escape($json.id)) "THURBOX_SESSION env folded into the window command"
-Assert ($procs -match "'$Agent'") "agent argv delivered ($Agent)"
-
-$list = & $cli --json session list | Out-String | ConvertFrom-Json
-Assert (@($list | Where-Object { $_.name -eq $name }).Count -eq 1) "thurbox-cli session list sees the session"
-
-Write-Output "== thurbox.exe TUI boot (inside a scoped psmux pane) =="
-# psmux targets are session-qualified; the session name is the deployed
-# build's compile-time default, so discover it instead of hardcoding.
-$sess = (psmux -L $Socket list-sessions -F '#{session_name}' | Select-Object -First 1)
-# Window command is one argv token: env + exec. The pane gives the TUI a ConPTY.
-$boot = "Set-Item Env:THURBOX_SOCKET '$Socket'; Set-Item Env:THURBOX_CONFIG_DIR '$LabDir/native/config'; Set-Item Env:THURBOX_DATA_DIR '$LabDir/native/data'; & '$tui'"
-psmux -L $Socket new-window -d -t "${sess}:" -n lab-tui $boot
-Start-Sleep 8
-$frame = (psmux -L $Socket capture-pane -p -t "${sess}:lab-tui") -join "`n"
-Assert ($frame -match 'lab-native') "TUI booted and shows/adopted the session"
-
-psmux -L $Socket kill-server 2>$null
-if ($fails -gt 0) { Write-Output "NATIVE-TEST FAILURES: $fails"; exit 1 }
-Write-Output "NATIVE-TEST OK"
-EOF
-  pass "native thurbox (dev) runs correctly on $DEST"
 }
 
 cmd_test_suite() {
@@ -715,14 +495,11 @@ cmd_ssh() {
 case "$VERB" in
   check)      cmd_check ;;
   hosts)      cmd_hosts "$@" ;;
-  test)       cmd_test ;;
   tui)        cmd_tui "$@" ;;
   ssh)        cmd_ssh "$@" ;;
   clean)      cmd_clean ;;
   deploy)     cmd_deploy ;;
   run)        cmd_run ;;
-  native-test) cmd_native_test "$@" ;;
-  cmd-login-test) cmd_cmd_login_test ;;
   transfer-test) cmd_transfer_test ;;
   test-suite) cmd_test_suite ;;
   wsl-setup)  cmd_wsl_setup "$@" ;;

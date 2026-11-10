@@ -39,37 +39,41 @@ drive() {
   ' _ "$SCRIPT" "$@"
 }
 
-# A stand-in `thurbox-cli` whose `runtime status --json` reports the psmux
-# adapter's status channel as $1 ("true"/"false"), beside a tmux entry holding
-# the opposite — so a read that matched the wrong backend's answer would fail.
-cli_reporting() {
-  local path="${BATS_TEST_TMPDIR}/thurbox-cli-$1" other=true
+# A stand-in for runtime-mux's psmux.rs declaring the gate as $1
+# ("true"/"false"), beside a tmux-shaped impl declaring the opposite — so a
+# read that matched the wrong adapter's constant would fail.
+source_declaring() {
+  local path="${BATS_TEST_TMPDIR}/psmux-$1.rs" other=true
   [ "$1" = true ] && other=false
-  cat >"$path" <<SH
-#!/bin/sh
-[ "\$*" = "--json runtime status" ] || exit 2
-printf '%s\n' '{"automation_heartbeat":false,"backend":"local:tmux","hook_status":{"local:psmux":$1,"local:tmux":$other},"tmux_socket":"thurbox"}'
-SH
-  chmod +x "$path"
+  cat >"$path" <<RS
+impl TmuxCompatible for Psmux {
+    /// \`HOOK_STATUS: bool = $other\` in a doc comment is not the constant.
+    const HOOK_STATUS: bool = $1;
+}
+RS
   printf '%s\n' "$path"
 }
 
-@test "the gate is what thurbox's own binary reports, not restated in the harness" {
-  drive psmux_hook_gate "$(cli_reporting false)"
+@test "the gate is what runtime-mux's psmux adapter declares, not restated in the harness" {
+  drive psmux_hook_gate "$(source_declaring false)"
   [ "${lines[0]}" = closed ]
-  drive psmux_hook_gate "$(cli_reporting true)"
+  drive psmux_hook_gate "$(source_declaring true)"
   [ "${lines[0]}" = open ]
 }
 
+@test "the real psmux adapter's gate is readable" {
+  drive psmux_hook_gate
+  [[ "${lines[0]}" == open || "${lines[0]}" == closed ]]
+}
+
 @test "a gate the harness cannot read is an error, not an assumption" {
-  drive psmux_hook_gate "${BATS_TEST_TMPDIR}/no-such-cli"
+  drive psmux_hook_gate "${BATS_TEST_TMPDIR}/no-such-file.rs"
   [ "${lines[-1]}" = "rc=1 FAILS=0" ]
 }
 
-@test "an answer naming no psmux backend is unreadable, not closed" {
-  local path="${BATS_TEST_TMPDIR}/thurbox-cli-silent"
-  printf '#!/bin/sh\nprintf "%%s\\n" "{\\"hook_status\\":{}}"\n' >"$path"
-  chmod +x "$path"
+@test "a source declaring no HOOK_STATUS is unreadable, not closed" {
+  local path="${BATS_TEST_TMPDIR}/silent.rs"
+  printf 'impl TmuxCompatible for Psmux {}\n' >"$path"
   drive psmux_hook_gate "$path"
   [ "${lines[-1]}" = "rc=1 FAILS=0" ]
 }

@@ -9,10 +9,10 @@
 #
 #   scripts/demo/record-hero.sh               # the whole regeneration
 #
-# What it shows, in order: the session list grouped by host and then by
-# repository, with sessions on this machine and on a remote host `devbox`;
-# walking the sessions; jumping to the remote host and opening one of its
-# sessions; folding and unfolding groups; a session's context menu; search.
+# What it shows, in order: the session list grouped by repository; walking the
+# sessions; opening one; folding and unfolding groups; a session's context menu;
+# search. Every session is a Fleet Task on this machine: runtime-mux serves
+# local hosts only, so the clip has no remote host.
 #
 # Not a VHS tape. VHS cannot press a mouse button, and the context menu opens on
 # a right press, nor can it send F-keys or Ctrl+punctuation, so a tape has to
@@ -20,23 +20,14 @@
 # private tmux server and `tmux send-keys` presses the real keys — a right press
 # is the SGR mouse report a terminal would send. agg rasterises the cast.
 #
-# **The remote host is a stand-in `ssh`, not a machine.** `devbox` is declared
-# in hosts.toml like any SSH host, and thurbox reaches it through `ssh` on PATH —
-# which here is a script that drops the options and the destination and runs
-# the rest on this machine, under a HOME and a tmux socket directory of the
-# host's own (the same stand-in tests/backend_routes.rs uses). Everything
-# downstream of the `ssh` binary is the real remote path: the transport, the
-# control-mode connection, the host's own multiplexer server. Anybody can rerun
-# it without a second machine, a container runtime or an sshd.
-#
-# Isolation: HOME, XDG and thurbox's config/data all point into $SBX, and both
-# tmux servers (this machine's and devbox's) live under its TMUX_TMPDIR, so the
-# teardown cannot reach a server you have running. The agents boot with no
+# Isolation: HOME, XDG, thurbox's config/data and the Fleet store all point into
+# $SBX, and every tmux server lives under its TMUX_TMPDIR, so the teardown
+# cannot reach a server you have running. The agents boot with no
 # history; codex's auth token is copied in (it shows no identity when signed
 # in), claude is left signed out (signed in, it prints the account's
 # organisation name).
 #
-# Requirements: cargo, git, tmux, sqlite3, python3, node, asciinema **2.x**
+# Requirements: cargo, git, tmux, python3, node, asciinema **2.x**
 # (trim-cast.mjs reads v2's absolute timestamps), agg, ffmpeg; claude and/or
 # codex for the agent panes. agg ships no font, so FONT_DIR must hold JetBrains
 # Mono Nerd Font Mono (https://github.com/ryanoasis/nerd-fonts/releases ->
@@ -71,7 +62,7 @@ if [ -e "$SBX" ] && [ ! -e "$SBX/.thurbox-hero" ]; then
     exit 1
 fi
 
-for bin in cargo git tmux sqlite3 python3 node asciinema agg ffmpeg; do
+for bin in cargo git tmux python3 node asciinema agg ffmpeg; do
     command -v "$bin" >/dev/null 2>&1 || {
         echo "error: $bin not found on PATH" >&2
         exit 1
@@ -101,7 +92,7 @@ done
 agent_for() { echo "${agents[$(($1 % ${#agents[@]}))]}"; }
 
 echo "==> building thurbox (dev)"
-(cd "$ROOT" && cargo build --bin thurbox --bin thurbox-cli) || exit 1
+(cd "$ROOT" && cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux) || exit 1
 
 REAL_HOME="$HOME"
 REC_SOCKET="thurbox-hero-rec"
@@ -114,18 +105,24 @@ export THURBOX_DATA_DIR="$XDG_DATA_HOME/thurbox"
 # Names nothing else uses — never `thurbox`: the teardown kills these by name,
 # and a socket directory that failed to apply must not make that name yours.
 export THURBOX_SOCKET="thurbox-hero"
-DEVBOX_SOCKET="thurbox-hero-devbox"
 unset THURBOX_SOCKET_FOR TMUX
-DEVBOX_HOME="$SBX/devbox"
 PATH="$SBX/bin:$ROOT/target/debug:$PATH"
 export PATH
 export OPENCODE_DISABLE_AUTOUPDATE=true CODEX_DISABLE_UPDATE_CHECK=1 \
     npm_config_update_notifier=false NO_UPDATE_NOTIFIER=1
 
+# The sandbox helpers: Fleet's config and its teardown.
+export TBX_REPO_ROOT="$ROOT"
+# shellcheck source=scripts/dev/lib/sandbox-env.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/dev/lib/sandbox-env.sh"
+
 cleanup() {
     tmux -L "$REC_SOCKET" kill-server 2>/dev/null
+    # `fleet up` (thurbox starts it) first, so it does not start the agents again.
+    _tbx_stop_fleet "$SBX"
     tmux -L "$THURBOX_SOCKET" kill-server 2>/dev/null
-    TMUX_TMPDIR="$TMUX_TMPDIR/devbox" tmux -L "$DEVBOX_SOCKET" kill-server 2>/dev/null
+    tmux -L runtime-mux kill-server 2>/dev/null
     # Whatever an agent daemonised out of its pane runs from a binary it
     # installed under the sandbox, so the path names it and nothing else.
     pkill -f "^$SBX/" 2>/dev/null
@@ -141,38 +138,13 @@ KEEP_SANDBOX= cleanup  # a kept sandbox is for inspecting the last run, not reus
 # exit (which runs the EXIT trap) instead of tearing down and carrying on.
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-mkdir -p "$TMUX_TMPDIR" "$HOME" "$THURBOX_CONFIG_DIR" "$THURBOX_DATA_DIR" \
-    "$DEVBOX_HOME" "$SBX/bin"
+mkdir -p "$TMUX_TMPDIR" "$HOME" "$THURBOX_CONFIG_DIR" "$THURBOX_DATA_DIR" "$SBX/bin"
 touch "$SBX/.thurbox-hero"
 
-# --- devbox: the stand-in ssh ----------------------------------------------------
-cat > "$SBX/bin/ssh" <<SH
-#!/bin/sh
-while [ "\$#" -gt 0 ]; do
-    case "\$1" in
-        -o|-p|-i|-l|-F) shift 2 ;;
-        -*) shift ;;
-        *) break ;;
-    esac
-done
-[ "\${1:-}" = devbox ] || { echo "ssh: unknown host \${1:-}" >&2; exit 255; }
-shift
-[ "\$#" -eq 0 ] && exit 0
-export HOME='$DEVBOX_HOME'
-export TMUX_TMPDIR='$TMUX_TMPDIR/devbox'
-mkdir -p "\$TMUX_TMPDIR"
-cd "\$HOME" || exit 255
-exec sh -c "\$*"
-SH
-chmod +x "$SBX/bin/ssh"
-
-cat > "$THURBOX_CONFIG_DIR/hosts.toml" <<TOML
-[[hosts]]
-name = "devbox"
-destination = "devbox"
-socket = "$DEVBOX_SOCKET"
-share_sessions = false
-TOML
+# The sessions are Fleet Tasks, on a Fleet of the sandbox's own: the shared
+# helper writes its config under $SBX and exports FLEET_CONFIG.
+export TBX_SANDBOX_ROOT="$SBX"
+tbx_sandbox_fleet
 
 # Both flags reach the network: one puts an upgrade notice in the top band, the
 # other replaces binaries on startup.
@@ -181,17 +153,6 @@ cat > "$THURBOX_CONFIG_DIR/settings.toml" <<'TOML'
 version_check = false
 auto_update = false
 TOML
-
-{
-    echo "default = \"${agents[0]}\""
-    for a in "${agents[@]}"; do
-        printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$a"
-        # codex's shared app-server daemon keys its control socket outside
-        # HOME, so the second codex — devbox's, on this same machine — finds it
-        # taken and dies printing the daemon's log.
-        [ "$a" = codex ] && printf 'args = ["--no-daemon"]\n'
-    done
-} > "$THURBOX_CONFIG_DIR/agents.toml"
 
 # --- Demo repositories ------------------------------------------------------------
 git_q() { git -c user.email=demo@example.invalid -c user.name=demo -c commit.gpgsign=false "$@"; }
@@ -203,12 +164,12 @@ make_repo() {
 }
 make_repo "$HOME/thurbox"
 make_repo "$HOME/website"
-make_repo "$DEVBOX_HOME/api-gateway"
-make_repo "$DEVBOX_HOME/ml-pipeline"
+make_repo "$HOME/api-gateway"
+make_repo "$HOME/ml-pipeline"
 
 # --- Agent first-run state --------------------------------------------------------
 # Trust prompts and onboarding screens would otherwise be what every pane shows.
-trusted=("$HOME/thurbox" "$HOME/website" "$DEVBOX_HOME/api-gateway" "$DEVBOX_HOME/ml-pipeline")
+trusted=("$HOME/thurbox" "$HOME/website" "$HOME/api-gateway" "$HOME/ml-pipeline")
 seed_agent_home() {
     local home="$1"
     if [ -f "$REAL_HOME/.codex/auth.json" ]; then
@@ -228,45 +189,40 @@ json.dump({"hasCompletedOnboarding": True,
 PY
 }
 seed_agent_home "$HOME"
-seed_agent_home "$DEVBOX_HOME"
-# Both tmux servers read their HOME's config. Without focus events claude
-# prints a line under its prompt telling you to turn them on.
-echo 'set -g focus-events on' | tee "$HOME/.tmux.conf" > "$DEVBOX_HOME/.tmux.conf"
+# Without focus events claude prints a line under its prompt telling you to
+# turn them on.
+echo 'set -g focus-events on' > "$HOME/.tmux.conf"
 
 # --- Sessions ---------------------------------------------------------------------
 # Named after the work, so the list reads as one backlog in flight. Worktree
 # sessions carry the branch mark in the list.
-thurbox-cli extension deactivate hooks >/dev/null 2>&1
-thurbox-cli config accept-interface >/dev/null 2>&1
-
 i=0
-create() { # name repo branch [host]
-    local name="$1" repo="$2" branch="$3" host="${4:-}"
-    local args=(session create --name "$name" --repo-path "$repo" --agent "$(agent_for $i)"
-        --worktree-branch "$branch" --base-branch main)
-    [ -n "$host" ] && args+=(--host "$host")
-    echo "==> session $name${host:+ on $host}"
-    thurbox-cli "${args[@]}" >/dev/null || exit 1
+create() { # name repo branch
+    local name="$1" repo="$2" branch="$3" agent wt
+    agent="$(agent_for $i)"
+    [ "$agent" = claude ] && agent=claude-code
+    wt="$SBX/worktrees/$name"
+    echo "==> session $name"
+    git_q -C "$repo" worktree add -q -b "$branch" "$wt" main || exit 1
+    tbx_fleet_session "$name" "$wt" "$agent" || exit 1
     i=$((i + 1))
 }
 create fix-osc52-tmux "$HOME/thurbox" fix/osc52-tmux
 create add-wsl-host-tests "$HOME/thurbox" test/wsl-hosts
 create perf-session-order "$HOME/thurbox" perf/session-order
 create docs-landing-copy "$HOME/website" docs/landing-copy
-create rate-limit-middleware "$DEVBOX_HOME/api-gateway" feat/rate-limit devbox
-create fix-auth-refresh "$DEVBOX_HOME/api-gateway" fix/auth-refresh devbox
-create retrain-nightly "$DEVBOX_HOME/ml-pipeline" ci/retrain-nightly devbox
+create rate-limit-middleware "$HOME/api-gateway" feat/rate-limit
+create fix-auth-refresh "$HOME/api-gateway" fix/auth-refresh
+create retrain-nightly "$HOME/ml-pipeline" ci/retrain-nightly
 
-DB="$THURBOX_DATA_DIR/thurbox.db"
-sqlite3 "$DB" "
-INSERT INTO metadata (key, value) VALUES ('v2_interface_acknowledged', '1')
-  ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-INSERT INTO metadata (key, value) VALUES ('active_theme', '$THEME')
-  ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-UPDATE sessions SET display_order = (
-    SELECT COUNT(*) FROM sessions AS earlier
-     WHERE earlier.deleted_at IS NULL AND earlier.created_at < sessions.created_at)
- WHERE deleted_at IS NULL;" || exit 1
+# The theme, and the list in creation order: the context menu below is opened by
+# a row's position.
+python3 - "$THURBOX_CONFIG_DIR/interface.json" "$THEME" fix-osc52-tmux add-wsl-host-tests \
+    perf-session-order docs-landing-copy rate-limit-middleware fix-auth-refresh \
+    retrain-nightly <<'PY' || exit 1
+import json, sys
+json.dump({"theme": sys.argv[2], "order": sys.argv[3:]}, open(sys.argv[1], "w"), indent=2)
+PY
 
 [ -n "${SETUP_ONLY:-}" ] && {
     echo "sandbox ready at $SBX (SETUP_ONLY); env: HOME=$HOME TMUX_TMPDIR=$TMUX_TMPDIR"
@@ -288,7 +244,7 @@ tmux -L "$REC_SOCKET" new-session -d -x "$COLS" -y "$ROWS" -c "$HOME" -s r \
      XDG_CONFIG_HOME=$XDG_CONFIG_HOME XDG_DATA_HOME=$XDG_DATA_HOME \
      XDG_STATE_HOME=$XDG_STATE_HOME XDG_CACHE_HOME=$XDG_CACHE_HOME \
      THURBOX_CONFIG_DIR=$THURBOX_CONFIG_DIR THURBOX_DATA_DIR=$THURBOX_DATA_DIR \
-     THURBOX_SOCKET=$THURBOX_SOCKET PATH=$PATH \
+     THURBOX_SOCKET=$THURBOX_SOCKET FLEET_CONFIG=$FLEET_CONFIG PATH=$PATH \
      asciinema rec --overwrite --quiet --cols $COLS --rows $ROWS -c thurbox '$CAST'"
 START=$SECONDS
 
@@ -319,12 +275,9 @@ for _ in 1 2 3; do
     sleep 2
 done
 
-# Into the list (Ctrl+H), `]` to the next host, down onto its first session and
-# open it — the agent running on devbox, in devbox's own tmux server.
+# Into the list (Ctrl+H), down onto another repository's session and open it.
 send C-h
 sleep 1.2
-send ']'
-sleep 1.5
 send j
 sleep 0.6
 send j

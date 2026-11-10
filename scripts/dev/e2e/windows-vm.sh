@@ -161,7 +161,7 @@ Copy-Item "$oem\authorized_keys" $adminKeys -Force
 icacls $adminKeys /inheritance:r | Out-Null
 icacls $adminKeys /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
 
-# --- psmux (the Windows tmux that thurbox's TmuxBackend invokes) -------------
+# --- psmux (the Windows tmux that runtime-mux's psmux adapter invokes) -------
 $tools = 'C:\Tools\psmux'
 New-Item -ItemType Directory -Force -Path $tools | Out-Null
 Expand-Archive -Path "$oem\psmux.zip" -DestinationPath $tools -Force
@@ -292,22 +292,22 @@ cmd_ssh() {
 # change to one line.
 PSMUX_GATE_UNPROBED="claude's forward-slash --settings path on Windows"
 
-# psmux_hook_gate [CLI] — "open" or "closed": whether thurbox's psmux adapter
-# offers a hook status channel, as the binary itself answers it in `thurbox-cli
-# runtime status --json` (`hook_status`, one entry per local backend). Asked
-# rather than restated or read out of the source, so there is one record of
-# what thurbox believes and it is the behaviour: a gate flipped without this
-# evidence then fails the verdict below. CLI defaults to $THURBOX_CLI, else the
-# repo's debug build. Non-zero if the CLI cannot be run or its answer names no
-# psmux entry — a gate the harness cannot read is an error, not an assumption.
-# shellcheck disable=SC2120 # CLI defaults; windows-vm.bats passes a stand-in
+# psmux_hook_gate [SOURCE] — "open" or "closed": whether runtime-mux's psmux
+# adapter offers a hook status channel, read from its `HOOK_STATUS` constant
+# (SOURCE defaults to crates/runtime-mux/src/psmux.rs). No binary reports the
+# gate, so the source is its one record: a gate flipped without this evidence
+# then fails the verdict below. Non-zero if the file cannot be read or declares
+# no `HOOK_STATUS` — a gate the harness cannot read is an error, not an
+# assumption.
+# shellcheck disable=SC2120 # SOURCE defaults; windows-vm.bats passes a stand-in
 psmux_hook_gate() {
-  local cli="${1:-${THURBOX_CLI:-$REPO_ROOT/target/debug/thurbox-cli}}" answer
-  answer="$("$cli" --json runtime status 2>/dev/null)" || return 1
-  case "$(printf '%s' "$answer" | grep -o '"local:psmux":[a-z]*')" in
-    '"local:psmux":true')  printf 'open\n' ;;
-    '"local:psmux":false') printf 'closed\n' ;;
-    *)                     return 1 ;;
+  local src="${1:-$REPO_ROOT/crates/runtime-mux/src/psmux.rs}" line
+  line="$(grep -E '^[[:space:]]*const HOOK_STATUS: bool = (true|false);' "$src" 2>/dev/null)" \
+    || return 1
+  case "$line" in
+    *'= true;')  printf 'open\n' ;;
+    *'= false;') printf 'closed\n' ;;
+    *)           return 1 ;;
   esac
 }
 
@@ -387,7 +387,7 @@ smoke_verdict() {
   if ! printf '%s\n' "$sessions" | grep -qx smoke; then
     fail "could not create/list a psmux session (got: ${sessions:-<none>})"
   elif [ "$fails" -gt 0 ]; then
-    fail "psmux session round-tripped, but $fails probe check(s) disagree with thurbox's own psmux gate — see the miss lines above"
+    fail "psmux session round-tripped, but $fails probe check(s) disagree with runtime-mux's psmux gate — see the miss lines above"
   else
     pass "psmux is installed and a -L $SOCKET session round-tripped"
   fi
@@ -408,7 +408,7 @@ cmd_test() {
     || die "psmux not found on PATH inside the VM"
   log "psmux reports: $ver"
 
-  # Exercise the exact surface TmuxBackend needs: an -L socket server you can
+  # Exercise the exact surface runtime-mux needs: an -L socket server you can
   # spin up headless, create a detached session in, and enumerate. No command is
   # passed so the session holds its default shell open — a self-exiting command
   # (e.g. `cmd /c ver`) would close the session before we list it. This mirrors
@@ -422,14 +422,8 @@ cmd_test() {
   # measures; the verdict is on the pair, against the gate itself.
   log "probing psmux pane-user-option support (hook-status gate)"
   local gate pane opt inpane measured_a=unknown measured_b=unknown
-  # The gate is the binary's answer, so the binary has to be this checkout's:
-  # an older build would report the gate the source no longer has.
-  if [ -z "${THURBOX_CLI:-}" ]; then
-    ( cd "$REPO_ROOT" && cargo build --quiet --bin thurbox-cli ) \
-      || die "could not build thurbox-cli to read the psmux gate from"
-  fi
   gate="$(psmux_hook_gate)" \
-    || die "could not read the psmux status channel from 'thurbox-cli runtime status --json' (build it: cargo build --bin thurbox-cli, or set THURBOX_CLI) — the gate probes have nothing to check against"
+    || die "could not read HOOK_STATUS from crates/runtime-mux/src/psmux.rs — the gate probes have nothing to check against"
   ssh_vm "psmux -L $SOCKET new-session -d -s probe" >/dev/null 2>&1 || true
   pane="$(ssh_vm "psmux -L $SOCKET list-panes -s -t probe -F '#{pane_id}'" 2>/dev/null | tr -d '\r' | head -n1)"
   # A second pane is what makes the per-pane half observable: with one pane an
@@ -457,7 +451,7 @@ cmd_test() {
   # A paste cannot be key-encoded for psmux (a split ESC arrives as a bare
   # Escape keypress, losing the ESC[200~ marker, and every embedded CR then
   # submits — issue #916), so thurbox hands pastes to psmux's own
-  # `send-paste` (see `backend::psmux`'s `PsmuxPaste`). This probes the two
+  # `send-paste` (see runtime-mux's `psmux` adapter, `PsmuxPaste`). This probes the two
   # properties that path relies on: the payload is standard **base64**, and a
   # multi-line payload keeps its newlines instead of being cut on the wire with
   # its tail executed as a psmux command (psmux #560). `rename-window` is the
@@ -491,7 +485,7 @@ cmd_test() {
   # every one that starts with `-` as an unknown flag — so a quoted literal `-`
   # never reached the pane and hyphens could not be typed on Windows (issue
   # #920). thurbox escapes such a run into psmux's own `0xNN` codepoint form
-  # (`control_mode::psmux_literal_args`). The psmux CLI forwards both encodings
+  # (runtime-mux's `control_mode::psmux_literal_args`). The psmux CLI forwards both encodings
   # to the same server-side classifier thurbox's control-mode line hits, so
   # typing them into one prompt line is evidence about that rule: the old
   # encoding must lose its hyphen, the new one must keep it.
@@ -517,23 +511,6 @@ cmd_test() {
     info "hyphen probe skipped: could not resolve a probe pane id"
   fi
   ssh_vm "psmux -L $SOCKET kill-server" >/dev/null 2>&1 || true
-
-  # --- shared-sessions probe (evidence, not verdict) -------------------------
-  # A shared Windows host (ADR-24) is driven through its own thurbox-cli over
-  # the PowerShell path: `session_ops::host_cli` probes for the CLI where
-  # install.ps1 and provisioning put it, and delegates `session create` to it.
-  # With the cross-built binaries deployed (`cmd_deploy`), this asks the VM's
-  # CLI the exact question the probe asks — `version --json` with a schema —
-  # and reports what a delegation would find. Never fails the smoke test.
-  log "probing the shared-sessions CLI path on the VM"
-  local vcli
-  # shellcheck disable=SC2016 # the $… are PowerShell's, evaluated on the VM
-  vcli="$(ssh_vm '$c = @("thurbox-cli", "$env:LOCALAPPDATA\thurbox\bin\thurbox-cli.exe", "$env:LOCALAPPDATA\Programs\thurbox\thurbox-cli.exe"); foreach ($p in $c) { $g = Get-Command $p -ErrorAction SilentlyContinue; if ($g) { & $g.Source version --json; exit 0 } }; Write-Output "@none"' 2>/dev/null | tr -d '\r')"
-  case "$vcli" in
-    *'"schema_version"'*) ok "probe E: the VM's thurbox-cli answers version --json with a schema (delegation possible)" ;;
-    *'"version"'*) info "probe E: the VM's thurbox-cli predates session sharing (no schema_version): a matching one would be provisioned" ;;
-    *) info "probe E: no thurbox-cli on the VM — run '$0 deploy' first, or let a shared spawn provision one (got: ${vcli:-<none>})" ;;
-  esac
 
   echo
   smoke_verdict "$sessions" "$FAILS"

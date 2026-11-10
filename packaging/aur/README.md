@@ -30,11 +30,6 @@ installed at a time.
 ## Runtime dependencies
 
 - `tmux` (>= 3.2) and `git` are required.
-- The `thurbox` (source) package links the system `sqlite` — its
-  `prepare()` drops rusqlite's vendored `bundled` SQLite so the binary
-  uses `libsqlite3.so` (Arch discourages bundled libs, and the vendored
-  static lib also fails to link under the default rust-lld). The
-  `thurbox-bin` package is statically linked and needs no `sqlite`.
 - A coding-agent CLI (claude-code, aider, opencode, …) is user-supplied
   and listed as `optdepends`.
 

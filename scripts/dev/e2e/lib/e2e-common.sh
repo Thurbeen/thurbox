@@ -44,17 +44,6 @@ fail() {
   return 1
 }
 
-# ---- dependency-free JSON extraction (replaces python3) ---------------------
-
-# json_field NAME — read a compact JSON object on stdin and print the string
-# value of its top-level "NAME" key (empty if absent or null). Good enough for
-# thurbox-cli's flat `--json` objects (uuid `id`, `backend_type`); it is NOT a
-# general JSON parser — values must be plain strings with no embedded quotes,
-# which every field it is used for satisfies.
-json_field() {
-  sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
-}
-
 # ---- hosts.toml [[hosts]] emitter ------------------------------------------
 
 # hosts_block NAME DESTINATION [SSH_OPTS_TOML] [MULTIPLEXER] — emit a `[[hosts]]`
@@ -69,39 +58,4 @@ hosts_block() {
   [ -n "$ssh_opts" ] && printf 'ssh_opts = %s\n' "$ssh_opts"
   [ -n "$mux" ] && printf 'multiplexer = "%s"\n' "$mux"
   return 0
-}
-
-# ---- create -> get -> assert core ------------------------------------------
-
-# e2e_cli ARGS… — run `thurbox-cli --json ARGS…` from the repo root. The caller
-# exports the isolated config/data env (XDG_* or THURBOX_*_DIR) beforehand so
-# the run never touches a real thurbox database.
-e2e_cli() {
-  ( cd "$REPO_ROOT" && cargo run -q --bin thurbox-cli -- --json "$@" )
-}
-
-# e2e_create_and_get CREATE_ARGS… — `session create` then `session get`, echoing
-# "<id> <backend_type>" on one line. Dies on a failed create or unparseable id.
-# Replaces the copy-pasted `session create | python3 | session get | python3`.
-e2e_create_and_get() {
-  local out id backend
-  out="$(e2e_cli session create "$@")" \
-    || die "session create failed (see stderr above)"
-  id="$(printf '%s' "$out" | json_field id)"
-  [ -n "$id" ] || die "session create returned unparseable JSON: $out"
-  backend="$(e2e_cli session get "$id" | json_field backend_type)" \
-    || die "session get $id failed"
-  printf '%s %s\n' "$id" "$backend"
-}
-
-# e2e_assert WANT GOT WINDOWS WORKTREES PASS_MSG FAIL_MSG — the shared verdict:
-# the backend matched and at least one remote window + worktree exist.
-e2e_assert() {
-  echo
-  log "backend_type = $2   remote windows = $3   remote worktrees = $4"
-  if [ "$2" = "$1" ] && [ "$3" -ge 1 ] && [ "$4" -ge 1 ]; then
-    pass "$5"
-  else
-    fail "$6"
-  fi
 }

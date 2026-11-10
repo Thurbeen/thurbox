@@ -6,7 +6,11 @@
 # sessions, no changes. Every feature that is about a repository (the review
 # pane, the file viewer, sync, fork, the creation flow's branch list) is
 # therefore untestable there until you hand-build a git repo, create a session,
-# and commit onto its branch. This does that, once, reproducibly.
+# and change files in its worktree. This does that, once, reproducibly.
+#
+# A session is a Fleet Task (ADR-41) over a worktree this script makes. A Fleet
+# session row carries no base branch, so the review shows the worktree's
+# UNCOMMITTED changes (`git diff HEAD`): the fixtures are left uncommitted.
 #
 # Usage:
 #   scripts/dev/demo-repo.sh                  # seed the "default" profile
@@ -42,20 +46,26 @@ while [ $# -gt 0 ]; do
         --fresh) mode="fresh"; shift ;;
         --profile) profile="${2:?--profile needs a name}"; shift 2 ;;
         --big) want_big=1; shift ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
 done
 
-# Enter the sandbox unless a caller (sandbox.sh --demo) already has.
-if [ -z "${TBX_SANDBOX_ROOT:-}" ]; then
-    # shellcheck source=scripts/dev/lib/sandbox-env.sh
-    # shellcheck disable=SC1091
-    source "$SCRIPT_DIR/lib/sandbox-env.sh"
+# Enter the sandbox unless a caller (sandbox.sh --demo) already has. Sourced
+# either way, for the Fleet helpers; sourcing resets TBX_SANDBOX_ROOT, so an
+# inherited one is put back.
+inherited_root="${TBX_SANDBOX_ROOT:-}"
+# shellcheck source=scripts/dev/lib/sandbox-env.sh
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/sandbox-env.sh"
+if [ -n "$inherited_root" ]; then
+    TBX_SANDBOX_ROOT="$inherited_root"
+else
     tbx_sandbox_init "$mode" "$profile"
 fi
-CLI="$TBX_REPO_ROOT/target/debug/thurbox-cli"
-[ -x "$CLI" ] || die "no thurbox-cli at $CLI — \`cargo build --bin thurbox-cli\` first"
+tbx_sandbox_fleet
+command -v fleet >/dev/null \
+    || die "no fleet on PATH — \`cargo build --bin fleet --bin runtime-mux\` first"
 
 REPOS="$TBX_SANDBOX_ROOT/repos"
 mkdir -p "$REPOS"
@@ -63,58 +73,12 @@ mkdir -p "$REPOS"
 # ── the agent ───────────────────────────────────────────────────────────────
 #
 # A seeded session must not launch a real coding agent: it would want
-# credentials, take seconds, and burn tokens for a demo. `sh` is a shell, which
-# is all a demo session needs to exist and hold a pane.
-#
-# The user's `default` is NOT touched — a demo that quietly rewrites which agent
-# every hand-made session gets is worse than a slow demo. `sh` is registered and
-# named per session with `--agent sh`.
-#
-# Getting the file to exist at all is the awkward part: thurbox seeds
-# `agents.toml` on first run and `thurbox-cli` has no verb that does it (only
-# `session create` loads the agent registry, so only it seeds). So on a sandbox
-# that has never been opened we force the seed with one throwaway session and
-# delete it again. Worth knowing: an UNREGISTERED `--agent` silently falls back
-# to the default, so skipping this step does not fail loudly — it quietly starts
-# claude.
-ensure_agent() {
-    local agents="$THURBOX_CONFIG_DIR/agents.toml"
-    if [ ! -f "$agents" ]; then
-        log "seeding agents.toml (thurbox writes it on first run; the CLI has no verb for it)"
-        local seed_repo="$REPOS/.seed"
-        if [ ! -d "$seed_repo/.git" ]; then
-            mkdir -p "$seed_repo"
-            git -C "$seed_repo" init -q -b main
-            git -C "$seed_repo" config user.email demo@thurbox.invalid
-            git -C "$seed_repo" config user.name "thurbox demo"
-            : > "$seed_repo/.keep"
-            git -C "$seed_repo" add -A
-            git -C "$seed_repo" commit -qm "seed"
-        fi
-        local id
-        id="$("$CLI" session create --name thurbox-demo-seed --repo-path "$seed_repo" --json \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" || true
-        [ -n "${id:-}" ] && "$CLI" session delete "$id" --force >/dev/null 2>&1 || true
-        rm -rf "$seed_repo"
-    fi
-    [ -f "$agents" ] || die "agents.toml still absent; open the sandbox once and re-run"
-
-    if grep -q '^name = "sh"' "$agents"; then
-        skip "agent 'sh' already registered"
-        return
-    fi
-    log "registering the 'sh' agent (leaving 'default' alone)"
-    cat >> "$agents" <<'TOML'
-
-# Added by scripts/dev/demo-repo.sh. A shell, so a seeded demo session holds a
-# pane without wanting credentials. `default` above is deliberately untouched:
-# which agent YOUR sessions get is your choice, not the demo's.
-[[agents]]
-name = "sh"
-command = "bash"
-args = []
-TOML
-}
+# credentials, take seconds, and burn tokens for a demo. Fleet runs a harness
+# it has no profile for as a program of that name, so the harness `sh` is a
+# shell, which is all a demo session needs to exist and hold a pane. thurbox's
+# own create flow offers only the profiled harnesses; this script applies the
+# Task itself.
+HARNESS="sh"
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 #
@@ -220,6 +184,7 @@ for f in range(files):
 PY
 }
 
+
 # ── repositories and sessions ───────────────────────────────────────────────
 
 git_init() {  # <dir>
@@ -234,58 +199,34 @@ commit_all() {  # <dir> <message>
 }
 
 have_session() {  # <name>
-    "$CLI" session list --json 2>/dev/null \
-      | python3 -c 'import json,sys
-try: rows = json.load(sys.stdin)
-except Exception: sys.exit(1)
-rows = rows if isinstance(rows, list) else rows.get("sessions", [])
-sys.exit(0 if any(r.get("name") == sys.argv[1] for r in rows) else 1)' "$1"
+    fleet get task "$(tbx_fleet_task_name "$1")" >/dev/null 2>&1
 }
 
-# Take back a branch and worktree a previous seed left behind.
-#
-# Deleting a session is a SOFT delete and does not take its worktree or its
-# branch with it, so re-seeding after a delete hits "branch already exists" and
-# the session never comes back — which is the per-thing idempotency this script
-# is supposed to have. Both belong to the demo, so both are ours to remove.
-reclaim_branch() {  # <repo> <branch>
-    local repo="$1" branch="$2" path
-    git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" || return 0
-    path="$(git -C "$repo" worktree list --porcelain \
-            | awk -v b="refs/heads/$branch" '/^worktree /{p=$2} $0=="branch "b{print p}')"
-    if [ -n "$path" ]; then
-        git -C "$repo" worktree remove --force "$path" >/dev/null 2>&1 || true
-    fi
+# A fresh worktree of <repo> at <dir> on <branch>, made from main. A previous
+# seed's worktree and branch are taken back first: deleting a Task leaves the
+# directory it worked in, so re-seeding after a delete would otherwise hit
+# "branch already exists" — and the session would never come back, which is the
+# per-thing idempotency this script is supposed to have. Both belong to the
+# demo, so both are ours to remove.
+fresh_worktree() {  # <repo> <dir> <branch>
+    local repo="$1" dir="$2" branch="$3"
+    git -C "$repo" worktree remove --force "$dir" >/dev/null 2>&1 || true
+    rm -rf "$dir"
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
-    git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
-    skip "took back $branch from a previous seed"
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+        git -C "$repo" branch -D "$branch" >/dev/null 2>&1 || true
+        skip "took back $branch from a previous seed"
+    fi
+    git -C "$repo" worktree add -q -b "$branch" "$dir" main
+    git -C "$dir" config user.email demo@thurbox.invalid
+    git -C "$dir" config user.name "thurbox demo"
 }
 
-# `--worktree-branch` is not optional, and this is the part that would waste an
-# afternoon: `sessions.base_branch` is written ONLY at spawn, by the worktree
-# path. A session created without one has `base_branch = NULL`, and the diff
-# then falls back to UNCOMMITTED changes — so committed fixtures show nothing,
-# the pane looks broken, and the "no changes" session passes for the wrong
-# reason.
-create_session() {  # <name> <repo> <branch>
-    reclaim_branch "$2" "$3"
-    local out
-    # Captured rather than piped, so the CLI's own error is what you read when
-    # this fails. Piping it into a JSON reader turned every failure into a
-    # decode traceback with the reason thrown away.
-    out="$("$CLI" session create --name "$1" --repo-path "$2" \
-            --worktree-branch "$3" --base-branch main --agent sh --json 2>&1)" \
-        || die "creating session '$1' failed: $out"
-    printf '%s' "$out" \
-      | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("cwd",""))
-except Exception: sys.exit(1)' \
-      || die "creating session '$1' did not return JSON: $out"
+create_session() {  # <name> <dir>
+    tbx_fleet_session "$1" "$2" "$HARNESS" || die "creating session '$1' failed"
 }
 
-ensure_agent
-
-# ── 1. the demo repository, and a session with changes on its branch ────────
+# ── 1. the demo repository, and a session with changes in its worktree ──────
 DEMO="$REPOS/demo"
 if [ -d "$DEMO/.git" ]; then
     skip "repository exists: $DEMO"
@@ -301,16 +242,17 @@ if have_session demo-changes; then
     skip "session 'demo-changes' exists"
 else
     log "creating session 'demo-changes' on demo/changes"
-    wt="$(create_session demo-changes "$DEMO" demo/changes)"
-    [ -n "$wt" ] || die "no worktree came back for demo-changes"
-    git -C "$wt" config user.email demo@thurbox.invalid
-    git -C "$wt" config user.name "thurbox demo"
+    wt="$REPOS/demo-changes"
+    fresh_worktree "$DEMO" "$wt" demo/changes
     seed_changes "$wt"
-    commit_all "$wt" "the changes under review"
-    log "  $(git -C "$wt" diff --stat main..HEAD | tail -1)"
+    # Staged, not committed: `git diff HEAD` then shows the added file too,
+    # and the rename as a rename.
+    git -C "$wt" add -A
+    create_session demo-changes "$wt"
+    log "  $(git -C "$wt" diff --stat HEAD | tail -1)"
 fi
 
-# ── 2. a session with NOTHING on its branch ─────────────────────────────────
+# ── 2. a session with NOTHING in its worktree ───────────────────────────────
 #
 # The kernel's own spec has a scenario for this ("an empty diff is reported,
 # distinct from not-yet-known") and it cannot be demonstrated without a session
@@ -320,7 +262,8 @@ if have_session demo-clean; then
     skip "session 'demo-clean' exists"
 else
     log "creating session 'demo-clean' on demo/clean (no changes, on purpose)"
-    create_session demo-clean "$DEMO" demo/clean >/dev/null
+    fresh_worktree "$DEMO" "$REPOS/demo-clean" demo/clean
+    create_session demo-clean "$REPOS/demo-clean"
 fi
 
 # ── 3. the large repository, on request ─────────────────────────────────────
@@ -340,14 +283,13 @@ if [ "$want_big" = "1" ]; then
         skip "session 'demo-big' exists"
     else
         log "creating session 'demo-big' on demo/big"
-        wt="$(create_session demo-big "$BIG" demo/big)"
-        [ -n "$wt" ] || die "no worktree came back for demo-big"
-        git -C "$wt" config user.email demo@thurbox.invalid
-        git -C "$wt" config user.name "thurbox demo"
+        wt="$REPOS/demo-big"
+        fresh_worktree "$BIG" "$wt" demo/big
         seed_big "$wt" REWRITTEN
-        commit_all "$wt" "rewrite everything"
-        log "  $(git -C "$wt" diff --no-color main..HEAD | wc -c) bytes of diff"
+        git -C "$wt" add -A
+        create_session demo-big "$wt"
+        log "  $(git -C "$wt" diff --no-color HEAD | wc -c) bytes of diff"
     fi
 fi
 
-log "seeded. repositories under $REPOS"
+log "seeded. repositories under $REPOS; the sessions start with the TUI's \`fleet up\`"

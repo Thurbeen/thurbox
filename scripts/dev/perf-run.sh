@@ -17,10 +17,11 @@
 #   scripts/dev/perf-run.sh --json             # one machine-readable line
 #   scripts/dev/perf-run.sh -b 1000 --search e # global search open over full scrollback
 #
-# Fully isolated: a private HOME, XDG root and TMUX_TMPDIR (so the cleanup
-# `kill-server` can never reach a real server), the sandbox helper every other
-# dev script uses. The agent is `sh` printing on a timer, so the measurement is
-# of thurbox and not of whichever coding CLI happened to be installed.
+# Fully isolated: a private HOME, XDG root, TMUX_TMPDIR (so the cleanup
+# `kill-server` can never reach a real server) and Fleet, the sandbox helper
+# every other dev script uses. Each session is a Fleet Task whose harness is a
+# `sh` script printing on a timer, so the measurement is of thurbox and not of
+# whichever coding CLI happened to be installed.
 #
 # thurbox needs a terminal, and it must be a terminal of a KNOWN SIZE — a frame
 # costs what its cells cost, so a run at whatever the invoking window happens to
@@ -41,7 +42,7 @@ COLS=200
 ROWS=50
 JSON=0
 # Whether the run carries THURBOX_PERF_LOG. On, the loop keeps histograms and
-# republishes a JSON snapshot to SQLite every few seconds -- which is itself
+# republishes a JSON snapshot (`perf.json`) every few seconds -- which is itself
 # work, and work a default run does not do. CPU here is measured from
 # /proc, so the log can be turned off and the headline number still stands;
 # only the percentile lines go away.
@@ -59,7 +60,8 @@ URL_EVERY=12
 # eight times a second while any session does, and it is part of the pure-pane
 # cache key -- so every pane re-renders at that rate for a spinner glyph. `sh`
 # runs no status hook, so without this the harness measures that cost as zero
-# while a real profile pays it nearly all the time.
+# while a real profile pays it nearly all the time. A working agent reports
+# itself with `fleet signal working`, as a real agent's hook does.
 #
 # A `working` session must also PRINT, or the harness measures zero anyway by a
 # second route: `snapshot::with_output_quiescence` folds a `working` session with
@@ -108,7 +110,8 @@ usage: perf-run.sh [options]
   --scrollback N  set scrollback_lines for the run
   --search Q  open global search and type Q before measuring
   --typing    with --search, keep erasing and retyping Q while measuring
-  --bin-dir D measure the thurbox/thurbox-cli in D instead of building
+  --bin-dir D measure the thurbox, thurbox-cli, fleet and runtime-mux in D
+              instead of building
   --json      one machine-readable line instead of the report
 EOF
     exit 2
@@ -191,20 +194,24 @@ if [ -n "$PREBUILT" ]; then
 elif [ "$PROFILE" = release ]; then
     BIN_DIR="$REPO_ROOT/target/release"
     say "building (release)…"
-    cargo build --release --bin thurbox --bin thurbox-cli >/dev/null 2>&1
+    cargo build --release --bin thurbox --bin thurbox-cli --bin fleet \
+        --bin runtime-mux >/dev/null 2>&1
 else
     BIN_DIR="$REPO_ROOT/target/debug"
     say "building (dev)…"
-    cargo build --bin thurbox --bin thurbox-cli >/dev/null 2>&1
+    cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux \
+        >/dev/null 2>&1
 fi
 
 # --- an isolated world ------------------------------------------------------
 
 tbx_sandbox_init_full fresh
-# The helper puts target/debug first for the agent-hook case; this measures a
-# chosen profile, so the chosen one wins.
+# The helper puts target/debug first; this measures a chosen profile, so the
+# chosen one wins -- for `fleet` and `runtime-mux` too, which the TUI's `fleet
+# up` and every session run on.
 PATH="$BIN_DIR:$PATH"
 export PATH
+tbx_sandbox_fleet
 trap 'tbx_sandbox_teardown' EXIT
 
 # The agent. `sh` rather than a coding CLI: this measures thurbox's cost of
@@ -242,7 +249,10 @@ cat > "$AGENT_DIR/ticking" <<EOF
 #!/bin/sh
 # A session that reports itself \`working\` and animates a progress line, which
 # is what every real agent does while a turn runs -- and what keeps thurbox's
-# output-quiescence fallback from folding the state back to idle.
+# output-quiescence fallback from folding the state back to idle. The state is
+# reported the way an agent's hook reports it: Fleet gave the session
+# FLEET_SIGNAL_FILE.
+fleet signal working 2>/dev/null || true
 $BACKFILL_CMD
 n=0
 while :; do
@@ -258,25 +268,11 @@ if [ -n "$SCROLLBACK" ]; then
     printf 'config_version = 1\nscrollback_lines = %s\n' "$SCROLLBACK" \
         > "$XDG_CONFIG_HOME/thurbox-dev/settings.toml"
 fi
-cat > "$XDG_CONFIG_HOME/thurbox-dev/agents.toml" <<EOF
-default = "quiet"
 
-[[agents]]
-name = "quiet"
-command = "$AGENT_DIR/quiet"
-
-[[agents]]
-name = "noisy"
-command = "$AGENT_DIR/noisy"
-
-[[agents]]
-name = "ticking"
-command = "$AGENT_DIR/ticking"
-EOF
-
-# A repository for the sessions to live in. Bare and local: worktree creation is
-# a startup cost, not a steady-state one, and a real repo would make each run
-# depend on whatever is checked out.
+# A repository for the sessions to live in, shared by every Task as its
+# workspace directory. Bare and local: worktree creation is a startup cost, not
+# a steady-state one, and a real repo would make each run depend on whatever is
+# checked out.
 REPO="$TBX_SANDBOX_ROOT/repo"
 mkdir -p "$REPO"
 git -C "$REPO" init -q
@@ -289,12 +285,10 @@ git -C "$REPO" -c user.email=perf@example.com -c user.name=perf commit -q \
 # so a run at whatever the invoking window happens to be is not comparable with
 # the last one.
 #
-# The TUI starts on the EMPTY database, before any session exists. The v1->v2
-# consent gate fires for a profile with session history and no acknowledgment,
-# and it waits for a keypress -- so seeding first left the binary sitting on the
-# gate for the whole run, reporting a very restful 0% of a core. Sessions are
-# created underneath it instead and adopted through the ordinary `data_version`
-# poll, which is also closer to what a real profile does.
+# The TUI starts before any session exists, and starts the sandbox's `fleet up`.
+# Sessions are created underneath it, as Fleet Tasks: that manager spawns them
+# and the TUI's `fleet watch` adopts them, which is also closer to what a real
+# profile does.
 
 LOG_DIR="$XDG_DATA_HOME/thurbox-dev"
 say "starting thurbox at ${COLS}x${ROWS}…"
@@ -334,44 +328,28 @@ fi
 # The first $PRINTING print; of the rest, the ones that must report `working`
 # get the ticking agent so their state survives the quiescence fallback.
 say "creating $SESSIONS sessions ($PRINTING printing, $WORKING working)…"
-WORKING_IDS=""
 for i in $(seq 1 "$SESSIONS"); do
     if [ "$i" -le "$PRINTING" ]; then
         agent=noisy
     elif [ "$i" -le "$WORKING" ]; then
+        # Reports itself `working` (see the ticking agent above).
         agent=ticking
     else
         agent=quiet
     fi
-    created="$(thurbox-cli session create \
-        --name "perf-session-$i" \
-        --repo-path "$REPO" \
-        --agent "$agent" --json)"
-    if [ "$i" -le "$WORKING" ]; then
-        # Which session, not which row of a list: `session list` orders by
-        # display order, so taking its head marks whichever sessions happen to
-        # sort first rather than the ones given a printing agent above.
-        id="$(echo "$created" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
-        WORKING_IDS="$WORKING_IDS $id"
-    fi
+    tbx_fleet_session "perf-session-$i" "$REPO" "$AGENT_DIR/$agent"
 done
 
-# A status hook's write, without a hook. `session signal` takes its identity
-# from the injected `THURBOX_SESSION`, so setting it here is exactly what an
-# agent's own hook does from inside its pane. The agents above keep it there.
-for id in $WORKING_IDS; do
-    THURBOX_SESSION="$id" thurbox-cli session signal --state working >/dev/null
-done
-
-if [ "$FOCUS_LAST" = "1" ]; then
-    last_id="$(echo "$created" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
-    thurbox-cli session focus "$last_id" >/dev/null
-fi
-
-# Settle: adopting a pane, taking the first snapshot and painting the first
-# frame are startup, not steady state. Measuring across them would report the
-# startup once as if it happened every second.
+# Settle: spawning the sessions, adopting their panes, taking the first snapshot
+# and painting the first frame are startup, not steady state. Measuring across
+# them would report the startup once as if it happened every second.
 sleep 8
+
+# A session row's id is its Task's name.
+if [ "$FOCUS_LAST" = "1" ]; then
+    thurbox-cli ui action session.focus --session "perf-session-$SESSIONS" >/dev/null
+    sleep 2
+fi
 if ! kill -0 "$PID" 2>/dev/null; then
     echo "perf-run.sh: thurbox exited during the settle. Last log lines:" >&2
     tail -20 "$LOG_DIR"/thurbox.log* 2>/dev/null >&2 || true

@@ -33,9 +33,10 @@
 # get the same footage from — the attract demo is the same every time.
 #
 # Requirements:
-#   thurbox + thurbox-cli on PATH   (the binaries under test)
-#   asciinema **2.x**, agg, ffmpeg, ffprobe, tmux, git, node, python3 (>= 3.11),
-#   sqlite3. The 2.x pin is load-bearing: asciinema 3 records asciicast v3, an
+#   thurbox, thurbox-cli, fleet and runtime-mux on PATH (the binaries under
+#   test; the sessions are Fleet Tasks)
+#   asciinema **2.x**, agg, ffmpeg, ffprobe, tmux, git, node, python3 (>= 3.11).
+#   The 2.x pin is load-bearing: asciinema 3 records asciicast v3, an
 #   interval-based format trim-cast.mjs does not parse — it reads v2's absolute
 #   timestamps. `uv tool install 'asciinema==2.4.0'` is one way to get it.
 #   network access, once, for the plugin clone (or point DOOM_PLUGIN_SRC at a
@@ -63,8 +64,8 @@ COLS="${COLS:-160}"
 ROWS="${ROWS:-44}"
 FONT_SIZE="${FONT_SIZE:-20}"
 FPS="${FPS:-25}"
-# The theme the clip is recorded in, persisted as metadata.active_theme (see
-# src/theme/mod.rs). `doom` for the obvious reason, and it is what
+# The theme the clip is recorded in, persisted as `theme` in interface.json
+# (src/config/interface_state.rs). `doom` for the obvious reason, and it is what
 # scripts/demo/record.sh puts every other clip in.
 THEME="${THEME:-doom}"
 # Where the plugin comes from. A `git+` prefix is one of the three spellings that
@@ -103,7 +104,7 @@ SBX="${SBX:-/tmp/thurbox-doom-rec}"
 SESSION_NAMES=(fix-osc52-tmux add-wsl-host-tests perf-session-order-cache docs-remote-hooks)
 SESSION_BRANCHES=(fix/osc52-tmux test/wsl-hosts perf/session-order docs/remote-hooks)
 
-for bin in thurbox thurbox-cli node python3 sqlite3 asciinema agg ffmpeg ffprobe tmux git; do
+for bin in thurbox thurbox-cli fleet runtime-mux node python3 asciinema agg ffmpeg ffprobe tmux git; do
     command -v "$bin" >/dev/null 2>&1 || {
         echo "error: $bin not found on PATH" >&2
         exit 1
@@ -140,6 +141,14 @@ export THURBOX_DATA_DIR="$SBX/data"
 export THURBOX_SOCKET="thurbox-doom"
 unset THURBOX_SOCKET_FOR
 
+# The sessions are Fleet Tasks, on a Fleet of the sandbox's own: the shared
+# helper writes its config under $SBX and exports FLEET_CONFIG.
+export TBX_REPO_ROOT="$ROOT"
+# shellcheck source=scripts/dev/lib/sandbox-env.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/dev/lib/sandbox-env.sh"
+export TBX_SANDBOX_ROOT="$SBX"
+
 rm -rf "$SBX"
 mkdir -p "$SBX"/{tmux,config,data}
 
@@ -157,9 +166,8 @@ SETTINGS
 # Named `thurbox` because the session list groups by repository and prints the
 # directory's basename as the group header.
 REPO="$SBX/thurbox"
-# `-b main`, not git's default: a worktree is created off `main` unless told
-# otherwise, and on a box whose init.defaultBranch is `master` every
-# `session create --worktree-branch` below fails with `invalid reference: main`.
+# `-b main`, not git's default: each session's worktree below is made off
+# `main`, which a box whose init.defaultBranch is `master` would not have.
 git init -q -b main "$REPO"
 printf 'thurbox\n' > "$REPO/README.md"
 git -C "$REPO" add -A
@@ -170,12 +178,16 @@ CAST="$SBX/doom.cast"
 TRIMMED="$SBX/trimmed.cast"
 GIF="$SBX/doom.gif"
 
-# Both kills are scoped by the exported TMUX_TMPDIR above, which is why killing
+# The kills are scoped by the exported TMUX_TMPDIR above, which is why killing
 # these sockets by name here cannot reach your real thurbox server. The second
-# is also what reaps Doom, whose program pane is a window on that socket.
+# is also what reaps Doom, whose program pane is a window on that socket; the
+# third holds the agents, and `fleet up` (thurbox starts it) is stopped first so
+# it does not start them again.
 cleanup() {
+    _tbx_stop_fleet "$SBX"
     tmux -L thurbox-doom-rec kill-server 2>/dev/null
     tmux -L "$THURBOX_SOCKET" kill-server 2>/dev/null
+    tmux -L runtime-mux kill-server 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -185,7 +197,7 @@ trap cleanup EXIT
 paths=$(thurbox-cli config show --json 2>/dev/null | python3 -c '
 import json, sys
 paths = json.load(sys.stdin)["paths"]
-print(paths["ui_dir"]); print(paths["ui_json"]); print(paths["database"])
+print(paths["ui_dir"]); print(paths["plugin_state_json"]); print(paths["interface_json"])
 ')
 [ -n "$paths" ] || {
     echo "error: could not read the resolved paths from thurbox-cli config show" >&2
@@ -193,8 +205,8 @@ print(paths["ui_dir"]); print(paths["ui_json"]); print(paths["database"])
 }
 {
     IFS= read -r UI_DIR
-    IFS= read -r UI_JSON
-    IFS= read -r DB
+    IFS= read -r PLUGIN_STATE
+    IFS= read -r INTERFACE_JSON
 } <<< "$paths"
 
 echo "==> installing the doom plugin into $UI_DIR"
@@ -231,7 +243,7 @@ echo "==> granting the program capability"
 # Both halves come out of plugins.lock rather than being recomputed: the digest
 # recorded there is the one the delivered file has, so the row reads `trusted`
 # and not `trusted · modified`.
-python3 - "$UI_DIR" "$UI_JSON" <<'PYTRUST' || exit 1
+python3 - "$UI_DIR" "$PLUGIN_STATE" <<'PYTRUST' || exit 1
 import json, pathlib, sys, tomllib
 
 ui_dir, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -258,40 +270,27 @@ done
 if [ ${#agents[@]} -eq 0 ]; then
     echo "warning: no agent CLI found — recording with an empty session list" >&2
 else
-    {
-        echo "default = \"${agents[0]}\""
-        for a in "${agents[@]}"; do
-            printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$a"
-        done
-    } > "$THURBOX_CONFIG_DIR/agents.toml"
-
+    tbx_sandbox_fleet
+    # Fleet runs a harness it has a profile for (claude, codex) with its hooks,
+    # and any other name as the program of that name.
     for i in "${!agents[@]}"; do
         [ "$i" -lt "${#SESSION_NAMES[@]}" ] || break
         echo "==> creating session ${SESSION_NAMES[$i]} (${agents[$i]})"
-        thurbox-cli session create --name "${SESSION_NAMES[$i]}" \
-            --agent "${agents[$i]}" --repo-path "$REPO" \
-            --worktree-branch "${SESSION_BRANCHES[$i]}" --text 2>&1 | head -2
+        wt="$SBX/worktrees/${SESSION_NAMES[$i]}"
+        git -C "$REPO" worktree add -q -b "${SESSION_BRANCHES[$i]}" "$wt" main || exit 1
+        tbx_fleet_session "${SESSION_NAMES[$i]}" "$wt" "${agents[$i]}" || exit 1
     done
 fi
 
-# The db and its metadata table exist by now (the calls above opened them), and
-# no TUI is running yet, so these writes are conflict-free.
-#
-# `v2_interface_acknowledged` is the one that is not cosmetic: the v1 -> v2
-# consent gate asks any profile with session history, and seeding sessions gives
-# a fresh profile exactly that. Unacknowledged, thurbox stops on the notice and
-# the recording is 60 seconds of a wall of text.
-sqlite3 "$DB" "
-INSERT INTO metadata (key, value) VALUES ('v2_interface_acknowledged', '1')
-  ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-INSERT INTO metadata (key, value) VALUES ('active_theme', '$THEME')
-  ON CONFLICT(key) DO UPDATE SET value = excluded.value;" || exit 1
+# No TUI is running yet, so this write is conflict-free.
+printf '{"theme": "%s"}\n' "$THEME" > "$INTERFACE_JSON" || exit 1
 
 echo "==> recording thurbox (${COLS}x${ROWS})"
 # asciinema owns the pty, so `tmux send-keys` below reaches thurbox through it.
 tmux -L thurbox-doom-rec new-session -d -x "$COLS" -y "$ROWS" -c "$REPO" -s r \
     "TMUX_TMPDIR=$TMUX_TMPDIR THURBOX_CONFIG_DIR=$THURBOX_CONFIG_DIR \
      THURBOX_DATA_DIR=$THURBOX_DATA_DIR THURBOX_SOCKET=$THURBOX_SOCKET PATH=$PATH \
+     FLEET_CONFIG=${FLEET_CONFIG:-} \
      asciinema rec --overwrite --quiet --cols $COLS --rows $ROWS -c thurbox '$CAST'"
 
 send() { tmux -L thurbox-doom-rec send-keys -t r "$@"; }

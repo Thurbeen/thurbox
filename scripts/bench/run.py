@@ -107,8 +107,9 @@ def resolve_tools(args):
         bindir = args.thurbox_bin or os.path.join(
             os.path.dirname(os.path.dirname(HERE)), "target", "release"
         )
-        tools["thurbox"] = os.path.join(bindir, "thurbox")
-        tools["thurbox-cli"] = os.path.join(bindir, "thurbox-cli")
+        # thurbox runs every session on Fleet and its multiplexer runtime.
+        for name in ("thurbox", "thurbox-cli", "fleet", "runtime-mux"):
+            tools[name] = os.path.join(bindir, name)
     for name, path in tools.items():
         if not path or not os.access(path, os.X_OK):
             sys.exit(
@@ -228,7 +229,7 @@ def main(argv=None):
         "--out", default=None, help="results directory (default: <work>/results-<timestamp>)"
     )
     p.add_argument("--herdr", default=None, help="path to the herdr binary")
-    p.add_argument("--thurbox-bin", default=None, help="directory holding thurbox and thurbox-cli")
+    p.add_argument("--thurbox-bin", default=None, help="directory holding thurbox, thurbox-cli, fleet and runtime-mux")
     args = p.parse_args(argv)
     args.hosts = [h for h in args.hosts.split(",") if h]
     scenarios = [s for s in args.scenarios.split(",") if s]

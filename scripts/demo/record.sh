@@ -6,7 +6,6 @@
 #   * thurbox-interface.{gif,mp4}       (interface.tape       — panes are files)
 #   * thurbox-theme.{gif,mp4}           (theme.tape)
 #   * thurbox-session-creation.{gif,mp4}(session-creation.tape)
-#   * thurbox-fork.{gif,mp4}            (fork.tape)
 #   * search-demo.{gif,mp4}             (search.tape)
 #
 # The hero demo (thurbox-demo.*) is not a tape: scripts/demo/record-hero.sh
@@ -33,7 +32,7 @@
 #     have running.
 #   * XDG_{DATA,CONFIG,STATE,CACHE}_HOME point at a throwaway dir.
 #
-# Requirements: cargo, git, tmux, sqlite3, jq, vhs (+ ffmpeg + ttyd) and whichever agent CLIs
+# Requirements: cargo, git, tmux, python3, jq, vhs (+ ffmpeg + ttyd) and whichever agent CLIs
 # you want to feature (claude / opencode / codex / antigravity). Missing agents are
 # skipped with a warning.
 #
@@ -46,11 +45,11 @@ set -eu
 
 # Tapes to record (stems of scripts/demo/<stem>.tape): `search` ->
 # search-demo.*, others -> thurbox-<stem>.*.
-ALL_TAPES="interface theme session-creation fork search"
+ALL_TAPES="interface theme session-creation search"
 TAPES="${*:-$ALL_TAPES}"
 
-# thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
-# see src/theme/mod.rs). The `theme` clip switches away from it to show
+# thurbox TUI theme every clip starts in (`theme` in interface.json, see
+# src/config/interface_state.rs). The `theme` clip switches away from it to show
 # the picker, so we re-apply this before EVERY tape to keep all videos on-brand.
 DEMO_THEME="${DEMO_THEME:-doom}"
 
@@ -70,7 +69,7 @@ done
 
 # --- Preflight: required tools ----------------------------------------------
 missing=
-for tool in cargo git tmux vhs sqlite3 jq; do
+for tool in cargo git tmux vhs python3 jq; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then
@@ -107,7 +106,7 @@ fi
 # --- Build the dev binaries (version 0.0.0-dev => dev_build cfg) -------------
 # Build BEFORE the HOME override so cargo still finds ~/.cargo.
 echo "==> Building thurbox (dev) ..."
-cargo build --bin thurbox --bin thurbox-cli
+cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux
 
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
 CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
@@ -121,8 +120,9 @@ REAL_HOME="$HOME"                        # captured before the override below
 tbx_sandbox_init_full fresh              # throwaway temp HOME/XDG/TMUX_TMPDIR
 DEMO_HOME="$TBX_SANDBOX_ROOT"            # fresh agent auth (no real creds/history)
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"   # dev_build subdir
-DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"  # SQLite db (dev_build subdir)
-mkdir -p "$CFG_DIR"
+DATA_DIR="$XDG_DATA_HOME/thurbox-dev"
+mkdir -p "$CFG_DIR" "$DATA_DIR"
+tbx_sandbox_fleet                        # the sessions are this sandbox's Fleet Tasks
 
 # Hide `wsl.exe` from the demo's PATH. WSL distros are AUTO-discovered (no config
 # to isolate — `config::hosts::discover_wsl_hosts` shells out to `wsl.exe -l -q`
@@ -434,56 +434,19 @@ demo_session_name() {
     esac
 }
 
-# Opt out of the built-in hooks extension for the recording. It is auto-activated
-# by default and injects a `--settings` patch into claude, which then asks
-# "Hooks need review / 4 hooks are new or changed" on first launch in the
-# throwaway HOME — a modal that both hides the agent's real UI and can swallow a
-# tape's keystrokes. The status hooks it wires drive the session-list dots, which
-# no tape asserts on (agents are launched with no prompt, so nothing is working),
-# so dropping it costs the demo nothing. Must run BEFORE the sessions spawn.
-"$CLI_BIN" extension deactivate hooks >/dev/null 2>&1 || true
-
-# The first-launch interface prompt exists for somebody upgrading from v1. This
-# profile is synthetic and a minute old, but it has sessions, which is the signal
-# the gate reads — so without this every tape would spend its keystrokes on the
-# prompt instead of the interface, and the closing Ctrl+Q would decline and exit.
-# (That is exactly what the first re-recording produced.)
-"$CLI_BIN" config accept-interface >/dev/null 2>&1 || true
-
 echo "==> Seeding one session per agent:$AGENTS"
+# Fleet runs claude and codex from its own harness profiles, and any other name
+# as the program of that name. Each Task names the session in its
+# `thurbox.dev/name` label, as thurbox's create flow does.
 for a in $AGENTS; do
-    "$CLI_BIN" session create --name "$(demo_session_name "$a")" \
-        --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
+    harness=$(agent_command "$a")
+    [ "$a" = claude ] && harness=claude-code
+    tbx_fleet_session "$(demo_session_name "$a")" "$DEMO_REPO" "$harness"
 done
 
-# --- Pre-seed a few tasks + an automation -----------------------------------
-# Unconditional, because the demo interface installed above puts the tasks pane
-# on screen in EVERY clip. It used to be gated on the `tasks` and `search` tapes,
-# which is how the main demo came to be recorded with an empty tasks pane reading
-# "nothing on the list" — the pane was working and had simply been given nothing.
-echo "==> Seeding demo tasks + an automation"
-# Real backlog items from thurbox's own tracker, matching the vendored tree
-# and the session names — so the tasks panel reads as the same sprint the
-# sessions are working, not as generic filler.
-#
-# NOTE: `search.tape` types the literal queries `tri`, `quote` and `test`, so
-# at least one task/automation must match each. Keep them in sync when editing.
-#
-# A plain local todo plus one already in progress, so the checkbox glyphs
-# (todo/in-progress/done) all show in the list.
-"$CLI_BIN" task create --title "Add psmux control-mode tests" >/dev/null 2>&1 || true
-"$CLI_BIN" task create --title "Triage flaky WSL host discovery" \
-    --status in_progress >/dev/null 2>&1 || true
-# A rich markdown description so the full-screen preview shows headings,
-# bold and lists rendered (the headline of the tasks feature). Uses **bold**
-# rather than backtick code spans: a backtick inside single quotes reads as an
-# unexpanded command substitution to shellcheck (SC2016), and the preview
-# renders bold just as legibly.
-"$CLI_BIN" task create --title "Harden posix_quote against newlines" \
-    --description "$(printf '## Goal\n\nA newline survives **posix_quote** and is re-split by tmux **control mode**.\n\n- reject newlines at the quoting boundary\n- add a regression test\n- audit callers that build *remote* git commands')" \
-    >/dev/null 2>&1 || true
-# An automation (spawn action, inferred from --repo) so the search demo has
-# a matching automation result too.
+# --- Pre-seed an automation --------------------------------------------------
+# So the search demo has a matching automation result (search.tape types `tri`).
+echo "==> Seeding an automation"
 "$CLI_BIN" automation create --name "nightly-clippy-triage" --trigger daily \
     --time "09:00" --repo "$DEMO_REPO" \
     --prompt "Run cargo clippy --all-targets and triage any new warnings" \
@@ -497,61 +460,47 @@ sleep 6
 # --- Record -----------------------------------------------------------------
 # Each tape declares its own Output paths, so one VHS run == one output pair.
 # Loop over the requested tapes, rendering each into media/.
-# Persist the TUI theme into the seeded db so the next launched TUI starts in it.
-# The db + metadata table already exist (the `session create` calls above opened
-# them). No TUI is running between vhs invocations, so this write is conflict-free.
-set_theme() {
-    sqlite3 "$DB_FILE" \
-        "INSERT INTO metadata (key, value) VALUES ('active_theme', '$1') \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+# Persist the TUI theme and a fixed session order into interface.json, so each
+# launched TUI starts in the theme on a known first row. No TUI is running
+# between vhs invocations, so this write is conflict-free.
+#
+# Tapes that walk the list with a FIXED number of Down presses are only correct
+# if the walk starts on a known row: one press too many wraps onto another row
+# and the following keystrokes reach the focused agent's PTY instead — a broken
+# clip that still exits 0. The order names each session's Task, in the order
+# they were created.
+set_interface_state() {
+    # shellcheck disable=SC2046 # one Task name per word, split on purpose
+    python3 - "$CFG_DIR/interface.json" "$1" $(for a in $AGENTS; do tbx_fleet_task_name "$(demo_session_name "$a")"; echo; done) <<'PYSTATE'
+import json, sys
+path, theme, order = sys.argv[1], sys.argv[2], sys.argv[3:]
+json.dump({"theme": theme, "order": order}, open(path, "w"), indent=2)
+PYSTATE
 }
 
-# Pin a deterministic session order so the left column is byte-stable across
-# runs. Tapes that walk the list with a FIXED number of Down presses (the
-# `automations` clip steps past the last session to flow into the Automations
-# pane) are only correct if the walk starts on a known row: the combined
-# session+automations column is circular, so one press too many wraps back onto
-# the list and the following keystrokes are forwarded to the focused agent's PTY
-# instead — a broken clip that still exits 0. `display_order` is the authoritative
-# ordering (a NULL sorts after ordered rows, in creation order), so stamping it
-# 0..n-1 by creation time fixes both the order and which row is selected first.
 # Put the demo repo in the repo picker's remembered list.
 #
 # Bookmarks are written when a repository is chosen THROUGH THE FLOW, so seeding
-# sessions with `thurbox-cli session create` leaves the picker with nothing
-# remembered. The only row it then offers is the interface directory, which it
-# always offers — and that is what session-creation.tape selected for who knows how
-# long: the clip created a session in `~/.config/thurbox-dev/ui`, its `w` and its
-# typed name went to the agent's PTY, and the wreckage was still on screen when the
-# next tape recorded.
+# sessions as Fleet Tasks leaves the picker with nothing remembered. The only row
+# it then offers is the interface directory, which it always offers — and that is
+# what session-creation.tape selected for who knows how long: the clip created a
+# session in `~/.config/thurbox-dev/ui`, its `w` and its typed name went to the
+# agent's PTY, and the wreckage was still on screen when the next tape recorded.
 #
-# `is_git = 1` because the flow needs it to offer the worktree option; `use_count`
-# and `last_used_at` are what a real bookmark would carry.
+# `is_git` because the flow needs it to offer the worktree option.
 bookmark_demo_repo() {
-    sqlite3 "$DB_FILE" <<SQL
-INSERT INTO repo_bookmarks (host, repo_path, last_used_at, use_count, is_parent, is_git)
-VALUES ('', '$DEMO_REPO', strftime('%s','now'), 3, 0, 1)
-ON CONFLICT(host, repo_path) DO UPDATE SET use_count = 3, is_git = 1;
-SQL
-}
-
-set_session_order() {
-    sqlite3 "$DB_FILE" <<'SQL'
-UPDATE sessions
-   SET display_order = (
-       SELECT COUNT(*) FROM sessions AS earlier
-        WHERE earlier.deleted_at IS NULL
-          AND earlier.created_at < sessions.created_at
-   )
- WHERE deleted_at IS NULL;
-SQL
+    python3 - "$DATA_DIR/bookmarks.json" "$DEMO_REPO" <<'PYMARK'
+import json, sys, time
+path, repo = sys.argv[1], sys.argv[2]
+json.dump([{"host": "", "repo_path": repo, "last_used_at": int(time.time() * 1000),
+            "is_parent": False, "is_git": True}], open(path, "w"), indent=2)
+PYMARK
 }
 
 for tape in $TAPES; do
     # Re-apply before every tape: the `theme` clip switches themes (and persists
     # the change), so without this any tape after it would start on the wrong one.
-    set_theme "$DEMO_THEME"
-    set_session_order
+    set_interface_state "$DEMO_THEME"
     # Re-applied per tape for the same reason as the theme: a tape that creates a
     # session rewrites the bookmark list, so the next one must start from a known
     # state.

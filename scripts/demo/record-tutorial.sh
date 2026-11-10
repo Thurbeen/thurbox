@@ -28,7 +28,7 @@
 # HOME/XDG/TMUX_TMPDIR, so this can touch neither your thurbox profile, nor your
 # tmux server, nor your agent credentials.
 #
-# Requirements: cargo, git, tmux, agg, ffmpeg, python3, jq, sqlite3. A coding
+# Requirements: cargo, git, tmux, agg, ffmpeg, python3, jq. A coding
 # agent CLI is optional (see agents.toml above). agg ships no font, so FONT_DIR
 # is provisioned under target/fonts: JetBrains Mono (whose box-drawing glyphs
 # tile, which is what keeps a pane border from rendering as a dashed line), plus
@@ -77,7 +77,7 @@ FONT_FAMILY="${FONT_FAMILY:-JetBrains Mono,DejaVu Sans Mono,Noto Sans Symbols 2}
 # server.
 SOCK="thurbox-tutorial-rec"
 
-for bin in cargo git tmux agg ffmpeg python3 jq sqlite3; do
+for bin in cargo git tmux agg ffmpeg python3 jq; do
     command -v "$bin" >/dev/null 2>&1 || die "$bin not found on PATH"
 done
 
@@ -115,9 +115,8 @@ ensure_fonts
 
 # --- Build the dev binaries (BEFORE the HOME override, so cargo finds ~/.cargo) -
 log "Building thurbox (dev) ..."
-cargo build --bin thurbox --bin thurbox-cli >&2
+cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux >&2
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
-CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
 [ -x "$THURBOX_BIN" ] || die "dev binary not found at $THURBOX_BIN"
 
 HAS_CLAUDE=0
@@ -142,7 +141,7 @@ fi
 ln -sfn "$HOME" "$HOME_LINK"
 export HOME="$HOME_LINK"
 # Same reasoning one level down: the worktree a session runs in is printed by
-# `thurbox-cli session list`, and it is built under XDG_DATA_HOME. Pointing the
+# `fleet list task`, and it is built under XDG_DATA_HOME. Pointing the
 # XDG roots at their DEFAULT places inside the (now short) home keeps every path
 # in a screenshot the shape a reader's own would be, and stays inside the
 # sandbox — these resolve through the symlink to the sandbox root.
@@ -156,8 +155,9 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 # written to and read from a profile the TUI never opens — which is a run of
 # screenshots in the wrong theme, with nothing failing.
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
-DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"
-mkdir -p "$CFG_DIR" "$(dirname "$DB_FILE")"
+mkdir -p "$CFG_DIR"
+# The sessions are this sandbox's Fleet Tasks (exports FLEET_CONFIG).
+tbx_sandbox_fleet
 
 cleanup() {
     tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
@@ -263,29 +263,15 @@ if [ "$HAS_CLAUDE" -eq 1 ]; then
 fi
 
 # --- Profile state, before the first frame ----------------------------------
-# The hooks extension is auto-activated and patches claude with `--settings`,
-# which makes it ask "4 hooks are new or changed" on first launch in a fresh HOME
-# — a modal over the agent pane in the tutorial's headline screenshot. The status
-# dots it drives are not what these stills are about.
-"$CLI_BIN" extension deactivate hooks >/dev/null 2>&1 || true
-# The first-launch interface prompt is for somebody upgrading from v1; it would
-# otherwise be the first thing every screenshot showed.
-"$CLI_BIN" config accept-interface >/dev/null 2>&1 || true
-# Touch the database so the theme can be persisted into it.
-"$CLI_BIN" session list >/dev/null 2>&1 || true
+printf '{"theme": "%s"}\n' "$THEME" > "$CFG_DIR/interface.json"
 
-sqlite3 "$DB_FILE" \
-    "INSERT INTO metadata (key, value) VALUES ('active_theme', '$THEME') \
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value" \
-    || log "warning: could not set the theme (continuing with the default)"
-
-# Tripwire: this profile must be empty. A session here means the isolation broke
-# and the dev binary is reading a real database — the tutorial's first screenshot
-# would then be of somebody's actual work.
-sessions=$(sqlite3 "$DB_FILE" \
-    "SELECT count(*) FROM sessions WHERE deleted_at IS NULL" 2>/dev/null || echo 0)
-[ "$sessions" = "0" ] || die "sandbox is not empty ($sessions session(s)) — \
-THURBOX_CONFIG_DIR/THURBOX_DATA_DIR may point at your real data. Aborting."
+# Tripwire: the sessions must live in this sandbox. A FLEET_CONFIG outside it
+# means the isolation broke and the dev binary would read a real Fleet store —
+# the tutorial's first screenshot would then be of somebody's actual work.
+case "${FLEET_CONFIG:-}" in
+    "$TBX_SANDBOX_ROOT"/*) ;;
+    *) die "FLEET_CONFIG (${FLEET_CONFIG:-unset}) is outside the sandbox — aborting" ;;
+esac
 
 # --- The recording terminal --------------------------------------------------
 # `status off` because the pane has to own every row it was given, and
@@ -305,7 +291,7 @@ tmux -L "$SOCK" -f "$TMUX_CONF" new-session -d -s tut -x "$COLS" -y "$ROWS" \
     "$THURBOX_BIN"
 
 # The pane every helper below acts on. The run drives two in turn: the TUI, then
-# a shell for the `thurbox-cli` still, once the TUI has quit and taken its window
+# a shell for the `fleet` still, once the TUI has quit and taken its window
 # with it.
 TARGET=tut
 
@@ -454,8 +440,8 @@ send Escape; sleep 1
 # Quit: detaches, leaving every agent running under the sandbox's tmux.
 send C-q; sleep 3
 
-# 15 — the other half of the tutorial: the same sessions from `thurbox-cli`,
-# which is what an agent inside a session reaches for. Its own tmux session
+# 15 — the other half of the tutorial: the same sessions from `fleet`, which is
+# what an agent inside a session reaches for. Its own tmux session
 # because the TUI's window closed with the TUI.
 tmux -L "$SOCK" -f "$TMUX_CONF" new-session -d -s cli -x "$COLS" -y "$ROWS" \
     "bash --norc"
@@ -463,11 +449,8 @@ TARGET=cli
 sleep 1
 # A bare `$` reads as a prompt in a doc; `bash-5.2$` reads as this machine.
 run "PS1='\$ '; clear" 1
-run "thurbox-cli session list" 3
-# A session created with no TUI running at all: it appears in the list, and in
-# the TUI within a tick, because both binaries share one database.
-run "thurbox-cli session create --name docs --repo-path ~/code/web-app" 6
-run "thurbox-cli session list" 3
+# The sessions the walkthrough made, as Fleet Tasks: the store the TUI reads.
+run "fleet list task" 3
 shot cli
 
 count=$(find "$OUT_DIR" -maxdepth 1 -name '*.png' | wc -l | tr -d ' ')

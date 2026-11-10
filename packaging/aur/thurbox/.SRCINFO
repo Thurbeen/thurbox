@@ -9,7 +9,6 @@ pkgbase = thurbox
 	makedepends = cargo
 	depends = tmux
 	depends = git
-	depends = sqlite
 	depends = glibc
 	optdepends = claude-code: Claude Code agent CLI
 	optdepends = aider-chat: aider agent CLI

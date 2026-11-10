@@ -90,7 +90,8 @@ case ",$hosts," in
 esac
 
 if [ "$build" = 1 ] && [[ ",$hosts," == *,thurbox,* ]]; then
-    (cd "$repo" && nice -n 10 cargo build --release --bin thurbox --bin thurbox-cli)
+    (cd "$repo" && nice -n 10 cargo build --release --bin thurbox --bin thurbox-cli \
+        --bin fleet --bin runtime-mux)
 fi
 
 command -v tmux >/dev/null || {

@@ -306,9 +306,8 @@ impl TmuxCompatible for Psmux {
     /// shipped, the agent launches clean (surfaced as
     /// `SessionInfo::hook_wiring`), and a psmux host's sessions report no
     /// status — unknown, not idle. `scripts/dev/e2e/windows-vm.sh test` probes
-    /// the first two and holds them against this answer, which it reads from
-    /// `thurbox-cli runtime status --json` (`hook_status`); open it only with
-    /// evidence for all three.
+    /// the first two and holds them against this constant, which it reads
+    /// from this file; open it only with evidence for all three.
     const HOOK_STATUS: bool = false;
 
     /// psmux has no `TMUX_TMPDIR`-style socket directory — every `-L <name>`
