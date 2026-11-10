@@ -11,8 +11,10 @@ use std::path::PathBuf;
 /// The extensions a drop counts as an image by.
 const IMAGE_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic"];
 
-/// The image files `text` drops, when it is nothing but the paths of existing
-/// local image files, as a terminal pastes a drop; `None` for any other text.
+/// The image files `text` drops, when it is nothing but absolute paths with an
+/// image extension, as a terminal pastes a drop; `None` for any other text.
+/// Decided from the text alone: this runs on the paste, on the loop, and a
+/// filesystem check could stall it on a mount that does not answer.
 pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
     let words = split_words(text.trim_matches(|c: char| c.is_ascii_whitespace()))?;
     if words.is_empty() {
@@ -26,7 +28,7 @@ pub fn dropped_images(text: &str) -> Option<Vec<PathBuf>> {
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
-            (image && path.is_absolute() && path.is_file()).then_some(path)
+            (image && path.is_absolute()).then_some(path)
         })
         .collect()
 }
@@ -116,4 +118,25 @@ fn file_uri_path(word: &str) -> Option<String> {
         path.remove(0);
     }
     Some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dropped_images;
+
+    /// The decision is made from the text alone: a path under a directory
+    /// that does not exist is still a drop, so a stalled mount cannot hold
+    /// the paste that asks.
+    #[test]
+    fn a_drop_is_known_by_its_shape_without_touching_the_filesystem() {
+        let gone = "/nonexistent-thurbox-dir/sub/shot.png";
+        assert_eq!(dropped_images(gone).map(|p| p.len()), Some(1));
+        assert_eq!(
+            dropped_images("'/no where/a b.PNG' file:///nope/c%20d.jpg").map(|p| p.len()),
+            Some(2)
+        );
+        for text in ["shot.png", "/tmp/notes.txt", "hello /tmp/a.png", ""] {
+            assert!(dropped_images(text).is_none(), "{text:?}");
+        }
+    }
 }

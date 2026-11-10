@@ -3802,9 +3802,11 @@ delivers a dropped file as a paste of its local path, which names nothing on
 the machine a remote Task runs on. v2 copied the file there over thurbox's own
 ssh; in v3 neither the runtime protocol (its `exec` takes no input) nor Fleet's
 command line carries a file to a Task's host. So a paste that is nothing but
-the paths of existing local image files, on either surface of a session whose
+absolute paths with an image extension, on either surface of a session whose
 Task runs on another host, is not typed: the error line says "image drop isn't
 supported for remote sessions yet". A local session takes the paths as before.
+The decision reads the text alone and never the filesystem: it runs on the
+paste, and a mount that does not answer must not hold the interface.
 
 **What the agent reads, thurbox has not seen.** This is the one paste path where
 what you copied reaches the agent as content it fetches itself, rather than as
