@@ -415,7 +415,7 @@ pub enum PathKind {
     /// The *file* is legacy and read only for migration, but the path is not:
     /// every config location is derived from it by
     /// `with_file_name`/`parent().join(..)` — `agents.toml`, `hosts.toml`,
-    /// `settings.toml`, `themes.toml`, `extensions/`, `ui/`, `ui.json`,
+    /// `settings.toml`, `themes.toml`, `ui/`, `ui.json`,
     /// `plugin-state.json`. So this is
     /// the single place the `thurbox` / `thurbox-dev` split enters for all of
     /// them, and calling it "migration only" invited the conclusion that the
@@ -928,8 +928,8 @@ pub(crate) fn unique_link_name(name: &str, used: &mut std::collections::HashSet<
 
 /// Validate that a manifest-supplied path is a safe relative path (no absolute
 /// root, no `..` components) — the shared path-traversal guard for payloads
-/// delivered under a directory the caller controls (extension installs, and
-/// anything else that joins untrusted relative paths onto a base).
+/// delivered under a directory the caller controls (anything that joins
+/// untrusted relative paths onto a base).
 ///
 /// This is the one canonical implementation (see also [`safe_join`]).
 /// `session::plugin_spec::validate_destination` deliberately keeps its own,

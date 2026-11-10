@@ -50,8 +50,7 @@ the final message ended with `[thurbox-idle]`, or `session signal --idle` after
 the turn), and the pane probe found the agent; `unknown` otherwise; `stopped`
 when parked. Any later report clears the proof. `pending` (what the last
 `Stop` listed) and `state_support` (`AgentHookCoverage::state_support`:
-`full` for claude, `partial` for the rest, null when unwired or the hooks
-extension is off) ride with it. The contract is docs/thurbox/orchestration.md →
+`full` for claude, `partial` for the rest, null when unwired) ride with it. The contract is docs/thurbox/orchestration.md →
 Activity.
 
 **Readiness (`ready`).** `Assessment::ready` folds the state into the
@@ -170,7 +169,7 @@ own, which is the point.
   difference between the two verbs' answers for one row, and `session list
   --help` says so.
   `session doctor` is the same picture as a verdict plus the wiring checks
-  (extension active, payload on disk carrying the signal marker, `thurbox-cli`
+  (payload on disk carrying the signal marker, `thurbox-cli`
   resolvable on the pane's own `PATH` — see the bullet below it), exiting
   non-zero when a session's wiring is broken —
   an agent thurbox ships no hooks for but which is *signalling anyway* warns
@@ -410,9 +409,9 @@ own, which is the point.
   to Lua as theme roles and read by the pane. `status_error` is a separate
   role (a failed *command*, e.g. `bands.rs`'s `Level::Error` — not a session
   state, and untouched by `SessionState` dropping `Error`).
-- **Wiring the hooks** is the job of the built-in **hooks extension**
-  (auto-activated; see the Extensions section) — core thurbox only knows
-  the generic `session signal` command.
+- **Wiring the hooks**: thurbox installs nothing into an agent's config.
+  Fleet's harness profiles pass each harness its hooks at launch
+  (`crates/fleet-api/src/harness.rs`).
 
 ## OS notifications
 

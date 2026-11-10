@@ -11,7 +11,7 @@ For architectural choices, see [architecture.md](architecture.md).
 > surface needs and it is not recoverable from the code.
 >
 > The engine below the interface — sessions, worktrees, agents, hosts, storage,
-> extensions, the CLI — is unchanged, and so are those sections.
+> the CLI — is unchanged, and so are those sections.
 
 ---
 
@@ -181,13 +181,9 @@ manual order is never disturbed (see *Smart ordering* below). Repo groups
 roll up to their most-urgent member
 (`Blocked > Working > Done > Unreachable > Idle`).
 
-The hooks are wired automatically by the built-in **hooks** extension
-(auto-activated on first run; opt out with `thurbox-cli extension
-deactivate hooks`). How much each agent can report depends on the
-lifecycle surface its CLI exposes; the per-agent facts are owned by
-`docs/thurbox/agents.md` → *Status hook mechanisms* (the `AGENT_HOOK_COVERAGE`
-table), with the matrix in `extensions/hooks/README.md` (and the
-website's *Agent hooks* page).
+Thurbox installs no hooks into an agent's own config: Fleet's harness
+profiles pass each harness its status hooks at launch
+(`docs/thurbox/agents.md` → *Status hooks*).
 
 **Remote sessions report status too** (same per-agent range): at spawn
 time the hook commands are rewritten to the command the row's backend
@@ -262,17 +258,16 @@ the pane's environment and every child inherits it, so the call needs no
 arguments (see *Inter-session messages* for the same identity contract).
 
 **`thurbox-cli session doctor [uuid]`** is the diagnostic, in the spirit
-of `notify --test`: is the hooks extension active, does this agent have
-coverage, is its payload really on disk where the agent reads it, could
-a hook command resolve `thurbox-cli` on the **pane's own** `PATH` at all
+of `notify --test`: does this agent have coverage, is its payload really on
+disk where the agent reads it, could a hook command resolve `thurbox-cli` on
+the **pane's own** `PATH` at all
 (the pane's, because that is the one a hook runs against — answering
 with the `PATH` `doctor` itself was run on is how it once reported
 healthy wiring for panes that could find no binary), what was last
 reported and when, and does the pane agree. Every shipped hook command
 ends in `|| true`, so a signal that never lands is otherwise
 indistinguishable from an agent that has not signalled — this is how to
-tell them apart. It reads without ever repairing (`thurbox-cli
-extension reinstall hooks` is the repair), and exits non-zero when a
+tell them apart. It reads without ever repairing, and exits non-zero when a
 session's wiring is broken. An agent thurbox ships no hooks for but
 which is signalling anyway — a driver calling `session signal` itself —
 is a warning, not a failure: state is demonstrably arriving.
@@ -731,7 +726,7 @@ replacing inherited values and `append_args` adding flags. Per-session
 picks up registry edits while replaying those literal arguments, and forking
 copies them without converting the session into a raw command. Hook coverage
 and Codex conversation binding follow the inherited family. The format,
-validation, extension-patch order and delegated capability are documented in
+validation and delegated capability are documented in
 [config.md](config.md#agentstoml).
 
 Only `claude` and `pi` accept the thurbox-generated id at creation
@@ -908,7 +903,7 @@ has the rationale; the shape:
   does the worktree, the hooks and the launch with the host's own
   `agents.toml` and `hooks.toml`. Every caller goes
   through the shared `session_ops` pipelines, so the creation flow,
-  the CLI, `spawn` automations and extension self-heal all delegate.
+  the CLI and `spawn` automations all delegate.
   The caller's own `hooks.toml` fires around the delegated call with
   `THURBOX_HOST` set; the host's fires there. A refusal on the host is
   the caller's error, verbatim. A delegated create carries everything
@@ -1348,8 +1343,7 @@ as data (`~/.config/thurbox/hooks.toml`, one `[[hooks]]` entry per
 event + command), seeded commented-out, read each time an event fires.
 
 The mechanism is where they fire, not what they are. Every interface —
-the TUI's flow and chords, `thurbox-cli`, a `spawn` automation, an
-extension's self-healed sessions — ends in the same four functions in
+the TUI's flow and chords, `thurbox-cli`, a `spawn` automation — ends in the same four functions in
 `session_ops` (`spawn`, `delete`, `restart`, `restore`), so a hook placed
 inside those fires **once per operation for every caller**, and nothing
 in the kernel or the Lua interface knows hooks exist. They run on the
@@ -1384,10 +1378,6 @@ retention-gap behavior and bounded tick budget are specified in
 [config.md](config.md#hookstoml). `session wait` and `send --wait-turn` consume
 the same stream; [orchestration.md](orchestration.md#bounded-waits-and-read-side-evidence)
 covers their exit codes and the output/transcript read fields.
-
-Deliberately not the same thing as the built-in `hooks` *extension*
-(`<config>/hooks/`), which is the reverse direction: files thurbox
-installs into the agent CLIs so they can report status.
 
 The four `post_*` events are also delivered to interface plugins under the
 same names (`events = { "session.post_create" }` + `on_event`, see
@@ -1763,7 +1753,7 @@ fires once and schedules the occurrence after it.
 
 > **CLI only.** There is no tasks pane. The data, the storage and the agent
 > linkage are unchanged, so `thurbox-cli task` does everything below and scripts
-> and extensions that used tasks still work. A pane is owed.
+> that used tasks still work. A pane is owed.
 
 A **task list** of todo items that can be **connected to a coding
 agent**. Tasks deliberately reuse the automation **Send/Spawn** action
@@ -1853,100 +1843,6 @@ delete}`, called by the interface's `task` command and `thurbox-cli task`: an
 edit reads and writes the row under one write lock, so it keeps a field another
 caller saved meanwhile, and deleting a task that is not there is
 "Task not found" from both, where the command used to report success.
-
----
-
-## Extensions
-
-Opt-in, agent-agnostic add-ons that build on `thurbox-cli` without
-touching the core binary. An extension is **data, not code** (ADR-20):
-an `extension.toml` manifest declares the agents to register, the files
-to lay down, and the sessions and automations to keep alive, and
-`thurbox-cli extension install` reads it. thurbox knows the format,
-never a specific extension. The format, the lifecycle commands and the
-self-heal contract are in `docs/thurbox/config.md` → `extensions/`.
-
-### What ships in the repo
-
-`extensions/` holds the **three built-ins**, and only those. All are
-embedded in the binary and auto-activated, because what they wire up has
-to be there before a user knows to ask for it:
-
-- **`hooks`** — status-hook delivery for the built-in agents, so session
-  status works with no setup. Per-agent detail is in `docs/thurbox/agents.md` →
-  "Status hook mechanisms".
-- **`ui-skill`** — it ships no session, no automation and no agent. It
-  installs a single **agent skill**, `thurbox-ui`, into each coding CLI's
-  personal skill directory (`~/.claude/skills/`,
-  `~/.codex/skills/`, `~/.config/opencode/skills/`, `~/.copilot/skills/`,
-  `~/.agents/skills/`, each guarded so a CLI you do not have is skipped),
-  so an agent in **any** session knows how to change thurbox's own
-  interface — where it lives, how to check an edit, and what the sandbox
-  withholds. It replaces attaching the interface directory to every
-  session as an extra repo: a skill loads only when the request is about
-  the TUI. Someone who does not already know the interface is editable
-  will not go looking for the extension that says so.
-- **`sessions-skill`** — `ui-skill`'s twin, installed the same way to the
-  same guarded destinations. Its skill, `thurbox-sessions`, teaches an
-  agent to work with the **other** sessions using only commands
-  `thurbox-cli` already has: find them and itself (`session list`,
-  `THURBOX_SESSION`), read one without disturbing it (`session get`,
-  `capture`, read-only `exec`, and what each state means for busy versus
-  idle), and reach it — the mailbox (`message send`/`inbox`/`reply`) first,
-  which never types into a pane, and `session send` only when the user asked,
-  after confirming the target, that it is idle, and that it is not the
-  session open in the user's TUI (`ui state` → `selected_session`). Keys
-  that interrupt a turn, `--force`, `session focus` and every lifecycle verb
-  on someone else's session are off-limits unless the user asks.
-
-Turn any of them off with `thurbox-cli extension deactivate <name>`.
-
-Nothing else installs by **bare name**. The bare-name registry
-(`OFFICIAL_EXTENSIONS`) is empty and the resolver stays as it is, so
-`extension available` and a mistyped install both point at the three
-forms that do work: an `http(s)://` base URL, a local directory, or a
-repository (`git+https://…`).
-
-### The worked example: fleet
-
-The extension the documentation presents lives in **its own repository**:
-[Thurbeen/fleet](https://github.com/Thurbeen/fleet), a control-plane
-template you clone and repoint. Its manifest, at the frozen `v1.0.0` tag
-(fleet's `main` ships no extension), is the format in practice —
-one `[[files]]` payload (`FLEET.rendered.md`), three
-`[[symlinks]]` surfacing it as `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, one
-long-lived `[[sessions]]`, and deliberately no `[[automations]]` because
-the only scheduled candidate pushes to `main`. It ships as
-`extension.toml.in` with a `__REPO_PATH__` placeholder that
-`uv run fleet install-extension` renders with the clone's absolute path,
-because `{home}` resolves to the extension home and no
-token spells "my clone".
-
-Nothing in thurbox knows fleet exists, and that is the point — it is a
-template, not a feature. `docs/thurbox/orchestration.md` → "The reference
-implementation" owns the full walkthrough.
-
-### Removed
-
-Four opt-in extensions — `flow` (a triage agent), `forge` (an automation
-proposer), `ci-shepherd` (a PR/MR fixer) and `renovate` (a dependency
-updater) — shipped under `extensions/` and were deleted, unused. Every
-capability they were built on is still in the binary and still
-provider-neutral: the manifest format above, tasks and worktree
-dispatch, the `Exec` automation action, and the inter-session message
-queue. What went was four consumers of that machinery, not the
-machinery.
-
-Four **tracker-import** extensions (`github-issues`, `gitlab-issues`,
-`linear`, `jira`) went earlier, for the same reason twice over: they were
-near-identical, each carrying one provider's API shape, for a job that is
-a `curl` and an upsert. Their support is generic and stays —
-`task --source/--external-id/--external-url`,
-`get_task_by_external_id`, the `idx_tasks_external` index, and the
-`Exec` automation action — so a scheduled `Exec` running your own script
-does the same thing. Dedup is on `(source, external_id)` and only
-open-vs-done is authoritative on the way in, so a local `in_progress` is
-never clobbered. No provider name is in the binary, by design (ADR-20).
 
 ---
 
@@ -2476,26 +2372,24 @@ best-effort (its row, its branch and its agent), and the error says so.
 Uncommitted work went with the force delete and does not return.
 
 `fail`, `adopt` and `replace` **lock the name** from the lookup to the row — the
-same lock self-heal and restore take (below) — because each promises the caller
+same lock restore takes (below) — because each promises the caller
 the only session of that name, and a spawn runs for seconds. Without it two
-`--on-existing fail` calls, or one racing a self-heal, both looked, both found
+`--on-existing fail` calls both looked, both found
 nothing and both created (issue #1475). A name somebody else is creating is
 refused with "being created … right now"; try again once it has finished.
 `allow` takes no lock: it accepts a namesake, so it waits on nobody.
 
-Two creators never reach an `--on-existing` at all, and they are the two with
-nobody at the keyboard to ask: **extension self-heal**, which recreates a
-declared session from the 60 s heartbeat tick, and **`session restore`**, which
-un-deletes a name rather than choosing one. Both ask the same question through
-`session_ops::names`, and both answer it by refusing. Three things can hold a
+One creator never reaches an `--on-existing` at all: **`session restore`**,
+which un-deletes a name rather than choosing one. It asks the same question
+through `session_ops::names`, and answers it by refusing. Three things can hold a
 name on a backend, and only the first is visible to a plain lookup: a live
 session; one soft-deleted whose **undo window is still open**, because the
 delete can still be taken back and a creation now is a pair the moment it is;
 and another creator **mid-spawn**, since a spawn runs for tens of seconds and
-"look, then create" is not a claim. Both take that claim — `session_ops::lock`, an
+"look, then create" is not a claim. It takes that claim — `session_ops::lock`, an
 atomic conditional write on `event_cursors`, expiring so a creator killed mid-spawn
 does not hold the name for the rest of the day, and sized against every lifecycle hook `hooks.toml`
-configures, whose `timeout_secs` has no cap — and hold it across the whole operation
+configures, whose `timeout_secs` has no cap — and holds it across the whole operation
 rather than across the lookups: a creation that has claimed a name has not
 written its row yet, so a lookup alone cannot see it.
 
@@ -2526,14 +2420,13 @@ deleting a session therefore leaves no trace in the message band.
 
 ### A session's key: the address a driver finds it by
 
-A session may carry one **key** (`session create --key`, `session set-key`,
-`key` on an extension's `[[sessions]]`): an opaque string chosen by whoever
-creates it — `fleet.acme.mission-control`, say. Thurbox never mints, parses or
-interprets one. It stores it, compares it for equality, keeps it unique, resolves
-it and shows it (`key` in `list`/`get`/`create` JSON and so in the mirror format,
-`key` on the Lua `thurbox.Session`, `THURBOX_SESSION_KEY` in the pane and in
-lifecycle hooks). The name stays a label, free to change; a rename never touches
-the key.
+A session may carry one **key** (`session create --key`, `session set-key`): an
+opaque string chosen by whoever creates it — `fleet.acme.mission-control`, say.
+Thurbox never mints, parses or interprets one. It stores it, compares it for
+equality, keeps it unique, resolves it and shows it (`key` in
+`list`/`get`/`create` JSON and so in the mirror format, `key` on the Lua
+`thurbox.Session`, `THURBOX_SESSION_KEY` in the pane and in lifecycle hooks).
+The name stays a label, free to change; a rename never touches the key.
 
 **One live session per key per host.** The scope is the host
 (`names::key_host`: `None` here, the `hosts.toml` name otherwise), not the
@@ -2547,9 +2440,7 @@ across the write): `create --key` and `set-key` refuse a taken key; `register`
 and an undo/`session restore` record the row **without** its key when another
 live session has it, and say so (`key_dropped`); `sync --adopt` registers through
 the host's `register`; `fork` never copies a key. A soft-deleted row does **not**
-reserve its key the way an undoable delete reserves a name — otherwise an
-extension could not self-heal its keyed session until the undo window closed —
-which is exactly why the undo that follows a heal comes back keyless.
+reserve its key the way an undoable delete reserves a name.
 
 **Addressing.** `key:<key>` resolves to the session with that key on this machine
 only, never silently a remote one; `key:<host>/<key>` to the one on that host,
@@ -2561,15 +2452,6 @@ order. A session whose *name* is spelled `key:x` — legal before keys existed �
 still resolves by that exact name when no key answers. `session list --key K` /
 `--key-prefix P` list across local and mirrored rows, each with its `host`.
 
-**Extensions.** A `[[sessions]]` entry with a `key` is ensured, deactivated and
-reported by that key, on this machine only; its `name` is only the label it is
-created with, so renaming the session — or changing `name` in the manifest — no
-longer spawns a twin. An automation's `session_ref` may name the entry by its
-`name` or its `key`, and reaches the live session by key either way. An entry
-without a `key` behaves exactly as before; thurbox never derives one. A session
-an extension already runs is migrated by stamping it once with `session set-key`
-before (or with) the manifest that declares the key.
-
 A restore refuses a name a live session now answers to, matched on the sanitised
 *window* name as `rename` matches it, since `deploy prod` and `deploy.prod` are
 two names and one `tb-deploy_prod`. The refusal is **not** waived by
@@ -2577,14 +2459,7 @@ two names and one `tb-deploy_prod`. The refusal is **not** waived by
 not about loss. It is asked of **local** rows only — a remote session's names are
 arbitrated where its rows are authored, and the delegated `session restore` asks
 the same question there rather than of a mirror that can be a snapshot behind.
-Its message says how to free the name, and says `extension deactivate` rather
-than `rename` where self-heal would take the name straight back.
-
-Refusing is only half of it. Self-heal reports what it declined to create and
-why, in the same message stream as its "Repaired …" line, because a refusal
-nobody is told about is indistinguishable from a pass that found nothing to do —
-which is how the pair went unnoticed long enough to be filed as a session
-appearing from nowhere.
+Its message says how to free the name.
 
 ### Saying which agent a pane actually runs
 
@@ -2610,9 +2485,9 @@ command session is "no hooks expected", not broken wiring.
 heavy agent's pane was `delete --force`, which also removed its worktrees.
 
 A stopped session is **marked**, not merely pane-less, because a session with no
-pane normally means its agent died — and three subsystems repair that on sight:
-the interface's respawn of surveyed rows, a peer's `restart --if-missing` after
-a reboot, and extension self-heal. All three skip a marked row, and `start` is
+pane normally means its agent died — and two subsystems repair that on sight:
+the interface's respawn of surveyed rows and a peer's `restart --if-missing`
+after a reboot. Both skip a marked row, and `start` is
 the only caller that clears the mark. Without the exemptions the interface would
 undo every stop within a tick of it happening.
 
@@ -2728,8 +2603,7 @@ branch name) is saved in the database and reconstructed on restore.
   restore whose window name a **live session on the same backend** now answers
   to, or which a creation is holding, is refused outright — un-deleting it would
   leave two, and neither could be addressed by name again. See "A name that is
-  already taken" for the rule it shares with `--on-existing` and with extension
-  self-heal.
+  already taken" for the rule it shares with `--on-existing`.
   Either way the row **leaves the list on the keystroke** rather than sitting
   there tagged while the teardown runs: the session list drops any session whose `delete` is in flight
   (`live_sessions()` in `ui/lib/session_model.lua`), so the cursor lands on
@@ -2791,7 +2665,7 @@ A general, agent-neutral message queue (`session_messages` table, schema
 v32; `thurbox-cli message`) lets one session hand another a **structured
 payload** — addressed to a session, with a free-form `kind` tag, a `body`,
 and optional `from_session_id`/`from_task_id` provenance. It is the channel
-extensions use for agent↔agent coordination — an orchestration lead
+for agent↔agent coordination — an orchestration lead
 collecting its workers' questions, plans and results is the shape it was
 built for.
 
@@ -2959,8 +2833,7 @@ approval dialog unless its Claude settings carry `crossSessionInbound: accept`;
 the send still reports `claude-socket`, since the socket accepted it, and says
 `may_hold: true` (and, in text, that the message may wait on a prompt).
 Thurbox does not set it. A user who wants it puts it in their own Claude
-settings, because self-heal rewrites the hooks extension's managed `claude.json`
-— see the claude section of [agents.md](agents.md).
+settings — see the claude section of [agents.md](agents.md).
 
 ### Delivered rows and unread counts
 

@@ -146,15 +146,13 @@ jobs:
           # bare-name install resolves against the release TAG
           # (`official_set_base`), so a change that is never tagged is one nobody
           # can install.
-          # `extensions/`, `ui/` and `examples/lua/` are here for the same reason
-          # and, more directly, because all three are `include_str!`d into the
-          # binary — `extensions/` now holds only the built-ins, whose assets
-          # `session_ops::builtin_*` embed — so they are
-          # bytes a user installs. A releasable span confined to a pane fix would
+          # `ui/` and `examples/lua/` are here for the same reason and, more
+          # directly, because both are `include_str!`d into the binary, so they
+          # are bytes a user installs. A releasable span confined to a pane fix would
           # otherwise be suppressed as "no shipped artifact changed" — no tag, no
           # binaries, no channel pushes — and the `ui` commit scope cannot separate
           # a pane fix from a website one, so the type gate will not catch it either.
-          SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|extensions/|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
+          SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
 
           LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 

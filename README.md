@@ -124,10 +124,6 @@ For the same walkthrough with screenshots, see the
   — an agent-neutral mailbox so one agent hands another a payload instead of
   scraping its terminal. A built-in `thurbox-sessions` skill teaches whichever
   CLI you run to find the other sessions, read them, and message them safely.
-- **[Extensions](https://thurbox.thurbeen.eu/docs/extensions.html)** — opt-in
-  add-ons that are data, not code: a manifest declares the agents, files,
-  sessions and automations it wants, and one command installs and self-heals
-  them.
 - **[Session lifecycle hooks](https://thurbox.thurbeen.eu/docs/configuration.html#hooks-toml)**,
   **[OS notifications](https://thurbox.thurbeen.eu/docs/configuration.html#notifications)**,
   **[36 themes](https://thurbox.thurbeen.eu/docs/features.html#themes)**
@@ -144,9 +140,9 @@ there. Panes live in `ui/plugins/*.lua`, the arrangement in `ui/layout.lua`, and
 `F10` reloads both from disk. Agents, hosts, hooks, themes, chords and settings
 are each a file under `~/.config/thurbox/`.
 
-You do not have to learn Lua for any of it. Thurbox ships a built-in `ui-skill`
-extension that teaches whichever CLI you run how the interface is put together,
-so from inside any session you can just ask:
+You do not have to learn Lua for any of it. The interface directory ships an
+`AGENTS.md` that teaches whichever CLI you run how the interface is put
+together, so from a session opened there you can just ask:
 
 > *Add a pane on the left with CPU and RAM usage. Move the search strip to the
 > bottom and make the session column 30% wide.*
@@ -162,7 +158,7 @@ shipped file, `space` turns yours off.
 ![Turning a pane off from the Interface tab](media/thurbox-interface.gif)
 
 [**Plugins →**](https://thurbox.thurbeen.eu/plugins.html) — official and community
-panes, extensions and other add-ons, with install commands and submission details.
+panes and other add-ons, with install commands and submission details.
 
 ## Documentation
 

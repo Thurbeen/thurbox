@@ -667,8 +667,8 @@ only** and never CI-asserted (the counters remain the sole regression gate):
 - **Slow ops** wrap `interface_reload` (the whole reload: rebuild, sources,
   declarations) and `input_dispatch` (a keypress, which runs plugin Lua and so
   is where a slow plugin is felt). ≥5 ms rings, ≥100 ms also warns.
-- **Startup phases are v2's own**: config, DB open, theme activate, extension
-  heal, heartbeat, **`ui_build_ms`** (building the Lua interface — a cost v1
+- **Startup phases are v2's own**: config, DB open, theme activate,
+  **`ui_build_ms`** (building the Lua interface — a cost v1
   did not have) and `first_frame_ms`. There is no `restore_ms`: v2 has no
   synchronous restore phase.
 - **The subscriber had to be restored.** v2's TUI shipped without one at all,
@@ -2781,7 +2781,7 @@ worktree/spawn offload should ride with that branch or follow it.
 | I want to… | Do this |
 | --- | --- |
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
-| Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `snapshot_open_ms`, `theme_activate_ms`, `extension_heal_ms`, `heartbeat_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
+| Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `snapshot_open_ms`, `theme_activate_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
 | Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~1000 iterations: counter deltas + frame/republish/tick percentiles + slow ops) |
 | Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms + the plugin whose call was longest), or the slow-op list in `perf_window` |
 | Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |

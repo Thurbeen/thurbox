@@ -1,520 +1,320 @@
 ---
 layout: docs.njk
-title: 'Extensions — Thurbox Docs'
-description: 'Thurbox extensions: install, activate, deactivate, and self-heal opt-in, agent-agnostic add-ons with thurbox-cli, plus the extension.toml manifest format and how to author one.'
+title: 'Removing old hook entries — Thurbox Docs'
+description: 'Thurbox v3 installs nothing into a coding agent config. How to delete by hand the status-hook entries, status files and skills that Thurbox v2 wrote into claude, codex, antigravity, kimi, opencode, vibe, pi, omp, copilot, grok and aider.'
 currentPage: 'extensions'
-breadcrumb: 'Extensions'
+breadcrumb: 'Removing old hook entries'
 ---
-<h1>Extensions</h1>
+<h1>Removing Thurbox's old hook entries</h1>
           <p>
-            Extensions are opt-in,
-            <strong>agent-agnostic</strong>
-            add-ons that
-            <em>compose</em>
-            Thurbox through the public
-            <code>thurbox-cli</code>
-            surface &mdash; they never extend the binary. The core knows a declarative
-            <strong>manifest format</strong>
-            , never any specific extension, so the same machinery installs and manages any of them.
+            Thurbox v3 installs nothing into a coding agent's configuration. Session status comes
+            from
+            <a href="https://github.com/Thurbeen/fleet">Fleet</a>
+            : each Fleet harness profile passes the agent its hooks when Fleet launches it, so no
+            agent's own config file is changed.
+          </p>
+          <p>
+            Thurbox v2 worked differently. Its built-in
+            <code>hooks</code>
+            extension wrote status hooks into each agent's config, and its
+            <code>ui-skill</code>
+            and
+            <code>sessions-skill</code>
+            extensions copied two skills into each agent's skill directory. Thurbox v3 does not
+            remove them. The hooks call
+            <code>thurbox-cli session signal</code>
+            , a command that no longer exists. Each one ends in
+            <code>|| true</code>
+            (or
+            <code>|| exit 0</code>
+            ), so it fails without harm, but it still runs on every agent event. Delete them by hand
+            with the steps below. Skip any agent you never used: v2 wrote a file only when that
+            agent's directory already existed.
           </p>
 
-          <h2 id="overview">
-            Overview
-            <a href="#overview" class="heading-anchor">#</a>
+          <h2 id="recognise">
+            How to recognise Thurbox's entries
+            <a href="#recognise" class="heading-anchor">#</a>
           </h2>
-          <p>
-            An extension is a directory with a single
-            <code>extension.toml</code>
-            manifest plus the files it ships (specs, scripts, config templates). One command
-            installs it:
-            <code>thurbox-cli</code>
-            fetches the manifest, lays the files down under a home directory, registers any agents
-            the extension needs in
-            <code>agents.toml</code>
-            , then creates &mdash; and keeps alive &mdash; the sessions and automations the
-            extension declares.
-          </p>
           <ul>
             <li>
-              <strong>Data, not binary.</strong>
-              Nothing about an extension is compiled in; the core reads a manifest and acts on it.
-            </li>
-            <li>
-              <strong>Agent-neutral.</strong>
-              Extensions reach coding agents only through
-              <code>agents.toml</code>
-              aliases you remap to any CLI (claude, codex, antigravity, opencode, vibe, &hellip;).
-            </li>
-            <li>
-              <strong>Self-healing.</strong>
-              While an extension is active, deleting its session or automation is a no-op &mdash;
-              Thurbox recreates it. Deactivating is the real off-switch.
-            </li>
-          </ul>
-          <div class="info-box">
-            <p>
-              <strong>Three extensions ship with Thurbox, and all are built in.</strong>
-              Everything else you install yourself, from a URL, a local directory, or a git
-              repository &mdash; see
-              <a href="#catalog">Available extensions</a>
-              . The commands and manifest fields below are generic.
-            </p>
-          </div>
-          <div class="info-box">
-            <p>
-              <strong>Three extensions ship built in:</strong>
-              <a href="agent-hooks.html">agent hooks</a>
-              , which wires each agent's lifecycle hooks to
+              A hook command that runs
               <code>thurbox-cli session signal</code>
-              so the session list shows working/blocked/done/idle, and
-              <strong>ui-skill</strong>
-              , which teaches whichever coding CLI you run
-              <a href="interface.html#ask-the-agent">how to edit the interface</a>
-              , and
-              <strong>sessions-skill</strong>
-              , which teaches it how to read and message your other sessions. Unlike the others all
-              three are
-              <strong>embedded in the binary and auto-activated</strong>
-              &mdash; they still install through the same manifest machinery shown here. Turn any of
-              them off with
-              <code>thurbox-cli extension deactivate &lt;name&gt;</code>
+              (codex's also runs
+              <code>thurbox-cli session bind-codex</code>
+              ).
+            </li>
+            <li>
+              The text
+              <code>managed by thurbox `extension install`</code>
+              , at the end of a merged command, in a comment above a merged entry, or at the top
+              of a file Thurbox wrote.
+            </li>
+            <li>
+              On an SSH or WSL host, the same entries call
+              <code>tmux set-option -p @thurbox_state</code>
+              (or
+              <code>psmux … set-option -p @thurbox_state</code>
+              ) in place of
+              <code>thurbox-cli session signal</code>
               .
-            </p>
-          </div>
-
-          <h2 id="install">
-            Install
-            <a href="#install" class="heading-anchor">#</a>
-          </h2>
-          <p>Install an extension from a directory, a URL, or a git repository:</p>
-          <pre data-wrap><code class="language-bash">thurbox-cli extension install ./my-extension
-thurbox-cli extension install git+https://github.com/you/my-extension</code></pre>
+            </li>
+          </ul>
           <p>
-            That single command is the whole installer. It resolves the source, fetches the manifest
-            and payload, writes them under the extension home (
-            <code>~/.config/thurbox/extensions/&lt;name&gt;</code>
-            by default;
-            <code>--home &lt;dir&gt;</code>
-            to override), registers the extension's agents, writes the resolved manifest to
-            <code>~/.config/thurbox/extensions/&lt;name&gt;.toml</code>
-            , and activates it. It is idempotent &mdash; re-running refreshes shipped files while
-            keeping your own data (seeded files you've edited, agent tweaks).
+            A hook that you wrote yourself has none of these. Leave it.
           </p>
 
-          <h2 id="lifecycle">
-            Lifecycle commands
-            <a href="#lifecycle" class="heading-anchor">#</a>
+          <h2 id="merged">
+            Entries merged into a file you own
+            <a href="#merged" class="heading-anchor">#</a>
           </h2>
           <p>
-            All extension management lives under
-            <code>thurbox-cli extension</code>
-            (alias
-            <code>ext</code>
-            ):
+            In these files, delete only Thurbox's entries and keep the rest of the file.
           </p>
           <table>
             <thead>
               <tr>
-                <th>Command</th>
-                <th>What it does</th>
+                <th>Agent</th>
+                <th>File</th>
+                <th>What to delete</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td><code>install &lt;url|dir|git+repo|name&gt;</code></td>
-                <td>Fetch + lay down files, register agents, write manifest, and activate.</td>
-              </tr>
-              <tr>
-                <td><code>uninstall &lt;name&gt;</code></td>
+                <td>claude</td>
+                <td><code>~/.config/thurbox/agents.toml</code></td>
                 <td>
-                  Reverse an install: tear down the session/automation, remove the extension's
-                  agents, and delete the manifest. Add
-                  <code>--purge</code>
-                  to also delete the home dir.
+                  The two arguments
+                  <code>"--settings"</code>
+                  and the path ending in
+                  <code>thurbox/hooks/claude.json</code>
+                  from the
+                  <code>args</code>
+                  of the
+                  <code>claude</code>
+                  agent. Also check every custom agent with
+                  <code>hook_schema = "claude"</code>
+                  and every agent that
+                  <code>extends</code>
+                  one of them.
                 </td>
               </tr>
               <tr>
-                <td><code>activate &lt;name&gt;</code></td>
-                <td>(Re)create the declared sessions/automations and mark the extension active.</td>
-              </tr>
-              <tr>
-                <td><code>deactivate &lt;name&gt;</code></td>
+                <td>aider</td>
+                <td><code>~/.config/thurbox/agents.toml</code></td>
                 <td>
-                  Tear down resources and stop self-heal (the off-switch). Add
-                  <code>--force</code>
-                  to kill tmux/worktrees,
-                  <code>--purge</code>
-                  to also drop the manifest.
-                </td>
-              </tr>
-              <tr>
-                <td><code>list</code></td>
-                <td>Show installed extensions with their active / healthy state.</td>
-              </tr>
-              <tr>
-                <td><code>status [&lt;name&gt;]</code></td>
-                <td>Per-resource presence for one extension (or all).</td>
-              </tr>
-            </tbody>
-          </table>
-          <p>
-            <strong>Install vs. activate.</strong>
-            <code>install</code>
-            also lays down files and registers agents;
-            <code>activate</code>
-            only (re)creates the runtime resources from an already-installed manifest. Use
-            <code>deactivate</code>
-            to switch an extension off but keep it installed for a later
-            <code>activate</code>
-            .
-          </p>
-
-          <h2 id="sources">
-            Sources &amp; versioning
-            <a href="#sources" class="heading-anchor">#</a>
-          </h2>
-          <p>The install target can be four things:</p>
-          <ul>
-            <li>
-              <strong>A local directory</strong>
-              (
-              <code>./my-extension</code>
-              ) &mdash; installs from a checkout.
-            </li>
-            <li>
-              <strong>
-                An
-                <code>http(s)://</code>
-                base URL
-              </strong>
-              &mdash; installs from your own source, fetching each manifest-named file.
-            </li>
-            <li>
-              <strong>A git repository</strong>
-              (
-              <code>git+https://&hellip;</code>
-              , a URL ending in
-              <code>.git</code>
-              , or
-              <code>git@host:path</code>
-              ) &mdash; cloned as a working copy, which is how an extension that lives in its own
-              repo installs. Recognised explicitly, so a plain
-              <code>https://</code>
-              URL keeps meaning &ldquo;a base to fetch files from&rdquo;.
-            </li>
-            <li>
-              <strong>A bare name</strong>
-              &mdash; fetched from the official source over
-              <code>curl</code>
-              /
-              <code>wget</code>
-              , pinned to your binary's release tag (dev builds track
-              <code>main</code>
-              ), so a fetched extension always matches the binary reading it.
-              <strong>Nothing ships under a bare name today:</strong>
-              the only extensions in the Thurbox repository are the built-ins, which install
-              themselves.
-            </li>
-          </ul>
-          <pre data-wrap><code class="language-bash">thurbox-cli extension install ./my-extension
-thurbox-cli extension install https://example.com/ext/my-extension --home ~/work/ext</code></pre>
-          <div class="info-box">
-            <p>
-              <strong>Safety:</strong>
-              payload paths are validated against traversal (no absolute paths or
-              <code>..</code>
-              ), a config template you've edited isn't overwritten on reinstall (use
-              <code>--force</code>
-              ), and payload files are fetched as text (specs, scripts, JSON) &mdash; not binaries.
-            </p>
-          </div>
-
-          <h2 id="self-heal">
-            Self-healing
-            <a href="#self-heal" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            An installed extension is recorded in an
-            <strong>active set</strong>
-            . On TUI startup and on every automation tick, Thurbox re-ensures each active
-            extension's declared sessions and automations exist &mdash; so deleting them by hand
-            (TUI
-            <code>Ctrl+D</code>
-            , a
-            <code>clean</code>
-            , or
-            <code>thurbox-cli session/automation delete</code>
-            ) is a no-op: they come back. This is what makes an extension hard to half-remove by
-            accident.
-          </p>
-          <ul>
-            <li>
-              <code>deactivate &lt;name&gt;</code>
-              removes the extension from the active set, so self-heal stops resurrecting it &mdash;
-              the real off-switch.
-            </li>
-            <li>
-              Headless self-heal (while the TUI is closed) rides the automation heartbeat, so it
-              needs
-              <code>[features] automations = true</code>
-              ; with automations off, healing happens at the next TUI startup only.
-            </li>
-          </ul>
-
-          <h2 id="manifest">
-            The manifest
-            <a href="#manifest" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            An extension is fully described by its
-            <code>extension.toml</code>
-            . It has two halves: an
-            <strong>install</strong>
-            spec (what to lay down) and a
-            <strong>runtime</strong>
-            spec (what to keep alive). The
-            <code>{home}</code>
-            token is substituted with the resolved home directory.
-          </p>
-          <p>
-            The example below is illustrative: it uses every field once, which no real extension
-            needs.
-          </p>
-          <pre data-title="extension.toml"><code class="language-toml">name = "lead"
-description = "A long-lived lead session with its standing instructions"
-config_version = 1
-# home = "~/lead"               # OPTIONAL; default is under the config dir
-                                # ({home} is substituted everywhere it appears)
-
-# install spec ---------------------------------------------------------------
-[[agents]]                      # registered in agents.toml (existing kept)
-name = "lead"
-command = "claude"
-args = ["--model", "claude-haiku-4-5"]
-
-[[files]]                       # fetched from the source, written under home
-path = "LEAD.md"
-[[files]]
-path = "scripts/hook.sh"
-executable = true               # chmod +x
-[[files]]
-path = "repos.md"
-if_absent = true                # seed once; never clobbered on reinstall
-[[files]]
-path = ".claude/settings.json"
-source = "claude-settings.json" # source path differs from dest
-substitute = true               # replace {home} in the content
-
-[[symlinks]]                    # never clobbers a real file at `link`
-link = "CLAUDE.md"
-target = "LEAD.md"
-
-# runtime spec (ensured on activate, self-healed if deleted) -----------------
-[[sessions]]
-name = "lead"
-agent = "lead"
-repo_path = "{home}"            # resolved to the absolute home at install.
-                                # {home} is the EXTENSION home, so an extension
-                                # whose session must open your own checkout ships
-                                # a placeholder its installer renders instead
-
-[[automations]]                 # OPTIONAL: a scheduled tick
-name = "example-tick"
-trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
-session_ref = "lead"            # must match a [[sessions]] name above
-prompt = "tick"</code></pre>
-          <table>
-            <thead>
-              <tr>
-                <th>Section</th>
-                <th>Purpose</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>home</code></td>
-                <td>
-                  Default install directory; overridable with
-                  <code>--home</code>
+                  The three arguments
+                  <code>"--notifications"</code>
+                  ,
+                  <code>"--notifications-command"</code>
+                  and
+                  <code>"thurbox-cli session signal --state blocked"</code>
+                  from the
+                  <code>args</code>
+                  of the
+                  <code>aider</code>
+                  agent, and of each agent with
+                  <code>hook_schema = "aider"</code>
                   .
                 </td>
               </tr>
               <tr>
-                <td><code>[[agents]]</code></td>
+                <td>codex</td>
                 <td>
-                  Agent definitions appended to
-                  <code>agents.toml</code>
-                  (existing names are kept).
+                  <code>~/.codex/hooks.json</code>
+                  , and
+                  <code>hooks.json</code>
+                  in every other
+                  <code>CODEX_HOME</code>
+                  you used
+                </td>
+                <td>
+                  Each hook whose
+                  <code>command</code>
+                  calls
+                  <code>thurbox-cli</code>
+                  , and the
+                  <code>SessionStart</code>
+                  hook that
+                  <code>echo</code>
+                  s an instruction starting with
+                  <code>thurbox:</code>
+                  . Delete an event's list when it becomes empty.
                 </td>
               </tr>
               <tr>
-                <td><code>[[files]]</code></td>
+                <td>antigravity</td>
+                <td><code>~/.gemini/settings.json</code></td>
                 <td>
-                  Payload files written under
-                  <code>home</code>
-                  . Flags:
-                  <code>executable</code>
+                  Each hook under
+                  <code>hooks</code>
+                  whose
+                  <code>command</code>
+                  calls
+                  <code>thurbox-cli session signal</code>
+                  (events
+                  <code>SessionStart</code>
                   ,
-                  <code>if_absent</code>
-                  (seed once),
-                  <code>substitute</code>
-                  (
-                  <code>{home}</code>
-                  in content), and
-                  <code>source</code>
-                  (when the source path differs from the destination).
+                  <code>PreToolUse</code>
+                  ,
+                  <code>PostToolUse</code>
+                  ,
+                  <code>Notification</code>
+                  ,
+                  <code>Stop</code>
+                  ).
                 </td>
               </tr>
               <tr>
-                <td><code>[[symlinks]]</code></td>
+                <td>kimi</td>
+                <td><code>~/.kimi-code/config.toml</code></td>
                 <td>
-                  Symlinks created under
-                  <code>home</code>
-                  (never clobber a real file).
-                </td>
-              </tr>
-              <tr>
-                <td><code>[[sessions]]</code></td>
-                <td>Sessions ensured on activate and self-healed if deleted.</td>
-              </tr>
-              <tr>
-                <td><code>[[automations]]</code></td>
-                <td>
-                  Automations ensured on activate;
-                  <code>session_ref</code>
-                  names a session above.
+                  Each
+                  <code>[[hooks]]</code>
+                  table under the comment
+                  <code># managed by thurbox `extension install` — do not edit</code>
+                  , and that comment.
                 </td>
               </tr>
             </tbody>
           </table>
-
-          <h2 id="authoring">
-            Authoring an extension
-            <a href="#authoring" class="heading-anchor">#</a>
-          </h2>
-          <ol>
-            <li>
-              Create a directory with an
-              <code>extension.toml</code>
-              and the files it references (
-              <code>[[files]]</code>
-              paths are relative to both the source and the home dir).
-            </li>
-            <li>
-              Build the behavior on the
-              <code>thurbox-cli</code>
-              surface (
-              <code>session</code>
-              ,
-              <code>task</code>
-              ,
-              <code>automation</code>
-              ) plus standard tools &mdash; no core changes, no vendor lock-in.
-            </li>
-            <li>
-              Test locally with
-              <code>thurbox-cli extension install ./your-ext</code>
-              , then publish it &mdash; a git repository is the usual home, and
-              <code>install git+https://&hellip;</code>
-              clones it.
-            </li>
-          </ol>
           <p>
-            For the exact config-file locations and the metadata key that tracks active extensions,
-            see the
-            <a
-              href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md"
-              target="_blank"
-              rel="noopener"
-            >
-              configuration reference
-            </a>
+            Your agents' list lives in
+            <code>~/.config/thurbox-dev/agents.toml</code>
+            for a development build, and in
+            <code>%APPDATA%\thurbox\agents.toml</code>
+            on Windows.
+          </p>
+
+          <h2 id="files">
+            Files Thurbox wrote
+            <a href="#files" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Delete each of these files. Open it first: if it does not start with the
+            <code>managed by thurbox</code>
+            marker, it is your own file, so keep it.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>File</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>opencode</td>
+                <td><code>~/.config/opencode/plugin/thurbox-status.js</code></td>
+              </tr>
+              <tr>
+                <td>vibe</td>
+                <td><code>~/.vibe/hooks.toml</code></td>
+              </tr>
+              <tr>
+                <td>pi</td>
+                <td><code>~/.pi/agent/extensions/thurbox-status.ts</code></td>
+              </tr>
+              <tr>
+                <td>omp</td>
+                <td><code>~/.omp/agent/extensions/thurbox-status.ts</code></td>
+              </tr>
+              <tr>
+                <td>copilot</td>
+                <td><code>~/.copilot/hooks/thurbox-status.json</code></td>
+              </tr>
+              <tr>
+                <td>grok</td>
+                <td><code>~/.grok/hooks/thurbox-status.json</code></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2 id="skills">
+            Skills
+            <a href="#skills" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            <code>ui-skill</code>
+            copied a
+            <code>thurbox-ui</code>
+            skill and
+            <code>sessions-skill</code>
+            copied a
+            <code>thurbox-sessions</code>
+            skill into these directories. Each
+            <code>SKILL.md</code>
+            carries the
+            <code>managed by thurbox</code>
+            marker. Delete the
+            <code>thurbox-ui</code>
+            and
+            <code>thurbox-sessions</code>
+            directories in each one:
+          </p>
+          <ul>
+            <li><code>~/.claude/skills/</code></li>
+            <li><code>~/.codex/skills/</code></li>
+            <li><code>~/.config/opencode/skills/</code></li>
+            <li><code>~/.copilot/skills/</code></li>
+            <li><code>~/.agents/skills/</code></li>
+          </ul>
+
+          <h2 id="thurbox-dirs">
+            Thurbox's own leftovers
+            <a href="#thurbox-dirs" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Delete these two directories. Thurbox v3 reads neither of them.
+          </p>
+          <ul>
+            <li>
+              <code>~/.config/thurbox/hooks/</code>
+              &mdash; it held
+              <code>claude.json</code>
+              , the file the
+              <code>--settings</code>
+              argument above pointed at.
+            </li>
+            <li>
+              <code>~/.config/thurbox/extensions/</code>
+              &mdash; the extension manifests and their files.
+            </li>
+          </ul>
+          <p>
+            Keep
+            <code>~/.config/thurbox/hooks.toml</code>
+            : it holds your own
+            <a href="configuration.html">session lifecycle hooks</a>
+            , which Thurbox v3 still runs. A development build uses
+            <code>~/.config/thurbox-dev/</code>
+            in place of
+            <code>~/.config/thurbox/</code>
             .
           </p>
 
-          <h2 id="catalog">
-            Available extensions
-            <a href="#catalog" class="heading-anchor">#</a>
+          <h2 id="windows-remote">
+            Windows and remote hosts
+            <a href="#windows-remote" class="heading-anchor">#</a>
           </h2>
           <p>
-            Three ship with Thurbox and are on by default; anything else you install yourself.
+            On Windows, each
+            <code>~</code>
+            path above is under
+            <code>%USERPROFILE%</code>
+            , and Thurbox's own directories are under
+            <code>%APPDATA%\thurbox</code>
+            .
           </p>
-
-          <h3 class="docs-hub-category" id="cat-built-in">Built in</h3>
-          <p class="docs-hub-category-desc">
-            Ships embedded in the binary and is active by default &mdash; no install step.
-          </p>
-          <div class="docs-hub-grid">
-            <a href="agent-hooks.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2732;</div>
-                <h3>agent hooks <span class="badge badge-green">built in</span></h3>
-                <p>
-                  Wires each agent's lifecycle hooks to
-                  <code>thurbox-cli session signal</code>
-                  so every session reports working/blocked/done/idle. Embedded and on by default.
-                </p>
-              </div>
-            </a>
-            <a href="interface.html#ask-the-agent" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x270E;</div>
-                <h3>ui-skill <span class="badge badge-green">built in</span></h3>
-                <p>
-                  Installs a
-                  <code>thurbox-ui</code>
-                  skill into whichever coding CLIs you have, so an agent in any session knows how
-                  to edit the interface. Embedded and on by default.
-                </p>
-              </div>
-            </a>
-            <a
-              href="https://github.com/Thurbeen/thurbox/blob/main/extensions/sessions-skill/README.md"
-              class="docs-hub-card"
-              target="_blank"
-              rel="noopener"
-            >
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x21C4;</div>
-                <h3>sessions-skill <span class="badge badge-green">built in</span></h3>
-                <p>
-                  Installs a
-                  <code>thurbox-sessions</code>
-                  skill, so an agent can find your other sessions, read what they are doing without
-                  disturbing them, and message them safely. Embedded and on by default.
-                </p>
-              </div>
-            </a>
-          </div>
-
-          <h3 class="docs-hub-category" id="cat-install">Install it yourself</h3>
-          <p class="docs-hub-category-desc">
-            Lives in its own repository, installs through the same manifest machinery.
-          </p>
-          <div class="docs-hub-grid">
-            <a
-              href="https://github.com/Thurbeen/thurbox-auto-continue"
-              class="docs-hub-card"
-              target="_blank"
-              rel="noopener"
-            >
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x21BB;</div>
-                <h3>auto-continue <span class="badge">official</span></h3>
-                <p>
-                  Types
-                  <code>continue</code>
-                  into a Claude session once its usage limit has reset. Its manifest seeds a
-                  config file, merges a hook into Claude's settings and declares a sweep
-                  automation; its
-                  <code>install.sh</code>
-                  also puts the binary in place. Off by default.
-                </p>
-              </div>
-            </a>
-          </div>
           <p>
-            The
-            <a href="../plugins.html">plugin catalog</a>
-            lists every extension and pane you can install, official and community.
+            On an SSH or WSL host where Thurbox v2 ran agents, it wrote the same hook entries and
+            status files into that host's agent directories. Log in to each host with
+            <code>ssh &lt;host&gt;</code>
+            or
+            <code>wsl -d &lt;distro&gt;</code>
+            and do the same steps there. On a host, the hook commands set the
+            <code>@thurbox_state</code>
+            pane option in place of calling
+            <code>thurbox-cli</code>
+            .
           </p>

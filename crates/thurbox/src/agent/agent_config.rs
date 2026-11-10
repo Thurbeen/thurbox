@@ -12,8 +12,7 @@ use crate::session::{AgentDef, AgentRegistry};
 
 /// Built-in agent definitions, also used to seed `agents.toml` on first run.
 ///
-/// Adding a built-in here is only step 1 — status-hook wiring
-/// (`extensions/hooks/extension.toml`) and the doc lists are **not** updated
+/// Adding a built-in here is only step 1 — the doc lists are **not** updated
 /// automatically. See the checklist in `docs/thurbox/agents.md`.
 ///
 /// Kept deliberately small per agent: just the command, plus resume/fork/
@@ -222,11 +221,9 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # telemetry_env = {}            # set only while [telemetry] is on
 # telemetry_args = []           # appended only while [telemetry] is on
 # hook_schema = "claude"        # OPTIONAL: name the hook FAMILY this CLI speaks
-#                               #   so the built-in `hooks` extension wires its
-#                               #   status hooks as if this were that built-in.
-#                               #   A rebranded-claude CLI sets "claude" to get
-#                               #   claude's --settings hook wiring under its own
-#                               #   name. Omit if the agent has no known family.
+#                               #   so its status is read as that built-in's.
+#                               #   A rebranded-claude CLI sets "claude". Omit
+#                               #   if the agent has no known family.
 #
 # {id} is a thurbox-generated UUID. {name} is the display name captured for
 # this launch. Each replacement remains one literal argument. Only agents that accept it at creation

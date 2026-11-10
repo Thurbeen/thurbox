@@ -244,7 +244,7 @@ share the release's sessions, so it can't carry `-dev`. The runtime
 auto-update and `thurbox-cli update` from trying to replace a binary in the
 read-only Nix store. Anyone who wants a release pins the flake input to its
 tag. The binary still reports `0.0.0-unstable-…`, dated to the tagged commit. Being unreleased has one
-more effect: `official_ref()` fetches official extensions from `main` rather
+more effect: `official_ref()` fetches official panes from `main` rather
 than from a tag, which is the same thing a source build does.
 
 ## Checklist for a release that changes artifacts

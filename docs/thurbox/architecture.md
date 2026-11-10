@@ -1549,7 +1549,7 @@ I/O coordination.
 **Choice**: Headless automation lives in a separate binary
 (`thurbox-cli`) that shares the same SQLite database as the TUI.
 It exposes `session`, `automation`, `task`, `message`, `editor`,
-`agent`, `config`, `extension`, `version`, `update`, `notify`, `perf`,
+`agent`, `config`, `version`, `update`, `notify`, `perf`,
 `watch`, `runtime`, `plugin`, `ui`, `schema` and `doctor` as subcommands
 (`thurbox-cli --help`), printing JSON results.
 
@@ -1669,6 +1669,10 @@ database.
 
 ## ADR-20: Agent-agnostic extensions in `extensions/`
 
+> **Superseded in v3 (ADR-41).** ADR-41 retired extensions. thurbox installs
+> nothing into an agent's own config, and Fleet's harness profiles pass each
+> harness its status hooks at launch.
+
 **Choice**: Opt-in workflows that *compose* thurbox (rather than
 extend the binary) live outside it as data + shell: a
 plain-markdown behavior spec, portable scripts built on
@@ -1712,6 +1716,9 @@ load-bearing contract.
   out-of-repo extension is an ordinary install.
 
 ## ADR-21: Declarative extension manifests + first-class lifecycle
+
+> **Superseded in v3 (ADR-41).** ADR-41 retired extensions: the manifest
+> format, the `thurbox-cli extension` commands and self-heal are gone.
 
 **Choice**: Extend ADR-20 by teaching the core a single declarative
 **manifest format** (`extension.toml`, `session::ExtensionDef`) and a
@@ -2428,8 +2435,8 @@ first use. psmux (ADR-13) has no usable window options, so a lone namesake
 resolves to its listed pane — to every row of that name, a soft-deleted one
 included. The reap therefore takes an unstamped window only while no live
 session answers to the row's name: without that guard a deleted row's reap
-killed its live replacement on every sweep, so an extension session that
-self-heals under its old name never stayed up on Windows. Local recovery can
+killed its live replacement on every sweep, so a session recreated under
+its old name never stayed up on Windows. Local recovery can
 also select the sole live pane
 among exited namesakes from a fresh listing. Multiple live namesakes stay
 unknown locally; remote duplicates stay unknown even when a remembered pane
@@ -3174,8 +3181,7 @@ mirror may hold a stale duplicate for one pass. Every writer of a key goes
 through the claim — create, `set-key`, restore, `register` — and a soft-deleted
 row does not reserve its key. It is in the row's JSON, so it is mirrored with the
 host's record winning (ADR-24). References reach it only through an explicit
-`key:` prefix. An extension's `[[sessions]]` entry that declares one is matched
-by it, on this machine only (ADR-21).
+`key:` prefix.
 
 **Why**: the only stable handles a driver had were the UUID, which a fresh
 process does not hold, and the name, which is not unique by design (ADR-24) and
@@ -3397,7 +3403,8 @@ is untrusted text, which a pane renders as text.
 > **Accepted, partly implemented.** The design is
 > [the documentation overview](../README.md).
 > thurbox's own session engine is deleted, so this supersedes ADR-8, ADR-7b,
-> ADR-8b, ADR-24 and ADR-26. The snapshot reads the rows from a
+> ADR-8b, ADR-24 and ADR-26. Extensions are retired with it, which supersedes
+> ADR-20 and ADR-21. The snapshot reads the rows from a
 > `SnapshotSource` (Fleet's Tasks through `fleet watch`), and the command bus
 > runs commands through an `Executor` (Fleet's command line,
 > [`[fleet]`](config.md#fleet--the-session-engine)).

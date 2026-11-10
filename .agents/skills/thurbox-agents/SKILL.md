@@ -162,29 +162,18 @@ explicit values (including empty arrays/maps and `false`) replacing the base's.
 `append_args` appends after the resolved `args`; chains resolve in either file
 order, with cycles, unknown bases and a chain deeper than 32 entries diagnosed
 by `config validate`. The resolved hook family is inherited, including Codex's
-conversation binding. Extension patches cover variants too: inherited args carry
-the base's patch once, and a full args replacement keeps the patch before its
-own args. Seed compatibility upgrades apply to standalone bases before merging.
+conversation binding. Seed compatibility upgrades apply to standalone bases before merging.
 Direct remote TUI input needs the alias in the caller's registry to recognize
 its family; host-only aliases can be created but their family is not mirrored.
 See `docs/thurbox/config.md` for the complete contract.
 
-**Custom-agent status hooks (`hook_schema`).** thurbox stays agent-neutral, so
-the built-in **hooks** extension wires built-ins and their inherited variants.
-An unrelated **custom** definition (e.g. a rebranded-claude `fleet`) gets no
-`--settings` patch without an asserted family. An optional
-`AgentDef.hook_schema: Option<String>` closes this: it names the hook **family**
-the CLI speaks, and `agent::extension_config::apply_agent_patches` (+ its
-uninstall reverse) fans each `[[agent_patches]]` out to the built-in named
-`patch.name` **and** every agent with `hook_schema == patch.name`. So
-`hook_schema = "claude"` on `fleet` injects the same `--settings {home}/
-claude.json` claude gets — and, because the remote rewrite
-(`session_ops::spawn::adapt_agent_args_for_remote_with_report`) keys off the `--settings`
-arg rather than the agent name, remote/WSL wiring follows for free. Only the
-per-arg-patch families (claude, aider) need it; the config-dir agents
-(codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own
-config dir, so a rebrand sharing that dir already reports. thurbox bakes in no
-agent knowledge — the *user* asserts the family.
+**Custom-agent status family (`hook_schema`).** An optional
+`AgentDef.hook_schema: Option<String>` names the hook **family** the CLI speaks
+(e.g. `"claude"` on a rebranded claude), so its status is read as that
+built-in's. thurbox installs nothing into an agent's config: Fleet's harness
+profiles pass each harness its hooks at launch
+(`crates/fleet-api/src/harness.rs`). thurbox bakes in no agent knowledge — the
+*user* asserts the family.
 
 **Per-agent environment (`env`).** String-valued defaults on `AgentDef`, with
 `{home}` resolved on the launch host. Creation freezes them together with
@@ -195,12 +184,6 @@ creation reads the host's registry; a direct remote launch reads the caller's
 and expands the remote home. `session show --json` on the owning instance shows
 saved `env` (a caller's mirror reports `null`); `agent launch-args` without a
 session shows current defaults.
-An `env` that moves an agent's config dir moves its hooks with it: codex's asset
-path is `{env:CODEX_HOME:-~/.codex}/hooks.json`, resolved against the saved
-launch env by `adapt_def_for_launch` on every spawn, restart and launch plan —
-`provision_account_hooks_locally` here, `provision_agent_hooks_on_host` on a
-host — so an account reports status and binds the conversation restart resumes.
-See `docs/thurbox/agents.md` → Several Claude accounts for hooks and UI-skill setup.
 
 **Agent-native telemetry (`telemetry_env` / `telemetry_args`).** Applied only
 while `settings.toml` `[telemetry]` is on (`session_ops::telemetry::apply`, at

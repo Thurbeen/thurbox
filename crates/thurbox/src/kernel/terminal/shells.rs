@@ -66,6 +66,31 @@ impl Terminals {
         })
     }
 
+    /// The route a saved shell is re-adopted on: the route it was saved on,
+    /// while that is still the session's machine and a backend serves it.
+    /// Its window's stamp still decides whether it is this session's shell;
+    /// the host's current multiplexer is only for a new shell.
+    pub fn readopt_route(
+        &self,
+        remote_host: Option<&str>,
+        saved: &str,
+    ) -> Option<crate::session::Route> {
+        let current = self.shell_route(remote_host)?;
+        let saved = crate::session::Route::parse(saved).ok()?;
+        (saved.same_machine(&current) && self.backend_on(&saved).is_some()).then_some(saved)
+    }
+
+    /// Run `session`'s companion shell on `route`'s backend: the saved route
+    /// while its shell is re-adopted, the current one for a new shell.
+    pub fn use_shell_route(&mut self, session: &str, route: &crate::session::Route) {
+        let Some(backend) = self.backend_on(route) else {
+            return;
+        };
+        if let Some(live) = self.live.get_mut(session) {
+            live.session.set_shell_backend(backend);
+        }
+    }
+
     /// The backend registered for `route`, if any.
     pub(super) fn backend_on(
         &self,
@@ -293,6 +318,46 @@ mod tests {
         );
         assert!(terminals.shell_route(Some("nowhere")).is_none());
         assert!(terminals.shell_route(None).expect("local").is_local());
+    }
+
+    /// A host whose multiplexer changed keeps the shell it already had: the
+    /// shell saved on `ssh:box:tmux` is re-adopted there, not left running
+    /// beside a new one on rmux.
+    #[test]
+    fn a_saved_shell_is_readopted_on_its_own_route_after_the_host_changes_multiplexer() {
+        use crate::session::{HostDef, HostRegistry, Multiplexer, Route, Via};
+        let mut terminals = Terminals::with_registry(
+            Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        let saved = Route::remote(Via::Ssh, "box", Multiplexer::Tmux);
+        let backend = Arc::clone(terminals.backends.default_backend());
+        Arc::get_mut(&mut terminals.backends)
+            .expect("unshared registry")
+            .register(saved.clone(), backend);
+        terminals.hosts = HostRegistry {
+            config_version: Some(1),
+            hosts: vec![HostDef {
+                name: "box".into(),
+                multiplexer: Some("rmux".into()),
+                ..Default::default()
+            }],
+        };
+        assert_eq!(
+            terminals.shell_route(Some("box")),
+            Some(Route::remote(Via::Ssh, "box", Multiplexer::Rmux)),
+            "a new shell takes the host's multiplexer"
+        );
+        assert_eq!(
+            terminals.readopt_route(Some("box"), &saved.format()),
+            Some(saved.clone())
+        );
+        // Another machine's shell is not this session's companion any more.
+        assert_eq!(
+            terminals.readopt_route(Some("other"), &saved.format()),
+            None
+        );
+        assert_eq!(terminals.readopt_route(None, &saved.format()), None);
     }
 
     #[test]

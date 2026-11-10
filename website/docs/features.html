@@ -280,8 +280,7 @@ breadcrumb: 'Features'
             <strong>spawns</strong>
             a fresh session (optionally on a new git worktree) and prompts it, or
             <strong>runs a shell command</strong>
-            headlessly with no agent at all &mdash; the deterministic scheduled job the
-            issue-tracker extensions are built on.
+            headlessly with no agent at all &mdash; a deterministic scheduled job.
           </p>
           <ul>
             <li>
@@ -666,9 +665,9 @@ timeout_secs = 300</code></pre>
               <code>Ctrl+R</code>
               , undo,
               <code>thurbox-cli</code>
-              , a
+              and a
               <code>spawn</code>
-              automation and an extension's sessions all end in the same four pipelines, so a
+              automation all end in the same four pipelines, so a
               hook fires exactly once for each of them and never on the render thread.
             </li>
             <li>
@@ -705,11 +704,7 @@ timeout_secs = 300</code></pre>
             </li>
           </ul>
           <p>
-            This is the reverse of the built-in
-            <a href="agent-hooks.html">agent hooks</a>
-            extension, which installs status hooks
-            <em>into</em>
-            the agent CLIs so they can report to thurbox. Full reference:
+            Full reference:
             <a href="configuration.html#hooks-toml">configuration &rarr; hooks.toml</a>
             .
           </p>
@@ -727,7 +722,7 @@ timeout_secs = 300</code></pre>
             tag, a
             <code>--body</code>
             , and optional sender/task provenance &mdash; instead of scraping its rendered
-            terminal. It is the channel extensions use for agent&harr;agent coordination &mdash;
+            terminal. It is a channel for agent&harr;agent coordination &mdash;
             an orchestration lead collecting its workers' questions, plans and results is the shape
             it was built for.
           </p>
@@ -1322,30 +1317,6 @@ thurbox-cli message inbox --for lead --claim</code></pre>
               additionally makes it this invocation's own.
             </li>
             <li>
-              <strong>agent launch-args</strong>
-              &mdash; prints the
-              <code>command</code>
-              ,
-              <code>args</code>
-              and
-              <code>env</code>
-              thurbox would launch a registered agent with. Status hooks are
-              <em>arguments</em>
-              &mdash; the hooks extension installs them by appending to the
-              agent's
-              <code>args</code>
-              in
-              <code>agents.toml</code>
-              &mdash; so an agent a driver launches itself has none, and its
-              session reports no state. Pass these through and the hooks are
-              there;
-              <code>--session &lt;ref&gt;</code>
-              resolves it for one session, pinning the conversation id and
-              carrying the identity its
-              <code>session signal</code>
-              will report under.
-            </li>
-            <li>
               <strong>session stop / start</strong>
               &mdash; park a session and put it back: the pane goes, the row,
               the checkout and the conversation stay. A parked session stays in
@@ -1530,23 +1501,6 @@ thurbox-cli message inbox --for lead --claim</code></pre>
               &mdash; coarser than a hook by design, but not silence.
             </li>
             <li>
-              <strong>session doctor</strong>
-              &mdash; answers &ldquo;are this session's hooks actually
-              working?&rdquo;: whether the built-in hooks extension is active,
-              what this agent's hooks can report, whether its payload is really
-              on disk where the agent reads it, whether a hook command could
-              resolve
-              <code>thurbox-cli</code>
-              on
-              <code>PATH</code>
-              at all, what was last reported and when, and whether the pane
-              agrees. Every shipped hook command ends in
-              <code>|| true</code>
-              , so a signal that never lands is otherwise indistinguishable from
-              an agent that has not signalled. Exits non-zero when no state can
-              reach thurbox from a session.
-            </li>
-            <li>
               <strong>automation</strong>
               (alias
               <code>auto</code>
@@ -1617,32 +1571,6 @@ thurbox-cli message inbox --for lead --claim</code></pre>
               is a plain local todo, and
               <code>run</code>
               triggers its Send/Spawn agent action headlessly.
-            </li>
-            <li>
-              <strong>extension</strong>
-              (alias
-              <code>ext</code>
-              ) &mdash;
-              <code>install</code>
-              /
-              <code>uninstall</code>
-              /
-              <code>reinstall</code>
-              /
-              <code>list</code>
-              /
-              <code>available</code>
-              /
-              <code>update</code>
-              /
-              <code>activate</code>
-              /
-              <code>deactivate</code>
-              /
-              <code>status</code>
-              manage the
-              <a href="extensions.html">opt-in extensions</a>
-              .
             </li>
             <li>
               <strong>editor</strong>

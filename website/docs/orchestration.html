@@ -362,17 +362,7 @@ thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
 
 <h3>The lead is a real session</h3>
 <p>
-  A lead you build yourself can install itself as an
-  <a href="extensions.html">extension</a>
-  with one long-lived
-  <code>[[sessions]]</code>
-  entry, which Thurbox
-  <strong>self-heals</strong>
-  : delete the session and it comes back at the next startup or automation tick. A control plane
-  that evaporates when someone tidies their session list is not a control plane.
-</p>
-<p>
-  And because it
+  Because it
   <em>is</em>
   a real session rather than an ad-hoc terminal, it can be addressed: workers can mail it, it has a
   UUID to hand out as
@@ -450,11 +440,7 @@ thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
   <code>done</code>
   /
   <code>idle</code>
-  state that
-  <a href="agent-hooks.html">agent hooks</a>
-  report via
-  <code>session signal</code>
-  , in
+  state the agent last reported, in
   <code>hook_state</code>
   . What they cannot carry is any guarantee that it is
   <em>current</em>
@@ -607,45 +593,3 @@ id=$(jq -r .id &lt;&lt;&lt;"$out")</code></pre>
 <pre><code class="language-bash">git -C "$REPO" fetch origin
 git -C "$REPO" merge --ff-only origin/main
 git -C "$REPO" rev-list --count main..origin/main   # expect 0</code></pre>
-
-<h2 id="build-your-own">
-  Building your own lead
-  <a href="#build-your-own" class="heading-anchor">#</a>
-</h2>
-<p>
-  Fleet is a separate program: nothing in Thurbox knows it exists. If you would rather build a lead
-  as an
-  <a href="extensions.html">extension</a>
-  , two choices are worth copying because they follow from how extensions work, not from taste.
-</p>
-<p>
-  <strong>The lead's job description is a payload file, not a prompt.</strong>
-  A
-  <code>[[files]]</code>
-  entry lays it down in the extension home, and
-  <code>[[symlinks]]</code>
-  surface it as
-  <code>CLAUDE.md</code>
-  ,
-  <code>AGENTS.md</code>
-  and
-  <code>GEMINI.md</code>
-  , so the lead reads what it is
-  <em>for</em>
-  whichever CLI is behind it. Keep that text apart from the repo's own
-  <code>AGENTS.md</code>
-  : one says what the session is for &mdash; hold the plan and the log, never the branches &mdash;
-  and the other says how to work inside the checkout. A lead whose invariant lives only in the
-  conversation that stated it keeps that invariant exactly as long as the conversation.
-</p>
-<p>
-  <strong>A manifest that names your clone has to be rendered.</strong>
-  <code>[[sessions]] repo_path</code>
-  may need to name a checkout, and
-  <code>{home}</code>
-  resolves to the extension home, not to it. A committed file cannot hardcode a path that exists on
-  one machine, so ship the manifest as a template with a placeholder, and have your installer
-  render it with the clone's absolute path before running
-  <code>thurbox-cli extension install</code>
-  .
-</p>

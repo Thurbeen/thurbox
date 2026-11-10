@@ -83,9 +83,8 @@ config_version = 1
 # network (GitHub) on startup. `version_check` only *notifies* (TUI header
 # "update available" badge + `thurbox-cli version --check`); `auto_update` goes
 # further and silently downloads, verifies, and replaces the installed binaries
-# when a newer release exists (the new version applies on the next launch); it
-# also auto-refreshes any installed extension that the upgrade left stale
-# (self-heal, TUI startup + headless tick). `thurbox-cli update` does the same
+# when a newer release exists (the new version applies on the next launch).
+# `thurbox-cli update` does the same
 # binary update on demand. Set either to `false` to opt out.
 #
 # Neither crosses a MAJOR version: a 2.x install only ever takes 2.x releases,

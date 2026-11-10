@@ -24,9 +24,9 @@ you want them).
 The repository is one Cargo workspace (ADR-41). Each component is a crate under
 `crates/` — `crates/thurbox`, the interface, `crates/fleet-*`, the engine, and
 `crates/runtime-mux`, the multiplexer runtime — and everything that is not a
-crate stays at the root: `ui/`, `extensions/`, `examples/`, `vendor/`, `docs/`,
-`scripts/`. Fleet's own trees sit in a `fleet/`
-directory there (`examples/fleet/`, `scripts/fleet/`, `docs/fleet/`).
+crate stays at the root: `ui/`, `examples/`, `vendor/`, `docs/`, `scripts/`.
+Fleet's own trees sit in a `fleet/` directory there (`examples/fleet/`,
+`scripts/fleet/`, `docs/fleet/`).
 `crates/architecture.toml` is the crate graph `fleet-arch` checks: a component
 other than Fleet is `role = "component"`, and no component depends on another
 (thurbox still links `runtime-mux` until Fleet drives the runtimes).
@@ -125,7 +125,7 @@ full flavor). Single source of truth for the `thurbox-dev` sandbox pattern;
 
 ## Working reference (skills)
 
-The per-subsystem reference that used to live in this file is now **eleven
+The per-subsystem reference that used to live in this file is now **ten
 skills** under `.agents/skills/`, loaded on demand instead of on every turn.
 Every skill's body lives there, agent-neutrally; `.claude/skills/<name>` is a
 relative symlink into it, so Claude Code and opencode read the one copy.
@@ -141,16 +141,14 @@ that names it. Read the one your change touches:
 | `thurbox-agents` | Agent Definitions · Multi-repo sessions |
 | `thurbox-remote-hosts` | Remote SSH & WSL Sessions |
 | `thurbox-cli` | thurbox-cli · its subcommands · where the session verbs went |
-| `thurbox-extensions` | Extensions · Extension manifests + self-heal |
 | `thurbox-session-status` | Session status (hooks-driven) · OS notifications |
 | `thurbox-kernel` | Architecture (plugin kernel) · Writing an interface plugin |
 | `thurbox-ui-surfaces` | Keybindings · Themes · Settings panel · Global search · Code review |
 | `thurbox-demo-media` | Demo Video |
 
-Three more are unrelated to this split: `ui-review` (screenshot the TUI and
-critique it), `thurbox-ui` (edit the *running* interface's Lua, installed by the
-`ui-skill` extension into each coding CLI) and `thurbox-sessions` (read and
-message other sessions, installed by the `sessions-skill` extension).
+The others are unrelated to this split: `ui-review` (screenshot the TUI and
+critique it), `thurbox-session` (inspect or drive one thurbox session) and the
+`fleet-*` skills, which belong to Fleet.
 
 A skill is a working reference, not an owner: the docs under `docs/` still own
 the rationale, and the **Rule** at the bottom of this file applies to a skill
@@ -320,8 +318,7 @@ config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
                      paths) plus session (themes: theme instead)
 update               update::* (declarations only)
-update::*            session, paths, shell, agent::extension_config,
-                     update::version_check
+update::*            paths, shell, agent::fetch, update::version_check
 backend              session, paths, config::hosts     (the gateway to
                                                         runtime-mux, and what
                                                         thurbox injects)

@@ -34,29 +34,27 @@ that string, and `seed_agents_toml()` writes it verbatim to
 `~/.config/thurbox/agents.toml` on first run. So the same text is both the
 in-binary fallback and the seed the user then edits — keep it authoritative.
 
-Status hooks (working / blocked / done) are wired **separately** by the built-in
-**hooks** extension, whose per-agent mechanism is declared in
-[`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml). An
-`AgentDef` says *how to launch* an agent; the hooks manifest says *how that agent
-reports state back*. Adding a built-in agent means touching **both**.
+An `AgentDef` says *how to launch* an agent, and nothing about how it reports
+state back: thurbox installs nothing into an agent's own config. See
+[Status hooks](#status-hooks).
 
 ## The built-in agents
 
 Ten entries ship pre-seeded — nine coding agents and a plain shell.
 `default = "claude"`.
 
-| Name | Command | Resume | Fork | ID model | Status hooks |
-|------|---------|--------|------|----------|--------------|
-| `claude` | `claude` | `--resume {id}` | `--resume {id} --fork-session` | **pinned** (`--session-id {id}`) | `--settings` arg patch (`claude.json`) |
-| `codex` | `codex` | `resume {id}` | `fork {id}` | hook-reported ID | `config_merges` → `~/.codex/hooks.json` |
-| `antigravity` | `agy` | `--continue` | — (none) | id-less (`resume_latest`) | `config_merges` → `~/.gemini/settings.json` |
-| `opencode` | `opencode` | `--continue` | `--continue --fork` | id-less (`resume_latest`) | `external_files` → `~/.config/opencode/plugin/` |
-| `aider` | `aider` | `--restore-chat-history` | — (none) | id-less (`resume_latest`) | `--notifications-command` arg patch (blocked only) |
-| `copilot` | `copilot` | `--continue` | — (none) | id-less (`resume_latest`) | `external_files` → `~/.copilot/hooks/` |
-| `vibe` | `vibe` | — (starts fresh) | — (none) | none | `external_files` → `~/.vibe/hooks.toml` |
-| `pi` | `pi` | `--session-id {id}` | `--fork {id}` | **pinned** (`--session-id {id}`) | `external_files` → `~/.pi/agent/extensions/` |
-| `omp` | `omp` | `--session-dir {home}/.omp/…/thurbox-{id} --continue` | — (none) | **path-pinned** (`--session-dir <dir>`) | `external_files` → `~/.omp/agent/extensions/` |
-| `shell` | `bash -i` (`powershell -NoLogo` on a Windows host) | — (none) | — (none) | none | none (see below) |
+| Name | Command | Resume | Fork | ID model |
+|------|---------|--------|------|----------|
+| `claude` | `claude` | `--resume {id}` | `--resume {id} --fork-session` | **pinned** (`--session-id {id}`) |
+| `codex` | `codex` | `resume {id}` | `fork {id}` | hook-reported ID |
+| `antigravity` | `agy` | `--continue` | — (none) | id-less (`resume_latest`) |
+| `opencode` | `opencode` | `--continue` | `--continue --fork` | id-less (`resume_latest`) |
+| `aider` | `aider` | `--restore-chat-history` | — (none) | id-less (`resume_latest`) |
+| `copilot` | `copilot` | `--continue` | — (none) | id-less (`resume_latest`) |
+| `vibe` | `vibe` | — (starts fresh) | — (none) | none |
+| `pi` | `pi` | `--session-id {id}` | `--fork {id}` | **pinned** (`--session-id {id}`) |
+| `omp` | `omp` | `--session-dir {home}/.omp/…/thurbox-{id} --continue` | — (none) | **path-pinned** (`--session-dir <dir>`) |
+| `shell` | `bash -i` (`powershell -NoLogo` on a Windows host) | — (none) | — (none) | none |
 
 `claude`, `codex` and `vibe` also ship `telemetry_env` / `telemetry_args`,
 applied only while `[telemetry]` is on; `copilot`, `omp` and `opencode` need
@@ -83,8 +81,8 @@ env = { CLAUDE_CONFIG_DIR = "{home}/.claude-work" }
 
 Choose that agent in the TUI or pass `--agent claude-work` to `session create`.
 The config directory is saved with the session, so restart and fork use the same
-account even after the agent definition changes. `hook_schema = "claude"` wires
-Claude's status hooks for this custom name; status and messaging follow the
+account even after the agent definition changes. `hook_schema = "claude"` reads
+this custom name's status as Claude's; status and messaging follow the
 session's configuration directory and identity.
 
 Every conversation argument group may also contain `{name}`. Thurbox replaces it
@@ -93,18 +91,8 @@ does not alter the running process; a later restart uses the persisted new name.
 The same snapshot is available to every agent and direct command as
 `THURBOX_SESSION_NAME`.
 
-The `ui-skill` and `sessions-skill` extensions install Claude's copy into
-`~/.claude/skills` only, never into another `CLAUDE_CONFIG_DIR`. Link their
-skills into each additional directory:
-
-```bash
-mkdir -p ~/.claude-work/skills
-ln -s ~/.claude/skills/thurbox-ui ~/.claude-work/skills/thurbox-ui
-ln -s ~/.claude/skills/thurbox-sessions ~/.claude-work/skills/thurbox-sessions
-```
-
-Repeat the entry and link for another account directory. On a shared host, define
-the agent and skill link on that host. Tokens remain in the agent's own account
+Repeat the entry for another account directory. On a shared host, define
+the agent on that host. Tokens remain in the agent's own account
 configuration, outside `agents.toml`.
 
 A Codex account works the same way, with `CODEX_HOME` as the directory:
@@ -115,12 +103,6 @@ name = "codex-work"
 extends = "codex"
 env = { CODEX_HOME = "{home}/.codex-work" }
 ```
-
-Codex reads its hooks from `$CODEX_HOME/hooks.json`, so each launch merges
-Thurbox's status hooks into the session's own account directory, on this
-machine or on the session's host, when that directory exists. The hooks also
-report the conversation ID that restart resumes. Uninstalling the hooks
-extension removes them from the default directory only.
 
 ### Multi-repo directory scope
 
@@ -283,261 +265,24 @@ Thurbox does not set `crossSessionInbound` itself: accepting cross-session
 prompts with no dialog lets any peer session drive the recipient, which is a
 choice for the user to make. To make it, put the setting in your own claude
 settings (`~/.claude/settings.json`, or the one under `CLAUDE_CONFIG_DIR`).
-Claude merges thurbox's `--settings` file over those, so they still apply
-inside thurbox sessions. They also apply outside thurbox. An edit to the hooks
-extension's managed `claude.json` does not last: self-heal rewrites that file
-from the embedded payload.
+Claude merges the `--settings` its launch carries over those, so they still
+apply inside thurbox sessions. They also apply outside thurbox.
 
-### Status hook mechanisms
+### Status hooks
 
-Every built-in reports status via the **hooks** extension, but *how* the hook is
-delivered differs by what each CLI supports. Two entries below (`grok`, `kimi`)
-are **not** built-in agents: their hooks are installed into their own config dirs
-all the same, so a session running one — started from a `--command` shell, a
-custom `agents.toml` entry, or an outside driver — reports state whoever launched
-it. Naming the agent on the row (`session create --reports-as grok`) is what
-resolves the coverage. All are declared in
-[`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml); the
-embedded hook assets live in
-[`extensions/hooks/`](../../extensions/hooks/).
-
-- **`agent_patches` (arg injection)** — appends args to the agent's launch
-  command, reversibly.
-  - `claude`: `--settings {home}/claude.json` (claude *merges* it with the user's
-    own settings, never clobbering). Claude keeps only one `--settings`
-    argument, so when a launch carries several (the agent's own `args`, this
-    patch, one passed with `--agent-arg` as Fleet passes its hooks), thurbox
-    hands it one inline JSON object: objects merged by key, each hook event's
-    list joined, other values taken from the later one. A relative path is
-    read from the directory the agent launches in. A value that is neither
-    JSON nor a JSON file readable here leaves the arguments unmerged, and a
-    launch on a remote host reads no path at all. Full lifecycle: idle/working/blocked/done,
-    plus `background` from its `Stop` payload and its subagent edges (see
-    [Background sub-work](#background-sub-work)).
-    Its tool hooks skip a call whose payload has a top-level `agent_id` and no
-    `agent_type` (an `agent_id` inside `tool_input`/`tool_response` does not
-    count): the background agent claude starts after a turn (it writes
-    the project memory) would otherwise turn `done` back into `working`, and
-    nothing reports its end (verified against Claude Code 2.1.301).
-  - `aider`: `--notifications-command "thurbox-cli session signal --state
-    blocked"`. aider has only a "waiting for input" callback, so **blocked is the
-    only state it can report**.
-- **`config_merges` (reversible deep-merge into a shared config file)** — for
-  agents whose hooks live in a file thurbox must not overwrite. JSON by default;
-  `format = "toml"` selects the TOML merge for an agent whose shared config is
-  TOML (kimi). Either way the semantics match: objects/tables recurse, arrays
-  union, a type conflict with the user's value is left alone, and uninstall
-  prunes exactly our entries. Install prunes first too, in both formats, so a
-  payload that renamed an event or edited a command replaces the entry already on
-  disk instead of stacking a second copy beside it — without that, a fixed hook
-  stays broken, because the stale one is still there and still firing. How "ours"
-  is decided is the same in both: an **ownership stamp** on each shipped entry.
-  TOML carries it as a comment above the entry; JSON has no comments, so it goes
-  in the command itself, as a trailing `# managed by thurbox …` a shell ignores.
-  Matching on the `session signal` command instead would delete a hook the user
-  wired themselves — which `extensions/hooks/README.md` invites — and install
-  runs at startup and on every heartbeat tick, so it would delete it again every
-  time they put it back.
-
-  One exception, once: a file written before thurbox stamped what it merges
-  (hooks < 1.11) has nothing to match but the command, so the first install to
-  find an unstamped file sweeps our old entries out of the events the payload
-  owns. Leaving them would leave their broken commands firing beside the fixed
-  ones. That sweep is gated on the file carrying no stamp at all, so it runs
-  exactly once — and what it costs is a hook the user had written under one of
-  those events *before* upgrading.
-
-  Uninstall matches both the stamp and the command, and stays document-wide: it
-  is explicit and one-shot, and must leave nothing of ours orphaned whatever
-  shape the payload had when it wrote it. It still takes a user hook that calls
-  `session signal` with it, in JSON; the TOML one passes over it.
-  - `codex`: merged into `$CODEX_HOME/hooks.json`, `~/.codex/hooks.json` by
-    default (SessionStart→idle,
-    UserPromptSubmit/PostToolUse→working, PermissionRequest and
-    PreToolUse matching `request_user_input`→blocked, Stop→done). It has **two**
-    block edges and both are **structured**, like kimi's: a real approval event,
-    and the `request_user_input` tool call — the questions plan mode asks, which
-    fire no approval event, the turn simply sitting inside a tool call until you
-    answer. PostToolUse is the edge back out of either. `PreToolUse` is used for
-    nothing else: it fires *before* `PermissionRequest`, so an unmatched group
-    re-asserting `working` never cleared a block, and it could not be kept beside
-    the matched one anyway — codex runs an event's hooks concurrently, so two
-    groups signalling different states are a race. The matcher is matched against
-    the **whole** tool name, which is what keeps the non-blocking
-    `request_user_input_async` out of it. Two things are codex's alone: `Stop`
-    must write JSON to stdout on a zero exit (`echo '{}'` — its schema is
-    `deny_unknown_fields`, `decision`/`reason` plus the universal fields) or the
-    turn fails with *"hook returned invalid stop hook JSON output"*, and every
-    other event folds plain-text stdout into the model's context. Both are why
-    every shipped hook command redirects its own output away — see
-    `tests/hook_stdout_contract.rs` — except the one `SessionStart` group whose
-    whole purpose is that fold: it prints the idle-claim instruction (see
-    [Background sub-work](#background-sub-work)). Verified against codex-cli 0.154.0 over
-    real turns: every event fires; an approval prompt reports `blocked` and
-    returns to `working` when granted; a `request_user_input` question reports
-    `blocked` until it is answered; and a bare `request_user` matcher registered
-    beside the anchored one never fires. `codex exec` pins its approval policy
-    to `never`, so the approval edge only shows in an interactive session.
-
-    Codex may require a changed command hook to be reviewed. If the user
-    continues without trusting it, Codex does not deliver the status events;
-    Thurbox leaves that security choice alone. When Thurbox can identify the
-    session row receiving input that may submit a prompt (`session send`,
-    `session key enter`, or a direct Enter in its terminal), it clears any
-    older Codex hook report. The list then says `unreported`, and a live pane
-    probe can say `running` (agent present, turn state unknown). A draft sent
-    with `--no-enter` does not clear the report. Without hook delivery, Thurbox
-    cannot detect when the turn ends or a prompt submitted outside Thurbox;
-    the coarse state can persist until a trusted hook reports again. A legacy
-    unstamped window shared by namesake rows also has no safe row identity,
-    so a name-only automation send cannot retire one row's report.
-  - `kimi` (Kimi Code CLI): merged into `~/.kimi-code/config.toml` — TOML, so
-    the merge is `agent::toml_merge` (`format = "toml"` on the `[[config_merges]]`
-    entry) rather than the JSON one; `toml_edit` keeps the user's comments and key
-    order. Kimi reads hooks from a `[[hooks]]` array in that one shared file and
-    has no drop-in hooks dir, so a managed file would clobber the user's whole
-    configuration. SessionStart→idle, UserPromptSubmit/PreToolUse/PostToolUse→
-    working, PermissionRequest→blocked, PermissionResult→working, Stop→done. The
-    only agent here whose block edge is a **structured permission event on both
-    sides** — a real request event and a real result event — so `blocked` neither
-    false-fires nor latches. Kimi accepts exactly four keys per hook entry
-    (event/command/matcher/timeout) and refuses to load the whole config file on a
-    fifth, so `kimi-hooks.toml` must never grow one (a test pins this).
-    *Experimental.*
-  - `antigravity` (`agy`): merged into the shared `~/.gemini/settings.json` (agy
-    adopted claude's hook schema — SessionStart→idle,
-    PreToolUse/PostToolUse→working, Notification→blocked, Stop→done; no
-    UserPromptSubmit, so working fires at the first tool call). PostToolUse is
-    the edge out of blocked: no agent here has a "permission granted" event, so
-    the tool completing is the first thing said once the prompt is answered.
-- **`external_files` (drop a standalone managed file into the agent's config
-  dir)** — refused if a non-managed file already exists there (the agent goes
-  *unreported*, never *broken*).
-  - `opencode`: a plugin at `~/.config/opencode/plugin/thurbox-status.js`
-    (idle/working/blocked/done). The only agent with a real permission-*reply*
-    event, so `permission.replied`→working clears the block exactly when it
-    ends rather than at the next tool boundary. One module for both plugin
-    APIs: 1.x reads `server` off the default export, 2.x `id` + `setup`
-    (verified against 1.19.2 and 2.0.30). On 2.x it reports only from a
-    session launched with `--standalone` — the default shared background
-    server never saw the session's `$THURBOX_SESSION` — and the flag is left
-    to the user's `agents.toml` because 1.x rejects it.
-  - `copilot`: `~/.copilot/hooks/thurbox-status.json`
-    (userPromptSubmitted/preToolUse/postToolUse→working, agentStop→done,
-    notification matched to `permission_prompt`→blocked; **no idle** —
-    copilot fires `sessionStart` only with the first prompt and after
-    `userPromptSubmitted`, so an idle there overwrote the turn's working;
-    verified against copilot 1.0.98). Ships both `bash` and `powershell`
-    commands.
-    *Experimental.*
-  - `vibe`: a managed `~/.vibe/hooks.toml` (pre_tool→working, post_agent→done;
-    **no blocked** — vibe has no permission/notification hook). Verified against
-    vibe 2.21.0.
-  - `pi`: a TypeScript extension at `~/.pi/agent/extensions/thurbox-status.ts`
-    (session_start→idle, agent_start/tool_execution_start/tool_execution_end→
-    working, agent_end→done; **blocked inferred only** from an
-    `ask_user_question` tool call, cleared when that tool ends). *Experimental.*
-  - `grok` (xAI's Grok Build CLI): `~/.grok/hooks/thurbox-status.json` — grok
-    loads every `*.json` in that dir on its own, so a standalone drop never
-    touches a hook file the user wrote. It is the **global** dir deliberately:
-    global hooks are always trusted and load on first launch, while
-    `<project>/.grok/hooks` additionally needs the folder granted trust in grok's
-    own `~/.grok/trusted_folders.toml` (or a `--trust` launch flag, which would
-    only cover sessions thurbox itself launches). grok is Claude-Code-compatible,
-    so the mapping mirrors claude: SessionStart→idle,
-    UserPromptSubmit/PreToolUse/PostToolUse→working, Notification (its `message`
-    matched to permission/approval)→blocked, Stop→done. Every command is
-    deliberately `$`-free: a `$VAR` reference without an inline `:-default` makes
-    grok silently refuse to load the whole hook file, so the blocked edge pipes
-    the extracted message through `grep` instead of claude's `case` (a test pins
-    it). *Experimental.*
-  - `omp`: a TypeScript extension at `~/.omp/agent/extensions/thurbox-status.ts`,
-    mirroring pi's but mapping OMP's structured user-question tool — named `ask`
-    — to blocked (it recognizes both `ask` and pi's `ask_user_question`), cleared
-    by tool_execution_end. Verified against OMP 17.0.6. *Experimental.*
-
-Each `requires_dir` guard makes the drop a no-op when that agent isn't installed,
-so a fresh install with only claude present doesn't scatter files for agents you
-don't have.
-
-**Deliberately uninstrumented.** Two agents have a hook surface thurbox cannot
-reach with any of the three mechanisms, and are left out of the table so they
-keep reporting `uncovered` honestly rather than claiming a payload that never
-fires:
-
-- **cursor** (`cursor-agent`). The only scope its CLI is known to load hooks
-  from is per-project `<repo>/.cursor/hooks.json`, and only when the agent is
-  launched with `--trust` — which is a `[[agent_patches]]` flag, so it would
-  cover nothing an outside driver launches, and a per-repo file is not a config
-  dir any mechanism here writes to. User-scope `~/.cursor/hooks.json` is
-  documented for the IDE; in the CLI it is reported to run only the
-  shell/MCP/file-edit hooks, none of which can say `done`. Wiring it there would
-  latch a session at `working` forever. It becomes a plain `config_merges` entry
-  into `~/.cursor/hooks.json` the moment `stop`/`sessionStart` are confirmed to
-  fire from user scope in the CLI.
-- **muse** (Muse Code). Its hooks exist only as capabilities of a native plugin:
-  installing one means running `muse plugins install` and `muse plugins approve`
-  (the management CLI itself gated behind `MUSE_EXPERIMENTAL_PLUGINS`), and a
-  dropped-in config file is silently ignored. An extension manifest writes files;
-  it does not run an agent's install-and-approve commands, so there is nothing to
-  ship. Muse does keep a durable per-session event log
-  (`${XDG_DATA_HOME:-~/.local/share}/muse/sessions/YYYY/MM/DD/<uuid>/session.jsonl`)
-  whose `run` `started`/`terminal` events bracket every turn — reading it would be
-  a **fourth** delivery mechanism (a poller, not a hook) and is a separate
-  decision, not a variation on these three.
-
-**This list has a machine-readable twin.** `session::hook_status::
-AGENT_HOOK_COVERAGE` carries the same per-agent facts — the states each payload
-signals, its delivery mechanism, the file it lands in, and whether its `blocked`
-is a text match on a notification body — and is what `session get`/`list` report
-as `hook_coverage` / `hook_states_reportable` / `hook_delivery` /
-`hook_blocked_is_heuristic`, so a consumer can tell "this agent is quiet" from
-"this agent cannot say that". The table is asserted against the embedded
-payloads by a test rather than maintained by hand beside them: **change a
-payload's events and that test fails until the table agrees.**
-
-`thurbox-cli session doctor [uuid]` is the runtime half — whether a given
-session's payload is actually installed where its agent reads it, whether a hook
-command could resolve `thurbox-cli` at all, and whether what was last reported
-is corroborated by the pane. A `--command` session is the one shape it does not
-judge: thurbox never had an agent there to wire, so it reports **no hooks
-expected** rather than broken wiring.
-
-**A pane can run an agent thurbox did not launch.** A `--command` session is
-named after the command's file stem, so a driver that opens a shell and starts
-`claude` inside it has no declared agent for the fields above to resolve
-against. When the pane probe has already named one, that name is used and
-coverage reads `presumed` (`hook_coverage_source: "detection"`) — deliberately
-not `full`, because seeing an agent in a pane is evidence about the process and
-never about whether its hooks are wired. Undeclared and unprobed, it stays
-coverage `none` with `hook_blocked_is_heuristic: false`, which asserts the block
-signal is structured when it is claude's text match on a notification
-message. `session create --reports-as <agent>` and
-`thurbox-cli session reports-as <ref> <agent>` (`--clear` to take it back) let
-the driver name the agent that actually reports; it is stored on the row
-(`sessions.reports_as`, schema v44), survives restart, and changes nothing about
-the launch — `session restart` still replays the recorded command. Only an agent
-in the table above (or a custom agent that asserts a family with `hook_schema`)
-may be declared: a name with no coverage would unlock nothing, silently.
-
-**On a shared host** (`hosts.toml` `share_sessions = true`, the default — see
-ADR-24) none of the remote rewriting applies: the host's own `thurbox-cli`
-launches the agent with the host's own hooks extension, so each agent reports
-exactly as it does locally, into the host's database, which the remote thurbox
-mirrors. That includes a **Windows (psmux) host**, whose remote path stays
-off (the psmux adapter reports no hook status channel, ADR-32) but is simply
-not used when the host has — or is provisioned with — a CLI.
+Thurbox installs nothing into an agent's own config. Fleet's harness profiles
+([`crates/fleet-api/src/harness.rs`](../../crates/fleet-api/src/harness.rs))
+pass a harness its status hooks at launch: `claude` gets one `--settings` with
+its hooks and `codex` a `notify` command. Another agent reports no status.
+Hook entries an earlier thurbox wrote into an agent's config are removed by
+hand: see [removing thurbox's old hook entries](https://thurbox.thurbeen.eu/docs/extensions.html).
 
 ### `hook_schema` (custom rebrands only)
 
-The built-ins never set `hook_schema` — the hooks extension already knows them by
-name. It exists for a **user's** custom agent that runs a built-in under a
-different name (e.g. a rebranded-claude CLI called `fleet`): set `hook_schema =
-"claude"` and it inherits claude's `--settings` hook wiring under its own name.
-Only the per-arg-patch families (`claude`, `aider`) need it; the config-dir
-agents (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own config
-dir, so a rebrand sharing that dir already reports without it. `hook_schema`
-says nothing about accounts: thurbox reads no agent credentials and asks no
+The built-ins never set `hook_schema`. It exists for a **user's** custom agent
+that runs a built-in under a different name (e.g. a rebranded-claude CLI called
+`fleet`): set `hook_schema = "claude"` and its status is read as claude's.
+`hook_schema` says nothing about accounts: thurbox reads no agent credentials and asks no
 provider for quotas, which is the job of a plugin such as `thurbox-info-panel`.
 See
 [config.md](config.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
@@ -556,23 +301,9 @@ automatically. Work the checklist top to bottom:
    existing entries do. **Decide the ID model first** — whether the CLI can pin a
    session id — because it determines the conversation argument groups.
 
-2. **Status hooks** — add the wiring to
-   [`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml) and
-   the hook asset file under [`extensions/hooks/`](../../extensions/hooks/). Pick the
-   mechanism from [Status hook mechanisms](#status-hook-mechanisms):
-   `agent_patches` if hooks are launch flags, `config_merges` if they live in a
-   shared config file thurbox must not clobber, `external_files` for a standalone
-   drop into the agent's own config dir. Add its row to `AGENT_HOOK_COVERAGE` in
-   [`src/session/hook_status.rs`](../../crates/thurbox/src/session/hook_status.rs) (the drift test
-   fails until it matches the payload), and — for a `config_merges` /
-   `external_files` wiring — the same payload for remote sessions. Bump the
-   hooks extension `version`. Skipping this step means the new
-   agent launches fine but **never shows working/blocked/done**.
-
-   This step also stands **alone**: an agent thurbox ships no `[[agents]]` entry
-   for still gets its hooks installed into its own config dir, which is what
-   makes `grok`/`kimi` report for a driver that launches them itself. Steps 1,
-   3 and 4 are about launching an agent, not instrumenting one.
+2. **Status hooks** — thurbox wires none. An agent reports
+   working/blocked/done only when its Fleet harness profile gives it hooks; see
+   [Status hooks](#status-hooks).
 
 3. **Docs — update every list of built-ins** (these are prose, not generated, so
    they drift):
@@ -705,11 +436,9 @@ resume_latest = true
 ```
 
 These launch as `claude --permission-mode auto --model opus --add-dir …
---session-id <id> --settings …/claude.json` and as `codex resume --last
+--session-id <id>` and as `codex resume --last
 --approve-for-me -p spotpay-coder -c … --add-dir …` (or the same flags with no
-subcommand on a fresh launch). The `--settings` file the wrapper passed
-itself is the hooks extension's patch, which it appends to every
-`hook_schema = "claude"` entry's `args`, after the token. A setup step that
+subcommand on a fresh launch). A setup step that
 fails — `scripts/role.sh` refusing an unknown role — stops the launch with the
 session `failed` instead of starting an agent without its role.
 

@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Configuration — Thurbox Docs'
-description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, hooks.toml session lifecycle hooks, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, extension manifests, SQLite-backed state, and environment variables.'
+description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, hooks.toml session lifecycle hooks, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, SQLite-backed state, and environment variables.'
 currentPage: 'configuration'
 breadcrumb: 'Configuration'
 ---
@@ -178,13 +178,6 @@ breadcrumb: 'Configuration'
                   <code>ui.json</code>
                   .
                 </td>
-              </tr>
-              <tr>
-                <td><code>~/.config/thurbox/extensions/&lt;name&gt;.toml</code></td>
-                <td>TOML</td>
-                <td><code>extension install</code></td>
-                <td>startup + tick</td>
-                <td>extension manifests (self-healed resources)</td>
               </tr>
               <tr>
                 <td><code>~/.local/share/thurbox/thurbox.db</code></td>
@@ -429,13 +422,12 @@ resume_latest = false       # true = id-less "resume last session in cwd"</code>
               Not the
               <code>hooks/</code>
               <strong>directory</strong>
-              beside it. That is the home of the built-in
-              <a href="agent-hooks.html">agent hooks extension</a>
-              , which installs status-hook files
-              <em>into</em>
-              the agent CLIs so they can tell thurbox what they are doing.
+              beside it. Thurbox v2 kept agent status-hook files there, and v3 no longer reads it;
+              see
+              <a href="extensions.html">Removing old hook entries</a>
+              .
               <code>hooks.toml</code>
-              is the other direction: thurbox telling
+              is thurbox telling
               <em>your</em>
               scripts what
               <em>it</em>
@@ -489,7 +481,7 @@ timeout_secs = 120</code></pre>
             <strong>once per operation whichever interface asked</strong>
             &mdash; the TUI,
             <code>thurbox-cli</code>
-            , an automation, an extension &mdash; because every interface ends in the same
+            , an automation &mdash; because every interface ends in the same
             pipeline. Hooks for one event run one at a time, in file order.
           </p>
           <table>
@@ -506,15 +498,14 @@ timeout_secs = 120</code></pre>
                 <td><code>session.pre_create</code> / <code>session.post_create</code></td>
                 <td>
                   the creation flow, <code>Ctrl+F</code>, <code>thurbox-cli session create</code>,
-                  a <code>spawn</code> automation, an extension's sessions
+                  a <code>spawn</code> automation
                 </td>
               </tr>
               <tr>
                 <td>delete (soft or force)</td>
                 <td><code>session.pre_delete</code> / <code>session.post_delete</code></td>
                 <td>
-                  <code>Ctrl+D</code>, <code>thurbox-cli session delete [--force]</code>,
-                  extension uninstall
+                  <code>Ctrl+D</code>, <code>thurbox-cli session delete [--force]</code>
                 </td>
               </tr>
               <tr>
@@ -1154,32 +1145,6 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             page for the full default chord table.
           </p>
 
-          <h2 id="extensions">
-            Extensions
-            <a href="#extensions" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Each opt-in extension is described by a single
-            <code>extension.toml</code>
-            manifest.
-            <code>thurbox-cli extension install</code>
-            writes the home-resolved copy to
-            <code>~/.config/thurbox/extensions/&lt;name&gt;.toml</code>
-            (thurbox never seeds this dir). The manifest has an
-            <strong>install</strong>
-            spec and a
-            <strong>runtime</strong>
-            spec; see the
-            <a href="extensions.html">Extensions</a>
-            page for the full manifest format, lifecycle commands, and versioning.
-          </p>
-          <pre><code class="language-bash">thurbox-cli extension install ./my-ext     # fetch + lay files + agents + activate
-thurbox-cli extension list                 # installed + active/healthy + version/stale
-thurbox-cli extension update --all         # re-fetch every installed extension
-thurbox-cli extension activate &lt;name&gt;      # (re)create resources + mark active
-thurbox-cli extension deactivate &lt;name&gt;    # tear down + stop self-heal
-thurbox-cli extension status [&lt;name&gt;]      # per-resource presence + version/stale</code></pre>
-
           <h2 id="sqlite-settings">
             SQLite-backed settings
             <a href="#sqlite-settings" class="heading-anchor">#</a>
@@ -1207,11 +1172,6 @@ thurbox-cli extension status [&lt;name&gt;]      # per-resource presence + versi
                 <td><code>editor_command</code></td>
                 <td><code>thurbox-cli editor set "&lt;cmd&gt;"</code></td>
                 <td>what <code>Ctrl+O</code> runs</td>
-              </tr>
-              <tr>
-                <td><code>active_extensions</code></td>
-                <td><code>extension activate/deactivate</code></td>
-                <td>JSON array of active extensions to self-heal</td>
               </tr>
             </tbody>
           </table>

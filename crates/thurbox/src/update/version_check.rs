@@ -20,14 +20,14 @@
 //! [`compare_versions`] / [`is_dev_version`] helpers, so dev builds
 //! (`0.0.0-dev`) never report an update. The GitHub fetch shells out to
 //! `curl`/`wget` (no new crate dependency — same dependency-free approach as
-//! `scripts/install.sh` and the extension installer).
+//! `scripts/install.sh`).
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::extension_def::{compare_versions, is_dev_version, major_version};
+use crate::agent::fetch::{compare_versions, is_dev_version, major_version};
 
 /// The major version this source tree releases. Auto-update and the update
 /// check only ever consider releases on this line.
@@ -118,10 +118,10 @@ pub fn decide_update(current: &str, latest: &str) -> Option<UpdateStatus> {
 }
 
 /// The running binary's version (thin wrapper over the shared
-/// [`binary_version`](crate::agent::extension_config::binary_version) helper, so
+/// [`binary_version`](crate::agent::fetch::binary_version) helper, so
 /// callers in this feature have a single import).
 pub fn current_version() -> &'static str {
-    crate::agent::extension_config::binary_version()
+    crate::agent::fetch::binary_version()
 }
 
 /// Path to the cache file: `~/.local/share/thurbox/version-check.json`.
@@ -215,7 +215,7 @@ fn parse_releases(body: &str) -> Option<Releases> {
 
 /// Fetch the release list from `url` (network; `curl`/`wget`).
 pub fn fetch_releases(url: &str) -> Result<Releases, String> {
-    let body = crate::agent::extension_config::http_get(url)?;
+    let body = crate::agent::fetch::http_get(url)?;
     parse_releases(&body).ok_or_else(|| "could not parse the GitHub release list".to_string())
 }
 

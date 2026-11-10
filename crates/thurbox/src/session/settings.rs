@@ -289,10 +289,7 @@ pub struct FeatureFlags {
     pub version_check: bool,
     /// Silent auto-update: the TUI silently downloads, verifies, and replaces
     /// the installed binaries on startup when a newer release exists, and the
-    /// `thurbox-cli update` command does the same on demand. Also keeps installed
-    /// extensions fresh — once the binary upgrades, the self-heal pass (TUI
-    /// startup + headless tick) refreshes any extension that is now stale instead
-    /// of merely nudging. **On by default for 1.0** — opt out with `[features]
+    /// `thurbox-cli update` command does the same on demand. **On by default for 1.0** — opt out with `[features]
     /// auto_update = false`; it makes a network call and replaces files on
     /// disk. The new version applies on the next launch.
     #[serde(default = "default_true")]

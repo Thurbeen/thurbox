@@ -61,9 +61,8 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   file behind. `tui_e2e`'s
   `legacy_trust_and_disabled_choices_move_to_their_own_store_and_still_apply` pins
   the migration out of a legacy `ui.json` across two starts of the real binary. The native
-  interruption probe is Unix-only; on Windows the replacement is `std::fs::rename`, and the
-  extensions suite's concurrent-reader test exercises it replacing a file a reader
-  holds open. The same file pins config-file
+  interruption probe is Unix-only; on Windows the replacement is `std::fs::rename`.
+  The same file pins config-file
   symlink preservation on Unix and paths beyond `MAX_PATH` on Windows.
 - **`tests/edited_interface.rs`** — an edited interface keeps working across an
   upgrade. It holds files frozen from old releases with a user's edit

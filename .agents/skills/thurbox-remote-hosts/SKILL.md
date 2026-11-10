@@ -1,6 +1,6 @@
 ---
 name: thurbox-remote-hosts
-description: Remote SSH and WSL sessions in thurbox: hosts.toml schema, the TmuxTransport abstraction, psmux/Windows-host divergences, remote worktrees, shared sessions (ADR-24) and host CLI delegation, agent-config path rewriting, remote hook status delivery via tmux pane options, and remote teardown. Use when working on remote/WSL/Windows hosts, ssh transport, psmux, host provisioning or remote session status.
+description: Remote SSH and WSL sessions in thurbox: hosts.toml schema, the TmuxTransport abstraction, psmux/Windows-host divergences, remote worktrees, shared sessions (ADR-24) and host CLI delegation, and remote teardown. Use when working on remote/WSL/Windows hosts, ssh transport, psmux, host provisioning or remote session status.
 ---
 
 # Thurbox remote SSH and WSL hosts
@@ -382,14 +382,12 @@ session), never on the loop, ADR-P12).
   (`backend::instance::learn_host_socket`) so a dev laptop attaches to a release host's server.
   Kept per host, not per route: it names the host's thurbox instance, which
   every multiplexer there runs under.
-  Everything below this bullet — the hooks rewrite, remote provisioning, the
-  pane-option status channel — is the **legacy path** for a host that cannot
+  Everything below this bullet is the **legacy path** for a host that cannot
   be delegated to (no artifact, no network, a host schema older than ours that
   provisioning cannot upgrade, `share_sessions = false`); `session create` then reports `sharing` and `session sync --adopt`
   registers such rows on the host later. `session send`/`key`/`capture` on such
   a host drive its window over the transport through the registry (ADR-30)
-  instead of refusing. `session signal` also sets the pane
-  option, so tmux hosts keep sub-second status. Relaunch after a reboot is the
+  instead of refusing. Relaunch after a reboot is the
   host's (`session restart --if-missing`). Shared-host forks run on that host
   too, preserving its frozen environment and conversation selection. A mirrored
   parent without its owning CLI is refused; a locally owned direct-remote row
@@ -400,88 +398,6 @@ session), never on the loop, ADR-P12).
   owner's telemetry attributes; request them on the owner for its complete
   saved account environment.
   Docs: `docs/thurbox/features.md` → Shared sessions.
-- **Agent config on the host**: agent args referencing thurbox-managed config
-  by *local* path (the hooks extension's `--settings <config>/hooks/
-  claude.json`) would kill the remote agent on launch ("Settings file not
-  found"). `session_ops::spawn::adapt_def_for_launch` (shared by headless
-  spawn and the TUI, run on the spawn worker — never the UI thread) rewrites
-  them per host: on a POSIX remote the home-anchored path is **translated to
-  the remote home**, the file copied there, and the arg substituted. A
-  **Windows-local** config root (`C:\…` — the Windows TUI driving a WSL distro)
-  has no absolute counterpart to mirror, so it lands under the remote
-  `$HOME/.config/<root-name>` (final component = dev/release isolation), with
-  `\` honoured as a separator **only** for such a root (it is a legal POSIX
-  filename char) since the injected arg mixes them (`C:\…\hooks/claude.json`).
-  On a route whose backend reports no status channel
-  (`StatusChannel::hook_signal_command` is `None` — psmux today) or a failed
-  home lookup/copy the **flag+path pair is stripped** so the agent launches
-  clean — surfaced as a `Hooks: degraded` row in the info panel
-  (`SessionInfo.hook_wiring`). Literal signal commands carried directly in
-  args (aider's `--notifications-command`) are rewritten too.
-  The local-location env hints
-  (`THURBOX_METRICS_DIR`/`THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR`, and
-  `THURBOX_SOCKET` — the host's sessions are on the host's own server) are
-  likewise skipped for remote spawns (`inject_thurbox_env`); only the opaque
-  identity vars travel.
-- **Remote session status** (hooks-driven, like local, **all agents**) is the
-  **route's backend's** (ADR-32): every step below is a `SessionBackend` verb,
-  so nothing in `session_ops`/`cli` names a multiplexer. RMUX supplies its own
-  channel by answering them; a future Herdr adapter would do the same.
-  `thurbox-cli session signal` can't work from a host (no CLI there; it would
-  write the host's own DB), so hook commands are **rewritten**
-  (`builtin_hooks::rewrite_hook_signals`) to the command the row's backend
-  hands out (`hook_signal_command`). For tmux that is `tmux set-option -p
-  @thurbox_state <s>` — no socket, pane id or identity needed inside a pane;
-  psmux's form would bake in `-L <socket>` (sanitized to `[A-Za-z0-9._-]`).
-  Sub-work edges (`session signal --work-start/--work-end`, the `background`
-  state's count) become the shell's no-op `:` in that rewrite: a pane option
-  holds one word and cannot count, so a remote claude reports its turns as it
-  did before `background` existed.
-  `None` = no channel: no hook config is shipped (the flag+path is stripped,
-  config-dir payloads are not provisioned) and the session shows `Hooks:
-  degraded` — **unknown, never idle**. Delivery per agent: claude's hooks file
-  travels via its `--settings` arg; agents wired through their **own config
-  dir** (codex, antigravity, opencode, vibe, copilot, grok, kimi) are
-  provisioned at spawn time by
-  `session_ops::remote_hooks::provision_agent_hooks_on_host` — the rewritten
-  payload shipped into the host's agent config dir with the local installer's
-  safety rules (`requires_dir` probe over ssh, prune-then-merge for a shared
-  config — JSON on a content marker, TOML (kimi) on the same ownership comment
-  used locally, see `thurbox-extensions`), managed-marker guard for standalone
-  files, compare-before-write; cached per `(backend, hook file path)` — the
-  path is resolved against the session's saved env and `~`-expanded on the
-  host, so a codex account's `CODEX_HOME` is its own file and two spellings of
-  one file share an entry — best-effort,
-  never fails the spawn; remote **cleanup** is a documented leave-behind;
-  Windows hosts are skipped there because the payloads run through `sh`).
-  **Live**: a tmux-protocol connection subscribes once per connection
-  (`refresh-client -B 'thurbox-status:%*:#{@thurbox_state}'`, armed in
-  `ControlMode::start` so reconnects re-arm; the wire names live in
-  `backend::tmux_compat::control_mode`) and receives `%subscription-changed`
-  pushes (≤1/s); a **remote psmux or RMUX** connection instead runs a 1 s
-  **poller thread** (`control_mode::diff_polled_hook_states`) — armed only when
-  its channel is open. Both feed `take_hook_state_events`, drained each tick by
-  `Terminals::drain_hook_events` into the same `set_hook_state` columns local
-  signals use — so Done→seen acknowledgment, OS notifications, and the
-  stuck-`working` fallback are shared. Events are matched by **backend name +
-  pane id** (pane ids collide across hosts), allow-listed (pane-controlled
-  text), and deduped against the cache. **Headless**: the live channels die
-  with the interface, so `automation tick` (the 60 s heartbeat) groups live rows
-  by the route they settle to and asks each route's backend `hook_states()`
-  (`session_ops::remote_hooks::poll_hook_states`) — remote and local routes
-  alike, so a session a peer created here on a non-default local server is
-  polled too — allow-listed and diffed against the stored `hook_state`. A route
-  nothing serves, a backend with no channel, or one that did not answer is
-  skipped and keeps its held state. `session signal` also calls
-  `record_hook_state` on the row's own pane, so a peer attached to that backend
-  sees it live and the next poll does not undo it. **psmux carve-out**: the
-  adapter's channel is closed (`Psmux::HOOK_STATUS = false`) until
-  `scripts/dev/e2e/windows-vm.sh test`'s probes prove psmux's per-pane options;
-  those probes read the gate from `thurbox-cli runtime status --json`
-  (`hook_status["local:psmux"]`, the binary's own answer — never the source)
-  and **fail** the harness when psmux disagrees with it in either direction
-  (issue #1170 — psmux 3.3.6 implements no per-pane user options at all). No
-  live psmux host has exercised this path.
 - **Remote teardown** (WSL inherits the SSH path): `session delete --force`
   teardown is **backend-aware** — `teardown_runtime_resources` kills the
   session's windows through the backend its route names

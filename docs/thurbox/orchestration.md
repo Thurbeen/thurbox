@@ -117,17 +117,8 @@ is a merge conflict waiting for a scheduler.
 
 ### The lead is a real session
 
-The control plane installs itself as an extension with one long-lived
-`[[sessions]]` entry (ADR-21). Two properties follow, and the pattern
-needs both.
-
-It **self-heals**: active extensions are recorded in SQLite and their
-sessions are recreated at TUI startup and on every `automation tick`.
-Delete the lead session and it comes back. A control plane that
-evaporates when someone tidies up their session list is not a control
-plane.
-
-And because it *is* a real session rather than an ad-hoc terminal, it
+The control plane runs its lead as one long-lived session. Because it
+*is* a real session rather than an ad-hoc terminal, it
 can be addressed. Workers can mail it. It has a UUID to hand out as
 `--parent`. It gets `THURBOX_SESSION` in its environment like any other
 session. The lead being a first-class session is the precondition for
@@ -537,8 +528,7 @@ report of any kind — it describes the turn that ended last and no other:
   default `workspace-write` sandbox refuses the write to thurbox's database.
   The other `partial` agents have no instruction channel yet, so they never
   read `idle` unless a driver claims it with `session signal --idle`.
-- **`null`** — nothing reports: an agent the hooks extension does not know,
-  or the extension deactivated.
+- **`null`** — nothing reports: an agent launched with no hooks.
 
 `session signal --idle` is the claim from outside the turn. It is taken only
 once the turn has ended (`done` or `idle`) with nothing counted or listed in
@@ -588,8 +578,8 @@ failure keeps the state it had. `session wait` ends on it —
 exit code 6, like a lost session — unless it was waiting for `--state failed`.
 
 What counts. A failed setup always does. An exit counts only for an agent whose
-silence meant something: the hooks extension is on and the agent has hook
-coverage (by name or `hook_schema`), so it would have reported on boot. An
+silence meant something: the agent has hook coverage (by name or
+`hook_schema`), so it would have reported on boot. An
 uncovered agent, a plain `--command` session or a session with hooks off never
 reports at all, and a shell somebody `exit`ed an hour in is not a failed launch.
 A session that has reported once in this launch is never `failed`, including a
@@ -666,11 +656,10 @@ having reported anything.
 Three things close that, and all are **stable contract**:
 
 - **`thurbox-cli agent launch-args <name>` reports what to launch.**
-  The hooks are *arguments* — the `hooks` extension installs them by
-  appending to the agent's `args` in `agents.toml` (`--settings
-  <hooks>.json` for claude) — so an agent started any other way simply
-  has none. This prints the `command`, `args` and `env` thurbox itself
-  would use; pass the args through and the hooks are there. With
+  The hooks are *arguments* (`--settings <hooks>.json` for claude), so
+  an agent started any other way simply has none. This prints the
+  `command`, `args` and `env` thurbox itself would use; pass the args
+  through and the hooks are there. With
   `--session <ref>` it resolves for that session: the conversation id is
   pinned to the row's, the host adapts the args, and the environment
   carries the `THURBOX_SESSION` its `session signal` will report under.
@@ -760,11 +749,7 @@ Fetch and fast-forward before `session create`, and verify
 ## The reference implementation
 
 **[Fleet](https://github.com/Thurbeen/fleet)** is all of the above,
-maintained. It is also the worked example of a thurbox extension — the one
-the rest of the documentation points at, since `extensions/` in the thurbox
-repo holds only the built-ins. The manifest that example reads is the one at
-fleet's `v1.0.0` tag (`extension.toml.in`); the `main` installer below sets up
-no extension, so read the manifest at that tag.
+maintained.
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
@@ -783,30 +768,6 @@ and its facts, the operator's settings — is gitignored, so the public repo
 holds only the machinery and does not back that content up. Merging is
 explicit: `shepherd` squash-merges only the repositories the operator's own
 `auto-merge.conf` names, and the tracked example names none.
-
-Fleet is an extension, not a thurbox feature: nothing in thurbox knows it
-exists. The part worth copying is the arrangement, not the files. Two of
-its choices are that arrangement rather than its own taste.
-
-**The lead's job description is a payload file, not a prompt.** The
-manifest's `[[files]]` lays down `FLEET.rendered.md`, rendered from the
-checkout's `FLEET.md`, in the extension home, and three `[[symlinks]]`
-surface it as `CLAUDE.md`, `AGENTS.md` and `GEMINI.md`, so the lead reads
-what it is *for* whichever CLI is behind it. That text is deliberately not
-the repo's own `AGENTS.md`: one says what the session is for — hold the
-plan and the log, never the branches — and the other says how to work
-inside the checkout. A lead whose invariant lives only in the conversation
-that stated it keeps that invariant exactly as long as the conversation.
-
-**The manifest ships as `extension.toml.in` because no token spells "my
-clone".** `[[sessions]] repo_path` has to name the checkout — that is
-where `registry/` and `orchestration/` are — and `{home}` is
-substituted, but it resolves to the extension home
-(`<config>/extensions/<name>/`). A committed file cannot hardcode a path
-that exists on one machine, so it ships a `__REPO_PATH__` placeholder that
-`uv run fleet install-extension` renders with the clone's absolute path
-before installing. A leading `~` would not help: it names a home
-directory, not a clone, so the placeholder is the permanent answer.
 
 `version --json` advertises these additive event-consumer features as
 `session_wait`, `session_state_hooks` and `session_pre_launch`, so a driver

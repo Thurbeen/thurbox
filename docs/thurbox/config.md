@@ -30,7 +30,6 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli plugin` | on each `plugin` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
 | `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugin settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring plugin chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
 | `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. A release before it kept both tables in `ui.json`; the first start that finds them there writes this file, then removes them from `ui.json` — in that order, so an interruption leaves both copies and this file wins: a later start only removes the leftover tables from `ui.json` and never rewrites this file. If this file cannot be written, `ui.json` keeps both tables until a later start moves them; one that exists but cannot be read or parsed is never replaced by them, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
-| `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
 | `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order, the companion shell) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens, the manual session order and one record per companion shell (its multiplexer's route, its pane, its window's stamp). Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
@@ -70,7 +69,7 @@ via the live mtime poll.
 
 Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
 `ui.json`, `plugin-state.json`, `agents.toml` (and the other seeded config files),
-extension manifests and payloads, the keybindings JSON, the interface's plugin
+the keybindings JSON, the interface's plugin
 lock, spec and bundled files, and the heartbeat's state — is written through
 one writer, `paths::write_atomically`. It stages a complete file beside the
 destination and replaces it with one native same-directory rename, so a reader
@@ -88,10 +87,9 @@ production write, apart from an allow-list of logs, a cache, the control
 socket's privately staged files and the self-update's staged binary.
 
 The config files beside `config.toml` — `agents.toml`, `settings.toml`,
-`themes.toml`, `hooks.toml`, `hosts.toml` and the extension manifests — are
+`themes.toml`, `hooks.toml` and `hosts.toml` — are
 read and written by one loader, `config::file`. It seeds an absent file with
-its documented defaults (a manifest is never seeded: absent means the
-extension is not installed), parses it reporting every unknown key as a warning,
+its documented defaults, parses it reporting every unknown key as a warning,
 writes through `paths::write_atomically`, and on any failure (no path, a seed
 it could not write, an unreadable or malformed file) keeps thurbox starting:
 the file's fallback is used and a warning names the file and what it fell
@@ -158,10 +156,7 @@ The file is **seeded once** and never rewritten — so it stays yours to
 edit, but a thurbox **update that adds a new built-in agent does not
 merge it into an existing `agents.toml`**. To pick up a newly-bundled
 agent, add its `[[agents]]` block by hand (copy it from this file's
-built-in list) or delete `agents.toml` to re-seed the full set. The
-matching status hook is wired automatically once the agent's config dir
-exists — the built-in hooks extension self-heals on every startup/tick,
-independent of `agents.toml`.
+built-in list) or delete `agents.toml` to re-seed the full set.
 
 ```toml
 config_version = 1
@@ -177,8 +172,7 @@ new_session_args = ["--session-id", "{id}"]   # emitted on a fresh spawn
 additional_dir_args = ["--add-dir", "{dir}"] # repeated per multi-repo member
 resume_latest = false       # true = id-less "resume last session in cwd"
 # hook_schema = "claude"    # optional: name the hook FAMILY this CLI speaks so
-                            #   the built-in hooks extension wires its status
-                            #   hooks under this custom agent's name too
+                            #   its status is read as that built-in's
 env = { CLAUDE_CONFIG_DIR = "{home}/.claude-work" } # frozen at creation
 telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1" }  # only while [telemetry] is on
 # telemetry_args = []       # appended only while [telemetry] is on
@@ -213,10 +207,7 @@ as well as the host so Enter retires the previous turn's status. A definition
 that exists only on the host can be created there, but the caller cannot infer
 its family from the session name.
 
-Extension argument patches targeting the base also cover its variants. An
-appending variant inherits the patched base once; a variant replacing `args`
-keeps the patch before its replacement arguments. Uninstall removes the patch
-from those replacements too. Editing TOML is the interface for adding variants.
+Editing TOML is the interface for adding variants.
 
 For a single session, use repeatable `session create --agent NAME --agent-arg
 ARG` (for example `--agent-arg=--model --agent-arg opus`). These opaque values
@@ -482,12 +473,9 @@ than a guessed invocation. A missing **agent** is answered with the `agents.toml
 entry that decides what gets run, because thurbox bakes in no knowledge of any
 agent's installer.
 
-`hook_schema` is optional. Custom agents are agent-neutral, so the built-in
-**hooks** extension normally wires status hooks only for the built-ins it knows
-by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose
-`command` runs `claude` under a different `name`) and it inherits claude's hook
-wiring — the `--settings` patch locally, and the same rewrite on a remote/WSL
-host. It names the *family* to imitate, not a boolean; see
+`hook_schema` is optional. Set `hook_schema = "claude"` on a **rebranded** agent
+(one whose `command` runs `claude` under a different `name`) and its status is
+read as claude's. It names the *family* to imitate, not a boolean; see
 [agents.md](agents.md#hook_schema-custom-rebrands-only) for which family is
 actually useful today and why.
 
@@ -498,7 +486,7 @@ through `extends` and `append_args`). Both stay commented, so a fresh install st
 to exactly the ten built-ins (nine coding agents plus `shell`).
 
 For **each built-in's** exact config and runtime behavior (resume/fork
-semantics, ID model, and which status-hook mechanism it uses), and the
+semantics and ID model), and the
 checklist for **adding a new built-in**, see
 [agents.md](agents.md).
 
@@ -790,12 +778,6 @@ session. Seeded fully commented-out (a fresh install runs nothing); read
 operation with no restart. Malformed file → no hooks run, warning in the
 log, and `config validate` fails.
 
-> Not the `hooks/` **directory** beside it. That is the home of the
-> built-in `hooks` *extension*, which installs status-hook files **into**
-> the agent CLIs so they can tell thurbox what they are doing
-> (see [Session status](#session-status)). `hooks.toml` is the other
-> direction: thurbox telling *your* scripts what *it* is doing.
-
 ```toml
 [[hooks]]
 event = "session.pre_create"
@@ -820,8 +802,8 @@ timeout_secs = 120
 
 | Operation | Events | Fired by |
 |-----------|--------|----------|
-| create (incl. fork) | `session.pre_create` / `session.post_create` | the creation flow, `Ctrl+F`, `thurbox-cli session create`, a `spawn` automation, an extension's sessions |
-| delete (soft or force) | `session.pre_delete` / `session.post_delete` | `Ctrl+D`, `thurbox-cli session delete [--force]`, extension uninstall |
+| create (incl. fork) | `session.pre_create` / `session.post_create` | the creation flow, `Ctrl+F`, `thurbox-cli session create`, a `spawn` automation |
+| delete (soft or force) | `session.pre_delete` / `session.post_delete` | `Ctrl+D`, `thurbox-cli session delete [--force]` |
 | restart | `session.pre_restart` / `session.post_restart` | `Ctrl+R`, `thurbox-cli session restart` |
 | restore (incl. undo) | `session.pre_restore` / `session.post_restore` | `Ctrl+Z`/`Ctrl+U`, `thurbox-cli session restore` |
 
@@ -895,7 +877,6 @@ off switch disables automatic keeper startup; manual `automation tick` still
 consumes state hooks. After editing the file, `config validate` arms the keeper
 when state hooks exist and the feature is enabled; startup and session creation
 also arm it. A driver needing lower latency uses `watch` or `session wait`.
-Extensions cannot declare these hook entries; keep them in the user's own file.
 
 **What a hook receives.** Environment variables — **unset** (never
 empty) when the fact is not known at that moment:
@@ -1111,7 +1092,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `false` | TUI and CLI delete immediately; on = soft delete with an undo window (CLI `--soft` / `--force` override) |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
-| `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
+| `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update` |
 
 `automations = false` stops the interface firing due automations; nothing
 fires unless an OS timer runs `thurbox-cli automation tick` or someone runs
@@ -1172,7 +1153,6 @@ compatibility alone does not identify the caller or its intended deletion mode.
 Users who never set the flag now get immediate teardown for plain CLI/TUI
 deletes; an explicit
 `[features] soft_delete = true` keeps the previous undoable behavior.
-`extension deactivate` follows the same preference for its sessions.
 Task and automation deletion have no undo window; their storage bookkeeping
 is independent of this session preference.
 With `soft_delete = true`, the TUI also asks before the reversible delete and
@@ -1260,17 +1240,6 @@ version off it — `docs/thurbox/releasing.md`, "v2 and v3".
 > 1.x install, `auto_update = false` in `settings.toml` is the reliable hold —
 > which is exactly what the v1→v2 consent gate writes when you decline.
 
-`auto_update = true` also keeps **installed extensions** in step with the
-binary. Extension versions are pinned to the binary's release tag, so an
-extension only goes stale (`installed_with` ≠ the running binary) right after an
-upgrade. The self-heal pass — which already runs on TUI startup and on the
-headless `automation tick` — then refreshes each stale extension in place
-(re-fetching it from its recorded source) instead of only nudging you to run
-`thurbox-cli extension update`. The staleness check is local and network-free,
-so a launch where nothing is stale does no extra work; a refresh runs at most
-once per extension per binary version. With `auto_update` off, the nudge is
-shown and you update extensions by hand.
-
 ### `[remote]` — sessions on hosts of hosts
 
 A shareable host (see [hosts.toml](#hoststoml)) lists its own sessions and,
@@ -1333,6 +1302,8 @@ database:
   by name: Fleet would run a program named as the agent.
 - A rename sets the Task's `thurbox.dev/name` label (`fleet label`). The
   manual order and each session's companion shell pane are `interface.json`.
+  A saved shell is re-adopted on the multiplexer it was opened on; a host's
+  `multiplexer` in `hosts.toml` applies to the shells opened after it.
 - Restore, restart, fork, sync, the task list and dispatching a task have no
   engine and are refused by name, as are the interface's automation verbs: an
   automation is `thurbox-cli automation`'s, in `automations.json`. A todo is a Fleet Task
@@ -1666,9 +1637,10 @@ Identity comes from the injected `THURBOX_SESSION` env var, so a hook passes
 no id. A finished turn shows `Done` (blue) — for the session you're watching too
 — and becomes `Idle` once you switch focus off it.
 
-The hooks are wired up automatically by the built-in **hooks** extension
-(auto-activated on first run). Opt out with `thurbox-cli extension deactivate
-hooks`. The status colours are tunable theme keys (`status_working` /
+Thurbox installs no hooks into an agent's own config: Fleet's harness profiles
+pass each harness its status hooks at launch (see
+[agents.md → Status hooks](agents.md#status-hooks)). The status colours are
+tunable theme keys (`status_working` /
 `status_blocked` / `status_done` / `status_idle` / `status_unreachable` /
 `status_running` / `status_unknown` / `status_background` — see
 `themes.toml`). `status_running` is
@@ -1679,23 +1651,8 @@ from `status_idle`, which is the agent's own report that it is at rest.
 session state that is a failure: `failed`, a launch that died before its agent
 reported anything (see [Launch failures](orchestration.md#launch-failures)).
 
-The wiring is applied **only to agents thurbox launches** — it never edits your
-own global agent config (e.g. your personal `~/.claude/settings.json`). thurbox's
-managed hook config lives per agent, applied by injecting a flag into
-`agents.toml` or by a reversible merge into / managed file in the agent's own
-config dir. Which mechanism and file each agent uses is
-[agents.md → Status hook mechanisms](agents.md#status-hook-mechanisms); claude's
-is the `--settings` flag naming `~/.config/thurbox/hooks/claude.json`.
-
-The home dir is `~/.config/thurbox/hooks` on a release build and
-`~/.config/thurbox-dev/hooks` on a dev build. Because claude *merges* the
-`--settings` file, your own hooks still fire inside a thurbox session — both run.
-Hand-edits to a managed file are rewritten from the embedded payload on the next
-TUI start, heartbeat tick, or `thurbox-cli` command that launches an agent
-(`session create`/`start`/`restart`/`fork`, `task run`); to customize, deactivate
-the extension and wire the hook yourself, or edit the payload under
-`extensions/hooks/` and reinstall. Full per-agent detail:
-`extensions/hooks/README.md`.
+Hook entries an earlier thurbox wrote into an agent's config are removed by
+hand: see [removing thurbox's old hook entries](https://thurbox.thurbeen.eu/docs/extensions.html).
 
 ## themes.toml
 
@@ -1760,199 +1717,6 @@ it. `thurbox-cli config validate` checks `ui.json`, not this file.
   [Keybindings page](https://thurbox.thurbeen.eu/docs/keybindings.html), the
   live `F1` registry, or `src/kernel/registry.rs`.
 
-## extensions/
-
-Each opt-in extension is described by a single `extension.toml` manifest.
-`thurbox-cli extension install` writes the home-resolved copy to
-`~/.config/thurbox/extensions/<name>.toml` (thurbox never seeds this dir). The
-install **home** (where payload files land and the session runs) defaults to
-`~/.config/thurbox/extensions/<name>/` — a sibling dir of that manifest —
-unless the manifest pins a `home` or you pass `--home`. The manifest has two
-halves — an **install** spec and a **runtime** spec.
-
-A relative install home is made absolute against the install command's
-directory. Explicit automation `cwd` paths are stored absolute: relative
-paths resolve against that install home, `~` against the user's home, and
-`{home}` names the install home. Activation and heartbeat ticks therefore use
-the same directory. A hand-written discovery manifest must supply an absolute
-or resolvable `~` cwd; install it first to resolve relative paths.
-Reactivation repairs previously stored relative cwd values from the resolved
-manifest while preserving existing absolute overrides and run history.
-
-The example below is modelled on
-[fleet](https://github.com/Thurbeen/fleet), the control-plane template that is
-the worked example of an installable extension (`docs/thurbox/orchestration.md`). Its
-real manifest uses `[[agents]]`, one `[[files]]`, three `[[symlinks]]` and one
-`[[sessions]]`; the other entries here are illustrative, so every field the
-format supports is shown once:
-
-```toml
-name = "fleet"
-description = "Control-plane session: the repo map and thurbox orchestration"
-config_version = 1              # manifest *format* version (for migrations)
-version = "1.0.0"              # the extension's own version (bumped by its author)
-min_thurbox_version = "2.19.0"  # minimum thurbox; older binaries get a warning
-# home = "~/fleet"              # OPTIONAL; default is <config>/extensions/<name>.
-                                # {home} is substituted everywhere it appears
-
-# install spec ---------------------------------------------------------------
-[[agents]]                      # registered in agents.toml (existing kept)
-name = "fleet"
-command = "claude"
-args = ["--model", "claude-haiku-4-5"]
-
-[[files]]                       # fetched from the source, written under home
-path = "FLEET.md"
-[[files]]
-path = "scripts/sync-registry.sh"
-executable = true               # chmod +x
-[[files]]
-path = "repos.md"
-if_absent = true                # seed once; never clobbered on reinstall
-[[files]]
-path = ".claude/settings.json"
-source = "claude-settings.json" # source path differs from dest
-substitute = true               # replace {home} in the content
-
-[[symlinks]]                    # never clobbers a real file at `link`
-link = "CLAUDE.md"
-target = "FLEET.md"
-
-# Reaching OUTSIDE the extension home (used by the built-in hooks extension):
-[[external_files]]              # write a file into an agent's OWN config dir
-path = "~/.config/opencode/plugin/x.js"
-source = "x.js"
-requires_dir = "~/.config/opencode"  # skip when that agent isn't installed
-
-[[agent_patches]]               # append args to an EXISTING agent (reversible)
-name = "claude"
-append_args = ["--settings", "{home}/claude.json"]
-
-[[config_merges]]               # reversibly deep-merge into an agent's own
-path = "~/.gemini/settings.json"  #   SHARED config file (never clobbered)
-source = "antigravity-hooks.json"  # objects recurse, arrays union; uninstall prunes
-requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
-                                #   when unchanged; malformed target soft-skipped
-# `path`/`requires_dir` of either may name {env:NAME:-default}: the install reads
-#   NAME from thurbox's own environment, and the built-in hooks re-resolve it
-#   against a session's saved env at launch (codex's CODEX_HOME, issue #1526)
-# format = "toml"                # OPTIONAL; JSON by default. Set for a TOML
-                                #   shared config (agent::toml_merge via toml_edit).
-                                #   TOML owns its entries by a comment on each, so
-                                #   the payload must stamp every one of them
-
-# runtime spec (ensured on activate, self-healed if deleted) -----------------
-[[sessions]]
-name = "fleet"
-agent = "fleet"
-repo_path = "{home}"            # absolute, `~`-relative, or `{home}`; resolved
-                                #   to an absolute path at install. `{home}` is
-                                #   the extension home, so an extension whose
-                                #   session must open the USER's checkout ships
-                                #   a placeholder its installer renders instead
-
-# [[automations]] is an OPTIONAL runtime resource (fleet ships none on purpose —
-# its only scheduled candidate pushes to `main`). An extension that wants a
-# scheduled tick declares:
-[[automations]]
-name = "example-tick"
-trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
-session_ref = "fleet"          # must match a [[sessions]] name above
-prompt = "tick"
-
-# Or an exec automation: a command, no session. `timeout_secs` (default 600),
-# `cwd` (default user's home; relative to install home; `{home}` substituted)
-# and `env` are how it runs, as
-# `automation create --timeout/--cwd/--env` set them; `cwd` and `env` are
-# refused on a send automation.
-[[automations]]
-name = "example-sync"
-trigger = "hourly"
-command = "{home}/sync.sh"
-timeout_secs = 120
-cwd = "{home}"
-env = { SYNC_MODE = "incremental" }
-```
-
-Manage extensions with the CLI:
-
-```bash
-thurbox-cli extension install ./my-ext     # from a local dir: fetch + lay files
-                                           #   + agents + activate
-thurbox-cli extension install <url> --home ~/x    # from a URL, custom home
-thurbox-cli extension install git+https://github.com/you/my-ext  # clone a repo
-thurbox-cli extension uninstall <name>     # reverse install (keep home dir)
-thurbox-cli extension uninstall <name> --purge    # also delete the home dir
-thurbox-cli extension list                 # installed + active/healthy + version/stale
-thurbox-cli extension update <name>        # re-fetch from recorded source (refresh)
-thurbox-cli extension update --all         # update every installed extension
-thurbox-cli extension update <name> --force # also overwrite user-edited seed files
-thurbox-cli extension activate <name>      # (re)create resources + mark active
-thurbox-cli extension deactivate <name>    # tear down + stop self-heal
-thurbox-cli extension deactivate <name> --force --purge  # also kill tmux + drop manifest
-thurbox-cli extension status [<name>]      # per-resource presence + version/stale
-```
-
-A bare name installs from the official source
-(`raw.githubusercontent.com/Thurbeen/thurbox/<ref>/extensions/<name>`,
-fetched via curl/wget) — `<ref>` is the running binary's release tag
-(`main` for dev builds), so a fetched extension matches your binary.
-**No extension ships under a bare name today**: `extensions/` holds only the
-three built-ins (`hooks`, `ui-skill`, `sessions-skill`), which are embedded in the binary and
-activate themselves, so `extension available` lists nothing and every install
-is a path, an `http(s)://` URL, or a repository (`git+https://…`, or a URL
-ending in `.git`, or the scp-like `git@host:path` — recognised explicitly, so a
-bare `https://` URL keeps meaning "a base to fetch files from"). Payload paths are
-validated against traversal (no absolute paths or `..`), and a
-`substitute` file you've edited isn't overwritten on reinstall (use
-`--force`). Payload files are fetched as **text** (specs/scripts/JSON),
-not binaries.
-
-While an extension is **active**, thurbox **self-heals** its declared
-resources: on TUI startup and on every `automation tick` it re-creates
-any session/automation that has been deleted. So deleting them by hand is
-a no-op (they come back); `extension deactivate` is the real off-switch.
-Self-heal while the TUI is closed depends on the automation heartbeat
-(`[features] automations = true`); with automations off, healing happens
-at the next TUI startup only.
-
-### Versioning + the update lifecycle
-
-Extensions carry two version markers, and the installer stamps two more
-into the discovery-dir copy so staleness can be detected:
-
-| Field | Where set | Purpose |
-|-------|-----------|---------|
-| `version` | source manifest | the extension's own semver (author-bumped) |
-| `min_thurbox_version` | source manifest | minimum thurbox; older binaries warn |
-| `installed_with` | stamped on install | the thurbox version that installed it |
-| `source` | stamped on install | the target it was installed from |
-
-A **bare-name** install (`extension install <name>`) fetches from the
-official source **pinned to the running binary's release tag**, so the
-extension you get always matches your thurbox. When you later **upgrade
-thurbox**, the on-disk copy is now older than the binary — thurbox
-flags it as `stale` (in `extension list`/`status`, and as a one-line
-nudge from self-heal at startup). Run `extension update <name>` (or
-`--all`) to re-fetch from the recorded `source`; because a bare name
-re-resolves against the *new* binary's tag, this pulls the version that
-matches your upgraded thurbox. Updates honour the same file rules as
-install — user-edited `substitute` files and `if_absent` seeds are
-preserved unless you pass `--force`.
-
-`min_thurbox_version` is a **soft** gate: an extension authored for a
-newer thurbox still installs on an older binary, but install/activate and
-self-heal emit a compatibility warning so the mismatch is visible.
-**Dev builds** (`0.0.0-dev`) skip both the staleness and compatibility
-checks — their version doesn't order against release tags.
-
-**Rollback.** There's no version snapshot store: to roll an extension
-back, install from a URL or repository that names the version you want —
-for a bare-name extension that is a specific thurbox tag, `extension install
-https://raw.githubusercontent.com/Thurbeen/thurbox/v0.112.0/extensions/<name>`
-— or downgrade the binary and run `extension update`, which re-resolves
-the bare name to that older tag.
-
 ## SQLite-backed settings
 
 Live in the `metadata` table and apply immediately (no restart), except
@@ -1964,8 +1728,6 @@ thurbox process reads it when it next starts.
 | `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (thirty-six built-ins) |
 | `editor_command` | `thurbox-cli editor set "<cmd>"` | what `Ctrl+O` runs |
 | `editor_mode` | `thurbox-cli editor mode <auto\|terminal\|gui>` | how `Ctrl+O` runs the editor: `auto` (default) detects terminal vs GUI and gives terminal editors a real TTY (tmux popup / TUI suspend); `terminal` forces the TTY path; `gui` forces detached |
-| `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
-| `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
 | `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/thurbox/performance.md`) |
 | `host_probe_backoff:<backend>` | the teardown sweep, when a host's windows could not be listed | `<attempted_at_millis>:<failures>` — how long that host is left alone before the sweep asks again (ADR-26). Not user-set; the row is deleted the first time the host answers |
 | `session_reap_backoff:<session id>` | the teardown sweep, when a soft-deleted row's reap did not reach its host | `<attempted_at_millis>:<failures>` — the same curve, per row rather than per host, for a host that answers `list-windows` while its own `thurbox-cli` does not run (ADR-26). Not user-set; the row is deleted the moment the reap comes off, and by a restore, which ends the delete it belonged to |
@@ -1982,7 +1744,7 @@ snapshot when they change (schema v55): only the teardown sweep reads them.
 | `consumer` | Written by | `cursor` / `lease_until` |
 |---|---|---|
 | `telemetry` | the export in `automation tick` (ADR-37) | the last `session_events.seq` exported / the epoch ms the exporting tick's lease ends |
-| `lock:name:<server>:<name>` | `session_ops::lock`, while a session name is decided: extension self-heal, `session restore`, `session create --on-existing fail\|adopt\|replace` for a session created here (a delegated create leaves the name to the host) | `0` / the epoch ms the lock lapses. Deleted when the operation ends, taken over once it lapses |
+| `lock:name:<server>:<name>` | `session_ops::lock`, while a session name is decided: `session restore`, `session create --on-existing fail\|adopt\|replace` for a session created here (a delegated create leaves the name to the host) | `0` / the epoch ms the lock lapses. Deleted when the operation ends, taken over once it lapses |
 | `lock:name:key@<host>:<key>` | the same lock, on a session key, for every writer that gives one out | as above |
 | `lock:session:<id>` | a restart, while it replaces the session's window | as above |
 | `lock:run:<automation id>` | a fire of one automation — the tick's or `automation run --wait`'s — held for the automation's timeout plus 5 s at least, so a second fire of it is skipped (tick) or refused with exit 5 (`run --wait`) | as above |
@@ -2039,8 +1801,7 @@ variable, because `PATH` is the one tmux will not take that way: both
 `new-window -e PATH=…` and `set-environment -g PATH …` are ignored (verified
 against tmux 3.5a).
 
-`THURBOX_SESSION` is a **stable integration contract**, not an internal
-detail of the hooks extension. It is set on the pane, so every process
+`THURBOX_SESSION` is a **stable integration contract**. It is set on the pane, so every process
 started inside it inherits it — including an agent a driver of your own
 launches there, and that agent's own hooks. Anything in the pane can
 therefore report state with

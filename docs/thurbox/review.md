@@ -360,7 +360,7 @@ the operating guidance a coding agent needs on every turn, and a code change
 that invalidates or extends a documented decision updates the owning doc in the
 same change. The per-subsystem working reference lives in the skills under
 .agents/skills/ (thurbox-testing, thurbox-performance, thurbox-release,
-thurbox-agents, thurbox-remote-hosts, thurbox-cli, thurbox-extensions,
+thurbox-agents, thurbox-remote-hosts, thurbox-cli,
 thurbox-session-status, thurbox-kernel, thurbox-ui-surfaces,
 thurbox-demo-media), which AGENTS.md indexes: detail an agent needs only when
 working on that subsystem belongs in its skill rather than back in AGENTS.md,

@@ -23,9 +23,9 @@ Every push to `main` automatically triggers the release workflow:
    - **Artifact relevance** (`check-release`'s `shipped` step): the diff since
      the last tag must touch something a user installs (`src/`, `tests/`,
      `ui/`, `examples/`, `build.rs`, `Cargo.toml`/`Cargo.lock`,
-     `rust-toolchain.toml`, `Cross.toml`, `extensions/`, `packaging/`,
-     `scripts/install.{sh,ps1}`, `cd.yml`). `extensions/` and `examples/panes/`
-     are there although no binary carries them: a bare-name install resolves
+     `rust-toolchain.toml`, `Cross.toml`, `packaging/`,
+     `scripts/install.{sh,ps1}`, `cd.yml`). `examples/panes/`
+     is there although no binary carries it: a bare-name install resolves
      against the release *tag*, so a change never tagged is one nobody can
      install. `ui/` and `examples/lua/` are there more directly still — both are
      `include_str!`d into the binary, so they are bytes a user installs.

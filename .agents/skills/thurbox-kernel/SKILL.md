@@ -87,8 +87,7 @@ config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
                      paths) plus session (themes: theme instead)
 update               update::* (declarations only)
-update::*            session, paths, shell, agent::extension_config,
-                     update::version_check
+update::*            paths, shell, agent::fetch, update::version_check
 backend              session, paths, config::hosts     (the gateway to
                                                         runtime-mux, and what
                                                         thurbox injects)
@@ -197,8 +196,8 @@ alias and re-export laundering, and test-only edges.
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
 - **`agent/`** — the coding agents. `AgentProvider` + `GenericProvider`
   build the CLI invocation from a declarative `AgentDef`; `agent_config` loads
-  `agents.toml`, `extension_config` the extension manifests, and `preflight`
-  and `host_path` check and translate what a launch needs.
+  `agents.toml`, `fetch` what the plugin installer and the updater download,
+  and `preflight` and `host_path` check and translate what a launch needs.
 - **`config/`** — thurbox's own config files beside `config.toml` (`hooks`,
   `hosts`, `settings`, `themes`). `config::file` is the one loader every config
   file goes through, `agents.toml` and the manifests included: its path,
@@ -397,8 +396,7 @@ reference, and **`AGENTS.md`** is the operational half a coding CLI loads as con
 without being asked — which is what stops "install this plugin" being read as a
 package-manager request rather than `thurbox-cli plugin install`. `CLAUDE.md` and
 `GEMINI.md` beside it are one-line pointers, not copies, so there is one file to
-keep true; an extension surfaces its own spec the same way, as symlinks it can
-make because it copies its own files.
+keep true.
 
 Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise the user's copy
 (`~/.config/thurbox/ui/`, materialised from the embedded interface on first run,
@@ -411,7 +409,7 @@ and startup reports the directory whenever there is a question about it — an o
 is in force, the fallback was used, or this is a dev build. The user-copy path is
 derived
 from `paths::config_file()` like every other config path — `agents.toml`,
-`hosts.toml`, `hooks.toml`, `settings.toml`, `themes.toml`, `extensions/`, `ui.json` — so a **dev
+`hosts.toml`, `hooks.toml`, `settings.toml`, `themes.toml`, `ui.json` — so a **dev
 build reads `~/.config/thurbox-dev/ui`** and cannot touch the release copy.
 `THURBOX_CONFIG_DIR` overrides that anchor and thurbox injects it into every
 session it spawns, which is why a `thurbox-cli` run *inside* a session resolves
@@ -445,7 +443,7 @@ disk, intact, not loaded — implemented by `build` not reading the file, so a d
 plugin declares no keys, occupies no slot and is granted no capability. A broken one
 can be switched off to get a working interface back.
 
-**A plugin that carries more than Lua is a repository** (`ExtensionSource::Git`,
+**A plugin that carries more than Lua is a repository** (`fetch::Source::Git`,
 `git::clone_plugin`). The fetch path returns a `String` and decodes remote output
 lossily, so a binary through it is *corrupted rather than refused* — which is why
 payload arrives only by clone and that path stays Lua-only. Recognition is
@@ -484,8 +482,8 @@ directory), were never looked at, and `unknown` is not `missing` (see
 
 **Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
 in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`
-at the binary's release tag, a URL, or a path — `extension_config::resolve_source_in`,
-one resolver for both kinds of thing), a destination `file`, and an optional `pin`;
+at the binary's release tag, a URL, or a path — `fetch::resolve_source_in`,
+one resolver), a destination `file`, and an optional `pin`;
 `plugins.lock` records what each resolved to plus the digest of every file delivered.
 `plugin sync` converges the directory to the spec, which reduces an agent's job to
 *edit one file, run one command, read the exit status*. Delivery semantics are

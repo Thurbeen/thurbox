@@ -148,23 +148,17 @@ pub struct FetchedArchive {
 /// has no release to fetch and is refused here; `host_cli` decides what a dev
 /// build ships instead.
 pub fn fetch_archive(version: &str, target: &str) -> Result<FetchedArchive, String> {
-    if crate::session::extension_def::is_dev_version(version) {
+    if crate::agent::fetch::is_dev_version(version) {
         return Err(format!(
             "no release archive exists for the development build {version}"
         ));
     }
     let scratch = ScratchDir::new()?;
     let checksums_path = scratch.path.join(checksums_name(version));
-    crate::agent::extension_config::http_get_to_file(
-        &checksums_url(RELEASE_BASE, version),
-        &checksums_path,
-    )?;
+    crate::agent::fetch::http_get_to_file(&checksums_url(RELEASE_BASE, version), &checksums_path)?;
     let name = archive_name(version, target);
     let path = scratch.path.join(&name);
-    crate::agent::extension_config::http_get_to_file(
-        &archive_url(RELEASE_BASE, version, target),
-        &path,
-    )?;
+    crate::agent::fetch::http_get_to_file(&archive_url(RELEASE_BASE, version, target), &path)?;
     let checksums =
         std::fs::read_to_string(&checksums_path).map_err(|e| format!("read checksums: {e}"))?;
     let expected = parse_checksum(&checksums, &name)
@@ -681,7 +675,7 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let current = current_version().to_string();
 
     // Dev builds never auto-update (their version doesn't order against tags).
-    if !force && crate::agent::extension_config::is_dev_build() {
+    if !force && crate::agent::fetch::is_dev_build() {
         return Ok(UpdateOutcome::SkippedDevBuild { current });
     }
 
@@ -734,13 +728,13 @@ fn perform_update_from(
 
     // Download checksums + this platform's archive (a tarball, or Windows' zip).
     let checksums_path = scratch.path.join(checksums_name(&latest));
-    crate::agent::extension_config::http_get_to_file(
+    crate::agent::fetch::http_get_to_file(
         &checksums_url(&feed.download, &latest),
         &checksums_path,
     )?;
     let archive = archive_name(&latest, target);
     let archive_path = scratch.path.join(&archive);
-    crate::agent::extension_config::http_get_to_file(
+    crate::agent::fetch::http_get_to_file(
         &archive_url(&feed.download, &latest, target),
         &archive_path,
     )?;
@@ -1621,7 +1615,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         // The dev-build guard must short-circuit before any network IO. Only
         // assert when the test binary is itself a dev build (the normal case);
         // a release-versioned test build would legitimately hit the network.
-        if !crate::agent::extension_config::is_dev_build() {
+        if !crate::agent::fetch::is_dev_build() {
             return;
         }
         let outcome = perform_update(false).expect("dev build short-circuits, no network");

@@ -11,7 +11,7 @@
 > you install and re-run `thurbox-cli plugin check` after an upgrade.
 >
 > **Plugins are trusted code.** They run in-process with whatever capabilities
-> the kernel grants, exactly like an extension's shell scripts. Install one the
+> the kernel grants. Install one the
 > way you would install a shell script from a stranger — which is to say, read
 > it first.
 
@@ -62,20 +62,6 @@ selection = state.cursor or 1 } end`. The local `thurbox-cli ui state` snapshot
 calls it on the TUI loop and includes at most 16 scalar fields per plugin, with
 short string keys and values. It is a public projection: return only state a
 local controller needs, never terminal text, credentials, or the whole `store`.
-
-**Editing the interface from some other session.** The interface directory is a
-config path of yours, so a coding agent working in an unrelated repository has no
-reason to know it exists. thurbox handles that for you: the built-in **ui-skill**
-extension is on by default and drops one `SKILL.md` (`thurbox-ui`) into each
-coding CLI's personal skill directory, so the agent loads the short form of this
-page *when* a request is about changing the TUI, in any session. No extra repo
-attached to every session, where it would sit in front of the agent whether or
-not the work is about the TUI.
-
-```bash
-thurbox-cli extension deactivate ui-skill   # not wanted; takes every copy back
-thurbox-cli extension activate ui-skill     # and back on
-```
 
 ```text
 <the directory plugin dir reports>/
@@ -2094,13 +2080,9 @@ pin  = "v2.1.0"                 # omit to take the newest at install time
 TOML because that is what every hand-edited registry here is, and because a bad
 edit is a parse error naming its line rather than a nil three frames later. A bare
 name resolves to `examples/panes/<name>` in the thurbox repository at **this binary's
-release tag**, the same rule `extension install <name>` follows against
-`extensions/<name>` — a pane reads `thurbox.*`, which is a contract that moves, so
-what a bare name fetches matches the binary asking for it. (For extensions the
-rule currently resolves to nothing: `extensions/` holds only the built-ins,
-which install themselves. Panes are where bare names still have something to
-reach.) Bare names reach the *examples*; anything you
-actually depend on is better named by a URL, a path, or a repository you control.
+release tag** — a pane reads `thurbox.*`, which is a contract that moves, so
+what a bare name fetches matches the binary asking for it. Bare names reach the
+*examples*; anything you actually depend on is better named by a URL, a path, or a repository you control.
 
 That tag is also why a bare name can stop resolving: the examples lived under
 `ui-plugins/` before they moved to `examples/panes/`, so a `plugins.lock` written

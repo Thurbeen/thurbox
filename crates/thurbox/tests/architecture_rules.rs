@@ -75,8 +75,8 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::extension_config",
-        allowed: &["session", "paths", "agent::agent_config", "config::file"],
+        name: "agent::fetch",
+        allowed: &["paths"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -90,18 +90,8 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::json_merge",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
         name: "agent::provider",
         allowed: &["session"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::toml_merge",
-        allowed: &[],
         allowed_path_only: &[],
     },
     // thurbox's own config files beside config.toml. `config::file` is the one
@@ -164,18 +154,12 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "update::self_update",
-        allowed: &[
-            "session",
-            "paths",
-            "shell",
-            "agent::extension_config",
-            "update::version_check",
-        ],
+        allowed: &["paths", "shell", "agent::fetch", "update::version_check"],
         allowed_path_only: &[],
     },
     ModuleRules {
         name: "update::version_check",
-        allowed: &["session", "paths", "agent::extension_config"],
+        allowed: &["paths", "agent::fetch"],
         allowed_path_only: &[],
     },
     // The gateway to the multiplexer runtime (`runtime_mux`, ADR-41): its
@@ -255,7 +239,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         // side-effect layer is visible at its call site.
         allowed_path_only: &[
             "agent::agent_config",
-            "agent::extension_config",
+            "agent::fetch",
             "backend",
             "config::hosts",
             "config::automations",

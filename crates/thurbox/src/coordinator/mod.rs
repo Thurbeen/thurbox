@@ -818,21 +818,22 @@ impl App {
                     pane,
                     stamp,
                 } => {
-                    let route = self
-                        .snapshots
-                        .current()
-                        .session(&session)
-                        .and_then(|row| self.terminals.shell_route(row.remote_host.as_deref()));
+                    // A re-adopted shell stays on the route it was saved on.
+                    let route = match self.shells.records.get(&session) {
+                        Some(record) if record.pane == pane && record.stamp == stamp => {
+                            Some(record.route.clone())
+                        }
+                        _ => self
+                            .snapshots
+                            .current()
+                            .session(&session)
+                            .and_then(|row| self.terminals.shell_route(row.remote_host.as_deref()))
+                            .map(|route| route.format()),
+                    };
                     let Some(route) = route else { continue };
                     self.terminals.record_shell(&session, Some(pane.clone()));
-                    self.shells.set(
-                        &session,
-                        Some(ShellRecord {
-                            route: route.format(),
-                            pane,
-                            stamp,
-                        }),
-                    );
+                    self.shells
+                        .set(&session, Some(ShellRecord { route, pane, stamp }));
                 }
                 ShellResult::Gone {
                     session,
@@ -843,6 +844,15 @@ impl App {
                     self.shells.set(&session, None);
                     if let Some(pane) = pane {
                         self.shells.lost.insert((session.clone(), pane));
+                    }
+                    // A new shell takes the host's current multiplexer.
+                    let current = self
+                        .snapshots
+                        .current()
+                        .session(&session)
+                        .and_then(|row| self.terminals.shell_route(row.remote_host.as_deref()));
+                    if let Some(route) = current {
+                        self.terminals.use_shell_route(&session, &route);
                     }
                     if open_requested {
                         self.open_shell(&session, None);
@@ -859,7 +869,7 @@ impl App {
         self.close_shells_of_deleted_sessions();
         // Cheap to ask every iteration: nearly every row has no shell
         // recorded, and the size is the cached one.
-        let wanted: Vec<(String, ShellRecord)> = self
+        let wanted: Vec<(String, ShellRecord, thurbox::session::Route)> = self
             .snapshots
             .current()
             .sessions
@@ -870,10 +880,12 @@ impl App {
                 let record = self.shells.records.get(&row.id)?;
                 // A shell on another machine than the one the Task runs on
                 // now is not this session's companion any more.
-                let route = self.terminals.shell_route(row.remote_host.as_deref())?;
-                (route.format() == record.route).then(|| (row.id.clone(), record.clone()))
+                let route = self
+                    .terminals
+                    .readopt_route(row.remote_host.as_deref(), &record.route)?;
+                Some((row.id.clone(), record.clone(), route))
             })
-            .filter(|(session, record)| {
+            .filter(|(session, record, _)| {
                 !self
                     .shells
                     .lost
@@ -881,7 +893,8 @@ impl App {
             })
             .collect();
         let (cols, rows) = self.screen_size;
-        for (session, record) in wanted {
+        for (session, record, route) in wanted {
+            self.terminals.use_shell_route(&session, &route);
             self.terminals
                 .readopt_shell(&session, &record.pane, &record.stamp, rows, cols);
         }

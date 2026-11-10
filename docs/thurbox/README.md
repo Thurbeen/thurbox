@@ -15,7 +15,7 @@ operational guidance (build commands, module layout, event loop), see
 | [performance.md](performance.md) | Render/tick performance decisions | Changing the render loop, a cache, or a worker cadence |
 | [kernel.md](kernel.md) | The plugin kernel: its shape, rules and traps | Changing the kernel's contract with Lua |
 | [plugins.md](plugins.md) | Writing an interface plugin | Changing the plugin API or the `thurbox.*` shape |
-| [orchestration.md](orchestration.md) | The control-plane pattern for running sessions across many repos | Changing the session/message/extension surface the pattern relies on |
+| [orchestration.md](orchestration.md) | The control-plane pattern for running sessions across many repos | Changing the session/message surface the pattern relies on |
 | [agents.md](agents.md) | Each built-in agent's config and status-hook mechanism | Adding or changing a built-in agent |
 | [config.md](config.md) | Thurbox's own config files / env vars / DB settings in one place | Adding/changing a config file, env var, or DB setting |
 | [releasing.md](releasing.md) | What a release may and may not change about the artifacts | Changing the release workflow or a published artifact |

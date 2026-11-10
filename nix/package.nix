@@ -24,7 +24,6 @@ rustPlatform.buildRustPackage {
       ../Cargo.lock
       ../crates
       ../ui
-      ../extensions
       ../examples
       # The `[patch.crates-io]` crates Cargo.toml points at.
       ../vendor

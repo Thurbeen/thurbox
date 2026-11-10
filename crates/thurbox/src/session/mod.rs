@@ -1,7 +1,6 @@
 pub mod agent_def;
 pub mod automation;
 pub mod background_work;
-pub mod extension_def;
 pub mod hook_def;
 pub mod hook_status;
 pub mod launch_failure;
@@ -23,10 +22,6 @@ pub use agent_def::{AgentDef, AgentRegistry};
 pub use automation::{
     parse_hhmm, preset_to_cron, Automation, AutomationAction, AutomationRun, AutomationRunStatus,
     AutomationSchedule, ExtraRepo, RunSettings, SchedulePreset,
-};
-pub use extension_def::{
-    AgentPatch, ConfigMerge, ConfigMergeFormat, ExtensionAutomation, ExtensionDef, ExtensionFile,
-    ExtensionSession, ExtensionSymlink, ExternalFile,
 };
 pub use hook_def::{
     HookContext, HookEvent, HookWorktree, HooksFile, LifecycleHook, DEFAULT_HOOK_TIMEOUT_SECS,

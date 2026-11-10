@@ -154,12 +154,10 @@ session              (no crate-internal references — the dependency sink;
                      re-exports runtime-mux's host model and SessionId)
 agent                → agent::{generic, provider}       (re-exports only)
 agent::agent_config  → session, shell, config::file
-agent::extension_config → session, paths, agent::agent_config, config::file
+agent::fetch         → paths
 agent::generic       → session, agent::provider
 agent::input         (no crate-internal references)
-agent::json_merge    (no crate-internal references)
 agent::provider      → session
-agent::toml_merge    (no crate-internal references)
 config               (declares the modules below — no references)
 config::file         → paths                (the one loader: seed, parse, save)
 config::hooks        → session, config::file
@@ -169,15 +167,14 @@ config::interface_state → session, config::file
 config::settings     → session, config::file
 config::themes       → theme, config::file
 update               (declares the modules below — no references)
-update::self_update  → session, paths, shell, agent::extension_config,
-                       update::version_check
-update::version_check → session, paths, agent::extension_config
+update::self_update  → paths, shell, agent::fetch, update::version_check
+update::version_check → paths, agent::fetch
 backend              → session, paths, config::hosts  (the gateway to
                        runtime-mux, and what thurbox injects into it)
 git                  → session, paths, shell
 telemetry            → session                    (ADR-38 diagnostic logs)
 kernel               → session, paths, git, notifications, shell, theme
-                       [path-only: agent::{agent_config, extension_config},
+                       [path-only: agent::{agent_config, fetch},
                         backend, config::{hosts, settings, themes},
                         update::{self_update, version_check}]
 cli                  → session, paths, notifications, ui_control, theme

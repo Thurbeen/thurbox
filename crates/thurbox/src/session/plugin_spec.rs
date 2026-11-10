@@ -37,8 +37,7 @@ pub const LOCK_FILE: &str = "plugins.lock";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginEntry {
     /// Where it comes from: a bare name resolving to the repository's examples for
-    /// this release, a URL, or a filesystem path. Resolved by the same rules an
-    /// extension source is, so one vocabulary covers both.
+    /// this release, a URL, or a filesystem path (`agent::fetch` resolves it).
     pub src: String,
     /// Where it is delivered, relative to the interface directory. Carries the
     /// load order in its filename, because that is where the interface has always
@@ -85,7 +84,7 @@ impl PluginEntry {
 /// directory and are subject to the same rule.
 ///
 /// Deliberately *not* `paths::ensure_safe_relative` (the canonical traversal
-/// guard the extension installer uses): `session` is the pure-data leaf and may
+/// guard): `session` is the pure-data leaf and may
 /// reference no crate module (tests/architecture_rules.rs), and this rule set
 /// is different anyway — Lua-only, and string-level on both separators so a
 /// spec written on Windows still refuses `..\` on Linux.

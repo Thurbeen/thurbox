@@ -1702,8 +1702,10 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     struct FakeLivenessBackend(std::sync::atomic::AtomicU8);
 
+    #[cfg(unix)]
     impl crate::backend::PaneStream for FakeLivenessBackend {
         fn spawn(
             &self,
@@ -1737,6 +1739,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl crate::backend::WindowLifecycle for FakeLivenessBackend {
         fn pane_state(
             &self,
@@ -1851,6 +1854,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl crate::backend::PaneIo for FakeLivenessBackend {
         fn send_text(
             &self,
@@ -1888,6 +1892,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl crate::backend::StatusChannel for FakeLivenessBackend {
         fn hook_signal_command(&self) -> Option<String> {
             None
@@ -1927,6 +1932,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl crate::backend::SessionBackend for FakeLivenessBackend {
         fn name(&self) -> &str {
             "fake"

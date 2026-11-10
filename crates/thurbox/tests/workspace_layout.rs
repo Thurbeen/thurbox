@@ -1,6 +1,6 @@
 //! The repository is one Cargo workspace, and thurbox is the member at
 //! `crates/thurbox` (ADR-41): the components each live under `crates/`, and
-//! everything that is not a crate (`ui/`, `extensions/`, `docs/`, `vendor/`)
+//! everything that is not a crate (`ui/`, `examples/`, `docs/`, `vendor/`)
 //! stays at the root, where the tooling that lints it looks.
 
 use std::path::{Path, PathBuf};
@@ -58,18 +58,40 @@ fn the_repository_root_is_a_workspace_with_thurbox_under_crates() {
     );
 }
 
-/// The interface, its extensions and the patched dependencies are not part of
+/// The interface, its examples and the patched dependencies are not part of
 /// any one crate: they stay at the root, and the crate reaches them there.
 #[test]
 fn the_shared_trees_stay_at_the_repository_root() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for tree in ["ui", "extensions", "examples", "vendor", "docs"] {
+    for tree in ["ui", "examples", "vendor", "docs"] {
         assert!(
             root.join(tree).is_dir(),
             "{tree}/ is at the repository root"
         );
     }
     assert!(!root.join("src").exists(), "no crate sources at the root");
+}
+
+/// thurbox installs nothing into an agent's own configuration: Fleet's
+/// harness profiles and `fleet signal` report a session's status (ADR-41), so
+/// the extension machinery, its embedded extensions and its skill are gone.
+#[test]
+fn thurbox_ships_no_extensions() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for gone in [
+        &["extensions"][..],
+        &[".agents", "skills", "thurbox-extensions"],
+        &["crates", "thurbox", "src", "session", "extension_def.rs"],
+        &["crates", "thurbox", "src", "agent", "extension_config.rs"],
+    ] {
+        let path = gone.iter().fold(root.clone(), |path, part| path.join(part));
+        assert!(!path.exists(), "{} is still there", path.display());
+    }
+    let agents = std::fs::read_to_string(root.join("AGENTS.md")).expect("AGENTS.md");
+    assert!(
+        !agents.contains("thurbox-extensions"),
+        "AGENTS.md still lists the extensions skill"
+    );
 }
 
 /// thurbox keeps no database of its own (ADR-41): SQLite is out of the tree

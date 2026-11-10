@@ -125,8 +125,7 @@ to a repository of its own with nothing to untangle.
   `stream_panes` in thurbox's `settings.toml` opens local tmux panes through
   `runtime-mux view` for that measurement.
 - Windows (psmux) at the cutover, or after Linux and macOS.
-- VEGA stays a separate starter repository; Fleetlens moves under
-  `extensions/`.
+- VEGA stays a separate starter repository.
 
 ## Layout
 

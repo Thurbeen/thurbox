@@ -92,10 +92,8 @@ breadcrumb: 'Built-in agents'
             <strong>path-pinned</strong>
             (thurbox maps its id to a fixed session file), and the rest are
             <strong>id-less</strong>
-            and resolve "the last session in this directory" themselves. Status reporting is wired
-            separately by the built-in
-            <a href="agent-hooks.html">hooks extension</a>
-            .
+            and resolve "the last session in this directory" themselves. Thurbox installs nothing
+            into an agent's own config: session status comes from Fleet's harness profiles.
           </p>
 
           <h2 id="at-a-glance">
@@ -197,9 +195,7 @@ breadcrumb: 'Built-in agents'
             </tbody>
           </table>
           <p>
-            "Status" is what the session-list dot can reflect (see the
-            <a href="agent-hooks.html#coverage">per-agent coverage matrix</a>
-            ). The
+            "Status" is what the session-list dot can reflect. The
             <code>default</code>
             agent is
             <code>claude</code>
@@ -517,7 +513,7 @@ fork_args = []                # appended on Ctrl+F fork, with {id} substituted
 new_session_args = []         # appended on a fresh spawn, with {id} substituted
 resume_latest = false         # true = id-less "resume last session in cwd"
 # hook_schema = "claude"      # optional: name the hook FAMILY this CLI speaks so
-#                             #   the hooks extension wires status under this name</code></pre>
+#                             #   its status is read as that built-in's</code></pre>
           <p>
             Set
             <code>hook_schema = "claude"</code>
@@ -525,9 +521,7 @@ resume_latest = false         # true = id-less "resume last session in cwd"
             <strong>rebranded</strong>
             agent (one whose
             <code>command</code>
-            runs claude under a different name) so it inherits claude's status-hook wiring. See the
+            runs claude under a different name) so its status is read as claude's. See the
             <a href="configuration.html#agents-toml"><code>agents.toml</code> reference</a>
-            for the full field list and the
-            <a href="agent-hooks.html">hooks page</a>
-            for how status is wired.
+            for the full field list.
           </p>

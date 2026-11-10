@@ -259,7 +259,7 @@ thurbox-cli session delete <uuid>
 Everything else lives under the same tree: `thurbox-cli config show` prints
 every resolved path, `thurbox-cli plugin dir` prints the interface directory,
 and `thurbox-cli --help` lists the rest (`automation`, `task`, `message`,
-`extension`, `editor`, `notify`).
+`editor`, `notify`).
 
 ## Where to go next
 
