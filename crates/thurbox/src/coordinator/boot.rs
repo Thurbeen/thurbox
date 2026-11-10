@@ -206,7 +206,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         Box::new(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager(
             fleet.clone(),
         )),
-        &backends,
         &startup_settings,
     );
     startup.snapshot_open_ms = phase.elapsed().as_millis() as u64;

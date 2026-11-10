@@ -127,8 +127,13 @@ impl super::Executor for Fleet {
 pub(crate) fn task_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars().flat_map(char::to_lowercase) {
-        if c.is_ascii_alphanumeric() || c == '.' {
+        if c.is_ascii_alphanumeric() {
             out.push(c);
+        } else if c == '.' {
+            // Fleet's names forbid `..`, so a run of dots is one.
+            if !out.ends_with('.') {
+                out.push(c);
+            }
         } else if !out.ends_with('-') {
             out.push('-');
         }
@@ -159,6 +164,8 @@ impl Fleet {
             Some(route) if crate::session::Route::parse(route).is_ok_and(|r| r.is_local()) => {
                 "local".to_string()
             }
+            // The flow's host rows carry Fleet's own host names.
+            Some(route) if !route.contains(':') => route.to_string(),
             Some(route) => crate::session::host_of_key(route)
                 .ok_or_else(|| format!("not a host: {route}"))?
                 .to_string(),
@@ -183,6 +190,11 @@ impl Fleet {
     /// checkout here), so an unmapped one is refused with the line to add,
     /// never run in the checkout instead.
     fn worktree_of(&self, dir: &std::path::Path) -> Result<serde_json::Value, String> {
+        // A directory that is no git repository (the installed interface the
+        // picker offers to edit) has no worktree to make: it runs as it is.
+        if crate::git::repository_identity_on(None, dir).is_none() {
+            return Ok(json!({"dir": dir}));
+        }
         let answer = self.json(&["repositories", "--json"])?;
         let same = |source: &str| {
             let canonical = |path: &std::path::Path| {
@@ -301,5 +313,18 @@ impl Fleet {
             .find_map(|line| line.strip_prefix("error: "))
             .unwrap_or(stderr.trim());
         Err(format!("fleet {}: {why}", args[0]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_name;
+
+    /// Fleet's names forbid `..`, so a folder such as `app..backup` must not
+    /// make one.
+    #[test]
+    fn a_name_never_holds_two_dots_in_a_row() {
+        assert_eq!(task_name("app..backup"), "app.backup");
+        assert_eq!(task_name("My_Repo"), "my-repo");
     }
 }

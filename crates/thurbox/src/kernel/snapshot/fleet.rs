@@ -48,6 +48,8 @@ enum Update {
     Manager(Option<String>),
     /// The harnesses Fleet has profiles for: the agents a session can run.
     Harnesses(Vec<String>),
+    /// The hosts Fleet defines: where a session can run.
+    Hosts(Vec<String>),
 }
 
 /// The Tasks as session rows, followed by `fleet watch` on a worker.
@@ -91,6 +93,10 @@ impl FleetWatch {
             let (program, tx) = (program.clone(), tx.clone());
             std::thread::spawn(move || read_harnesses(&program, &tx));
         }
+        {
+            let (program, tx) = (program.clone(), tx.clone());
+            std::thread::spawn(move || read_hosts(&program, &tx));
+        }
         let child = Arc::new(Mutex::new(None));
         let held = Arc::clone(&child);
         std::thread::spawn(move || watch(&program, &tx, &held));
@@ -120,6 +126,7 @@ impl SnapshotSource for FleetWatch {
                 Update::Watch(error) => self.watch_error = error,
                 Update::Manager(error) => self.manager_error = error,
                 Update::Harnesses(harnesses) => self.read.harnesses = Some(harnesses),
+                Update::Hosts(hosts) => self.read.hosts = Some(hosts),
             }
         }
         // The interface's own file, read again only when this process wrote
@@ -173,20 +180,43 @@ impl Drop for FleetWatch {
     }
 }
 
+/// Ask Fleet which hosts it defines (`fleet runtime hosts --json`), again
+/// every [`RETRY`] until it answers: the hosts the creation flow offers are
+/// Fleet's. `null` (one runtime serves any host) names none to offer.
+fn read_hosts(program: &Path, tx: &Sender<Update>) {
+    loop {
+        if let Some(answer) = ask(program, &["runtime", "hosts", "--json"]) {
+            let hosts = answer["hosts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|h| h.as_str().map(str::to_string))
+                .collect();
+            let _ = tx.send(Update::Hosts(hosts));
+            return;
+        }
+        std::thread::sleep(RETRY);
+    }
+}
+
+/// One `fleet <args>` answer as JSON, or `None` when it failed.
+fn ask(program: &Path, args: &[&str]) -> Option<Value> {
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
+}
+
 /// Ask Fleet which harnesses it has profiles for (`fleet version --json`),
 /// again every [`RETRY`] until it answers: the agents the creation flow
 /// offers are Fleet's, and thurbox keeps no list of its own.
 fn read_harnesses(program: &Path, tx: &Sender<Update>) {
     loop {
-        let answer = Command::new(program)
-            .args(["version", "--json"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok());
-        if let Some(answer) = answer {
+        if let Some(answer) = ask(program, &["version", "--json"]) {
             let harnesses = answer["harnesses"]
                 .as_array()
                 .into_iter()

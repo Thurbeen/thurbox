@@ -7284,6 +7284,46 @@ fn a_session_on_an_unmapped_repo_is_refused_with_what_to_add() {
     assert!(tui.quit().success());
 }
 
+/// The hosts the creation flow offers are the ones Fleet defines (`fleet
+/// runtime hosts --json`), not a `hosts.toml` of thurbox's: a host Fleet
+/// names is offered, and one only `hosts.toml` names is not.
+#[test]
+fn the_host_picker_lists_the_hosts_fleet_reports() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let fleet_toml = profile.path("fleet.toml");
+    let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+    std::fs::write(
+        &fleet_toml,
+        format!("{config}\n[hosts.fleetbox]\nruntime = \"mux\"\n"),
+    )
+    .expect("a second host");
+    std::fs::write(
+        {
+            std::fs::create_dir_all(profile.path("config")).expect("config dir");
+            profile.path("config/hosts.toml")
+        },
+        "[[hosts]]\nname = \"onlyhoststoml\"\ndestination = \"nowhere.invalid\"\n",
+    )
+    .expect("a hosts.toml host");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("fleetbox");
+    assert!(
+        !tui.frame().contains("onlyhoststoml"),
+        "a host only hosts.toml names is offered:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
 /// Input that follows a held remote paste waits behind it: an `Enter` in the
 /// same batch submits the pasted path, and a second paste neither overtakes
 /// nor replaces the first.

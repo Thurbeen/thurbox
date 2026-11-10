@@ -261,7 +261,8 @@ breadcrumb: 'Features'
             Fleet makes worktrees of mapped repositories only, so the repository must be listed in
             <code>[workspaces.repositories]</code>; an unmapped one is refused with the line to
             add. Fleet makes worktrees on its own machine only, so a session on another Fleet host
-            runs in the repository directory there, as it is.
+            runs in the repository directory there, as it is. A directory that is no git repository,
+            such as the installed interface, also runs as it is.
           </p>
           <ul>
             <li>

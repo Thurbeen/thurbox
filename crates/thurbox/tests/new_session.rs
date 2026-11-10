@@ -1624,9 +1624,11 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     let task = fleet.applied();
     // A Task's name is a DNS-like name: the typed one, made one.
     assert_eq!(task["metadata"]["name"], "read-the-code");
+    // `/src/thurbox` is no repository on this machine, so it runs as it is;
+    // `tui_e2e` covers a mapped repository's worktree.
     assert_eq!(
-        task["spec"]["workspace"]["repositories"],
-        serde_json::json!([{"name": "thurbox", "url": "https://example.invalid/thurbox"}])
+        task["spec"]["workspace"],
+        serde_json::json!({"dir": "/src/thurbox"})
     );
     assert_eq!(task["spec"]["harness"], "claude");
     assert_eq!(task["spec"]["host"], "local");
@@ -1818,6 +1820,29 @@ fn a_session_on_another_fleet_host_runs_in_its_directory() {
     assert_eq!(
         task["spec"]["workspace"],
         serde_json::json!({"dir": "/home/me/far-repo"})
+    );
+}
+
+/// A directory that is no git repository, such as the installed interface
+/// the picker offers to edit, has no worktree to make: its session runs in it
+/// as it is, while an unmapped repository is still refused.
+#[cfg(unix)]
+#[test]
+fn a_directory_that_is_no_repository_runs_as_it_is() {
+    let fleet = StubFleet::new("[\"local\"]");
+    let plain = tempfile::tempdir().expect("a plain directory");
+    let path = plain.path().to_string_lossy().into_owned();
+    fleet
+        .run(vec![Command::Create {
+            name: "panes".into(),
+            repo: path.clone(),
+            agent: Some("claude".into()),
+            host: None,
+        }])
+        .expect("a plain directory is not refused");
+    assert_eq!(
+        fleet.applied()["spec"]["workspace"],
+        serde_json::json!({ "dir": path })
     );
 }
 

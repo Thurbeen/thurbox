@@ -15,10 +15,7 @@ fn a_snapshot_refresh_moves_the_version() {
     // The version is what a reader compares to decide it can reuse what it
     // built last time. If a refresh left it still, every such reader would keep
     // showing what the database said before.
-    let mut store = SnapshotStore::without_sessions(
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::without_sessions(&Default::default());
 
     let before = store.version();
     store.refresh();
@@ -33,10 +30,7 @@ fn a_snapshot_refresh_moves_the_version() {
 fn every_refresh_moves_it_again() {
     // An explicit refresh replaces the rows. The clock-only idle path has
     // its own signal, tested separately below and in the snapshot tests.
-    let mut store = SnapshotStore::without_sessions(
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::without_sessions(&Default::default());
 
     let mut seen = store.version();
     for _ in 0..5 {
@@ -51,10 +45,7 @@ fn every_refresh_moves_it_again() {
 fn reading_the_snapshot_leaves_the_version_alone() {
     // The other half, and the one that makes gating worth anything: if merely
     // looking moved the signal, nothing could ever be reused.
-    let mut store = SnapshotStore::without_sessions(
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::without_sessions(&Default::default());
     store.refresh();
 
     let settled = store.version();
@@ -805,10 +796,7 @@ fn a_re_stamped_snapshot_does_not_move_the_version_within_a_second() {
     // not change must therefore leave the version alone — it used to move
     // 2.5 times a second, which capped how long any pure pane could be cached
     // and was the dominant reason an idle interface kept re-rendering.
-    let mut store = SnapshotStore::without_sessions(
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::without_sessions(&Default::default());
     store.refresh();
 
     let settled = store.version();
@@ -833,10 +821,7 @@ fn the_published_instant_is_whole_seconds() {
     // The contract that makes the above honest rather than merely stale: the
     // field means "when these rows were read, to the second", and every reader
     // of it floors to seconds anyway.
-    let mut store = SnapshotStore::without_sessions(
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::without_sessions(&Default::default());
     store.refresh();
     assert_eq!(
         store.current().taken_at_ms % 1000,

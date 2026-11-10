@@ -32,7 +32,8 @@ The verbs:
 A session the interface creates on this machine names its repository as a
 `repositories` workspace, so Fleet makes it a git worktree of its own. One on
 another Fleet host names a `dir` workspace and runs in that directory as it
-is: Fleet makes worktrees on its own machine only. That needs the
+is: Fleet makes worktrees on its own machine only. A directory that is no git
+repository, such as the installed interface, also runs as it is. That needs the
 repository's URL in Fleet's repository map (`[workspaces.repositories]`). A
 Task you write with a `dir` workspace runs in that directory as it is.
 

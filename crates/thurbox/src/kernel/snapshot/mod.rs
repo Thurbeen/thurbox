@@ -256,7 +256,7 @@ pub struct AgentRow {
 ///
 /// The flow uses the name, detail and backend separately; the session list
 /// also needs the host's platform, independent of its transport and mux.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostRow {
     pub name: String,
     pub detail: String,
@@ -316,6 +316,8 @@ pub struct SourceRead {
     pub error: Option<String>,
     /// The harnesses Fleet has profiles for, once it has said.
     pub harnesses: Option<Vec<String>>,
+    /// The hosts Fleet defines, once it has said.
+    pub hosts: Option<Vec<String>>,
 }
 
 /// Owns the snapshot and decides when to rebuild it.
@@ -335,13 +337,6 @@ pub struct SnapshotStore {
     /// [`Self::request_refresh_awaiting`].
     awaited: Vec<String>,
     git: GitStats,
-    hosts: Vec<HostRow>,
-    /// Whether the create flow is open, so each host may be probed for its
-    /// multiplexers — see [`Self::probe_hosts`].
-    probe_hosts: bool,
-    /// The routes the process's registry serves, read once from it: which
-    /// multiplexers the create flow may offer, here and on each host.
-    served: std::collections::HashSet<crate::session::Route>,
     current: Snapshot,
     last_refresh: Option<Instant>,
     /// Moves whenever anything in [`Self::current`] does.
@@ -356,24 +351,16 @@ pub struct SnapshotStore {
 
 impl SnapshotStore {
     /// Build a store whose session rows come from `source`.
-    pub fn with_source(
-        source: Box<dyn SnapshotSource>,
-        backends: &crate::backend::BackendRegistry,
-        settings: &Settings,
-    ) -> Self {
-        let mut store = Self::build(backends, settings);
+    pub fn with_source(source: Box<dyn SnapshotSource>, settings: &Settings) -> Self {
+        let mut store = Self::build(settings);
         store.source = Some(source);
         store.poll_source();
         store
     }
 
-    /// A store with no session source: the agents, hosts and multiplexer rows
-    /// alone.
-    pub fn without_sessions(
-        backends: &crate::backend::BackendRegistry,
-        settings: &Settings,
-    ) -> Self {
-        Self::build(backends, settings)
+    /// A store with no session source: no sessions, agents or hosts.
+    pub fn without_sessions(settings: &Settings) -> Self {
+        Self::build(settings)
     }
 
     /// Apply what the source has, returning whether anything moved.
@@ -392,14 +379,15 @@ impl SnapshotStore {
                     .collect(),
             );
         }
+        if let Some(hosts) = read.hosts {
+            self.current.hosts = hosts_from(&hosts);
+        }
         self.current.taken_at_ms = taken_at_stamp();
         self.mark_changed();
         true
     }
 
-    fn build(backends: &crate::backend::BackendRegistry, settings: &Settings) -> Self {
-        let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
-        let hosts = read_hosts(&served, false);
+    fn build(settings: &Settings) -> Self {
         Self {
             source: None,
             source_reads: 0,
@@ -407,13 +395,9 @@ impl SnapshotStore {
             awaited: Vec::new(),
             git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             current: Snapshot {
-                hosts: hosts.clone(),
                 taken_at_ms: taken_at_stamp(),
                 ..Snapshot::default()
             },
-            hosts,
-            probe_hosts: false,
-            served,
             last_refresh: None,
             version: 0,
         }
@@ -453,12 +437,11 @@ impl SnapshotStore {
             return applied;
         }
         self.last_refresh = Some(now);
-        let preflight_moved = self.poll_hosts();
         self.current.taken_at_ms = taken_at_stamp();
         // Git stats landing rewrite rows here, so this changes more than the
         // timestamp, and the snapshot moved if they did.
         let git_moved = self.attach_git_stats();
-        if git_moved || preflight_moved {
+        if git_moved {
             self.mark_changed();
         }
         applied
@@ -556,28 +539,6 @@ impl SnapshotStore {
         moved
     }
 
-    /// Whether the create flow is open. Only then is a host probed for which
-    /// multiplexers it has: a closed flow costs no connection to any host.
-    pub fn probe_hosts(&mut self, wanted: bool) {
-        self.probe_hosts = wanted;
-    }
-
-    /// Re-read the host rows while the flow is open, which is how a probe
-    /// answering in the background reaches the picker. A cache lookup per
-    /// host, never a wait. Returns whether any row moved.
-    fn poll_hosts(&mut self) -> bool {
-        if !self.probe_hosts {
-            return false;
-        }
-        let hosts = read_hosts(&self.served, true);
-        if hosts == self.hosts {
-            return false;
-        }
-        self.hosts = hosts;
-        self.current.hosts = self.hosts.clone();
-        true
-    }
-
     /// Apply what the source has now and fold in the git stats, without
     /// waiting on the interval. Start-up and tests.
     pub fn refresh(&mut self) {
@@ -589,50 +550,19 @@ impl SnapshotStore {
     }
 }
 
-/// Configured and discovered hosts. Empty means local only, and the flow skips
-/// asking.
-fn read_hosts(
-    served: &std::collections::HashSet<crate::session::Route>,
-    probe: bool,
-) -> Vec<HostRow> {
-    let (registry, _warnings) = crate::config::hosts::cached_registry();
-    hosts_from(&registry.hosts, served, probe)
-}
-
-/// Each host's row, offering the multiplexers its probe found there, and
-/// starting that probe when `probe` allows it. The probe is never waited for:
-/// until it answers, a host offers what
-/// [`crate::session::Multiplexer::available_on`] trusts it with unseen.
-fn hosts_from(
-    hosts: &[crate::session::HostDef],
-    served: &std::collections::HashSet<crate::session::Route>,
-    probe: bool,
-) -> Vec<HostRow> {
+/// The host rows the creation flow offers: each host Fleet defines but
+/// `local`, which the flow offers itself. A row's `backend` is the Fleet host
+/// name, which is what a created Task's `spec.host` and a session row's
+/// `remote_host` carry, so a creation in flight and its row group as one.
+fn hosts_from(hosts: &[String]) -> Vec<HostRow> {
     hosts
         .iter()
-        .map(|host| {
-            let answer = crate::backend::host_path::multiplexers_found(host, probe);
-            let found = match &answer {
-                crate::backend::host_path::MuxProbe::Found(found) => Some(found.as_slice()),
-                _ => None,
-            };
-            HostRow {
-                name: host.name.clone(),
-                detail: host.picker_detail(),
-                backend: host.backend_name(),
-                platform: host.platform().name().to_string(),
-                multiplexer: host.multiplexer.clone(),
-                available_multiplexers: crate::session::Multiplexer::available_on(
-                    host.platform(),
-                    found,
-                    host.multiplexer(),
-                )
-                .into_iter()
-                .filter(|mux| served.contains(&host.route(*mux)))
-                .map(|mux| mux.name().to_string())
-                .collect(),
-                probing: answer == crate::backend::host_path::MuxProbe::Pending,
-            }
+        .filter(|host| host.as_str() != "local")
+        .map(|host| HostRow {
+            name: host.clone(),
+            detail: "Fleet host".to_string(),
+            backend: host.clone(),
+            ..HostRow::default()
         })
         .collect()
 }
@@ -704,37 +634,18 @@ mod tests {
     }
 
     #[test]
-    fn a_host_offers_what_its_probe_found_and_never_waits_for_one() {
-        use crate::session::{HostDef, Multiplexer};
-        let probed = HostDef {
-            name: "probed-host".into(),
-            ..Default::default()
-        };
-        let pending = HostDef {
-            name: "pending-host".into(),
-            ..Default::default()
-        };
-        crate::backend::host_path::seed_multiplexers(&probed, Some(vec![Multiplexer::Rmux]));
-        let served: std::collections::HashSet<_> = [&probed, &pending]
-            .into_iter()
-            .flat_map(|host| Multiplexer::ALL.map(|mux| host.route(mux)))
-            .collect();
-        let rows = hosts_from(&[probed, pending], &served, false);
-        assert_eq!(rows[0].available_multiplexers, vec!["rmux"]);
+    fn the_host_rows_are_fleets_hosts_but_local() {
+        let rows = hosts_from(&["local".to_string(), "devbox".to_string()]);
+        assert_eq!(rows.len(), 1);
         assert_eq!(
-            rows[1].available_multiplexers,
-            vec!["tmux"],
-            "a host not looked at yet offers its platform default"
+            (rows[0].name.as_str(), rows[0].backend.as_str()),
+            ("devbox", "devbox")
         );
-        assert!(!rows[0].probing && rows[1].probing);
     }
 
     #[test]
     fn idle_clock_does_not_invalidate_snapshot_rows() {
-        let mut store = SnapshotStore::without_sessions(
-            &crate::backend::registry::inert(),
-            &Settings::default(),
-        );
+        let mut store = SnapshotStore::without_sessions(&Settings::default());
         store.refresh();
         let version = store.version();
         store.current.taken_at_ms = 0;

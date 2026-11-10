@@ -115,10 +115,7 @@ fn a_snapshot_read_never_touches_the_database() {
     // keep an idle tick off the sessions table. Here the shape makes it
     // structural — reads come from the snapshot, and refresh is the only thing
     // that queries.
-    let store = SnapshotStore::without_sessions(
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let store = SnapshotStore::without_sessions(&Default::default());
 
     let started = std::time::Instant::now();
     for _ in 0..10_000 {

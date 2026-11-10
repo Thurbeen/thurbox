@@ -33,6 +33,44 @@ fn fleet_bin() -> Option<PathBuf> {
     found
 }
 
+/// Make `dir` a git repository with one commit. Git's location variables
+/// are scrubbed, so a run under a commit hook never reaches the real one.
+fn git_init(dir: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &[
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ][..],
+    ] {
+        let mut git = Process::new("git");
+        git.args(args).current_dir(dir);
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            git.env_remove(var);
+        }
+        assert!(git.status().expect("git").success(), "git {args:?}");
+    }
+}
+
 /// One isolated Fleet: a store, the fake runtime, and `program`, the script
 /// thurbox is configured with, which runs the real binary against them.
 struct Fleet {
@@ -122,6 +160,7 @@ impl Fleet {
     /// thurbox creates must be: Fleet makes it a worktree of the mapped
     /// checkout.
     fn map(&self, repo: &Path) {
+        git_init(repo);
         let config = self.root.path().join("fleet.toml");
         let mut text = std::fs::read_to_string(&config).expect("config");
         text.push_str(&format!(
@@ -242,11 +281,7 @@ fn store_over(fleet: &Fleet) -> SnapshotStore {
 }
 
 fn store_of(source: FleetWatch) -> SnapshotStore {
-    SnapshotStore::with_source(
-        Box::new(source),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    )
+    SnapshotStore::with_source(Box::new(source), &Default::default())
 }
 
 fn names(store: &mut SnapshotStore) -> Vec<String> {
@@ -320,7 +355,6 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
     let fleet = Fleet::new(bin);
     let mut store = SnapshotStore::with_source(
         Box::new(FleetWatch::spawn(fleet.root.path().join("no-such-fleet"))),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );
     until("the error is published", || {
@@ -500,15 +534,12 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     make_executable(&program);
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     let mut bridged = row("bridged", "fleet", dir.path());
     bridged.key = Some("bridged.u1".into());
     tx.send(SourceRead {
         harnesses: None,
+        hosts: None,
         sessions: vec![bridged],
         error: None,
     })
@@ -585,15 +616,12 @@ fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
 #[test]
 fn a_refresh_ticket_waits_for_the_source_to_answer() {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     let ticket = store.request_refresh();
     assert!(!store.fresh_since(ticket), "nothing was read since");
     tx.send(SourceRead {
         harnesses: None,
+        hosts: None,
         sessions: vec![row("made", "fleet", Path::new("/w"))],
         error: None,
     })
@@ -666,11 +694,7 @@ fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
 #[test]
 fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     let ticket = store.request_refresh_awaiting(vec!["Made".into()]);
     // A watch that answers late: past the second a quiet source is given.
     std::thread::sleep(Duration::from_millis(2_000));
@@ -680,6 +704,7 @@ fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
     made.name = "Made".into();
     tx.send(SourceRead {
         harnesses: None,
+        hosts: None,
         sessions: vec![made],
         error: None,
     })
@@ -726,13 +751,10 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
     let mut elsewhere = row("on-fleet", "fleet", repo.path());
     elsewhere.remote_host = Some("devbox".into());
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     tx.send(SourceRead {
         harnesses: None,
+        hosts: None,
         sessions: vec![elsewhere, row("local", "tmux", repo.path())],
         error: None,
     })
