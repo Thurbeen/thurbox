@@ -129,14 +129,28 @@ mod tests {
     /// the paste that asks.
     #[test]
     fn a_drop_is_known_by_its_shape_without_touching_the_filesystem() {
-        let gone = "/nonexistent-thurbox-dir/sub/shot.png";
+        // An absolute path is this platform's: a drive path on Windows,
+        // where a terminal's drop always names the drive.
+        let (gone, two) = if cfg!(windows) {
+            (
+                r"C:\nonexistent-thurbox-dir\sub\shot.png",
+                r"'C:\no where\a b.PNG' file:///C:/nope/c%20d.jpg",
+            )
+        } else {
+            (
+                "/nonexistent-thurbox-dir/sub/shot.png",
+                "'/no where/a b.PNG' file:///nope/c%20d.jpg",
+            )
+        };
         assert_eq!(dropped_images(gone).map(|p| p.len()), Some(1));
-        assert_eq!(
-            dropped_images("'/no where/a b.PNG' file:///nope/c%20d.jpg").map(|p| p.len()),
-            Some(2)
-        );
+        assert_eq!(dropped_images(two).map(|p| p.len()), Some(2));
         for text in ["shot.png", "/tmp/notes.txt", "hello /tmp/a.png", ""] {
             assert!(dropped_images(text).is_none(), "{text:?}");
+        }
+        // A rooted path with no drive is not absolute on Windows, and no
+        // drop there spells one: it is text, typed as is.
+        if cfg!(windows) {
+            assert!(dropped_images("/rooted/no-drive.png").is_none());
         }
     }
 }
