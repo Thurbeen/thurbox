@@ -167,7 +167,7 @@ clippy_guards = [
 "fleet_api::store::FieldManager::Cli" = ["fleet-api", "fleet-manager", "fleet-store"]
 "fleet_api::store::FieldManager::Listener" = ["fleet-api", "fleet-manager", "fleet-store"]
 
-# One crate starts processes, so every program fleet runs (thurbox-cli, the
+# One crate starts processes, so every program fleet runs (a runtime, the
 # gate's tools) is bounded and has its tree killed the same way.
 [[restricted]]
 path = "std::process::Command"

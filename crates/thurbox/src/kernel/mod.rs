@@ -5,12 +5,13 @@
 //! of the session engine ([`snapshot`]), and the VM that plugins run in
 //! ([`host`]). Everything a user sees — the session list included — is Lua.
 
+pub mod automations;
 pub mod bands;
+pub mod bookmarks;
 pub mod bundled;
 pub mod clipboard;
 pub mod command;
 pub mod config;
-pub mod consent;
 pub mod convert;
 pub mod diff;
 pub mod events;

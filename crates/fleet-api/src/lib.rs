@@ -21,7 +21,7 @@
 //!
 //! ```compile_fail
 //! // ...or the runtime adapters...
-//! use fleet_runtime::ThurboxRuntime;
+//! use fleet_runtime::ExecRuntime;
 //! ```
 //!
 //! ```compile_fail

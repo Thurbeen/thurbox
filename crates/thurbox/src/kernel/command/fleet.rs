@@ -8,9 +8,8 @@
 //! line answered. A session command Fleet has no verb for is refused by
 //! name, never dropped.
 //!
-//! Only sessions are Fleet's. Every other command (the interface's settings,
-//! bookmarks, folders and clones, its task list and automations) runs on
-//! thurbox's own engine, which this executor wraps.
+//! Only sessions are Fleet's. The interface's settings and its repository
+//! memory are files of thurbox's ([`super::execute::local`]).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -26,8 +25,6 @@ use super::Command;
 pub(super) struct Fleet {
     /// The `fleet` binary: a name on `PATH` or a path.
     pub(super) program: PathBuf,
-    /// What runs every command that is no session's.
-    pub(super) engine: super::execute::Engine,
 }
 
 impl super::Executor for Fleet {
@@ -59,38 +56,27 @@ impl super::Executor for Fleet {
                 }
                 return self.execute(inner, _id, _progress);
             }
-            // The multiplexer the create flow settles on is the thurbox
-            // engine's: Fleet's runtime keeps the terminal, so it is dropped.
             Command::Create {
                 name,
                 repo,
-                branch,
-                base,
-                worktree_path,
                 agent,
                 host,
-                multiplexer: _,
-                extras,
             } => {
-                let asked = [
-                    (branch.is_some(), "a branch"),
-                    (base.is_some(), "a base branch"),
-                    (worktree_path.is_some(), "an existing worktree"),
-                    (!extras.is_empty(), "further repositories"),
-                ];
-                if let Some((_, what)) = asked.iter().find(|(asked, _)| *asked) {
-                    return Err(format!(
-                        "the Fleet engine takes no {what}: Fleet makes a Task's workspace, and \
-                         its runtime runs the terminal"
-                    ));
-                }
                 let host = self.host(host.as_deref())?;
                 if let Some(agent) = agent {
                     self.harness(agent)?;
                 }
+                // Fleet makes worktrees on its own machine only (its worktree
+                // adapter refuses any other host), so a session elsewhere
+                // runs in the repository directory there, as it is.
+                let workspace = if host == "local" {
+                    self.worktree_of(&crate::paths::expand_tilde(repo))?
+                } else {
+                    json!({"dir": repo})
+                };
                 let mut spec = json!({
                     "host": host,
-                    "workspace": {"dir": crate::paths::expand_tilde(repo)},
+                    "workspace": workspace,
                     "dispatch": true,
                 });
                 if let Some(agent) = agent {
@@ -117,35 +103,19 @@ impl super::Executor for Fleet {
                 )?;
             }
             Command::Send { session, text } => self.run(&["send", session, text], None)?,
-            // Fleet has no undo window: a soft delete is a delete.
+            Command::Rename { session, name } => self.rename(session, name)?,
+            // Fleet has no undo window: a delete is for good.
             Command::Delete { session, .. } => self.run(&["delete", "task", session], None)?,
-            // Fleet revives a lost session itself; the interface's relaunch of
-            // a pane-less row has nothing to do.
-            Command::Restart {
-                fresh: false,
-                if_missing: true,
-                ..
-            } => return Ok(Outcome::Nothing),
-            // No undo window to sweep.
-            Command::Reap => return Ok(Outcome::Nothing),
-            // The session commands Fleet has no verb for.
-            Command::Restore { .. }
-            | Command::Restart { .. }
-            | Command::Fork { .. }
-            | Command::Rename { .. }
-            | Command::Sync { .. }
-            | Command::Reorder { .. }
-            | Command::Order { .. }
-            | Command::DispatchTask { .. } => {
-                return Err(format!(
-                    "{} is not available on the Fleet engine",
-                    command.kind()
-                ))
+            // Everything else is a file of thurbox's, or a command no engine
+            // runs: refused by name, never dropped.
+            _ => {
+                return super::execute::local(command).unwrap_or_else(|| {
+                    Err(format!(
+                        "{} is not available on the Fleet engine",
+                        command.kind()
+                    ))
+                })
             }
-            // Everything else is no session's: the interface's settings,
-            // bookmarks, folders and clones, its task list and automations.
-            // thurbox's own engine runs it, unchanged.
-            _ => return super::Executor::execute(&self.engine, command, _id, _progress),
         }
         Ok(Outcome::Done)
     }
@@ -154,11 +124,16 @@ impl super::Executor for Fleet {
 /// A session's name as a Task's: lowercase letters, digits, `-` and `.`,
 /// starting and ending with a letter or digit, which is what Fleet takes.
 /// Anything else becomes a `-`, and runs of them one.
-fn task_name(name: &str) -> String {
+pub(crate) fn task_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars().flat_map(char::to_lowercase) {
-        if c.is_ascii_alphanumeric() || c == '.' {
+        if c.is_ascii_alphanumeric() {
             out.push(c);
+        } else if c == '.' {
+            // Fleet's names forbid `..`, so a run of dots is one.
+            if !out.ends_with('.') {
+                out.push(c);
+            }
         } else if !out.ends_with('-') {
             out.push('-');
         }
@@ -168,16 +143,31 @@ fn task_name(name: &str) -> String {
 }
 
 impl Fleet {
+    /// Give the session `name`: the Task's [`NAME_LABEL`], set with `fleet
+    /// label`, which changes that label and nothing else of the Task, so a
+    /// Task a Conversation made keeps the labels only Fleet writes. The name
+    /// is checked by the rules a created session's name is.
+    ///
+    /// [`NAME_LABEL`]: crate::kernel::snapshot::fleet::NAME_LABEL
+    fn rename(&self, session: &str, name: &str) -> Result<(), String> {
+        crate::paths::validate_safe_name(name)?;
+        let label = format!("{}={name}", crate::kernel::snapshot::fleet::NAME_LABEL);
+        self.run(&["label", "task", session, &label], None)
+    }
+
     /// The Fleet host a session on `route` runs on: the picker's route
     /// (`ssh:devbox`) names the machine Fleet calls `devbox`, and no route
     /// is `local`. A host Fleet's config does not define is refused.
     fn host(&self, route: Option<&str>) -> Result<String, String> {
         let host = match route.filter(|route| !route.is_empty()) {
             None => "local".to_string(),
-            Some(route) => crate::session::Route::parse(route)
-                .map_err(|_| format!("not a host: {route}"))?
-                .host()
-                .unwrap_or("local")
+            Some(route) if crate::session::Route::parse(route).is_ok_and(|r| r.is_local()) => {
+                "local".to_string()
+            }
+            // The flow's host rows carry Fleet's own host names.
+            Some(route) if !route.contains(':') => route.to_string(),
+            Some(route) => crate::session::host_of_key(route)
+                .ok_or_else(|| format!("not a host: {route}"))?
                 .to_string(),
         };
         let answer = self.json(&["runtime", "hosts", "--json"])?;
@@ -192,6 +182,51 @@ impl Fleet {
             }
         }
         Ok(host)
+    }
+
+    /// The `repositories` workspace for the checkout at `dir`, so Fleet
+    /// makes the session a git worktree of its own. Fleet makes worktrees of
+    /// mapped repositories only (`[workspaces.repositories]`, a URL to its
+    /// checkout here), so an unmapped one is refused with the line to add,
+    /// never run in the checkout instead.
+    fn worktree_of(&self, dir: &std::path::Path) -> Result<serde_json::Value, String> {
+        // A directory that is no git repository (the installed interface the
+        // picker offers to edit) has no worktree to make: it runs as it is.
+        // Decided from the filesystem, not from asking `git`, so a `git` that
+        // cannot run never passes for a directory with no repository. A bare
+        // repository keeps its files where a checkout keeps `.git`.
+        let bare =
+            dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
+        if !bare && !dir.ancestors().any(|at| at.join(".git").exists()) {
+            return Ok(json!({"dir": dir}));
+        }
+        let answer = self.json(&["repositories", "--json"])?;
+        let same = |source: &str| {
+            let canonical = |path: &std::path::Path| {
+                std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+            };
+            canonical(std::path::Path::new(source)) == canonical(dir)
+        };
+        let url = answer["repositories"].as_object().and_then(|map| {
+            map.iter()
+                .find(|(_, source)| source.as_str().is_some_and(same))
+                .map(|(url, _)| url.clone())
+        });
+        let Some(url) = url else {
+            return Err(format!(
+                "Fleet maps no repository at {dir}, so it cannot give the session a worktree: \
+                 add \"<its URL>\" = \"{dir}\" under [workspaces.repositories] in Fleet's config",
+                dir = dir.display()
+            ));
+        };
+        // Fleet names a workspace's repository as it names a Task, so a
+        // checkout called `My_Repo` is `my-repo`.
+        let name = dir
+            .file_name()
+            .map(|n| task_name(&n.to_string_lossy()))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "repo".to_string());
+        Ok(json!({"repositories": [{"name": name, "url": url}]}))
     }
 
     /// Refuse an agent Fleet has no harness profile for: Fleet would run a
@@ -283,5 +318,18 @@ impl Fleet {
             .find_map(|line| line.strip_prefix("error: "))
             .unwrap_or(stderr.trim());
         Err(format!("fleet {}: {why}", args[0]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_name;
+
+    /// Fleet's names forbid `..`, so a folder such as `app..backup` must not
+    /// make one.
+    #[test]
+    fn a_name_never_holds_two_dots_in_a_row() {
+        assert_eq!(task_name("app..backup"), "app.backup");
+        assert_eq!(task_name("My_Repo"), "my-repo");
     }
 }

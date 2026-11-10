@@ -87,11 +87,15 @@ test('orchestration page leads with Fleet v2, its release installer and Fleet Le
   assert.doesNotMatch(page.innerHTML, /raw\.githubusercontent\.com\/Thurbeen\/fleet\//, 'no file from Fleet v1');
 });
 
-test('Fleet v1 is no longer offered as a Thurbox extension', () => {
-  const extensions = built('docs/extensions.html');
-  const copy = text(extensions);
+test('the extensions page only explains removing the old hook entries by hand', () => {
+  const page = built('docs/extensions.html');
+  const copy = text(page);
   for (const stale of [...retiredFleet, ...fleetV1]) assert.doesNotMatch(copy, stale);
-  assert.doesNotMatch(copy, /\bfleet\b/i, 'the manifest example and the catalog are not Fleet');
+  assert.match(copy, /installs nothing into a coding agent's configuration/);
+  assert.doesNotMatch(copy, /thurbox-cli extension/, 'no extension command is offered');
+  for (const file of ['~/.codex/hooks.json', '~/.gemini/settings.json', '~/.kimi-code/config.toml']) {
+    assert.ok(copy.includes(file), `names ${file}`);
+  }
   assert.doesNotMatch(built('index.html').innerHTML, /<code>fleet<\/code>/);
 });
 

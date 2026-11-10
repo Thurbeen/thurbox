@@ -33,6 +33,44 @@ fn fleet_bin() -> Option<PathBuf> {
     found
 }
 
+/// Make `dir` a git repository with one commit. Git's location variables
+/// are scrubbed, so a run under a commit hook never reaches the real one.
+fn git_init(dir: &Path) {
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &[
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ][..],
+    ] {
+        let mut git = Process::new("git");
+        git.args(args).current_dir(dir);
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            git.env_remove(var);
+        }
+        assert!(git.status().expect("git").success(), "git {args:?}");
+    }
+}
+
 /// One isolated Fleet: a store, the fake runtime, and `program`, the script
 /// thurbox is configured with, which runs the real binary against them.
 struct Fleet {
@@ -116,6 +154,20 @@ impl Fleet {
 
     fn data(&self) -> PathBuf {
         self.root.path().join("data")
+    }
+
+    /// Map `repo` in Fleet's `[workspaces.repositories]`, which a session
+    /// thurbox creates must be: Fleet makes it a worktree of the mapped
+    /// checkout.
+    fn map(&self, repo: &Path) {
+        git_init(repo);
+        let config = self.root.path().join("fleet.toml");
+        let mut text = std::fs::read_to_string(&config).expect("config");
+        text.push_str(&format!(
+            "\n[workspaces.repositories]\n\"https://example.invalid/repo\" = \"{}\"\n",
+            repo.display()
+        ));
+        std::fs::write(&config, text).expect("a repository map");
     }
 
     fn run(&self, args: &[&str]) -> Run {
@@ -229,11 +281,7 @@ fn store_over(fleet: &Fleet) -> SnapshotStore {
 }
 
 fn store_of(source: FleetWatch) -> SnapshotStore {
-    SnapshotStore::with_source(
-        Box::new(source),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    )
+    SnapshotStore::with_source(Box::new(source), &Default::default())
 }
 
 fn names(store: &mut SnapshotStore) -> Vec<String> {
@@ -307,7 +355,6 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
     let fleet = Fleet::new(bin);
     let mut store = SnapshotStore::with_source(
         Box::new(FleetWatch::spawn(fleet.root.path().join("no-such-fleet"))),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );
     until("the error is published", || {
@@ -319,11 +366,7 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
 }
 
 fn fleet_bus(program: &Path) -> CommandBus {
-    CommandBus::fleet(
-        program.to_path_buf(),
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
-        &Default::default(),
-    )
+    CommandBus::fleet(program.to_path_buf())
 }
 
 fn run_command(bus: &mut CommandBus, command: Command) -> Result<(), String> {
@@ -349,6 +392,7 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     let fleet = Fleet::new(bin);
     let repo = fleet.root.path().join("repo");
     std::fs::create_dir_all(&repo).expect("repo");
+    fleet.map(&repo);
     let mut bus = fleet_bus(&fleet.program);
 
     // A session thurbox creates is an interactive Task: no brief, dispatched.
@@ -357,13 +401,8 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
         Command::Create {
             name: "gamma".into(),
             repo: repo.to_string_lossy().into_owned(),
-            branch: None,
-            base: None,
-            worktree_path: None,
             agent: Some("claude-code".into()),
             host: None,
-            multiplexer: None,
-            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -372,8 +411,8 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert_eq!(gamma["spec"]["host"], "local");
     assert_eq!(gamma["spec"]["dispatch"], true);
     assert_eq!(
-        gamma["spec"]["workspace"]["dir"],
-        repo.to_string_lossy().as_ref()
+        gamma["spec"]["workspace"]["repositories"],
+        json!([{"name": "repo", "url": "https://example.invalid/repo"}])
     );
     assert!(gamma["spec"]["brief"].is_null(), "{gamma:#}");
 
@@ -387,25 +426,6 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     .expect("send");
     let inbox = fleet.get("gamma").unwrap()["status"]["inbox"].clone();
     assert_eq!(inbox[0]["text"], "hello there", "{inbox:#}");
-
-    // What Fleet cannot do is refused by name, never dropped.
-    let refused = run_command(
-        &mut bus,
-        Command::Create {
-            name: "delta".into(),
-            repo: repo.to_string_lossy().into_owned(),
-            branch: Some("feature".into()),
-            base: None,
-            worktree_path: None,
-            agent: None,
-            host: None,
-            multiplexer: None,
-            extras: Vec::new(),
-        },
-    )
-    .expect_err("a branch is the workspace's to make");
-    assert!(refused.contains("branch"), "{refused}");
-    assert!(fleet.get("delta").is_none());
 
     run_command(
         &mut bus,
@@ -440,19 +460,15 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
 fn a_created_session_keeps_the_name_it_was_given() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
+    fleet.map(fleet.root.path());
     let mut bus = fleet_bus(&fleet.program);
     run_command(
         &mut bus,
         Command::Create {
             name: "Read the code".into(),
             repo: fleet.root.path().to_string_lossy().into_owned(),
-            branch: None,
-            base: None,
-            worktree_path: None,
             agent: Some("claude-code".into()),
             host: None,
-            multiplexer: None,
-            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -474,17 +490,13 @@ fn a_created_session_keeps_the_name_it_was_given() {
 fn a_name_already_taken_is_refused_and_the_task_left_alone() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
+    fleet.map(fleet.root.path());
     let mut bus = fleet_bus(&fleet.program);
     let create = |name: &str| Command::Create {
         name: name.into(),
         repo: fleet.root.path().to_string_lossy().into_owned(),
-        branch: None,
-        base: None,
-        worktree_path: None,
         agent: Some("claude-code".into()),
         host: None,
-        multiplexer: None,
-        extras: Vec::new(),
     };
     run_command(&mut bus, create("Review")).expect("the first");
     let refused = run_command(&mut bus, create("review")).expect_err("the same Task");
@@ -522,14 +534,12 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     make_executable(&program);
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     let mut bridged = row("bridged", "fleet", dir.path());
     bridged.key = Some("bridged.u1".into());
     tx.send(SourceRead {
+        harnesses: None,
+        hosts: None,
         sessions: vec![bridged],
         error: None,
     })
@@ -606,14 +616,12 @@ fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
 #[test]
 fn a_refresh_ticket_waits_for_the_source_to_answer() {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     let ticket = store.request_refresh();
     assert!(!store.fresh_since(ticket), "nothing was read since");
     tx.send(SourceRead {
+        harnesses: None,
+        hosts: None,
         sessions: vec![row("made", "fleet", Path::new("/w"))],
         error: None,
     })
@@ -686,11 +694,7 @@ fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
 #[test]
 fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     let ticket = store.request_refresh_awaiting(vec!["Made".into()]);
     // A watch that answers late: past the second a quiet source is given.
     std::thread::sleep(Duration::from_millis(2_000));
@@ -699,6 +703,8 @@ fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
     let mut made = row("made", "fleet", Path::new("/w"));
     made.name = "Made".into();
     tx.send(SourceRead {
+        harnesses: None,
+        hosts: None,
         sessions: vec![made],
         error: None,
     })
@@ -745,12 +751,10 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
     let mut elsewhere = row("on-fleet", "fleet", repo.path());
     elsewhere.remote_host = Some("devbox".into());
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(
-        Box::new(Fed(rx)),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
     tx.send(SourceRead {
+        harnesses: None,
+        hosts: None,
         sessions: vec![elsewhere, row("local", "tmux", repo.path())],
         error: None,
     })

@@ -60,7 +60,7 @@ fn row(name: &str) -> SessionRow {
         repos: Vec::new(),
         branch: Some(format!("feat/{name}")),
         base_branch: None,
-        backend: "local-tmux".to_string(),
+        backend: "local:tmux".to_string(),
         backend_id: Some("%1".to_string()),
         remote_host: None,
         agent_session_id: None,
@@ -83,7 +83,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
     let themes = Themes::load(None);
     let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
@@ -100,13 +100,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         can_open: true,
         inventory: &[],
         ui_dir: "ui",
-        settings: &thurbox::session::settings::Settings {
-            features: thurbox::session::settings::FeatureFlags {
-                soft_delete: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        settings: &Default::default(),
         repos: &repos,
         wants: &Default::default(),
         focus: None,
@@ -184,28 +178,23 @@ fn fire(host: &LuaHost, chord: &str) {
 /// below, in `CHORDS_AWAITING_THEIR_PANE`. They are listed rather than dropped so
 /// re-adding a pane has an obvious place to reconnect, and so the shortfall is
 /// counted rather than forgotten.
-const GLOBAL_CHORDS: [(&str, &str); 24] = [
+const GLOBAL_CHORDS: [(&str, &str); 19] = [
     ("ctrl+n", "new_session.open"),
     // Reassigned deliberately, not reused quietly: v1 spent it on the
     // automations pane, and the palette is the way *into* that pane — and every
     // other — once it returns. See `CHORDS_AWAITING_THEIR_PANE`, which it left.
     ("ctrl+p", "palette.open"),
-    ("ctrl+u", "restore.open"),
     // One declaration, three spellings: the kernel folds the encodings a
     // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.
     ("ctrl+/", "search.open"),
     ("ctrl+7", "search.open"),
     ("ctrl+_", "search.open"),
     ("ctrl+d", "sessions.delete"),
-    ("ctrl+r", "sessions.restart"),
-    ("ctrl+f", "sessions.fork"),
-    ("ctrl+s", "sessions.sync"),
     ("ctrl+o", "sessions.editor"),
     // Reassigned deliberately, as `ctrl+p` was: v1 held it for a files pane that
     // exists nowhere now, and `f2`, the other conventional rename key, is still
     // claimed by the info panel that is maintained out of tree.
     ("ctrl+e", "sessions.rename"),
-    ("ctrl+z", "sessions.undo"),
     ("ctrl+j", "sessions.next"),
     ("ctrl+k", "sessions.previous"),
     ("ctrl+t", "shell.open"),
@@ -328,12 +317,7 @@ fn the_session_chords_issue_the_commands_v1_runs() {
     .expect("render the list");
     host.drain_commands();
 
-    for (chord, kind) in [
-        ("ctrl+d", "delete"),
-        ("ctrl+r", "restart"),
-        ("ctrl+s", "sync"),
-        ("ctrl+o", "editor"),
-    ] {
+    for (chord, kind) in [("ctrl+d", "delete"), ("ctrl+o", "editor")] {
         fire(&host, chord);
         let mut issued = host.drain_commands();
         if chord != "ctrl+o" {
@@ -345,92 +329,6 @@ fn the_session_chords_issue_the_commands_v1_runs() {
         assert_eq!(issued[0].kind(), kind, "{chord}");
         assert_eq!(issued[0].session(), snapshot.sessions[0].id, "{chord}");
     }
-
-    // `ctrl+f` is the exception, and matching v1 is why: `fork_active_session`
-    // prepared the spawn and opened the shared Session Name modal prefilled
-    // `<source>-fork`, so a fork was named before it existed. It therefore issues
-    // NOTHING on the keystroke — it leaves the job in `store.fork`, the way an
-    // irreversible change leaves its question in `store.confirm`.
-    fire(&host, "ctrl+f");
-    assert!(
-        host.drain_commands().is_empty(),
-        "ctrl+f must ask for a name before forking, as v1 did"
-    );
-    // What it handed over is asserted where it is consumed: the creation float
-    // opens at its name step with the prefill, which is the v1-visible behaviour
-    // and is checked through the real plugins rather than by reading `store`.
-    let rendered = host
-        .render(
-            index_of(&host, "new_session"),
-            RenderContext {
-                width: 120,
-                height: 40,
-                focused: true,
-                elapsed: 0.0,
-                frame: 2,
-            },
-        )
-        .expect("render the flow");
-    assert!(rendered.float.is_some(), "the flow floats");
-    let tree = format!("{:?}", rendered.node);
-    assert!(
-        tree.contains("fix-osc52-fork"),
-        "the name field is prefilled `<source>-fork`, as v1 prefilled it: {tree}"
-    );
-    assert!(
-        tree.contains("Session Name"),
-        "and it is v1's Session Name step: {tree}"
-    );
-}
-
-#[test]
-fn undo_restores_the_delete_that_was_just_made_and_nothing_else() {
-    // v1's Ctrl+Z is an undo of *your* delete (`App::undo_delete` restores its
-    // own `pending_delete`), not "restore whatever was deleted last" — which
-    // could be another instance's session.
-    let host = host();
-    let snapshot = Snapshot {
-        sessions: vec![row("fix-osc52")],
-        ..Snapshot::default()
-    };
-    publish(&host, &snapshot);
-    host.render(
-        index_of(&host, "sessions"),
-        RenderContext {
-            width: 40,
-            height: 12,
-            focused: true,
-            elapsed: 1.0,
-            frame: 1,
-        },
-    )
-    .expect("render the list");
-    host.drain_commands();
-
-    // Nothing deleted yet: the key says so rather than restoring a stranger.
-    // Silence was indistinguishable from the chord never arriving — Ctrl+Z is
-    // global, so it fires with the column hidden and from a focused terminal.
-    fire(&host, "ctrl+z");
-    let issued = host.drain_commands();
-    assert_eq!(issued.len(), 1, "{issued:?}");
-    assert_eq!(issued[0].kind(), "message");
-
-    fire(&host, "ctrl+d");
-    assert!(host.drain_commands().is_empty());
-    confirm_yes(&host);
-    host.drain_commands();
-    fire(&host, "ctrl+z");
-    let issued = host.drain_commands();
-    assert_eq!(issued.len(), 1, "{issued:?}");
-    assert_eq!(issued[0].kind(), "restore");
-    assert_eq!(issued[0].session(), snapshot.sessions[0].id);
-
-    // One undo per delete: the second press has nothing left to undo, and says
-    // that rather than restoring the row again.
-    fire(&host, "ctrl+z");
-    let issued = host.drain_commands();
-    assert_eq!(issued.len(), 1, "{issued:?}");
-    assert_eq!(issued[0].kind(), "message");
 }
 
 /// Chords v1 hands to the agent that v2 does not yet.

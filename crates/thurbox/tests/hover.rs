@@ -42,7 +42,7 @@ fn chip_backgrounds(host: &LuaHost, hovered: Option<&Identity>) -> Vec<(String, 
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let snapshot = one_session();
 
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
@@ -144,7 +144,7 @@ fn one_session() -> Snapshot {
             repos: vec!["thurbox".into()],
             branch: Some("fix/osc52".into()),
             base_branch: None,
-            backend: "local-tmux".into(),
+            backend: "local:tmux".into(),
             backend_id: Some("%1".into()),
             remote_host: None,
             agent_session_id: None,
@@ -272,7 +272,7 @@ fn a_hovered_row_is_banded_and_keeps_its_own_colours() {
         let (bindings, settings) = host.declarations();
         registry.declare(bindings, settings);
         let diffs = thurbox::kernel::diff::DiffStore::new();
-        let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+        let repos = thurbox::kernel::repos::RepoStore::new();
         host.publish(&Published {
             epoch: thurbox::kernel::host::Epoch::always_fresh(),
             snapshot: &snapshot,
@@ -412,7 +412,7 @@ return {
         let themes = Themes::load(None);
         let registry = Registry::default();
         let diffs = thurbox::kernel::diff::DiffStore::new();
-        let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+        let repos = thurbox::kernel::repos::RepoStore::new();
         host.publish(&Published {
             epoch: thurbox::kernel::host::Epoch::always_fresh(),
             snapshot: &Snapshot::default(),

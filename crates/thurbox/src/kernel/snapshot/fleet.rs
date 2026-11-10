@@ -46,6 +46,10 @@ enum Update {
     Watch(Option<String>),
     /// Why no manager runs, or `None` once one does.
     Manager(Option<String>),
+    /// The harnesses Fleet has profiles for: the agents a session can run.
+    Harnesses(Vec<String>),
+    /// The hosts Fleet defines: where a session can run.
+    Hosts(Vec<String>),
 }
 
 /// The Tasks as session rows, followed by `fleet watch` on a worker.
@@ -54,6 +58,13 @@ pub struct FleetWatch {
     read: SourceRead,
     watch_error: Option<String>,
     manager_error: Option<String>,
+    /// The Tasks as `fleet watch` last read them, before the interface's own
+    /// order is laid over them.
+    tasks: Vec<SessionRow>,
+    /// Whether the watch has delivered rows yet.
+    rows_seen: bool,
+    /// `interface.json` as last read, and the generation it was read at.
+    interface: Option<(u64, crate::config::interface_state::InterfaceState)>,
     /// The running `fleet watch`, killed when the source goes.
     child: Arc<Mutex<Option<Child>>>,
 }
@@ -78,6 +89,14 @@ impl FleetWatch {
             let (program, tx) = (program.clone(), tx.clone());
             std::thread::spawn(move || keep_manager(&program, &tx));
         }
+        {
+            let (program, tx) = (program.clone(), tx.clone());
+            std::thread::spawn(move || read_harnesses(&program, &tx));
+        }
+        {
+            let (program, tx) = (program.clone(), tx.clone());
+            std::thread::spawn(move || read_hosts(&program, &tx));
+        }
         let child = Arc::new(Mutex::new(None));
         let held = Arc::clone(&child);
         std::thread::spawn(move || watch(&program, &tx, &held));
@@ -86,6 +105,9 @@ impl FleetWatch {
             read: SourceRead::default(),
             watch_error: None,
             manager_error: None,
+            tasks: Vec::new(),
+            rows_seen: false,
+            interface: None,
             child,
         }
     }
@@ -97,14 +119,47 @@ impl SnapshotSource for FleetWatch {
         while let Ok(update) = self.updates.try_recv() {
             moved = true;
             match update {
-                Update::Rows(rows) => self.read.sessions = rows,
+                Update::Rows(rows) => {
+                    self.tasks = rows;
+                    self.rows_seen = true;
+                }
                 Update::Watch(error) => self.watch_error = error,
                 Update::Manager(error) => self.manager_error = error,
+                Update::Harnesses(harnesses) => self.read.harnesses = Some(harnesses),
+                Update::Hosts(hosts) => self.read.hosts = Some(hosts),
             }
+        }
+        // The interface's own file, read again only when this process wrote
+        // it: what it holds is changed from this interface alone.
+        let generation = crate::config::interface_state::generation();
+        if self
+            .interface
+            .as_ref()
+            .is_none_or(|(seen, _)| *seen != generation)
+        {
+            self.interface = Some((generation, crate::config::interface_state::load()));
+            // Before the first rows there is nothing to lay it over.
+            moved |= self.rows_seen;
         }
         if !moved {
             return None;
         }
+        let state = self.interface.as_ref().map(|(_, state)| state);
+        self.read.sessions = self
+            .tasks
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                if let Some(state) = state {
+                    row.display_order = state
+                        .order
+                        .iter()
+                        .position(|id| *id == row.id)
+                        .map(|at| at as i64);
+                }
+                row
+            })
+            .collect();
         let errors: Vec<&str> = [&self.watch_error, &self.manager_error]
             .into_iter()
             .flatten()
@@ -122,6 +177,56 @@ impl Drop for FleetWatch {
                 let _ = child.kill();
             }
         }
+    }
+}
+
+/// Ask Fleet which hosts it defines (`fleet runtime hosts --json`), again
+/// every [`RETRY`] until it answers: the hosts the creation flow offers are
+/// Fleet's. `null` (one runtime serves any host) names none to offer.
+fn read_hosts(program: &Path, tx: &Sender<Update>) {
+    loop {
+        if let Some(answer) = ask(program, &["runtime", "hosts", "--json"]) {
+            let hosts = answer["hosts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|h| h.as_str().map(str::to_string))
+                .collect();
+            let _ = tx.send(Update::Hosts(hosts));
+            return;
+        }
+        std::thread::sleep(RETRY);
+    }
+}
+
+/// One `fleet <args>` answer as JSON, or `None` when it failed.
+fn ask(program: &Path, args: &[&str]) -> Option<Value> {
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
+}
+
+/// Ask Fleet which harnesses it has profiles for (`fleet version --json`),
+/// again every [`RETRY`] until it answers: the agents the creation flow
+/// offers are Fleet's, and thurbox keeps no list of its own.
+fn read_harnesses(program: &Path, tx: &Sender<Update>) {
+    loop {
+        if let Some(answer) = ask(program, &["version", "--json"]) {
+            let harnesses = answer["harnesses"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|h| h.as_str().map(str::to_string))
+                .collect();
+            let _ = tx.send(Update::Harnesses(harnesses));
+            return;
+        }
+        std::thread::sleep(RETRY);
     }
 }
 
@@ -452,6 +557,32 @@ pub fn row_of(task: &Value) -> SessionRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The agents a session can run are the harnesses Fleet has profiles
+    /// for, read from `fleet version --json`: thurbox keeps no list of its own.
+    #[cfg(unix)]
+    #[test]
+    fn the_agents_are_the_harnesses_fleet_reports() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fleet = dir.path().join("fleet");
+        std::fs::write(
+            &fleet,
+            "#!/bin/sh\n[ \"$1\" = version ] && exec echo '{\"harnesses\":[\"claude-code\",\"codex\"]}'\nexec sleep 30\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut source = FleetWatch::spawn(fleet);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let harnesses = loop {
+            if let Some(harnesses) = source.poll().and_then(|read| read.harnesses) {
+                break harnesses;
+            }
+            assert!(std::time::Instant::now() < deadline, "Fleet never answered");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(harnesses, ["claude-code", "codex"]);
+    }
 
     /// Whatever stands where a log would go, a link included, is never
     /// opened: what it pointed at keeps its contents.

@@ -40,7 +40,7 @@ fn row(id: &str, name: &str, agent: &str, branch: &str) -> SessionRow {
         repos: vec!["thurbox".into()],
         branch: Some(branch.into()),
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,
         agent_session_id: None,
@@ -103,7 +103,7 @@ fn publish_hovered(
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: snap,
@@ -790,7 +790,7 @@ fn every_match_still_paints_when_the_results_fill_the_strip() {
         let (bindings, settings) = host.declarations();
         registry.declare(bindings, settings);
         let diffs = thurbox::kernel::diff::DiffStore::new();
-        let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+        let repos = thurbox::kernel::repos::RepoStore::new();
         let snap = Snapshot {
             sessions,
             ..Snapshot::default()
@@ -1198,7 +1198,7 @@ fn many_row(n: usize) -> SessionRow {
         repos: vec!["thurbox".into()],
         branch: Some(format!("feat/thing-{n}")),
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some(format!("%{n}")),
         remote_host: None,
         agent_session_id: None,
@@ -1252,7 +1252,7 @@ fn publish_at(host: &LuaHost, epoch: Epoch, snapshot: &Snapshot, search: &Answer
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch,
         snapshot,

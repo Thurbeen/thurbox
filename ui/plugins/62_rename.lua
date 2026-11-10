@@ -8,8 +8,8 @@
 -- and this owns the field, issues `rename` on enter, and stays up until the
 -- command answers — so a name the kernel refuses is explained here, beside the
 -- text that caused it, rather than as a failure on a row the eye has left. The
--- rules are the kernel's alone (`session_ops::rename`); a copy of them in Lua
--- would be a second list to drift.
+-- rules are the engine's alone; a copy of them in Lua would be a second list
+-- to drift.
 
 local modal = require("lib.modal")
 local textinput = require("lib.textinput")

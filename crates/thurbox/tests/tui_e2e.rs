@@ -36,8 +36,6 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use thurbox::backend::tmux_compat::server::TmuxCompatible;
-
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
@@ -56,9 +54,6 @@ const WAIT: Duration = Duration::from_secs(20);
 const CTRL_P: &[u8] = b"\x10";
 const CTRL_Q: &[u8] = b"\x11";
 const CTRL_Y: &[u8] = b"\x19";
-/// Readline's end-of-line, and so one of the chords the interface defers to a
-/// focused agent (`passthrough` in `ui/plugins/10_sessions.lua`).
-const CTRL_E: &[u8] = b"\x05";
 /// What a legacy terminal sends for `ctrl+/` (the search plugin folds
 /// `ctrl+/`, `ctrl+7` and `ctrl+_` into one chord).
 const CTRL_SLASH: &[u8] = b"\x1f";
@@ -98,17 +93,6 @@ fn have_tmux() -> bool {
         .unwrap_or(false)
 }
 
-fn have_rmux() -> bool {
-    Command::new("rmux").arg("-V").output().is_ok_and(|output| {
-        output.status.success()
-            && thurbox::backend::rmux::Rmux::check_banner(
-                &String::from_utf8_lossy(&output.stdout),
-                "test",
-            )
-            .is_ok()
-    })
-}
-
 /// The isolated profile a scenario runs in: every directory the binary reads
 /// or writes, under one tempdir that goes away with the test — except the
 /// multiplexer's socket directory, which has to be short.
@@ -137,11 +121,95 @@ impl Profile {
         )
         .expect("seed settings");
         let bin = root.path().join("bin");
+        // Fleet is the engine every interface starts (`fleet watch`, `fleet
+        // up`), found on `PATH` as `fleet`. This one has no Tasks and no
+        // manager to start, so a profile never reaches a real store; the
+        // watch ends with the interface that started it.
+        write_script(
+            &bin.join("fleet"),
+            "#!/bin/sh\ncase \"$1\" in\n  watch) while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  *) echo \"error: no Fleet in this profile\" >&2; exit 1 ;;\nesac\n",
+        );
         Self {
             root,
             bin,
             server: TmuxServer::private(&private_socket()),
         }
+    }
+
+    /// Put a real Fleet in front of this profile: its own store and config,
+    /// the multiplexer runtime on this profile's tmux directory (reaped with
+    /// the server guard), and `claude` running `sh`, so a Task's session is a
+    /// shell. `None`, with the reason printed, where the binaries are absent.
+    fn real_fleet(&self) -> Option<()> {
+        let dir = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).parent()?;
+        let (fleet, runtime) = (dir.join("fleet"), dir.join("runtime-mux"));
+        if !fleet.is_file() || !runtime.is_file() {
+            eprintln!("skipping: build fleet and runtime-mux (`cargo build --workspace`)");
+            return None;
+        }
+        let root = self.root.path();
+        std::fs::create_dir_all(root.join("fleet-tmp")).expect("fleet tmp");
+        std::fs::write(
+            root.join("fleet.toml"),
+            format!(
+                "version = 1\n\n[data]\ndir = \"fleet-data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n\n[hosts.local]\nruntime = \"mux\"\n",
+                runtime.display()
+            ),
+        )
+        .expect("fleet config");
+        write_script(
+            &self.bin.join("fleet"),
+            &format!(
+                "#!/bin/sh\nexec env -i HOME='{r}/home' TMPDIR='{r}/fleet-tmp' PATH='{b}:/usr/bin:/bin' TERM=xterm-256color TMUX_TMPDIR='{t}' '{f}' --config '{r}/fleet.toml' \"$@\"\n",
+                r = root.display(),
+                b = self.bin.display(),
+                t = self.server.tmpdir().display(),
+                f = fleet.display(),
+            ),
+        );
+        write_script(&self.bin.join("claude"), "#!/bin/sh\nexec sh\n");
+        Some(())
+    }
+
+    /// Run this profile's Fleet with `input` on stdin; it must succeed. Its
+    /// stdout.
+    fn fleet(&self, args: &[&str], input: &str) -> String {
+        let mut child = Command::new(self.bin.join("fleet"))
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run fleet");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(input.as_bytes())
+            .expect("write");
+        let output = child.wait_with_output().expect("fleet");
+        assert!(
+            output.status.success(),
+            "fleet {args:?} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The Task `name` as Fleet stores it.
+    fn fleet_task(&self, name: &str) -> serde_json::Value {
+        serde_json::from_str(&self.fleet(&["get", "task", name], "")).expect("a Task as JSON")
+    }
+
+    /// A dispatched, interactive Task named `name` working in `dir`, its
+    /// session started.
+    fn fleet_session(&self, name: &str, dir: &Path) {
+        let task = format!(
+            r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"{name}"}},"spec":{{"harness":"claude-code","host":"local","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+            dir.display()
+        );
+        self.fleet(&["apply", "-f", "-"], &task);
+        self.fleet(&["reconcile"], "");
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -186,18 +254,6 @@ impl Profile {
         for var in GIT_LOCATION_ENV {
             cmd.env_remove(var);
         }
-    }
-
-    /// Run `thurbox-cli` in this profile; it must succeed.
-    fn cli(&self, args: &[&str]) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        self.apply(&mut cmd);
-        let output = cmd.args(args).output().expect("run thurbox-cli");
-        assert!(
-            output.status.success(),
-            "thurbox-cli {args:?} failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }
 
@@ -741,103 +797,12 @@ fn a_signal_restores_the_terminal_before_exiting() {
 
 // --- the event loop never waits on the database ----------------------------
 
-/// Another process holding the database's write lock must not freeze the
-/// interface (issue #1474). Bumping the rows generation is what brings the
-/// snapshot round to a full rebuild, whose focus claim is a write — so before
-/// the snapshot's reads and writes moved to a worker, the loop sat in SQLite's
-/// busy wait for the whole 5 s timeout and the keystroke painted only after.
-#[test]
-fn a_held_database_write_lock_does_not_stop_the_interface_painting() {
-    let profile = Profile::new();
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
-
-    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
-    db.execute(
-        "UPDATE snapshot_versions SET rows_version = rows_version + 1",
-        [],
-    )
-    .expect("bump the rows generation");
-    db.execute_batch("BEGIN IMMEDIATE")
-        .expect("take the write lock");
-    // Past one refresh interval, so the rebuild the bump asked for has started.
-    std::thread::sleep(Duration::from_secs(1));
-
-    tui.send(F1);
-    tui.wait_within(
-        Duration::from_secs(2),
-        "the help overlay to paint while another process holds the write lock",
-        |frame| frame.contains("Keybindings"),
-    );
-
-    db.execute_batch("ROLLBACK")
-        .expect("release the write lock");
-    tui.send(ESC);
-    tui.wait_gone("Keybindings");
-    assert!(tui.quit().success());
-}
-
-/// Choosing a theme while another process holds the write lock does not stop
-/// the interface, and the choice is stored once the lock goes (issue #1474).
-/// The picker used to store it through a connection of the loop's own, so the
-/// write waited out the busy timeout on the loop. A lock held past that
-/// timeout still loses the choice; it is only no longer the frame that waits.
-#[test]
-fn choosing_a_theme_under_a_held_write_lock_keeps_painting_and_stores_it() {
-    let profile = Profile::new();
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
-
-    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
-    db.busy_timeout(WAIT).expect("busy timeout");
-    let stored = |db: &rusqlite::Connection| -> Option<String> {
-        db.query_row(
-            "SELECT value FROM metadata WHERE key = 'active_theme'",
-            [],
-            |row| row.get(0),
-        )
-        .ok()
-    };
-    let before = stored(&db);
-    db.execute_batch("BEGIN IMMEDIATE")
-        .expect("take the write lock");
-
-    tui.send(CTRL_Y);
-    tui.wait_within(
-        Duration::from_secs(2),
-        "the theme picker to open under the write lock",
-        |frame| frame.contains("/ filter themes"),
-    );
-    tui.send(b"\x1b[B");
-    tui.send(b"\r");
-    tui.send(F1);
-    tui.wait_within(
-        Duration::from_secs(2),
-        "the help overlay to paint after a theme was chosen under the write lock",
-        |frame| frame.contains("Keybindings"),
-    );
-
-    db.execute_batch("ROLLBACK")
-        .expect("release the write lock");
-    let deadline = Instant::now() + WAIT;
-    while stored(&db) == before {
-        assert!(
-            Instant::now() < deadline,
-            "the theme chosen under the write lock was never stored (still {before:?})"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    tui.send(ESC);
-    tui.wait_gone("Keybindings");
-    assert!(tui.quit().success());
-}
-
 // --- diagnostic logs over OTLP ---------------------------------------------
 
 /// `export_diagnostic_logs` bridges the interface's own `tracing` events to the
 /// collector, at WARN and above only, while the file log keeps everything
 /// (ADR-38, issue #1465 phase 3). The WARN comes from the interface's first
-/// read of an `agents.toml` with a key it does not know.
+/// read of a `settings.toml` with a key it does not know.
 #[test]
 fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
@@ -847,17 +812,12 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     let profile = Profile::new();
     let settings = profile.path("config/settings.toml");
     let mut seeded = std::fs::read_to_string(&settings).expect("read settings");
+    seeded.insert_str(0, "stray_key = 1\n");
     seeded.push_str(&format!(
         "\n[telemetry]\nenabled = true\nendpoint = \"{}\"\nexport_diagnostic_logs = true\n",
         collector.endpoint()
     ));
     std::fs::write(&settings, seeded).expect("write settings");
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "config_version = 1\ndefault = \"claude\"\nstray_key = 1\n\n\
-         [[agents]]\nname = \"claude\"\ncommand = \"claude\"\n",
-    )
-    .expect("write agents.toml");
 
     let mut tui = Tui::spawn_with(&profile, 24, 80, |cmd| {
         // A suite run inside a session with [telemetry] on inherits these.
@@ -1109,20 +1069,7 @@ fn an_unavailable_control_socket_does_not_abort_the_tui() {
     });
     tui.wait_for("interface from");
     tui.wait_for("No sessions yet");
-    let mut saw_control_notice = false;
-    let mut saw_other_status = false;
-    for _ in 0..16 {
-        tui.send(b"\x1a");
-        std::thread::sleep(Duration::from_millis(500));
-        let frame = tui.frame();
-        saw_control_notice |= frame.contains("local UI control unavailable");
-        saw_other_status |= frame.contains("nothing to undo");
-    }
-    assert!(saw_other_status, "status traffic did not reach the TUI");
-    assert!(
-        saw_control_notice,
-        "other status messages hid the control failure"
-    );
+    tui.wait_for("local UI control unavailable");
     assert!(tui.quit().success());
 }
 
@@ -1215,64 +1162,6 @@ fn stale_discovery_entries_do_not_hide_a_live_tui() {
         "dead records must be pruned after discovery"
     );
     assert!(tui.quit().success());
-}
-
-#[test]
-fn session_focus_refuses_a_tui_without_an_agent_pane() {
-    let Some((profile, mut first)) = shell_session() else {
-        return;
-    };
-    let agent = profile.path("config/ui/plugins/20_agent.lua");
-    std::fs::write(
-        profile.path("config/ui.json"),
-        serde_json::json!({"disabled": [agent]}).to_string(),
-    )
-    .expect("disable agent pane");
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("probe");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut cmd);
-    let sessions = cmd
-        .args(["--json", "session", "list"])
-        .output()
-        .expect("sessions");
-    let rows: serde_json::Value = serde_json::from_slice(&sessions.stdout).expect("JSON");
-    let session = rows[0]["id"].as_str().expect("session id");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut cmd);
-    let instances = cmd
-        .args(["--json", "ui", "instances"])
-        .output()
-        .expect("instances");
-    let listed: serde_json::Value = serde_json::from_slice(&instances.stdout).expect("JSON");
-    let target = listed["instances"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry["pid"] == tui.child.id())
-        .and_then(|entry| entry["id"].as_str())
-        .expect("target instance");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut cmd);
-    let output = cmd
-        .args([
-            "--json",
-            "ui",
-            "--instance",
-            target,
-            "action",
-            "session.focus",
-            "--session",
-            session,
-        ])
-        .output()
-        .expect("focus request");
-    assert!(
-        !output.status.success(),
-        "focus must refuse a missing agent pane"
-    );
-    assert!(tui.quit().success());
-    assert!(first.quit().success());
 }
 
 #[test]
@@ -1411,294 +1300,6 @@ fn search_cancel_has_the_same_effect_by_key_and_local_action() {
 }
 
 #[test]
-fn local_ui_control_targets_one_of_two_live_instances() {
-    let Some((profile, mut first)) = shell_session() else {
-        return;
-    };
-    let mut second = Tui::spawn(&profile, 40, 120);
-    second.wait_for("probe");
-    let cli = |args: &[&str]| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut cmd);
-        let output = cmd.args(["--json"]).args(args).output().expect("run cli");
-        (
-            output.status,
-            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON"),
-        )
-    };
-    let deadline = Instant::now() + WAIT;
-    let ids = loop {
-        let (status, value) = cli(&["ui", "instances"]);
-        if status.success() {
-            let entries = value["instances"].as_array().expect("instances array");
-            if entries.len() == 2 {
-                let id_for = |pid| {
-                    entries
-                        .iter()
-                        .find(|row| row["pid"] == pid)
-                        .and_then(|row| row["id"].as_str())
-                        .expect("instance PID")
-                        .to_owned()
-                };
-                break vec![id_for(first.child.id()), id_for(second.child.id())];
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "two live instances were not discovered"
-        );
-        std::thread::sleep(Duration::from_millis(40));
-    };
-    let (status, ambiguous) = cli(&["ui", "state"]);
-    assert!(!status.success());
-    assert!(ambiguous["error"].to_string().contains("ambiguous"));
-    let directory = profile.path("data/ui-control");
-    assert_eq!(
-        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
-    for id in &ids {
-        let socket = directory.join(format!("{id}.sock"));
-        assert_eq!(
-            std::fs::metadata(socket).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-    let (status, absent) = cli(&[
-        "ui",
-        "--instance",
-        &ids[1],
-        "action",
-        "session.focus",
-        "--session",
-        "00000000-0000-0000-0000-000000000000",
-    ]);
-    assert!(!status.success());
-    assert!(absent["result"]["error"]["message"]
-        .to_string()
-        .contains("not in this interface"));
-    let (status, invalid) = cli(&[
-        "ui",
-        "--instance",
-        &ids[1],
-        "action",
-        "session.focus",
-        "--session",
-        "not-a-uuid",
-    ]);
-    assert!(!status.success());
-    assert!(invalid["result"]["error"]["message"]
-        .to_string()
-        .contains("must be a UUID"));
-
-    let (status, receipt) = cli(&[
-        "ui",
-        "--instance",
-        &ids[0],
-        "action",
-        "search.open",
-        "--query",
-        "one",
-    ]);
-    assert!(status.success());
-    assert_eq!(receipt["instance_id"], ids[0]);
-    assert!(receipt["request_id"].as_str().is_some());
-    assert_eq!(receipt["result"]["ok"], true);
-    assert!(
-        receipt["revision"].as_u64().unwrap()
-            >= receipt["result"]["state"]["revision"].as_u64().unwrap()
-    );
-    first.wait_for("Search one");
-    assert!(!second.frame().contains("Search one"));
-    let (status, state) = cli(&["ui", "--instance", &ids[0], "state"]);
-    assert!(status.success());
-    assert_eq!(state["search_query"], "one");
-    assert_eq!(state["focused_pane"], "search");
-
-    let (status, _) = cli(&[
-        "ui",
-        "--instance",
-        &ids[1],
-        "action",
-        "search.open",
-        "--query",
-        "two",
-    ]);
-    assert!(status.success());
-    second.wait_for("Search two");
-    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
-    assert!(status.success());
-    assert_eq!(state["search_query"], "two");
-    let revision = state["revision"].clone();
-    let (status, _) = cli(&[
-        "ui",
-        "--instance",
-        &ids[1],
-        "action",
-        "search.open",
-        "--query",
-        "two",
-    ]);
-    assert!(status.success());
-    second.wait_for("Search two");
-    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
-    assert!(status.success());
-    assert_eq!(state["search_query"], "two");
-    assert!(state["revision"].as_u64().unwrap() > revision.as_u64().unwrap());
-    let since = revision.as_u64().unwrap().to_string();
-    let (status, outcome) = cli(&[
-        "ui",
-        "--instance",
-        &ids[1],
-        "watch",
-        "--since",
-        &since,
-        "--once",
-    ]);
-    assert!(status.success());
-    assert!(outcome["events"].as_array().unwrap().iter().any(|event| {
-        event["kind"] == "action.completed" && event["value"]["action"] == "search.open"
-    }));
-
-    let (status, sessions) = cli(&["session", "list"]);
-    assert!(status.success());
-    let session = sessions[0]["id"].as_str().expect("session id");
-    let (status, _) = cli(&[
-        "ui",
-        "--instance",
-        &ids[1],
-        "action",
-        "session.focus",
-        "--session",
-        session,
-    ]);
-    assert!(status.success());
-    let (status, state) = cli(&["ui", "--instance", &ids[1], "state"]);
-    assert!(status.success());
-    assert_eq!(state["selected_session"], session);
-    assert_eq!(state["focused_pane"], "agent");
-    let (status, first_state) = cli(&["ui", "--instance", &ids[0], "state"]);
-    assert!(status.success());
-    assert_eq!(first_state["search_query"], "one");
-
-    assert!(second.quit().success());
-    let (status, stale) = cli(&["ui", "--instance", &ids[1], "state"]);
-    assert!(!status.success());
-    assert!(stale["error"].to_string().contains("instance"));
-    assert!(first.quit().success());
-}
-
-#[test]
-fn destructive_ui_action_needs_a_single_use_instance_bound_confirmation() {
-    let Some((profile, mut tui)) = shell_session() else {
-        return;
-    };
-    let mut discover = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut discover);
-    let output = discover
-        .args(["--json", "ui", "instances"])
-        .output()
-        .expect("discover UI");
-    assert!(output.status.success());
-    let discovery: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("instance JSON");
-    let instance: thurbox::ui_control::Instance =
-        serde_json::from_value(discovery["instances"][0].clone()).expect("running interface");
-    let list = || {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut command);
-        let output = command
-            .args(["--json", "session", "list"])
-            .output()
-            .expect("list sessions");
-        assert!(output.status.success());
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("session JSON")
-    };
-    let sessions = list();
-    let session = sessions[0]["id"].as_str().expect("session id");
-    tui.send(b"\x08");
-    let addressed = thurbox::ui_control::send(
-        &instance,
-        &thurbox::ui_control::Request::Input {
-            target: "sessions".into(),
-            input: thurbox::ui_control::InputOperation::Key { chord: "D".into() },
-        },
-    )
-    .expect("addressed key reply");
-    assert_eq!(
-        addressed.result["error"]["code"], "confirmation_required",
-        "{}",
-        addressed.result
-    );
-    assert!(list()
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["id"] == session));
-    let requested = thurbox::ui_control::send(
-        &instance,
-        &thurbox::ui_control::Request::Action {
-            name: "sessions.force_delete".into(),
-            args: serde_json::json!({"session_id": session}),
-        },
-    )
-    .expect("action reply");
-    assert_eq!(requested.result["error"]["code"], "confirmation_required");
-    let ticket = requested.result["error"]["ticket"]
-        .as_str()
-        .expect("confirmation ticket");
-    assert!(!ticket.is_empty());
-    let audit = profile.path("data/ui-control/audit.jsonl");
-    assert_eq!(
-        std::fs::metadata(&audit).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    let recorded = std::fs::read_to_string(&audit).expect("audit record");
-    assert!(recorded.contains("sessions.force_delete"));
-    assert!(recorded.contains(session));
-    assert_eq!(
-        recorded
-            .lines()
-            .filter(|line| line.contains("\"outcome\":\"confirmation_required\""))
-            .count(),
-        1,
-        "the decision is recorded once"
-    );
-    let still_present = list();
-    assert!(still_present
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["id"] == session));
-
-    let confirm = |ticket: &str| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut command);
-        let output = command
-            .args([
-                "--json",
-                "ui",
-                "--instance",
-                &instance.id,
-                "confirm",
-                ticket,
-            ])
-            .output()
-            .expect("confirm command");
-        (
-            output.status,
-            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("confirmation JSON"),
-        )
-    };
-    let (status, confirmed) = confirm(ticket);
-    assert!(status.success(), "confirmation: {confirmed}");
-    let (status, replay) = confirm(ticket);
-    assert!(!status.success());
-    assert_eq!(replay["result"]["error"]["code"], "invalid_ticket");
-    assert!(tui.quit().success());
-}
-
-#[test]
 fn addressed_text_cannot_answer_a_destructive_confirmation() {
     let Some((profile, mut tui)) = shell_session() else {
         return;
@@ -1713,7 +1314,7 @@ fn addressed_text_cannot_answer_a_destructive_confirmation() {
     let instance: thurbox::ui_control::Instance =
         serde_json::from_value(instances["instances"][0].clone()).unwrap();
     tui.send(b"\x08");
-    tui.send(b"D");
+    tui.send(b"\x04");
     tui.wait_for("Confirm");
     let reply = thurbox::ui_control::send(
         &instance,
@@ -1725,135 +1326,6 @@ fn addressed_text_cannot_answer_a_destructive_confirmation() {
     .expect("addressed text reply");
     assert_eq!(reply.result["error"]["code"], "confirmation_required");
     tui.wait_for("Confirm");
-    tui.send(ESC);
-    tui.wait_gone("Confirm");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn destructive_ui_action_fails_closed_when_the_audit_file_is_not_private() {
-    let Some((profile, mut tui)) = shell_session() else {
-        return;
-    };
-    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut command);
-    let output = command
-        .args(["--json", "ui", "instances"])
-        .output()
-        .expect("instances");
-    let instances: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let instance: thurbox::ui_control::Instance =
-        serde_json::from_value(instances["instances"][0].clone()).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut command);
-    let output = command
-        .args(["--json", "session", "list"])
-        .output()
-        .expect("sessions");
-    let sessions: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let session = sessions[0]["id"].as_str().unwrap();
-    let audit = profile.path("data/ui-control/audit.jsonl");
-    std::fs::write(&audit, "").expect("audit file");
-    std::fs::set_permissions(&audit, std::fs::Permissions::from_mode(0o644))
-        .expect("weaken audit permissions");
-    let reply = thurbox::ui_control::send(
-        &instance,
-        &thurbox::ui_control::Request::Action {
-            name: "sessions.force_delete".into(),
-            args: serde_json::json!({"session_id": session}),
-        },
-    )
-    .expect("action reply");
-    assert_eq!(reply.result["error"]["code"], "audit_unavailable");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut command);
-    let output = command
-        .args(["--json", "session", "list"])
-        .output()
-        .expect("sessions");
-    let still_present: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(still_present
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["id"] == session));
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn confirmation_rejects_another_instance_and_a_removed_target() {
-    let Some((profile, mut first)) = shell_session() else {
-        return;
-    };
-    let mut second = Tui::spawn(&profile, 40, 120);
-    second.wait_for("probe");
-    let cli = |args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut command);
-        let output = command.args(["--json"]).args(args).output().expect("CLI");
-        (
-            output.status,
-            serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON"),
-        )
-    };
-    let (_, instances) = cli(&["ui", "instances"]);
-    let rows = instances["instances"].as_array().expect("instances");
-    let first_id = rows
-        .iter()
-        .find(|row| row["pid"] == first.child.id())
-        .unwrap()["id"]
-        .as_str()
-        .unwrap();
-    let second_id = rows
-        .iter()
-        .find(|row| row["pid"] == second.child.id())
-        .unwrap()["id"]
-        .as_str()
-        .unwrap();
-    let (_, sessions) = cli(&["session", "list"]);
-    let session = sessions[0]["id"].as_str().unwrap();
-    let (status, request) = cli(&[
-        "ui",
-        "--instance",
-        first_id,
-        "action",
-        "sessions.force_delete",
-        "--session",
-        session,
-    ]);
-    assert!(!status.success());
-    let ticket = request["result"]["error"]["ticket"]
-        .as_str()
-        .expect("ticket");
-    let (status, cross) = cli(&["ui", "--instance", second_id, "confirm", ticket]);
-    assert!(!status.success());
-    assert_eq!(cross["result"]["error"]["code"], "invalid_ticket");
-    let (status, _) = cli(&["session", "delete", session]);
-    assert!(status.success());
-    first.wait_gone("probe");
-    let (status, stale) = cli(&["ui", "--instance", first_id, "confirm", ticket]);
-    assert!(!status.success());
-    assert_eq!(stale["result"]["error"]["code"], "stale_target");
-    assert!(second.quit().success());
-    assert!(first.quit().success());
-}
-
-#[test]
-fn keyboard_force_delete_uses_the_shared_confirmation_float() {
-    let Some((profile, mut tui)) = shell_session() else {
-        return;
-    };
-    tui.send(b"\x08");
-    tui.send(b"D");
-    tui.wait_for("Confirm");
-    let mut list = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut list);
-    let output = list
-        .args(["--json", "session", "list"])
-        .output()
-        .expect("sessions");
-    let sessions: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(sessions.as_array().unwrap().len(), 1);
     tui.send(ESC);
     tui.wait_gone("Confirm");
     assert!(tui.quit().success());
@@ -2166,45 +1638,6 @@ fn float_focus_without_opt_in_keeps_the_existing_cycle() {
     tui.wait_for("CARDS alpha calls=0 behind=sessions");
     tui.send(b"\x08");
     tui.wait_for("CARDS alpha calls=0 behind=agent");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn float_focus_named_actions_use_the_same_hook() {
-    let (_interface, profile, mut tui) = float_focus_tui(true);
-    tui.send(b"\x02");
-    tui.wait_for("CARDS alpha calls=0 behind=agent");
-    profile.cli(&["ui", "action", "kernel.focus_next"]);
-    tui.wait_for("CARDS beta calls=1 behind=agent");
-    profile.cli(&["ui", "action", "kernel.focus_previous"]);
-    tui.wait_for("CARDS alpha calls=2 behind=agent");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn float_focus_only_the_topmost_float_receives_the_cycle() {
-    let fixture = include_str!("fixtures/float_focus/91_cards.lua");
-    let interface = interface_plus("91_cards.lua", fixture);
-    let upper = fixture
-        .replace("cards", "upper")
-        .replace("CARDS", "UPPER")
-        .replace("ctrl+b", "ctrl+o");
-    std::fs::write(interface.path().join("plugins/92_upper.lua"), upper).unwrap();
-    let profile = Profile::new();
-    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-    });
-    tui.wait_for("No sessions yet");
-    tui.send(b"\x02");
-    tui.wait_for("CARDS alpha calls=0 behind=agent");
-    profile.cli(&["ui", "action", "upper.open"]);
-    tui.wait_for("UPPER alpha calls=0 behind=agent");
-    tui.send(b"\x0c");
-    tui.wait_for("UPPER beta calls=1 behind=agent");
-    tui.send(ESC);
-    tui.wait_for("CARDS alpha calls=0 behind=agent");
-    tui.send(b"\x08");
-    tui.wait_for("CARDS gamma calls=1 behind=agent");
     assert!(tui.quit().success());
 }
 
@@ -3442,7 +2875,7 @@ fn trust(profile: &Profile, interface: &Path, file: &str, contents: &str) {
     let raw = interface.join(file);
     let canonical = raw.canonicalize().expect("canonicalize");
     std::fs::write(
-        profile.path("config/ui.json"),
+        profile.path("config/plugin-state.json"),
         format!(r#"{{"trusted": {{ {raw:?}: "{digest}", {canonical:?}: "{digest}" }}}}"#),
     )
     .expect("seed trust");
@@ -3481,88 +2914,6 @@ fn a_sessionless_run_is_refused_before_queueing_and_local_runs_complete() {
     tui.wait_for("LOCAL-RUN-OK");
     assert!(!tui.frame().contains("MISSING-ACCEPTED"));
     assert!(tui.quit().success());
-}
-
-/// #1467: trust and the disabled set leave `ui.json` for a store of their own.
-/// A profile written before the move must keep every decision — the first
-/// start migrates it, and the second start, reading only the new store, must
-/// still grant `run` to the trusted pane and keep the disabled one off.
-#[test]
-fn legacy_trust_and_disabled_choices_move_to_their_own_store_and_still_apply() {
-    let body = r#"return {
-  name = "migrated", slot = "sessions", capabilities = { "run" },
-  render = function()
-    if not run then return { type = "text", text = "MIGRATED-UNTRUSTED" } end
-    if not state.asked then
-      run("m", "printf MIGRATED-RUN-OK", { machine = "local", ttl = 60 })
-      state.asked = true
-    end
-    local got = (thurbox.runs or {}).m
-    return { type = "text", text = got and (got.stdout or got.state) or "pending" }
-  end,
-}"#;
-    let off = r#"return {
-  name = "off", slot = "off",
-  render = function() return { type = "text", text = "OFF-PANE-DREW" } end,
-}"#;
-    let interface = interface_with("plugins/10_sessions.lua", body);
-    let off_path = interface.path().join("plugins/91_off.lua");
-    std::fs::write(&off_path, off).expect("off pane");
-    std::fs::write(
-        interface.path().join("layout.lua"),
-        "return function() return { children = { { slot = 'sessions' }, { slot = 'off' } } } end",
-    )
-    .expect("layout");
-    let profile = Profile::new();
-    let digest = thurbox::kernel::bundled::digest(body);
-    let raw = interface.path().join("plugins/10_sessions.lua");
-    let canonical = raw.canonicalize().expect("canonicalize");
-    let ui_json = profile.path("config/ui.json");
-    std::fs::write(
-        &ui_json,
-        format!(
-            r#"{{"pills": {{"sessions.create": 7}},
-"trusted": {{ {raw:?}: "{digest}", {canonical:?}: "{digest}" }},
-"disabled": [{off_path:?}]}}"#
-        ),
-    )
-    .expect("seed a legacy ui.json");
-
-    for start in ["migrating", "reading the store"] {
-        let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
-            cmd.env("THURBOX_UI_DIR", interface.path());
-        });
-        tui.wait_for("MIGRATED-RUN-OK");
-        assert!(
-            !tui.frame().contains("OFF-PANE-DREW"),
-            "{start}: the disabled pane drew\n{}",
-            tui.frame()
-        );
-        assert!(tui.quit().success());
-
-        let store: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(profile.path("config/plugin-state.json"))
-                .unwrap_or_else(|e| panic!("{start}: no plugin-state.json: {e}")),
-        )
-        .expect("store json");
-        assert!(
-            !store["trusted"][raw.to_string_lossy().as_ref()].is_null(),
-            "{start}: the grant did not move: {store}"
-        );
-        assert_eq!(
-            store["disabled"],
-            serde_json::json!([off_path]),
-            "{start}: the disabled set did not move"
-        );
-        let ui: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&ui_json).expect("ui.json"))
-                .expect("ui json");
-        assert!(
-            ui.get("trusted").is_none() && ui.get("disabled").is_none(),
-            "{start}: ui.json still carries trust or the disabled set: {ui}"
-        );
-        assert_eq!(ui["pills"]["sessions.create"], 7, "{start}: {ui}");
-    }
 }
 
 /// Keep the real server and its output alive while closing only the control
@@ -3743,52 +3094,6 @@ const CONFIGURED_HOST_RUN: &str = r#"return {
 }"#;
 
 #[test]
-fn configured_host_runs_need_no_session_or_sharing_and_keep_execution_bounded() {
-    let interface = interface_with("plugins/10_sessions.lua", CONFIGURED_HOST_RUN);
-    std::fs::write(
-        interface.path().join("layout.lua"),
-        "return function() return { children = { { slot = 'sessions' } } } end",
-    )
-    .expect("layout");
-    let profile = configured_host_run_profile();
-    trust(
-        &profile,
-        interface.path(),
-        "plugins/10_sessions.lua",
-        CONFIGURED_HOST_RUN,
-    );
-    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-    });
-    tui.wait_for(&format!("HOST-API-OK:{}", profile.path("home").display()));
-    tui.wait_for("sessions=0");
-    for result in [
-        "HOST-OFFLINE-OK",
-        "HOST-TIMEOUT-OK",
-        "HOST-CAP-OK",
-        "HOST-MISSING-REFUSED",
-    ] {
-        tui.wait_for(result);
-    }
-    let calls = std::fs::read_to_string(profile.path("host-run-calls")).expect("calls");
-    assert!(calls.contains("HostKeyAlias=fixture"), "{calls}");
-    assert!(!calls.contains("HOST-API-MUST-NOT-RUN"), "{calls}");
-    let pid: i32 = std::fs::read_to_string(profile.path("host-run-pid"))
-        .expect("transport pid")
-        .trim()
-        .parse()
-        .expect("pid");
-    // The stand-in execs its sleeper: this pins local transport termination,
-    // without claiming that killing SSH can terminate a remote command.
-    assert_eq!(
-        unsafe { libc::kill(pid, 0) },
-        -1,
-        "timed-out transport survived"
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
 fn configured_host_runs_still_require_a_trusted_run_capability() {
     let interface = interface_with("plugins/10_sessions.lua", CONFIGURED_HOST_RUN);
     let profile = configured_host_run_profile();
@@ -3798,176 +3103,6 @@ fn configured_host_runs_still_require_a_trusted_run_capability() {
     tui.wait_for("HOST-RUN-UNTRUSTED");
     let calls = std::fs::read_to_string(profile.path("host-run-calls")).unwrap_or_default();
     assert!(!calls.contains("HOST-API-"), "{calls}");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn forgetting_retired_host_keys_bounds_answers_across_repeated_churn() {
-    let body = r#"return {
-  name = "retention", slot = "sessions", capabilities = { "run" },
-  render = function()
-    if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
-    state.round = state.round or 1
-    local count = 0
-    for _ in pairs(thurbox.runs) do count = count + 1 end
-    if count > 1 then error("retired answers accumulated: " .. count) end
-    if state.round > 32 then
-      return { type = "text", text = count == 0 and "HOST-CHURN-BOUNDED" or "retiring" }
-    end
-    local key = "host:rotating-" .. state.round
-    local got = thurbox.runs[key]
-    if got and got.state == "done" and got.ok then
-      run_forget(key)
-      run_forget(key)
-      state.round = state.round + 1
-    else
-      run(key, "printf HOST-API-CHURN", { machine = "host:rotating-" .. state.round, ttl = 60 })
-    end
-    return { type = "text", text = "host churn " .. state.round }
-  end,
-}"#;
-    let interface = interface_with("plugins/10_sessions.lua", body);
-    let profile = configured_host_run_profile();
-    // The registry is fixed at startup. Rotate the consumer's desired hosts,
-    // without implying that editing hosts.toml reloads the running registry.
-    let mut hosts = String::new();
-    for round in 1..=32 {
-        hosts.push_str(&format!(
-            "[[hosts]]\nname = \"rotating-{round}\"\ndestination = \"fixture-host\"\nshare_sessions = false\n"
-        ));
-    }
-    std::fs::write(profile.path("config/hosts.toml"), hosts).expect("hosts");
-    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
-    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-    });
-    let deadline = Instant::now() + WAIT;
-    while !tui.frame().contains("HOST-CHURN-BOUNDED") && Instant::now() < deadline {
-        // Drive the input/repaint cycles a changing desired-host set causes,
-        // rather than relying on an otherwise idle interface's redraw floor.
-        tui.send(b"\x0c");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(
-        tui.frame().contains("HOST-CHURN-BOUNDED"),
-        "{}",
-        tui.frame()
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn forgetting_an_active_request_does_not_replace_a_reused_keys_new_answer() {
-    let body = r#"return {
-  name = "forget-race", slot = "sessions", capabilities = { "run" },
-  keys = { { key = "ctrl+g", action = "reuse", desc = "Reuse forgotten key", scope = "global" } },
-  on_action = function()
-    run_forget("same")
-    run_forget("same")
-    run("same", "printf HOST-API-NEW", { machine = "host:local", ttl = 60 })
-    return true
-  end,
-  render = function()
-    if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
-    if not state.asked then
-      run("same", "printf HOST-API-OLD", { machine = "host:local", ttl = 60 })
-      state.asked = true
-    end
-    local got = thurbox.runs.same
-    return { type = "text", text = got and (got.stdout or got.state) or "forgotten" }
-  end,
-}"#;
-    let interface = interface_with("plugins/10_sessions.lua", body);
-    let profile = configured_host_run_profile();
-    let old_started = profile.path("old-started");
-    let release_old = profile.path("release-old");
-    let old_finished = profile.path("old-finished");
-    let script = profile.bin.join("ssh");
-    let original = std::fs::read_to_string(&script).expect("fixture");
-    let gated = original.replacen(
-        "case \"$*\" in",
-        &format!(
-            r#"case "$*" in
-  *HOST-API-OLD*)
-    touch {started}
-    n=0
-    while [ ! -f {release} ] && [ "$n" -lt 250 ]; do
-      sleep 0.02
-      n=$((n + 1))
-    done
-    printf HOST-API-OLD
-    touch {finished}
-    exit 0 ;;
-"#,
-            started = shell_word(&old_started),
-            release = shell_word(&release_old),
-            finished = shell_word(&old_finished),
-        ),
-        1,
-    );
-    std::fs::write(script, gated).expect("gated fixture");
-    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
-    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-    });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !old_started.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        old_started.exists(),
-        "old request never reached the transport: {}",
-        tui.frame()
-    );
-    tui.send(b"\x07");
-    tui.wait_for("HOST-API-NEW");
-    std::fs::write(release_old, "release").expect("release old transport");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !old_finished.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(old_finished.exists(), "old transport never finished");
-    // Let the real coordinator consume the transport's late completion. The
-    // replacement must remain readable after repeated paints and polls.
-    for _ in 0..10 {
-        tui.send(b"\x0c");
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(tui.frame().contains("HOST-API-NEW"), "{}", tui.frame());
-    }
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn forgetting_a_queued_host_request_prevents_its_transport_from_starting() {
-    let body = r#"return {
-  name = "queued-forget", slot = "sessions", capabilities = { "run" },
-  render = function()
-    if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
-    if not state.asked then
-      for i = 1, 4 do
-        run("busy:" .. i, "echo HOST-API-STALL", { machine = "host:local", ttl = 60, timeout = 0.25 })
-      end
-      run("discard", "echo HOST-API-QUEUED-MUST-NOT-START", { machine = "host:local", ttl = 60 })
-      run_forget("discard")
-      run_forget("discard")
-      run("after", "printf HOST-API-QUEUE-DRAINED", { machine = "host:local", ttl = 60 })
-      state.asked = true
-    end
-    if thurbox.runs.discard then error("forgotten queued answer survived") end
-    local got = thurbox.runs.after
-    return { type = "text", text = got and (got.stdout or got.state) or "pending" }
-  end,
-}"#;
-    let interface = interface_with("plugins/10_sessions.lua", body);
-    let profile = configured_host_run_profile();
-    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
-    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-    });
-    tui.wait_for("HOST-API-QUEUE-DRAINED");
-    let calls = std::fs::read_to_string(profile.path("host-run-calls")).expect("calls");
-    assert!(!calls.contains("HOST-API-QUEUED-MUST-NOT-START"), "{calls}");
-    assert_eq!(calls.matches("HOST-API-STALL").count(), 4, "{calls}");
     assert!(tui.quit().success());
 }
 
@@ -4023,7 +3158,7 @@ fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
         "plugins/10_sessions.lua",
         forgetting,
     );
-    let grants = profile.path("config/ui.json");
+    let grants = profile.path("config/plugin-state.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&grants).expect("trust")).expect("json");
     let path = interface.path().join(second);
@@ -4234,428 +3369,6 @@ fn the_terminal_title_stays_visible_in_a_narrow_session_list() {
     assert!(tui.quit().success());
 }
 
-/// A local shell beside a stored SSH session, with no live remote connection.
-/// The session list is the subject; no test needs to attach to the remote pane.
-fn hosted_session_list() -> Option<(Profile, Tui)> {
-    shell_session_prepared(
-        |profile| {
-            let second = profile.path("second");
-            std::fs::create_dir_all(&second).expect("second root");
-            let local_repo = repo(&second);
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "local-row",
-                "--repo-path",
-                local_repo.to_str().expect("utf-8 path"),
-                "--agent",
-                "shell",
-            ]);
-            std::fs::write(
-                profile.path("config/hosts.toml"),
-                "[[hosts]]\nname = \"example-ssh\"\ndestination = \"invalid.example\"\n",
-            )
-            .expect("hosts");
-            let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
-            db.execute(
-                "UPDATE sessions SET backend_type = 'ssh:example-ssh' WHERE name = 'probe'",
-                [],
-            )
-            .expect("put probe on host");
-        },
-        |_| {},
-    )
-}
-
-#[test]
-fn ssh_host_labels_do_not_depend_on_platform() {
-    let Some((_profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            for name in ["linux-session", "windows-session"] {
-                profile.cli(&[
-                    "session",
-                    "create",
-                    "--name",
-                    name,
-                    "--repo-path",
-                    profile.path("repo").to_str().unwrap(),
-                    "--agent",
-                    "shell",
-                ]);
-            }
-            std::fs::write(
-                profile.path("config/hosts.toml"),
-                "[[hosts]]\nname = \"build-box\"\ndestination = \"invalid.example\"\nplatform = \"posix\"\n\n[[hosts]]\nname = \"win-desk\"\ndestination = \"invalid.example\"\nplatform = \"windows\"\n",
-            ).expect("hosts");
-            let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).unwrap();
-            for (name, backend) in [
-                ("linux-session", "ssh:build-box:tmux"),
-                ("windows-session", "ssh:win-desk:psmux"),
-            ] {
-                db.execute(
-                    "UPDATE sessions SET backend_type = ?1 WHERE name = ?2",
-                    [backend, name],
-                )
-                .unwrap();
-            }
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    tui.wait_for("@ build-box");
-    tui.wait_for("@ win-desk");
-    tui.press(0, tui.find("@ win-desk"));
-    tui.wait_gone("windows-session");
-    assert!(tui.frame().contains("@ win-desk"));
-    assert!(tui.quit().success());
-}
-
-/// A session on a host that does not answer shows `unreachable`, never the
-/// `idle` its row last held. A shareable host (the default) is mirrored as
-/// well as attached, and neither failing may leave the stale word standing.
-#[test]
-fn a_session_on_a_host_that_does_not_answer_reads_unreachable_not_idle() {
-    use std::os::unix::fs::PermissionsExt;
-    let Some((_profile, tui)) = shell_session_prepared(
-        |profile| {
-            let ssh = profile.bin.join("ssh");
-            std::fs::write(
-                &ssh,
-                "#!/bin/sh\necho 'ssh: connect to host down.example port 22: Connection timed out' >&2\nexit 255\n",
-            )
-            .expect("ssh stand-in");
-            std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-            std::fs::write(
-                profile.path("config/hosts.toml"),
-                "[[hosts]]\nname = \"down-box\"\ndestination = \"down.example\"\n",
-            )
-            .expect("hosts");
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "remote-row",
-                "--repo-path",
-                profile.path("repo").to_str().expect("utf-8 path"),
-                "--agent",
-                "shell",
-            ]);
-            let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
-            db.execute(
-                "UPDATE sessions SET backend_type = 'ssh:down-box:tmux', backend_id = '%7', \
-                 hook_state = 'idle', hook_state_at = 1 WHERE name = 'remote-row'",
-                [],
-            )
-            .expect("put probe on a host that is down");
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    tui.wait_for("@ down-box");
-    tui.wait_until("the remote row to read unreachable", |frame| {
-        frame.contains("⊘ remote-row")
-    });
-}
-
-fn selected_session(profile: &Profile) -> Option<String> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut cmd);
-    let output = cmd
-        .args(["--json", "ui", "state"])
-        .output()
-        .expect("ui state");
-    assert!(output.status.success());
-    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("state JSON");
-    state["selected_session"].as_str().map(str::to_owned)
-}
-
-fn select_expanded_host(tui: &mut Tui) {
-    tui.press(0, tui.find("example-ssh"));
-    tui.wait_gone("probe");
-    tui.send(b"l");
-    tui.wait_for("probe");
-}
-
-fn record_tui_transition(tui: &Tui, before: String, output_var: &str) {
-    if let Ok(path) = std::env::var(output_var) {
-        let after = tui.screen.lock().unwrap().screen().contents_formatted();
-        let event = |time, contents: String| {
-            serde_json::json!([time, "o", format!("\x1b[2J\x1b[H{contents}")])
-        };
-        let cast = [
-            serde_json::json!({"version": 2, "width": 120, "height": 40}),
-            event(0.0, before),
-            event(2.0, after),
-            serde_json::json!([4.0, "o", ""]),
-        ];
-        std::fs::write(
-            path,
-            cast.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n",
-        )
-        .expect("write fold demonstration");
-    }
-}
-
-#[test]
-fn folding_a_selected_child_selects_its_parent_in_the_running_tui() {
-    let Some((profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            let parent = session_id(profile, "probe");
-            let repo = profile.path("repo");
-            for name in ["worker-a", "worker-b"] {
-                profile.cli(&[
-                    "session",
-                    "create",
-                    "--name",
-                    name,
-                    "--repo-path",
-                    repo.to_str().expect("utf-8 path"),
-                    "--agent",
-                    "shell",
-                    "--parent",
-                    &parent,
-                ]);
-            }
-            profile.cli(&[
-                "session",
-                "signal",
-                "--session",
-                &session_id(profile, "worker-b"),
-                "--state",
-                "blocked",
-            ]);
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    tui.wait_until("both children in the sessions list", |_| {
-        tui.session_row("worker-a").is_some() && tui.session_row("worker-b").is_some()
-    });
-    tui.press(0, tui.session_row("worker-a").expect("child row"));
-    wait_selected(&tui, &profile, &session_id(&profile, "worker-a"));
-    let before = tui.screen.lock().unwrap().screen().contents_formatted();
-    let (_, y) = tui.session_row("probe").expect("parent row");
-    let row = tui.row(y);
-    let x = row
-        .chars()
-        .position(|c| c == '▾')
-        .expect("parent fold handle") as u16;
-    tui.press(0, (x, y));
-    tui.wait_until("the quiet child to fold away", |_| {
-        tui.session_row("worker-a").is_none()
-    });
-    assert!(
-        tui.session_row("worker-b").is_some(),
-        "blocked child stays visible"
-    );
-    record_tui_transition(&tui, before, "THURBOX_FOLD_CAST");
-    assert_eq!(
-        selected_session(&profile),
-        Some(session_id(&profile, "probe")),
-        "folding must select the parent rather than the row replacing its child"
-    );
-    tui.send(b"r");
-    tui.wait_for("Restart probe?");
-    tui.send(ESC);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn answering_a_blocked_child_of_a_folded_parent_keeps_its_terminal_selected() {
-    let Some((profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            let parent = session_id(profile, "probe");
-            let repo = profile.path("repo");
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "worker-b",
-                "--repo-path",
-                repo.to_str().unwrap(),
-                "--agent",
-                "shell",
-                "--parent",
-                &parent,
-            ]);
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "solo",
-                "--repo-path",
-                repo.to_str().unwrap(),
-                "--agent",
-                "shell",
-            ]);
-            profile.cli(&[
-                "session",
-                "signal",
-                "--session",
-                &session_id(profile, "worker-b"),
-                "--state",
-                "blocked",
-            ]);
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    tui.wait_until("the blocked child row", |_| {
-        tui.session_row("worker-b").is_some()
-    });
-    let worker = session_id(&profile, "worker-b");
-    tui.press(0, tui.session_row("worker-b").unwrap());
-    wait_selected(&tui, &profile, &worker);
-    let (_, y) = tui.session_row("probe").unwrap();
-    let x = tui.row(y).chars().position(|c| c == '▾').unwrap() as u16;
-    tui.press(0, (x, y));
-    tui.wait_for("probe +1");
-    wait_selected(&tui, &profile, &worker);
-    let before = tui.screen.lock().unwrap().screen().contents_formatted();
-    profile.cli(&[
-        "session",
-        "signal",
-        "--session",
-        &worker,
-        "--state",
-        "working",
-    ]);
-    tui.wait_gone("Blocked");
-    record_tui_transition(&tui, before, "THURBOX_STATUS_CAST");
-    tui.wait_until("the answered child to stay visible and selected", |_| {
-        tui.session_row("worker-b").is_some()
-            && selected_session(&profile).as_deref() == Some(worker.as_str())
-            && !tui.row(y).contains("probe +1")
-    });
-    assert_eq!(selected_session(&profile).as_deref(), Some(worker.as_str()));
-    tui.send(b"r");
-    tui.wait_for("Restart worker-b?");
-    tui.send(ESC);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn an_external_focus_reveals_a_descendant_beyond_sixty_four_parents() {
-    let Some((profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db")).unwrap();
-            let root = db.get_session_by_name("probe").unwrap().unwrap();
-            let mut parent = root.id;
-            for depth in 1..=70 {
-                let mut child = root.clone();
-                child.id = thurbox::session::SessionId::default();
-                child.name = format!("descendant-{depth}");
-                child.parent_session_id = Some(parent);
-                child.backend_id.clear();
-                child.shell_backend_id = None;
-                db.upsert_session(&child).unwrap();
-                db.set_session_stopped(child.id, true).unwrap();
-                parent = child.id;
-            }
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    tui.press(0, tui.session_row("probe").expect("root row"));
-    tui.send(b"\x1b[D");
-    tui.wait_for("probe +70");
-    let deepest = session_id(&profile, "descendant-70");
-    profile.cli(&["session", "focus", &deepest]);
-    wait_selected(&tui, &profile, &deepest);
-    assert_eq!(
-        selected_session(&profile).as_deref(),
-        Some(deepest.as_str())
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_left_arrow_collapses_expanded_host() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    select_expanded_host(&mut tui);
-    tui.send(b"\x1b[D");
-    tui.wait_gone("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_right_arrow_expands_collapsed_host() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.press(0, tui.find("example-ssh"));
-    tui.wait_gone("probe");
-    tui.send(b"\x1b[C");
-    tui.wait_for("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_left_arrow_moves_to_parent_before_collapsing() {
-    let Some((profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.press(0, tui.find("probe"));
-    tui.send(b"\x1b[D");
-    tui.wait_until("host selection with child still visible", |frame| {
-        frame.contains("probe") && selected_session(&profile).is_none()
-    });
-    tui.send(b"\x1b[D");
-    tui.wait_gone("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_right_arrow_moves_to_first_session() {
-    let Some((profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    let id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .expect("database")
-        .get_session_by_name("probe")
-        .expect("read")
-        .expect("probe")
-        .id
-        .to_string();
-    select_expanded_host(&mut tui);
-    // Host, then its repo row, then the repo's first session.
-    tui.send(b"\x1b[C\x1b[C");
-    tui.wait_until("first session selected", |_| {
-        selected_session(&profile).as_deref() == Some(&id)
-    });
-    tui.send(b"\x1b[C");
-    tui.send(b"r");
-    tui.wait_for("Restart probe?");
-    tui.send(ESC);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_right_click_toggles_without_opening_menu() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.press(2, tui.find("example-ssh"));
-    tui.wait_gone("probe");
-    assert!(!tui.frame().contains("Restore deleted"));
-    tui.press(2, tui.find("example-ssh"));
-    tui.wait_for("probe");
-    assert!(!tui.frame().contains("Restore deleted"));
-    assert!(tui.quit().success());
-}
-
 #[test]
 fn session_host_arrows_reach_focused_agent_pane() {
     let Some((_profile, mut tui)) = shell_session() else {
@@ -4667,523 +3380,6 @@ fn session_host_arrows_reach_focused_agent_pane() {
     });
     tui.send(b"\x1b[D\x1b[C");
     tui.wait_for("^[[D^[[C");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_enter_toggles_the_selected_host() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    select_expanded_host(&mut tui);
-    tui.send(b"\r");
-    tui.wait_gone("probe");
-    tui.send(b"\r");
-    tui.wait_for("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_double_click_toggles_once() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    let point = tui.find("example-ssh");
-    tui.press(0, point);
-    tui.press(0, point);
-    tui.wait_gone("probe");
-    tui.send(b"r");
-    tui.send(F1);
-    tui.wait_for("Keybindings");
-    assert!(!tui.frame().contains("probe"));
-    tui.send(ESC);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_context_menus_reuse_bulk_fold_actions() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.press(2, tui.find("◌ local-row"));
-    tui.wait_for("Delete + worktree");
-    tui.wait_for("Collapse all");
-    tui.press(0, tui.find("Collapse all"));
-    tui.wait_gone("Collapse all");
-    tui.wait_gone("local-row");
-    tui.wait_gone("probe");
-
-    tui.press(2, (3, 20));
-    tui.wait_for("Expand all");
-    tui.press(0, tui.find("Expand all"));
-    tui.wait_gone("Expand all");
-    tui.wait_for("local-row");
-    tui.wait_for("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_bulk_keys_and_boundary_navigation_skip_folded_children() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.send(b"\x08H");
-    tui.wait_gone("probe");
-    tui.wait_gone("local-row");
-    tui.send(b"\x1b[H\x1b[6~\r\x1b[C\x1b[C");
-    tui.wait_for("probe");
-    assert!(!tui.frame().contains("local-row"));
-    tui.send(b"H\x1b[F\x1b[5~\r\x1b[C\x1b[C");
-    tui.wait_for("local-row");
-    assert!(!tui.frame().contains("probe"));
-    tui.send(b"L");
-    tui.wait_for("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_jump_keys_visit_host_handles() {
-    let Some((_profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.press(0, tui.find("◌ local-row"));
-    tui.send(b"]h");
-    tui.wait_gone("probe");
-    tui.send(b"[h");
-    tui.wait_gone("local-row");
-    tui.send(b"L");
-    tui.wait_for("local-row");
-    tui.wait_for("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_control_api_addresses_folds_and_reports_state() {
-    let Some((profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    let mut catalog = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut catalog);
-    let output = catalog
-        .args(["--json", "ui", "actions"])
-        .output()
-        .expect("action catalog");
-    assert!(output.status.success());
-    let catalog: serde_json::Value = serde_json::from_slice(&output.stdout).expect("catalog JSON");
-    let actions = catalog["actions"].as_array().expect("actions");
-    for name in [
-        "sessions.collapse_host",
-        "sessions.expand_host",
-        "sessions.toggle_host",
-        "sessions.parent_host",
-        "sessions.first_child",
-        "sessions.collapse_all",
-        "sessions.expand_all",
-        "sessions.next_host",
-        "sessions.previous_host",
-        "sessions.next_attention",
-        "sessions.first",
-        "sessions.last",
-        "sessions.page_up",
-        "sessions.page_down",
-    ] {
-        assert_eq!(
-            actions
-                .iter()
-                .filter(|action| action["name"] == name)
-                .count(),
-            1,
-            "catalog should declare {name} once"
-        );
-    }
-    profile.cli(&[
-        "ui",
-        "action",
-        "sessions.collapse_host",
-        "--arg",
-        "host=example-ssh",
-    ]);
-    tui.wait_gone("probe");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut cmd);
-    let output = cmd
-        .args(["--json", "ui", "state"])
-        .output()
-        .expect("ui state");
-    assert!(output.status.success());
-    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("state JSON");
-    let pane = state["plugin_state"]
-        .as_object()
-        .expect("plugin state")
-        .values()
-        .find(|pane| pane.get("selected_host").is_some())
-        .expect("session fold projection");
-    assert_eq!(pane["selected_host"], "example-ssh");
-    assert_eq!(pane["host_collapsed"], true);
-    assert_eq!(pane["folded_host_count"], 1);
-    profile.cli(&[
-        "ui",
-        "action",
-        "sessions.expand_host",
-        "--arg",
-        "host=example-ssh",
-    ]);
-    tui.wait_for("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_host_row_folds_by_key_reveals_search_hits_and_survives_restart() {
-    let Some((profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.wait_for("example-ssh");
-    tui.wait_for("probe");
-    tui.send(b"\x08"); // Ctrl+H focuses the session list.
-    tui.send(b"j");
-    tui.send(b"h");
-    tui.wait_until("the host to fold", |frame| {
-        frame.contains("example-ssh") && !frame.contains("probe")
-    });
-    tui.send(b"jjj");
-    let local_id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .expect("database")
-        .get_session_by_name("local-row")
-        .expect("read local session")
-        .expect("local session")
-        .id
-        .to_string();
-    tui.wait_until("navigation to skip the folded child", |_| {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut cmd);
-        let output = cmd
-            .args(["--json", "ui", "state"])
-            .output()
-            .expect("ui state");
-        output.status.success()
-            && serde_json::from_slice::<serde_json::Value>(&output.stdout)
-                .ok()
-                .and_then(|state| state["selected_session"].as_str().map(str::to_string))
-                .as_deref()
-                == Some(local_id.as_str())
-    });
-    assert!(
-        !tui.frame().contains("probe"),
-        "navigation should skip folded children:\n{}",
-        tui.frame()
-    );
-    tui.send(CTRL_SLASH);
-    tui.wait_for("Search");
-    tui.send(b"probe");
-    tui.wait_until("the search hit inside the folded host", |frame| {
-        frame.contains("probe") && frame.contains("example-ssh")
-    });
-    tui.send(ESC);
-    tui.wait_gone("Search");
-    tui.wait_until("the host to fold again after search", |frame| {
-        frame.contains("example-ssh") && !frame.contains("probe")
-    });
-    assert!(tui.quit().success());
-
-    let mut reopened = Tui::spawn(&profile, 40, 120);
-    reopened.wait_for("example-ssh");
-    assert!(
-        !reopened.frame().contains("probe"),
-        "fold state should survive restart:\n{}",
-        reopened.frame()
-    );
-    reopened.send(b"\x08");
-    reopened.send(b"j");
-    reopened.send(b"l");
-    reopened.wait_for("probe");
-    reopened.press(0, reopened.find("example-ssh"));
-    reopened.wait_until("a mouse press to fold the host", |frame| {
-        frame.contains("example-ssh") && !frame.contains("probe")
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    reopened.press(0, reopened.find("example-ssh"));
-    reopened.wait_for("probe");
-    assert!(reopened.quit().success());
-}
-
-#[test]
-fn activating_a_search_hit_inside_a_folded_host_keeps_that_session_selected() {
-    let Some((profile, mut tui)) = hosted_session_list() else {
-        return;
-    };
-    tui.wait_for("example-ssh");
-    tui.wait_for("probe");
-    tui.send(b"\x08");
-    tui.send(b"j");
-    tui.send(b"h");
-    tui.wait_until("the host to fold", |frame| {
-        frame.contains("example-ssh") && !frame.contains("probe")
-    });
-    tui.send(CTRL_SLASH);
-    tui.wait_for("Search");
-    tui.send(b"probe");
-    tui.wait_until("the folded child to appear in search", |frame| {
-        frame.contains("probe") && frame.contains("example-ssh")
-    });
-    tui.send(b"\r");
-    tui.wait_gone("Search");
-    let probe_id = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .expect("database")
-        .get_session_by_name("probe")
-        .expect("read probe")
-        .expect("probe")
-        .id
-        .to_string();
-    tui.wait_until("the accepted remote session to stay selected", |_| {
-        if tui.session_row("probe").is_none() {
-            return false;
-        }
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut cmd);
-        let output = cmd
-            .args(["--json", "ui", "state"])
-            .output()
-            .expect("ui state");
-        output.status.success()
-            && serde_json::from_slice::<serde_json::Value>(&output.stdout)
-                .ok()
-                .and_then(|state| state["selected_session"].as_str().map(str::to_string))
-                .as_deref()
-                == Some(probe_id.as_str())
-    });
-    assert!(tui.quit().success());
-}
-
-/// `probe` in `repo` beside `sibling` in `other-repo`, both local: the local
-/// host row holds two repo rows, each holding one session. `prepare` runs
-/// before the binary starts, for a scenario that changes a setting.
-fn nested_repo_list_with(prepare: impl FnOnce(&Profile)) -> Option<(Profile, Tui)> {
-    let found = shell_session_prepared(
-        |profile| {
-            let second = profile.path("second");
-            std::fs::create_dir_all(&second).expect("second root");
-            let other = named_repo(&second, "other-repo");
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "sibling",
-                "--repo-path",
-                other.to_str().expect("utf-8 path"),
-                "--agent",
-                "shell",
-            ]);
-            prepare(profile);
-        },
-        |_| {},
-    );
-    if let Some((_, tui)) = &found {
-        tui.wait_for("sibling");
-    }
-    found
-}
-
-fn nested_repo_list() -> Option<(Profile, Tui)> {
-    nested_repo_list_with(|_| {})
-}
-
-const PROBE_REPO: &str = "repo:\0local\u{1}repo";
-const LOCAL_HOST: &str = "host:\0local";
-
-/// The row the session list's cursor is on — a session id, or the target of
-/// a host or repo row, which `selected_session` never reports.
-fn selected_row(profile: &Profile) -> Option<String> {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut cmd);
-    let output = cmd
-        .args(["--json", "ui", "state"])
-        .output()
-        .expect("ui state");
-    assert!(output.status.success());
-    let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("state JSON");
-    state["plugin_state"]
-        .as_object()?
-        .values()
-        .find(|pane| pane.get("folded_host_count").is_some())?["selected_row"]
-        .as_str()
-        .map(str::to_owned)
-}
-
-fn wait_selected(tui: &Tui, profile: &Profile, row: &str) {
-    tui.wait_until(&format!("{row:?} to be selected"), |_| {
-        selected_row(profile).as_deref() == Some(row)
-    });
-}
-
-fn session_id(profile: &Profile, name: &str) -> String {
-    thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .expect("database")
-        .get_session_by_name(name)
-        .expect("read")
-        .expect("session")
-        .id
-        .to_string()
-}
-
-/// A click folds a repo row and selects it; `l` unfolds it again.
-fn select_expanded_repo(tui: &mut Tui) {
-    tui.press(0, tui.find("▾ repo"));
-    tui.wait_gone("probe");
-    tui.send(b"l");
-    tui.wait_for("probe");
-}
-
-#[test]
-fn session_repo_left_arrow_collapses_expanded_repo() {
-    let Some((profile, mut tui)) = nested_repo_list() else {
-        return;
-    };
-    select_expanded_repo(&mut tui);
-    tui.send(b"\x1b[D");
-    tui.wait_gone("probe");
-    assert!(tui.frame().contains("sibling"), "only the repo folds");
-    wait_selected(&tui, &profile, PROBE_REPO);
-    assert!(tui.quit().success());
-
-    let mut reopened = Tui::spawn(&profile, 40, 120);
-    reopened.wait_for("sibling");
-    assert!(
-        !reopened.frame().contains("probe"),
-        "the repo fold should survive a restart:\n{}",
-        reopened.frame()
-    );
-    assert!(reopened.quit().success());
-}
-
-#[test]
-fn session_repo_right_arrow_expands_collapsed_repo() {
-    let Some((profile, mut tui)) = nested_repo_list() else {
-        return;
-    };
-    tui.press(0, tui.find("▾ repo"));
-    tui.wait_gone("probe");
-    tui.send(b"\x1b[C");
-    tui.wait_for("probe");
-    wait_selected(&tui, &profile, PROBE_REPO);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_repo_left_arrow_walks_from_session_to_repo_to_host() {
-    let Some((profile, mut tui)) = nested_repo_list() else {
-        return;
-    };
-    tui.press(0, tui.find("probe"));
-    tui.send(b"\x1b[D");
-    wait_selected(&tui, &profile, PROBE_REPO);
-    assert!(
-        tui.frame().contains("probe"),
-        "selecting the repo folds nothing"
-    );
-    tui.send(b"\x1b[D");
-    tui.wait_gone("probe");
-    tui.send(b"\x1b[D");
-    wait_selected(&tui, &profile, LOCAL_HOST);
-    assert!(
-        tui.frame().contains("sibling"),
-        "selecting the host folds nothing"
-    );
-    tui.send(b"\x1b[D");
-    tui.wait_gone("sibling");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_repo_right_arrow_walks_from_host_to_repo_to_session() {
-    let Some((profile, mut tui)) = nested_repo_list() else {
-        return;
-    };
-    let sibling = session_id(&profile, "sibling");
-    tui.press(0, tui.find("⌂ local"));
-    tui.wait_gone("sibling");
-    tui.send(b"\x1b[C");
-    tui.wait_for("sibling");
-    // `other-repo` is the host's first repo row.
-    tui.send(b"\x1b[C");
-    wait_selected(&tui, &profile, "repo:\0local\u{1}other-repo");
-    tui.press(0, tui.find("▾ other-repo"));
-    tui.wait_gone("sibling");
-    tui.send(b"\x1b[C");
-    tui.wait_for("sibling");
-    tui.send(b"\x1b[C");
-    wait_selected(&tui, &profile, &sibling);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_repo_arrows_without_host_rows() {
-    let Some((profile, mut tui)) = nested_repo_list_with(|profile| {
-        std::fs::write(
-            profile.path("config/ui.json"),
-            r#"{"settings":{"sessions.group_by_host":false}}"#,
-        )
-        .expect("ui.json");
-    }) else {
-        return;
-    };
-    let repo = "repo:\u{1}repo";
-    let probe = session_id(&profile, "probe");
-    tui.press(0, tui.find("probe"));
-    tui.send(b"\x1b[D");
-    wait_selected(&tui, &profile, repo);
-    tui.send(b"\x1b[D");
-    tui.wait_gone("probe");
-    // Nothing above a repo row: Left there stays put.
-    tui.send(b"\x1b[D");
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(selected_row(&profile).as_deref(), Some(repo));
-    tui.send(b"\x1b[C");
-    tui.wait_for("probe");
-    tui.send(b"\x1b[C");
-    wait_selected(&tui, &profile, &probe);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_repo_enter_toggles_the_selected_repo() {
-    let Some((_profile, mut tui)) = nested_repo_list() else {
-        return;
-    };
-    select_expanded_repo(&mut tui);
-    tui.send(b"\r");
-    tui.wait_gone("probe");
-    tui.send(b"\r");
-    tui.wait_for("probe");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_repo_double_click_toggles_once() {
-    let Some((_profile, mut tui)) = nested_repo_list() else {
-        return;
-    };
-    let point = tui.find("▾ repo");
-    tui.press(0, point);
-    tui.press(0, point);
-    tui.wait_gone("probe");
-    tui.send(F1);
-    tui.wait_for("Keybindings");
-    assert!(!tui.frame().contains("probe"));
-    tui.send(ESC);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn session_repo_right_click_toggles_without_opening_menu() {
-    let Some((_profile, mut tui)) = nested_repo_list() else {
-        return;
-    };
-    tui.press(2, tui.find("▾ repo"));
-    tui.wait_gone("probe");
-    assert!(!tui.frame().contains("Restore deleted"));
-    tui.press(2, tui.find("▸ repo"));
-    tui.wait_for("probe");
-    assert!(!tui.frame().contains("Restore deleted"));
     assert!(tui.quit().success());
 }
 
@@ -5212,31 +3408,12 @@ fn shell_session_prepared_on_branch(
         return None;
     }
     let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .expect("seed agents");
+    profile.real_fleet()?;
     let repo = repo(profile.root.path());
-
-    let mut create = vec![
-        "session",
-        "create",
-        "--name",
-        "probe",
-        "--repo-path",
-        repo.to_str().expect("utf-8 path"),
-        "--agent",
-        "shell",
-    ];
     if let Some(branch) = branch {
-        create.extend(["--worktree-branch", branch]);
+        git(&repo, &["switch", "-q", "-c", branch]);
     }
-    profile.cli(&create);
-    // A database with session history is a v1 profile as far as the one-time
-    // gate can tell, and a gate on a pty is a real prompt; this is the
-    // headless answer to it.
-    profile.cli(&["config", "accept-interface"]);
+    profile.fleet_session("probe", &repo);
     prepare(&profile);
 
     let tui = Tui::spawn_with(&profile, 40, 120, adjust);
@@ -5253,6 +3430,21 @@ fn shell_session_prepared_on_branch(
     });
     tui.wait_for("$ ");
     Some((profile, tui))
+}
+
+/// thurbox keeps no session state of its own (ADR-41): the interface starts
+/// on Fleet, shows Fleet's session and runs its terminal, and leaves no
+/// database in its data directory.
+#[test]
+fn the_interface_runs_a_fleet_session_with_no_database() {
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"echo tb-fleet-\"\"marker\r");
+    tui.wait_for("tb-fleet-marker");
+    assert!(tui.quit().success());
+    let db = profile.path("data/thurbox.db");
+    assert!(!db.exists(), "the interface wrote {}", db.display());
 }
 
 #[test]
@@ -5278,504 +3470,6 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
 }
-
-/// A failed command is reported even while the read its report waits for is
-/// held up. The bus drops a failure from its list after a linger, and two busy
-/// waits on a lock another process holds outlast it: a failure collected only
-/// with that read read as a success, or as nothing (#1474).
-#[test]
-fn a_command_failing_under_a_held_write_lock_is_still_reported_as_failed() {
-    let Some((profile, tui)) = shell_session_prepared(
-        |profile| {
-            std::fs::write(
-                profile.path("config/hooks.toml"),
-                r#"[[hooks]]
-event = 'session.pre_restart'
-command = 'touch "$THURBOX_DATA_DIR/restart-entered"; while test ! -f "$THURBOX_DATA_DIR/restart-release"; do sleep 0.05; done; echo refused-restart >&2; exit 1'
-"#,
-            )
-            .expect("seed refusing restart hook");
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    let original = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .unwrap()
-        .get_session_by_name("probe")
-        .unwrap()
-        .unwrap();
-    let mut kill = Command::new("tmux");
-    profile.apply(&mut kill);
-    assert!(kill
-        .args([
-            "-L",
-            profile.server.socket(),
-            "kill-pane",
-            "-t",
-            &original.backend_id
-        ])
-        .status()
-        .unwrap()
-        .success());
-    tui.wait_until("restart worker to enter the hook", |_| {
-        profile.path("data/restart-entered").exists()
-    });
-
-    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
-    db.execute(
-        "UPDATE snapshot_versions SET rows_version = rows_version + 1",
-        [],
-    )
-    .expect("bump the rows generation");
-    db.execute_batch("BEGIN IMMEDIATE")
-        .expect("take the write lock");
-    // Past one refresh interval, so a read is already waiting on the lock when
-    // the command fails and the report's own read queues behind it.
-    std::thread::sleep(Duration::from_secs(1));
-    std::fs::write(profile.path("data/restart-release"), "").unwrap();
-
-    let reported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tui.wait_within(
-            Duration::from_secs(12),
-            "the failed restart to be reported while the lock is held",
-            |frame| frame.contains("could not restart probe"),
-        )
-    }));
-    db.execute_batch("ROLLBACK")
-        .expect("release the write lock");
-    if let Err(panic) = reported {
-        std::panic::resume_unwind(panic);
-    }
-}
-
-#[test]
-fn an_automatic_restart_does_not_announce_a_relaunch_before_it_succeeds() {
-    let Some((profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            std::fs::write(
-                profile.path("config/hooks.toml"),
-                r#"[[hooks]]
-event = 'session.pre_restart'
-command = 'touch "$THURBOX_DATA_DIR/restart-entered"; while test ! -f "$THURBOX_DATA_DIR/restart-release"; do sleep 0.05; done; echo refused-restart >&2; exit 1'
-"#,
-            )
-            .expect("seed refusing restart hook");
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db")).unwrap();
-    let original = db.get_session_by_name("probe").unwrap().unwrap();
-    let mut kill = Command::new("tmux");
-    profile.apply(&mut kill);
-    assert!(kill
-        .args([
-            "-L",
-            profile.server.socket(),
-            "kill-pane",
-            "-t",
-            &original.backend_id
-        ])
-        .status()
-        .unwrap()
-        .success());
-    tui.wait_until("restart worker to enter the hook", |_| {
-        profile.path("data/restart-entered").exists()
-    });
-    let frame = tui.frame();
-    // Release before asserting, so a failure cannot strand the hook worker.
-    std::fs::write(profile.path("data/restart-release"), "").unwrap();
-    assert!(
-        !frame.contains("agent was gone, relaunching"),
-        "a worker that has not passed its pre-hook cannot claim a relaunch:\n{frame}"
-    );
-    tui.wait_for("could not restart probe");
-    assert_eq!(
-        db.get_session_by_name("probe").unwrap().unwrap().backend_id,
-        original.backend_id
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn a_crash_loop_hold_reaches_the_tui_and_does_not_emit_post_restart() {
-    assert_crash_loop_hold_in_tui(false, false);
-}
-
-#[test]
-fn a_crash_loop_hold_outlives_the_audit_retention() {
-    assert_crash_loop_hold_in_tui(true, false);
-}
-
-#[test]
-fn a_recent_crash_loop_survives_disabled_audit_history() {
-    assert_crash_loop_hold_in_tui(false, true);
-}
-
-fn assert_crash_loop_hold_in_tui(aged: bool, zero_audit: bool) {
-    let profile = Profile::new();
-    let script = profile.bin.join("psmux");
-    std::fs::write(
-        &script,
-        r#"#!/bin/sh
-printf '%s\n' "$*" >> "$THURBOX_DATA_DIR/mux-calls"
-case " $* " in
-    *" -V "*) printf '%s\n' 'psmux 3.3.8' ;;
-    *" display-message "*) printf '%s\n' '3.3.8' ;;
-    *" new-window "*) echo 'probe refuses an unexpected spawn' >&2; exit 1 ;;
-    *" -C "*)
-        while IFS= read -r line; do
-            printf '%s\n' '%begin 1 1 0'
-            case "$line" in *'#{version}'*) printf '%s\n' '3.3.8' ;; esac
-            printf '%s\n' '%end 1 1 0'
-        done
-        ;;
-esac
-"#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "[[agents]]\nname = 'shell'\ncommand = 'sh'\n",
-    )
-    .unwrap();
-    let ui = profile.path("config/ui/plugins");
-    std::fs::create_dir_all(&ui).unwrap();
-    std::fs::write(
-        ui.join("99_exit_probe.lua"),
-        r#"return {
-    name = "exit_probe", slot = "exit_probe", strip = true, size = { len = 1 },
-    events = { "command.done", "command.failed", "session.post_restart" },
-    on_event = function(name, payload)
-        if name == "command.done" and payload.kind == "restart" then
-            state.result = "APPLIED"
-        elseif name == "command.failed" and payload.kind == "restart" then
-            state.result = "FAILED"
-        elseif name == "session.post_restart" then
-            state.post_restart = true
-        end
-    end,
-    render = function()
-        return { type = "text", text = "exit-probe=" .. (state.result or "WAIT")
-            .. ";post=" .. tostring(state.post_restart == true) }
-    end,
-}
-"#,
-    )
-    .unwrap();
-    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db")).unwrap();
-    let session = thurbox::session::SharedSession {
-        id: thurbox::session::SessionId::default(),
-        name: "hold-probe".into(),
-        agent: "shell".into(),
-        backend_id: String::new(),
-        backend_type: "local:psmux".into(),
-        agent_session_id: Some("test-conversation".into()),
-        cwd: Some(profile.root.path().to_path_buf()),
-        additional_dirs: vec![],
-        worktrees: vec![],
-        shell_backend_id: None,
-        parent_session_id: None,
-        display_order: None,
-        tombstone: false,
-        tombstone_at: None,
-        key: None,
-    };
-    db.upsert_session(&session).unwrap();
-    for _ in 0..thurbox::session_ops::restart::CRASH_LOOP_RELAUNCHES {
-        db.record_relaunch(session.id, 0).unwrap();
-    }
-    if aged || zero_audit {
-        std::fs::write(
-            profile.path("config/settings.toml"),
-            format!(
-                "audit_retention_days = {}\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
-                if zero_audit { 0 } else { 1 }
-            ),
-        )
-        .unwrap();
-    }
-    if aged {
-        db.hold_relaunches(session.id).unwrap();
-        let sql = rusqlite::Connection::open(profile.path("data/thurbox.db")).unwrap();
-        sql.execute(
-            "UPDATE session_relaunches SET at_ms = 1000 WHERE session_id = ?1",
-            [session.id.to_string()],
-        )
-        .unwrap();
-        sql.execute(
-            "UPDATE session_events SET at_ms = 1000 WHERE session_id = ?1 AND reason = 'relaunched'",
-            [session.id.to_string()],
-        )
-        .unwrap();
-        sql.execute(
-            "UPDATE sessions SET lost_at = 1000, relaunch_held_at = 1000 WHERE id = ?1",
-            [session.id.to_string()],
-        )
-        .unwrap();
-    }
-    profile.cli(&["config", "accept-interface"]);
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_until("restart completion to reach the observer", |frame| {
-        frame.contains("exit-probe=APPLIED")
-            || frame.contains("exit-probe=HELD")
-            || frame.contains("exit-probe=FAILED")
-    });
-    let frame = tui.frame();
-    let lost = db.load_lost_sessions().unwrap().contains_key(&session.id);
-    let calls = std::fs::read_to_string(profile.path("data/mux-calls")).unwrap();
-    assert!(tui.quit().success());
-    assert!(lost, "the backend must actually have held back the restart");
-    assert!(!calls.contains("new-window"), "{calls}");
-    assert!(
-        frame.contains("exit-probe=FAILED;post=false"),
-        "a held-back restart must report its failure without post_restart:\n{frame}"
-    );
-    assert!(frame.contains("it keeps exiting"), "{frame}");
-    assert!(!frame.contains("restarted hold-probe"), "{frame}");
-}
-
-#[test]
-fn deleting_an_agent_window_while_the_tui_is_open_relaunches_it_once() {
-    let Some((profile, mut tui)) =
-        shell_session_prepared_on_branch(Some("test/relaunch-same-worktree"), |_| {}, |_| {})
-    else {
-        return;
-    };
-
-    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .expect("open profile database");
-    let original = db
-        .get_session_by_name("probe")
-        .expect("read session")
-        .expect("probe session");
-    assert_eq!(original.worktrees.len(), 1);
-
-    let old_pane = original.backend_id.as_str();
-    assert!(!old_pane.is_empty());
-
-    let mut kill = Command::new("tmux");
-    profile.apply(&mut kill);
-    let killed = kill
-        .args(["-L", profile.server.socket(), "kill-pane", "-t", old_pane])
-        .output()
-        .expect("kill pane");
-    assert!(
-        killed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&killed.stderr)
-    );
-
-    let deadline = Instant::now() + WAIT;
-    while Instant::now() < deadline
-        && db
-            .get_session_by_name("probe")
-            .expect("read session during relaunch")
-            .is_some_and(|row| row.backend_id == old_pane)
-    {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    tui.wait_for("$ ");
-    tui.send(b"echo tb-relaunched-once\r");
-    tui.wait_for("tb-relaunched-once");
-
-    let mut list = Command::new("tmux");
-    profile.apply(&mut list);
-    let after = list
-        .args(["-L", profile.server.socket()])
-        .args(["list-panes", "-a", "-F", "#{pane_id} #{window_name}"])
-        .output()
-        .expect("list panes after relaunch");
-    assert!(after.status.success());
-    let panes = String::from_utf8(after.stdout).expect("pane ids");
-    let agents: Vec<_> = panes
-        .lines()
-        .filter(|line| line.ends_with(" tb-probe"))
-        .collect();
-    assert_eq!(agents.len(), 1, "duplicate relaunch: {panes}");
-    assert_ne!(agents[0].split(' ').next(), Some(old_pane));
-    let relaunched = db
-        .get_session_by_name("probe")
-        .expect("read relaunched session")
-        .expect("same session row");
-    assert_eq!(relaunched.id, original.id);
-    assert_ne!(relaunched.backend_id, original.backend_id);
-    assert_eq!(relaunched.agent, original.agent);
-    assert_eq!(relaunched.worktrees, original.worktrees);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn configured_unavailable_multiplexer_is_named_in_the_tui_create_flow() {
-    let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/settings.toml"),
-        "multiplexer = \"herdr\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
-    )
-    .expect("set unavailable backend");
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
-    tui.send(b"\x0e");
-    tui.wait_for("herdr is unavailable");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn the_tui_picker_creates_a_session_on_rmux() {
-    if !have_rmux() {
-        eprintln!("skipping: rmux is not installed");
-        return;
-    }
-    let profile = Profile::new();
-    struct RmuxCleanup<'a>(&'a Profile);
-    impl Drop for RmuxCleanup<'_> {
-        fn drop(&mut self) {
-            let mut command = Command::new("rmux");
-            self.0.apply(&mut command);
-            let _ = command
-                .args(["-L", self.0.server.socket(), "kill-server"])
-                .output();
-        }
-    }
-    let _cleanup = RmuxCleanup(&profile);
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .expect("seed agent");
-    let repo = repo(profile.root.path());
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
-    tui.send(b"\x0e");
-    tui.wait_for("Multiplexer");
-    tui.wait_for("tmux");
-    tui.wait_for("rmux");
-    tui.send(b"\x1b[B");
-    tui.wait_for("▸ rmux");
-    tui.send(b"\r");
-    tui.wait_for("Select Repos");
-    tui.send(b"\t");
-    tui.wait_for("Add Repo Path");
-    tui.send(repo.to_str().expect("utf-8 repo path").as_bytes());
-    tui.send(b"\r");
-    tui.wait_until("the new repository to be selected", |frame| {
-        frame
-            .lines()
-            .any(|line| line.contains("[x]") && line.contains("/repo"))
-    });
-    tui.send(b"\x1b[Z");
-    tui.send(b"\r");
-    tui.wait_for("Session Name");
-    tui.send(b"rmux-picker\r");
-    tui.wait_for("rmux-picker");
-    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .expect("open profile database");
-    let row = db
-        .get_session_by_name("rmux-picker")
-        .expect("read session")
-        .expect("created session");
-    assert_eq!(row.backend_type, "local:rmux");
-    tui.wait_for("$ ");
-    let old_pane = row.backend_id;
-    let mut kill = Command::new("rmux");
-    profile.apply(&mut kill);
-    let killed = kill
-        .args(["-L", profile.server.socket(), "kill-pane", "-t", &old_pane])
-        .output()
-        .expect("kill RMUX pane while TUI is open");
-    assert!(killed.status.success(), "{killed:?}");
-    let deadline = Instant::now() + WAIT;
-    while Instant::now() < deadline
-        && db
-            .get_session_by_name("rmux-picker")
-            .expect("read session during relaunch")
-            .is_some_and(|row| row.backend_id == old_pane)
-    {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let relaunched = db
-        .get_session_by_name("rmux-picker")
-        .expect("read relaunched session")
-        .expect("same session row");
-    assert_ne!(relaunched.backend_id, old_pane);
-    tui.wait_for("$ ");
-    tui.send(b"echo rmux-relaunched-live\r");
-    tui.wait_for("rmux-relaunched-live");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn explicit_cli_choice_overrides_an_unavailable_local_preference() {
-    if !have_tmux() {
-        return;
-    }
-    let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/settings.toml"),
-        "multiplexer = \"herdr\"\n[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
-    )
-    .expect("set unavailable preference");
-    let repo = repo(profile.root.path());
-
-    let mut unavailable = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut unavailable);
-    let unavailable = unavailable
-        .args([
-            "session",
-            "create",
-            "--name",
-            "unavailable",
-            "--command",
-            "sh",
-        ])
-        .arg("--repo-path")
-        .arg(&repo)
-        .output()
-        .expect("create with preference");
-    assert!(!unavailable.status.success());
-    assert!(
-        String::from_utf8_lossy(&unavailable.stdout).contains("herdr is unavailable"),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&unavailable.stdout),
-        String::from_utf8_lossy(&unavailable.stderr)
-    );
-
-    let mut override_create = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut override_create);
-    let created = override_create
-        .args([
-            "session",
-            "create",
-            "--name",
-            "overridden",
-            "--command",
-            "sh",
-            "--multiplexer",
-            "tmux",
-        ])
-        .arg("--repo-path")
-        .arg(&repo)
-        .output()
-        .expect("create with override");
-    assert!(
-        created.status.success(),
-        "{}",
-        String::from_utf8_lossy(&created.stderr)
-    );
-    let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
-        .expect("open profile database");
-    let row = db
-        .get_session_by_name("overridden")
-        .expect("read session")
-        .expect("created session");
-    // Written qualified: an explicit tmux, not the legacy platform default.
-    assert_eq!(row.backend_type, "local:tmux");
-    assert!(db.get_session_by_name("unavailable").unwrap().is_none());
-}
-
 #[test]
 fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
     // The failure search was rebuilt for: a prompt typed earlier has scrolled
@@ -5840,42 +3534,6 @@ fn search_finds_text_that_scrolled_away_and_opens_the_session_on_it() {
         "the landed line is not highlighted:\n{frame}"
     );
     assert!(tui.quit().success());
-}
-
-#[test]
-fn ctrl_d_asks_to_delete_a_session_whose_agent_has_exited() {
-    // `Ctrl+D` is a passthrough chord: while a terminal has focus it is the
-    // agent's EOF, and the delete it also means is left to the session list.
-    // But an agent that ran `/exit` leaves a dead pane the window keeps
-    // (remain-on-exit), and tmux still accepts `send-keys` into it — so the
-    // chord was delivered to a pane no one reads and the session it should
-    // have deleted hung in the list. A dead pane is doing no line editing, so
-    // the delete prompt is what the chord means there.
-    let Some((_profile, mut tui)) = shell_session() else {
-        return;
-    };
-
-    // The row's presence is the precondition the delete acts on.
-    tui.send(b"exit\r");
-    tui.wait_until_quiet();
-    assert!(
-        tui.session_row("probe").is_some(),
-        "the session must still be listed after its agent exits:\n{}",
-        tui.frame()
-    );
-
-    // 0x04 is Ctrl+D; focus never left the agent pane, so this is the
-    // passthrough path, not the list's own binding.
-    tui.send(b"\x04");
-    tui.wait_for("Confirm");
-    tui.send(b"y");
-    tui.wait_gone("Confirm");
-    tui.wait_until("the deleted session row to disappear", |_| {
-        tui.session_row("probe").is_none()
-    });
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
 }
 
 #[test]
@@ -5962,326 +3620,6 @@ fn wait_for_view(tui: &Tui, view: &str) {
                 .is_some_and(|band| band.trim_start().starts_with(view))
         },
     );
-}
-
-/// The companion shell is the user's `$SHELL`, and a zsh started in the
-/// profile's empty HOME opens its first-run wizard instead of a prompt.
-fn plain_shell(cmd: &mut Command) {
-    cmd.env("SHELL", "/bin/sh");
-}
-
-/// Ctrl+T there and back twice, typing into each side: the shell is its own
-/// live terminal, and what it printed is still there after the agent has had
-/// the pane.
-fn exercise_the_shell_tab(tui: &mut Tui) {
-    tui.send(b"\x14");
-    wait_for_view(tui, "Shell");
-    // The pane paints before the shell inside it has drawn a prompt, and a
-    // keystroke sent in between is lost.
-    tui.wait_until_quiet();
-    tui.send(b"echo tb-in-\"\"shell\r");
-    tui.wait_for("tb-in-shell");
-
-    tui.send(b"\x14");
-    wait_for_view(tui, "Agent");
-    tui.wait_gone("tb-in-shell");
-    tui.send(b"echo tb-in-\"\"agent\r");
-    tui.wait_for("tb-in-agent");
-
-    tui.send(b"\x14");
-    wait_for_view(tui, "Shell");
-    tui.wait_for("tb-in-shell");
-    assert!(
-        !tui.frame().contains("tb-in-agent"),
-        "the Shell tab must show the shell, not the agent's terminal:\n{}",
-        tui.frame()
-    );
-    tui.wait_until_quiet();
-    tui.send(b"echo tb-still-\"\"live\r");
-    tui.wait_for("tb-still-live");
-}
-
-#[test]
-fn the_shell_tab_shows_switches_and_holds_a_working_shell() {
-    // The classic arrangement's companion shell: a tab of the agent pane that
-    // Ctrl+T raises and lowers. #1227 swapped it for a pane of its own under a
-    // split layout; this pins the tab its rollback brings back.
-    let Some((_profile, mut tui)) = shell_session_with(plain_shell) else {
-        return;
-    };
-    exercise_the_shell_tab(&mut tui);
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-/// A shell session whose panes lose their grid after a second off screen.
-fn shell_session_dropping_hidden_grids() -> Option<(Profile, Tui)> {
-    shell_session_prepared(
-        |profile| {
-            let settings = profile.path("config/settings.toml");
-            let seeded = std::fs::read_to_string(&settings).expect("read settings");
-            std::fs::write(&settings, format!("hidden_terminal_secs = 1\n{seeded}"))
-                .expect("seed settings");
-        },
-        plain_shell,
-    )
-}
-
-/// Raise the Shell tab and prove a live shell is behind it: `marker`, typed
-/// into it, is echoed back.
-fn raise_a_working_shell(tui: &mut Tui, marker: &str) {
-    tui.send(b"\x14");
-    wait_for_view(tui, "Shell");
-    tui.wait_for("$ ");
-    let (head, tail) = marker.split_at(marker.len() / 2);
-    tui.send(format!("echo {head}\"\"{tail}\r").as_bytes());
-    tui.wait_for(marker);
-}
-
-#[test]
-fn a_shell_that_exited_behind_the_agent_is_replaced_when_raised() {
-    // The long-lived session's shell, left for later: it ends while the agent
-    // has the pane (here `exit`; a window closed from outside is the same),
-    // stays off screen long enough for its grid to be dropped, and is raised
-    // again. The shell tab must hold a working shell, not the dead one's
-    // blank grid — which no snapshot can rebuild, since the pane is gone.
-    let Some((_profile, mut tui)) = shell_session_dropping_hidden_grids() else {
-        return;
-    };
-    raise_a_working_shell(&mut tui, "tb-first-shell");
-    tui.send(b"exit\r");
-    tui.wait_until_quiet();
-    tui.send(b"\x14");
-    wait_for_view(&tui, "Agent");
-    // Past the setting, and past the snapshot tick that does the dropping.
-    std::thread::sleep(Duration::from_secs(4));
-
-    raise_a_working_shell(&mut tui, "tb-second-shell");
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-#[test]
-fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
-    // The shell's pane id outlives the interface in the session's row, so a
-    // restart re-adopts it. A window that went in the meantime (a tmux server
-    // restart, a kill from outside) must not be adopted as a shell that never
-    // prints: raising the tab has to give a working one.
-    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
-        return;
-    };
-    raise_a_working_shell(&mut tui, "tb-first-shell");
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-
-    let windows = profile
-        .server
-        .tmux(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
-    let shells: Vec<String> = String::from_utf8_lossy(&windows.stdout)
-        .lines()
-        .filter(|line| line.contains(" tbs-"))
-        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
-        .collect();
-    assert_eq!(shells.len(), 1, "one shell window to close: {windows:?}");
-    profile.server.tmux(&["kill-window", "-t", &shells[0]]);
-
-    let mut tui = Tui::spawn_with(&profile, 40, 120, plain_shell);
-    tui.wait_until("the agent pane to be the focused one", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Agent"))
-    });
-    tui.wait_for("$ ");
-    raise_a_working_shell(&mut tui, "tb-second-shell");
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-/// Leave `profile` as v2.32.0 left someone who chose the `split-shell` preset:
-/// that release's layout, shell pane, agent pane and `lib/panels.lua` on disk,
-/// the delivery manifest recording them as written, and `layout` in
-/// settings.toml. `edited` adds a line of the user's own to the layout and to
-/// the shell pane, so delivery must keep both rather than refresh them.
-fn as_v2_32_0_split_shell(profile: &Profile, edited: bool) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2_32_0_split_shell");
-    let ui = profile.path("config/ui");
-    let report = thurbox::kernel::bundled::materialize(&ui);
-    assert!(report.errors.is_empty(), "{:?}", report.errors);
-
-    let manifest_path = ui.join(".bundled.json");
-    let mut manifest: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
-            .expect("manifest is a map");
-    for relative in [
-        "layout.lua",
-        "plugins/25_shell.lua",
-        "plugins/20_agent.lua",
-        "lib/panels.lua",
-    ] {
-        let shipped = std::fs::read_to_string(fixture.join(relative)).expect("fixture");
-        manifest.insert(
-            relative.to_string(),
-            thurbox::kernel::bundled::digest(&shipped).into(),
-        );
-        let on_disk = if edited && matches!(relative, "layout.lua" | "plugins/25_shell.lua") {
-            format!("{shipped}-- my own line\n")
-        } else {
-            shipped
-        };
-        std::fs::write(ui.join(relative), on_disk).expect("write fixture");
-    }
-    std::fs::write(
-        &manifest_path,
-        serde_json::to_string(&manifest).expect("manifest"),
-    )
-    .expect("write manifest");
-
-    let settings = profile.path("config/settings.toml");
-    let body = std::fs::read_to_string(&settings).expect("settings");
-    std::fs::write(&settings, format!("layout = \"split-shell\"\n{body}")).expect("settings");
-}
-
-/// What every v2.32.0 split-shell profile must come back to after upgrading:
-/// the one-time note, the classic Shell tab working, the shell pane taken back
-/// and the settings key gone — and, started again, nothing more said.
-fn assert_back_to_classic(profile: &Profile, mut tui: Tui) {
-    tui.wait_for("layout presets");
-    exercise_the_shell_tab(&mut tui);
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-
-    let ui = profile.path("config/ui");
-    assert!(
-        !ui.join("plugins/25_shell.lua").exists(),
-        "the shell pane must be taken back"
-    );
-    let shipped = |relative: &str| {
-        std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../ui")
-                .join(relative),
-        )
-        .expect("shipped")
-    };
-    for relative in ["plugins/20_agent.lua", "lib/panels.lua"] {
-        assert_eq!(
-            std::fs::read_to_string(ui.join(relative)).expect("delivered"),
-            shipped(relative),
-            "{relative} must be refreshed to this release's copy"
-        );
-    }
-    let settings: toml::Table = std::fs::read_to_string(profile.path("config/settings.toml"))
-        .expect("settings")
-        .parse()
-        .expect("settings.toml still parses");
-    assert!(
-        !settings.contains_key("layout"),
-        "the withdrawn key must be gone"
-    );
-    assert!(
-        settings.contains_key("features"),
-        "the rest of settings.toml must survive"
-    );
-
-    let tui = Tui::spawn(profile, 40, 120);
-    tui.wait_for("probe");
-    tui.wait_until_quiet();
-    assert!(
-        !tui.frame().contains("layout presets"),
-        "the note is said once:\n{}",
-        tui.frame()
-    );
-}
-
-#[test]
-fn a_v2_32_0_split_shell_profile_upgrades_to_the_classic_layout() {
-    // Layout presets shipped in v2.32.0 and were rolled back. Someone who picked
-    // `split-shell` has its layout.lua, its shell pane and the agent pane that
-    // dropped its Shell tab for it — all untouched, so all refreshed or retired.
-    let Some((profile, tui)) =
-        shell_session_prepared(|p| as_v2_32_0_split_shell(p, false), plain_shell)
-    else {
-        return;
-    };
-    assert_back_to_classic(&profile, tui);
-    assert_eq!(
-        std::fs::read_to_string(profile.path("config/ui/layout.lua")).expect("layout"),
-        include_str!("../../../ui/layout.lua"),
-        "an untouched split-shell layout is refreshed to classic"
-    );
-}
-
-#[test]
-fn a_layout_edited_from_the_split_shell_preset_is_kept_and_still_works() {
-    // Their edits are theirs and are kept. The layout still names a `shell`
-    // slot, which nothing fills once the shell pane is set aside — so the arrangement's own
-    // `filled` check leaves it out and the Shell tab is where the shell is.
-    let Some((profile, tui)) =
-        shell_session_prepared(|p| as_v2_32_0_split_shell(p, true), plain_shell)
-    else {
-        return;
-    };
-    assert_back_to_classic(&profile, tui);
-    assert!(
-        std::fs::read_to_string(profile.path("config/ui/layout.lua"))
-            .expect("layout")
-            .ends_with("-- my own line\n"),
-        "an edited layout is never overwritten"
-    );
-    // The edited shell pane is kept too, but aside: loaded, it would be a pane
-    // with a slot no arrangement places, which `plugin check` rejects.
-    assert!(
-        std::fs::read_to_string(profile.path("config/ui/plugins/25_shell.lua.bak"))
-            .expect("the edit is kept beside the pane")
-            .ends_with("-- my own line\n")
-    );
-    profile.cli(&["plugin", "check"]);
-}
-
-#[test]
-fn ctrl_e_renames_the_selected_session_and_says_why_a_name_is_refused() {
-    // Issue #1141: a session could be created and deleted from the keyboard, and
-    // renamed by nothing at all. `Ctrl+E` is a readline chord like the list's
-    // others, so it is pressed with the list focused; the field it opens holds
-    // the current name, a refused name is explained in the field rather than
-    // lost, and a good one lands in the list.
-    let Some((_profile, mut tui)) = shell_session() else {
-        return;
-    };
-
-    // 0x08 is Ctrl+H, the reserved way out of a focused terminal and onto the
-    // list beside it.
-    tui.send(b"\x08");
-    tui.wait_until("the session list to be the focused one", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Sessions"))
-    });
-
-    // 0x05 is Ctrl+E; 0x15 is Ctrl+U, which clears the prefilled name.
-    tui.send(b"\x05");
-    tui.wait_for("Rename session");
-    tui.send(b"\x15");
-    tui.send(b"bad/name\r");
-    tui.wait_for("Name contains invalid characters");
-
-    tui.send(b"\x15");
-    tui.send(b"renamed\r");
-    tui.wait_gone("Rename session");
-    tui.wait_gone("probe");
-    assert!(
-        tui.frame().contains("renamed"),
-        "the list must show the new name:\n{}",
-        tui.frame()
-    );
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
 }
 
 // --- selection, copy, and the interrupt a shell is owed ----------------------
@@ -6792,157 +4130,6 @@ fn an_app_behind_a_modal_cannot_write_the_clipboard() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
-/// What the second session's app copies, once the test lets it.
-const BACKGROUND_COPY: &str = "tb-background-secret";
-
-/// The shell session, plus a second one — `copier` — that prints an OSC 52
-/// write of [`BACKGROUND_COPY`] when `copy-now` appears in the profile, says
-/// so by creating `copied`, and is then a shell. `probe` holds the focus;
-/// `copier` is off screen.
-fn shell_session_beside_a_copier() -> Option<(Profile, Tui)> {
-    let (profile, mut tui) = shell_session_prepared(
-        |profile| {
-            let script = format!(
-                "echo tb-copier-ready; while [ ! -e '{}' ]; do sleep 0.05; done; {}; : > '{}'; \
-                 exec sh",
-                profile.path("copy-now").display(),
-                osc52_printf("c", &b64(BACKGROUND_COPY.as_bytes())),
-                profile.path("copied").display(),
-            );
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "copier",
-                "--repo-path",
-                profile.path("repo").to_str().expect("utf-8 path"),
-                "--command",
-                "sh",
-                "--arg",
-                "-c",
-                "--arg",
-                &script,
-            ]);
-        },
-        plain_shell,
-    )?;
-    // Which row is selected at start is the list's business; this test needs
-    // `probe` in front, and says so.
-    profile.cli(&["session", "focus", "probe"]);
-    tui.send(b"echo tb-probe-\"\"focused\r");
-    tui.wait_for("tb-probe-focused");
-    assert!(
-        !tui.frame().contains("tb-copier-ready"),
-        "the copier must be off screen"
-    );
-    Some((profile, tui))
-}
-
-/// Let the copier copy, and wait until it has written the sequence to its
-/// pane.
-fn let_the_copier_copy(profile: &Profile, tui: &Tui) {
-    std::fs::write(profile.path("copy-now"), "").expect("touch trigger");
-    let deadline = Instant::now() + WAIT;
-    while !profile.path("copied").exists() {
-        if Instant::now() > deadline {
-            tui.give_up("the copier to print its copy");
-        }
-        std::thread::sleep(Duration::from_millis(40));
-    }
-}
-
-#[test]
-fn a_background_sessions_osc52_copy_never_reaches_the_clipboard() {
-    // The operator's rule: an app writes the clipboard only from the session
-    // the user is in. An agent working off screen — a local one or one on a
-    // remote host — must not replace what the user just copied, and must not
-    // have its write held until the user happens to look at it.
-    let Some((profile, mut tui)) = shell_session_beside_a_copier() else {
-        return;
-    };
-    let mark = tui.raw_len();
-    let_the_copier_copy(&profile, &tui);
-    // Output the binary reads after the copier's, so the copier's has been
-    // parsed by the time the window below closes.
-    tui.send(b"echo tb-after-\"\"copy\r");
-    tui.wait_for("tb-after-copy");
-    let out = settled_since(&tui, mark);
-    assert_eq!(
-        osc52_count(&out),
-        0,
-        "a background copy reached the outer terminal:\n{out:?}"
-    );
-
-    // Bringing it forward must not release a write it made while hidden.
-    let mark = tui.raw_len();
-    profile.cli(&["session", "focus", "copier"]);
-    tui.wait_for("tb-copier-ready");
-    let out = settled_since(&tui, mark);
-    assert_eq!(
-        osc52_count(&out),
-        0,
-        "focusing the copier released its hidden copy:\n{out:?}"
-    );
-
-    // Now in front, it copies like any focused app — so the silence above
-    // was the focus rule and not a pane whose output was never read.
-    tui.wait_until_quiet();
-    let mark = tui.raw_len();
-    let line = osc52_printf("c", &b64(b"tb-copier-focused"));
-    tui.send(format!("{line}\r").as_bytes());
-    tui.wait_until("the focused copier's copy", |_| {
-        tui.raw_since(mark).contains(OSC52)
-    });
-    assert_eq!(
-        osc52_payload(&tui.raw_since(mark)).as_deref(),
-        Some("tb-copier-focused")
-    );
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-#[test]
-fn an_app_cannot_read_back_another_sessions_copy() {
-    // An OSC 52 `?` asks the terminal for the clipboard. Under `set-clipboard
-    // on`, tmux answers it from its newest paste buffer, which that setting
-    // fills with every app's copy on the server: an app in one session could
-    // read what an app in another had copied. No reply at all is the answer
-    // every peer gives — whatever buffers the server holds, so one is put
-    // there by hand as well.
-    let Some((profile, mut tui)) = shell_session_beside_a_copier() else {
-        return;
-    };
-    let_the_copier_copy(&profile, &tui);
-    let seeded = profile.server.tmux(&["set-buffer", "tb-buffered-secret"]);
-    assert!(seeded.status.success(), "seed a paste buffer");
-
-    // `min 0 time 10`: a read returns whatever came within a second, or end of
-    // file, so `cat` ends by itself — and stays in the foreground, where it can
-    // read the terminal at all.
-    let reply = profile.path("reply.bin");
-    let reader = profile.path("read-clipboard.sh");
-    std::fs::write(
-        &reader,
-        format!(
-            "stty raw -echo min 0 time 10\nprintf '\\033]52;c;?\\007'\ncat > '{}'\nstty sane\n",
-            reply.display()
-        ),
-    )
-    .expect("write reader");
-    tui.send(format!("sh '{}'; echo tb-read-\"\"done\r", reader.display()).as_bytes());
-    tui.wait_for("tb-read-done");
-    let answered = std::fs::read(&reply).expect("read reply");
-    assert!(
-        answered.is_empty(),
-        "an app was answered a clipboard read: {:?}",
-        String::from_utf8_lossy(&answered)
-    );
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
 /// The mouse text selection reaches a Lua pane through `thurbox.selection`.
 ///
 /// The coordinator recomputes the selection every frame for `copy_selection`;
@@ -7052,146 +4239,6 @@ fn a_chord_reads_the_selection_dragged_in_its_own_batch() {
     tui.drag_then_chord(at, 12, 0x07);
 
     tui.wait_for("selchord:[tb-select-me]");
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-#[test]
-fn a_single_click_selects_a_session_row_and_a_double_click_opens_it() {
-    // Pointing at a session and opening it are two gestures. A single click
-    // selects the row and leaves the keyboard in the column, so Ctrl+D and the
-    // other list chords act on the session just pointed at; a double-click is
-    // Enter, and hands focus to the agent pane. The whole road is asserted
-    // here — SGR reports in, `ClickTrain` counting the two presses, the pane
-    // reading `hit.clicks` — because a wire that dropped the count anywhere
-    // along it would leave every in-process test green and open on one click.
-    let Some((_profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            let repo = profile.root.path().join("repo");
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "second",
-                "--repo-path",
-                repo.to_str().expect("utf-8 path"),
-                "--agent",
-                "shell",
-            ]);
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    let badge_reads = |frame: &str, pane: &str| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with(pane))
-    };
-
-    // 0x08 is Ctrl+H, the kernel's focus-cycle chord.
-    tui.send(b"\x08");
-    tui.wait_until("the sessions pane to be the focused one", |frame| {
-        badge_reads(frame, "Sessions")
-    });
-
-    // "second" is on screen only as its row: the chrome and the agent pane's
-    // title both name the selected session, which is still "probe".
-    let at = tui.find("second");
-    tui.press(0, at);
-    tui.wait_until("the click to select the second session", |frame| {
-        frame.contains("second (shell)")
-    });
-    tui.wait_until_quiet();
-    assert!(
-        badge_reads(&tui.frame(), "Sessions"),
-        "a single click must leave the keyboard in the column:\n{}",
-        tui.frame()
-    );
-
-    // Now "probe" is the row that is NOT selected, and its row is the only
-    // "probe" on screen. The first press selects it, and the second is held
-    // back until the repaint has marked the row selected — the case a
-    // double-click exists for, and the one a count keyed on anything but the
-    // node's id reads as two singles. Two presses sent back to back land in
-    // one frame and would miss that transition. The wait is budgeted well
-    // inside the 400 ms window, so a slow repaint fails here, by name, rather
-    // than as a double-click that did not open.
-    let at = tui.find("probe");
-    tui.press(0, at);
-    tui.wait_within(
-        Duration::from_millis(300),
-        "the first press to select probe and repaint its row",
-        |frame| frame.contains("probe (shell)"),
-    );
-    tui.press(0, at);
-    tui.wait_until(
-        "the double-click to hand focus to the agent pane",
-        |frame| badge_reads(frame, "Agent"),
-    );
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
-/// A press of any button is a press. Two quick left clicks on a row with a
-/// middle press between them are not a double-click, however fast: the
-/// gesture was interrupted, and the row must only be selected, not opened.
-#[test]
-fn a_press_of_another_button_between_two_clicks_keeps_them_two_clicks() {
-    let Some((_profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            let repo = profile.root.path().join("repo");
-            profile.cli(&[
-                "session",
-                "create",
-                "--name",
-                "second",
-                "--repo-path",
-                repo.to_str().expect("utf-8 path"),
-                "--agent",
-                "shell",
-            ]);
-        },
-        |_| {},
-    ) else {
-        return;
-    };
-    let badge_reads = |frame: &str, pane: &str| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with(pane))
-    };
-
-    tui.send(b"\x08");
-    tui.wait_until("the sessions pane to be the focused one", |frame| {
-        badge_reads(frame, "Sessions")
-    });
-    // Select "second" so that "probe" is the row that is not selected, and
-    // the only "probe" on screen.
-    tui.press(0, tui.find("second"));
-    tui.wait_until("the click to select the second session", |frame| {
-        frame.contains("second (shell)")
-    });
-    tui.wait_until_quiet();
-
-    // Left, middle (button 1), left — back to back, well inside the window.
-    let at = tui.find("probe");
-    tui.press(0, at);
-    tui.press(1, at);
-    tui.press(0, at);
-    tui.wait_until("the presses to select probe", |frame| {
-        frame.contains("probe (shell)")
-    });
-    tui.wait_until_quiet();
-    assert!(
-        badge_reads(&tui.frame(), "Sessions"),
-        "an interrupted pair of clicks must not open the session:\n{}",
-        tui.frame()
-    );
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
@@ -7512,38 +4559,6 @@ fn the_wheel_still_reaches_a_fullscreen_app_after_a_restart() {
     assert!(tui.quit().success());
 }
 
-#[test]
-fn the_wheel_scrolls_the_companion_shell_too() {
-    // The shell is a second surface over the same primitive, and it was the
-    // half that never honoured a scroll offset: the pane refused to hold one
-    // for it and the kernel never set it on the shell's parser, so the wheel
-    // over an open shell moved nothing.
-    let Some((_profile, mut tui)) = shell_session() else {
-        return;
-    };
-
-    // Ctrl+T opens the companion shell in the same pane. The focus badge names
-    // the view, so it is what tells us the shell is the one on screen.
-    tui.send(b"\x14");
-    tui.wait_until("the shell tab to be the view", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Shell"))
-    });
-    // The pane paints before the shell inside it has drawn a prompt, and a
-    // keystroke sent in between is lost.
-    tui.wait_until_quiet();
-    bury_a_marker(&mut tui, "tb-shell-marker");
-
-    let at = tui.find("tb-fill-100");
-    tui.wheel(at, true, 90);
-    tui.wait_for("tb-shell-marker");
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
 // --- the buttons over a tracking terminal -----------------------------------
 
 #[test]
@@ -7612,14 +4627,9 @@ fn open_repo_picker(profile: &Profile) -> Tui {
     let mut tui = Tui::spawn(profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    // The multiplexer step is asked only where more than one is installed.
-    tui.wait_until("the new-session wizard to be up", |frame| {
-        frame.contains("Multiplexer") || frame.contains("Select Repos")
-    });
-    if tui.frame().contains("Multiplexer") {
-        tui.send(b"\r");
-    }
-    tui.wait_for("Select Repos");
+    tui.wait_for("Run On");
+    tui.send(b"\r");
+    tui.wait_for("Select Repo");
     tui
 }
 
@@ -7627,7 +4637,7 @@ fn repo_picker_selected(frame: &str, path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap();
     frame
         .lines()
-        .any(|line| line.contains("[x]") && line.contains(name))
+        .any(|line| line.contains("▸ ") && line.contains(name))
 }
 
 fn repo_picker_fixture(profile: &Profile) {
@@ -7789,31 +4799,7 @@ fn repo_picker_enter_selects_a_plain_directory_from_the_dropdown() {
         repo_picker_selected(frame, "plain")
     });
     tui.send(b"\r");
-    tui.wait_gone("Select Repos");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn repo_picker_existing_worktrees_are_collapsed_until_right_and_closed_with_left() {
-    let profile = Profile::new();
-    repo_picker_fixture(&profile);
-    let mut tui = open_repo_picker(&profile);
-    tui.send(b"\t~/repo\r");
-    tui.wait_until("the repository to be selected", |frame| {
-        repo_picker_selected(frame, "repo")
-    });
-    tui.wait_until_quiet();
-    assert!(
-        !tui.frame().contains("linked"),
-        "existing worktrees start collapsed: {}",
-        tui.frame()
-    );
-    tui.send(b"\x1b[Z\x1b[C");
-    tui.wait_for("linked");
-    tui.send(b"\x1b[B\x1b[D");
-    tui.wait_gone("linked");
-    tui.send(b"\x1b[C");
-    tui.wait_for("linked");
+    tui.wait_gone("Select Repo");
     assert!(tui.quit().success());
 }
 
@@ -7845,7 +4831,7 @@ fn repo_picker_shows_a_refused_path_inside_the_modal() {
     let frame = tui.frame();
     let top = frame
         .lines()
-        .position(|line| line.contains("Select Repos"))
+        .position(|line| line.contains("Select Repo"))
         .unwrap();
     let bottom = frame
         .lines()
@@ -8017,170 +5003,7 @@ impl Tui {
     }
 }
 
-#[test]
-fn the_scrollbar_can_be_pressed_and_dragged() {
-    // The bar was drawn and could not be touched: the border column carried no
-    // identity, so a press on it armed a text selection, and a drag only ever
-    // meant "extend the selection" — there was no route from the pointer to the
-    // pane that owns the offset.
-    //
-    // Driven on the SHELL tab, which is where it was reported and the harder of
-    // the two: the shell is a second surface over the same primitive.
-    let Some((_profile, mut tui)) = shell_session() else {
-        return;
-    };
-    tui.send(b"\x14");
-    tui.wait_until("the shell tab to be the view", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Shell"))
-    });
-    tui.wait_until_quiet();
-    bury_a_marker(&mut tui, "tb-bar-marker");
-
-    // A wheel scroll is what gives the bar a depth to be scaled against, and
-    // leaves the thumb at the top of its track.
-    let at = tui.find("tb-fill-100");
-    tui.wheel(at, true, 90);
-    tui.wait_for("tb-bar-marker");
-    let (column, _) = tui.find("█");
-    let (top, bottom) = tui.track_extent(column);
-
-    // Drag the thumb down the track: that is a return to the live bottom of the
-    // stream, the same place the wheel would have brought us back to.
-    tui.drag_down((column, top + 1), bottom - 1);
-    tui.wait_for("tb-fill-100");
-    tui.wait_gone("tb-bar-marker");
-
-    // And a press on the track alone is a jump, with no drag behind it.
-    tui.drag_down((column, top + 1), top + 1);
-    tui.wait_for("tb-bar-marker");
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
-
 // --- the WSL image probe, through the real binary ---------------------------
-
-/// A stand-in for `powershell.exe` that records every call and answers `answer`.
-///
-/// The probe resolves PowerShell through `PATH` (`clipboard::POWERSHELL`), so a
-/// directory in front of the real one is the whole trick — no Windows, and no
-/// need for a real clipboard to be in any particular state.
-fn stub_powershell(dir: &Path, answer: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let bin = dir.join("winbin");
-    std::fs::create_dir_all(&bin).expect("mkdir winbin");
-    let script = bin.join("powershell.exe");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\necho call >> \"$(dirname \"$0\")/asked\"\necho {answer}\n"),
-    )
-    .expect("write the stub");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-    bin
-}
-
-/// How many times the stub has been asked.
-fn asked(bin: &Path) -> usize {
-    std::fs::read_to_string(bin.join("asked"))
-        .map(|log| log.lines().count())
-        .unwrap_or(0)
-}
-
-/// Waits for the stub to have been asked `n` times, and says so if it never is.
-fn wait_for_asks(bin: &Path, n: usize, tui: &Tui) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while asked(bin) < n && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert_eq!(
-        asked(bin),
-        n,
-        "Windows was asked {} times, not {n}\n--- frame ---\n{}",
-        asked(bin),
-        tui.frame()
-    );
-}
-
-/// Inside WSL every `Ctrl+V` asks Windows — one question per press, and none at
-/// all while a float is holding the keyboard.
-///
-/// The whole route, through the real binary: the press is claimed by the
-/// clipboard stage, the question goes out on a worker, the answer is polled
-/// back on the loop and spent, and only then can the next question be asked.
-/// Nothing below the binary is stubbed except Windows itself — a directory in
-/// front of `PATH` holding a `powershell.exe` that counts its calls.
-///
-/// Two failures are covered that unit tests cannot reach:
-///
-/// - **the answer is never polled.** Deleting `poll_image_probe` from the loop
-///   leaves every unit test green, because `ImageProbe` is perfectly happy
-///   never to be asked again — but the interface then swallows every paste for
-///   the rest of the session. Here the second press has to reach Windows, which
-///   it can only do after the first answer was taken.
-/// - **a float's paste is swallowed.** The clipboard stage runs *before*
-///   `dispatch_grabbed`, so asking Windows while the new-session wizard is up
-///   claims a press that the float should have had — and the answer, arriving
-///   0.42 s later, finds the float still there and drops it. Pasting a path
-///   into the wizard did nothing at all under WSL.
-#[test]
-fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
-    let windows = tempfile::tempdir().expect("tempdir");
-    // "image" so the answer is spent on forwarding the chord to the shell,
-    // which leaves the message band clean for the float's own report below.
-    let bin = stub_powershell(windows.path(), "image");
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
-        cmd.env("WSL_DISTRO_NAME", "Ubuntu");
-        cmd.env("PATH", path);
-        // No X clipboard, so the float below reports the one thing it can
-        // report rather than pasting whatever this machine happens to hold.
-        cmd.env_remove("DISPLAY");
-        cmd.env_remove("WAYLAND_DISPLAY");
-    }) else {
-        return;
-    };
-
-    const CTRL_V: &[u8] = &[0x16];
-    const CTRL_N: &[u8] = &[0x0e];
-
-    tui.send(CTRL_V);
-    wait_for_asks(&bin, 1, &tui);
-    // The second press is the assertion: it can only reach Windows if the first
-    // answer came back, was polled on the loop, and freed the question.
-    tui.send(CTRL_V);
-    wait_for_asks(&bin, 2, &tui);
-
-    // Now the wizard, which floats and therefore holds the keyboard.
-    tui.send(CTRL_N);
-    // Its first question is "Run On" where the machine has hosts, else
-    // "Multiplexer" where it has a choice of them and "Select Repos" where it
-    // has one — this one has sibling WSL distros, so which it is depends on the
-    // machine and none is the point.
-    tui.wait_until("the new-session wizard to be up", |frame| {
-        frame.contains("Run On") || frame.contains("Multiplexer") || frame.contains("Select Repos")
-    });
-    tui.send(CTRL_V);
-    // It has nothing to paste from — that is what the missing X clipboard
-    // buys — and saying so is proof the press was handled here rather than
-    // spent on a question the float could never use the answer to.
-    tui.wait_for("No local clipboard");
-    assert_eq!(
-        asked(&bin),
-        2,
-        "a press made into a float asked Windows about an image a name field \
-         could not take"
-    );
-
-    let status = tui.quit();
-    assert!(status.success(), "exit must be clean: {status:?}");
-}
 
 // --- a remote session whose link goes bad -----------------------------------
 
@@ -8203,890 +5026,10 @@ fn a_paste_under_wsl_asks_windows_once_per_press_and_never_from_a_float() {
 /// frozen interface would pass.
 const RESPONSIVE: Duration = Duration::from_secs(5);
 
-/// The remote session's name. Long enough that a narrow terminal cannot show
-/// it, which is what lets a test tell a repaint from leftover glyphs.
-const REMOTE_NAME: &str = "afar-on-bad-link";
-
-/// A stand-in for `ssh` that runs the "remote" command on this machine.
-///
-/// The point is not to imitate a network. It is to reproduce the one thing a
-/// real `ssh` puts between thurbox and the multiplexer: **a process that copies
-/// the bytes**, which a test can then stop.
-///
-/// That relay has to be built rather than inherited, because a local tmux has
-/// none. `tmux -C attach-session` hands its stdin and stdout *file descriptors*
-/// to the tmux server and then only shepherds; the server does the I/O on those
-/// inherited fds. So stopping the client changes nothing — it is not on the
-/// data path — while stopping `ssh` wedges the link exactly as a bad network
-/// does. The control connection therefore runs through a pair of `cat` pumps
-/// over fifos, one per direction, and those are the pids recorded.
-///
-/// Every *other* call `exec`s straight through: they are short round trips
-/// whose **exit status is load-bearing** (`has-session` answering "no" is how
-/// `ensure_ready` decides to create a session, and the git probes read theirs),
-/// and only the long-lived connection ever needs to be wedged. Real ssh joins
-/// the command words with spaces and hands them to the host's login shell,
-/// which is what `eval` reads them as here — the same re-splitting
-/// `posix_quote` is written against.
-fn fake_ssh(profile: &Profile) -> Link {
-    use std::os::unix::fs::PermissionsExt;
-    let pids = profile.root.path().join("ssh-pids");
-    let script = profile.bin.join("ssh");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\n\
-             while [ \"$#\" -gt 0 ]; do\n\
-             \x20 case \"$1\" in\n\
-             \x20   -o) shift; shift ;;\n\
-             \x20   -*) shift ;;\n\
-             \x20   *) break ;;\n\
-             \x20 esac\n\
-             done\n\
-             [ \"$#\" -gt 0 ] && shift\n\
-             [ \"$#\" -eq 0 ] && exit 0\n\
-             printf '%s\\n' \"$$\" >> {pids}\n\
-             printf '%s\\n' \"$*\" >> {calls}\n\
-             case \" $* \" in\n\
-             \x20 *\" -C attach-session \"*)\n\
-             \x20   d=$(mktemp -d {root}/link.XXXXXX) || exit 1\n\
-             \x20   mkfifo \"$d/up\" \"$d/down\" || exit 1\n\
-             \x20   eval \"$* \" < \"$d/up\" > \"$d/down\" &\n\
-             \x20   cat < \"$d/down\" &\n\
-             \x20   printf '%s\\n' \"$!\" >> {pids}\n\
-             \x20   exec cat > \"$d/up\"\n\
-             \x20   ;;\n\
-             esac\n\
-             eval \"exec $*\"\n",
-            pids = shell_word(&pids),
-            root = shell_word(profile.root.path()),
-            calls = shell_word(&profile.root.path().join("ssh-calls")),
-        ),
-    )
-    .expect("write the ssh stand-in");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-    Link { pids }
-}
-
 /// A path as one shell word. The profile root is a tempdir, so it is ordinary —
 /// but a `TMPDIR` with a space in it would otherwise split the redirect.
 fn shell_word(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
-}
-
-/// The link the stand-in carries, and the switch that takes it away.
-struct Link {
-    pids: PathBuf,
-}
-
-impl Link {
-    /// Every process the stand-in recorded that is still running — in practice
-    /// the control connection's two pumps, the short calls having exited.
-    fn live(&self) -> Vec<libc::pid_t> {
-        std::fs::read_to_string(&self.pids)
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|line| line.trim().parse::<libc::pid_t>().ok())
-            // SAFETY: signal 0 delivers nothing; it only reports whether the
-            // process exists.
-            .filter(|pid| unsafe { libc::kill(*pid, 0) } == 0)
-            .collect()
-    }
-
-    fn signal(&self, sig: libc::c_int) -> usize {
-        let live = self.live();
-        for pid in &live {
-            // SAFETY: a pid this process started, and a plain signal number.
-            unsafe { libc::kill(*pid, sig) };
-        }
-        live.len()
-    }
-
-    /// Wedge the link: up, and carrying nothing.
-    ///
-    /// Stopped pumps carry nothing in either direction while every pipe stays
-    /// open, which is what a link that has gone bad looks like from this end —
-    /// and is the case no timeout in the ssh option set reaches, because the
-    /// connection never fails, it just stops working. Killing them instead
-    /// would exercise the broken-pipe path, which already works.
-    fn wedge(&self) {
-        assert_eq!(
-            self.signal(libc::SIGSTOP),
-            2,
-            "a wedge needs both of the control connection's pumps; the session \
-             cannot have attached over the stand-in"
-        );
-    }
-
-    fn heal(&self) {
-        self.signal(libc::SIGCONT);
-    }
-
-    /// Cut the link: the control connection ends, as it does when an ssh
-    /// master dies under it.
-    fn cut(&self) {
-        assert_eq!(
-            self.signal(libc::SIGKILL),
-            2,
-            "a cut needs both of the control connection's pumps"
-        );
-    }
-}
-
-impl Drop for Link {
-    /// A wedged process would otherwise outlive a panicking test — it cannot
-    /// even act on the `kill-server` the profile's own drop sends.
-    fn drop(&mut self) {
-        self.heal();
-    }
-}
-
-/// A profile with one `sh` session on a *remote* host, attached and painted.
-///
-/// The host is this machine reached through `fake_ssh`, so everything below
-/// the launcher is real: the ssh `HostLauncher` behind `TmuxTransport`, the POSIX quoting, the
-/// control-mode protocol, the attach worker. `share_sessions = false` because
-/// the host's database would be this database (the ADR-24 loopback), and the
-/// socket is named outright for the same reason the profile names it — a
-/// default would put the "remote" server on the developer's own.
-fn remote_shell_session() -> Option<(Profile, Link, Tui)> {
-    remote_shell_session_with(|_, _| {})
-}
-
-fn remote_shell_session_with(
-    adjust: impl FnOnce(&Profile, &mut Command),
-) -> Option<(Profile, Link, Tui)> {
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return None;
-    }
-    let profile = Profile::new();
-    let link = fake_ssh(&profile);
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .expect("seed agents");
-    std::fs::write(
-        profile.path("config/hosts.toml"),
-        format!(
-            "[[hosts]]\n\
-             name = \"devbox\"\n\
-             destination = \"e2e@localhost\"\n\
-             socket = \"{socket}\"\n\
-             share_sessions = false\n\
-             worktrees_dir = \"{worktrees}\"\n",
-            socket = profile.server.socket(),
-            worktrees = profile.path("worktrees").display(),
-        ),
-    )
-    .expect("seed hosts");
-    let repo = repo(profile.root.path());
-
-    profile.cli(&[
-        "session",
-        "create",
-        "--name",
-        REMOTE_NAME,
-        "--repo-path",
-        repo.to_str().expect("utf-8 path"),
-        "--agent",
-        "shell",
-        "--host",
-        "devbox",
-    ]);
-    profile.cli(&["config", "accept-interface"]);
-
-    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| adjust(&profile, cmd));
-    tui.wait_for(REMOTE_NAME);
-    tui.wait_until("the agent pane to be the focused one", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Agent"))
-    });
-    tui.wait_for("$ ");
-    Some((profile, link, tui))
-}
-
-fn plain_remote_shell(profile: &Profile, cmd: &mut Command) {
-    plain_shell(cmd);
-    let result = profile
-        .server
-        .tmux(&["set-option", "-g", "default-shell", "/bin/sh"]);
-    assert!(result.status.success());
-}
-
-fn delay_remote_control_command(profile: &Profile, command: &str) {
-    let script = profile.bin.join("ssh");
-    let original = std::fs::read_to_string(&script).expect("ssh stand-in");
-    let delayed = original.replace(
-        "exec cat > \"$d/up\"",
-        &format!(
-            "while IFS= read -r line; do case \"$line\" in *\"{command}\"*) touch {}; sleep 4 ;; esac; printf '%s\\n' \"$line\"; done > \"$d/up\"",
-            shell_word(&profile.path("shell-request-delayed")),
-        ),
-    );
-    assert_ne!(original, delayed, "install the delayed control link");
-    std::fs::write(script, delayed).expect("delay shell request");
-}
-
-/// Give the control connection's downlink the depth of a real one.
-///
-/// A real link holds what the host has sent and the client has not read yet:
-/// the ssh channel window and both ends' socket buffers, megabytes between
-/// them. The stand-in's `cat` pump holds one pipe's worth, so a wedged
-/// stand-in pushes back on the multiplexer almost at once and it stops
-/// reading its panes. Here the host's output is spooled to a file instead and
-/// forwarded from it, so wedging the forwarder stops delivery but not the
-/// host — and healing it delivers the whole backlog in one burst.
-///
-/// The forwarder is GNU `tail`, for `--pid`; see `have_tail_pid`.
-fn deepen_remote_downlink(profile: &Profile) {
-    let script = profile.bin.join("ssh");
-    let original = std::fs::read_to_string(&script).expect("ssh stand-in");
-    // The spool exists before `tail` opens it, and `--pid` ends `tail` with
-    // the pump, so the connection still sees its end.
-    let deep = original.replace(
-        "cat < \"$d/down\" &",
-        ": > \"$d/spool\"\n\
-         \x20   cat < \"$d/down\" > \"$d/spool\" &\n\
-         \x20   tail --pid=\"$!\" -c +1 -f \"$d/spool\" &",
-    );
-    assert_ne!(original, deep, "install the deep downlink");
-    std::fs::write(script, deep).expect("deepen the downlink");
-}
-
-#[test]
-fn a_new_shell_recovers_output_written_before_its_reader_connects() {
-    use std::os::unix::fs::PermissionsExt;
-    let scripts = tempfile::tempdir().expect("shell scripts");
-    let shell = scripts.path().join("quiet-shell");
-    let wrote = scripts.path().join("wrote-prompt");
-    // An interactive Bash prompt can hide lost startup output by redrawing on resize.
-    std::fs::write(&shell, format!(
-        "#!/bin/sh\ntrap '' WINCH\nprintf 'bootstrap-shell-prompt$ '\ntouch {}\nwhile IFS= read -r line; do eval \"$line\"; done\n",
-        shell_word(&wrote),
-    )).expect("single-prompt shell");
-    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-    let Some((profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            // Hold the birth reply until the shell has written its only prompt.
-            assert!(profile
-                .server
-                .tmux(&["set-hook", "-g", "after-new-window", "run-shell 'sleep 1'",])
-                .status
-                .success());
-        },
-        |cmd| {
-            cmd.env("SHELL", &shell);
-        },
-    ) else {
-        return;
-    };
-    tui.send(b"\x14");
-    wait_for_view(&tui, "Shell");
-    tui.wait_until("the initial prompt to be written", |_| wrote.exists());
-    let panes = profile
-        .server
-        .tmux(&["list-panes", "-a", "-F", "#{pane_id} #{window_name}"]);
-    let panes = String::from_utf8(panes.stdout).expect("panes");
-    let pane = panes
-        .lines()
-        .find(|line| line.contains("tbs-probe"))
-        .and_then(|line| line.split_whitespace().next())
-        .expect("shell pane");
-    let captured = profile.server.tmux(&["capture-pane", "-p", "-t", pane]);
-    assert!(String::from_utf8_lossy(&captured.stdout).contains("bootstrap-shell-prompt"));
-    tui.wait_for("bootstrap-shell-prompt");
-    tui.send(b"echo connected-\"\"shell-ready\r");
-    tui.wait_for("connected-shell-ready");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn a_slow_companion_shell_open_keeps_the_interface_painting() {
-    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
-        plain_remote_shell(profile, cmd);
-        delay_remote_control_command(profile, "new-window");
-    }) else {
-        return;
-    };
-    tui.send(b"\x14");
-    tui.wait_until("the shell spawn to reach the delayed link", |_| {
-        profile.path("shell-request-delayed").exists()
-    });
-    tui.send(b"\x14\x14");
-    tui.send(F1);
-    tui.wait_within(
-        Duration::from_secs(2),
-        "help during the shell spawn",
-        |frame| frame.contains("Keybindings"),
-    );
-    tui.send(ESC);
-    tui.wait_gone("Keybindings");
-    wait_for_view(&tui, "Shell");
-    tui.wait_for("$ ");
-    tui.send(b"printf 'companion-''landed\\n'\r");
-    tui.wait_for("companion-landed");
-    let windows = profile
-        .server
-        .tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
-    assert_eq!(
-        String::from_utf8_lossy(&windows.stdout)
-            .lines()
-            .filter(|line| line.starts_with("tbs-"))
-            .count(),
-        1,
-        "repeated opens create one shell"
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn a_slow_companion_shell_readoption_keeps_the_interface_painting() {
-    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
-        plain_remote_shell(profile, cmd);
-    }) else {
-        return;
-    };
-    tui.send(b"\x14");
-    wait_for_view(&tui, "Shell");
-    tui.wait_for("$ ");
-    tui.send(b"echo before-\"\"readoption\r");
-    tui.wait_for("before-readoption");
-    assert!(tui.quit().success());
-    delay_remote_control_command(&profile, "list-panes -a -F '#{pane_id}'");
-    let mut tui = Tui::spawn_with(&profile, 40, 120, plain_shell);
-    tui.wait_until("the shell adoption to reach the delayed link", |_| {
-        profile.path("shell-request-delayed").exists()
-    });
-    tui.send(F1);
-    tui.wait_within(
-        Duration::from_secs(2),
-        "help during shell adoption",
-        |frame| frame.contains("Keybindings"),
-    );
-    tui.send(ESC);
-    tui.wait_gone("Keybindings");
-    tui.send(b"\x14");
-    wait_for_view(&tui, "Shell");
-    tui.wait_for("$ ");
-    tui.send(b"echo after-\"\"readoption\r");
-    tui.wait_for("after-readoption");
-    let windows = profile
-        .server
-        .tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
-    assert_eq!(
-        String::from_utf8_lossy(&windows.stdout)
-            .lines()
-            .filter(|line| line.starts_with("tbs-"))
-            .count(),
-        1
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn opening_a_shell_during_failed_readoption_creates_its_replacement() {
-    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
-        plain_remote_shell(profile, cmd);
-    }) else {
-        return;
-    };
-    tui.send(b"\x14");
-    wait_for_view(&tui, "Shell");
-    tui.wait_for("$ ");
-    tui.send(b"echo shell-before-\"\"restart\r");
-    tui.wait_for("shell-before-restart");
-    assert!(tui.quit().success());
-    let windows = profile
-        .server
-        .tmux(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
-    for line in String::from_utf8_lossy(&windows.stdout).lines() {
-        if line
-            .split_whitespace()
-            .nth(1)
-            .is_some_and(|name| name.starts_with("tbs-"))
-        {
-            profile
-                .server
-                .tmux(&["kill-window", "-t", line.split_whitespace().next().unwrap()]);
-        }
-    }
-    delay_remote_control_command(&profile, "list-panes -a -F '#{pane_id}'");
-    let mut tui = Tui::spawn_with(&profile, 40, 120, plain_shell);
-    tui.wait_until("the old shell's adoption to reach the delayed link", |_| {
-        profile.path("shell-request-delayed").exists()
-    });
-    tui.send(b"\x14");
-    wait_for_view(&tui, "Shell");
-    tui.send(F1);
-    tui.wait_within(
-        Duration::from_secs(2),
-        "help during the failed adoption",
-        |frame| frame.contains("Keybindings"),
-    );
-    tui.send(ESC);
-    tui.wait_gone("Keybindings");
-    tui.wait_for("$ ");
-    tui.send(b"echo replacement-\"\"shell-ready\r");
-    tui.wait_for("replacement-shell-ready");
-    assert!(tui.quit().success());
-}
-
-/// Record the focused agent's input after the real PTY, event parser, routing,
-/// SSH stand-in and tmux control connection have all handled it.
-fn record_remote_input(profile: &Profile, tui: &mut Tui) -> PathBuf {
-    let recorded = profile.path("agent-input");
-    tui.send(
-        format!(
-            "stty raw -echo; printf 'tb-recording-''ready'; exec cat > {}\r",
-            shell_word(&recorded)
-        )
-        .as_bytes(),
-    );
-    tui.wait_for("tb-recording-ready");
-    recorded
-}
-
-fn assert_recorded_input(recorded: &Path, expected: &[u8]) {
-    // A trailing marker is an input fence: reaching it proves the agent read
-    // the preceding bytes, without judging absence from a quiet screen.
-    const FENCE: &[u8] = b"input-fence";
-    assert!(expected.ends_with(FENCE));
-    let deadline = Instant::now() + WAIT;
-    loop {
-        let actual = std::fs::read(recorded).unwrap_or_default();
-        if actual.ends_with(FENCE) {
-            assert_eq!(
-                actual,
-                expected,
-                "terminal replies became agent input: {:?}",
-                String::from_utf8_lossy(&actual)
-            );
-            return;
-        }
-        assert!(Instant::now() < deadline, "agent input fence never arrived");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-#[test]
-fn secondary_device_attributes_do_not_type_into_a_remote_agent() {
-    let Some((profile, _link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-    let recorded = record_remote_input(&profile, &mut tui);
-
-    tui.send(b"before\x1b[>0;10cafterinput-fence");
-    assert_recorded_input(&recorded, b"beforeafterinput-fence");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn fragmented_secondary_device_attributes_do_not_type_into_a_remote_agent() {
-    let Some((profile, _link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-    let recorded = record_remote_input(&profile, &mut tui);
-
-    // Pace the relay after incomplete CSI prefixes, never after a lone ESC:
-    // a standalone Escape is also a legitimate key on a legacy terminal.
-    for fragment in [b"before\x1b[".as_slice(), b">0;", b"10"] {
-        tui.send(fragment);
-        std::thread::sleep(Duration::from_millis(40));
-    }
-    tui.send(b"cafterinput-fence");
-    assert_recorded_input(&recorded, b"beforeafterinput-fence");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn primary_device_attributes_do_not_type_into_a_remote_agent() {
-    let Some((profile, _link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-    let recorded = record_remote_input(&profile, &mut tui);
-
-    tui.send(b"before\x1b[?62;22cafterinput-fence");
-    assert_recorded_input(&recorded, b"beforeafterinput-fence");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn terminal_reply_shaped_typing_and_paste_still_reach_a_remote_agent() {
-    let Some((profile, _link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-    let recorded = record_remote_input(&profile, &mut tui);
-
-    tui.send(b"literal 0;10c\x1b[D\x1bx");
-    tui.send(b"\x1b[200~pasted \x1b[>0;10c\x1b[201~");
-    tui.send(b"input-fence");
-    // The paste keeps the reply's text but not its ESC: `paste_safe` removes
-    // every control character from a paste, so none can end it early.
-    assert_recorded_input(
-        &recorded,
-        b"literal 0;10c\x1b[D\x1bxpasted [>0;10cinput-fence",
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn connected_host_markers_keep_arrows_without_a_circle() {
-    let Some((profile, _link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-    profile.cli(&[
-        "session",
-        "create",
-        "--name",
-        "local-marker-probe",
-        "--repo-path",
-        profile.path("repo").to_str().expect("utf-8 path"),
-        "--agent",
-        "shell",
-    ]);
-    tui.wait_for("local-marker-probe");
-    let mut redundant_markers = Vec::new();
-    for (label, glyph, child) in [
-        ("local", "⌂", "local-marker-probe"),
-        ("devbox", "@", REMOTE_NAME),
-    ] {
-        for arrow in ["▾", "▸"] {
-            let frame = tui.frame();
-            let line = frame
-                .lines()
-                .find(|line| line.contains(&format!("{glyph} {label}")))
-                .expect("host row");
-            let prefix = line.split(label).next().expect("host prefix");
-            eprintln!("rendered host prefix: {prefix}");
-            if !prefix.ends_with(&format!(" {arrow} {glyph} ")) {
-                redundant_markers.push(prefix.to_string());
-            }
-            if arrow == "▾" {
-                tui.press(0, tui.find(&format!("{glyph} {label}")));
-                tui.wait_gone(child);
-            }
-        }
-    }
-    assert!(tui.quit().success());
-    assert!(
-        redundant_markers.is_empty(),
-        "connected hosts should show only their arrow and host glyph: {redundant_markers:?}"
-    );
-}
-
-/// Every window on the remote stand-in's server, with the stamp it carries.
-fn stamped_listing(profile: &Profile) -> String {
-    let out = profile.server.tmux(&[
-        "list-windows",
-        "-a",
-        "-F",
-        "#{window_id}|#{@thurbox_session}|#{@thurbox_role}|#{session_name}",
-    ]);
-    assert!(out.status.success(), "list windows: {out:?}");
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// Two windows carrying one session's stamp on a *host* (issue #1635). The
-/// repair of #1207 retires the older one, and a host is where that repair was
-/// never run: `stamped_match` refuses the pair by design, so every pane verb on
-/// the session was refused until someone killed a window by hand.
-///
-/// The pair is planted by hand for the reason `one_window_per_stamp` gives: a
-/// spawn retires the window it would have paired with. The planted window is
-/// the newer, so it keeps the identity, and it records what reaches it — the
-/// send landing there is what "addressable again" means.
-#[test]
-fn a_remote_session_stamped_on_two_windows_is_addressable_again() {
-    let Some((profile, _link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-    let listing = stamped_listing(&profile);
-    let (session_id, tmux_session) = listing
-        .lines()
-        .find_map(|line| {
-            let fields: Vec<_> = line.split('|').collect();
-            (fields.get(2) == Some(&"agent") && !fields[1].is_empty())
-                .then(|| (fields[1].to_string(), fields[3].to_string()))
-        })
-        .unwrap_or_else(|| panic!("the remote agent window is stamped:\n{listing}"));
-
-    let recorded = profile.path("planted-input");
-    let created = profile.server.tmux(&[
-        "new-window",
-        "-d",
-        "-P",
-        "-F",
-        "#{window_id}",
-        "-t",
-        &format!("{tmux_session}:"),
-        "-n",
-        "tb-planted",
-        "sh",
-        "-c",
-        &format!("exec cat > {}", shell_word(&recorded)),
-    ]);
-    assert!(created.status.success(), "plant a window: {created:?}");
-    let planted = String::from_utf8_lossy(&created.stdout).trim().to_string();
-    for (option, value) in [
-        ("@thurbox_session", session_id.as_str()),
-        ("@thurbox_role", "agent"),
-    ] {
-        let out = profile
-            .server
-            .tmux(&["set-option", "-w", "-t", &planted, option, value]);
-        assert!(out.status.success(), "stamp {option}: {out:?}");
-    }
-
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    profile.apply(&mut cmd);
-    let sent = cmd
-        .args(["session", "send", REMOTE_NAME, "reached-the-survivor"])
-        .output()
-        .expect("run thurbox-cli");
-    assert!(
-        sent.status.success(),
-        "a send to the paired remote session was refused:\n{}{}\nserver holds:\n{}",
-        String::from_utf8_lossy(&sent.stdout),
-        String::from_utf8_lossy(&sent.stderr),
-        stamped_listing(&profile)
-    );
-
-    let stamped: Vec<String> = stamped_listing(&profile)
-        .lines()
-        .filter(|line| line.contains(&format!("|{session_id}|agent|")))
-        .filter_map(|line| line.split('|').next().map(str::to_string))
-        .collect();
-    assert_eq!(
-        stamped,
-        vec![planted],
-        "the older window must have been retired on the host"
-    );
-    let deadline = Instant::now() + WAIT;
-    while !std::fs::read_to_string(&recorded)
-        .unwrap_or_default()
-        .contains("reached-the-survivor")
-    {
-        assert!(
-            Instant::now() < deadline,
-            "the send never reached the window that kept the stamp"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(tui.quit().success());
-}
-
-/// A remote session whose worktree carries ~100 KB of uncommitted change: the
-/// shape that made one idle remote session cost 1.3 MB/min, all of it the
-/// selected session's working diff fetched again over ssh every few seconds.
-/// `pane`, when given, is installed as a strip before the interface starts.
-fn remote_session_with_a_large_diff(pane: Option<&str>) -> Option<(Profile, Link, Tui)> {
-    remote_shell_session_with(|profile, _| {
-        let body: String = (0..2000)
-            .map(|n| format!("line {n:05} of a large uncommitted change, padded out\n"))
-            .collect();
-        std::fs::write(profile.path("repo/README.md"), body).expect("write the change");
-        if let Some(pane) = pane {
-            let ui = profile.path("config/ui/plugins");
-            std::fs::create_dir_all(&ui).expect("mkdir plugins");
-            std::fs::write(ui.join("95_diff_probe.lua"), pane).expect("write the pane");
-        }
-    })
-}
-
-/// A strip that shows the selected session's diff, which is all it takes to be
-/// "a pane that displays it": it reads `thurbox.diffs`.
-const DIFF_PROBE: &str = r#"return {
-  name = "diff_probe", slot = "diff_probe", strip = true, size = { len = 1 },
-  focusable = false,
-  render = function()
-    local text = "diff-probe=none"
-    for _, diff in pairs(thurbox.diffs or {}) do
-      local added = 0
-      for _, file in ipairs(diff.files or {}) do
-        added = added + file.added
-      end
-      text = "diff-probe=" .. diff.state .. ";added=" .. added
-    end
-    return { type = "text", text = text }
-  end,
-}
-"#;
-
-/// The calls the `ssh` stand-in has carried, from line `since` on.
-fn ssh_calls(profile: &Profile, since: usize) -> Vec<String> {
-    std::fs::read_to_string(profile.path("ssh-calls"))
-        .unwrap_or_default()
-        .lines()
-        .skip(since)
-        .map(|line| line.replace('\'', ""))
-        .collect()
-}
-
-/// How many times the full working diff body was read in `calls`.
-fn full_diff_reads(calls: &[String]) -> usize {
-    calls
-        .iter()
-        .filter(|call| call.ends_with("diff --no-color HEAD"))
-        .count()
-}
-
-/// Long enough for two expiries of the diff's five-second age.
-const IDLE_WINDOW: Duration = Duration::from_secs(12);
-
-#[test]
-fn a_remote_diff_nothing_shows_is_never_fetched() {
-    // No bundled pane reads `thurbox.diffs`, so the selected remote session's
-    // diff is bytes over the link that nothing ever draws.
-    let Some((profile, _link, mut tui)) = remote_session_with_a_large_diff(None) else {
-        return;
-    };
-    let since = ssh_calls(&profile, 0).len();
-    std::thread::sleep(IDLE_WINDOW);
-    let calls = ssh_calls(&profile, since);
-    assert!(tui.quit().success());
-    // Nor its fingerprint: with only that, the full reads stay at zero while
-    // a check still crosses the link every few seconds. The plain `status` the
-    // session list's own stat polls with is a different call and stays.
-    let diff_calls: Vec<_> = calls
-        .iter()
-        .filter(|call| {
-            call.ends_with("diff --no-color HEAD")
-                || call.contains(" hash-object ")
-                || call.contains("--no-optional-locks status")
-        })
-        .collect();
-    assert!(
-        diff_calls.is_empty(),
-        "the remote diff was asked for with no pane showing it:\n{diff_calls:#?}"
-    );
-}
-
-#[test]
-fn a_shown_remote_diff_is_fetched_again_only_when_the_worktree_changes() {
-    let Some((profile, _link, mut tui)) = remote_session_with_a_large_diff(Some(DIFF_PROBE)) else {
-        return;
-    };
-    tui.wait_for("diff-probe=ready;added=2000");
-    assert!(
-        full_diff_reads(&ssh_calls(&profile, 0)) >= 1,
-        "a shown diff is read in full at least once"
-    );
-
-    // Unchanged: the diff ages out twice, and each time a cheap check must
-    // stand in for the 100 KB body.
-    let since = ssh_calls(&profile, 0).len();
-    std::thread::sleep(IDLE_WINDOW);
-    let idle = ssh_calls(&profile, since);
-    assert_eq!(
-        full_diff_reads(&idle),
-        0,
-        "an unchanged remote diff was read in full again:\n{}",
-        idle.join("\n")
-    );
-    assert!(
-        idle.iter().any(|call| call.contains(" hash-object ")),
-        "a shown remote diff must still be checked for change:\n{}",
-        idle.join("\n")
-    );
-
-    // Changed: the next check notices, and the pane shows the new diff.
-    let mut more = std::fs::read_to_string(profile.path("repo/README.md")).expect("read");
-    more.push_str("one more line\n");
-    std::fs::write(profile.path("repo/README.md"), more).expect("write");
-    tui.wait_for("diff-probe=ready;added=2001");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn a_chord_is_answered_while_a_remote_sessions_link_is_wedged() {
-    // The interface must stay the user's while the network is not.
-    //
-    // A *passthrough* chord is the one that goes over the wire. Before it can
-    // be left to the agent, `coordinator::input`'s gate asks whether the
-    // focused pane is dead — `focused_terminal_is_dead` -> `Terminals::is_dead`
-    // -> `tmux_compat::Server::is_dead`, a control-mode round trip made on the loop
-    // itself. With the link wedged that runs out `COMMAND_TIMEOUT`, reconnects,
-    // and runs out again, and nothing else is handled meanwhile.
-    //
-    // So `ctrl+e` is the press under test and `ctrl+p` is the assertion: the
-    // palette is drawn entirely from the kernel's own registry and needs
-    // nothing from the host, so it can only be late if the press before it
-    // stopped the loop. Two presses rather than one because a live pane's
-    // passthrough chord has no visible outcome of its own — it is forwarded,
-    // which is the whole point of it.
-    //
-    // The answer is already here, without asking: the pane's reader thread sets
-    // `WiredPane::exited` on EOF, and `has_exited` reads it with an atomic load.
-    let Some((_profile, link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-
-    link.wedge();
-
-    tui.send(CTRL_E);
-    tui.send(CTRL_P);
-    tui.wait_within(
-        RESPONSIVE,
-        "the palette to open on a wedged link",
-        |frame| frame.contains("type to filter commands"),
-    );
-
-    // Healed before the exit: quitting detaches every backend, and a wedged one
-    // would hold that up for reasons this test has already made its point about.
-    link.heal();
-    tui.send(ESC);
-    tui.wait_gone("type to filter commands");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
-    // The other half, on the thread that owns the screen. `render_session`
-    // matches the pane to the rect it is painted into, and `Session::resize`
-    // does that by asking the backend — a control-mode round trip, mid-frame.
-    // The placeholder branch right above it already refuses to (*"would issue a
-    // blocking ssh resize on the UI thread — the freeze we're avoiding"*); the
-    // live branch is the one this pins.
-    //
-    // Nothing on screen needs that answer: the pane is resized so the *agent*
-    // wraps correctly, which is a message to the host, not an input to the
-    // frame. It belongs on the queue the keystrokes already go out on.
-    //
-    // Same shape as the chord test, and for the same reason — the palette is
-    // the only thing asserted on, because it is drawn from the kernel's own
-    // registry and owes the host nothing. The session list is deliberately not
-    // used: it comes back on a snapshot tick, which is seconds even on a
-    // healthy link, so it cannot tell a frozen interface from a patient one.
-    let Some((_profile, link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-
-    link.wedge();
-
-    // The rect changes, so the next frame re-sizes the pane behind it — and
-    // that frame is the assertion. Narrowing to 100 columns cuts the header's
-    // right-hand end out of the grid, so `Default` can only be back once the
-    // interface has painted a whole frame at the new width. Blocked mid-paint,
-    // it never does.
-    //
-    // Asserted on the repaint rather than on a chord sent after it: a press
-    // made before the reflow lands can be refused (focus may only rest on a
-    // slot the last painted frame placed, which is what
-    // `a_press_right_after_a_reload_never_reaches_a_pane_that_did_not_paint_it`
-    // pins), so pressing here tested the race and not the resize.
-    tui.resize(30, 100);
-    tui.wait_within(
-        RESPONSIVE,
-        "the interface to repaint at the new width on a wedged link",
-        |frame| frame.contains("Default"),
-    );
-
-    link.heal();
-    assert!(tui.quit().success());
 }
 
 /// A pane that fills the plugin VM to the byte when `ctrl+g` is pressed.
@@ -9546,7 +5489,7 @@ fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
     let off = interface.path().join("plugins").join("93_off.lua");
     std::fs::write(&off, "return {").expect("a plugin that does not load");
     std::fs::write(
-        profile.path("config/ui.json"),
+        profile.path("config/plugin-state.json"),
         format!(r#"{{"disabled": [{:?}]}}"#, off.display().to_string()),
     )
     .expect("turn the plugin off");
@@ -9744,7 +5687,7 @@ fn memory_fallback_keeps_disabled_bundled_plugins_disabled() {
     let interface = interface_plus("91_hog.lua", HOG_PANE);
     let profile = Profile::new();
     std::fs::write(
-        profile.path("config/ui.json"),
+        profile.path("config/plugin-state.json"),
         serde_json::json!({
             "disabled": [interface.path().join("plugins/20_agent.lua")]
         })
@@ -9835,466 +5778,6 @@ fn memory_fallback_reaps_programs_owned_by_panes_it_removed() {
     tui.send(CTRL_P);
     tui.wait_for("type to filter commands");
     tui.send(ESC);
-    assert!(tui.quit().success());
-}
-
-/// How long a host whose connection ended may take to be typed into again.
-///
-/// The connection is re-opened on demand, in well under a second here; what
-/// this bounds is the interface holding every session on the host as
-/// unreachable for the attach retry interval (20 s) after the host is back.
-const RECOVERY: Duration = Duration::from_secs(10);
-
-/// Type `echo <marker>` into the focused pane until the shell answers, giving
-/// up after `budget`. Retyped every couple of seconds: keys pressed while the
-/// pane is detached go nowhere.
-fn echo_within(tui: &mut Tui, marker: &str, budget: Duration) {
-    let (head, tail) = marker.split_at(marker.len() / 2);
-    let until = Instant::now() + budget;
-    while Instant::now() < until {
-        tui.send(format!("echo {head}\"\"{tail}\r").as_bytes());
-        let retype = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < retype.min(until) {
-            if tui.frame().contains(marker) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-    tui.give_up(&format!("{marker:?} to be echoed within {budget:?}"));
-}
-
-/// The remote session, plus a second one on the same host that is off screen
-/// long enough for its output to be held back.
-fn two_remote_sessions_one_hidden() -> Option<(Profile, Link, Tui)> {
-    let (profile, link, tui) = remote_shell_session_with(|profile, _| {
-        let settings = profile.path("config/settings.toml");
-        let seeded = std::fs::read_to_string(&settings).expect("read settings");
-        std::fs::write(&settings, format!("hidden_terminal_secs = 1\n{seeded}"))
-            .expect("seed settings");
-        profile.cli(&[
-            "session",
-            "create",
-            "--name",
-            "afar-second",
-            "--repo-path",
-            profile.path("repo").to_str().expect("utf-8 path"),
-            "--agent",
-            "shell",
-            "--host",
-            "devbox",
-        ]);
-    })?;
-    tui.wait_for("afar-second");
-    // Past the setting, and past the snapshot tick that drops the grid.
-    std::thread::sleep(Duration::from_secs(4));
-    Some((profile, link, tui))
-}
-
-/// Show `name`'s agent pane, with the keyboard in it.
-fn show_session(tui: &mut Tui, name: &str) {
-    // The row, not the header, which names the selected session too.
-    tui.press(0, tui.session_row(name).expect("the session row"));
-    tui.wait_until("the click to select the session", |frame| {
-        frame.contains(&format!("{name} (shell)"))
-    });
-    tui.send(b"\x0c");
-    tui.wait_until("the agent pane to be the focused one", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Agent"))
-    });
-}
-
-/// Both sessions on the host answer again within [`RECOVERY`] of `from` —
-/// the one that was off screen first, then the one that was not.
-fn both_sessions_answer(tui: &mut Tui, from: Instant) {
-    show_session(tui, "afar-second");
-    echo_within(
-        tui,
-        "tb-second-back",
-        RECOVERY.saturating_sub(from.elapsed()),
-    );
-    show_session(tui, REMOTE_NAME);
-    echo_within(tui, "tb-first-back", RECOVERY);
-}
-
-#[test]
-fn a_remote_session_comes_back_at_once_after_its_link_is_cut() {
-    // Every pane on a host shares one control connection, so when it ends every
-    // session on that host goes with it — and the host itself is fine: a fresh
-    // ssh reaches it at once, as it does when an ssh master dies under a
-    // connection that was otherwise healthy.
-    let Some((_profile, link, mut tui)) = remote_shell_session() else {
-        return;
-    };
-
-    link.cut();
-    echo_within(&mut tui, "tb-back-42", RECOVERY);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn every_session_on_a_host_comes_back_at_once_after_its_link_is_cut() {
-    let Some((_profile, link, mut tui)) = two_remote_sessions_one_hidden() else {
-        return;
-    };
-
-    link.cut();
-    both_sessions_answer(&mut tui, Instant::now());
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn every_session_on_a_host_comes_back_once_a_wedged_link_heals() {
-    // A link that carries nothing for longer than one command may wait
-    // (`COMMAND_TIMEOUT`) and then carries again — a lid closed and opened, a
-    // network that re-routes. The timeout replaces the connection; the
-    // sessions it carried must follow it as soon as the old one lets go.
-    let Some((_profile, link, mut tui)) = two_remote_sessions_one_hidden() else {
-        return;
-    };
-
-    link.wedge();
-    std::thread::sleep(Duration::from_secs(15));
-    link.heal();
-    both_sessions_answer(&mut tui, Instant::now());
-    assert!(tui.quit().success());
-}
-
-// --- a remote pane that floods ----------------------------------------------
-
-/// Lines the flood prints. tmux sends them as about 7,000 `%output` chunks,
-/// well past the 4,096 a pane's channel holds (`PANE_CHANNEL_CAPACITY`), so
-/// delivered as one burst they cannot all fit.
-const FLOOD_LINES: usize = 200_000;
-
-/// The log line the control reader writes when a pane's channel overflows —
-/// proof the flood took the resync path rather than fitting.
-const OVERFLOWED: &str = "dropping output until a snapshot catches it up";
-
-/// A remote shell session whose pane will flood once `go` exists, with the
-/// backend logging at debug so an overflow can be seen. `deep` gives the link
-/// a real one's depth (`deepen_remote_downlink`).
-///
-/// Every line is wrapped in escape sequences — colour, underline, erase to
-/// end of line — so a chunk cut out of the stream cuts one of them, and a
-/// grid that parsed across the gap shows it.
-fn armed_flood(deep: bool) -> Option<(Profile, Link, Tui, PathBuf, String)> {
-    if deep && !have_tail_pid() {
-        eprintln!("skipping: this tail has no --pid");
-        return None;
-    }
-    let (profile, link, mut tui) = remote_shell_session_with(|profile, cmd| {
-        plain_remote_shell(profile, cmd);
-        if deep {
-            deepen_remote_downlink(profile);
-        }
-        cmd.env("RUST_LOG", "runtime_mux=debug");
-    })?;
-    let flood = profile.path("flood");
-    let text: String = (0..FLOOD_LINES)
-        .map(|n| {
-            format!(
-                "\x1b[1;3{}mflood-{n:06}\x1b[0m \x1b[4m{}\x1b[24m\x1b[K\n",
-                n % 8,
-                "=".repeat(n % 41)
-            )
-        })
-        .collect();
-    std::fs::write(&flood, text).expect("write the flood");
-    let go = profile.path("go");
-    tui.send(
-        format!(
-            "echo flood-\"\"armed; while [ ! -e {go} ]; do sleep 0.1; done; cat {flood}; \
-             echo flood-\"\"done\r",
-            go = shell_word(&go),
-            flood = shell_word(&flood),
-        )
-        .as_bytes(),
-    );
-    // The pane is the one running the armed command — not merely showing it
-    // typed, which it does before the whole line has crossed the link.
-    let deadline = Instant::now() + WAIT;
-    let pane = loop {
-        let panes = profile
-            .server
-            .tmux(&["list-panes", "-a", "-F", "#{pane_id}"]);
-        let armed = String::from_utf8_lossy(&panes.stdout)
-            .lines()
-            .find(|pane| {
-                captured_rows(&profile, pane)
-                    .iter()
-                    .any(|row| row == "flood-armed")
-            })
-            .map(str::to_owned);
-        if let Some(pane) = armed {
-            break pane;
-        }
-        assert!(Instant::now() < deadline, "the flood was never armed");
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    Some((profile, link, tui, go, pane))
-}
-
-/// Whether `tail` takes `--pid`, which ends a forwarder with its pump. GNU
-/// has it and BSD does not; a forwarder that outlives its pump would hide the
-/// connection's end.
-fn have_tail_pid() -> bool {
-    Command::new("tail")
-        .args(["--pid=1", "-c", "+1", "/dev/null"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-/// The pane's screen as the multiplexer holds it, one string per row.
-fn captured_rows(profile: &Profile, pane: &str) -> Vec<String> {
-    let out = profile.server.tmux(&["capture-pane", "-p", "-t", pane]);
-    assert!(out.status.success(), "capture-pane {pane}");
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|row| row.trim_end().to_owned())
-        .collect()
-}
-
-/// One cell as a comparison sees it: the glyph, and the attributes the flood
-/// sets — so a grid that kept the text but lost or leaked a style differs.
-#[derive(Clone, Copy, PartialEq, Debug)]
-struct Styled {
-    ch: char,
-    fg: vt100::Color,
-    bold: bool,
-    underline: bool,
-}
-
-fn styled_rows(screen: &vt100::Screen) -> Vec<Vec<Styled>> {
-    let (rows, cols) = (screen.size().0.get(), screen.size().1.get());
-    (0..rows)
-        .map(|y| {
-            (0..cols)
-                .map(|x| {
-                    let cell = screen.cell(y, x);
-                    Styled {
-                        // An empty cell is a space, so a column is a cell.
-                        ch: cell
-                            .and_then(|cell| cell.contents().chars().next())
-                            .unwrap_or(' '),
-                        fg: cell.map_or(vt100::Color::Default, vt100::Cell::fgcolor),
-                        bold: cell.is_some_and(vt100::Cell::bold),
-                        underline: cell.is_some_and(vt100::Cell::underline),
-                    }
-                })
-                .collect()
-        })
-        .collect()
-}
-
-impl Tui {
-    fn styled_rows(&self) -> Vec<Vec<Styled>> {
-        styled_rows(self.screen.lock().unwrap().screen())
-    }
-}
-
-/// The pane's screen as the multiplexer holds it, styles included
-/// (`capture-pane -e`), parsed onto a grid of the pane's own size.
-fn captured_cells(profile: &Profile, pane: &str) -> Vec<Vec<Styled>> {
-    let size = profile.server.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        pane,
-        "#{pane_height} #{pane_width}",
-    ]);
-    let size = String::from_utf8_lossy(&size.stdout);
-    let mut size = size
-        .split_whitespace()
-        .map(|n| n.parse::<u16>().expect("size"));
-    let (rows, cols) = (size.next().expect("rows"), size.next().expect("cols"));
-    let out = profile
-        .server
-        .tmux(&["capture-pane", "-p", "-e", "-t", pane]);
-    assert!(out.status.success(), "capture-pane -e {pane}");
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut parser = vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 0);
-    let lines: Vec<&str> = text.lines().collect();
-    parser.process(lines.join("\r\n").as_bytes());
-    styled_rows(parser.screen())
-}
-
-/// Whether `captured` is painted somewhere in `frame`, cell for cell: placed
-/// by its first non-blank row's text, every other row read at the same
-/// column, up to the pane's border.
-///
-/// Colour is compared as painted. Text the pane leaves in its default colour
-/// may be painted in a theme's, but in one and the same everywhere — so a
-/// colour leaking onto it still shows.
-fn grid_painted(frame: &[Vec<Styled>], captured: &[Vec<Styled>]) -> bool {
-    let text = |row: &[Styled]| -> String {
-        row.iter()
-            .map(|c| c.ch)
-            .collect::<String>()
-            .trim_end()
-            .to_owned()
-    };
-    let Some(first) = captured.iter().position(|row| !text(row).is_empty()) else {
-        return false;
-    };
-    let needle: Vec<char> = text(&captured[first]).chars().collect();
-    let found = frame.iter().enumerate().find_map(|(y, row)| {
-        let chars: Vec<char> = row.iter().map(|c| c.ch).collect();
-        chars
-            .windows(needle.len())
-            .position(|cells| cells == needle.as_slice())
-            .map(|x| (y, x))
-    });
-    let Some((y, x)) = found else {
-        return false;
-    };
-    let Some(top) = y.checked_sub(first) else {
-        return false;
-    };
-    let mut default_fg = None;
-    captured.iter().enumerate().all(|(i, want)| {
-        let Some(row) = frame.get(top + i) else {
-            return false;
-        };
-        let painted = row.get(x..).unwrap_or_default();
-        let len = text(want).chars().count();
-        painted.len() >= len
-            && want[..len].iter().zip(painted).all(|(want, got)| {
-                let fg = if want.fg == vt100::Color::Default {
-                    *default_fg.get_or_insert(got.fg) == got.fg
-                } else {
-                    want.fg == got.fg
-                };
-                want.ch == got.ch && want.bold == got.bold && want.underline == got.underline && fg
-            })
-            && painted[len..]
-                .iter()
-                .take_while(|cell| !matches!(cell.ch, '│' | '┃' | '║'))
-                // The interface paints the pane's cursor as a block.
-                .all(|cell| matches!(cell.ch, ' ' | '█'))
-    })
-}
-
-/// Wait for the flood to finish and the frame to paint the pane's real screen.
-fn wait_for_true_grid(profile: &Profile, tui: &Tui, pane: &str) {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        let captured = captured_cells(profile, pane);
-        let done = captured_rows(profile, pane)
-            .iter()
-            .any(|row| row == "flood-done");
-        if done && grid_painted(&tui.styled_rows(), &captured) {
-            return;
-        }
-        if Instant::now() > deadline {
-            tui.give_up(&format!(
-                "the flooded pane to match capture-pane:\n{}",
-                captured_rows(profile, pane).join("\n")
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Wait until the host has printed the flood as far as `row`.
-fn wait_for_host(profile: &Profile, pane: &str, what: &str, row: impl Fn(&str) -> bool) {
-    let deadline = Instant::now() + WAIT;
-    while !captured_rows(profile, pane).iter().any(|r| row(r)) {
-        assert!(Instant::now() < deadline, "{what} on the host");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// The palette opens and closes within `RESPONSIVE`. It is drawn from the
-/// kernel's own registry and owes the host nothing, so it can only be late if
-/// the loop is.
-fn palette_answers(tui: &mut Tui, while_: &str) {
-    tui.send(CTRL_P);
-    tui.wait_within(
-        RESPONSIVE,
-        &format!("the palette to open {while_}"),
-        |frame| frame.contains("type to filter commands"),
-    );
-    tui.send(ESC);
-    tui.wait_within(
-        RESPONSIVE,
-        &format!("the palette to close {while_}"),
-        |frame| !frame.contains("type to filter commands"),
-    );
-}
-
-#[test]
-fn a_remote_pane_that_overflows_its_channel_ends_on_its_real_screen() {
-    // A pane that prints faster than its reader drains overflows its channel.
-    // The output dropped there can cut an escape sequence in half, so the grid
-    // is not parsed across the gap: a snapshot catches it up, and what the
-    // interface paints afterwards is what the host's multiplexer holds.
-    //
-    // The host's own multiplexer prints slower than the reader drains, so a
-    // flood straight through never overflows. A real link is what makes it:
-    // stalled with the host's output already in flight, it delivers all of it
-    // at once when it moves again. So the link is held until the host has
-    // printed the whole flood, and the burst is the flood.
-    let Some((profile, link, mut tui, go, pane)) = armed_flood(true) else {
-        return;
-    };
-
-    link.wedge();
-    std::fs::write(&go, "").expect("release the flood");
-    wait_for_host(&profile, &pane, "the flood never finished", |row| {
-        row == "flood-done"
-    });
-    palette_answers(&mut tui, "while a flood waits on a wedged link");
-
-    link.heal();
-    palette_answers(&mut tui, "while the flood lands");
-    wait_for_true_grid(&profile, &tui, &pane);
-    assert!(
-        tui.log_text().contains(OVERFLOWED),
-        "the burst never overflowed the pane's channel, so it tested nothing"
-    );
-
-    tui.send(b"echo after-\"\"flood\r");
-    tui.wait_for("after-flood");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn a_remote_pane_flooded_on_a_wedged_link_ends_on_its_real_screen_once_it_heals() {
-    // The stand-in's own shallow link: the host's multiplexer is pushed back
-    // on as soon as the link stops carrying, and holds the flood mid-print
-    // until it heals. The interface stays the user's meanwhile — it paints a
-    // new size and answers a chord — and once the link moves the flood runs
-    // to its end and the pane shows the host's screen.
-    let Some((profile, link, mut tui, go, pane)) = armed_flood(false) else {
-        return;
-    };
-
-    link.wedge();
-    std::fs::write(&go, "").expect("release the flood");
-    wait_for_host(&profile, &pane, "the flood never started", |row| {
-        row.starts_with("flood-0")
-    });
-    palette_answers(&mut tui, "while a flood is held by a wedged link");
-    // Narrowed, the header's right-hand end drops out of the grid, so
-    // `Default` is back only once a whole frame was painted at the new width.
-    tui.resize(30, 100);
-    tui.wait_within(
-        RESPONSIVE,
-        "the interface to repaint at the new width while a flood is held",
-        |frame| frame.contains("Default"),
-    );
-
-    link.heal();
-    wait_for_true_grid(&profile, &tui, &pane);
-
-    tui.send(b"echo after-\"\"flood\r");
-    tui.wait_for("after-flood");
     assert!(tui.quit().success());
 }
 
@@ -10408,256 +5891,6 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
     }
 
     assert!(tui.quit().success());
-}
-
-/// A stand-in agent that echoes each key it reads as `[k]`, redrawn in place,
-/// a few milliseconds after reading it.
-///
-/// The delay is what makes the echo scenarios mean something. An echo that
-/// arrives before the interface has started painting the keystroke's own frame
-/// rides in that frame for free, however the loop paces output; one that
-/// arrives *after* it — which is the case for any agent slower than a frame to
-/// answer, real agents included — used to be paced by the output floor.
-const DELAYED_ECHO: &str =
-    "printf 'ready> '; while IFS= read -rs -n1 c; do sleep 0.005; printf '\\r[%s]' \"$c\"; done";
-
-/// Type `keys` letters into the focused [`DELAYED_ECHO`] session at a person's
-/// pace, each one only after the last one's echo is on screen.
-fn type_and_see_echoes(tui: &mut Tui, keys: usize) {
-    for i in 0..keys {
-        let key = b'a' + (i % 26) as u8;
-        let token = format!("[{}]", key as char);
-        tui.send(&[key]);
-        tui.wait_within(
-            Duration::from_secs(5),
-            &format!("the echo {token}"),
-            |frame| frame.contains(&token),
-        );
-        // 60–100 ms between keys, varied so the keys cannot lock onto the
-        // loop's own clock — the benchmark's typing rate.
-        std::thread::sleep(Duration::from_millis(60 + (i as u64 * 37) % 41));
-    }
-}
-
-/// The loop's `(echoes, echo_frames)` counters, once its published perf
-/// snapshot has counted at least `at_least` echoes — or as they stand when it
-/// gives up. Published every few seconds while `THURBOX_PERF_LOG` is set.
-fn echo_counters(profile: &Profile, at_least: u64) -> (u64, u64) {
-    let deadline = Instant::now() + WAIT;
-    let mut seen = (0, 0);
-    while Instant::now() < deadline {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut cmd);
-        let out = cmd
-            .args(["perf", "--json"])
-            .output()
-            .expect("thurbox-cli perf");
-        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-            let counter = |name: &str| json["counters"][name].as_u64().unwrap_or(0);
-            seen = (counter("echoes"), counter("echo_frames"));
-            if seen.0 >= at_least {
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    seen
-}
-
-/// A profile with a session named `echo` running `command` (plus whatever
-/// `extra` creates after it), attached and focused, with the loop counting.
-fn echo_session(command: &str, extra: impl FnOnce(&Profile, &Path)) -> Option<(Profile, Tui)> {
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return None;
-    }
-    let profile = Profile::new();
-    let repo = repo(profile.root.path());
-    let repo_path = repo.to_str().expect("utf-8 path");
-    profile.cli(&[
-        "session",
-        "create",
-        "--name",
-        "echo",
-        "--repo-path",
-        repo_path,
-        "--command",
-        "bash",
-        "--arg",
-        "-c",
-        "--arg",
-        command,
-    ]);
-    // After, so `echo` is the first row, which is the one selected at boot.
-    extra(&profile, &repo);
-    profile.cli(&["config", "accept-interface"]);
-    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
-        cmd.env("THURBOX_PERF_LOG", "1");
-    });
-    tui.wait_for("ready> ");
-    tui.wait_until("the agent pane to be the focused one", |frame| {
-        frame
-            .lines()
-            .last()
-            .is_some_and(|band| band.trim_start().starts_with("Agent"))
-    });
-    Some((profile, tui))
-}
-
-/// Keys typed in the two scenarios below.
-const ECHO_KEYS: u64 = 20;
-
-/// What both scenarios assert: every key's echo was painted with no frame
-/// floor, and all but the first as a frame that redrew only the pane — the
-/// first key after a pause has no kept frame to redraw over (see
-/// `KEEP_FRAME_WHILE_TYPING`).
-///
-/// Asserted on the loop's counters rather than on the clock (ADR-P5): the
-/// benchmark measures how long an echo takes (docs/thurbox/benchmark-multiplexers.md),
-/// and this pins that nothing puts it back on a floor.
-fn assert_every_echo_painted_at_once(profile: &Profile) {
-    let (echoes, echo_frames) = echo_counters(profile, ECHO_KEYS);
-    assert_eq!(
-        echoes, ECHO_KEYS,
-        "every keystroke's echo is painted with no floor ({echo_frames} of them as echo frames)"
-    );
-    assert!(
-        echo_frames >= ECHO_KEYS - 1,
-        "{echo_frames} of {echoes} echoes were painted by redrawing only the pane"
-    );
-}
-
-#[test]
-fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
-    // Output is paced at 30 frames a second (ADR-P17) because nobody reads a
-    // scrolling log faster. The echo of a key is output too, and pacing it
-    // put 25–48 ms on every keystroke (docs/thurbox/benchmark-multiplexers.md): the
-    // keystroke's own frame painted at once, the echo landed just after it and
-    // then waited out the floor from that frame (ADR-P28).
-    // After the 20 ordinary keys, answer the first key of a two-key batch at
-    // once and the second 75 ms later. That keeps the two output chunks well
-    // inside the echo window but far enough apart that tmux cannot coalesce
-    // them into one read.
-    const DELAY_SECOND_BATCH_ECHO: &str = "printf 'ready> '; i=0; while IFS= read -rs -n1 c; do i=$((i + 1)); if [ \"$i\" -le 20 ]; then sleep 0.005; elif [ \"$i\" -eq 22 ]; then sleep 0.075; fi; printf '\\r[%s]' \"$c\"; done";
-    let Some((profile, mut tui)) = echo_session(DELAY_SECOND_BATCH_ECHO, |_, _| {}) else {
-        return;
-    };
-    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
-    assert_every_echo_painted_at_once(&profile);
-
-    // Crossterm can hand one input poll several rapid or repeated keys. The
-    // agent answers them one at a time, so each send must keep its own wait
-    // instead of replacing the wait the previous key left behind.
-    const BATCHED_KEYS: u64 = 2;
-    let keys: Vec<u8> = (0..BATCHED_KEYS).map(|i| b'a' + (i % 26) as u8).collect();
-    let last = format!("[{}]", keys.last().copied().expect("a key") as char);
-    tui.send(&keys);
-    tui.wait_within(Duration::from_secs(5), "the last batched echo", |frame| {
-        frame.contains(&last)
-    });
-    let expected = ECHO_KEYS + BATCHED_KEYS;
-    let (echoes, echo_frames) = echo_counters(&profile, expected);
-    assert_eq!(echoes, expected, "every batched key retained its echo wait");
-    // Reading the first counter snapshot can outlive KEEP_FRAME_WHILE_TYPING,
-    // so the batch's first echo may need a full frame; its second must reuse
-    // that frame.
-    assert!(
-        echo_frames >= expected - 2,
-        "{echo_frames} of {echoes} batched echoes redrew only the pane"
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn a_keystrokes_echo_is_painted_at_once_while_another_session_prints() {
-    // The same, with a second session printing the whole time. Its output
-    // keeps the loop painting at the output floor, which is exactly the clock
-    // an echo must not be put on — and it must not be counted as an echo.
-    let Some((profile, mut tui)) = echo_session(DELAYED_ECHO, |profile, repo| {
-        profile.cli(&[
-            "session",
-            "create",
-            "--name",
-            "busy",
-            "--repo-path",
-            repo.to_str().expect("utf-8 path"),
-            "--command",
-            "bash",
-            "--arg",
-            "-c",
-            "--arg",
-            "while :; do echo \"busy $RANDOM $RANDOM $RANDOM\"; sleep 0.002; done",
-        ]);
-    }) else {
-        return;
-    };
-    type_and_see_echoes(&mut tui, ECHO_KEYS as usize);
-    assert_every_echo_painted_at_once(&profile);
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn creating_a_session_runs_a_handful_of_tmux_processes() {
-    // `session create` re-applies the server's options on every call, and did
-    // it as one `tmux set-option` process each: 27 processes and ~92 ms a
-    // session, most of the gap to Herdr and raw tmux (#1243). What is counted
-    // here is the processes, not the milliseconds — a count is the same on
-    // every machine.
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return;
-    }
-    let profile = Profile::new();
-    let repo = repo(profile.root.path());
-    let real = String::from_utf8(
-        Command::new("sh")
-            .args(["-c", "command -v tmux"])
-            .output()
-            .expect("find tmux")
-            .stdout,
-    )
-    .expect("utf-8 path");
-    let log = profile.path("tmux-calls.log");
-    let shim = profile.bin.join("tmux");
-    std::fs::write(
-        &shim,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
-            log.display(),
-            real.trim()
-        ),
-    )
-    .expect("write tmux shim");
-    let mut perms = std::fs::metadata(&shim).expect("shim").permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&shim, perms).expect("chmod shim");
-
-    let create = |name: &str| {
-        profile.cli(&[
-            "session",
-            "create",
-            "--name",
-            name,
-            "--repo-path",
-            repo.to_str().expect("utf-8 path"),
-            "--command",
-            "sleep",
-            "--arg",
-            "600",
-        ]);
-    };
-    // The first one starts the server, which is a cost paid once.
-    create("first");
-    std::fs::write(&log, "").expect("reset log");
-    create("second");
-
-    let calls = std::fs::read_to_string(&log).expect("read log");
-    let count = calls.lines().count();
-    assert!(
-        count <= 3,
-        "one `session create` on a running server ran {count} tmux processes (budget 3: \
-         before-listing, configure/create, observe/retire):\n{calls}"
-    );
 }
 
 // --- what a paste looks like to the program it lands in ---------------------
@@ -10891,400 +6124,7 @@ fn a_pasted_end_marker_cannot_submit_a_line() {
     assert!(tui.quit().success());
 }
 
-/// A session whose agent is `script`, run by `sh` — an agent-like pane that
-/// prints a transcript, then waits for the test to touch `<profile>/redraw`
-/// before changing what it shows, the way a working agent prints or a TUI
-/// repaints while somebody is looking at a search result in it.
-fn scripted_agent_session(script: impl FnOnce(&Path) -> String) -> Option<(Profile, Tui)> {
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return None;
-    }
-    let profile = Profile::new();
-    let path = profile.root.path().join("agent.sh");
-    std::fs::write(&path, script(profile.root.path())).expect("write agent script");
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        format!(
-            "default = \"scripted\"\n\n[[agents]]\nname = \"scripted\"\ncommand = \"sh\"\nargs = [{:?}]\n",
-            path.to_str().expect("utf-8 path")
-        ),
-    )
-    .expect("seed agents");
-    let repo = repo(profile.root.path());
-    profile.cli(&[
-        "session",
-        "create",
-        "--name",
-        "probe",
-        "--repo-path",
-        repo.to_str().expect("utf-8 path"),
-        "--agent",
-        "scripted",
-    ]);
-    profile.cli(&["config", "accept-interface"]);
-    let tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
-        cmd.env("NO_COLOR", "1");
-    });
-    tui.wait_for("probe");
-    tui.wait_for("tb-ready");
-    Some((profile, tui))
-}
-
-/// The tail every scripted agent ends with: wait for the test's go, run
-/// `then`, and stay alive.
-fn after_redraw(profile_root: &Path, then: &str) -> String {
-    format!(
-        "while [ ! -e '{root}/redraw' ]; do sleep 0.05; done\n{then}\nexec sleep 1000\n",
-        root = profile_root.display()
-    )
-}
-
-/// The agent pane's left border column: where its top corner sits beside the
-/// session list's.
-fn agent_border(tui: &Tui) -> u16 {
-    let top = tui.row(1);
-    top.chars()
-        .enumerate()
-        .skip(1)
-        .find(|(_, c)| matches!(c, '╭' | '┏'))
-        .map(|(x, _)| x as u16)
-        .unwrap_or_else(|| tui.give_up("the agent pane's top border"))
-}
-
-/// The rows of the agent pane: those whose border column is drawn and whose
-/// left neighbour is the session list's border — which rules out the search
-/// strip's rows, which repeat the same text further down.
-fn agent_rows(tui: &Tui) -> Vec<(u16, String)> {
-    let x = usize::from(agent_border(tui));
-    let rows = tui.screen.lock().unwrap().screen().size().0.get();
-    (2..rows)
-        .map(|y| (y, tui.row(y)))
-        .filter(|(_, row)| {
-            let mut chars = row.chars().skip(x - 1);
-            chars.next() == Some('│') && matches!(chars.next(), Some('│' | '┃'))
-        })
-        .collect()
-}
-
-/// The agent pane's rows the kernel has marked — reversed from the first cell
-/// inside the border.
-fn marked_rows(tui: &Tui) -> Vec<u16> {
-    let x = agent_border(tui) + 1;
-    agent_rows(tui)
-        .into_iter()
-        .map(|(y, _)| y)
-        .filter(|&y| tui.inverse_at(y, x))
-        .collect()
-}
-
-/// Whether the agent pane shows `needle`, and the one row it marks is the row
-/// `needle` is on.
-fn marks_exactly(tui: &Tui, needle: &str) -> bool {
-    let on = agent_rows(tui)
-        .into_iter()
-        .find(|(_, row)| row.contains(needle))
-        .map(|(y, _)| y);
-    on.is_some() && marked_rows(tui) == on.into_iter().collect::<Vec<_>>()
-}
-
-/// Wait for `marks_exactly`, failing with the rows that were marked instead.
-fn wait_for_mark_on(tui: &Tui, needle: &str, what: &str) {
-    let deadline = Instant::now() + WAIT;
-    while Instant::now() < deadline {
-        if marks_exactly(tui, needle) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(40));
-    }
-    let lines: Vec<String> = marked_rows(tui).into_iter().map(|y| tui.row(y)).collect();
-    tui.give_up(&format!(
-        "{what}: the row holding {needle:?} to be the one marked; marked instead: {lines:#?}"
-    ));
-}
-
-#[test]
-fn a_search_result_is_revealed_as_soon_as_it_is_the_selected_one() {
-    // Typing a query lands the cursor on its first result, and the session
-    // list already follows it — but the terminal stayed where it was until an
-    // arrow key or Enter, so the "preview" showed the right session at the
-    // wrong place. The selected result is revealed the moment it is selected,
-    // without a key, and Enter stays what lands the focus in it.
-    let Some((_profile, mut tui)) = scripted_agent_session(|_| {
-        "seq 1 200; echo tb-\"\"findme; seq 1 300; echo tb-ready\nexec sleep 1000\n".into()
-    }) else {
-        return;
-    };
-    tui.wait_gone("tb-findme");
-    tui.send(CTRL_SLASH);
-    tui.wait_for("Search");
-    tui.send(b"tb-findme");
-    tui.wait_until("a result row for the scrolled-away line", |frame| {
-        frame
-            .lines()
-            .any(|line| line.contains("probe") && line.contains('↑') && line.contains("tb-findme"))
-    });
-    wait_for_mark_on(&tui, "tb-findme", "the selected result, before any key");
-    assert!(
-        tui.frame().contains("Search"),
-        "the strip must still be open"
-    );
-
-    tui.send(b"\r");
-    tui.wait_until("the terminal to take focus", |frame| {
-        !frame.contains("Search")
-    });
-    wait_for_mark_on(&tui, "tb-findme", "the opened result");
-    assert!(tui.quit().success());
-}
-
-/// What the search strip's status line says it searched: the `in N lines` of
-/// it, so a test can tell a fresh answer from the one before it.
-fn searched_lines(frame: &str) -> Option<String> {
-    frame.lines().find_map(|line| {
-        let at = line.find(" lines of ")?;
-        let from = line[..at].rfind(" in ")? + " in ".len();
-        Some(line[from..at].to_string())
-    })
-}
-
-#[test]
-fn the_search_mark_stays_on_a_wrapped_scrollback_line_while_the_agent_prints() {
-    // The bug as reported: in an agent session the strip marked the wrong
-    // rows, yet Enter landed on the right one. A hit is a position — how far
-    // back its line is — and a working agent keeps printing under it, so the
-    // position goes stale. The kernel re-runs the search and the answer
-    // moves, but the strip only told the terminal where to scroll on a key,
-    // so the view kept the old offset and the mark sat on whatever had moved
-    // under it; Enter re-sent the fresh position and so landed correctly.
-    // The line is a wrapped one with the match on its second row, in the
-    // scrollback.
-    let Some((profile, mut tui)) = scripted_agent_session(|root| {
-        format!(
-            "seq 1 200\nprintf '%0100d tb-wrapped\\n' 0\nseq 1 300\necho tb-ready\n{}",
-            after_redraw(root, "seq 1 7")
-        )
-    }) else {
-        return;
-    };
-    tui.wait_gone("tb-wrapped");
-    tui.send(CTRL_SLASH);
-    tui.wait_for("Search");
-    tui.send(b"tb-wrapped");
-    // The result row's snippet is cut to the strip's width, so it is the
-    // count that says the line was found.
-    tui.wait_until("a result for the wrapped line", |frame| {
-        frame.contains("text 1 in")
-            && frame
-                .lines()
-                .any(|l| l.contains("probe") && l.contains('↑'))
-    });
-    // Revealed by a key, so this holds whether or not selecting a result
-    // reveals it by itself.
-    tui.send(b"\x1b[B");
-    wait_for_mark_on(&tui, "tb-wrapped", "the previewed result");
-
-    let before = searched_lines(&tui.frame());
-    std::fs::write(profile.root.path().join("redraw"), "").expect("signal the agent");
-    tui.wait_until(
-        "the search to re-run over what the agent printed",
-        |frame| searched_lines(frame).is_some_and(|now| Some(&now) != before.as_ref()),
-    );
-    wait_for_mark_on(
-        &tui,
-        "tb-wrapped",
-        "the previewed result after the agent printed",
-    );
-
-    tui.send(b"\r");
-    tui.wait_until("the terminal to take focus", |frame| {
-        !frame.contains("Search")
-    });
-    wait_for_mark_on(&tui, "tb-wrapped", "the opened result");
-    assert!(tui.quit().success());
-}
-
-#[test]
-fn the_search_mark_follows_a_redraw_on_the_alternate_screen() {
-    // Codex and Claude draw on the alternate screen, which has no scrollback:
-    // a hit there is a screen row, and the program repaints it wherever it
-    // likes. A repaint that moves the line moves the hit, and the mark has to
-    // move with it rather than stay on the row the line used to be on.
-    let Some((profile, mut tui)) = scripted_agent_session(|root| {
-        format!(
-            "printf '\\033[?1049h\\033[H\\033[2J'\n\
-             for i in 1 2 3 4 5; do echo \"header $i\"; done\n\
-             echo 'tb-alt v1'\necho tb-ready\n{}",
-            after_redraw(
-                root,
-                "printf '\\033[H\\033[2J\\n\\n\\n\\n'\n\
-                 for i in 1 2 3 4 5; do echo \"header $i\"; done\n\
-                 echo 'tb-alt v2'\necho tb-ready"
-            )
-        )
-    }) else {
-        return;
-    };
-    tui.send(CTRL_SLASH);
-    tui.wait_for("Search");
-    tui.send(b"tb-alt");
-    tui.wait_until("a result row for the on-screen line", |frame| {
-        frame.lines().any(|line| {
-            line.contains("probe") && line.contains("on screen") && line.contains("tb-alt v1")
-        })
-    });
-    tui.send(b"\x1b[B");
-    wait_for_mark_on(&tui, "tb-alt v1", "the previewed result");
-
-    std::fs::write(profile.root.path().join("redraw"), "").expect("signal the agent");
-    tui.wait_until("the search to find the repainted line", |frame| {
-        frame
-            .lines()
-            .any(|line| line.contains("probe") && line.contains("tb-alt v2"))
-    });
-    wait_for_mark_on(&tui, "tb-alt v2", "the previewed result after the repaint");
-
-    tui.send(b"\r");
-    tui.wait_until("the terminal to take focus", |frame| {
-        !frame.contains("Search")
-    });
-    wait_for_mark_on(&tui, "tb-alt v2", "the opened result");
-    assert!(tui.quit().success());
-}
-
 // --- a WSL session whose launcher shares the interface's terminal ----------
-
-/// The WSL session's name.
-const WSL_NAME: &str = "in-the-distro";
-
-/// A stand-in for `wsl.exe` that runs the "distro" command on this machine and,
-/// like the real one, reads the terminal it was started under for as long as it
-/// runs.
-///
-/// That second half is the whole point. On Windows 11 a `wsl.exe` child whose
-/// stdin, stdout and stderr are all redirected still attaches to its parent's
-/// console and takes that console's input: a console reader received 0 of 8
-/// keys while `wsl.exe -d <distro> sleep 40` ran beside it, and 8 of 8 once the
-/// same child was started with `CREATE_NO_WINDOW`. A control-mode connection is
-/// such a child for as long as a session on the distro is attached, so the
-/// interface stopped answering the keyboard the moment one connected.
-///
-/// A pty has no console. What a child that was not kept off the interface's
-/// terminal can reach here is the controlling terminal, `/dev/tty`, so that is
-/// what the stand-in reads — and the read is only possible for a child that
-/// still has one. Everything else is `fake_ssh`'s shape: `-l` lists one distro,
-/// `-d`/`--cd` are dropped, `--exec` runs argv as given and anything else goes
-/// through the shell, which is how `wsl.exe` forwards whitespace-free tokens.
-fn fake_wsl(profile: &Profile, distro: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let script = profile.bin.join("wsl.exe");
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\n\
-             if [ \"$1\" = -l ]; then printf '%s\\n' {distro}; exit 0; fi\n\
-             direct=\n\
-             while [ \"$#\" -gt 0 ]; do\n\
-             \x20 case \"$1\" in\n\
-             \x20   -d|--cd) shift; shift ;;\n\
-             \x20   -e|--exec) shift; direct=1; break ;;\n\
-             \x20   *) break ;;\n\
-             \x20 esac\n\
-             done\n\
-             relay=\n\
-             if (: < /dev/tty) 2>/dev/null; then\n\
-             \x20 cat < /dev/tty > /dev/null &\n\
-             \x20 relay=$!\n\
-             fi\n\
-             if [ -n \"$direct\" ]; then \"$@\"; else eval \"$*\"; fi\n\
-             status=$?\n\
-             [ -n \"$relay\" ] && kill \"$relay\"\n\
-             exit \"$status\"\n",
-        ),
-    )
-    .expect("write the wsl.exe stand-in");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
-}
-
-#[test]
-fn the_keyboard_is_still_the_interfaces_while_a_wsl_session_is_attached() {
-    // The freeze reported against native Windows: create or switch to a
-    // session on a WSL distro and the interface stops answering. It is still
-    // painting — the loop is not blocked — but no key reaches it, because the
-    // `wsl.exe` behind the session's control-mode connection is reading them.
-    //
-    // A printable run typed into the palette's filter is the assertion rather
-    // than one chord: with two readers on a terminal each key goes to
-    // whichever is woken first, so a single key could slip through by luck,
-    // while twenty-six in order cannot.
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return;
-    }
-    let distro = "e2e-distro";
-    let profile = Profile::new();
-    fake_wsl(&profile, distro);
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .expect("seed agents");
-    // Configured rather than left to discovery so the socket can be named — the
-    // "distro" is this machine, and a default would land on the developer's own
-    // server — and sharing is off because its database would be this one.
-    std::fs::write(
-        profile.path("config/hosts.toml"),
-        format!(
-            "[[hosts]]\n\
-             name = \"{distro}\"\n\
-             kind = \"wsl\"\n\
-             socket = \"{socket}\"\n\
-             share_sessions = false\n\
-             worktrees_dir = \"{worktrees}\"\n",
-            socket = profile.server.socket(),
-            worktrees = profile.path("worktrees").display(),
-        ),
-    )
-    .expect("seed hosts");
-    let repo = repo(profile.root.path());
-    profile.cli(&[
-        "session",
-        "create",
-        "--name",
-        WSL_NAME,
-        "--repo-path",
-        repo.to_str().expect("utf-8 path"),
-        "--agent",
-        "shell",
-        "--host",
-        distro,
-    ]);
-    profile.cli(&["config", "accept-interface"]);
-
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for(WSL_NAME);
-    // Its prompt is painted, so the control-mode connection is up — and with it
-    // the `wsl.exe` that has to stay off this terminal.
-    tui.wait_for("$ ");
-
-    tui.send(CTRL_P);
-    tui.wait_within(
-        RESPONSIVE,
-        "the palette to open while a WSL session is attached",
-        |frame| frame.contains("type to filter commands"),
-    );
-    let typed = "qwertyuiopasdfghjklzxcvbnm";
-    tui.send(typed.as_bytes());
-    tui.wait_within(
-        RESPONSIVE,
-        "every key typed into the palette to reach it",
-        |frame| frame.contains(&format!("> {typed}")),
-    );
-
-    tui.send(ESC);
-    tui.wait_gone("type to filter commands");
-    assert!(tui.quit().success());
-}
 
 /// Lua that throws on every other quarter second of the pane's own clock: the
 /// intermittent failure a pane whose data is half there produces, tick after
@@ -11736,204 +6576,6 @@ fn a_legacy_terminal_reports_no_releases_and_keeps_press_only_delivery() {
     assert!(tui.quit().success());
 }
 
-/// The terminal is handed to a terminal editor with the kitty keyboard flags
-/// popped, and they are pushed again when it exits — otherwise every key
-/// release would reach the editor as an escape sequence, on a terminal whose
-/// flag stack the editor shares.
-#[test]
-fn a_terminal_editor_runs_with_the_keyboard_flags_popped() {
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return;
-    }
-    let interface = interface_plus(
-        "91_edit.lua",
-        r#"return {
-  name = "edit",
-  slot = "edit",
-  strip = true,
-  size = { len = 1 },
-  focusable = false,
-  keys = { { key = "f7", action = "edit.open", scope = "global" } },
-  on_action = function(action)
-    if action ~= "edit.open" then return false end
-    command("editor", { session = thurbox.sessions[1].id })
-    return true
-  end,
-  render = function() return { type = "text", text = "EDIT" } end,
-}"#,
-    );
-    let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .expect("seed agents");
-    let repo = repo(profile.root.path());
-    profile.cli(&[
-        "session",
-        "create",
-        "--name",
-        "probe",
-        "--repo-path",
-        repo.to_str().expect("utf-8 path"),
-        "--agent",
-        "shell",
-    ]);
-    profile.cli(&["config", "accept-interface"]);
-    // An "editor" that says it started and waits to be told to exit.
-    let started = profile.path("editor-started");
-    let finish = profile.path("editor-finish");
-    let editor = profile.path("bin/fake-editor");
-    std::fs::write(
-        &editor,
-        format!(
-            "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n",
-            started.display(),
-            finish.display()
-        ),
-    )
-    .expect("editor script");
-    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    profile.cli(&["editor", "set", editor.to_str().expect("utf-8 path")]);
-    profile.cli(&["editor", "mode", "terminal"]);
-
-    let mut tui = Tui::spawn_kitty(&profile, 40, 120, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-    });
-    tui.wait_for("probe");
-    let kitty = tui.kitty.clone().expect("a kitty terminal");
-    // (main, alternate): thurbox pushes on the alternate screen it runs on.
-    let depth = || kitty.lock().unwrap().depths();
-    fn wait(tui: &Tui, what: &str, done: &dyn Fn() -> bool) {
-        let deadline = Instant::now() + WAIT;
-        while !done() {
-            if Instant::now() > deadline {
-                tui.give_up(what);
-            }
-            std::thread::sleep(Duration::from_millis(40));
-        }
-    }
-    wait(&tui, "the flags to be pushed", &|| depth() == (0, 1));
-
-    tui.send(b"\x1b[18~");
-    wait(&tui, "the editor to start", &|| started.exists());
-    // The editor is running: the pop has to have been written before it.
-    std::thread::sleep(Duration::from_millis(200));
-    // Neither screen: an editor that opens the alternate screen, as most do,
-    // would otherwise find thurbox's flags waiting on it.
-    assert_eq!(
-        depth(),
-        (0, 0),
-        "the editor inherited thurbox's keyboard flags"
-    );
-
-    std::fs::write(&finish, "").expect("finish the editor");
-    std::thread::sleep(Duration::from_millis(200));
-    wait(&tui, "the flags to be pushed again", &|| depth() == (0, 1));
-    assert!(tui.quit().success());
-    tui.assert_keyboard_flags_popped();
-}
-
-/// Opening the editor while another process holds the write lock starts the
-/// configured editor and leaves the interface painting (issue #1474). The
-/// editor setting used to be read through a fresh connection, and opening one
-/// prunes aged history: a write, which waited out the busy timeout under the
-/// lock, once for the command and once for the mode.
-#[test]
-fn the_editor_opens_under_a_held_write_lock() {
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return;
-    }
-    let interface = interface_plus(
-        "91_edit.lua",
-        r#"return {
-  name = "edit",
-  slot = "edit",
-  strip = true,
-  size = { len = 1 },
-  focusable = false,
-  keys = { { key = "f7", action = "edit.open", scope = "global" } },
-  on_action = function(action)
-    if action ~= "edit.open" then return false end
-    command("editor", { session = thurbox.sessions[1].id })
-    return true
-  end,
-  render = function() return { type = "text", text = "EDIT" } end,
-}"#,
-    );
-    let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .expect("seed agents");
-    let repo = repo(profile.root.path());
-    profile.cli(&[
-        "session",
-        "create",
-        "--name",
-        "probe",
-        "--repo-path",
-        repo.to_str().expect("utf-8 path"),
-        "--agent",
-        "shell",
-    ]);
-    profile.cli(&["config", "accept-interface"]);
-    let started = profile.path("editor-started");
-    let editor = profile.path("bin/fake-gui-editor");
-    std::fs::write(
-        &editor,
-        format!("#!/bin/sh\ntouch '{}'\n", started.display()),
-    )
-    .expect("editor script");
-    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    profile.cli(&["editor", "set", editor.to_str().expect("utf-8 path")]);
-    profile.cli(&["editor", "mode", "gui"]);
-
-    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-        cmd.env_remove("VISUAL");
-        cmd.env_remove("EDITOR");
-    });
-    tui.wait_for("probe");
-
-    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
-    // The interface may be writing too, recording the pane it just attached.
-    db.busy_timeout(WAIT).expect("busy timeout");
-    // A read message past the retention window, as a long-running interface
-    // accumulates: what makes opening a connection prune, which is a write.
-    db.execute(
-        "INSERT INTO session_messages (to_session_id, body, created_at, read_at) \
-         VALUES ('aged', 'aged', 1, 1)",
-        [],
-    )
-    .expect("an aged read message");
-    db.execute_batch("BEGIN IMMEDIATE")
-        .expect("take the write lock");
-    tui.send(b"\x1b[18~");
-    tui.send(F1);
-    tui.wait_within(
-        Duration::from_secs(2),
-        "the help overlay to paint after the editor key under the write lock",
-        |frame| frame.contains("Keybindings"),
-    );
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while !started.exists() {
-        if Instant::now() > deadline {
-            tui.give_up("the configured editor to start under the write lock");
-        }
-        std::thread::sleep(Duration::from_millis(40));
-    }
-
-    db.execute_batch("ROLLBACK")
-        .expect("release the write lock");
-    tui.send(ESC);
-    tui.wait_gone("Keybindings");
-    assert!(tui.quit().success());
-}
-
 /// The loop's `frames` counter from the first perf snapshot captured after
 /// `after` (its `captured_at`, whole seconds since the epoch), with that
 /// snapshot's own `captured_at`.
@@ -11999,191 +6641,548 @@ fn a_release_nobody_holds_draws_no_frame() {
     tui.assert_keyboard_flags_popped();
 }
 
-/// A blocked stat models a file on an unavailable filesystem. The syscall gate
-/// stays closed until after the theme picker answers, so a fast local disk
-/// cannot conceal metadata accidentally moved back onto the event thread.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+/// Write an executable script.
+fn write_script(path: &Path, body: &str) {
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+    std::fs::write(path, body).expect("write script");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+// --- the session features thurbox keeps on Fleet -----------------------------
+
+/// Leave a focused terminal for the session list: 0x08 is Ctrl+H, the
+/// reserved way out of a terminal and onto the list beside it.
+fn focus_the_list(tui: &mut Tui) {
+    tui.send(b"\x08");
+    tui.wait_until("the session list to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Sessions"))
+    });
+}
+
 #[test]
-fn an_image_drop_keeps_the_tui_responsive_while_metadata_is_blocked() {
-    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
-        let shim = profile.path("metadata_gate.so");
-        let build = Command::new("cc")
-            .args(["-shared", "-fPIC"])
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata_gate.c"))
-            .arg("-o")
-            .arg(&shim)
-            .arg("-ldl")
-            .output()
-            .expect("compile metadata gate");
-        assert!(
-            build.status.success(),
-            "{}",
-            String::from_utf8_lossy(&build.stderr)
-        );
-        let image = profile.path("blocked image.png");
-        std::fs::write(&image, b"\x89PNG").expect("image fixture");
-        cmd.env("LD_PRELOAD", shim);
-        cmd.env("THURBOX_TEST_METADATA_PATH", image);
-        cmd.env(
-            "THURBOX_TEST_METADATA_ENTERED",
-            profile.path("metadata-entered"),
-        );
-        cmd.env(
-            "THURBOX_TEST_METADATA_RELEASE",
-            profile.path("metadata-release"),
-        );
-    }) else {
+fn ctrl_e_renames_the_selected_session_and_says_why_a_name_is_refused() {
+    // `Ctrl+E` opens a field holding the current name. A refused name is
+    // explained in the field; a good one lands in the list and in the Task's
+    // name label, where Fleet keeps a session's display name.
+    let Some((profile, mut tui)) = shell_session() else {
         return;
     };
-    let image = profile.path("blocked image.png");
-    let release = profile.path("metadata-release");
-    struct Release(PathBuf);
-    impl Drop for Release {
-        fn drop(&mut self) {
-            let _ = std::fs::write(&self.0, b"release");
-        }
-    }
-    let _release = Release(release.clone());
-    tui.send(format!("\x1b[200~'{}'\x1b[201~", image.display()).as_bytes());
-    let entered = profile.path("metadata-entered");
-    let deadline = Instant::now() + WAIT;
-    while !entered.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "the image's metadata was not requested"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    tui.send(CTRL_Y);
-    tui.wait_for("/ filter themes");
-    tui.send(ESC);
-    // Refuse the now-missing image once the stat resumes, avoiding an upload
-    // whose teardown would be unrelated to this responsiveness assertion.
-    std::fs::remove_file(image).expect("remove image fixture");
-    std::fs::write(release, b"release").expect("release metadata");
-    tui.wait_for("blocked image.png");
+    focus_the_list(&mut tui);
+
+    // 0x05 is Ctrl+E; 0x15 is Ctrl+U, which clears the prefilled name.
+    tui.send(b"\x05");
+    tui.wait_for("Rename session");
+    tui.send(b"\x15");
+    tui.send(b"bad/name\r");
+    tui.wait_for("Name contains invalid characters");
+
+    tui.send(b"\x15");
+    tui.send(b"renamed\r");
+    tui.wait_gone("Rename session");
+    tui.wait_until("the new name in the list", |_| {
+        tui.session_row("renamed").is_some() && tui.session_row("probe").is_none()
+    });
+    let task = profile.fleet_task("probe");
+    assert_eq!(
+        task["metadata"]["labels"]["thurbox.dev/name"], "renamed",
+        "the name lives on the Task: {task}"
+    );
     assert!(tui.quit().success());
 }
 
-/// Core never asks a provider about an account (#1601): the open TUI samples
-/// machine and process metrics for supported-agent sessions, and must leave
-/// account quotas to whatever plugin the user installs to fetch them.
-///
-/// The agents are the built-in `claude` and `codex`, each a stand-in on the
-/// profile's `PATH` that runs a shell — and, asked for `app-server`, records
-/// the request instead. `security` (the macOS Keychain) and `curl` are
-/// recording stand-ins too; `security` hands back a token-shaped answer, so a
-/// core that read credentials would go on to curl's credential config rather
-/// than stopping at "not logged in". Nothing here reads a real credential or
-/// reaches a network.
-///
-/// The probe pane reports what reached `thurbox.metrics`, so the sampler is
-/// proven to have run: turning all metrics off cannot pass this.
+/// The rows `first` and `second` are painted on, in that order.
+fn rows_of(tui: &Tui, first: &str, second: &str) -> Option<(u16, u16)> {
+    Some((tui.session_row(first)?.1, tui.session_row(second)?.1))
+}
+
 #[test]
-fn the_tui_samples_process_metrics_without_querying_a_provider_account() {
+fn a_session_moved_up_stays_there_across_a_restart() {
+    // `K` moves the selected session above its neighbour. The order is the
+    // interface's own (Fleet has no order of Tasks), so it is kept in a file
+    // of thurbox's and a restarted interface paints it the same way.
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| profile.fleet_session("second", &profile.path("repo")),
+        |_| {},
+    ) else {
+        return;
+    };
+    tui.wait_until("both sessions, in name order", |_| {
+        rows_of(&tui, "probe", "second").is_some_and(|(a, b)| a < b)
+    });
+    focus_the_list(&mut tui);
+    tui.send(b"j");
+    tui.send(b"K");
+    tui.wait_until("the moved session above the other", |_| {
+        rows_of(&tui, "probe", "second").is_some_and(|(a, b)| a > b)
+    });
+    assert!(tui.quit().success());
+
+    let tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_until("the order kept across the restart", |_| {
+        rows_of(&tui, "probe", "second").is_some_and(|(a, b)| a > b)
+    });
+}
+
+/// The companion shell is the user's `$SHELL`, and a zsh started in the
+/// profile's empty HOME opens its first-run wizard instead of a prompt.
+fn plain_shell(cmd: &mut Command) {
+    cmd.env("SHELL", "/bin/sh");
+}
+
+/// Raise the Shell tab (Ctrl+T) and prove a live shell is behind it:
+/// `command` runs there and `marker` is what it prints.
+fn in_the_shell(tui: &mut Tui, command: &str, marker: &str) {
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    tui.wait_for("$ ");
+    tui.wait_until_quiet();
+    tui.send(format!("{command}\r").as_bytes());
+    tui.wait_for(marker);
+}
+
+/// The id of each companion shell window on `profile`'s server.
+fn shell_windows(profile: &Profile) -> Vec<String> {
+    let windows = profile
+        .server
+        .tmux(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
+    String::from_utf8_lossy(&windows.stdout)
+        .lines()
+        .filter(|line| line.contains(" tbs-"))
+        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// A restarted interface on `profile`, its agent pane attached.
+fn restart(profile: &Profile) -> Tui {
+    let tui = Tui::spawn_with(profile, 40, 120, plain_shell);
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    tui
+}
+
+#[test]
+fn the_companion_shell_is_readopted_after_a_restart() {
+    // The shell outlives the interface in its own window. A restarted
+    // interface finds it again from the file it recorded it in: the variable
+    // the first interface's shell set is still set, and no second shell
+    // window is made.
+    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    in_the_shell(&mut tui, "TB_KEPT=kept; echo set-\"\"$TB_KEPT", "set-kept");
+    assert!(tui.quit().success());
+
+    let mut tui = restart(&profile);
+    in_the_shell(&mut tui, "echo again-\"\"$TB_KEPT", "again-kept");
+    assert_eq!(shell_windows(&profile).len(), 1, "one shell, re-adopted");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_recorded_pane_id_now_held_by_another_window_is_not_adopted() {
+    // A restarted server reissues pane ids. The record names a pane that an
+    // unrelated window holds now, stamped by no shell of this session: it is
+    // left alone, and raising the tab opens a shell of the session's own.
+    let Some((_profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let made = profile.server.tmux(&[
+                "new-session",
+                "-d",
+                "-s",
+                "unrelated",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "sh -c 'echo UNRELATED-WINDOW; exec sleep 600'",
+            ]);
+            let pane = String::from_utf8_lossy(&made.stdout).trim().to_string();
+            assert!(pane.starts_with('%'), "an unrelated pane: {made:?}");
+            std::fs::write(
+                profile.path("config/interface.json"),
+                format!(
+                    r#"{{"shells":{{"probe":{{"route":"local:tmux","pane":"{pane}","stamp":"another-session"}}}}}}"#
+                ),
+            )
+            .expect("a record naming it");
+        },
+        plain_shell,
+    ) else {
+        return;
+    };
+    in_the_shell(&mut tui, "echo tb-own-\"\"shell", "tb-own-shell");
+    assert!(
+        !tui.frame().contains("UNRELATED-WINDOW"),
+        "the unrelated window was adopted:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn deleting_the_task_closes_its_companion_shell() {
+    // A shell outlives the interface, not its session: once Fleet deletes
+    // the Task, its shell window goes and its record with it.
+    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    in_the_shell(&mut tui, "echo tb-doomed-\"\"shell", "tb-doomed-shell");
+    assert_eq!(shell_windows(&profile).len(), 1);
+    // Fleet releases a session only once its agent says it is at rest.
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Agent");
+    let fleet = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).with_file_name("fleet");
+    tui.send(format!("'{}' signal idle </dev/null\r", fleet.display()).as_bytes());
+    profile.fleet(&["delete", "task", "probe"], "");
+    // The controller releases the session over a few passes, then the Task
+    // leaves the store.
+    tui.wait_until("the session gone and its shell closed", |_| {
+        let _ = Command::new(profile.bin.join("fleet"))
+            .arg("reconcile")
+            .stdin(Stdio::null())
+            .output();
+        tui.session_row("probe").is_none() && shell_windows(&profile).is_empty()
+    });
+    tui.wait_until("its record dropped", |_| {
+        !std::fs::read_to_string(profile.path("config/interface.json"))
+            .unwrap_or_default()
+            .contains("\"probe\"")
+    });
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
+    // A window that went while the interface was closed (a tmux server
+    // restart, a kill from outside) must not be adopted as a shell that never
+    // prints: raising the tab gives a working one.
+    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    in_the_shell(&mut tui, "echo tb-first-\"\"shell", "tb-first-shell");
+    assert!(tui.quit().success());
+    let shells = shell_windows(&profile);
+    assert_eq!(shells.len(), 1, "one shell window to close");
+    profile.server.tmux(&["kill-window", "-t", &shells[0]]);
+
+    let mut tui = restart(&profile);
+    in_the_shell(&mut tui, "echo tb-second-\"\"shell", "tb-second-shell");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn an_image_dropped_on_a_remote_session_is_refused_not_typed() {
+    // A drop is a paste of a local path, which names nothing on the Task's
+    // host, and nothing carries the file there yet. The interface says so on
+    // its error line and the agent never sees the path.
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
     let profile = Profile::new();
-    let record = profile.path("provider-calls");
-    let stub = |name: &str, body: &str| {
-        let path = profile.bin.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write stand-in");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    };
-    let log = |name: &str| format!("echo \"{name} $*\" >> '{}'", record.display());
-    stub("claude", "exec sh");
-    stub(
-        "codex",
-        &format!(
-            "case \" $* \" in *' app-server '*) {}; exit 0;; esac\nexec sh",
-            log("codex")
-        ),
-    );
-    stub(
-        "security",
-        &format!(
-            "{}\necho '{{\"claudeAiOauth\":{{\"accessToken\":\"stand-in\"}}}}'",
-            log("security")
-        ),
-    );
-    stub(
-        "curl",
-        &format!("{}\ncat >/dev/null\necho '{{}}'", log("curl")),
-    );
-
-    let repo = repo(profile.root.path());
-    for agent in ["claude", "codex"] {
-        profile.cli(&[
-            "session",
-            "create",
-            "--name",
-            agent,
-            "--repo-path",
-            repo.to_str().expect("utf-8 path"),
-            "--agent",
-            agent,
-        ]);
+    if profile.real_fleet().is_none() {
+        return;
     }
-    profile.cli(&["config", "accept-interface"]);
-
-    let interface = interface_plus(
-        "91_metrics_probe.lua",
-        r#"return {
-  name = "metrics-probe",
-  slot = "sessions",
-  render = function()
-    return { type = "text", text = "" }
-  end,
-  ui_state = function()
-    local metrics = thurbox.metrics
-    local sampled = 0
-    for _, session in pairs(metrics.sessions) do
-      if session.memory_bytes then
-        sampled = sampled + 1
-      end
-    end
-    return { memory_total = metrics.system.memory_total, sampled = sampled }
-  end,
-}"#,
+    let fleet_toml = profile.path("fleet.toml");
+    let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+    std::fs::write(
+        &fleet_toml,
+        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
+    )
+    .expect("a second host");
+    let repo = repo(profile.root.path());
+    let task = format!(
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        repo.display()
     );
-    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-        // A credentials directory inherited from the developer's own shell
-        // would hand the old sampler a real token.
-        cmd.env_remove("CLAUDE_CONFIG_DIR");
-    });
-    tui.wait_for("codex");
+    profile.fleet(&["apply", "-f", "-"], &task);
+    profile.fleet(&["reconcile"], "");
+    let shot = profile.path("shot.png");
+    std::fs::write(&shot, b"\x89PNG\r\n\x1a\n").expect("an image");
 
-    let probe = || {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        profile.apply(&mut cmd);
-        let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
-        assert!(output.status.success());
-        let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
-        state["plugin_state"]["plugins/91_metrics_probe.lua"].clone()
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("far");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    tui.send(format!("\x1b[200~{}\x1b[201~", shot.display()).as_bytes());
+    tui.wait_for("image drop isn't supported for remote sessions yet");
+    tui.send(b"echo after-\"\"drop\r");
+    tui.wait_for("after-drop");
+    assert!(
+        !tui.frame().contains("shot.png"),
+        "the local path reached the agent:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
+/// A remote machine's own image path, pasted into its session, names a file
+/// there and nothing here: it is typed, not refused as a local drop.
+#[test]
+fn a_remote_machines_own_image_path_is_typed_not_refused() {
+    // A drop is a paste of a local path, which names nothing on the Task's
+    // host, and nothing carries the file there yet. The interface says so on
+    // its error line and the agent never sees the path.
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let fleet_toml = profile.path("fleet.toml");
+    let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+    std::fs::write(
+        &fleet_toml,
+        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
+    )
+    .expect("a second host");
+    let repo = repo(profile.root.path());
+    let task = format!(
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        repo.display()
+    );
+    profile.fleet(&["apply", "-f", "-"], &task);
+    profile.fleet(&["reconcile"], "");
+    // A path on the Task's host, which names nothing here: a paste, not a
+    // drop of this machine's files.
+    let shot = std::path::PathBuf::from("/tb-remote-only/far-shot.png");
+    assert!(!shot.exists());
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("far");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    tui.send(format!("\x1b[200~{}\x1b[201~", shot.display()).as_bytes());
+    tui.wait_for("far-shot.png");
+    assert!(
+        !tui.frame().contains("image drop isn't supported"),
+        "a path this machine does not have was refused:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
+/// Create a session through `Ctrl+N` on `repo`, named `name`, taking the
+/// first agent offered; `map` first adds `repo` to Fleet's repository map.
+fn create_through_the_flow(map: bool, name: &str) -> Option<(Profile, Tui, PathBuf)> {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return None;
+    }
+    let profile = Profile::new();
+    profile.real_fleet()?;
+    let repo = repo(profile.root.path());
+    if map {
+        let fleet_toml = profile.path("fleet.toml");
+        let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+        std::fs::write(
+            &fleet_toml,
+            format!(
+                "{config}\n[workspaces.repositories]\n\"https://example.invalid/repo\" = \"{}\"\n",
+                repo.display()
+            ),
+        )
+        .expect("a repository map");
+    }
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Run On");
+    tui.send(b"\r");
+    tui.wait_for("Select Repo");
+    tui.send(format!("\t{}", repo.display()).as_bytes());
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_until("the repository to be selected", |frame| {
+        repo_picker_selected(frame, "repo")
+    });
+    // Alt+Enter goes on from the path field, which still has the caret.
+    tui.send(b"\x1b\r");
+    tui.wait_gone("Select Repo");
+    tui.send(format!("{name}\r").as_bytes());
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    Some((profile, tui, repo))
+}
+
+/// A session the interface creates on a repository Fleet maps gets a git
+/// worktree of its own, not the checkout.
+#[test]
+fn a_session_created_on_a_mapped_repo_runs_in_its_own_worktree() {
+    let Some((profile, mut tui, repo)) = create_through_the_flow(true, "wt") else {
+        return;
     };
-    let deadline = Instant::now() + WAIT;
-    loop {
-        let seen = probe();
-        if seen["memory_total"].as_u64().unwrap_or(0) > 0 && seen["sampled"] == 2 {
-            break;
+    tui.wait_for("wt");
+    let task = profile.fleet_task("wt");
+    assert_eq!(
+        task["spec"]["workspace"]["repositories"][0]["url"], "https://example.invalid/repo",
+        "the Task names the mapped repository: {task:#}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let dir = loop {
+        profile.fleet(&["reconcile"], "");
+        let task = profile.fleet_task("wt");
+        if let Some(dir) = task["status"]["workspace"]["dir"].as_str() {
+            break PathBuf::from(dir);
         }
         assert!(
-            Instant::now() < deadline,
-            "machine and per-session metrics never arrived: {seen}"
+            std::time::Instant::now() < deadline,
+            "no workspace: {task:#}"
         );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    // The first sample starts every source at once, and a provider query is a
-    // subprocess away from it; give one a moment to land before looking.
-    std::thread::sleep(Duration::from_secs(2));
-
-    let calls = std::fs::read_to_string(&record).unwrap_or_default();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert_ne!(dir, repo, "the session runs in the checkout");
     assert!(
-        calls.is_empty(),
-        "core queried a provider account:\n{calls}"
+        dir.join(".git").is_file(),
+        "{} is no worktree",
+        dir.display()
+    );
+    assert!(tui.quit().success());
+}
+
+/// A repository Fleet does not map is refused with what to add, and no Task
+/// is made in the checkout instead.
+#[test]
+fn a_session_on_an_unmapped_repo_is_refused_with_what_to_add() {
+    let Some((profile, mut tui, _repo)) = create_through_the_flow(false, "loose") else {
+        return;
+    };
+    tui.wait_for("Fleet maps no repository at");
+    let tasks = profile.fleet(&["list", "task", "--json"], "");
+    assert!(!tasks.contains("loose"), "a Task was made: {tasks}");
+    assert!(tui.quit().success());
+}
+
+/// The hosts the creation flow offers are the ones Fleet defines (`fleet
+/// runtime hosts --json`), not a `hosts.toml` of thurbox's: a host Fleet
+/// names is offered, and one only `hosts.toml` names is not.
+#[test]
+fn the_host_picker_lists_the_hosts_fleet_reports() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let fleet_toml = profile.path("fleet.toml");
+    let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+    std::fs::write(
+        &fleet_toml,
+        format!("{config}\n[hosts.fleetbox]\nruntime = \"mux\"\n"),
+    )
+    .expect("a second host");
+    std::fs::write(
+        {
+            std::fs::create_dir_all(profile.path("config")).expect("config dir");
+            profile.path("config/hosts.toml")
+        },
+        "[[hosts]]\nname = \"onlyhoststoml\"\ndestination = \"nowhere.invalid\"\n",
+    )
+    .expect("a hosts.toml host");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("fleetbox");
+    assert!(
+        !tui.frame().contains("onlyhoststoml"),
+        "a host only hosts.toml names is offered:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
+/// Input that follows a held remote paste waits behind it: an `Enter` in the
+/// same batch submits the pasted path, and a second paste neither overtakes
+/// nor replaces the first.
+#[test]
+fn input_after_a_held_remote_paste_keeps_its_order() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let fleet_toml = profile.path("fleet.toml");
+    let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+    std::fs::write(
+        &fleet_toml,
+        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
+    )
+    .expect("a second host");
+    let repo = repo(profile.root.path());
+    let task = format!(
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        repo.display()
+    );
+    profile.fleet(&["apply", "-f", "-"], &task);
+    profile.fleet(&["reconcile"], "");
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("far");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    // Two pastes of paths only the remote machine has, then Enter, in one
+    // write: the shell runs the two paths as one word, in order.
+    tui.send(
+        b"\x1b[200~/tb-remote-only/far-a.png\x1b[201~\x1b[200~/tb-remote-only/far-b.png\x1b[201~\r",
+    );
+    tui.wait_for("far-a.png/tb-remote-only/far-b.png:");
+    assert!(tui.quit().success());
+}
+
+/// A Fleet session's id is its Task's name, not a UUID: `session.focus`
+/// (what a notification click runs) still finds it.
+#[test]
+fn session_focus_finds_a_fleet_session_by_its_task_name() {
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args([
+            "--json",
+            "ui",
+            "action",
+            "session.focus",
+            "--session",
+            "probe",
+        ])
+        .output()
+        .expect("ui cli");
+    assert!(
+        output.status.success(),
+        "session.focus refused the Task name: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(tui.quit().success());
 }

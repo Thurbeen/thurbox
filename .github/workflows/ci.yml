@@ -70,14 +70,6 @@ jobs:
               # green. The `lua` filter below lists the same two roots.
               - 'ui/**'
               - 'examples/**'
-              # Hook payloads and the UI skill are embedded and tested. The
-              # hooks README is prose, so it only needs the Markdown job.
-              - 'extensions/hooks/**.json'
-              - 'extensions/hooks/**.toml'
-              - 'extensions/hooks/**.js'
-              - 'extensions/hooks/**.ts'
-              - 'extensions/ui-skill/**'
-              - 'extensions/sessions-skill/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -139,8 +131,8 @@ jobs:
               - '.github/workflows/ci.yml'
             # The Windows harness needs a VM, but its psmux hook-status gate
             # probes do not: they check what the VM measured against the gate
-            # thurbox-cli reports (`runtime status --json`), and that
-            # comparison runs here against a stand-in CLI.
+            # runtime-mux's psmux adapter declares, and that comparison runs
+            # here against a stand-in source.
             windows_e2e_probes:
               - 'scripts/dev/e2e/windows-vm.sh'
               - 'scripts/dev/e2e/windows-vm.bats'
@@ -148,10 +140,8 @@ jobs:
               # suite asserts on both: a change to them can make the probes
               # advisory again, which is the whole defect (#1170).
               - 'scripts/dev/e2e/lib/e2e-common.sh'
-              # What the probes compare against: the psmux gate, and the
-              # command that reports it.
+              # What the probes compare against: the psmux gate.
               - 'crates/runtime-mux/src/psmux.rs'
-              - 'crates/thurbox/src/cli/runtime.rs'
               - '.github/workflows/ci.yml'
             # Fleet, the engine: its crates, the dependency graph fleet-arch
             # checks, the trees its tests read (its examples, its installer,
@@ -192,7 +182,6 @@ jobs:
               - 'crates/**'
               - 'ui/**'
               - 'examples/**'
-              - 'extensions/**'
               - 'vendor/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -211,6 +200,7 @@ jobs:
             release_line:
               - 'scripts/ci/release-line.sh'
               - 'scripts/ci/release-line.bats'
+              - '.github/release-hold'
               - 'crates/thurbox/src/update/version_check.rs'
               - '.github/workflows/cd.yml'
               - '.github/workflows/ci.yml'

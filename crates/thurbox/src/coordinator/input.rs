@@ -608,6 +608,10 @@ impl App {
         let Some(bytes) = key_to_bytes(key.code, key.modifiers) else {
             return false;
         };
+        if self.held_input.holds(&surface) {
+            self.held_input.hold_bytes(surface, bytes);
+            return true;
+        }
         let delivered = self.send_to_surface(&surface, bytes);
         // Delivered means consumed, which is what the rule above says and what
         // this now enforces. Falling through sent `Esc` to a program AND
@@ -803,78 +807,68 @@ impl App {
             self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return;
         };
-        if self.begin_image_drop(&surface, &text) {
+        if self.holds_a_remote_image_paste(&surface, &text) {
+            return;
+        }
+        if self.held_input.holds(&surface) {
+            self.held_input
+                .hold_paste(surface, text, None, std::time::Instant::now());
             return;
         }
         self.paste_text_into(&surface, &text);
     }
 
-    /// Start copying dropped images to the host of a remote `surface`, if
-    /// `text` is a drop of nothing but existing local image files.
-    ///
-    /// The terminal pastes the *local* path; the agent runs on the host and
-    /// cannot read it. The files are copied to the session's directory there
-    /// (`session_ops::image_drop`) and the paste is delivered with the remote
-    /// paths when the copy ends — [`Self::poll_image_drops`]. Anything else, and
-    /// every local session, takes the ordinary paste.
-    fn begin_image_drop(&mut self, surface: &str, text: &str) -> bool {
-        use thurbox::session_ops::image_drop;
-        let Some((session, host)) = self
-            .terminals
-            .remote_host_of(surface, self.snapshots.current())
+    /// Hold a paste of image paths into a session on another machine until a
+    /// worker has asked whether the files are this machine's
+    /// ([`Self::poll_remote_drop`]). A drop of local files is their local
+    /// paths, which name nothing there, and nothing yet carries a file to a
+    /// Fleet Task's host. A path the remote machine has, typed into its own
+    /// session, is ordinary text. Asked off the loop: a mount that does not
+    /// answer must not stall it.
+    fn holds_a_remote_image_paste(&mut self, surface: &str, text: &str) -> bool {
+        let session = surface.strip_suffix("#shell").unwrap_or(surface);
+        let remote = self
+            .snapshots
+            .current()
+            .session(session)
+            .is_some_and(|row| row.remote_host.is_some());
+        let Some(paths) = remote
+            .then(|| super::image_drop::dropped_images(text))
+            .flatten()
         else {
             return false;
         };
-        if !image_drop::supported(&host) {
-            return false;
-        }
-        // Words only: the files are stat'ed on the worker, since a stalled
-        // mount would otherwise freeze the event loop here.
-        let Some(count) = image_drop::image_paths(text).map(|paths| paths.len()) else {
-            return false;
-        };
-        self.toast(format!("copying {count} image(s) to {}…", host.name));
         let (tx, rx) = std::sync::mpsc::channel();
-        let text = text.to_string();
         std::thread::spawn(move || {
-            let outcome = match image_drop::dropped_images(&text) {
-                Some(files) => files
-                    .iter()
-                    .enumerate()
-                    .map(|(seq, file)| image_drop::upload(&host, &session, file, seq))
-                    .collect::<Result<Vec<String>, String>>()
-                    .map(|paths| DropOutcome::Copied(paths.join(" "))),
-                None => Ok(DropOutcome::NotImages(text)),
-            };
-            let _ = tx.send(outcome);
+            let _ = tx.send(paths.iter().all(|path| path.is_file()));
         });
-        self.image_drops.push(PendingDrop {
-            surface: surface.to_string(),
-            done: rx,
-        });
+        self.held_input.hold_paste(
+            surface.to_string(),
+            text.to_string(),
+            Some(rx),
+            std::time::Instant::now(),
+        );
         true
     }
 
-    /// Deliver the drops whose copy has ended: the remote paths as a paste, to
-    /// the pane the drop was aimed at, or the failure.
-    pub(crate) fn poll_image_drops(&mut self) {
-        if self.image_drops.is_empty() {
-            return;
-        }
-        let mut waiting = Vec::new();
-        for drop in std::mem::take(&mut self.image_drops) {
-            match drop.done.try_recv() {
-                Ok(Ok(DropOutcome::Copied(paths) | DropOutcome::NotImages(paths))) => {
-                    self.paste_text_into(&drop.surface, &paths);
-                }
-                Ok(Err(e)) => self.report(format!("could not copy the image: {e}"), Level::Error),
-                Err(std::sync::mpsc::TryRecvError::Empty) => waiting.push(drop),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.report("could not copy the image", Level::Error);
+    /// Release held input in the order it came, each surface up to its first
+    /// paste whose answer is still out ([`HeldInput::release`]): this
+    /// machine's files are refused on the error line and never typed;
+    /// anything else is typed as the text it is.
+    pub(crate) fn poll_remote_drop(&mut self) {
+        for release in self.held_input.release(std::time::Instant::now()) {
+            match release {
+                Release::Refuse => self.report(
+                    "image drop isn't supported for remote sessions yet",
+                    Level::Error,
+                ),
+                Release::Paste { surface, text } => self.paste_text_into(&surface, &text),
+                Release::Bytes { surface, bytes } => {
+                    self.send_to_surface(&surface, bytes);
                 }
             }
+            self.dirty = true;
         }
-        self.image_drops.extend(waiting);
     }
 
     /// Send `text` to one surface as a paste, made safe by [`paste_safe`].
@@ -962,19 +956,11 @@ impl App {
     /// nothing behind it delivers nothing, since neither send finds a target.
     fn send_to_surface(&mut self, surface: &str, bytes: Vec<u8>) -> bool {
         let echo = self.expect_echo(surface);
-        let submitted = bytes.as_slice() == b"\r" && self.terminals.program_key(surface).is_none();
-        let prior = submitted
-            .then(|| self.snapshots.codex_submission_report(surface))
-            .flatten();
         let delivered = match self.terminals.program_key(surface).cloned() {
             Some(program) => self.terminals.send_to_program(&program, bytes).is_ok(),
             None => self.terminals.send(surface, bytes),
         };
         if delivered {
-            if let Some(prior) = prior {
-                self.snapshots.note_codex_submission(surface, &prior);
-                self.snapshots.retire_codex_report(surface, &prior);
-            }
             self.last_keystroke = Some(Instant::now());
             if let Some(echo) = echo {
                 self.echo.push_back(echo);
@@ -1186,21 +1172,6 @@ fn reaches_the_pty(key: &KeyEvent) -> bool {
 /// press is gone.
 const CTRL_V: u8 = 0x16;
 
-/// An image drop on its way to a remote host: where it was aimed, and the
-/// thread copying it, which answers with what to paste.
-pub(crate) struct PendingDrop {
-    surface: String,
-    done: std::sync::mpsc::Receiver<Result<DropOutcome, String>>,
-}
-
-/// What the worker found, either way the text to paste.
-enum DropOutcome {
-    /// The files were copied: the remote paths.
-    Copied(String),
-    /// A file was missing, too big or not a file: the original paste, untouched.
-    NotImages(String),
-}
-
 /// What a paste with nothing focused says. One message, because it is one
 /// situation: the press was made with no session's terminal in front of it.
 const NOTHING_TO_PASTE_INTO: &str = "nothing to paste into — focus a session's terminal first";
@@ -1390,6 +1361,198 @@ impl Holds {
     /// Forget every hold: the plugins that took the presses were rebuilt.
     pub(crate) fn clear(&mut self) {
         self.held.clear();
+    }
+}
+
+/// How long a remote paste waits for the answer about its paths before it
+/// is typed as the text it is: a mount that never answers must not hold a
+/// terminal's input for good.
+pub(crate) const HELD_PASTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Terminal input waiting behind a paste of image paths into a remote
+/// session, oldest first ([`App::poll_remote_drop`]).
+#[derive(Default)]
+pub(crate) struct HeldInput {
+    queue: std::collections::VecDeque<Held>,
+}
+
+enum Held {
+    /// A paste; `answer` is out while a worker asks whether its paths are
+    /// this machine's files, and absent for a paste that only waits its turn.
+    Paste {
+        surface: String,
+        text: String,
+        answer: Option<std::sync::mpsc::Receiver<bool>>,
+        deadline: std::time::Instant,
+    },
+    /// A keystroke's bytes.
+    Bytes { surface: String, bytes: Vec<u8> },
+}
+
+/// What [`HeldInput::release`] hands back, in the order it was held.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Release {
+    /// The paste named this machine's files: refused, never typed.
+    Refuse,
+    Paste {
+        surface: String,
+        text: String,
+    },
+    Bytes {
+        surface: String,
+        bytes: Vec<u8>,
+    },
+}
+
+impl HeldInput {
+    /// Whether input for `surface` must wait its turn.
+    pub(crate) fn holds(&self, surface: &str) -> bool {
+        self.queue.iter().any(|held| held.surface() == surface)
+    }
+
+    pub(crate) fn hold_paste(
+        &mut self,
+        surface: String,
+        text: String,
+        answer: Option<std::sync::mpsc::Receiver<bool>>,
+        now: std::time::Instant,
+    ) {
+        self.queue.push_back(Held::Paste {
+            surface,
+            text,
+            answer,
+            deadline: now + HELD_PASTE_WAIT,
+        });
+    }
+
+    pub(crate) fn hold_bytes(&mut self, surface: String, bytes: Vec<u8>) {
+        self.queue.push_back(Held::Bytes { surface, bytes });
+    }
+
+    /// Everything that may go now, oldest first. A surface's input stops at
+    /// its first paste whose answer is still out and not yet past its bound;
+    /// another surface's input goes on. A paste whose check never answered
+    /// is typed as the text it is.
+    pub(crate) fn release(&mut self, now: std::time::Instant) -> Vec<Release> {
+        let mut out = Vec::new();
+        let mut waiting: Vec<String> = Vec::new();
+        let mut kept = std::collections::VecDeque::new();
+        for held in std::mem::take(&mut self.queue) {
+            if waiting.iter().any(|surface| surface == held.surface()) {
+                kept.push_back(held);
+                continue;
+            }
+            let local = match &held {
+                Held::Paste {
+                    answer: Some(rx),
+                    deadline,
+                    surface,
+                    ..
+                } => match rx.try_recv() {
+                    Ok(local) => local,
+                    Err(std::sync::mpsc::TryRecvError::Empty) if now < *deadline => {
+                        waiting.push(surface.clone());
+                        kept.push_back(held);
+                        continue;
+                    }
+                    Err(_) => false,
+                },
+                _ => false,
+            };
+            out.push(match held {
+                Held::Paste { .. } if local => Release::Refuse,
+                Held::Paste { surface, text, .. } => Release::Paste { surface, text },
+                Held::Bytes { surface, bytes } => Release::Bytes { surface, bytes },
+            });
+        }
+        self.queue = kept;
+        out
+    }
+}
+
+impl Held {
+    fn surface(&self) -> &str {
+        match self {
+            Held::Paste { surface, .. } | Held::Bytes { surface, .. } => surface,
+        }
+    }
+}
+
+#[cfg(test)]
+mod held_input_tests {
+    use super::{HeldInput, Release, HELD_PASTE_WAIT};
+    use std::time::Instant;
+
+    #[test]
+    fn a_held_paste_holds_only_its_own_surface() {
+        let mut held = HeldInput::default();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), Instant::now());
+        assert!(held.holds("far"));
+        assert!(
+            !held.holds("near"),
+            "another session's input waits on nothing"
+        );
+    }
+
+    #[test]
+    fn a_paste_whose_check_never_answers_is_typed_after_the_bound() {
+        let mut held = HeldInput::default();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), start);
+        held.hold_bytes("far".into(), b"\r".to_vec());
+        assert!(held.release(start).is_empty());
+        assert_eq!(
+            held.release(start + HELD_PASTE_WAIT),
+            vec![
+                Release::Paste {
+                    surface: "far".into(),
+                    text: "/x.png".into()
+                },
+                Release::Bytes {
+                    surface: "far".into(),
+                    bytes: b"\r".to_vec()
+                },
+            ]
+        );
+        assert!(!held.holds("far"));
+    }
+
+    #[test]
+    fn a_pending_paste_does_not_stop_another_surfaces_input() {
+        let mut held = HeldInput::default();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), start);
+        held.hold_bytes("near".into(), b"a".to_vec());
+        assert_eq!(
+            held.release(start),
+            vec![Release::Bytes {
+                surface: "near".into(),
+                bytes: b"a".to_vec()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_refused_paste_lets_what_followed_it_through() {
+        let mut held = HeldInput::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), start);
+        held.hold_bytes("far".into(), b"\r".to_vec());
+        tx.send(true).unwrap();
+        assert_eq!(
+            held.release(start),
+            vec![
+                Release::Refuse,
+                Release::Bytes {
+                    surface: "far".into(),
+                    bytes: b"\r".to_vec()
+                }
+            ]
+        );
     }
 }
 

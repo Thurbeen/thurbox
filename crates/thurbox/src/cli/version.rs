@@ -24,38 +24,21 @@ pub struct VersionArgs {
 /// Run the `version` command. Takes no database — it only reads the compiled-in
 /// version and (with `--check`) the network.
 ///
-/// `enabled` is `[features] version_check` as the process loaded it.
-pub fn run(args: VersionArgs, enabled: bool) -> CommandOutput {
+/// `enabled` is `[features] version_check` as the process loaded it, and
+/// `fleet_program` the `[fleet] program` it reports beside the version.
+pub fn run(args: VersionArgs, enabled: bool, fleet_program: &str) -> CommandOutput {
     let current = crate::update::version_check::current_version();
 
     if !args.check {
-        // The extra facts are what a *peer* thurbox reads when it probes this
-        // machine's CLI before delegating to it (`session_ops::host_cli`): the
-        // tmux server this build's sessions live on, where its data lives, and
-        // whether the two databases speak the same schema.
+        // Where this build's interface state lives and which tmux socket it
+        // names: what tells a sandbox apart from the real instance.
         return CommandOutput::new(
             json!({
                 "version": current,
                 "tmux_socket": crate::backend::instance::local_socket_name(),
                 "tmux_tmpdir": crate::backend::instance::local_socket_dir_report(),
-                "data_dir": crate::paths::database_file()
-                    .and_then(|p| p.parent().map(|d| d.display().to_string())),
-                "schema_version": crate::storage::SCHEMA_VERSION,
-                "multiplexer_choice": true,
-                "soft_delete_choice": true,
-                "session_revision": true,
-                "session_wait": true,
-                "session_state_hooks": true,
-                "session_pre_launch": true,
-                "deleted_since": true,
-                "deleted_changes_since": true,
-                "create_parity": true,
-                "agent_args": true,
-                "telemetry_attrs": true,
-                "purged_tombstones": true,
-                "lifecycle_preconditions": true,
-                "session_restart_fresh": true,
-                "message_native_send": true,
+                "data_dir": crate::paths::data_directory().map(|d| d.display().to_string()),
+                "fleet": super::doctor::FleetFacts::read(fleet_program).document(),
             }),
             format!("thurbox {current}"),
         );
@@ -128,17 +111,9 @@ mod tests {
 
     #[test]
     fn version_without_check_prints_current_version() {
-        let out = run(VersionArgs { check: false }, true);
+        let out = run(VersionArgs { check: false }, true, "fleet");
         assert!(out["version"].is_string(), "version field present");
-        assert_eq!(out["multiplexer_choice"], true);
-        assert_eq!(out["soft_delete_choice"], true);
-        assert_eq!(out["session_revision"], true);
-        assert_eq!(out["deleted_since"], true);
-        assert_eq!(out["deleted_changes_since"], true);
-        assert_eq!(out["create_parity"], true);
-        assert_eq!(out["telemetry_attrs"], true);
-        assert_eq!(out["session_restart_fresh"], true);
-        assert_eq!(out["message_native_send"], true);
+        assert!(out["tmux_socket"].is_string(), "the socket in force");
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }
@@ -147,7 +122,7 @@ mod tests {
     fn version_check_when_flag_disabled_prints_enable_hint() {
         // The flag is on by default for 1.0, so exercise the disabled path
         // directly, with the flag passed in — no network.
-        let out = run(VersionArgs { check: true }, false);
+        let out = run(VersionArgs { check: true }, false, "fleet");
         assert_eq!(out["check_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

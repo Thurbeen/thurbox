@@ -63,16 +63,12 @@ pub enum Diff {
 struct Computed {
     session: String,
     request: u64,
-    /// `None` when the fingerprint matched the held answer's: it still stands,
-    /// and only its age moves.
-    diff: Option<Diff>,
-    fingerprint: Option<String>,
+    diff: Diff,
 }
 
-/// Whether a session's backend reaches its worktree over ssh — where a diff
-/// costs network bytes, so it is fetched only while a pane shows it
-/// ([`DiffStore::request`]'s caller) and re-read only when its fingerprint
-/// moves. Every other backend keeps the plain TTL.
+/// Whether a session's backend is reached over ssh. Such a session's diff is
+/// asked for only while a pane shows it ([`DiffStore::request`]'s caller):
+/// thurbox reads diffs on this machine only, so its answer is a refusal.
 pub fn over_ssh(backend: &str) -> bool {
     crate::session::Route::parse(backend)
         .is_ok_and(|route| route.via() == Some(crate::session::Via::Ssh))
@@ -106,10 +102,6 @@ struct Held {
     /// answer stands until the fresh one lands in [`DiffStore::poll`] — the
     /// same old-value-while-refreshing shape the git stats use.
     refreshing: bool,
-    /// What [`crate::git::diff_fingerprint_on`] said when `diff` was read —
-    /// ssh sessions only. A refresh that reads the same fingerprint keeps
-    /// `diff` instead of fetching the body again.
-    fingerprint: Option<String>,
 }
 
 impl Held {
@@ -221,10 +213,6 @@ impl DiffStore {
         }
         self.next_request = self.next_request.wrapping_add(1);
         let request = self.next_request;
-        let previous = self.diffs.get(session).and_then(|held| match held.diff {
-            Diff::Ready { .. } => held.fingerprint.clone(),
-            _ => None,
-        });
         match self.diffs.get_mut(session) {
             // A settled answer past its age: keep publishing it, mark the
             // recompute in flight, and dispatch below.
@@ -241,44 +229,32 @@ impl DiffStore {
                         at: std::time::Instant::now(),
                         diff: Diff::Pending,
                         refreshing: false,
-                        fingerprint: None,
                     },
                 );
             }
         }
 
-        // The worktree is a path on the session's OWN machine. Running the local
-        // `git` against a remote path either fails or, on an unlucky collision,
-        // diffs something else entirely — the same reasoning that made `sync`
-        // host-aware. Resolved here rather than on the worker so an unreachable
-        // backend is reported as a failed diff instead of a silent local read.
-        let host = crate::session_ops::resolve_host(backend).flatten();
-        let unreachable = host.is_none() && crate::session::Route::is_remote_key(backend);
-        let fingerprinted = over_ssh(backend);
+        // The worktree is a path on the session's own machine, and thurbox
+        // reads diffs on this one only: running the local `git` against a
+        // remote path either fails or diffs something else entirely, so a
+        // remote route is a failed diff rather than a silent local read.
+        let unreachable = crate::session::Route::is_remote_key(backend);
 
         let tx = self.tx.clone();
         let session = session.to_string();
         std::thread::spawn(move || {
-            // Read before the diff, so a change landing between the two leaves
-            // an older fingerprint beside a newer diff: the next check then
-            // differs and reads again, rather than holding a stale body.
-            let fingerprint = (fingerprinted && !unreachable)
-                .then(|| crate::git::diff_fingerprint_on(host.as_ref(), &worktree, base.as_deref()))
-                .flatten();
             let diff = if unreachable {
-                Some(Diff::Failed(
-                    "this session's host is not in hosts.toml".to_string(),
-                ))
-            } else if fingerprint.is_some() && fingerprint == previous {
-                None
+                Diff::Failed(
+                    "this session runs on another machine; thurbox reads diffs on this one only"
+                        .to_string(),
+                )
             } else {
-                Some(compute(&worktree, base.as_deref(), host.as_ref()))
+                compute(&worktree, base.as_deref())
             };
             let _ = tx.send(Computed {
                 session,
                 request,
                 diff,
-                fingerprint,
             });
         });
     }
@@ -295,10 +271,7 @@ impl DiffStore {
             }
             held.at = std::time::Instant::now();
             held.refreshing = false;
-            held.fingerprint = done.fingerprint;
-            let Some(diff) = done.diff else {
-                continue;
-            };
+            let diff = done.diff;
             let moved = held.diff != diff;
             held.diff = diff;
             changed |= moved;
@@ -328,7 +301,6 @@ impl DiffStore {
                 at: std::time::Instant::now(),
                 diff,
                 refreshing: false,
-                fingerprint: None,
             },
         );
     }
@@ -349,13 +321,9 @@ impl Default for DiffStore {
     }
 }
 
-/// Run the diff and render it. Called on a worker thread.
-///
-/// `host` is the machine the worktree is on — `None` for local. v1 threads the
-/// same argument through `code_review`; passing `None` unconditionally is how a
-/// remote session came to be diffed against a path that does not exist here.
-fn compute(worktree: &Path, base: Option<&str>, host: Option<&crate::session::HostDef>) -> Diff {
-    let sources = match read_sources(worktree, base, host) {
+/// Run the diff on this machine and render it. Called on a worker thread.
+fn compute(worktree: &Path, base: Option<&str>) -> Diff {
+    let sources = match read_sources(worktree, base) {
         Ok(sources) => sources,
         Err(failure) => return Diff::Failed(failure.to_string()),
     };
@@ -434,21 +402,16 @@ struct Sources {
 /// which is what a session with no base branch has to show. The two are gathered
 /// differently: `base..HEAD` is committed history, so its body and file list are
 /// independent commands, while the working tree has to fold in **untracked
-/// files** and therefore comes back from [`crate::git::working_diff_on`] as one
+/// files** and therefore comes back from [`crate::git::working_diff`] as one
 /// consistent set. Asking for them separately there would let the body describe a
 /// file the list omitted.
 ///
 /// `Err` carries the message to report, keeping "could not read the diff" and
 /// "could not list the changed files" distinct — the second means the cheap
 /// commands failed after the expensive one worked, which is worth telling apart.
-fn read_sources(
-    worktree: &Path,
-    base: Option<&str>,
-    host: Option<&crate::session::HostDef>,
-) -> Result<Sources, &'static str> {
+fn read_sources(worktree: &Path, base: Option<&str>) -> Result<Sources, &'static str> {
     let Some(base) = base else {
-        let working =
-            crate::git::working_diff_on(host, worktree).ok_or("could not read the diff")?;
+        let working = crate::git::working_diff(worktree).ok_or("could not read the diff")?;
         return Ok(Sources {
             raw: working.body,
             numstat: working.numstat_z,
@@ -458,9 +421,9 @@ fn read_sources(
                 .saturating_sub(working.untracked_shown),
         });
     };
-    let raw = crate::git::diff_against_on(host, worktree, base).ok_or("could not read the diff")?;
-    let (numstat, name_status) = crate::git::diff_numstat_on(host, worktree, Some(base))
-        .zip(crate::git::diff_name_status_on(host, worktree, Some(base)))
+    let raw = crate::git::diff_against(worktree, base).ok_or("could not read the diff")?;
+    let (numstat, name_status) = crate::git::diff_numstat(worktree, Some(base))
+        .zip(crate::git::diff_name_status(worktree, Some(base)))
         .ok_or("could not list the changed files")?;
     Ok(Sources {
         raw,
@@ -491,7 +454,7 @@ mod tests {
                 "s1",
                 PathBuf::from("/definitely/not/a/repo"),
                 None,
-                "local-tmux",
+                "local:tmux",
             )
         };
         ask(&mut store);
@@ -519,7 +482,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
         assert!(started.elapsed() < std::time::Duration::from_millis(200));
         assert_eq!(store.get("s1"), Some(&Diff::Pending));
@@ -542,9 +505,9 @@ mod tests {
     #[test]
     fn a_second_request_does_not_recompute() {
         let mut store = DiffStore::new();
-        store.request("s1", PathBuf::from("/tmp"), None, "local-tmux");
+        store.request("s1", PathBuf::from("/tmp"), None, "local:tmux");
         let first = store.get("s1").cloned();
-        store.request("s1", PathBuf::from("/tmp"), None, "local-tmux");
+        store.request("s1", PathBuf::from("/tmp"), None, "local:tmux");
         assert_eq!(store.get("s1").cloned(), first);
     }
 
@@ -567,7 +530,6 @@ mod tests {
             at: std::time::Instant::now() - age,
             diff,
             refreshing: false,
-            fingerprint: None,
         }
     }
 
@@ -601,7 +563,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
         assert_eq!(
             store.get("s1"),
@@ -614,7 +576,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
         // The old answer stays published while the recompute is in flight —
         // replacing it with `Pending` would blank the pane every TTL.
@@ -640,7 +602,7 @@ mod tests {
     #[test]
     fn invalidating_allows_a_recompute() {
         let mut store = DiffStore::new();
-        store.request("s1", PathBuf::from("/tmp"), None, "local-tmux");
+        store.request("s1", PathBuf::from("/tmp"), None, "local:tmux");
         store.invalidate("s1");
         assert!(store.get("s1").is_none());
     }
@@ -652,7 +614,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -676,8 +638,7 @@ mod tests {
             .send(Computed {
                 session: "evicted".into(),
                 request: 1,
-                diff: Some(empty_ready()),
-                fingerprint: None,
+                diff: empty_ready(),
             })
             .unwrap();
         store
@@ -685,8 +646,7 @@ mod tests {
             .send(Computed {
                 session: "current".into(),
                 request: 99,
-                diff: Some(Diff::Failed("obsolete".into())),
-                fingerprint: None,
+                diff: Diff::Failed("obsolete".into()),
             })
             .unwrap();
         assert!(!store.poll());
@@ -705,8 +665,7 @@ mod tests {
             .send(Computed {
                 session: "current".into(),
                 request: 0,
-                diff: Some(empty_ready()),
-                fingerprint: None,
+                diff: empty_ready(),
             })
             .unwrap();
         assert!(!store.poll());
@@ -715,37 +674,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_fingerprint_keeps_the_held_diff_and_renews_its_age() {
-        let mut store = DiffStore::new();
-        store
-            .diffs
-            .insert("s1".into(), held(empty_ready(), DIFF_TTL));
-        let held_at = store.diffs["s1"].at;
-        let version = store.version();
-        store
-            .tx
-            .send(Computed {
-                session: "s1".into(),
-                request: 0,
-                diff: None,
-                fingerprint: Some("same".into()),
-            })
-            .unwrap();
-        assert!(!store.poll());
-        assert_eq!(store.version(), version);
-        let renewed = &store.diffs["s1"];
-        assert_eq!(renewed.diff, empty_ready());
-        assert!(renewed.at > held_at && !renewed.stale());
-        assert_eq!(renewed.fingerprint.as_deref(), Some("same"));
-    }
-
-    #[test]
-    fn only_ssh_backends_are_fingerprinted() {
-        assert!(over_ssh("ssh:devbox"));
+    fn only_ssh_backends_are_over_ssh() {
+        assert!(over_ssh("ssh:devbox:tmux"));
         assert!(over_ssh("ssh:devbox:rmux"));
-        assert!(!over_ssh("tmux"));
-        assert!(!over_ssh("local-tmux"));
-        assert!(!over_ssh("wsl:Ubuntu"));
+        assert!(!over_ssh("local:tmux"));
+        assert!(!over_ssh("wsl:Ubuntu:tmux"));
     }
 
     /// The property the file list was changed for: **the body is capped and the list
@@ -817,14 +750,14 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", "everything"]);
 
-        let raw = crate::git::diff_against_on(None, &repo, "main").expect("a diff");
+        let raw = crate::git::diff_against(&repo, "main").expect("a diff");
         assert!(
             raw.len() > MAX_DIFF_BYTES,
             "the fixture must exceed the cap to be testing anything: {} bytes",
             raw.len()
         );
 
-        let diff = compute(&repo, Some("main"), None);
+        let diff = compute(&repo, Some("main"));
         match diff {
             Diff::Ready {
                 files: listed,
@@ -865,7 +798,7 @@ mod tests {
             body,
             untracked_omitted,
             ..
-        } = compute(&repo, None, None)
+        } = compute(&repo, None)
         else {
             panic!("expected a ready diff");
         };
@@ -904,7 +837,7 @@ mod tests {
         std::fs::write(repo.join("ignored.txt"), "noise\n").expect("write");
         std::fs::write(repo.join("wanted.txt"), "signal\n").expect("write");
 
-        let Diff::Ready { files, .. } = compute(&repo, None, None) else {
+        let Diff::Ready { files, .. } = compute(&repo, None) else {
             panic!("expected a ready diff");
         };
         let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
@@ -924,7 +857,7 @@ mod tests {
         std::fs::write(repo.join("sub dir/has space.txt"), "spaced\n").expect("write");
         std::fs::write(repo.join("bin.dat"), [0u8, 1, 2, 0, 255]).expect("write");
 
-        let Diff::Ready { files, .. } = compute(&repo, None, None) else {
+        let Diff::Ready { files, .. } = compute(&repo, None) else {
             panic!("expected a ready diff");
         };
         let spaced = files
@@ -960,7 +893,7 @@ mod tests {
             files,
             untracked_omitted,
             ..
-        } = compute(&repo, Some("main"), None)
+        } = compute(&repo, Some("main"))
         else {
             panic!("expected a ready diff");
         };
@@ -989,7 +922,7 @@ mod tests {
             untracked_omitted,
             truncated,
             ..
-        } = compute(&repo, None, None)
+        } = compute(&repo, None)
         else {
             panic!("expected a ready diff");
         };
@@ -1002,28 +935,28 @@ mod tests {
     }
 
     #[test]
-    fn a_remote_session_whose_host_is_gone_is_reported_rather_than_diffed_locally() {
+    fn a_remote_session_is_reported_rather_than_diffed_locally() {
         // The path is on another machine. Running the local `git` against it
-        // either fails or, on a collision, diffs something else entirely — so an
-        // unresolvable host is a reported failure, not a fallback.
+        // either fails or, on a collision, diffs something else entirely — so a
+        // remote session is a reported failure, not a fallback.
         let mut store = DiffStore::new();
         store.request(
             "s1",
             PathBuf::from("/srv/worktree"),
             Some("main".into()),
-            "ssh:host-that-is-not-configured",
+            "ssh:devbox:tmux",
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             store.poll();
             if let Some(Diff::Failed(message)) = store.get("s1") {
-                assert!(message.contains("hosts.toml"), "{message}");
+                assert!(message.contains("another machine"), "{message}");
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!(
-            "the diff never reported the missing host: {:?}",
+            "the diff never reported the other machine: {:?}",
             store.get("s1")
         );
     }

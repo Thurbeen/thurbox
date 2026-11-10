@@ -1,692 +1,228 @@
 ---
 name: thurbox-remote-hosts
-description: Remote SSH and WSL sessions in thurbox: hosts.toml schema, the TmuxTransport abstraction, psmux/Windows-host divergences, remote worktrees, shared sessions (ADR-24) and host CLI delegation, agent-config path rewriting, remote hook status delivery via tmux pane options, and remote teardown. Use when working on remote/WSL/Windows hosts, ssh transport, psmux, host provisioning or remote session status.
+description: Remote SSH and WSL hosts: the hosts.toml schema (runtime-mux's) and WSL discovery, how a picked host reaches Fleet, why thurbox reads this machine only and runs only companion shells on a host, the TmuxTransport abstraction in crates/runtime-mux, the host's PATH probe, psmux/Windows-host divergences, and the failure classifiers. Use when working on remote/WSL/Windows hosts, ssh transport, psmux or hosts.toml.
 ---
 
 # Thurbox remote SSH and WSL hosts
 
 *Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
-## Remote SSH & WSL Sessions
+## What a host is for
 
-Sessions can run on an **off-local host** while the TUI runs locally: a
-**remote machine over SSH**, or a **local WSL distro** (`wsl.exe`). A WSL
-distro is modeled as "SSH without the ssh" — the *only* difference is the
-launch prefix (`wsl.exe -d <distro>` vs `ssh <dest>`); tmux, git, the agent,
-and the worktrees all run **inside the distro** at native Linux paths, so
-everything downstream of the launcher (control-mode protocol, POSIX quoting,
-worktree layout) is identical to the SSH path — no `wslpath` translation. Hosts
-are declared as data in `~/.config/thurbox/hosts.toml` (seeded commented-out;
-fresh install = zero SSH hosts, behaves as before), **plus WSL distros are
-auto-discovered** (`wsl.exe -l -q`) with no config — on Windows and, via
-interop, from inside a distro as well. What discovery never offers is the
-distro thurbox is running in: a **loopback** (`HostDef::is_wsl_loopback`, keyed
-on `$WSL_DISTRO_NAME`) is this machine, so sessions on it are local. It is
-dropped from both halves of the registry — discovered and configured (the
-configured one with a warning). A configured host that reaches a sibling but is
-*named* after the current distro (`shadows_current_wsl_distro`) registers as
-`wsl:<us>` and is therefore indistinguishable from a loopback row. It is kept
-**exactly as written** — it works — and what it costs instead is the repair, for
-that one name: the rows under it are the bug's local rows *and* the host's own
-sibling rows at once, so both rewrites are wrong for half of them and neither is
-attempted (a notice says so, counted with `rows_recorded_on` and skipped when
-the claimed spelling holds no row). That is one case of a general rule — the
-repair never rewrites a spelling a host it still serves registers under,
-including a dropped loopback's own free-label `name`, which auto-discovery may
-hand straight to a real sibling. Rows a released build already
-relabelled `wsl:<us>` (being shareable by default, the loopback was mirrored,
-and its "host" database was this database, so the pass rewrote our own local
-rows as remote) are put back by a one-time repair rather than by the migration:
-schema v47 only marks it **owed**, and `session_ops::repair_wsl_loopback_rows`
-runs it from every startup that opens the database — the TUI boot *and* the
-`thurbox-cli` entrypoint. Siblings stay ordinary hosts. The seeded file
-documents every field inline; the schema:
+An off-local host is a **remote machine over SSH** or a **local WSL distro**
+(`wsl.exe`). Every session is a Fleet Task, and Fleet runs it on the host its
+spec names, through the runtime Fleet's `[hosts.<name>]` names. thurbox
+itself reads this machine only:
+
+- **Creating a session.** The host step of the new-session flow is always
+  shown: it offers this machine at once and adds the hosts
+  `fleet runtime hosts --json` lists when Fleet answers. The picked host
+  becomes the Task's `spec.host`; this machine is `local`
+  (`Fleet::host`, `src/kernel/command/fleet.rs`). A host Fleet does not list
+  is refused, with a hint to add `[hosts.<name>]` to Fleet's config. A
+  session on another host gets a `dir` workspace: Fleet makes worktrees on
+  this machine only.
+- **The creation flow's reads** happen on this machine only
+  (`src/kernel/repos.rs`). A path typed for another host is remembered and
+  forgotten as typed (`src/kernel/command/execute.rs`).
+- **Diffs, git stats and plugin runs** refuse a session on another machine
+  (`src/kernel/diff.rs`, `SessionRow::workspace_reachable`,
+  `kernel::runs::command_for`).
+- **Companion shells** (`Ctrl+T`). A Fleet session's shell runs on the
+  multiplexer of the `hosts.toml` host its Fleet host is named as, on that
+  host's default route (`Terminals::shell_route`,
+  `src/kernel/terminal/shells.rs`). No such host means no shell. This is the
+  one place thurbox reads `hosts.toml`.
+- **Image drops** onto a remote session are refused with a message
+  (`refuses_a_remote_image_drop`, `src/coordinator/input.rs`).
+
+The agent's own terminal is the stream `fleet attach` names, not a pane of
+thurbox's backends.
+
+## hosts.toml
+
+`~/.config/thurbox/hosts.toml` is seeded commented out, so a fresh install has
+no SSH hosts. The seeded file documents every field inline
+(`crates/runtime-mux/src/hosts.rs`); the schema is `HostDef`
+(`crates/runtime-mux/src/host/host_def.rs`):
 
 ```toml
 # An SSH host (the default kind):
 [[hosts]]
-name = "devbox"               # required — backend id "ssh:devbox"; what --host expects
-destination = "me@devbox"     # required for ssh — target ("user@host" or ~/.ssh/config alias)
-ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]
-                              # optional (default []) — extra ssh flags; no ~ expansion, use abs paths
-socket = "thurbox"            # optional (default "thurbox") — host `tmux -L` socket
-session = "thurbox"           # optional (default "thurbox") — host tmux session name
-worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
-                              # optional — abs worktrees dir on the host
-multiplexer = "tmux"          # optional (default: the host platform's — tmux on POSIX, psmux on Windows); set "psmux" for a Windows SSH host
+name = "devbox"               # required — backend id "ssh:devbox"
+destination = "me@devbox"     # required for ssh — "user@host" or an ~/.ssh/config alias
+ssh_opts = ["-o", "ServerAliveInterval=15"]
+                              # optional (default []) — extra ssh flags; no ~ expansion
+socket = "thurbox"            # optional — the host's `tmux -L` socket
+session = "thurbox"           # optional — the host's tmux session name
+multiplexer = "tmux"          # optional (default: the platform's — tmux on POSIX, psmux on Windows)
 platform = "windows"          # optional — "posix"/"windows"; unset = windows iff multiplexer is psmux
-otel_endpoint = "http://localhost:4318"
-                              # optional — the host's OTLP collector, as the host reaches it (ADR-36);
-                              # unset = its sessions get resource attributes only
+path_prepend = ["~/.local/bin"]
+                              # optional — put in front of the host's PATH
 
-# A WSL distro (only needed to OVERRIDE auto-discovery, e.g. a custom worktrees_dir):
+# A WSL distro (only needed to override auto-discovery):
 [[hosts]]
-name = "ubuntu"               # → backend "wsl:ubuntu"; what --host expects
+name = "ubuntu"               # → backend "wsl:ubuntu"
 kind = "wsl"                  # required to select the WSL transport
 distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro name
 ```
 
-Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
-field's default is in the comments above and in `docs/thurbox/config.md`.
+Only `name` (plus `destination` for ssh, `kind` for wsl) is required. A host
+name may not contain `:`. `share_sessions` (default `true`) still parses; its
+one effect is on socket resolution (see *Sockets* below). `worktrees_dir` and
+`otel_endpoint` still parse and have no effect since 3.0.
+`thurbox-cli config` validates the file, and `thurbox-cli doctor` reads the
+cached registry.
 
-How it works: each tmux-protocol adapter — `TmuxBackend`, `PsmuxBackend`, and `RmuxBackend`,
-all `tmux_compat::Server<M>` — runs over a transport-neutral
-`backend::tmux_compat::transport::TmuxTransport` (an optional
-`shell::HostLauncher` plus the multiplexer binary — the launcher never adds
-`-L`). The local backend launches `<mux> -L thurbox …`; an SSH backend launches
-`ssh <dest> <mux> -L <host socket> …` (the host's socket, ADR-12); a **WSL
-backend launches `wsl.exe -d <distro> <mux> -L <host socket> …`**
-(`HostLauncher::Wsl`). For tmux on a POSIX host the multiplexer runs behind a
-`sh -c` that sets `TMUX_TMPDIR` to the host's data dir (`SocketDir`, ADR-34),
-so the socket stays out of the `/tmp` macOS sweeps; a server lost from its
-socket is found again (`SIGUSR1`) before any `new-session`. Every remote command builds its
-launcher with the one conversion `HostLauncher::for_host`. `wsl.exe` forwards whitespace-free tokens to the
-in-distro shell like `ssh` does, so the same POSIX quoting
-(`shell::posix_quote`) and the byte-identical control-mode protocol
-(`control_mode.rs`) apply — only the one-time process launch differs. (An arg
-*containing whitespace* is preserved as one word, so multi-word `sh -c` scripts
-go through `wsl.exe --exec` instead — see `shell::wsl_command` /
-`git::host_shell_c`.) Every `wsl.exe` is started **off the interface's
-terminal** (`shell::wsl_exe`: `CREATE_NO_WINDOW` on Windows, `setsid` on Unix):
-a `wsl.exe` child reads its parent console's keyboard input even with all three
-stdio handles redirected, so the control-mode connection of an attached WSL
-session used to take every key — the interface kept painting and answered
-nothing (measured: 0 of 8 keys reached a console reader beside `wsl.exe … sleep`,
-8 of 8 with the flag; pinned by `tui_e2e`'s
-`the_keyboard_is_still_the_interfaces_while_a_wsl_session_is_attached`). The local default multiplexer
-(`Multiplexer::default_for`) is **`tmux` on Linux/macOS and `psmux` on
-Windows**, but all three adapters are registered on every machine and host
-(ADR-31) — psmux is a native-Windows, drop-in tmux clone (ConPTY, no WSL)
-speaking the **same control-mode wire protocol** and pane-id (`%N`) / `-L`
-socket model, so the shared server (`backend::tmux_compat::server::Server<M>`)
-is generic over the multiplexer and `backend::tmux` / `backend::psmux` / `backend::rmux` are
-peer adapters answering `TmuxCompatible` (a remote SSH host can also pin
-`multiplexer = "psmux"`); a WSL distro runs its selected multiplexer inside the distro (tmux by default).
-RMUX >= 0.10.0 is opt-in, tested locally on Linux; real SSH, WSL, macOS and
-native Windows integration remain unverified. Installation, selection, version
-evidence and protocol limits live in `docs/thurbox/config.md` → *Multiplexer requirements
-and RMUX setup*. The
-tmux control-mode protocol is identical over SSH and WSL, with
-**psmux divergences** (verified against psmux 3.3.6, each a body in the psmux
-adapter, never a branch on the binary's name; naming or spawning a pane needs psmux ≥ 3.3.8,
-asked of the server and the client by `admit_server` — ADR-13 has why) — older psmux lacks `send-keys -H`, and psmux does not join
-`new-window` trailing tokens or honour its `-e`, implements no control-mode
-paste command, and has **no per-window options**. So thurbox re-encodes
-keystrokes from the primitives psmux does support (`psmux_send_keys_commands`),
-using one named key for each arrow or navigation sequence, folds
-env + command into **one** PowerShell script (`psmux_window_powershell`)
-launched as `powershell.exe -NoLogo -EncodedCommand …` (`psmux_window_program`,
-`shell::powershell_launcher`) — never a bare script, which psmux ≥ 3.4.0 runs
-through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH, and
-refused with `CommandLineTooLong` past `shell::WINDOWS_CMD_LINE_MAX` (8191) —
-quotes every one-shot command for a `cmd.exe` or PowerShell login shell rather
-than POSIX (`TmuxTransport::with_shell` → `shell::HostShell::launch`: plain
-words as they are, anything else as an encoded PowerShell script; #1460) —
-routes a bracketed paste out of band through the one-shot CLI
-`psmux send-paste` (`psmux::PsmuxPaste`) — `session send` in the same
-`PASTE_CHUNK_BYTES` chunks, sized to fit even as an encoded PowerShell line
-(#1503), and a deferred prompt's `run-shell` script refused
-past the limit (#1489) — and neither writes nor reads
-the ADR-25 window stamp there (`stamp_window` / `create_window` /
-`stamps_are_per_window`) — `set-option -w` writes a *server-global* option that
-`#{@...}` then answers with for **every** window, which made one session's id
-every window's identity. psmux also **answers the argv `attach-session` with
-no `%begin`/`%end` block**, so `ControlMode::start` drains one only where one
-is sent (`ControlPolicy::implicit_attach_reply`); draining psmux parks `ensure_ready`
-on a read that never returns, which is why discovery reported nothing and no
-pane ever attached on Windows (issue #1168 — the two faults are independent and
-either alone is the whole symptom). Each
-workaround has non-obvious quoting/tokenizing constraints — **read the psmux
-divergences subsection of ADR-13 in `docs/thurbox/architecture.md` before touching this
-path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
-psmux has **no `remain-on-exit`**, so an agent window closes with its agent
-and reads `Missing` — which is also why `create_window` looks for the window
-again after `SPAWN_SETTLE` and refuses one that is already gone rather than
-report it created. psmux answers no `-P`, so the local spawn learns its pane
-id by diffing the `tb-<name>` panes listed before and after `new-window`
-(psmux never reuses one), and the check matches that id only: a live
-namesake never vouches for a dead new window (#1456). The agent window's PowerShell ends by piping
-`LASTEXITCODE` into `thurbox-cli session exited`, which records an `exited`
-event with the status and the pane tail. Each repairer relaunch is logged as
-`relaunched`, and three within ten minutes hold the next one back and mark
-the session lost (`keeps_exited_windows`; ADR-13 → "A psmux agent reports its
-own exit").
-Psmux 3.3.8 also rejects tmux's `=window` exact-name target and can print that
-`ERROR:` on stdout while exiting 0. Recovery of an unstamped row lists windows
-and accepts exactly one live pane with the expected name; duplicate names are
-`Unknown`. Psmux one-shot commands treat reportable stderr as failure regardless
-of the process status, and structured listings reject `ERROR:` stdout too;
-captured pane output is preserved. SSH's informational `**` advisory lines are
-ignored.
-On psmux 3.3.8, cold `new-session -d` sometimes refuses or returns before a
-server answers. Its `has-session` deletes a starting server's port file after
-a failed TCP connection, so the adapter probes with `list-windows`. The
-adapter omits `-x/-y` for the initial placeholder, allowing psmux to claim a
-warm server, and retries transient `no server running` replies from setup and
-window creation with a bounded final wait. tmux keeps its size flags and one
-attempt. Psmux's global `set-option -g` commands include `-t <session>` so
-they do not route to `__default`. The failure occurs
-with psmux alone and is independent of v2.42.0's control-mode changes.
+**Loading.** `config::hosts` (`src/config/hosts.rs`) wraps
+`runtime_mux::hosts`: `load_all` is the configured hosts plus
+`discover_wsl_hosts()` (deduplicated; a configured entry wins).
+`cached_registry` is the one read every thurbox caller shares. WSL distros are
+discovered with `wsl.exe -l -q`, on Windows and, through interop, from inside a
+distro. Discovery never offers the distro thurbox runs in: a **loopback**
+(`HostDef::is_wsl_loopback`, keyed on `$WSL_DISTRO_NAME`) is this machine, and
+it is dropped from both the discovered and the configured halves (the
+configured one with a warning).
 
-A host's **platform** is its own field (`HostDef::platform`, `session::Platform`,
-ADR-13 "The host's platform is its own dimension"): `platform = "windows"`
-declares a native Windows host on any multiplexer, and an entry that sets none
-keeps the old reading (`multiplexer = "psmux"` ⇒ Windows, else POSIX; a WSL
-distro is always POSIX). `default_shell`, the `default-command` pin and the
-`/bin/sh -lc` login wrap follow the platform, never `cfg(windows)` or the
-multiplexer's name; `needs_liveness_poll` follows whether its control stream
-closes pane readers on window deletion (tmux yes, psmux and RMUX no). Tests simulate the Windows build
-with `shell::simulate_local`. A Windows host has no POSIX shell. So
-each remote probe ships **two scripts emitting one line protocol** —
-`git::host_probe` picks `sh -c` or `powershell -EncodedCommand`
-(`shell::HostShell::run_script`; UTF-16LE base64, because ssh space-joins its args for a
-default sshd shell that is commonly PowerShell and expands `$…` inside them) —
-and `git::remote_home` resolves `%USERPROFILE%` rather than `$HOME`, which under
-`cmd`/PowerShell prints the literal string and exits 0. Remote error *messages*
-are cleaned in one place (`git::reportable_stderr`): OpenSSH ≥ 10's three-line
-post-quantum advisory is dropped (it is informational, on stderr, and **first**,
-so it used to be the whole reported error), and PowerShell's `#< CLIXML` stderr
-envelope is decoded to the message inside it. See the two subsections after
-"psmux divergences" in ADR-13. A file too big for a command line (the
-provisioned CLI's archive) travels on stdin as **base64 lines read through
-`$input`** (`git::copy_stream_to_remote_windows`): Windows PowerShell 5.1's
-console host reads redirected stdin itself, so a script opening
-`[Console]::OpenStandardInput()` got 4096 bytes and waited forever, leaving a
-PowerShell on the host holding the half-written file open. Checked against a
-real host by `scripts/dev/e2e/real-host.sh <host> transfer-test`.
+**Data.** `HostDef` (with `kind: HostKind {Ssh, Wsl}`) and `HostRegistry` are
+pure data in `crates/runtime-mux`, re-exported through `session`. A route is
+read by one parser, `session::Route` (machine × multiplexer; grammar in
+`docs/thurbox/config.md` → *Multiplexer choice and existing sessions*). A host
+key (`ssh:<host>`) resolves through `HostRegistry::resolve`, and
+`HostDef::default_route` gives its multiplexer.
 
-Each host registers one backend per adapter, named by its route
-(`ssh:<name>:<mux>` / `wsl:<name>:<mux>`, `backend::wiring`'s table, built from a
-`BackendSpec` of route, launcher, platform and host), registered lazily from
-`config::hosts::load_all_with_warnings`: discovery/down hosts must
-not block startup, so `check_available`/`ensure_ready` are deferred to first use
-— looking a backend up is a map read, and the blocking `ensure_ready` runs on the
-attach worker in `kernel::terminal` (and on the spawn worker for a fresh
-session), never on the loop, ADR-P12).
+## The transport (crates/runtime-mux)
 
-- **Data**: `session::HostDef` (with `kind: HostKind {Ssh, Wsl}`) /
-  `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use
-  it). A row's `backend_type` is read by one parser, `session::Route`
-  (machine × optional multiplexer; grammar and legacy meaning in
-  `docs/thurbox/config.md` → *Multiplexer choice and existing sessions*), and
-  resolved by one resolver, `HostRegistry::host_of` / `qualify`: the host
-  comes back as configured, never with a platform read off the route.
-  `session_ops::windows::backend_for` finds the backend a row's route names in
-  the injected registry, refusing a route none serves (ADR-29);
-  `session_ops::server_key`
-  compares two rows' servers whatever spelling each carries. A host name may
-  not contain `:` (refused at load). **Loading**: `config::hosts::load_all{,_with_warnings}`
-  = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
-  wins), with every entry claiming the current distro settled first
-  (`settle_wsl_self_hosts` / `wsl_hosts_from`): a loopback dropped, a
-  backend-name shadow kept as written. `augment_with` is the pure dedup both
-  the load path and the repair path go through, so they cannot disagree about
-  which host ends up serving a name.
-- **The one-time repair**: `session_ops::repair_wsl_loopback_rows`, guarded by
-  the `wsl_loopback_repair_owed` mark schema v47 writes and it clears. Run from
-  **both** startups that open the database (`coordinator::boot` and
-  `bin/thurbox-cli`), because the mark is written by whichever gets there first.
-  What it rewrites is a `session::WslRepairPlan` decided by the registry as
-  callers *see* it — `config::hosts::wsl_repair_plan` settles then
-  augments with discovery, the loader's own two steps in order:
-  - Candidates = `wsl:$WSL_DISTRO_NAME` **plus** each dropped loopback's own
-    `backend_name()` (a hand-written `name = "self", distro = "<us>"` wrote
-    `wsl:self`, and dropping the entry without healing those rows strands
-    them).
-  - `to_local` = the candidates no served host registers under; `withheld` =
-    the rest, matched on the whole backend name (an `ssh:` host named after a
-    distro serves none of its rows, so it withholds nothing).
-  - Only a question that could not be **asked** keeps the owed mark, and only
-    where the answer depended on it: an unparseable `hosts.toml` and distros
-    that could not be enumerated are both `Err`, so nothing is touched and a
-    later start retries — but `$WSL_DISTRO_NAME` is checked before the file is
-    read, so off WSL the plan is empty however `hosts.toml` reads, and an
-    unrelated typo cannot defer a repair that has nothing to do. A `withheld`
-    name is an **answer** and clears it — those rows never become classifiable, so
-    waiting for the claim to disappear would just rewrite them once the
-    evidence was gone, relabelling a live sibling's sessions local. Silence
-    must never read as "no host claims this", though a machine with no
-    `wsl.exe` at all is a definite "no distros", since interop puts `wsl.exe`
-    on `PATH` inside a distro.
-  - Discovery is consulted **only** for a candidate it could decide — never for
-    `wsl:$WSL_DISTRO_NAME`, the spelling `wsl_hosts_from` filters out — so the
-    ordinary repair spawns no `wsl.exe`, and its outcome does not depend on the
-    machine having a working one. `with_discovered_wsl` pins the list in tests.
+`crates/runtime-mux` is the multiplexer runtime; `src/backend.rs` re-exports
+it and injects thurbox's settings (`mux_settings`). Each tmux-protocol adapter
+(`TmuxBackend`, `PsmuxBackend`, `RmuxBackend`, all over
+`tmux_compat::server::Server<M>`) runs over a transport-neutral
+`tmux_compat::transport::TmuxTransport`: an optional `shell::HostLauncher` plus
+the multiplexer binary.
 
-  `Database::apply_wsl_repair_plan` owns the SQL. `(host, repo_path)` is the
-  bookmark key, so colliding readings of one path are resolved on recency —
-  ties keep the row that is already local — before the survivor is rewritten,
-  and the survivor inherits the group's `is_parent`/`parent_path` so a healed
-  parent keeps the mark its children hang off.
-- **Selection**: `SessionConfig.backend` (`ssh:<host>` / `wsl:<distro>` or `None`
-  = local). The TUI new-session flow shows a **host picker** first (skipped when
-  none configured/discovered); the chosen host runs git worktree creation +
-  branch listing on that host.
-- **Worktrees**: `git::*_on(host, …)` variants run `git` via the host launcher
-  (`git::host_launcher` → `ssh …` or `wsl.exe …`). Worktrees live under the
-  host's `worktrees_dir` (or `$HOME/.local/share/thurbox/worktrees` resolved +
-  cached per backend name — a WSL distro has no `destination`).
-- **Persistence/restore**: `backend_type` round-trips in SQLite; restore
-  discovers windows **per backend** so off-local sessions re-adopt against their
-  own host. In v2 there is no separate restore pass: a session is adopted when a
-  pane first asks to paint it, and readying its backend, discovering its window
-  and attaching all happen on `kernel::terminal`'s attach worker — the sharpest
-  teeth in the loop, since a down host runs out its ssh timeout. So an
-  unreachable or slow host never blocks a frame, and nothing is readied that
-  nothing is looking at (ADR-P7/ADR-P12, `docs/thurbox/performance.md`).
-- **A connection already open is still not something the loop waits on**
-  (ADR-P24). A link that has gone bad stays open and carries nothing, so no ssh
-  timeout fires and a round trip made from the loop runs out `COMMAND_TIMEOUT`,
-  reconnects and runs out again. The two the loop makes are bounded or removed:
-  the pane resize behind a paint is **sent, not asked**
-  (`ControlMode::send_command_detached` — a place kept in the waiter queue with
-  the receiver dropped, as every line written down the connection keeps one), and the
-  passthrough gate's deadness question gets `LOOP_COMMAND_BUDGET`. Both go through
-  `tmux_compat::Server::ctrl_command_within`, which bounds the wait for the **control lock** as well
-  as for the answer — one backend is one connection is one serialized queue,
-  shared with the mirror pass and the attach worker — and neither reconnects,
-  because a reconnect is a fresh handshake plus a synchronous read of the
-  implicit attach response.
-- **Several instances on one server size a pane by turns (ADR-27).** A paint's
-  resize is honoured only for a window whose `@thurbox_sizer` is this backend's
-  (or nobody's, or when it is the only client attached); input into a pane not
-  at this instance's size claims it (`claim_size`), and so does the pane
-  gaining the focus (`Terminals::focus`, on the edge only). Every grid follows the
-  pane's real size from `%layout-change`, in stream order
-  (`PaneSize`). The conditional list answers with **five** `%begin` blocks
-  either way — `send_command_detached` is told the count, because an `if-shell`
-  adds a block per command it runs. psmux keeps last-writer-wins.
-- **Headless**: `thurbox-cli session create --host <name>` spawns on the host
-  (an SSH name or an auto-discovered WSL distro name).
-- **The agent's `PATH` on a host** (`agent::host_path`). ssh/`wsl.exe -e` give
-  a command a non-login `PATH`, and a delegated `session create` pins its own
-  `PATH` on the pane (`tmux_compat::server::path_prefix_args`), so the host's login `PATH`
-  (`$SHELL -lc` + `/bin/sh -lc`, probed once per host, cached, failures
-  included, bounded by `timeout` and a 15 s kill) is assigned in front of every
-  POSIX script `host_cli` runs, inside `login_wrap_for_remote`, and in front of
-  every multiplexer command and `shell_command` script (`TmuxTransport::with_path`,
-  set per command by `Server::host_transport` — tmux and rmux alike, #1461): hosts.toml
-  `path_prepend`, then the login shells', then the launcher's, de-duplicated.
-  No answer = no change plus a warning; a later successful picker probe
-  (`record_probe`) replaces a cached failure. Tests never probe: an unseeded host is
-  "no answer" under `cfg(test)`; seed one with `host_path::seed`.
-  The same probe names each multiplexer on that merged `PATH`, `path_prepend` included (`@mux` lines,
-  `HostEnv::multiplexers`): the new-session picker offers only those
-  (`host_path::multiplexers_found`: never waited for, asked only while the
-  flow is open, its own cache re-asked after `MUX_TTL`; `seed_multiplexers`
-  in tests).
-- **Removed hosts.** Rows a mirror wrote (`host_updated_at` set,
-  `Database::mirrored_session_ids`) on a host the registry no longer serves
-  are forgotten, never tombstoned — a tombstone would be pushed back as a
-  delete once the host is configured again (`mirror::forget_removed_hosts`,
-  from `mirror::sync` and the TUI boot). Rows only this database records are
-  kept. `config::hosts::served_host_names` is `Err`, and nothing is forgotten,
-  when `hosts.toml` does not parse, WSL cannot be listed, or thurbox runs
-  inside WSL with no `wsl.exe` on `PATH`; a loopback entry's rows are left to
-  the WSL repair.
-- **Shared sessions (ADR-24).** A shareable host (`share_sessions = true`, the
-  default) owns the record of the sessions on it: its **own thurbox database**.
-  A remote thurbox *mirrors* that database into local rows on `ssh:<name>`
-  (`session_ops::mirror` — same id, the host's facts and hook status; every
-  10 s from a worker in `kernel::terminal` — 60 s after a pass that could not
-  run, since a `Yes` verdict is cached for the process lifetime and a host that
-  has since gone down would otherwise run its ssh out to the connect timeout six
-  times a minute — right after anything it delegated, and from `automation
-  tick`; a pass asks the host's `session revision` — its `rows_version` — first
-  and reuses the lists it last pulled while that holds, so an idle host is not
-  re-listed; and a host reporting `deleted_changes_since` has its deleted history
-  read whole initially and hourly, and otherwise only the rows deleted or updated
-  since the newest timestamp held (`session list --deleted --since`). This includes
-  force-delete promotions of older rows. Older hosts are read whole), and performs create/delete/restart/restore/fork/send by
-  running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
-  branched inside the shared pipelines so every caller delegates; the choice
-  per verb on a live session is `session_ops::Executor`, #1471 — the
-  deleted-row teardown sweeps in `delete` still ask `host_cli::delegated`). A delegated create forwards
-  every `SpawnRequest` field or refuses it by name
-  (`spawn::delegated_create_args`, an exhaustive destructure): `--env` goes
-  as JSON on stdin (`--env-stdin`), an opened worktree as
-  `--existing-worktree`, and the caller-minted `--id` lets a
-  create whose answer a dropped link lost be found rather than repeated —
-  all three only for a host CLI reporting `create_parity`. A host with
-  no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the
-  release archive of this version, checksum-verified; a dev build ships its
-  own sibling binary when the platform matches), and `host_cli::provision`
-  asks that binary for its version before reporting success — the checksum is
-  taken here, nothing checks what landed there. The probe's protocol carries
-  `@status <n>` so a CLI that died on a signal, one whose output could not be
-  read and no CLI at all are told apart (`host_cli::ProbeFailure`), and a host
-  that answered with a **broken** CLI re-provisions instead of backing off:
-  the cached `No` skips the mirror pass, and the mirror is the only caller
-  that reaches provisioning, so the bad binary used to disable its own repair.
-  A CLI the host **refused to start** (Defender ASR, AppLocker, WDAC) is the
-  third `ProbeFault`, `Refused`: the Windows probe clears `$LASTEXITCODE` and
-  catches the call, printing `@launch-error <win32 code> <message>` when no
-  process ran, and a blank `@status` reads the same. It is backed off and never
-  re-provisioned — a fresh copy is refused again (#1576) — unless the code says
-  the file is not a runnable image (`BAD_IMAGE_ERRORS`). Every `No` and its
-  failure count persist in `<data dir>/host-verdicts.json`, so each
-  `automation tick` process shares the interface's backoff; `forget` clears it.
-  But a thurbox running on the host **advertises its own CLI** there first
-  (`host_cli::advertise_running_cli`, a symlink refreshed at TUI boot and on
-  every CLI call), which is how a host running a dev checkout is shareable
-  without any provisioning. That advertiser only ever manages a symlink of its
-  own — it never writes a regular file there, so it is never the thing that
-  leaves a half-written binary at that path: it
-  returns when the running CLI *is* the path it advertises into — which on a
-  provisioned host it is, `resolve_cli_binary` answering with a sibling of the
-  running exe — leaves a regular file there alone, and removes an existing
-  self-referential link on sight, since nothing else repairs one (issue #1193). `version --json` reports the
-  host CLI's `tmux_socket`, which the backend adopts
-  (`backend::instance::learn_host_socket`) so a dev laptop attaches to a release host's server.
-  Kept per host, not per route: it names the host's thurbox instance, which
-  every multiplexer there runs under.
-  Everything below this bullet — the hooks rewrite, remote provisioning, the
-  pane-option status channel — is the **legacy path** for a host that cannot
-  be delegated to (no artifact, no network, a host schema older than ours that
-  provisioning cannot upgrade, `share_sessions = false`); `session create` then reports `sharing` and `session sync --adopt`
-  registers such rows on the host later. `session send`/`key`/`capture` on such
-  a host drive its window over the transport through the registry (ADR-30)
-  instead of refusing. `session signal` also sets the pane
-  option, so tmux hosts keep sub-second status. Relaunch after a reboot is the
-  host's (`session restart --if-missing`). Shared-host forks run on that host
-  too, preserving its frozen environment and conversation selection. A mirrored
-  parent without its owning CLI is refused; a locally owned direct-remote row
-  forks through its backend with its saved environment, even if sharing is later
-  enabled or the host gains a usable CLI. Environment
-  snapshots are not mirrored: `session show` reports `env: null` on the caller,
-  and exec must run on the owning instance. Mirror launch plans can read the
-  owner's telemetry attributes; request them on the owner for its complete
-  saved account environment.
-  Docs: `docs/thurbox/features.md` → Shared sessions.
-- **Agent config on the host**: agent args referencing thurbox-managed config
-  by *local* path (the hooks extension's `--settings <config>/hooks/
-  claude.json`) would kill the remote agent on launch ("Settings file not
-  found"). `session_ops::spawn::adapt_def_for_launch` (shared by headless
-  spawn and the TUI, run on the spawn worker — never the UI thread) rewrites
-  them per host: on a POSIX remote the home-anchored path is **translated to
-  the remote home**, the file copied there, and the arg substituted. A
-  **Windows-local** config root (`C:\…` — the Windows TUI driving a WSL distro)
-  has no absolute counterpart to mirror, so it lands under the remote
-  `$HOME/.config/<root-name>` (final component = dev/release isolation), with
-  `\` honoured as a separator **only** for such a root (it is a legal POSIX
-  filename char) since the injected arg mixes them (`C:\…\hooks/claude.json`).
-  On a route whose backend reports no status channel
-  (`StatusChannel::hook_signal_command` is `None` — psmux today) or a failed
-  home lookup/copy the **flag+path pair is stripped** so the agent launches
-  clean — surfaced as a `Hooks: degraded` row in the info panel
-  (`SessionInfo.hook_wiring`). Literal signal commands carried directly in
-  args (aider's `--notifications-command`) are rewritten too.
-  The local-location env hints
-  (`THURBOX_METRICS_DIR`/`THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR`, and
-  `THURBOX_SOCKET` — the host's sessions are on the host's own server) are
-  likewise skipped for remote spawns (`inject_thurbox_env`); only the opaque
-  identity vars travel.
-- **Remote session status** (hooks-driven, like local, **all agents**) is the
-  **route's backend's** (ADR-32): every step below is a `SessionBackend` verb,
-  so nothing in `session_ops`/`cli` names a multiplexer. RMUX supplies its own
-  channel by answering them; a future Herdr adapter would do the same.
-  `thurbox-cli session signal` can't work from a host (no CLI there; it would
-  write the host's own DB), so hook commands are **rewritten**
-  (`builtin_hooks::rewrite_hook_signals`) to the command the row's backend
-  hands out (`hook_signal_command`). For tmux that is `tmux set-option -p
-  @thurbox_state <s>` — no socket, pane id or identity needed inside a pane;
-  psmux's form would bake in `-L <socket>` (sanitized to `[A-Za-z0-9._-]`).
-  Sub-work edges (`session signal --work-start/--work-end`, the `background`
-  state's count) become the shell's no-op `:` in that rewrite: a pane option
-  holds one word and cannot count, so a remote claude reports its turns as it
-  did before `background` existed.
-  `None` = no channel: no hook config is shipped (the flag+path is stripped,
-  config-dir payloads are not provisioned) and the session shows `Hooks:
-  degraded` — **unknown, never idle**. Delivery per agent: claude's hooks file
-  travels via its `--settings` arg; agents wired through their **own config
-  dir** (codex, antigravity, opencode, vibe, copilot, grok, kimi) are
-  provisioned at spawn time by
-  `session_ops::remote_hooks::provision_agent_hooks_on_host` — the rewritten
-  payload shipped into the host's agent config dir with the local installer's
-  safety rules (`requires_dir` probe over ssh, prune-then-merge for a shared
-  config — JSON on a content marker, TOML (kimi) on the same ownership comment
-  used locally, see `thurbox-extensions`), managed-marker guard for standalone
-  files, compare-before-write; cached per `(backend, hook file path)` — the
-  path is resolved against the session's saved env and `~`-expanded on the
-  host, so a codex account's `CODEX_HOME` is its own file and two spellings of
-  one file share an entry — best-effort,
-  never fails the spawn; remote **cleanup** is a documented leave-behind;
-  Windows hosts are skipped there because the payloads run through `sh`).
-  **Live**: a tmux-protocol connection subscribes once per connection
-  (`refresh-client -B 'thurbox-status:%*:#{@thurbox_state}'`, armed in
-  `ControlMode::start` so reconnects re-arm; the wire names live in
-  `backend::tmux_compat::control_mode`) and receives `%subscription-changed`
-  pushes (≤1/s); a **remote psmux or RMUX** connection instead runs a 1 s
-  **poller thread** (`control_mode::diff_polled_hook_states`) — armed only when
-  its channel is open. Both feed `take_hook_state_events`, drained each tick by
-  `Terminals::drain_hook_events` into the same `set_hook_state` columns local
-  signals use — so Done→seen acknowledgment, OS notifications, and the
-  stuck-`working` fallback are shared. Events are matched by **backend name +
-  pane id** (pane ids collide across hosts), allow-listed (pane-controlled
-  text), and deduped against the cache. **Headless**: the live channels die
-  with the interface, so `automation tick` (the 60 s heartbeat) groups live rows
-  by the route they settle to and asks each route's backend `hook_states()`
-  (`session_ops::remote_hooks::poll_hook_states`) — remote and local routes
-  alike, so a session a peer created here on a non-default local server is
-  polled too — allow-listed and diffed against the stored `hook_state`. A route
-  nothing serves, a backend with no channel, or one that did not answer is
-  skipped and keeps its held state. `session signal` also calls
-  `record_hook_state` on the row's own pane, so a peer attached to that backend
-  sees it live and the next poll does not undo it. **psmux carve-out**: the
-  adapter's channel is closed (`Psmux::HOOK_STATUS = false`) until
-  `scripts/dev/e2e/windows-vm.sh test`'s probes prove psmux's per-pane options;
-  those probes read the gate from `thurbox-cli runtime status --json`
-  (`hook_status["local:psmux"]`, the binary's own answer — never the source)
-  and **fail** the harness when psmux disagrees with it in either direction
-  (issue #1170 — psmux 3.3.6 implements no per-pane user options at all). No
-  live psmux host has exercised this path.
-- **Remote teardown** (WSL inherits the SSH path): `session delete --force`
-  teardown is **backend-aware** — `teardown_runtime_resources` kills the
-  session's windows through the backend its route names
-  (`session_ops::windows::kill_owned`: `locate` then `kill`) and, for a remote
-  session, removes each worktree via `git::remove_worktree_on(Some(host), …)`
-  (local sessions keep the local `remove_worktree` + Windows pane-reap path).
-  Every kill is resolved from the window's own `@thurbox_session` stamp, not the
-  row's pane id or its name (ADR-25) — the host's tmux server reissues pane ids
-  when it restarts, so a remembered `%N` there can be a live namesake's pane;
-  local psmux recovery can select the sole fresh live pane among exited
-  namesakes; remote psmux requires a unique name. Multiple live names stay
-  unknown locally, and remote duplicates stay unknown even when a remembered
-  pane has that name: its id may have been reassigned after a server restart.
-  psmux listing replies reject `ERROR:` lines even with exit status zero;
-  captured screen contents remain arbitrary text. An unreachable host or a missing `hosts.toml` entry is recorded in
-  `ForceDeleteReport.remote_teardown_error` (surfaced in the CLI JSON) and the
-  row is still soft-/force-deleted — a host that is down is often *why* someone
-  force-deletes, and refusing there would be the worse answer. Like local
-  force-delete it removes the worktree *directory* only, leaving the branch.
-  `wsl.exe`'s exact arg-passing isn't verified in CI (no WSL runner); the
-  construction is unit-tested (`transport::tests::wsl_*`, `git_command_wsl_*`).
-- **Dropped images are copied to the host.** A terminal's file drop pastes the
-  *local* path, which a remote agent cannot read. `Interface::on_paste` →
-  `begin_image_drop` selects image-shaped paths without filesystem access on
-  a POSIX `ssh:`/`wsl:` session. Its worker validates existence and size before
-  `session_ops::image_drop::upload` pipes each
-  file (and only it) over the host's launcher into
-  `/tmp/thurbox-drop/<session id>/`, and the paste is delivered with the remote
-  paths. `teardown_runtime_resources` removes that directory (best effort).
-  Rejected candidates keep their original paste. Native-Windows destinations
-  are unsupported. Linux SSH and native Windows-to-WSL transfers have been
-  exercised; native macOS remains unverified.
-- **A remote teardown that never reached its host is owed, not abandoned.**
-  Recording the failure used to be the end of it, and for a `force_deleted`
-  row that meant forever: every reaper skips such a row, and the mirror's
-  tombstone push needs a shareable host with a usable CLI — so on the legacy
-  path the agent, its window and its worktree survived the session for good.
-  `finish_locally_with` now writes the failure onto the row (schema v46's
-  `sessions.teardown_owed`, `ForceDeleteReport.remote_teardown_owed`,
-  `session list --deleted`'s `teardown_owed`) and
-  `session_ops::retry_owed_remote_teardowns` finishes the kill and the worktree
-  removals when the host next answers — delegating `session delete --force` to
-  a host that runs its own thurbox, killing through the stamp otherwise, and
-  falling through to the direct kill when the host answers `not_found` (from
-  a host too old to send `error_kind`, its own "Session not found: …" sentence).
-  Driven beside `reap_overdue_soft_deletes` (`automation tick` and the
-  interface's `Command::Reap`), reading `hosts.toml` afresh so adding the
-  missing entry is enough to make the job possible again, and asking a silent
-  host **once per pass** so a machine that is still down costs one connect
-  timeout rather than one per orphan. Force-deleted rows only: a soft-deleted
-  one is restorable and its windows are the reaper's at the end of the undo
-  window — ADR-24, ADR-26.
-- **A host the reap sweep cannot list is backed off, not re-asked.**
-  `reap_overdue_soft_deletes` gates every row on window ownership, and
-  `window_index_on` reads an unresolvable or unreachable host as "owns
-  nothing" — correct for one pass, but the row is then never reaped, so the
-  host was re-probed on the sweep's own five-second cadence for the life of
-  the process. `window_index_on` now records the failure and leaves the host
-  alone for `host_cli::retry_after` its consecutive failure count, the same
-  minute-doubling-to-fifteen curve the usability probe climbs; an answer
-  clears the count. The state is a durable `metadata` row
-  (`host_probe_backoff:<backend>`) claimed under one `BEGIN IMMEDIATE`, not a
-  process-local map: the interface reaps on a fresh thread every five seconds
-  without waiting for the last, and the heartbeat reaps in a **new process**
-  every minute, so an in-memory gate is overtaken by the first and forgotten by
-  the second. Issue #1182 is what that cost on native Windows: one WSL
-  row, `wsl.exe` spawned from the interface's own `Command::Reap` every five
-  seconds, and 3.9 MB of log in a day. The **reap** is claimed the same way and
-  per row (`session_reap_backoff:<session id>`), because a host can answer
-  `list-windows` while its own `thurbox-cli` will not run: the listing succeeds,
-  the row keeps owning its windows, and only the reap fails (issue #1193). That
-  is why `reap_remote` returns a `Result` rather than logging — "still owns
-  windows" cannot tell a reap that has not run from one that failed.
-- **"The host holds nothing" and "the host did not answer" are different
-  answers**, and the teardown is where confusing them costs the most.
-  `discover` gates on `has-session` and reads its failure as an empty server,
-  so a force delete taken while a host was briefly down found nothing to kill
-  and recorded *no error at all*. `tmux_compat::Server::discover_answered` (what
-  `discover` runs with no control mode open, and what `locate` and
-  `rename_windows` list with) answers empty only on the multiplexer's own
-  refusal, and drops the `has-session` round trip while it is there. It is
-  what `restart --if-missing` asks to decide whether to relaunch after a
-  reboot — an unreachable host now aborts the relaunch instead of reading as
-  "no window", which used to start a second agent beside the one still running
-  once the host answered again (`restart_if_missing_probe`).
-- **The layer decides, not the wording.** Both classifiers started as substring
-  matches, which is the same conflation one level down: the first unanticipated
-  message lands in the wrong branch silently. `ssh` exits **255** for its own
-  failures and passes a remote command's status through untouched, and
-  `thurbox-cli` only ever exits 1 to 6 — so 255 means the question never
-  arrived, whatever stderr says (`mux_answered`,
-  `host_cli::classify_failure`). `host_cli::Reach` names the three answers —
-  `Unreached` / `Answered` / `Undetermined` — and the third is its own answer,
-  never rounded to the nearest of the other two. `wsl.exe` has no 255
-  convention, so a WSL host is never `Unreached` on a status alone.
-  **Do not widen `TmuxCompatible::answered_absent`**: each adapter answers it
-  in its own multiplexer's exact words, matched from the first byte (tmux's
-  are the default, `tmux_answered_absent`), and it is the one classifier a
-  one-shot's stderr, a control-mode `%error` and a status-zero `ERROR:` all go
-  through. Each extra string makes it more confidently wrong about the next
-  one nobody anticipated. In particular `error connecting to` is not a prefix
-  match — only `(No such file or directory)` is absence; `(Permission denied)` / `(Connection refused)` /
-  `(Connection reset by peer)` are a server that may be alive behind a socket
-  that cannot be opened right now.
-- **An unclassifiable failure takes whichever branch destroys nothing**, which
-  is not the same branch in both places. A listing must not turn "unanswered"
-  into "holds nothing", so it errors and the teardown is owed. A *delegated
-  delete* is the reverse — aborting reaches nothing and records nothing, which
-  made a session on a host with a broken CLI undeletable — so `Undetermined`
-  falls back to the local teardown beside `Unreached`, and only `Answered`
-  aborts (the host heard the question and refused; the session may still be
-  running there). An older host that reports failures on stderr rather than as
-  the structured document still reads as `Answered`, from its exit code.
-- **Known limit**: tmux's absence is a claim about the *socket*, not the
-  machine — a server with live panes whose socket is moved reports `(No such
-  file or directory)`, verified against a real host with two processes still
-  running. A tmux server still bound to a *missing* path in a directory thurbox
-  looks in is brought back with `SIGUSR1` before the absence is believed
-  (ADR-34); one moved anywhere else, or whose path a second server now owns, is
-  reachable only through that socket, so no retry could ever discharge such an
-  owed teardown; closing it would need a session's
-  processes to be identifiable without the multiplexer (a recorded OS pid per
-  remote pane, or a scan by worktree cwd), which nothing here has today.
-- **A session owns two windows**, and every teardown takes both: the agent
-  (`tb-`) and the companion shell (`tbs-`). The shell is found by its stamp
-  (`@thurbox_role = shell`) rather than by `sessions.shell_backend_id`, which is
-  written only once the interface has actually opened one — so the column is
-  NULL for nearly every remote row, and a teardown keyed on it left a live
-  `tbs-` window behind for good. `stop` and `restart` take it down too; the
-  interface reopens one on demand.
-- **A remote teardown never starts a server.** `ensure_ready` creates the
-  multiplexer server *and* the thurbox session as a side effect, so a one-shot
-  `thurbox-cli` tearing a session down used to leave an empty server on the
-  host. With no control mode open, `locate` / `discover` / `kill` read one
-  `list-windows` (`discover_answered`, above) and kill with a one-shot
-  `kill-pane`. And they only act on a socket the host has vouched for:
-  `known_host_socket` takes `hosts.toml`'s `socket`, else what the host's own
-  CLI reported (`learn_host_socket`), else — for a host with `share_sessions =
-  false`, where nothing but this thurbox writes there — this build's default.
-  A **shareable** host that has reported nothing is refused with "socket
-  unknown for host '…'", because this build's default is a guess about someone
-  else's machine (a dev build aims at `thurbox-dev`; a relocated data dir
-  derives its own name).
-- **A remote soft delete is reaped on the host.** `reap_soft_deleted` no longer
-  gives up on a remote row: it asks a shareable host to collect it
-  (`thurbox-cli session reap <ref>` there, which owns the host's own row), and
-  otherwise kills the windows itself through the stamp. That fallback rechecks
-  the selected deletion after lookup before killing either owned window, so a
-  restore and fresh delete during lookup keeps its undo window. Driven by the one sweep,
-  `reap_overdue_soft_deletes` — the TUI's loop calls it on a slow cadence and,
-  with no interface open, the heartbeat's tick does — which gates a remote row
-  on the *host's* window listing,
-  exactly as it gates a local one on this machine's. Without it every soft
-  delete of a remote session (the TUI's default) leaked its `tb-`/`tbs-` pair
-  forever, and re-creating the name put a second agent beside the first.
-- **A local tombstone beats a host-active row** unless the host wrote the row
-  *after* this database's own last-known reading of that host's clock for the
-  row. `session list` carries `updated_at` for exactly this; `mirror::apply`
-  compares it with the snapshot `sessions.host_updated_at` was last given
-  (schema v45), not with the local `deleted_at` — the host's `updated_at` and
-  this machine's `deleted_at` are two different clocks, and comparing them
-  directly let a host whose clock merely ran behind this one look
-  not-yet-restored and get re-deleted. Reports the losers in
-  `MirrorReport.tombstoned`, and `mirror_host` pushes each as a `session delete`
-  to the host — the symmetric counterpart of `register_unknown`. Before that, a
-  delete taken while the host's CLI was in backoff was undone on the next mirror
-  pass, forever.
-- **Hosts of hosts: one row per session id, the direct path wins.** A host
-  lists what it mirrors from its own hosts beside its own sessions (its
-  `backend_type` is then `ssh:`/`wsl:`). `mirror::reconcile_with` (the database
-  half of `mirror_host`) takes a host's own rows as
-  always and a **transitive** one only when no other backend here holds that
-  id, active or deleted — so A → C beats A → B → C, a B mirroring A back never
-  relabels A's local rows, and a direct delete is not revived through B. A
-  transitive row gets `backend_id = ""` (the far host's pane id names another
-  agent on B's server; remote rows attach to their stored id unsurveyed) and
-  borrowed worktrees (`created_by_thurbox = false`, so a fallback teardown on
-  B removes nothing) — but only under `settings.toml` `[remote]
-  transitive_sessions = true` (`Transitive::Show`). The default, `false`
-  (`Transitive::Hide`, read per pass by `config::settings::load_quiet`), takes
-  only own rows and **forgets** the transitive ones held on that backend
-  (`Database::forget_session`, event reason `forgotten`) — never a tombstone,
-  which the next pass would push to B as a delete of a live session.
-  `tests/shared_sessions.rs` pins it over three real databases.
-- **A delegated delete the host does not know falls through** to the local
-  teardown instead of erroring: a fork minted here, a pre-ADR-24 row, or one a
-  peer already deleted there all make the host answer `not_found`, and
-  aborting left the local row active and attached. The fall-through is recorded
-  in `ForceDeleteReport.host_unknown`. A call whose `host_cli::Reach` is not
-  `Answered` — `Unreached` or `Undetermined` — falls through the same way,
-  recorded in `host_unreachable` instead: the row is still marked, and the
-  local teardown that runs in the host's place owes its own retry
-  (`remote_teardown_owed`) when it cannot reach the same down host either.
-  Only `Answered` still aborts — the host heard the question and refused, and
-  the session may still be running there.
-- **Local e2e**: `scripts/dev/e2e/linux-container.sh up` spins a throwaway Podman
-  container (sshd + tmux + git) and `… test` asserts a session lands on the
-  `ssh:podman` backend (state under `target/`, never touches your real
-  `~/.ssh`/`~/.config`). Its `remote_teardown_probe` is where the owed teardown
-  is proven end to end on a real process: create a session on the container,
-  point `hosts.toml` at a dead port, force-delete (which must still work),
-  bring the host back, and assert the tick's sweep killed the window *and*
-  reaped the pid it was running. It keeps sharing off throughout — with it on,
-  a host whose CLI has vouched for no socket is refused by
-  `known_host_socket`, which is a different behaviour and would hide this one.
-  `restart_if_missing_probe` covers the sibling fix: create a session, point
-  `hosts.toml` at a dead port, assert `restart --if-missing` refuses rather
-  than relaunching against a host it cannot reach, then bring the host back
-  and assert exactly one agent window exists — never a second one started
-  while the host looked absent.
+- The local backend launches `<mux> -L <socket> …`. An SSH backend launches
+  `ssh <dest> <mux> -L <host socket> …`. A WSL backend launches
+  `wsl.exe -d <distro> <mux> -L <host socket> …` (`HostLauncher::Wsl`). Every
+  launcher comes from one conversion, `HostLauncher::for_host`.
+- A WSL distro is "SSH without the ssh": tmux, git and the shell run inside the
+  distro at native Linux paths, so POSIX quoting (`shell::posix_quote`) and the
+  control-mode protocol are the same. An argument containing whitespace goes
+  through `wsl.exe --exec` instead (`shell::wsl_command`,
+  `git::host_shell_c`).
+- Every `wsl.exe` starts off the interface's terminal (`shell::wsl_exe`:
+  `CREATE_NO_WINDOW` on Windows, `setsid` on Unix). A `wsl.exe` child otherwise
+  reads its parent console's keyboard input.
+- For tmux on a POSIX host, the multiplexer runs behind a `sh -c` that sets
+  `TMUX_TMPDIR` to the host's data dir (ADR-34). A server lost from its socket
+  is found again with `SIGUSR1` before any `new-session`.
+- SSH is fail-fast: `shell::SSH_HARDENING_OPTS` (`BatchMode=yes`,
+  `ConnectTimeout`, `ServerAlive*`), plus `SSH_MULTIPLEX_OPTS`
+  (`ControlMaster=auto`, socket under `~/.ssh`) when that directory exists.
+  Both are appended after the user's `ssh_opts`, whose first occurrence wins.
+  A broken host never prompts on the TUI's terminal.
+- `wiring::configured` (`src/backend.rs`) registers one backend per adapter on
+  this machine and on every host, named by route (`ssh:<name>:<mux>`,
+  `wsl:<name>:<mux>`). Looking a backend up is a map read;
+  `check_available`/`ensure_ready` are deferred to first use and run on a
+  worker, never on the loop (ADR-P12).
+- A connection that has gone bad stays open and carries nothing, so the loop
+  never waits on one (ADR-P24). A paint's resize is sent, not asked
+  (`ControlMode::send_command_detached`), and `Server::ctrl_command_within`
+  bounds the wait for the control lock as well as for the answer.
+- Several instances on one server size a pane by turns (ADR-27): a resize is
+  honoured only for a window whose `@thurbox_sizer` is this backend's, and input
+  or focus claims it (`claim_size`). psmux keeps last-writer-wins.
+
+**Sockets.** A remote operation acts only on a socket the host vouches for
+(`instance::known_host_socket`): `hosts.toml`'s `socket`, else one recorded by
+`learn_host_socket`, else this build's default for a host with
+`share_sessions = false`. Any other host is refused with "socket unknown for
+host '…'", because this build's default is a guess about another machine.
+
+## The host's PATH
+
+ssh and `wsl.exe -e` give a command a non-login `PATH`.
+`backend::host_path` (`crates/runtime-mux/src/host_path.rs`) probes the host's
+login `PATH` (`$SHELL -lc` and `/bin/sh -lc`) once per host, caches it
+(failures included), and bounds it with `timeout` and a 15 s kill.
+`TmuxTransport::with_path` assigns `path_prepend`, then the login shells'
+`PATH`, then the launcher's, de-duplicated, in front of every multiplexer
+command. No answer means no change plus a warning. Tests never probe; seed one
+with `host_path::seed`.
+
+The same probe names each multiplexer on that `PATH` (`@mux` lines). The
+new-session picker offers only those (`host_path::multiplexers_found`: never
+waited for, re-asked after `MUX_TTL`; `seed_multiplexers` in tests).
+
+## Platforms and psmux
+
+A host's **platform** is its own field (`HostDef::platform`, ADR-13 "The
+host's platform is its own dimension"). `platform = "windows"` declares a
+native Windows host on any multiplexer. An entry that sets none reads as
+Windows when `multiplexer = "psmux"`, else POSIX; a WSL distro is always POSIX.
+The default shell and the `/bin/sh -lc` login wrap follow the platform, never
+`cfg(windows)` or the multiplexer's name. Tests simulate the Windows build with
+`shell::simulate_local`.
+
+A Windows host has no POSIX shell: runtime-mux's `HostShell` sends a script
+as `powershell -EncodedCommand` (UTF-16LE base64), so no outer shell can
+rewrite it. thurbox runs no git on a host. `git::reportable_stderr` drops
+OpenSSH's post-quantum advisory from a local git that reaches a remote over
+ssh.
+
+psmux is a native-Windows tmux clone (ConPTY) that speaks the same control-mode
+protocol, `%N` pane ids and `-L` sockets. Its divergences are each a body in
+the psmux adapter, never a branch on the binary's name. **Read the psmux
+divergences subsection of ADR-13 in `docs/thurbox/architecture.md` before
+touching this path.** In short:
+
+- Naming or spawning a pane needs psmux ≥ 3.3.8, checked by `admit_server`.
+- Keystrokes are re-encoded from primitives psmux supports
+  (`psmux_send_keys_commands`).
+- psmux does not join `new-window` trailing tokens or honour its `-e`, so env
+  and command fold into one PowerShell script (`psmux_window_powershell`),
+  launched as `powershell.exe -NoLogo -EncodedCommand …`. A script past
+  `shell::WINDOWS_CMD_LINE_MAX` (8191) is refused.
+- One-shot commands are quoted for a `cmd.exe` or PowerShell login shell
+  (`TmuxTransport::with_shell` → `shell::HostShell::launch`).
+- psmux has no per-window options, so the ADR-25 window stamp is neither
+  written nor read there.
+- psmux answers the argv `attach-session` with no `%begin`/`%end` block, so
+  `ControlMode::start` drains one only where `implicit_attach_reply` says one
+  is sent.
+- psmux has no `remain-on-exit`, and answers no `-P`: a spawn learns its pane id
+  by diffing the `tb-<name>` panes listed before and after `new-window`.
+- psmux rejects tmux's `=window` exact-name target and can print `ERROR:` on
+  stdout while exiting 0; structured listings reject such output.
+- A cold `new-session -d` can refuse or return before a server answers, so the
+  adapter probes with `list-windows` and retries transient `no server running`
+  replies with a bounded final wait. Global `set-option -g` commands include
+  `-t <session>`.
+
+RMUX ≥ 0.10.0 is opt-in. Installation, version evidence and protocol limits
+live in `docs/thurbox/config.md` → *Multiplexer requirements and RMUX setup*.
+
+## Failure classification
+
+- **"Holds nothing" and "did not answer" are different answers.**
+  `Server::discover_answered` answers empty only on the multiplexer's own
+  refusal; an unreachable host is an error.
+- **The layer decides, not the wording.** `ssh` exits 255 for its own failures
+  and passes a remote command's status through, so 255 means the question
+  never arrived. `wsl.exe` has no such convention.
+- **Do not widen `answered_absent`.** Each adapter answers it in its own
+  multiplexer's exact words, matched from the first byte
+  (`tmux_answered_absent` is the default). Only `(No such file or directory)`
+  is absence; `(Permission denied)`, `(Connection refused)` and
+  `(Connection reset by peer)` are a server that may be alive.
+- **Known limit.** tmux's absence is a claim about the socket, not the
+  machine. A server bound to a missing path in a directory thurbox looks in is
+  brought back with `SIGUSR1` (ADR-34); one moved elsewhere is reachable only
+  through that socket.
+
+## Testing
+
+`scripts/dev/e2e/linux-container.sh up` starts a throwaway Podman container
+(sshd + tmux + git) for the SSH path; `scripts/dev/e2e/windows-vm.sh test`
+probes psmux delivery. `wsl.exe`'s argument passing is not exercised in CI (no
+WSL runner); its construction is unit-tested (`transport::tests::wsl_*`).

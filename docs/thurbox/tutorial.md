@@ -17,7 +17,7 @@ host bands, repository separators and indented session rows.
 - [Before you start](#before-you-start)
 - [1. Launch it](#1-launch-it)
 - [2. Add a repository](#2-add-a-repository)
-- [3. Give the session its own worktree](#3-give-the-session-its-own-worktree)
+- [3. Fleet gives it a worktree](#3-fleet-gives-it-a-worktree)
 - [4. Name it and pick an agent](#4-name-it-and-pick-an-agent)
 - [5. You have a session](#5-you-have-a-session)
 - [6. The second session is faster](#6-the-second-session-is-faster)
@@ -38,15 +38,17 @@ Windows is `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/
 Homebrew, AUR, Nix, winget and Chocolatey are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
+Fleet runs every session, so `fleet` and `runtime-mux` must be on your `PATH`
+as well; see [Fleet's documentation](../fleet/README.md).
+
 You also need:
 
 - **tmux ≥ 3.2** (or [psmux ≥ 3.3.8](https://github.com/psmux/psmux) on native Windows, or
   opt-in [RMUX ≥ 0.10.0](config.md#multiplexer-requirements-and-rmux-setup)) —
   it is what keeps your agents alive when thurbox is closed
 - **git**
-- **at least one coding-agent CLI** — `claude`, `codex`, `agy`, `opencode`,
-  `aider`, `copilot`, … thurbox launches whichever you have; it is not tied to
-  any of them
+- **at least one coding-agent CLI** that Fleet has a harness profile for —
+  `claude` or `codex`
 
 Nothing to configure. On first launch thurbox seeds `~/.config/thurbox/` with
 the agents it knows, the themes, and the interface itself.
@@ -98,8 +100,8 @@ Two ways to finish from here:
 `↑`/`↓` move, `Enter` on a `●git` row picks it (`Enter` on a plain folder
 descends into it).
 
-Either way the repository lands in memory, **selected** (`[x]`), with the cursor
-on it — and stays there for next time:
+Either way the repository lands in memory, with the cursor on it — and stays
+there for next time:
 
 ![The repository added to the list and selected](../../media/tutorial/05-repo-added.png)
 
@@ -109,30 +111,28 @@ search, so the list's own keys are ones you cannot type:
 | Key | What it does |
 |---|---|
 | `↑`/`↓` | move the cursor |
-| `space` | select / deselect a repository (select several for a **multi-repo** session) |
-| `Alt+W` | give the selected repository its own **worktree** |
 | `Del` / `Alt+D` | forget a remembered repository (with the caret at the end of the search) |
-| `Enter` | go on with the ticked repositories — or, with none ticked, the one under the cursor |
+| `Enter` | go on with the repository under the cursor |
 | `Ctrl+Enter` / `Alt+Enter` | the same, from the path field too (`Ctrl+Enter` needs a terminal with the kitty keyboard protocol) |
 | `Esc` | clear the search; a second `Esc` closes the flow |
 | `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
 | `Tab` / `Shift+Tab` | move between the search and the path field |
 
-## 3. Give the session its own worktree
+## 3. Fleet gives it a worktree
 
-With the repository selected, press **`Alt+W`**. The `[wt]` mark means this session
-gets a **git worktree of its own** rather than your checkout — the agent works
-on its own branch, in its own directory, and your working tree is untouched.
+There is no worktree step. Fleet makes each session on this machine a **git
+worktree of its own**, so the agent never works in your checkout. A session on
+another Fleet host runs in the repository directory there, as it is: Fleet
+makes worktrees on its own machine only. Fleet makes worktrees of the
+repositories in its map only, so map the repository once in Fleet's config:
 
-![The selected repository marked [wt] for worktree mode](../../media/tutorial/06-worktree-mode.png)
+```toml
+[workspaces.repositories]
+"https://github.com/me/api-server" = "/home/me/code/api-server"
+```
 
-Press **`Enter`** when the selection is right. Because a worktree needs
-something to branch from, the next step asks which branch:
-
-![The base branch step, offering main](../../media/tutorial/07-base-branch.png)
-
-`j`/`k` navigate, `Enter` selects. (Without worktree mode this step does not
-appear at all — the session simply runs in the repository as it is.)
+A repository Fleet does not map is refused, and the refusal names the line to
+add.
 
 ## 4. Name it and pick an agent
 
@@ -142,18 +142,13 @@ repository's own), so you can press straight through.
 
 ![The session name step with rate-limit typed](../../media/tutorial/08-session-name.png)
 
-The branch name comes next, prefilled from the name you just gave:
-
-![The branch name step, prefilled with rate-limit](../../media/tutorial/09-branch-name.png)
-
-Then the agent. This is the list from `~/.config/thurbox/agents.toml` — the
-built-ins thurbox seeds, plus any CLI you have described yourself. (With only
-one agent defined, this step is skipped.)
+Then the agent. This is the list of harnesses Fleet offers (`fleet version
+--json` lists them). With only one harness, this step is skipped.
 
 ![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp, shell](../../media/tutorial/10-agent-picker.png)
 
-`Enter` creates everything: the worktree, the tmux window, and the agent
-running inside it.
+`Enter` creates the session: a Fleet Task, which Fleet starts in its own
+worktree with the agent running inside it.
 
 ## 5. You have a session
 
@@ -167,7 +162,7 @@ What you are looking at:
   goes to the agent; `Ctrl+O` opens the worktree in your editor, and
   `Ctrl+T`/`F8` gives you a shell in the same directory
 - the status dot tracks the agent through **working / blocked / done / idle**,
-  reported by the agent's own hooks rather than guessed
+  reported by the agent's own hooks through Fleet rather than guessed
 
 Press **`Ctrl+Q`** whenever you like: it detaches. tmux keeps every agent
 running, and relaunching `thurbox` puts you back where you were — after a crash,
@@ -176,7 +171,7 @@ a reboot, or a week away.
 ## 6. The second session is faster
 
 `Ctrl+N` again. The repository is in memory now, so there is nothing to type:
-`space` to select it, `Enter`, and through the same steps.
+move to it, `Enter`, and through the same steps.
 
 ![The repo picker with the remembered repository listed](../../media/tutorial/12-repo-remembered.png)
 
@@ -201,11 +196,8 @@ The ones worth knowing on day one:
 | `Ctrl+/` | Search sessions **and the text on their screens** |
 | `Ctrl+O` | Open the session's directory in your editor |
 | `Ctrl+T` / `F8` | A shell in the session's directory |
-| `Ctrl+F` | Fork the session — same repo, branch and agent, with the conversation carried over and the source recorded as its parent |
-| `Ctrl+S` | Sync the worktree with its base branch |
 | `Ctrl+E` | Rename the session (with the list focused — in a terminal it is end-of-line) |
-| `Ctrl+D` | Confirm deleting the session (`Ctrl+Z` undoes it) |
-| `Ctrl+U` | Restore a deleted session |
+| `Ctrl+D` | Confirm deleting the session (for good: Fleet keeps no undo) |
 | `Ctrl+Y` / `F4` | Theme picker (36 palettes) |
 | `Ctrl+,` / `F6` | Settings — `]` for the Interface tab |
 | `F10` | Reload the interface from disk |
@@ -225,41 +217,35 @@ the panes rather than being reprinted:
 
 ## The same thing from the command line
 
-`thurbox-cli` drives the same sessions with no TUI, against the same database —
-so anything you do here shows up in a running thurbox within a tick, and vice
-versa. It is on your `PATH` inside every session, which is what lets an agent
-orchestrate other agents.
-
-It answers in whichever form suits the reader: an aligned table in your
-terminal, and TOON — a compact, agent-friendly encoding — when its output is
-piped somewhere. Add `--json` for the complete record when a script needs to
-parse it, or `--text` to keep the table down a pipe.
+Every session is a Fleet Task, so `fleet` drives the same sessions with no
+TUI, against the same store. Anything you do here shows up in a running
+thurbox within a tick, and the other way round. Each command prints JSON.
 
 ```bash
 # What is running
-thurbox-cli                                # live state: sessions, mail, counts
-thurbox-cli session list
-thurbox-cli session list --json | jq       # the full record, for a script
+fleet list task
+fleet get task docs                        # one Task, its spec and status
 
-# Start one headlessly, on its own worktree branch
-thurbox-cli session create --name docs --repo-path ~/code/web-app
-thurbox-cli session create --name rate-limit --repo-path ~/code/api-server \
-    --agent claude --worktree-branch rate-limit
+# Start one headlessly: an interactive Task over a directory
+echo '{"apiVersion":"fleet/v1alpha1","kind":"Task",
+  "metadata":{"name":"docs","labels":{"thurbox.dev/name":"docs"}},
+  "spec":{"harness":"claude-code","host":"local",
+          "workspace":{"dir":"/home/me/code/web-app"},"dispatch":true}}' \
+  | fleet apply --create-only -f -
 
-# Talk to one, and read what it printed
-thurbox-cli session send <uuid> "run the tests and fix what fails"
-thurbox-cli session capture <uuid>
+# Talk to one
+fleet send docs "run the tests and fix what fails"
 
-# Clean up (soft by default — `session restore` brings it back)
-thurbox-cli session delete <uuid>
+# Clean up
+fleet delete task docs
 ```
 
-![thurbox-cli session list, a headless session create, and the list again](../../media/tutorial/15-cli.png)
+![fleet list task, after the tutorial's two sessions](../../media/tutorial/15-cli.png)
 
-Everything else lives under the same tree: `thurbox-cli config show` prints
-every resolved path, `thurbox-cli plugin dir` prints the interface directory,
-and `thurbox-cli --help` lists the rest (`automation`, `task`, `message`,
-`extension`, `editor`, `notify`).
+`thurbox-cli` keeps what is the interface's own: `thurbox-cli config show`
+prints every resolved path, `thurbox-cli plugin dir` prints the interface
+directory, and `thurbox-cli --help` lists the rest (`automation`, `editor`,
+`notify`).
 
 ## Where to go next
 
@@ -267,7 +253,7 @@ and `thurbox-cli --help` lists the rest (`automation`, `task`, `message`,
   agent in any session to change it, or read
   [docs/thurbox/plugins.md](plugins.md). `Ctrl+,` then `]` lists every pane and turns
   one off; `F10` reloads.
-- **Run a fleet** — [Recipe: provision a monorepo headless](https://thurbox.thurbeen.eu/docs/recipes.html#monorepo)
+- **Run a fleet** — [Recipe: a session per package of a monorepo](https://thurbox.thurbeen.eu/docs/recipes.html#monorepo)
   and [docs/thurbox/orchestration.md](orchestration.md).
 - **Work on another machine** — declare an SSH host or a WSL distro in
   `~/.config/thurbox/hosts.toml` and sessions run there while the TUI stays

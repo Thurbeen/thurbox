@@ -1,5 +1,4 @@
-//! Where a session runs, as `sessions.backend_type` records it: the one parser
-//! and the one formatter for every spelling a row has ever carried.
+//! Where a session runs: the one parser and the one formatter of a route key.
 //!
 //! A route has two independent halves. The **place** is the machine and how it
 //! is reached (this one, an ssh host, a WSL distro); the **multiplexer** is
@@ -7,27 +6,15 @@
 //! and neither says what OS the machine runs — that is the host's own
 //! configuration, never something read off a route.
 //!
-//! The grammar, old spellings first:
-//!
 //! | key | place | multiplexer |
 //! |---|---|---|
-//! | `""`, `tmux`, `local-tmux` | local | unqualified |
-//! | `local-<mux>` (any other name; legacy) | local | `<mux>` |
 //! | `local:<mux>` | local | `<mux>` |
-//! | `ssh:<host>` / `wsl:<host>` | remote | unqualified |
 //! | `ssh:<host>:<mux>` / `wsl:<host>:<mux>` | remote | `<mux>` |
 //!
-//! An **unqualified** multiplexer is what every row written before routes
-//! carried one means, and it keeps that meaning: [`Route::multiplexer`] settles
-//! it the way those rows were always read. Nothing is migrated. New rows are
-//! written qualified, so a later change of preference cannot reinterpret them.
-//!
-//! Every machine is qualified the same way, `<machine>:<mux>`, and that is
-//! what new rows are written as. The `local-<mux>` spellings are read only:
-//! `local-tmux` was written for the platform's own multiplexer before routes
-//! carried one — which on Windows is psmux — so it parses unqualified and keeps
-//! that meaning, while an explicit local tmux is `local:tmux` and cannot be
-//! mistaken for it.
+//! A key always names its multiplexer. A **host key** — `ssh:<host>` or
+//! `wsl:<host>`, what the host picker carries — names a machine only; its
+//! multiplexer is the host's own, which `hosts.toml` holds
+//! ([`HostRegistry::resolve`](super::HostRegistry::resolve)).
 
 use std::fmt;
 
@@ -37,11 +24,8 @@ use super::Multiplexer;
 pub const SSH_PREFIX: &str = "ssh:";
 /// The prefix of a key whose machine is a WSL distro.
 pub const WSL_PREFIX: &str = "wsl:";
-/// The prefix of a local key that names its multiplexer.
+/// The prefix of a local key.
 pub const LOCAL_PREFIX: &str = "local:";
-/// The prefix local keys carried before [`LOCAL_PREFIX`]: read, and written
-/// only as the one spelling of an unqualified local route.
-const LEGACY_LOCAL_PREFIX: &str = "local-";
 
 /// How a remote machine is reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -51,7 +35,7 @@ pub enum Via {
 }
 
 impl Via {
-    fn prefix(self) -> &'static str {
+    pub fn prefix(self) -> &'static str {
         match self {
             Self::Ssh => SSH_PREFIX,
             Self::Wsl => WSL_PREFIX,
@@ -66,12 +50,11 @@ pub enum Place {
     Remote { via: Via, host: String },
 }
 
-/// A parsed `backend_type`.
+/// A parsed route key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Route {
     pub place: Place,
-    /// `None` for a key written before routes named their multiplexer.
-    pub mux: Option<Multiplexer>,
+    pub mux: Multiplexer,
 }
 
 /// A key that names no route.
@@ -79,9 +62,7 @@ pub struct Route {
 pub enum RouteError {
     /// `ssh:` or `wsl:` with no host after it.
     NoHost(String),
-    /// Neither a local spelling nor a remote prefix, or a `local:`/`local-`
-    /// suffix no
-    /// multiplexer is called.
+    /// No place prefix, or no multiplexer known by the name after it.
     Unknown(String),
 }
 
@@ -96,15 +77,30 @@ impl fmt::Display for RouteError {
 
 impl std::error::Error for RouteError {}
 
+/// The host a host key or a route key names — `ssh:devbox` and
+/// `ssh:devbox:rmux` both name `devbox` — or `None` for any other key.
+pub fn host_of_key(key: &str) -> Option<&str> {
+    let rest = [SSH_PREFIX, WSL_PREFIX]
+        .iter()
+        .find_map(|prefix| key.strip_prefix(prefix))?;
+    // A host name holds no `:` (`hosts.toml` refuses one), so a known
+    // multiplexer after the last one is the route's.
+    let host = match rest.rsplit_once(':') {
+        Some((host, name)) if Multiplexer::parse(name).is_ok() => host,
+        _ => rest,
+    };
+    (!host.is_empty() && !host.contains(':')).then_some(host)
+}
+
 impl Route {
-    pub const fn local(mux: Option<Multiplexer>) -> Self {
+    pub const fn local(mux: Multiplexer) -> Self {
         Self {
             place: Place::Local,
             mux,
         }
     }
 
-    pub fn remote(via: Via, host: impl Into<String>, mux: Option<Multiplexer>) -> Self {
+    pub fn remote(via: Via, host: impl Into<String>, mux: Multiplexer) -> Self {
         Self {
             place: Place::Remote {
                 via,
@@ -115,35 +111,24 @@ impl Route {
     }
 
     pub fn parse(key: &str) -> Result<Self, RouteError> {
+        let unknown = || RouteError::Unknown(key.to_string());
+        if let Some(name) = key.strip_prefix(LOCAL_PREFIX) {
+            return Multiplexer::parse(name)
+                .map(Self::local)
+                .map_err(|_| unknown());
+        }
         for via in [Via::Ssh, Via::Wsl] {
             let Some(rest) = key.strip_prefix(via.prefix()) else {
                 continue;
             };
-            // A host name holds no `:` (`hosts.toml` refuses one), so a known
-            // multiplexer after the last one is the route's. Anything else is
-            // kept as the host: a row written for a host that cannot load now,
-            // which then resolves to nothing rather than to a guess.
-            let (host, mux) = match rest.rsplit_once(':') {
-                Some((host, name)) => match Multiplexer::parse(name) {
-                    Ok(mux) => (host, Some(mux)),
-                    Err(_) => (rest, None),
-                },
-                None => (rest, None),
-            };
+            let (host, name) = rest.rsplit_once(':').ok_or_else(unknown)?;
+            let mux = Multiplexer::parse(name).map_err(|_| unknown())?;
             if host.is_empty() {
                 return Err(RouteError::NoHost(key.to_string()));
             }
             return Ok(Self::remote(via, host, mux));
         }
-        match key {
-            "" | "tmux" | "local-tmux" => Ok(Self::local(None)),
-            _ => key
-                .strip_prefix(LOCAL_PREFIX)
-                .or_else(|| key.strip_prefix(LEGACY_LOCAL_PREFIX))
-                .and_then(|name| Multiplexer::parse(name).ok())
-                .map(|mux| Self::local(Some(mux)))
-                .ok_or_else(|| RouteError::Unknown(key.to_string())),
-        }
+        Err(unknown())
     }
 
     pub fn is_remote(&self) -> bool {
@@ -159,11 +144,9 @@ impl Route {
         self.place == Place::Local
     }
 
-    /// Whether this route is tmux on this machine: the multiplexer it names,
-    /// else the platform's default ([`Self::multiplexer`]).
+    /// Whether this route is tmux on this machine.
     pub fn is_local_tmux(&self) -> bool {
-        self.is_local()
-            && self.multiplexer(Multiplexer::platform_default(), None) == Multiplexer::Tmux
+        self.is_local() && self.mux == Multiplexer::Tmux
     }
 
     pub fn via(&self) -> Option<Via> {
@@ -190,53 +173,16 @@ impl Route {
     pub fn with_mux(&self, mux: Multiplexer) -> Self {
         Self {
             place: self.place.clone(),
-            mux: Some(mux),
+            mux,
         }
     }
 
-    /// The multiplexer this route is served by: its own when it names one,
-    /// else what an unqualified key has always meant — this machine's platform
-    /// default (`local_default`), or the host's configured multiplexer
-    /// (`host_preference`) when that is psmux and tmux otherwise.
-    ///
-    /// That last rule is the historical one and it matters: a legacy `ssh:box`
-    /// row was created on tmux (or psmux), so a host whose preference later
-    /// became rmux does not turn that row into an rmux session.
-    pub fn multiplexer(
-        &self,
-        local_default: Multiplexer,
-        host_preference: Option<Multiplexer>,
-    ) -> Multiplexer {
-        if let Some(mux) = self.mux {
-            return mux;
-        }
-        match self.place {
-            Place::Local => local_default,
-            Place::Remote { .. } => match host_preference {
-                Some(Multiplexer::Psmux) => Multiplexer::Psmux,
-                _ => Multiplexer::Tmux,
-            },
-        }
-    }
-
-    /// This route with its multiplexer settled by [`Self::multiplexer`].
-    pub fn qualify(
-        &self,
-        local_default: Multiplexer,
-        host_preference: Option<Multiplexer>,
-    ) -> Self {
-        self.with_mux(self.multiplexer(local_default, host_preference))
-    }
-
-    /// The key this route is written as. An unqualified local route is
-    /// written the one way such rows ever were, `local-tmux`.
+    /// The key this route is written as.
     pub fn format(&self) -> String {
-        let suffix = self.mux.map(Multiplexer::name);
-        match (&self.place, suffix) {
-            (Place::Local, None) => format!("{LEGACY_LOCAL_PREFIX}{}", Multiplexer::Tmux.name()),
-            (Place::Local, Some(name)) => format!("{LOCAL_PREFIX}{name}"),
-            (Place::Remote { via, host }, None) => format!("{}{host}", via.prefix()),
-            (Place::Remote { via, host }, Some(name)) => format!("{}{host}:{name}", via.prefix()),
+        let name = self.mux.name();
+        match &self.place {
+            Place::Local => format!("{LOCAL_PREFIX}{name}"),
+            Place::Remote { via, host } => format!("{}{host}:{name}", via.prefix()),
         }
     }
 }
@@ -254,53 +200,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_legacy_local_spelling_is_the_unqualified_local_route() {
-        for key in ["", "tmux", "local-tmux"] {
-            assert_eq!(Route::parse(key), Ok(Route::local(None)), "{key:?}");
+    fn a_key_that_names_no_multiplexer_is_refused() {
+        for key in [
+            "",
+            "tmux",
+            "local-tmux",
+            "local-psmux",
+            "local-rmux",
+            "ssh:box",
+            "wsl:Ubuntu",
+        ] {
+            assert!(Route::parse(key).is_err(), "{key:?} must not parse");
         }
     }
 
     #[test]
-    fn a_local_key_names_its_multiplexer() {
+    fn every_route_is_written_with_its_multiplexer() {
         for mux in Multiplexer::ALL {
-            let key = format!("local:{}", mux.name());
-            assert_eq!(Route::parse(&key), Ok(Route::local(Some(mux))), "{key}");
-            assert_eq!(Route::local(Some(mux)).format(), key);
-        }
-    }
-
-    /// The spellings written before `local:` still read as they were written:
-    /// `local-tmux` is the platform default, any other `local-<mux>` that mux.
-    #[test]
-    fn a_legacy_local_key_keeps_its_meaning() {
-        for mux in Multiplexer::ALL {
-            let key = format!("local-{}", mux.name());
-            let expected = match mux {
-                Multiplexer::Tmux => Route::local(None),
-                _ => Route::local(Some(mux)),
-            };
-            assert_eq!(Route::parse(&key), Ok(expected), "{key}");
-        }
-        // An explicit local tmux is not the legacy default.
-        assert_ne!(Route::local(Some(Multiplexer::Tmux)).format(), "local-tmux");
-    }
-
-    #[test]
-    fn a_remote_key_splits_host_from_multiplexer() {
-        assert_eq!(
-            Route::parse("ssh:h"),
-            Ok(Route::remote(Via::Ssh, "h", None))
-        );
-        assert_eq!(
-            Route::parse("wsl:Ubuntu"),
-            Ok(Route::remote(Via::Wsl, "Ubuntu", None))
-        );
-        for mux in Multiplexer::ALL {
-            for via in [Via::Ssh, Via::Wsl] {
-                let key = format!("{}h:{}", via.prefix(), mux.name());
-                let route = Route::parse(&key).unwrap();
-                assert_eq!(route, Route::remote(via, "h", Some(mux)), "{key}");
-                assert_eq!(route.host(), Some("h"), "{key}");
+            let name = mux.name();
+            for (route, key) in [
+                (Route::local(mux), format!("local:{name}")),
+                (
+                    Route::remote(Via::Ssh, "box", mux),
+                    format!("ssh:box:{name}"),
+                ),
+                (
+                    Route::remote(Via::Wsl, "box", mux),
+                    format!("wsl:box:{name}"),
+                ),
+            ] {
+                assert_eq!(route.format(), key);
+                assert_eq!(Route::parse(&key), Ok(route), "{key}");
             }
         }
     }
@@ -308,75 +238,32 @@ mod tests {
     #[test]
     fn keys_that_name_no_route_are_refused_not_guessed() {
         for key in [
-            "local-probe",
             "local:probe",
-            "local-",
             "local:",
             "weird",
             "ssh:",
             "wsl:",
             "ssh::tmux",
+            "ssh:box:screen",
         ] {
             assert!(Route::parse(key).is_err(), "{key:?} must not parse");
         }
     }
 
     #[test]
-    fn an_unknown_suffix_stays_part_of_a_host_that_cannot_load() {
-        // `hosts.toml` refuses a `:` in a name, so this host resolves to
-        // nothing — the row reads as unreachable, never as some other host.
-        assert_eq!(
-            Route::parse("ssh:box:screen"),
-            Ok(Route::remote(Via::Ssh, "box:screen", None))
-        );
-    }
-
-    #[test]
-    fn an_unqualified_remote_keeps_the_meaning_it_was_written_with() {
-        let unqualified = Route::parse("ssh:box").unwrap();
-        let cases = [
-            (None, Multiplexer::Tmux),
-            (Some("tmux"), Multiplexer::Tmux),
-            (Some("psmux"), Multiplexer::Psmux),
-            // Written before either existed, so written for tmux.
-            (Some("rmux"), Multiplexer::Tmux),
-            (Some("herdr"), Multiplexer::Tmux),
-        ];
-        for (preference, expected) in cases {
-            for local in Multiplexer::ALL {
-                assert_eq!(
-                    unqualified
-                        .multiplexer(local, preference.map(|p| Multiplexer::parse(p).unwrap())),
-                    expected,
-                    "host preference {preference:?}, local default {local:?}"
-                );
-            }
-        }
-        assert_eq!(
-            unqualified.multiplexer(Multiplexer::Psmux, None),
-            Multiplexer::Tmux
-        );
-    }
-
-    #[test]
-    fn an_unqualified_local_route_is_the_platform_default() {
-        for local in Multiplexer::ALL {
-            assert_eq!(Route::local(None).multiplexer(local, None), local);
-        }
-    }
-
-    #[test]
-    fn a_qualified_route_ignores_every_default() {
-        for mux in Multiplexer::ALL {
-            for local in Multiplexer::ALL {
-                for preference in std::iter::once(None).chain(Multiplexer::ALL.map(Some)) {
-                    assert_eq!(
-                        Route::remote(Via::Ssh, "box", Some(mux)).multiplexer(local, preference),
-                        mux
-                    );
-                    assert_eq!(Route::local(Some(mux)).multiplexer(local, preference), mux);
-                }
-            }
+    fn a_host_key_and_a_route_name_the_same_host() {
+        assert_eq!(host_of_key("ssh:devbox"), Some("devbox"));
+        assert_eq!(host_of_key("ssh:devbox:rmux"), Some("devbox"));
+        assert_eq!(host_of_key("wsl:Ubuntu"), Some("Ubuntu"));
+        for key in [
+            "",
+            "devbox",
+            "local:tmux",
+            "ssh:",
+            "ssh::tmux",
+            "ssh:box:screen",
+        ] {
+            assert_eq!(host_of_key(key), None, "{key:?}");
         }
     }
 
@@ -396,7 +283,7 @@ mod tests {
     }
 
     fn route() -> impl Strategy<Value = Route> {
-        (place(), proptest::option::of(mux())).prop_map(|(place, mux)| Route { place, mux })
+        (place(), mux()).prop_map(|(place, mux)| Route { place, mux })
     }
 
     proptest! {
@@ -406,30 +293,12 @@ mod tests {
             prop_assert_eq!(Route::parse(&route.format()).unwrap(), route);
         }
 
-        /// Formatting a parsed key gives one canonical spelling, which parses
-        /// to the same route: aliases converge and nothing drifts.
-        #[test]
-        fn a_key_settles_on_one_canonical_spelling(
-            key in prop_oneof![
-                Just(String::new()),
-                Just("tmux".to_string()),
-                Just("local-tmux".to_string()),
-                mux().prop_map(|mux| format!("local-{}", mux.name())),
-                route().prop_map(|r| r.format()),
-            ]
-        ) {
-            let parsed = Route::parse(&key).unwrap();
-            let canonical = parsed.format();
-            prop_assert_eq!(&Route::parse(&canonical).unwrap(), &parsed);
-            prop_assert_eq!(Route::parse(&canonical).unwrap().format(), canonical);
-        }
-
         /// Place and multiplexer are independent: any multiplexer can be named
         /// on any machine, and naming one changes nothing about the machine.
         #[test]
         fn place_and_multiplexer_vary_independently(place in place(), a in mux(), b in mux()) {
-            let one = Route { place: place.clone(), mux: Some(a) };
-            let two = Route { place, mux: Some(b) };
+            let one = Route { place: place.clone(), mux: a };
+            let two = Route { place, mux: b };
             prop_assert!(one.same_machine(&two));
             let back = Route::parse(&one.format()).unwrap();
             prop_assert_eq!(back.host(), two.host());

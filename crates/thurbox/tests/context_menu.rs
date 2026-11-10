@@ -97,7 +97,7 @@ fn publish_hovered(
     registry.declare(bindings, settings);
     registry.declare_commands(host.commands());
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
@@ -114,13 +114,7 @@ fn publish_hovered(
         can_open: true,
         inventory: &[],
         ui_dir: "ui",
-        settings: &thurbox::session::settings::Settings {
-            features: thurbox::session::settings::FeatureFlags {
-                soft_delete: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        settings: &Default::default(),
         repos: &repos,
         wants: &Default::default(),
         focus: None,
@@ -408,7 +402,7 @@ fn row(name: &str, repo: &str) -> SessionRow {
         repos: Vec::new(),
         branch: Some("main".into()),
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,
         agent_session_id: None,
@@ -464,14 +458,10 @@ fn a_right_press_on_a_session_opens_its_menu_at_the_pointer() {
     for label in [
         "Open",
         "Rename",
-        "Fork",
         "Open in editor",
-        "Restart",
-        "Sync",
         "Move up",
         "Move down",
         "Delete",
-        "Delete + worktree",
     ] {
         assert!(text.contains(label), "{label} missing:\n{text}");
     }
@@ -527,13 +517,7 @@ fn a_right_press_off_the_rows_opens_the_panes_menu() {
         .expect("the menu floats");
     assert_eq!(float.at, Some((9, 20)));
     let text = menu_text(&host).expect("drawn");
-    for label in [
-        "New session",
-        "Restore deleted",
-        "Sort by name",
-        "Collapse all",
-        "Hide panel",
-    ] {
+    for label in ["New session", "Sort by name", "Collapse all", "Hide panel"] {
         assert!(text.contains(label), "{label} missing:\n{text}");
     }
     for row_only in ["Rename", "Delete"] {
@@ -690,25 +674,6 @@ fn new_session_from_the_panes_menu_opens_the_creation_flow() {
     assert_eq!(actions(&host), ["new_session.open"]);
 }
 
-/// Offered only when there is something to undo, like every entry here.
-#[test]
-fn undo_delete_is_offered_once_a_session_was_deleted() {
-    let host = sessions_host();
-    let sessions = index_of(&host, "sessions");
-    host.on_action(sessions, "sessions.delete").expect("delete");
-    host.drain_commands();
-    // The confirmation answers what it drew, as it does every frame.
-    host.render(index_of(&host, "confirm"), ctx())
-        .expect("draw the question");
-    host.on_key(index_of(&host, "confirm"), &key("y"))
-        .expect("confirm delete");
-    host.drain_commands();
-    host.on_context(sessions, &right_press_at(9, 20, None))
-        .expect("context");
-    let text = menu_text(&host).expect("drawn");
-    assert!(text.contains("Undo delete"), "{text}");
-}
-
 #[test]
 fn an_empty_list_offers_no_sort() {
     let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui"));
@@ -817,12 +782,9 @@ fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
     );
     host.render(sessions, ctx()).expect("render");
 
-    assert_eq!(
-        choose_menu_entry(&host, "Delete + worktree"),
-        "sessions.force_delete"
-    );
+    assert_eq!(choose_menu_entry(&host, "Delete"), "sessions.delete");
     // What the coordinator does with that command.
-    host.on_action_with_args(sessions, "sessions.force_delete", &[("session_id", &beta)])
+    host.on_action_with_args(sessions, "sessions.delete", &[("session_id", &beta)])
         .expect("action");
     let issued = host.drain_commands();
     assert!(
@@ -839,38 +801,9 @@ fn a_menu_entry_does_not_act_on_a_session_other_than_the_one_pressed() {
 }
 
 #[test]
-fn a_clean_force_delete_still_asks_before_removing_the_worktree() {
-    let host = sessions_host();
-    let sessions = index_of(&host, "sessions");
-    let beta = two_sessions().sessions[1].id.clone();
-    let mut snapshot = two_sessions();
-    snapshot.sessions[1].git = Some(thurbox::kernel::snapshot::GitState {
-        files_changed: 0,
-        insertions: 0,
-        deletions: 0,
-        untracked: 0,
-        dirty: false,
-        ahead: 0,
-        behind: 0,
-        merged: Some(true),
-    });
-    publish(&host, &snapshot);
-    host.on_action_with_args(sessions, "sessions.force_delete", &[("session_id", &beta)])
-        .expect("force delete action");
-    assert!(!host
-        .drain_commands()
-        .iter()
-        .any(|command| command.kind() == "delete"));
-    assert!(host
-        .render(index_of(&host, "confirm"), ctx())
-        .expect("confirmation")
-        .float
-        .is_some());
-}
-
-#[test]
 fn session_actions_classified_destructive_ask_on_a_key_or_click() {
-    for action in ["sessions.delete", "sessions.restart", "sessions.sync"] {
+    {
+        let action = "sessions.delete";
         let host = sessions_host();
         let beta = two_sessions().sessions[1].id.clone();
         host.on_action_with_args(
@@ -919,7 +852,7 @@ fn a_plugin_cannot_shadow_the_bundled_delete_action() {
     copy_dir(&source.join("plugins"), &home.path().join("plugins"));
     std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
     std::fs::write(home.path().join("plugins/00_impostor.lua"),
-        "return { name = 'impostor', keys = { { key = 'x', action = 'sessions.force_delete' } }, render = function() return { type = 'text', text = '' } end }\n")
+        "return { name = 'impostor', keys = { { key = 'x', action = 'sessions.delete' } }, render = function() return { type = 'text', text = '' } end }\n")
         .expect("impostor");
     let host = LuaHost::new(home.path().to_path_buf());
     assert!(host
@@ -936,7 +869,7 @@ fn a_second_sessions_pane_cannot_shadow_the_bundled_delete_action() {
     copy_dir(&source.join("plugins"), &home.path().join("plugins"));
     std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
     std::fs::write(home.path().join("plugins/00_impostor.lua"),
-        "return { name = 'sessions', keys = { { key = 'x', action = 'sessions.force_delete' } }, render = function() return { type = 'text', text = '' } end }\n")
+        "return { name = 'sessions', keys = { { key = 'x', action = 'sessions.delete' } }, render = function() return { type = 'text', text = '' } end }\n")
         .expect("impostor");
     let host = LuaHost::new(home.path().to_path_buf());
     assert!(host
@@ -995,66 +928,6 @@ fn a_preserved_menu_can_pass_its_target_to_the_updated_sessions_pane() {
         .expect("old menu's argument-free action");
     let rename = host.render(index_of(&host, "rename"), ctx()).unwrap();
     assert!(format!("{:?}", rename.node).contains("beta"));
-}
-
-#[test]
-fn a_preserved_confirmation_pane_keeps_soft_delete_undo() {
-    let home = tempfile::tempdir().expect("interface dir");
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui");
-    copy_dir(&source.join("lib"), &home.path().join("lib"));
-    copy_dir(&source.join("plugins"), &home.path().join("plugins"));
-    std::fs::copy(source.join("layout.lua"), home.path().join("layout.lua")).expect("layout");
-    std::fs::write(
-        home.path().join("plugins/60_confirm.lua"),
-        r#"return {
-          name = 'confirm', slot = 'float', floats = true,
-          render = function() return { type = 'text', text = '' } end,
-          on_key = function(key)
-            local ask = store.confirm
-            if key.key == 'esc' and ask then
-              store.confirm = nil
-              return true
-            end
-            if key.key == 'y' and ask then
-              store.confirm = nil
-              command(ask.command, ask.options)
-              return true
-            end
-            return false
-          end,
-        }"#,
-    )
-    .expect("old confirm");
-    let host = LuaHost::new(home.path().to_path_buf());
-    assert!(host.error.is_none(), "{:?}", host.error);
-    publish(&host, &two_sessions());
-    host.render(index_of(&host, "sessions"), ctx())
-        .expect("render");
-    host.on_action(index_of(&host, "sessions"), "sessions.delete")
-        .expect("delete action");
-    assert!(host.drain_commands().is_empty());
-    host.on_key(index_of(&host, "confirm"), &key("esc"))
-        .expect("cancel");
-    host.on_action(index_of(&host, "sessions"), "sessions.undo")
-        .expect("undo after cancel");
-    assert!(matches!(
-        host.drain_commands().as_slice(),
-        [Command::Message { .. }]
-    ));
-    host.on_action(index_of(&host, "sessions"), "sessions.delete")
-        .expect("delete action");
-    host.on_key(index_of(&host, "confirm"), &key("y"))
-        .expect("answer");
-    assert!(matches!(
-        host.drain_commands().as_slice(),
-        [Command::Delete { force: false, .. }]
-    ));
-    host.on_action(index_of(&host, "sessions"), "sessions.undo")
-        .expect("undo");
-    assert!(matches!(
-        host.drain_commands().as_slice(),
-        [Command::Restore { .. }]
-    ));
 }
 
 /// A creation in flight draws a placeholder row, but a placeholder is not a
@@ -1167,10 +1040,7 @@ fn a_contributed_entry_is_offered_on_a_session_and_an_undeclared_one_is_not() {
     .expect("context");
     let text = menu_text(&host).expect("drawn");
     assert!(text.contains("Auto-continue"), "{text}");
-    assert!(
-        text.contains("Delete + worktree"),
-        "the pane's own stay:\n{text}"
-    );
+    assert!(text.contains("Delete"), "the pane's own stay:\n{text}");
     assert!(
         !text.contains("Ghost"),
         "extra.ghost is declared nowhere:\n{text}"

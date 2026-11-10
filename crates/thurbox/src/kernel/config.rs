@@ -136,7 +136,12 @@ impl Config {
         self.stamp = Some(stamp);
 
         let (fresh, warnings) = crate::config::settings::load_or_seed_with_warnings();
-        if let Some(first) = warnings.first() {
+        // A key 3.0 no longer reads was reported at startup; the file still
+        // loads, so a later edit beside it applies.
+        if let Some(first) = warnings
+            .iter()
+            .find(|warning| !crate::config::settings::is_retired_notice(warning))
+        {
             // The loader falls back to defaults per bad key rather than failing,
             // so this is a report, not a refusal.
             return Some(Reloaded::Failed(first.clone()));
@@ -187,9 +192,9 @@ mod tests {
     fn a_live_flag_is_taken_into_force() {
         let mut config = Config::detached(settings());
         let mut edited = settings();
-        edited.features.soft_delete = false;
+        edited.features.shell_pane = false;
         assert_eq!(config.adopt(edited), Reloaded::Live);
-        assert!(!config.features().soft_delete);
+        assert!(!config.features().shell_pane);
     }
 
     #[test]
@@ -245,25 +250,21 @@ mod tests {
         // Flipping every live flag must change every one of them.
         let mut config = Config::detached(settings());
         let mut edited = settings();
-        edited.features.tasks = false;
         edited.features.file_viewer = false;
         edited.features.info_panel = false;
         edited.features.global_search = false;
         edited.features.shell_pane = false;
         edited.features.code_review = false;
         edited.features.perf_hud = false;
-        edited.features.soft_delete = false;
         assert_eq!(config.adopt(edited), Reloaded::Live);
         let live = config.features();
         for (name, value) in [
-            ("tasks", live.tasks),
             ("file_viewer", live.file_viewer),
             ("info_panel", live.info_panel),
             ("global_search", live.global_search),
             ("shell_pane", live.shell_pane),
             ("code_review", live.code_review),
             ("perf_hud", live.perf_hud),
-            ("soft_delete", live.soft_delete),
         ] {
             assert!(!value, "{name} was not taken into force");
         }

@@ -245,7 +245,7 @@ impl App {
                 .with("subject", tracked.label.as_deref()),
         );
         let event = match tracked.kind {
-            "create" | "fork" => {
+            "create" => {
                 // The command named no session; the row is found by the name it
                 // was given, newest first, now that the snapshot has been
                 // re-read.
@@ -277,24 +277,6 @@ impl App {
                 .with("session", Some(tracked.session.as_str()))
                 .with("name", tracked.label.as_deref())
                 .with("force", Some(Field::Bool(tracked.force))),
-            "restart" | "restore" => {
-                let name = if tracked.kind == "restart" {
-                    "session.post_restart"
-                } else {
-                    "session.post_restore"
-                };
-                let mut event = Event::new(name)
-                    .with("session", Some(tracked.session.as_str()))
-                    .with("name", tracked.label.as_deref());
-                if let Some(row) = self.snapshots.current().session(&tracked.session) {
-                    event = event
-                        .with("agent", Some(row.agent.as_str()))
-                        .with("repo", row.repo.as_deref())
-                        .with("cwd", row.cwd.as_ref().map(|cwd| cwd.display().to_string()))
-                        .with("branch", row.branch.as_deref());
-                }
-                event
-            }
             _ => return,
         };
         self.enqueue_event(event);

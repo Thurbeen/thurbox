@@ -23,6 +23,7 @@ mod draw;
 pub(crate) mod editor;
 pub(crate) mod events;
 mod focus;
+mod image_drop;
 pub(crate) mod input;
 mod interface;
 pub(crate) mod mouse;
@@ -39,7 +40,7 @@ use thurbox::kernel::perf::Counters;
 
 use crate::{
     App, DEBOUNCE, ECHO_HOLD, ECHO_POLL, ECHO_WINDOW, IDLE_TICK, PERF_PUBLISH_INTERVAL,
-    PERF_WINDOW_TICKS, QUIESCENT_AFTER, REAP_INTERVAL, TICK,
+    PERF_WINDOW_TICKS, QUIESCENT_AFTER, TICK,
 };
 
 // The chrome helpers keep their bare names at every call site in this
@@ -178,23 +179,6 @@ impl App {
             Some(thurbox::kernel::config::Reloaded::Failed(error)) => {
                 self.report(format!("settings: {error}"), Level::Error);
             }
-            None => {}
-        }
-        match self.snapshots.poll_registry() {
-            Some(Ok(warnings)) => {
-                self.terminals
-                    .set_agents(self.snapshots.agent_registry().clone());
-                if warnings.is_empty() {
-                    self.toast("agents reloaded".to_string());
-                } else {
-                    for warning in &warnings {
-                        tracing::warn!("{warning}");
-                    }
-                    self.report(format!("agents: {}", warnings[0]), Level::Info);
-                }
-                self.dirty = true;
-            }
-            Some(Err(error)) => self.report(format!("agents: {error}"), Level::Error),
             None => {}
         }
         if self.reload_at.is_some_and(|at| Instant::now() >= at) {
@@ -445,7 +429,13 @@ impl App {
             self.snapshots.current().sessions.len(),
             &self.host.plugin_report(),
         );
-        self.snapshots.set_perf_snapshot(&json.to_string());
+        // Off the loop: `thurbox-cli perf` reads the file whenever it is asked.
+        let text = json.to_string();
+        std::thread::spawn(move || {
+            if let Err(e) = thurbox::kernel::perf::publish_snapshot(&text) {
+                tracing::warn!("could not publish the perf snapshot: {e}");
+            }
+        });
     }
 
     /// Time a named synchronous operation, ringing it if it was slow enough to
@@ -595,30 +585,14 @@ impl App {
         // is idempotent, so asking every iteration costs four lookups.
         let wants = self.repo_wants();
         self.repos.serve(&wants);
-        // An open flow is also what lets each host be asked which
-        // multiplexers it has.
-        self.snapshots.probe_hosts(wants.bookmarks.is_some());
         if self.repos.poll() {
             self.note_data_change();
-        }
-
-        // A session that has stayed deleted past its undo window keeps its
-        // worktrees and loses its agent — the reap v1 does when the undo
-        // expires. The question is asked of the database, on a slow cadence:
-        // the row's own `deleted_at` states it durably, so the answer survives
-        // a restart of this process and is the same one the headless heartbeat
-        // gets (ADR-8b). A pass with nothing overdue is one SELECT and
-        // consults no multiplexer at all.
-        if self.last_reap.elapsed() >= REAP_INTERVAL {
-            self.last_reap = Instant::now();
-            self.commands
-                .dispatch(thurbox::kernel::command::Command::Reap);
         }
 
         // What Windows said about its clipboard, for a paste press that could
         // not be answered when it happened (WSL only — `clipboard::ImageProbe`).
         self.poll_image_probe();
-        self.poll_image_drops();
+        self.poll_remote_drop();
 
         // An update that replaced binaries is worth saying once; a check that
         // merely found a release shows up in the header instead.
@@ -641,25 +615,9 @@ impl App {
     /// State another process left for this one, and the notifications that
     /// follow from it.
     pub(crate) fn apply_external_requests(&mut self) {
-        // A focus request from another process: a clicked notification's
-        // action callback, or `thurbox-cli session focus`, both of which
-        // leave a row in the database for whoever is running the interface.
-        // Taken atomically, so two instances cannot both claim it.
-        if let Some(id) = self.snapshots.take_focus_request() {
+        // A clicked notification's action callback asks for its session.
+        if let Some(id) = thurbox::notifications::take_focus_request() {
             self.focus_on_session(&id);
-        }
-
-        // Acknowledge a finished turn on the way out of it: moving the
-        // selection off a `done` session is what retires its filled dot.
-        // Read from the store because the selection belongs to the session
-        // list, which is a plugin.
-        let selected = self.host.shared_string("selected");
-        if selected != self.last_selected_session {
-            if let Some(left) = self.last_selected_session.take() {
-                self.snapshots.acknowledge(&left);
-            }
-            self.last_selected_session = selected;
-            self.dirty = true;
         }
 
         // Notify on the blocked edge, observed where status is read so the
@@ -688,44 +646,11 @@ impl App {
             self.dirty = true;
         }
         self.settle_echo();
-        // The stuck-`working` fallback, run here because it asks the
-        // terminals a question and they have just been synced — and run
-        // every tick rather than at refresh, because output moves between
-        // two reads of the database.
-        let terminals = &self.terminals;
-        if self
-            .snapshots
-            .apply_output_quiescence(|id| terminals.millis_since_output(id))
-            > 0
-        {
-            self.dirty = true;
-        }
-        // A pane the terminals had to resolve by window name gets its id
-        // persisted onto the row: names are not unique (two sessions can share
-        // one), so a legacy row stops depending on its name after one adoption.
-        for (session, pane) in self.terminals.drain_adopted_panes() {
-            if let Err(e) = self.snapshots.remember_pane(&session, &pane) {
-                tracing::warn!("could not record adopted pane for {session}: {e}");
-            }
-        }
-        // A session whose agent is gone gets it back, which is what v1 does
-        // at restore and what makes a session survive a reboot.
-        self.respawn_missing_agents();
-        // And the shell it had open, whose window outlived the interface.
         self.readopt_shells();
         // Programs plugins asked for. Served here because resolving a
         // session to a directory and a machine is the loop's knowledge, not
         // a store's — the store owns the bounds and the queue.
         self.serve_runs();
-        // A remote agent's hooks cannot call `thurbox-cli` — they set a tmux pane
-        // option, which arrives here over the control-mode subscription. Draining
-        // it into the same columns a local signal writes is the whole of remote
-        // status: the dot, the acknowledgment and the notification are all
-        // downstream of that one write.
-        let events = self.terminals.drain_hook_events();
-        if !events.is_empty() && self.snapshots.apply_hook_states(events, Instant::now()) > 0 {
-            self.dirty = true;
-        }
     }
 
     /// Take what plugins asked for, start what may start, and publish answers.
@@ -785,27 +710,23 @@ impl App {
 
     /// How one ask becomes a program on the right machine.
     pub(crate) fn runner(&self) -> std::sync::Arc<thurbox::kernel::runs::Runner> {
-        let sessions: std::collections::HashMap<String, (std::path::PathBuf, String)> = self
-            .snapshots
-            .current()
-            .sessions
-            .iter()
-            .filter_map(|row| {
-                let cwd = row.cwd.clone()?;
-                Some((row.id.clone(), (cwd, row.backend.clone())))
-            })
-            .collect();
+        let sessions: std::collections::HashMap<String, (std::path::PathBuf, Option<String>)> =
+            self.snapshots
+                .current()
+                .sessions
+                .iter()
+                .filter_map(|row| {
+                    let cwd = row.cwd.clone()?;
+                    Some((row.id.clone(), (cwd, row.remote_host.clone())))
+                })
+                .collect();
         std::sync::Arc::new(move |ask: &thurbox::kernel::runs::Ask| {
             let session = match &ask.target {
                 thurbox::kernel::runs::Target::Session(session) => session,
                 thurbox::kernel::runs::Target::Host(name) => {
-                    let Some(host) = thurbox::session_ops::configured_host(name) else {
-                        return thurbox::kernel::runs::Run::Failed(format!(
-                            "no configured host {name} to run it on"
-                        ));
-                    };
-                    let command = thurbox::kernel::runs::command_for_host(&ask.program, &host);
-                    return thurbox::kernel::runs::capture(command, ask.timeout);
+                    return thurbox::kernel::runs::Run::Failed(format!(
+                        "{name} is another machine; a plugin's program runs on this one only"
+                    ));
                 }
                 thurbox::kernel::runs::Target::Local => {
                     let Some(home) = thurbox::paths::home_dir() else {
@@ -813,76 +734,88 @@ impl App {
                             "no home directory to run it in".to_string(),
                         );
                     };
-                    let command = thurbox::kernel::runs::command_for(&ask.program, &home, None);
+                    let command = thurbox::kernel::runs::command_for(&ask.program, &home);
                     return thurbox::kernel::runs::capture(command, ask.timeout);
                 }
             };
-            let Some((cwd, backend)) = sessions.get(session) else {
+            let Some((cwd, remote)) = sessions.get(session) else {
                 return thurbox::kernel::runs::Run::Failed(format!(
                     "no session {session} to run it in"
                 ));
             };
-            let Some(host) = thurbox::session_ops::resolve_host(backend) else {
+            if let Some(name) = remote {
                 return thurbox::kernel::runs::Run::Failed(format!(
-                    "'{backend}' is not in hosts.toml — cannot reach the machine it runs on"
+                    "session {session} runs on {name}; a plugin's program runs on this machine only"
                 ));
-            };
-            let command = thurbox::kernel::runs::command_for(&ask.program, cwd, host.as_ref());
+            }
+            let command = thurbox::kernel::runs::command_for(&ask.program, cwd);
             thurbox::kernel::runs::capture(command, ask.timeout)
         })
     }
 
-    /// Relaunch the agent of any session whose window is gone.
+    /// Fold in the shells the terminals opened or lost, adopt again the shell
+    /// a session had open before this interface started, and close the shell
+    /// of a session Fleet deleted.
     ///
-    /// v1's `respawn_stale_session`, reached differently. v1 asks the question
-    /// once, synchronously, during restore; here discovery is a worker, so the
-    /// answer arrives a moment later and the question is asked each frame until
-    /// it can be answered. `self.respawned` permits one automatic relaunch per
-    /// session in this TUI process, including when the attempt fails. A failure
-    /// remains visible for an explicit operator retry.
-    ///
-    /// It goes through `restart`, which is exactly a respawn once killing a
-    /// window that is not there stopped being an error: same session id, same
-    /// worktrees, same host, and `resume_trigger_for` deciding whether the agent
-    /// resumes its conversation or starts fresh.
-    pub(crate) fn respawn_missing_agents(&mut self) {
-        let missing = self.terminals.missing_agents(self.snapshots.current());
-        for id in missing {
-            if !self.respawned.insert(id.clone()) {
-                continue;
-            }
-            self.dispatch_tracked(thurbox::kernel::command::Command::Restart {
-                session: id,
-                if_missing: true,
-                fresh: false,
-            });
-        }
-    }
-
-    /// Re-attach any session to the shell window it already had.
-    ///
-    /// v1 does this at restore (`readopt_shell_pane`); here attaching is a
-    /// worker, so the shell is picked up on the frame after the agent's own pane
-    /// lands. Cheap to ask every iteration: it is a map lookup for a session that
-    /// has no shell recorded, which is nearly all of them.
+    /// A shell outlives the interface in a window of its own, so it is kept in
+    /// [`ShellBook`]: in memory for the loop, saved to `interface.json` by a
+    /// worker. A worker's answer is matched against the book, never against a
+    /// save still in flight.
     pub(crate) fn readopt_shells(&mut self) {
+        use thurbox::config::interface_state::ShellRecord;
         for result in self.terminals.drain_shell_results() {
             use thurbox::kernel::terminal::ShellResult;
             self.dirty = true;
             match result {
-                ShellResult::Ready { session, pane } => {
-                    if let Err(error) = self.snapshots.remember_shell(&session, &pane) {
-                        tracing::warn!("could not record shell pane for {session}: {error}");
-                    }
+                ShellResult::Ready {
+                    session,
+                    pane,
+                    stamp,
+                } => {
+                    // A re-adopted shell stays on the route it was saved on.
+                    let route = match self.shells.records.get(&session) {
+                        Some(record) if record.pane == pane && record.stamp == stamp => {
+                            Some(record.route.clone())
+                        }
+                        _ => self
+                            .snapshots
+                            .current()
+                            .session(&session)
+                            .and_then(|row| self.terminals.shell_route(row.remote_host.as_deref()))
+                            .map(|route| route.format()),
+                    };
+                    let Some(route) = route else { continue };
+                    self.terminals.record_shell(&session, Some(pane.clone()));
+                    self.shells
+                        .set(&session, Some(ShellRecord { route, pane, stamp }));
                 }
                 ShellResult::Gone {
                     session,
                     open_requested,
+                    pane,
                 } => {
-                    let _ = self.snapshots.forget_shell(&session);
-                    if open_requested {
-                        self.apply_shell_command(&session);
+                    self.terminals.record_shell(&session, None);
+                    self.shells.set(&session, None);
+                    if let Some(pane) = pane {
+                        self.shells.lost.insert((session.clone(), pane));
                     }
+                    // A new shell takes the host's current multiplexer.
+                    let current = self
+                        .snapshots
+                        .current()
+                        .session(&session)
+                        .and_then(|row| self.terminals.shell_route(row.remote_host.as_deref()));
+                    if let Some(route) = current {
+                        self.terminals.use_shell_route(&session, &route);
+                    }
+                    if open_requested {
+                        self.open_shell(&session, None);
+                    }
+                }
+                // Nothing proved the pane gone: its record stays, and the
+                // re-adopt is tried again.
+                ShellResult::Unreachable { session, error } => {
+                    tracing::debug!("shell of {session} not re-adopted yet: {error}");
                 }
                 ShellResult::Failed { session, error } => {
                     self.report(
@@ -892,28 +825,249 @@ impl App {
                 }
             }
         }
-        let wanted: Vec<(String, String)> = self
+        self.close_shells_of_deleted_sessions();
+        // Cheap to ask every iteration: nearly every row has no shell
+        // recorded, and the size is the cached one.
+        let wanted: Vec<(String, ShellRecord, thurbox::session::Route)> = self
             .snapshots
             .current()
             .sessions
             .iter()
-            .filter(|row| row.shell_backend_id.is_some())
             .filter(|row| self.terminals.is_attached(&row.id))
             .filter(|row| !self.terminals.has_shell(&row.id))
             .filter_map(|row| {
-                row.shell_backend_id
-                    .clone()
-                    .map(|pane| (row.id.clone(), pane))
+                let record = self.shells.records.get(&row.id)?;
+                // A shell on another machine than the one the Task runs on
+                // now is not this session's companion any more.
+                let route = self
+                    .terminals
+                    .readopt_route(row.remote_host.as_deref(), &record.route)?;
+                Some((row.id.clone(), record.clone(), route))
+            })
+            .filter(|(session, record, _)| {
+                !self
+                    .shells
+                    .lost
+                    .contains(&(session.clone(), record.pane.clone()))
             })
             .collect();
-        // Asked before the size is so the common empty case stays free — and
-        // the size itself is the cached one, updated from `Event::Resize`.
-        if wanted.is_empty() {
-            return;
-        }
         let (cols, rows) = self.screen_size;
-        for (session, pane) in wanted {
-            self.terminals.readopt_shell(&session, &pane, rows, cols);
+        for (session, record, route) in wanted {
+            self.terminals.use_shell_route(&session, &route);
+            self.terminals
+                .readopt_shell(&session, &record.pane, &record.stamp, rows, cols);
         }
+    }
+
+    /// Close the shell of each session that was in the snapshot and is not any
+    /// more: its Task was deleted. An interface that merely closes keeps its
+    /// shells. The source keeps its last rows while Fleet cannot be read, so a
+    /// row leaves the snapshot only when its Task left the store.
+    fn close_shells_of_deleted_sessions(&mut self) {
+        let snapshot = self.snapshots.current();
+        let present: std::collections::HashSet<&str> = snapshot
+            .sessions
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        let deleted: Vec<String> = self
+            .shells
+            .records
+            .keys()
+            .filter(|session| {
+                self.shells.seen.contains(*session) && !present.contains(session.as_str())
+            })
+            .cloned()
+            .collect();
+        let seen: Vec<String> = present.iter().map(|id| id.to_string()).collect();
+        for session in deleted {
+            if let Some(record) = self.shells.records.get(&session) {
+                self.terminals.kill_shell_window(
+                    &record.route,
+                    &record.pane,
+                    &record.stamp,
+                    &session,
+                );
+            }
+            self.terminals.record_shell(&session, None);
+            self.shells.set(&session, None);
+            self.shells.seen.remove(&session);
+        }
+        self.shells.seen.extend(seen);
+    }
+}
+
+/// One record per companion shell, keyed by session.
+type ShellRecords =
+    std::collections::BTreeMap<String, thurbox::config::interface_state::ShellRecord>;
+
+/// One change to the book: a session's shell, or `None` for none.
+type ShellChange = (
+    String,
+    Option<thurbox::config::interface_state::ShellRecord>,
+);
+
+/// The companion shells this interface knows: the records, the panes found
+/// gone, and the sessions seen in the snapshot. Changes are made here, on the
+/// loop, and one worker writes each to `interface.json`, in order, through the
+/// read-change-write every writer of the file takes
+/// (`interface_state::update`): it changes that one session's entry in the
+/// file as it is then, so two interfaces on one config directory keep each
+/// other's shells, and the loop never waits on the file's lock.
+pub(crate) struct ShellBook {
+    pub(crate) records: ShellRecords,
+    /// `(session, pane)` found gone, until that session's record changes.
+    pub(crate) lost: std::collections::HashSet<(String, String)>,
+    /// Sessions the snapshot has shown: one that leaves it was deleted.
+    pub(crate) seen: std::collections::HashSet<String>,
+    saves: Option<std::sync::mpsc::Sender<ShellChange>>,
+    saver: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ShellBook {
+    /// The book as `interface.json` holds it, with its saver started.
+    pub(crate) fn load() -> Self {
+        Self::start(
+            thurbox::config::interface_state::load().shells,
+            |session, record| {
+                let saved = thurbox::config::interface_state::update(|state| match record {
+                    Some(record) => {
+                        state.shells.insert(session.to_string(), record.clone());
+                    }
+                    None => {
+                        state.shells.remove(session);
+                    }
+                });
+                if let Err(e) = saved {
+                    tracing::warn!("could not record the shell of {session}: {e}");
+                }
+            },
+        )
+    }
+
+    /// A book over `records` whose changes `save` writes, one at a time, on
+    /// a worker of its own.
+    fn start(
+        records: ShellRecords,
+        save: impl Fn(&str, Option<&thurbox::config::interface_state::ShellRecord>) + Send + 'static,
+    ) -> Self {
+        let (saves, queue) = std::sync::mpsc::channel::<ShellChange>();
+        let saver = std::thread::spawn(move || {
+            while let Ok((session, record)) = queue.recv() {
+                save(&session, record.as_ref());
+            }
+        });
+        Self {
+            records,
+            lost: std::collections::HashSet::new(),
+            seen: std::collections::HashSet::new(),
+            saves: Some(saves),
+            saver: Some(saver),
+        }
+    }
+
+    /// Record `session`'s shell, or that it has none, and queue the change.
+    /// The panes found gone for the session are forgotten: they were judged
+    /// against the record this replaces.
+    pub(crate) fn set(
+        &mut self,
+        session: &str,
+        record: Option<thurbox::config::interface_state::ShellRecord>,
+    ) {
+        let changed = match &record {
+            Some(record) => {
+                self.records.insert(session.to_string(), record.clone()) != Some(record.clone())
+            }
+            None => self.records.remove(session).is_some(),
+        };
+        if changed {
+            self.lost.retain(|(lost, _)| lost != session);
+            if let Some(saves) = &self.saves {
+                let _ = saves.send((session.to_string(), record));
+            }
+        }
+    }
+
+    /// Write what is still queued, and stop the saver. Called once the
+    /// interface has drawn its last frame, so a clean exit loses no change.
+    pub(crate) fn finish(&mut self) {
+        drop(self.saves.take());
+        if let Some(saver) = self.saver.take() {
+            let _ = saver.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellBook;
+    use thurbox::config::interface_state::ShellRecord;
+
+    fn record(pane: &str) -> ShellRecord {
+        ShellRecord {
+            route: "local:tmux".into(),
+            pane: pane.into(),
+            stamp: "s".into(),
+        }
+    }
+
+    /// A book whose saver writes `interface.json` under `dir`.
+    fn book_over(dir: &std::path::Path) -> ShellBook {
+        let dir = dir.to_path_buf();
+        ShellBook::start(Default::default(), move |session, record| {
+            let _isolated = thurbox::paths::TestPathGuard::new(&dir);
+            thurbox::config::interface_state::update(|state| match record {
+                Some(record) => {
+                    state.shells.insert(session.to_string(), record.clone());
+                }
+                None => {
+                    state.shells.remove(session);
+                }
+            })
+            .expect("save");
+        })
+    }
+
+    /// A pane found gone is remembered per session, and forgotten once that
+    /// session's record changes: the same id on another session, or a new
+    /// shell of this one that the server gave the old id, is judged afresh.
+    #[test]
+    fn a_lost_pane_belongs_to_its_session_and_clears_with_its_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut book = book_over(dir.path());
+        book.set("a", Some(record("%1")));
+        book.lost.insert(("a".into(), "%1".into()));
+        book.lost.insert(("b".into(), "%1".into()));
+        book.set("a", Some(record("%1")));
+        assert_eq!(
+            book.lost.len(),
+            2,
+            "an unchanged record keeps what was lost"
+        );
+        book.set("a", Some(record("%2")));
+        assert!(!book.lost.contains(&("a".into(), "%1".into())));
+        assert!(
+            book.lost.contains(&("b".into(), "%1".into())),
+            "another session's pane stays lost"
+        );
+        book.finish();
+    }
+
+    /// Two interfaces on one config directory each save their own session's
+    /// shell into the file as it is then, so neither erases the other's, and
+    /// what is queued at a clean exit is written.
+    #[test]
+    fn two_books_on_one_file_keep_each_others_shells() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = book_over(dir.path());
+        let mut second = book_over(dir.path());
+        first.set("a", Some(record("%1")));
+        second.set("b", Some(record("%2")));
+        first.finish();
+        second.finish();
+        let _isolated = thurbox::paths::TestPathGuard::new(dir.path());
+        let shells = thurbox::config::interface_state::load().shells;
+        assert_eq!(shells.get("a"), Some(&record("%1")), "{shells:?}");
+        assert_eq!(shells.get("b"), Some(&record("%2")), "{shells:?}");
     }
 }

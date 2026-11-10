@@ -125,15 +125,7 @@ impl GitStats {
 
     /// Ask for a session's stats, unless polling is off, a run is in flight, or
     /// the last answer is still inside this session's own interval.
-    ///
-    /// `host` is where the worktree lives when that is not this machine: its
-    /// `git` has to run there, since the path exists only there.
-    pub(super) fn request(
-        &mut self,
-        session: &str,
-        worktree: PathBuf,
-        host: Option<crate::session::HostDef>,
-    ) {
+    pub(super) fn request(&mut self, session: &str, worktree: PathBuf) {
         if self.poll.is_none() || self.inflight.contains(session) {
             return;
         }
@@ -172,7 +164,7 @@ impl GitStats {
                 head,
                 merged: *merged,
             });
-            let stats = crate::git::worktree_stats_on(host.as_ref(), &worktree, known);
+            let stats = crate::git::worktree_stats(&worktree, known);
             // The answer and the commit it belongs to, so the next run can skip
             // the check. Neither half means anything without the other.
             let merge = stats.as_ref().and_then(|s| s.head.clone().zip(s.merged));
@@ -322,14 +314,14 @@ mod tests {
         };
 
         git.known.insert("s1".to_string(), stale_by(base * 3));
-        git.request("s1", dir.path().to_path_buf(), None);
+        git.request("s1", dir.path().to_path_buf());
         assert!(
             git.inflight.is_empty(),
             "the answer is older than the base interval but younger than this session's"
         );
 
         git.known.insert("s1".to_string(), stale_by(base * 5));
-        git.request("s1", dir.path().to_path_buf(), None);
+        git.request("s1", dir.path().to_path_buf());
         assert!(
             git.inflight.contains("s1"),
             "past its own interval it is asked again"
@@ -360,7 +352,7 @@ mod tests {
 
         // Well past MERGE_RECHECK, nowhere near this session's own interval.
         git.known.insert("s1".to_string(), aged(MERGE_RECHECK * 2));
-        git.request("s1", dir.path().to_path_buf(), None);
+        git.request("s1", dir.path().to_path_buf());
         assert!(
             git.inflight.is_empty(),
             "an overdue merge answer must not pull the whole stat forward"
@@ -370,7 +362,7 @@ mod tests {
         // which is the recheck being issued, and is stamped as such.
         git.known
             .insert("s1".to_string(), aged(base * GIT_STAT_BACKOFF * 2));
-        git.request("s1", dir.path().to_path_buf(), None);
+        git.request("s1", dir.path().to_path_buf());
         assert!(git.inflight.contains("s1"), "the poll itself is due");
         let stamp = git.known["s1"]
             .merge
@@ -390,7 +382,7 @@ mod tests {
         // run. Nothing is asked, and nothing is remembered to publish.
         let dir = tempfile::tempdir().expect("tempdir");
         let mut git = GitStats::new(None);
-        git.request("s1", dir.path().to_path_buf(), None);
+        git.request("s1", dir.path().to_path_buf());
         assert!(git.inflight.is_empty(), "no worker was started");
         assert!(git.known.is_empty(), "and nothing was recorded");
     }

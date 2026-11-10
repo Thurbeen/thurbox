@@ -5,20 +5,35 @@ use std::sync::Arc;
 use super::{shell_surface, Painted, Snapshot, Terminals};
 
 /// A shell worker's accepted answer for the coordinator to persist or report.
+#[derive(Debug)]
 pub enum ShellResult {
     Ready {
         session: String,
         pane: String,
+        /// What its window is stamped with.
+        stamp: String,
     },
     Gone {
         session: String,
         open_requested: bool,
+        /// The pane found gone.
+        pane: Option<String>,
     },
     Failed {
         session: String,
         error: String,
     },
+    /// A saved shell could not be re-adopted, and nothing proved its pane
+    /// gone (a host that does not answer): its record stays, and the
+    /// re-adopt is tried again after `READOPT_RETRY`.
+    Unreachable {
+        session: String,
+        error: String,
+    },
 }
+
+/// How long a re-adopt that proved nothing waits before it is tried again.
+pub const READOPT_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(super) struct Shelled {
     session: String,
@@ -26,9 +41,11 @@ pub(super) struct Shelled {
     owner: Arc<std::sync::Mutex<crate::backend::SessionParser>>,
     previous: Option<Arc<std::sync::Mutex<crate::backend::SessionParser>>>,
     seen: Option<String>,
+    stamp: String,
     readopting: bool,
     backend: Arc<dyn crate::backend::SessionBackend>,
-    shell: Result<crate::backend::pane::ShellPane, String>,
+    /// The pane, or why not and whether that proves the pane gone.
+    shell: Result<crate::backend::pane::ShellPane, (String, bool)>,
 }
 
 pub(super) struct Shelling {
@@ -39,6 +56,88 @@ pub(super) struct Shelling {
 }
 
 impl Terminals {
+    /// Say which shell pane `session`'s record now names, or that it names
+    /// none: a worker's answer is accepted only against the record as the
+    /// loop holds it.
+    pub fn record_shell(&mut self, session: &str, pane: Option<String>) {
+        match pane {
+            Some(pane) => self.recorded_shells.insert(session.to_string(), pane),
+            None => self.recorded_shells.remove(session),
+        };
+    }
+
+    /// The route of the multiplexer a Fleet session's companion shell runs
+    /// on: this machine's own for a local Task, else the route of the
+    /// `hosts.toml` host its Fleet host is named as, on that host's own
+    /// multiplexer, so a WSL host keeps its `wsl:` place. `None` when no such
+    /// host is configured.
+    pub fn shell_route(&self, remote_host: Option<&str>) -> Option<crate::session::Route> {
+        Some(match remote_host {
+            None => crate::session::Route::local(crate::session::Multiplexer::platform_default()),
+            Some(host) => self.hosts.get(host)?.default_route(),
+        })
+    }
+
+    /// The route a saved shell is re-adopted on: the route it was saved on,
+    /// while that is still the session's machine and a backend serves it.
+    /// Its window's stamp still decides whether it is this session's shell;
+    /// the host's current multiplexer is only for a new shell.
+    pub fn readopt_route(
+        &self,
+        remote_host: Option<&str>,
+        saved: &str,
+    ) -> Option<crate::session::Route> {
+        let current = self.shell_route(remote_host)?;
+        let saved = crate::session::Route::parse(saved).ok()?;
+        (saved.same_machine(&current) && self.backend_on(&saved).is_some()).then_some(saved)
+    }
+
+    /// Run `session`'s companion shell on `route`'s backend: the saved route
+    /// while its shell is re-adopted, the current one for a new shell.
+    pub fn use_shell_route(&mut self, session: &str, route: &crate::session::Route) {
+        let Some(backend) = self.backend_on(route) else {
+            return;
+        };
+        if let Some(live) = self.live.get_mut(session) {
+            live.session.set_shell_backend(backend);
+        }
+    }
+
+    /// The backend registered for `route`, if any.
+    pub(super) fn backend_on(
+        &self,
+        route: &crate::session::Route,
+    ) -> Option<Arc<dyn crate::backend::SessionBackend>> {
+        self.backends.get(route).cloned()
+    }
+
+    /// Kill a shell window a deleted session left, on a worker: only where
+    /// the window on `route` holding `pane` is still the shell stamped
+    /// `stamp`, so a reissued pane id never takes an unrelated window with it.
+    pub fn kill_shell_window(&self, route: &str, pane: &str, stamp: &str, name: &str) {
+        let Some(backend) = crate::session::Route::parse(route)
+            .ok()
+            .and_then(|route| self.backend_on(&route))
+        else {
+            return;
+        };
+        let (pane, stamp, name) = (pane.to_string(), stamp.to_string(), name.to_string());
+        std::thread::spawn(move || {
+            let placed = backend.locate(crate::backend::Owner {
+                session_id: &stamp,
+                name: &name,
+                agent_pane: "",
+                shell_pane: &pane,
+            });
+            if placed.is_ok_and(|placed| placed.shell == crate::backend::Located::At(pane.clone()))
+            {
+                if let Err(e) = backend.kill(&pane) {
+                    tracing::warn!("could not close the shell of a deleted session: {e}");
+                }
+            }
+        });
+    }
+
     /// Queue a companion shell in the session's launch directory. Repeated
     /// commands on the same attachment and observed shell slot share a request.
     /// `seen` is the persisted shell id at the time the command was decided.
@@ -63,13 +162,24 @@ impl Terminals {
         let Some(open) = live.session.shell_open_task(rows, cols, cwd) else {
             return Ok(());
         };
-        self.start_shell(session, seen.map(str::to_string), false, open);
+        // A new shell's window is stamped with the session's id as this
+        // attachment knows it.
+        let stamp = live.session.info.id.to_string();
+        self.start_shell(session, seen.map(str::to_string), stamp, false, open);
         Ok(())
     }
 
-    /// Queue re-adoption of a persisted shell. Its liveness is checked on the
-    /// worker, and a missing pane is forgotten only after that worker answers.
-    pub fn readopt_shell(&mut self, session: &str, pane: &str, rows: u16, cols: u16) {
+    /// Queue re-adoption of a persisted shell, whose window was stamped
+    /// `stamp`. Its identity is checked on the worker, and a missing pane is
+    /// forgotten only after that worker answers.
+    pub fn readopt_shell(&mut self, session: &str, pane: &str, stamp: &str, rows: u16, cols: u16) {
+        if self
+            .readopt_retry
+            .get(session)
+            .is_some_and(|after| std::time::Instant::now() < *after)
+        {
+            return;
+        }
         let Some(live) = self.live.get(session) else {
             return;
         };
@@ -81,14 +191,21 @@ impl Terminals {
         {
             return;
         }
-        let adopt = live.session.shell_adopt_task(pane, rows, cols);
-        self.start_shell(session, Some(pane.to_string()), true, adopt);
+        let adopt = live.session.shell_adopt_task(pane, stamp, rows, cols);
+        self.start_shell(
+            session,
+            Some(pane.to_string()),
+            stamp.to_string(),
+            true,
+            adopt,
+        );
     }
 
     fn start_shell(
         &mut self,
         session: &str,
         seen: Option<String>,
+        stamp: String,
         readopting: bool,
         work: impl FnOnce() -> anyhow::Result<crate::backend::pane::ShellPane> + Send + 'static,
     ) {
@@ -115,13 +232,17 @@ impl Terminals {
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());
-            let shell = work().map_err(|error| error.to_string());
+            let shell = work().map_err(|error| {
+                let gone = error.is::<crate::backend::pane::ShellGone>();
+                (error.to_string(), gone)
+            });
             let done = Shelled {
                 session,
                 request,
                 owner,
                 previous,
                 seen,
+                stamp,
                 readopting,
                 backend,
                 shell,
@@ -140,7 +261,7 @@ impl Terminals {
             }
             let open_requested = self.shelling.remove(&done.session).unwrap().open_requested;
             let wanted = snapshot.session(&done.session).is_some_and(|row| {
-                row.shell_backend_id == done.seen
+                self.recorded_shells.get(&done.session) == done.seen.as_ref()
                     && self.key(&row.backend) == self.key(done.backend.name())
             }) && self.live.get(&done.session).is_some_and(|live| {
                 Arc::ptr_eq(&live.session.parser, &done.owner)
@@ -167,16 +288,29 @@ impl Terminals {
                     ShellResult::Ready {
                         session: done.session,
                         pane,
+                        stamp: done.stamp,
                     }
                 }
-                Err(error) if done.readopting => {
+                Err((error, true)) if done.readopting => {
                     tracing::debug!("could not re-adopt shell: {error}");
                     ShellResult::Gone {
                         session: done.session,
                         open_requested,
+                        pane: done.seen,
                     }
                 }
-                Err(error) => ShellResult::Failed {
+                Err((error, false)) if done.readopting => {
+                    tracing::debug!("could not re-adopt shell, will retry: {error}");
+                    self.readopt_retry.insert(
+                        done.session.clone(),
+                        std::time::Instant::now() + READOPT_RETRY,
+                    );
+                    ShellResult::Unreachable {
+                        session: done.session,
+                        error,
+                    }
+                }
+                Err((error, _)) => ShellResult::Failed {
                     session: done.session,
                     error,
                 },
@@ -196,6 +330,69 @@ mod tests {
     use super::super::Live;
     use super::{Arc, Painted, ShellResult, Shelled, Shelling, Snapshot, Terminals};
 
+    /// A Fleet host named as a `hosts.toml` WSL distro keeps its `wsl:`
+    /// place: the shell runs on that distro's multiplexer, not on an ssh host
+    /// of the same name.
+    #[test]
+    fn a_shell_route_takes_its_place_from_the_host() {
+        let mut terminals = Terminals::with_registry(
+            Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        terminals.hosts = crate::session::HostRegistry {
+            config_version: Some(1),
+            hosts: vec![crate::session::HostDef::wsl("ubuntu")],
+        };
+        let route = terminals.shell_route(Some("ubuntu")).expect("a route");
+        assert!(
+            route.format().starts_with("wsl:ubuntu"),
+            "{}",
+            route.format()
+        );
+        assert!(terminals.shell_route(Some("nowhere")).is_none());
+        assert!(terminals.shell_route(None).expect("local").is_local());
+    }
+
+    /// A host whose multiplexer changed keeps the shell it already had: the
+    /// shell saved on `ssh:box:tmux` is re-adopted there, not left running
+    /// beside a new one on rmux.
+    #[test]
+    fn a_saved_shell_is_readopted_on_its_own_route_after_the_host_changes_multiplexer() {
+        use crate::session::{HostDef, HostRegistry, Multiplexer, Route, Via};
+        let mut terminals = Terminals::with_registry(
+            Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        let saved = Route::remote(Via::Ssh, "box", Multiplexer::Tmux);
+        let backend = Arc::clone(terminals.backends.default_backend());
+        Arc::get_mut(&mut terminals.backends)
+            .expect("unshared registry")
+            .register(saved.clone(), backend);
+        terminals.hosts = HostRegistry {
+            config_version: Some(1),
+            hosts: vec![HostDef {
+                name: "box".into(),
+                multiplexer: Some("rmux".into()),
+                ..Default::default()
+            }],
+        };
+        assert_eq!(
+            terminals.shell_route(Some("box")),
+            Some(Route::remote(Via::Ssh, "box", Multiplexer::Rmux)),
+            "a new shell takes the host's multiplexer"
+        );
+        assert_eq!(
+            terminals.readopt_route(Some("box"), &saved.format()),
+            Some(saved.clone())
+        );
+        // Another machine's shell is not this session's companion any more.
+        assert_eq!(
+            terminals.readopt_route(Some("other"), &saved.format()),
+            None
+        );
+        assert_eq!(terminals.readopt_route(None, &saved.format()), None);
+    }
+
     #[test]
     fn a_late_failed_readoption_cannot_forget_a_newer_shell() {
         for change in ["unchanged", "deleted", "reattached", "shell", "route"] {
@@ -211,9 +408,10 @@ mod tests {
                 owner: Arc::clone(&session.parser),
                 previous: None,
                 seen: Some("%2".into()),
+                stamp: String::new(),
                 readopting: true,
                 backend: Arc::clone(&backend),
-                shell: Err("old shell went away".into()),
+                shell: Err(("old shell went away".into(), true)),
             };
             terminals.shelling.insert(
                 "probe".into(),
@@ -232,8 +430,8 @@ mod tests {
                     shell: Painted::default(),
                 },
             );
-            let mut row = super::super::tests::row("probe", backend.name(), None);
-            row.shell_backend_id = Some("%2".into());
+            let row = super::super::tests::row("probe", backend.name(), None);
+            terminals.record_shell("probe", Some("%2".into()));
             let mut snapshot = Snapshot {
                 sessions: vec![row],
                 ..Default::default()
@@ -244,7 +442,7 @@ mod tests {
                     terminals.live.get_mut("probe").unwrap().session =
                         crate::backend::Session::stub("probe", &backend);
                 }
-                "shell" => snapshot.sessions[0].shell_backend_id = Some("%3".into()),
+                "shell" => terminals.record_shell("probe", Some("%3".into())),
                 "route" => snapshot.sessions[0].backend = "ssh:another:tmux".into(),
                 _ => {}
             }
@@ -278,9 +476,10 @@ mod tests {
             owner: Arc::clone(&old.parser),
             previous: None,
             seen: None,
+            stamp: String::new(),
             readopting: false,
             backend: Arc::clone(&backend),
-            shell: Err("old request".into()),
+            shell: Err(("old request".into(), false)),
         };
         terminals.live.insert(
             "probe".into(),
@@ -291,7 +490,7 @@ mod tests {
             },
         );
         let (release, held) = std::sync::mpsc::channel::<()>();
-        terminals.start_shell("probe", None, false, move || {
+        terminals.start_shell("probe", None, String::new(), false, move || {
             let _ = held.recv();
             anyhow::bail!("released request")
         });
@@ -307,6 +506,52 @@ mod tests {
         );
         assert!(terminals.drain_shell_results().is_empty());
         drop(release);
+    }
+
+    /// Re-adopting a saved shell erases its record only when the pane is
+    /// proved gone. An error that proves nothing (a host that does not
+    /// answer) keeps the record, to be tried again: unknown never means
+    /// absent.
+    #[test]
+    fn only_a_shell_proved_gone_is_reported_gone() {
+        for (error_is_gone, expect_gone) in [(false, false), (true, true)] {
+            let mut terminals = Terminals::with_registry(
+                Arc::new(crate::backend::registry::inert()),
+                &crate::session::settings::Settings::default(),
+            );
+            let backend = Arc::clone(terminals.backends.default_backend());
+            terminals.live.insert(
+                "probe".into(),
+                Live {
+                    session: crate::backend::Session::stub("probe", &backend),
+                    agent: Painted::default(),
+                    shell: Painted::default(),
+                },
+            );
+            terminals.record_shell("probe", Some("%2".into()));
+            terminals.start_shell("probe", Some("%2".into()), String::new(), true, move || {
+                if error_is_gone {
+                    Err(crate::backend::pane::ShellGone("%2".into()).into())
+                } else {
+                    anyhow::bail!("ssh: connect to host devbox: Connection refused")
+                }
+            });
+            let snapshot = Snapshot {
+                sessions: vec![super::super::tests::row("probe", backend.name(), None)],
+                ..Default::default()
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                terminals.collect_shells(&snapshot);
+                let result = terminals.drain_shell_results();
+                if !result.is_empty() || std::time::Instant::now() >= deadline {
+                    break result;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            let gone = matches!(result.as_slice(), [ShellResult::Gone { .. }]);
+            assert_eq!(gone, expect_gone, "{result:?}");
+        }
     }
 
     #[test]
@@ -329,21 +574,22 @@ mod tests {
             terminals.start_shell(
                 "probe",
                 readopting.then(|| "%2".into()),
+                String::new(),
                 readopting,
                 move || {
                     let _ = held.recv();
-                    anyhow::bail!("old request released")
+                    Err(crate::backend::pane::ShellGone("%2".into()).into())
                 },
             );
             if reattached {
                 terminals.live.get_mut("probe").unwrap().session =
                     crate::backend::Session::stub("probe", &backend);
             }
-            let mut row = super::super::tests::row("probe", backend.name(), None);
+            let row = super::super::tests::row("probe", backend.name(), None);
             if readopting {
                 let pane = if reattached { "%2" } else { "%3" };
-                row.shell_backend_id = Some(pane.into());
-                terminals.readopt_shell("probe", pane, 24, 80);
+                terminals.record_shell("probe", Some(pane.into()));
+                terminals.readopt_shell("probe", pane, "", 24, 80);
             } else {
                 terminals.open_shell("probe", 24, 80, None, None).unwrap();
             }
@@ -384,7 +630,7 @@ mod tests {
             },
         );
         let (release, held) = std::sync::mpsc::channel::<()>();
-        terminals.start_shell("probe", Some("%2".into()), true, move || {
+        terminals.start_shell("probe", Some("%2".into()), String::new(), true, move || {
             let _ = held.recv();
             anyhow::bail!("old request released")
         });
@@ -423,9 +669,10 @@ mod tests {
             owner: Arc::clone(&session.parser),
             previous: None,
             seen: Some("%2".into()),
+            stamp: String::new(),
             readopting: true,
             backend: Arc::clone(&backend),
-            shell: Err("obsolete adoption".into()),
+            shell: Err(("obsolete adoption".into(), true)),
         };
         terminals.live.insert(
             "probe".into(),
@@ -436,7 +683,7 @@ mod tests {
             },
         );
         let (release, held) = std::sync::mpsc::channel::<()>();
-        terminals.start_shell("probe", None, false, move || {
+        terminals.start_shell("probe", None, String::new(), false, move || {
             let _ = held.recv();
             anyhow::bail!("new request released")
         });
@@ -466,9 +713,10 @@ mod tests {
             owner: Arc::clone(&session.parser),
             previous: None,
             seen: Some("%2".into()),
+            stamp: String::new(),
             readopting: true,
             backend: Arc::clone(&backend),
-            shell: Err("obsolete adoption".into()),
+            shell: Err(("obsolete adoption".into(), true)),
         };
         terminals.live.insert(
             "probe".into(),
@@ -479,13 +727,13 @@ mod tests {
             },
         );
         let (release, held) = std::sync::mpsc::channel::<()>();
-        terminals.start_shell("probe", Some("%2".into()), true, move || {
+        terminals.start_shell("probe", Some("%2".into()), String::new(), true, move || {
             let _ = held.recv();
             anyhow::bail!("current request released")
         });
         terminals.shelled.0.send(done).ok().unwrap();
-        let mut row = super::super::tests::row("probe", backend.name(), None);
-        row.shell_backend_id = Some("%2".into());
+        let row = super::super::tests::row("probe", backend.name(), None);
+        terminals.record_shell("probe", Some("%2".into()));
         terminals.collect_shells(&Snapshot {
             sessions: vec![row],
             ..Default::default()

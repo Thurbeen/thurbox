@@ -17,28 +17,32 @@
 #   scripts/dev/sandbox.sh --demo          # seed a demo repo + sessions, then launch
 #   scripts/dev/sandbox.sh --demo-big      # …and the large-diff repo as well
 #   scripts/dev/sandbox.sh --shell         # drop into a shell with the sandbox env
-#                                          #   (run `thurbox-cli ...` against the sandbox DB)
-#   scripts/dev/sandbox.sh -- session list # run `thurbox-cli <args>` in the sandbox
+#                                          #   (run `fleet ...` / `thurbox-cli ...` against it)
+#   scripts/dev/sandbox.sh -- config show  # run `thurbox-cli <args>` in the sandbox
 #   scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile, then exit
 #
 # The interface materializes at `<sandbox>/thurbox-config/ui/` along with agents,
-# settings and the database, because THURBOX_CONFIG_DIR points there — which is
+# settings and bookmarks, because THURBOX_CONFIG_DIR points there — which is
 # what `--fresh` then gives you a clean one of.
 #
 # A bare sandbox has NO repositories and NO sessions, which is the state most
 # bugs are reported against and is worth keeping as the default. `--demo` opts
 # into `demo-repo.sh`: a repository with one file of each git status, a session
-# whose branch has changes, and a session whose branch deliberately has none.
+# whose worktree has changes, and a session whose worktree deliberately has none.
 #
 # The TUI is still launched FROM THE SANDBOX ROOT rather than the repo. That used
 # to be load-bearing: thurbox preferred a `./ui` in the working directory over the
-# user's own copy, so starting from the repo isolated the database and not the
+# user's own copy, so starting from the repo isolated the sessions and not the
 # interface. That rule is gone (standing somewhere no longer decides which
 # interface loads), and the cd is kept as belt-and-braces.
 #
+# Sessions are Fleet Tasks (ADR-41). The sandbox has a Fleet of its own
+# (`<sandbox>/fleet/config.toml`, exported as FLEET_CONFIG), and the TUI starts
+# its `fleet up`.
+#
 # State (persistent mode): target/dev-sandbox/<profile>/ (gitignored). Sessions
-# survive across runs — its tmux-dev server is left alive on exit. `--clean`
-# (or `cargo clean`) removes it.
+# survive across runs — the tmux servers and the `fleet up` the TUI started are
+# left alive on exit. `--clean` stops them and removes it.
 #
 # Requires: cargo, tmux >= 3.2. Build happens before any HOME override so cargo
 # still resolves your real ~/.cargo.
@@ -72,7 +76,7 @@ while [ $# -gt 0 ]; do
         --shell) action="shell"; shift ;;
         --clean) action="clean"; shift; case "${1:-}" in ""|-*) ;; *) profile="$1"; shift ;; esac ;;
         --) shift; action="cli"; cli_args=("$@"); break ;;
-        -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
 done
@@ -85,18 +89,19 @@ if [ "$action" = "clean" ]; then
     exit 0
 fi
 
-# Build the dev binaries BEFORE the HOME override (so cargo finds ~/.cargo).
-# thurbox-cli is built either way: it drives the same database and is what an
-# agent hook inside a session calls.
+# Build the dev binaries BEFORE the HOME override (so cargo finds ~/.cargo):
+# the TUI and its CLI, and the Fleet and runtime the sessions run on.
 tui_binary="thurbox"
-log "building $tui_binary + thurbox-cli (dev)"
-( cd "$TBX_REPO_ROOT" && cargo build --bin "$tui_binary" --bin thurbox-cli >&2 )
+log "building $tui_binary, thurbox-cli, fleet and runtime-mux (dev)"
+( cd "$TBX_REPO_ROOT" && cargo build --bin "$tui_binary" --bin thurbox-cli \
+    --bin fleet --bin runtime-mux >&2 )
 
 if [ "$isolation" = "full" ]; then
     tbx_sandbox_init_full "$mode" "$profile"
 else
     tbx_sandbox_init "$mode" "$profile"
 fi
+tbx_sandbox_fleet
 
 log "sandbox root: $TBX_SANDBOX_ROOT ($mode, $isolation isolation)"
 
@@ -113,12 +118,12 @@ fi
 run_in_sandbox() {
     case "$action" in
         shell)
-            log "entering sandbox shell — \`$tui_binary\`/\`thurbox-cli\` target this sandbox; exit to leave"
+            log "entering sandbox shell — \`$tui_binary\`/\`thurbox-cli\`/\`fleet\` target this sandbox; exit to leave"
             "${SHELL:-bash}" -i
             ;;
         cli) "$TBX_REPO_ROOT/target/debug/thurbox-cli" "${cli_args[@]}" ;;
         # Run from the sandbox root, not the repo: see the note in the header.
-        # Otherwise the sandbox isolates the database but not the interface.
+        # Otherwise the sandbox isolates the sessions but not the interface.
         tui) ( cd "$TBX_SANDBOX_ROOT" && "$TBX_REPO_ROOT/target/debug/$tui_binary" ) ;;
     esac
 }

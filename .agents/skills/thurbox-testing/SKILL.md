@@ -42,7 +42,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   for a leading underscore — that is how a capability once hid under `__run_impl`),
   the instruction/memory bounds, snapshot reads, and painting a plugin to a
   `TestBackend`.
-- **`tests/fleet_engine_e2e.rs`** — the Fleet engine (`[fleet] enabled`) against
+- **`tests/fleet_engine_e2e.rs`** — the Fleet engine against
   the real `fleet` binary, found beside `thurbox-cli` (or `FLEET_BIN`), with
   Fleet's fake runtime: Tasks as rows through `fleet watch`, create, send,
   delete and confirmed delete through its command line, and the `fleet up`
@@ -50,10 +50,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `fleet attach`. Skips when a binary is not built (`cargo build -p fleet-cli
   -p runtime-mux`).
 - **The per-surface files** — one file per surface or contract:
-  `session_list`, `search`, `new_session`, `terminal_pane`, `session_lifetime`,
+  `session_list`, `search`, `new_session`, `terminal_pane`,
   `keymap`, `focus`, `modals`, `chrome`, `mouse`, `hover`, `decoration`,
-  `plugin_{authoring,commands,lifecycle,settings,switching}`, `repo_memory`,
-  `remote_status`, `session_status`, `core_settings`, `attach_by_name`.
+  `plugin_{authoring,commands,lifecycle,settings,switching}`, `core_settings`.
   Several build an interface in a tempdir from the embedded copy, so delivery and
   loading are exercised together.
   `plugin_switching` also runs the registry persistence path in an isolated child
@@ -62,10 +61,8 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   file behind. `tui_e2e`'s
   `legacy_trust_and_disabled_choices_move_to_their_own_store_and_still_apply` pins
   the migration out of a legacy `ui.json` across two starts of the real binary. The native
-  interruption probe is Unix-only (`tests/atomic_config_writes.rs` is its Linux twin
-  for `agents.toml`); on Windows the replacement is `std::fs::rename`, and the
-  extensions suite's concurrent-reader test exercises it replacing a file a reader
-  holds open. The same file pins config-file
+  interruption probe is Unix-only; on Windows the replacement is `std::fs::rename`.
+  The same file pins config-file
   symlink preservation on Unix and paths beyond `MAX_PATH` on Windows.
 - **`tests/edited_interface.rs`** — an edited interface keeps working across an
   upgrade. It holds files frozen from old releases with a user's edit
@@ -123,34 +120,15 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   the search strip taking focus, a column toggle reflowing with no screen clear,
   a resize storm down to 1×1, a broken pane reported through the Interface tab,
   exit restoring the terminal (alternate screen, mouse, bracketed paste, cursor)
-  — and, where tmux exists, a headlessly created session attached, painted and
-  typed into (`sh` as the agent), the classic Shell tab raised, lowered and
-  still holding its shell (and replaced by a working one after it exited
-  behind the agent, or its window went while thurbox was closed), and a v2.32.0 layout-preset profile (fixture in
-  `tests/fixtures/v2_32_0_split_shell/`) upgrading back to classic. Also
-  delayed remote shell creation and re-adoption keeping F1 responsive, and
-  `just smoke`. It replaced the bash tmux
-  smoke script, which could not see the byte stream and duplicated this harness.
+  — and, where tmux and a workspace build of `fleet` and `runtime-mux`
+  exist, a Fleet session attached, painted and typed into. Every profile puts
+  a stand-in `fleet` first on `PATH` (no Tasks, no manager), so no interface
+  under test ever reaches a real Fleet store; `Profile::real_fleet` swaps in
+  the real binary on a store, config and tmux directory of the profile's own,
+  with `claude` running `sh`, and `Profile::fleet_session` applies and
+  reconciles an interactive Task. `just smoke` drives the same harness.
   Keyboard negotiation covers responsive legacy, kitty and silent terminals;
   `docs/thurbox/development.md` records the reply invariant and execution measurements.
-  Two scenarios there cover a **remote session whose link has gone bad**, which
-  needs a stand-in that a local tmux cannot supply on its own: `tmux -C
-  attach-session` hands its stdin and stdout *file descriptors* to the tmux
-  server and then only shepherds, so stopping the client changes nothing, while
-  a real `ssh` is a byte relay whose stopping wedges the link. The `ssh`
-  stand-in therefore runs the control connection through a pair of `cat` pumps
-  over fifos — the pids the test `SIGSTOP`s — and `exec`s straight through for
-  every other call, whose **exit status is load-bearing** (`has-session`
-  answering "no" is how `ensure_ready` decides to create a session). Both
-  scenarios assert only on a kernel-owned overlay, never on the session list:
-  the list returns on a snapshot tick, seconds even on a healthy link, so it
-  cannot tell a frozen interface from a patient one. See ADR-P24.
-  Two more **flood** a remote pane and compare its painted grid with
-  `capture-pane`. A shallow pipe relay lets tmux push back and stop printing, so
-  the one that must overflow the pane's channel (#1472's resync) first runs
-  `deepen_remote_downlink`, which spools the host's output while the link is
-  wedged and delivers it all at once on heal, and asserts the overflow's debug
-  line in the log.
 - **`tests/self_update_scratch.rs`** (unix) — the real update CLI with private
   config/data/home and bounded fake downloaders, terminated in its own process
   group mid-download. The leader stays unreaped until group teardown so the
@@ -160,55 +138,6 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   reserves or sweeps unrelated paths. `update::self_update::tests` covers the same
   staging lifecycle in child processes on Unix and native Windows, including normal
   exit, recent work, legacy names, malformed ownership, and symlinks / Windows junctions.
-- **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a
-  throwaway socket (skipped when tmux is absent), because the bug it pins only
-  exists in how tmux resolves a target. 15 tests. Seven pin the reap itself: a
-  stale row's reap spares a live namesake's window (stamped, and unstamped as
-  every psmux window is), a namesake's pane the stale
-  row still remembers, a live window whose name only collides after
-  `sanitize_window_name` ('fleet 1' and 'fleet_1' share one `tb-fleet_1`), and a
-  soft-deleted namesake still inside its undo window — while a row whose own
-  pane resolves, and one whose pane id resolves to nothing but whose stamp
-  nobody else answers to, still lose their window. Sparing must not be bought by
-  making the reap a no-op.
-  Force delete, `stop` and `restart` share the reap's ownership gate (ADR-25,
-  `backend::identity::WindowIndex`) rather than each resolving `tb-<name>` on their
-  own, so one test walks all three against their own live namesake, plus one
-  asserting force delete still kills the row's own window. Two more cover
-  the stamp itself: a row with no pane id at all (the psmux shape) still
-  resolves its own window, and a restore whose name a live session now answers
-  to is refused outright (issue #1192) rather than joining it on the backend —
-  `respawn`'s own ownership gate is walked by `restart` in the three-path test
-  above. The last three cover the
-  companion shell and the no-server guarantee (ADR-24/25's remote teardown):
-  force delete and reap both collect the companion shell alongside the agent's
-  window, a teardown spares a live namesake's companion shell, and a teardown
-  never brings a tmux server into being (the `ensure_ready` side effect this
-  path must not trigger). The owed-teardown sweep
-  (`retry_owed_remote_teardowns`) is unit-tested against `host_cli::fake` in
-  `session_ops::delete` — that a failed remote teardown is written onto the
-  row, that a soft-deleted row is never on its worklist (the undo window), and
-  that a silent host is asked once per pass — and proven end to end on a real
-  process by `linux-container.sh`'s `remote_teardown_probe`. The same file
-  covers a delegated delete whose host never answers at all: it falls back to
-  the local teardown and owes a retry, while any *other* host error still
-  aborts. `restart --if-missing` refusing to relaunch against an unreachable
-  host (rather than reading it as "no window" and starting a second agent) is
-  proven end to end by `linux-container.sh`'s `restart_if_missing_probe`.
-- **`tests/concurrent_respawn.rs`** — six sessions relaunching onto a tmux
-  server that does not exist yet, against a *real* tmux on a throwaway socket
-  (skipped when tmux is absent): every worker's `ensure_session_configured`
-  sees "no session" and races `new-session`, and the regression this pins is
-  that a loser must not abort its whole respawn over tmux's `duplicate
-  session` — it has to notice the winner's session and continue.
-- **`tests/spawn_command_resolution.rs`** (unix) — a local spawn against a *real*
-  tmux on a throwaway socket (skipped when tmux is absent): starts a server
-  whose own `PATH` lacks the agent, then spawns it through `TmuxBackend`'s
-  control-mode path with the agent only on thurbox's `PATH`. Pins the fix in
-  `resolve_local_program` (`docs/thurbox/config.md` → How `command` is resolved): a
-  local window command used to be left for the multiplexer to resolve, which
-  sees the *server's* `PATH` (an attached client's is not copied in), not the
-  one thurbox itself was launched with.
 - **`tests/spawn_with_failing_tmux_hook.rs`** (unix) — its own binary and its own
   socket because it installs a **server-global** hook, which any suite sharing
   the socket would then spawn into. Against a *real* tmux (skipped when tmux is
@@ -226,19 +155,11 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   current directory": that join used to answer with a bare relative name,
   reintroducing the multiplexer-resolves-it dependence the function exists to
   remove.
-- **`tests/session_state_agreement.rs`** — one row, four independent readers
-  (`session get`, `session list`, `watch --initial` via the real binary, and
-  `SnapshotStore` in-process): all four must answer the same `SessionState`.
-  Pins the concrete regression the `session::hook_status` consolidation fixed —
-  `seen_at` is a stored fact only the snapshot used to read, so a turn the
-  interface already showed as `idle` kept answering `done` on every headless
-  surface for the rest of the session's life.
 
 Tests that shell out to `git` **must scrub the `GIT_*` location variables**
 (`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running
 under this project's own pre-commit `cargo nextest` inherits a `GIT_DIR` pointing at
-the real repository. `tests/repo_memory.rs` and `tests/create_e2e.rs` show the
-shape.
+the real repository. `tests/tui_e2e.rs`'s `git` helper shows the shape.
 
 A test that creates a directory **owns its removal**: make it with
 `tempfile::TempDir` (a dev-dependency) and hold the handle for as long as the test
@@ -310,44 +231,6 @@ instead.
 > history if a behaviour needs archaeology.
 
 ### Session-backend e2e harnesses
-
-`tests/create_e2e.rs` also kills a creator after its window exists and a force
-deleter during git worktree removal, expires only the killed operation's leases
-in its private database, and verifies the shared sweep removes the resources.
-It pins failed-launch rollback, same-branch retry, stale-upsert protection and
-purge tombstones. `tests/cli_automation_lifecycle.rs` covers owner and target
-suspensions through real CLI calls, preserving ids, history and prior enabled
-state, and missing-pane confirmation across separate heartbeat processes.
-
-`tests/create_e2e.rs` checks multi-repo directory scope through the real spawn,
-restart and restore pipelines using a recording agent. Checkout cleanup also
-checks active cwd and attachment claims (including nested directories), with
-creation/cleanup directory lease contention covered in the same suite. An opt-in
-test also runs the installed Claude CLI against a loopback fake API: no model calls or real
-credentials. It verifies member edits through workspace and canonical paths,
-resume, and denial of a nested symlink to a non-member directory:
-
-```bash
-THURBOX_TEST_CLAUDE="$(command -v claude)" cargo nextest run --test create_e2e \
-  --run-ignored all -E 'test(installed_claude_edits_members)'
-```
-
-This test requires Python 3 and Claude Code with `--bare` support. It is Unix
-only; native Windows directory arguments are covered by the portable registry
-tests, but this does not attest live psmux/rmux permission behavior.
-
-On native Windows, `tests/session_lifetime.rs` runs
-`scripts/dev/e2e/psmux-exit-control.ps1` when psmux is installed. It creates a
-random socket and disposable config/data profile, opts out of agent wiring in
-that fresh profile, and checks a real TUI's crash-loop message and failed-command
-event after three actual CLI relaunches. Cleanup runs in `finally`. It runs
-`scripts/dev/e2e/psmux-pane-routing.ps1` the same way (#1557): three sessions of
-a fixture agent that logs what it reads, each sent its own line, then one
-stopped; it passes when every line reached its own session and only that window
-ended, or when thurbox refused a psmux older than 3.3.8. `-PsmuxDir` puts a
-given psmux first on `PATH`, which is how it was run against 3.3.7, 3.3.8 and
-3.4.0; `-ServerPsmuxDir` starts thurbox's server with an older psmux first, the
-server an upgrade leaves running.
 
 One family under `scripts/dev/e2e/` (`linux-container.sh` = ephemeral Podman,
 `windows-vm.sh` = ephemeral dockur Windows VM, `real-host.sh` = a machine you own)

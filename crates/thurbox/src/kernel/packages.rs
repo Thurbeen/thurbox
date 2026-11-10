@@ -367,13 +367,7 @@ fn prune_empty(dir: &Path, removed: &Path) {
 }
 
 /// The directory in the thurbox repository that bare plugin names resolve against
-/// — `examples/panes/`, laid out like `extensions/` and pinned to the same release tag
-/// by the same helper.
-///
-/// Named for what it holds rather than for the mechanism it borrows: `extensions/`
-/// *is* an official set and `official_set_base` is the right name there, but these
-/// are examples to copy from (see [`EXAMPLE_PLUGINS`]) and calling the constant
-/// official would put the two words back in the same file.
+/// — `examples/panes/`, pinned to this binary's release tag.
 ///
 /// Pinning to the tag is worth keeping even for examples: a pane reads `thurbox.*`,
 /// a contract that moves, so what a bare name fetches matches the binary asking
@@ -389,9 +383,8 @@ pub const EXAMPLE_SET: &str = "examples/panes";
 /// is a convenience over `cp`, and delivery treats it as the user's the moment they
 /// edit it.
 ///
-/// A small static list rather than a remote index, exactly as
-/// `OFFICIAL_EXTENSIONS` is (extensions really are official): a misspelled name should be caught without a network
-/// round-trip. Keep in step with `examples/panes/<name>/`.
+/// A small static list rather than a remote index: a misspelled name should be
+/// caught without a network round-trip. Keep in step with `examples/panes/<name>/`.
 pub const EXAMPLE_PLUGINS: &[(&str, &str)] = &[
     ("tasks", "A todo pane: read the snapshot, send or spawn"),
     ("top", "CPU, memory and load as gauges, parsed from `top`"),
@@ -399,7 +392,7 @@ pub const EXAMPLE_PLUGINS: &[(&str, &str)] = &[
 
 /// What a source resolved to.
 pub struct Resolved {
-    pub source: crate::agent::extension_config::ExtensionSource,
+    pub source: crate::agent::fetch::Source,
     /// The location, as a string worth recording and showing.
     pub at: String,
     /// The version this resolution represents.
@@ -418,21 +411,21 @@ pub fn resolve_source(src: &str, pin: Option<&str>) -> Resolved {
         (Some(pin), _) => pin.to_string(),
         // A bare name is fetched at the binary's release tag, so that IS the
         // version of a freshly-installed one.
-        (None, true) => crate::agent::extension_config::official_ref(),
+        (None, true) => crate::agent::fetch::official_ref(),
         (None, false) => String::new(),
     };
     let source = if bare {
-        crate::agent::extension_config::ExtensionSource::Remote(format!(
+        crate::agent::fetch::Source::Remote(format!(
             "{}/{src}",
-            crate::agent::extension_config::official_set_base_at(EXAMPLE_SET, &version)
+            crate::agent::fetch::official_set_base_at(EXAMPLE_SET, &version)
         ))
     } else {
-        crate::agent::extension_config::resolve_source_in(src, EXAMPLE_SET)
+        crate::agent::fetch::resolve_source_in(src, EXAMPLE_SET)
     };
     let at = match &source {
-        crate::agent::extension_config::ExtensionSource::Remote(base) => base.clone(),
-        crate::agent::extension_config::ExtensionSource::Local(dir) => dir.display().to_string(),
-        crate::agent::extension_config::ExtensionSource::Git(url) => url.clone(),
+        crate::agent::fetch::Source::Remote(base) => base.clone(),
+        crate::agent::fetch::Source::Local(dir) => dir.display().to_string(),
+        crate::agent::fetch::Source::Git(url) => url.clone(),
     };
     Resolved {
         source,
@@ -469,38 +462,30 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         // Fetched relative to the *parent*, since the source names the file itself.
         let (base, name) = split_last(src);
         let source = match &resolved.source {
-            crate::agent::extension_config::ExtensionSource::Remote(_) => {
-                crate::agent::extension_config::ExtensionSource::Remote(base)
-            }
-            crate::agent::extension_config::ExtensionSource::Local(_) => {
-                crate::agent::extension_config::ExtensionSource::Local(
-                    crate::agent::extension_config::expand_tilde(&base),
-                )
+            crate::agent::fetch::Source::Remote(_) => crate::agent::fetch::Source::Remote(base),
+            crate::agent::fetch::Source::Local(_) => {
+                crate::agent::fetch::Source::Local(crate::agent::fetch::expand_tilde(&base))
             }
             // A `.lua` source cannot also be a repository: `git_url` matched first,
             // so a `git+…/x.lua` never reaches here.
-            crate::agent::extension_config::ExtensionSource::Git(url) => {
-                crate::agent::extension_config::ExtensionSource::Git(url.clone())
-            }
+            crate::agent::fetch::Source::Git(url) => crate::agent::fetch::Source::Git(url.clone()),
         };
-        let contents = crate::agent::extension_config::fetch_file(&source, &name)?;
+        let contents = crate::agent::fetch::fetch_file(&source, &name)?;
         return Ok(Fetched {
             manifest: None,
             payloads: vec![Payload { file, contents }],
         });
     }
 
-    let manifest_text = crate::agent::extension_config::fetch_file(
-        &resolved.source,
-        crate::session::PackageManifest::FILE,
-    )
-    .map_err(|e| {
-        format!(
-            "{src}: no {} at {} ({e})",
-            crate::session::PackageManifest::FILE,
-            resolved.at
-        )
-    })?;
+    let manifest_text =
+        crate::agent::fetch::fetch_file(&resolved.source, crate::session::PackageManifest::FILE)
+            .map_err(|e| {
+                format!(
+                    "{src}: no {} at {} ({e})",
+                    crate::session::PackageManifest::FILE,
+                    resolved.at
+                )
+            })?;
     let manifest = crate::session::PackageManifest::parse(&manifest_text)
         .map_err(|e| format!("{src}: {e}"))?;
 
@@ -509,7 +494,7 @@ pub fn fetch(src: &str, resolved: &Resolved, as_file: Option<&str>) -> Result<Fe
         plugin_spec::validate_destination(&destination)?;
         payloads.push(Payload {
             file: destination,
-            contents: crate::agent::extension_config::fetch_file(&resolved.source, &file.source)?,
+            contents: crate::agent::fetch::fetch_file(&resolved.source, &file.source)?,
         });
     }
     Ok(Fetched {
@@ -680,7 +665,7 @@ pub struct EntryReport {
 /// decided the mechanism at install time, so asking it again cannot disagree with
 /// itself the way a second recorded flag could.
 pub fn is_repository(src: &str) -> bool {
-    crate::agent::extension_config::git_url(src).is_some()
+    crate::agent::fetch::git_url(src).is_some()
 }
 
 /// The directory name a repository is cloned into: its last path segment, without
@@ -902,8 +887,8 @@ pub fn install(
 
     let resolved = resolve_source(src, pin);
     // A repository is obtained as a working copy; everything else is fetched file by
-    // file. The source's own form chose this (`extension_config::git_url`).
-    if let crate::agent::extension_config::ExtensionSource::Git(url) = &resolved.source {
+    // file. The source's own form chose this (`fetch::git_url`).
+    if let crate::agent::fetch::Source::Git(url) = &resolved.source {
         let url = url.clone();
         return install_repository(dir, src, &url, as_file, pin, &spec, &mut lock);
     }
@@ -1067,7 +1052,7 @@ pub fn sync(dir: &Path) -> Result<Vec<EntryReport>, String> {
     let mut reports = withdraw_stale(dir, &spec, &mut lock, |_| true)?;
 
     for entry in &spec.plugins {
-        if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
+        if let Some(url) = crate::agent::fetch::git_url(&entry.src) {
             let (outcome, commit, from) = converge_repository(dir, entry, &url, false, &mut lock)?;
             record_repository(&mut lock, dir, entry, &url, &commit);
             reports.push(EntryReport {
@@ -1182,7 +1167,7 @@ pub fn update(dir: &Path, key: Option<&str>) -> Result<Vec<EntryReport>, String>
         !is_repository(&stale.src) && targets.iter().any(|target| owned_by(stale, target))
     })?;
     for entry in targets {
-        if let Some(url) = crate::agent::extension_config::git_url(&entry.src) {
+        if let Some(url) = crate::agent::fetch::git_url(&entry.src) {
             let (outcome, commit, from) = converge_repository(dir, entry, &url, true, &mut lock)?;
             record_repository(&mut lock, dir, entry, &url, &commit);
             reports.push(EntryReport {
@@ -1236,7 +1221,7 @@ pub fn remove(dir: &Path, key: &str) -> Result<EntryReport, String> {
 
     // A repository is one directory, not a file list: taking back the files the lock
     // happens to name would leave the working copy and its `.git` behind.
-    if let Some(url) = crate::agent::extension_config::git_url(&removed.src) {
+    if let Some(url) = crate::agent::fetch::git_url(&removed.src) {
         let name = repository_name(&url)?;
         let root = dir.join(&name);
         if root.exists() {
@@ -1315,7 +1300,7 @@ fn not_found_help(src: &str, error: String) -> String {
 }
 
 /// Suggest the closest example plugin name, within a small edit budget so an
-/// unrelated typo suggests nothing. Mirrors `suggest_extension`.
+/// unrelated typo suggests nothing.
 pub fn suggest_plugin(name: &str) -> Option<&'static str> {
     let name = name.trim().to_lowercase();
     let budget = (name.len() / 3).clamp(2, 3);

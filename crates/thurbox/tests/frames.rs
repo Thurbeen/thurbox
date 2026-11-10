@@ -104,7 +104,7 @@ fn publish_inner(
     let themes = themes();
     let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
@@ -143,7 +143,7 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
         repos: vec![repo.to_string()],
         branch: Some(format!("feat/{name}")),
         base_branch: None,
-        backend: "local-tmux".to_string(),
+        backend: "local:tmux".to_string(),
         backend_id: Some("%1".to_string()),
         agent_session_id: None,
         remote_host: None,

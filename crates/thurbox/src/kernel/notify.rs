@@ -134,11 +134,10 @@ impl Notifier {
 
     /// Hand one notification to the delivery layer.
     ///
-    /// A row whose id will not parse cannot be focused from the notification, so
-    /// there is nothing useful to deliver.
+    /// Keyed on the row's id as the snapshot carries it: a Fleet session's id
+    /// is its Task's name, not a UUID.
     fn deliver(&self, row: &SessionRow) {
-        let (Some(sender), Some(id)) = (&self.sender, crate::kernel::snapshot::parse_id(&row.id))
-        else {
+        let Some(sender) = &self.sender else {
             return;
         };
         let blocked = row.status == SessionState::Blocked;
@@ -155,7 +154,7 @@ impl Notifier {
         sender.send(crate::notifications::Notification {
             title,
             body,
-            session_id: id,
+            session_id: row.id.clone(),
             sound: self.settings.sound,
         });
     }
@@ -177,7 +176,7 @@ mod tests {
             repos: Vec::new(),
             branch: None,
             base_branch: None,
-            backend: "local-tmux".into(),
+            backend: "local:tmux".into(),
             backend_id: None,
             remote_host: None,
             agent_session_id: None,
@@ -233,6 +232,25 @@ mod tests {
         assert!(notifier
             .observe(&snap(vec![row("a", SessionState::Blocked)]), None)
             .is_empty());
+    }
+
+    /// A Fleet session's id is its Task's name, not a UUID: its notification
+    /// is still delivered, naming that id for a click to focus.
+    #[test]
+    fn a_fleet_sessions_notification_is_delivered_under_its_task_name() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut notifier = quiet(false);
+        notifier.sender = Some(crate::notifications::NotificationSender::to(tx));
+        notifier.observe(
+            &snap(vec![row("read-the-code", SessionState::Working)]),
+            None,
+        );
+        notifier.observe(
+            &snap(vec![row("read-the-code", SessionState::Blocked)]),
+            None,
+        );
+        let delivered = rx.try_recv().expect("a notification for the Fleet session");
+        assert_eq!(delivered.session_id, "read-the-code");
     }
 
     #[test]

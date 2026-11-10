@@ -289,7 +289,7 @@ fn an_untrusted_harness_waits_like_an_unmapped_repository() {
         assert!(
             attention
                 .message
-                .contains("runtime.workspaceTrust.codex-coder"),
+                .contains("workspace-trust interface for harness codex-coder"),
             "{attention:#?}"
         );
         obj = next;
@@ -1708,64 +1708,14 @@ fn stalled_held_and_deleting_tasks_are_never_resumed() {
 }
 
 #[test]
-fn a_note_kept_under_an_old_resume_key_is_still_delivered_first() {
-    // A record written before the catch-up note was renamed.
-    let mut obj = pausable(&["task/t/u7/send/1"], |_| {});
-    obj.status["resume"] = json!("task/t/u7/resume/1");
-    obj.status["resumes"] = json!(1);
-    let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(false)));
-    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/resume/1"));
-    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
-    assert_eq!(plan.effects[0].key, "task/t/u7/resume/1");
-    assert!(matches!(plan.effects[0].action, Action::Brief { .. }));
-    let written = plan.status.unwrap();
-    assert_eq!(written["catchUp"], "task/t/u7/resume/1");
-    assert!(written.get("resume").is_none());
-
-    // A later resume effect never reuses that note's key.
-    let obj = pausable(&["task/t/u7/send/1"], |st| {
-        set_paused(st, "External");
-        st.resumes = 1;
-    });
-    let (plan, _) = run(&obj, pause_obs(not_asked(), Observation::Known(true)));
-    assert_eq!(plan.effects[0].key, "task/t/u7/resume/2");
-}
-
-#[test]
-fn an_old_resume_note_in_flight_is_never_taken_for_a_resume_effect() {
-    // Written before the rename: the note `resume/3` was sent, and its
-    // answer is not Known yet. Its intent is a Brief.
-    let mut obj = pausable(&["task/t/u7/send/1"], |st| {
-        st.intents
-            .insert("task/t/u7/resume/3".into(), effect_intent("brief"));
-        st.receipts.insert(
-            "task/t/u7/resume/3".into(),
-            receipt("brief", Observation::unknown("answer lost")),
-        );
-    });
-    obj.status["resume"] = json!("task/t/u7/resume/3");
-    obj.status["resumes"] = json!(3);
-    assert!(probes(&obj).contains(&Probe::BriefDelivered {
-        session: session(),
-        key: "task/t/u7/resume/3".into()
-    }));
-    let mut obs = pause_obs(not_asked(), Observation::Known(false));
-    obs.brief_delivered = Some(Observation::unknown("journal unreadable"));
-    let (plan, st) = run(&obj, obs);
+fn a_catch_up_note_is_read_under_its_own_name_only() {
+    let st: TaskStatus =
+        serde_json::from_value(json!({"catchUp": "task/t/u7/catch-up/1"})).expect("catchUp");
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/catch-up/1"));
     assert!(
-        plan.effects.is_empty(),
-        "never sent again blindly: {plan:#?}"
+        serde_json::from_value::<TaskStatus>(json!({"resume": "task/t/u7/resume/1"})).is_err(),
+        "`resume` is no name of the catch-up note"
     );
-    assert!(st.intents.contains_key("task/t/u7/resume/3"));
-    assert!(st.conditions.iter().all(|c| c.type_ != "Paused"));
-
-    // The journal says it arrived: recorded, and the entry goes next.
-    let mut obs = pause_obs(not_asked(), Observation::Known(false));
-    obs.brief_delivered = Some(Observation::Known(true));
-    let (plan, st) = run(&obj, obs);
-    assert_eq!(st.catch_up, None);
-    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
-    assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
 }
 
 #[test]

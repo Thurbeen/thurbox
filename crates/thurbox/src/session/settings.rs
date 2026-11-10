@@ -15,9 +15,6 @@ use serde::{Deserialize, Serialize};
 /// unrecognized key in a startup warning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
-    /// Default multiplexer for new local sessions; an explicit create choice wins.
-    #[serde(default)]
-    pub multiplexer: Option<String>,
     /// Config-format version, for future migrations. Currently `1`.
     #[serde(default)]
     pub config_version: Option<u32>,
@@ -49,15 +46,6 @@ pub struct Settings {
     /// tasks / file viewer) becomes available.
     #[serde(default = "default_three_panel_min_cols")]
     pub three_panel_min_cols: u16,
-    /// Days of audit-log and session-event history kept (both pruned on
-    /// startup).
-    #[serde(default = "default_audit_retention_days")]
-    pub audit_retention_days: u64,
-    /// Days a deleted session stays restorable before its row is purged —
-    /// `0`, the default, keeps every one. A purge is final, so it is the
-    /// operator's to turn on (`thurbox-cli session purge` is the one-off).
-    #[serde(default)]
-    pub deleted_retention_days: u64,
     /// How often each session's git working tree is re-examined, in seconds.
     /// `0` turns the polling off: no diffstat, no ahead/behind, no `git`.
     ///
@@ -83,26 +71,73 @@ pub struct Settings {
     /// copy-on-select on.
     #[serde(default)]
     pub clipboard: ClipboardSettings,
-    /// Remote-host settings (`[remote]` table).
-    #[serde(default)]
-    pub remote: RemoteSettings,
     /// OpenTelemetry settings (`[telemetry]` table). Off by default.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
-    /// The session engine (`[fleet]` table): thurbox's own, or Fleet.
+    /// Fleet, the session engine (`[fleet]` table).
     #[serde(default)]
     pub fleet: FleetSettings,
 }
 
-/// Which engine runs the sessions (`[fleet]` table), ADR-41. Off, thurbox's
-/// own engine runs them over its database, as it always has. On, every
-/// session is a Fleet Task: the interface reads them through `fleet watch`,
-/// acts through `fleet apply`, `send` and `delete`, and keeps a `fleet up`
-/// running. Read at startup only.
+/// Keys an older `settings.toml` may hold that thurbox no longer reads, each
+/// with the reason. The loader names one it finds as retired rather than
+/// unknown, and `thurbox-cli config validate` passes a file holding one: a v2
+/// file keeps loading (ADR-41).
+pub const RETIRED_KEYS: &[(&str, &str)] = &[
+    (
+        "multiplexer",
+        "Fleet's runtime runs every session's terminal",
+    ),
+    ("remote", "thurbox lists no sessions through other hosts"),
+    ("features.soft_delete", "Fleet deletes a session at once"),
+    (
+        "telemetry.configure_agents",
+        "Fleet's harness profiles configure the agents",
+    ),
+    (
+        "telemetry.export_thurbox_metrics",
+        "thurbox exports no session metrics",
+    ),
+    (
+        "telemetry.export_session_events",
+        "thurbox exports no session events",
+    ),
+    (
+        "telemetry.per_session",
+        "thurbox exports no session metrics",
+    ),
+    (
+        "audit_retention_days",
+        "thurbox keeps no session database to prune",
+    ),
+    (
+        "deleted_retention_days",
+        "thurbox keeps no session database to prune",
+    ),
+];
+
+/// Keys an older `settings.toml` may hold that are accepted and ignored with
+/// no warning: v1's switches for panels that are now plugins, kept loading
+/// quietly since 2.0.
+pub const IGNORED_KEYS: &[&str] = &["features.tasks"];
+
+/// The retired key `path` is, or lies under (`remote.transitive_sessions` is
+/// `remote`'s), with the reason it is no longer read.
+pub fn retired_key(path: &str) -> Option<(&'static str, &'static str)> {
+    RETIRED_KEYS.iter().copied().find(|(key, _)| {
+        path == *key
+            || path
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.starts_with('.'))
+    })
+}
+
+/// How thurbox reaches Fleet, which runs every session (`[fleet]` table),
+/// ADR-41: each session is a Fleet Task, which the interface reads through
+/// `fleet watch` and acts on through `fleet apply`, `send` and `delete`, with
+/// a `fleet up` kept running. Read at startup only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetSettings {
-    #[serde(default)]
-    pub enabled: bool,
     /// The `fleet` binary: a name on `PATH` or a path. It reads its own
     /// config, as `fleet` does anywhere (`FLEET_CONFIG`, then its per-user
     /// file).
@@ -117,59 +152,34 @@ fn default_fleet_program() -> String {
 impl Default for FleetSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
             program: default_fleet_program(),
         }
     }
 }
 
-/// OpenTelemetry for the sessions thurbox spawns (`[telemetry]` table).
-///
-/// thurbox configures each agent's *own* OTel exporter rather than exporting
-/// on its behalf: the OTel spec's `OTEL_EXPORTER_OTLP_*` variables for every
-/// session, plus the agent's `telemetry_env` / `telemetry_args` from
-/// `agents.toml` for the switches the spec does not cover. Read at each spawn
-/// and restart, so a change applies to the next one; a running agent keeps the
-/// environment it launched with. See ADR-36 in `docs/thurbox/architecture.md`.
+/// OpenTelemetry for the interface itself (`[telemetry]` table): its own
+/// WARN-and-above diagnostic logs, bridged to an OTLP collector (ADR-38).
+/// The agents' telemetry is Fleet's: thurbox spawns no agent (ADR-41).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TelemetrySettings {
     /// Master switch.
     #[serde(default)]
     pub enabled: bool,
-    /// OTLP base URL (`OTEL_EXPORTER_OTLP_ENDPOINT`, `{otlp_endpoint}`) for
-    /// local sessions; a remote one uses its host's `otel_endpoint`.
+    /// OTLP base URL (`OTEL_EXPORTER_OTLP_ENDPOINT`).
     #[serde(default = "default_otlp_endpoint")]
     pub endpoint: String,
-    /// OTLP protocol (`OTEL_EXPORTER_OTLP_PROTOCOL`, `{otlp_protocol}`).
-    /// `http/protobuf` is the one every native agent exporter accepts.
+    /// OTLP protocol (`OTEL_EXPORTER_OTLP_PROTOCOL`).
     #[serde(default = "default_otlp_protocol")]
     pub protocol: String,
     /// OTLP request headers (`OTEL_EXPORTER_OTLP_HEADERS`), e.g. a hosted
-    /// backend's auth token. They sit in the pane's environment, so the agent
-    /// process can read them.
+    /// backend's auth token.
     #[serde(default)]
     pub headers: std::collections::BTreeMap<String, String>,
-    /// Pass the spec variables and each agent's `telemetry_env` /
-    /// `telemetry_args` to the sessions thurbox spawns.
-    #[serde(default = "default_true")]
-    pub configure_agents: bool,
-    /// Export thurbox's own `thurbox.*` session metrics from `automation
-    /// tick` (ADR-37).
-    #[serde(default = "default_true")]
-    pub export_thurbox_metrics: bool,
-    /// Export one OTLP log record per session event from `automation tick`.
-    #[serde(default = "default_true")]
-    pub export_session_events: bool,
     /// Bridge the interface's own WARN-and-above `tracing` events to the
     /// collector (ADR-38). Restart-only: the subscriber is built once, at
     /// boot. Off by default — it serves debugging thurbox itself.
     #[serde(default)]
     pub export_diagnostic_logs: bool,
-    /// Label thurbox's own metrics with `thurbox.session.id`. Off by default:
-    /// every session then becomes a series of its own in the backend. The
-    /// session event records always carry it.
-    #[serde(default)]
-    pub per_session: bool,
 }
 
 fn default_otlp_endpoint() -> String {
@@ -186,26 +196,12 @@ impl Default for TelemetrySettings {
             endpoint: default_otlp_endpoint(),
             protocol: default_otlp_protocol(),
             headers: Default::default(),
-            configure_agents: true,
-            export_thurbox_metrics: true,
-            export_session_events: true,
             export_diagnostic_logs: false,
-            per_session: false,
         }
     }
 }
 
 impl TelemetrySettings {
-    /// Whether spawned sessions get any telemetry configuration at all.
-    pub fn configures_agents(&self) -> bool {
-        self.enabled && self.configure_agents
-    }
-
-    /// Whether `automation tick` exports anything of thurbox's own.
-    pub fn exports_thurbox(&self) -> bool {
-        self.enabled && (self.export_thurbox_metrics || self.export_session_events)
-    }
-
     /// Whether the interface bridges its diagnostic logs to the collector.
     pub fn exports_diagnostic_logs(&self) -> bool {
         self.enabled && self.export_diagnostic_logs
@@ -223,29 +219,13 @@ impl TelemetrySettings {
     }
 }
 
-/// How sessions on remote hosts are mirrored (`[remote]` table).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteSettings {
-    /// Also list the sessions a shareable host mirrors from hosts of its own
-    /// (A → B → C: C's sessions, seen on A through B). Each session is listed
-    /// once, on the most direct path this instance has to it. Off by default:
-    /// a host's list is its own sessions, not a remote's remotes. Read by
-    /// every mirror pass, so a change applies on the next one.
-    #[serde(default)]
-    pub transitive_sessions: bool,
-}
-
 /// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
 /// feature's UI and blocks its keybinding; disabling `automations` also stops
-/// the TUI firing schedules and arming the heartbeat. Data and
-/// `thurbox-cli` surfaces stay fully functional regardless, so re-enabling a
-/// flag is lossless.
+/// the TUI firing schedules. Data and `thurbox-cli` surfaces stay fully
+/// functional regardless, so re-enabling a flag is lossless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeatureFlags {
-    /// Tasks panel (F5/Ctrl+W) and task search results.
-    #[serde(default = "default_true")]
-    pub tasks: bool,
-    /// Automations pane, Ctrl+P editor, TUI schedule firing, heartbeat arming.
+    /// The TUI firing the automations' schedules (`automations.json`).
     #[serde(default = "default_true")]
     pub automations: bool,
     /// File viewer column (F3) and file search results.
@@ -280,11 +260,6 @@ pub struct FeatureFlags {
     /// passive banner only (the modern API requires a signed app bundle).
     #[serde(default = "default_true")]
     pub notifications: bool,
-    /// Keep sessions undoable on delete, leaving windows and worktrees intact.
-    /// Off by default in every build: TUI and CLI delete runtime resources
-    /// immediately. CLI `--soft` and `--force` override this preference.
-    #[serde(default)]
-    pub soft_delete: bool,
     /// Version-update check: the TUI header "update available" badge and the
     /// `thurbox-cli version --check` command. **On by default for 1.0** — it
     /// makes a network call to GitHub to learn when a newer release is
@@ -293,10 +268,7 @@ pub struct FeatureFlags {
     pub version_check: bool,
     /// Silent auto-update: the TUI silently downloads, verifies, and replaces
     /// the installed binaries on startup when a newer release exists, and the
-    /// `thurbox-cli update` command does the same on demand. Also keeps installed
-    /// extensions fresh — once the binary upgrades, the self-heal pass (TUI
-    /// startup + headless tick) refreshes any extension that is now stale instead
-    /// of merely nudging. **On by default for 1.0** — opt out with `[features]
+    /// `thurbox-cli update` command does the same on demand. **On by default for 1.0** — opt out with `[features]
     /// auto_update = false`; it makes a network call and replaces files on
     /// disk. The new version applies on the next launch.
     #[serde(default = "default_true")]
@@ -476,7 +448,6 @@ fn default_true() -> bool {
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
-            tasks: true,
             automations: true,
             file_viewer: true,
             global_search: true,
@@ -486,7 +457,6 @@ impl Default for FeatureFlags {
             perf_hud: true,
             mouse: true,
             notifications: true,
-            soft_delete: false,
             version_check: true,
             auto_update: true,
         }
@@ -505,9 +475,6 @@ fn default_two_panel_min_cols() -> u16 {
 }
 fn default_three_panel_min_cols() -> u16 {
     120
-}
-fn default_audit_retention_days() -> u64 {
-    90
 }
 fn default_git_poll_secs() -> u64 {
     5
@@ -553,9 +520,6 @@ macro_rules! field {
 /// other. Two hand-kept lists did drift — `[clipboard]` was held as booted
 /// and reported live (issue #1638). A test fails until a new field has a row.
 pub const FIELDS: &[Field] = &[
-    // The multiplexer a session is created on is picked from the booted
-    // registry.
-    field!(NextLaunch, multiplexer),
     field!(Live, config_version),
     // Every terminal's parser is built with it.
     field!(NextLaunch, scrollback_lines),
@@ -566,21 +530,17 @@ pub const FIELDS: &[Field] = &[
     field!(NextLaunch, two_panel_min_cols),
     field!(NextLaunch, three_panel_min_cols),
     // Pruned once, at startup.
-    field!(NextLaunch, audit_retention_days),
-    field!(NextLaunch, deleted_retention_days),
     // The git-stat cache is built with it, and a cache that re-read it would
     // also have to re-age every entry.
     field!(NextLaunch, git_poll_secs),
     // The feature switches that only gate whether a surface is drawn, which is
     // decided per frame.
-    field!(Live, features.tasks),
     field!(Live, features.file_viewer),
     field!(Live, features.info_panel),
     field!(Live, features.global_search),
     field!(Live, features.shell_pane),
     field!(Live, features.code_review),
     field!(Live, features.perf_hud),
-    field!(Live, features.soft_delete),
     // Capture is an escape already sent, the notifier is a thread already
     // started (or not), the heartbeat is armed once, and the update work ran
     // at startup.
@@ -593,14 +553,10 @@ pub const FIELDS: &[Field] = &[
     field!(NextLaunch, notifications),
     // Read at every copy.
     field!(Live, clipboard),
-    // The mirror reads the file itself on every pass.
-    field!(Live, remote),
     // The engine's source and executor are chosen once, at boot (ADR-41).
     field!(NextLaunch, fleet),
-    // Spawns, restarts and the tick read the file themselves, so the table
-    // applies live there. What is in force here feeds only the diagnostic-log
-    // bridge, built once at boot (ADR-38), so it is held as booted and only a
-    // change to how that bridge would be built needs a restart.
+    // Feeds only the diagnostic-log bridge, built once at boot (ADR-38), so
+    // only a change to how that bridge would be built needs a restart.
     Field {
         key: "telemetry",
         applies: Applies::NextLaunch,
@@ -633,20 +589,16 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            multiplexer: None,
             config_version: None,
             scrollback_lines: default_scrollback_lines(),
             hidden_terminal_secs: default_hidden_terminal_secs(),
             stream_panes: false,
             two_panel_min_cols: default_two_panel_min_cols(),
             three_panel_min_cols: default_three_panel_min_cols(),
-            audit_retention_days: default_audit_retention_days(),
-            deleted_retention_days: 0,
             git_poll_secs: default_git_poll_secs(),
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),
-            remote: RemoteSettings::default(),
             telemetry: TelemetrySettings::default(),
             fleet: FleetSettings::default(),
         }
@@ -664,7 +616,6 @@ mod tests {
         assert_eq!(s.scrollback_lines, 1000);
         assert_eq!(s.two_panel_min_cols, 80);
         assert_eq!(s.three_panel_min_cols, 120);
-        assert_eq!(s.audit_retention_days, 90);
     }
 
     #[test]
@@ -682,7 +633,7 @@ mod tests {
     fn partial_override_keeps_other_defaults() {
         let s: Settings = toml::from_str("scrollback_lines = 5000").unwrap();
         assert_eq!(s.scrollback_lines, 5000);
-        assert_eq!(s.audit_retention_days, 90);
+        assert_eq!(s.git_poll_secs, 5);
     }
 
     #[test]
@@ -695,7 +646,7 @@ mod tests {
     fn absent_features_table_enables_everything() {
         let s: Settings = toml::from_str("").unwrap();
         assert_eq!(s.features, FeatureFlags::default());
-        assert!(s.features.tasks && s.features.automations);
+        assert!(s.features.file_viewer && s.features.automations);
     }
 
     #[test]
@@ -706,10 +657,9 @@ mod tests {
 
     #[test]
     fn partial_features_override_keeps_other_flags_enabled() {
-        let s: Settings = toml::from_str("[features]\ntasks = false").unwrap();
-        assert!(!s.features.tasks);
+        let s: Settings = toml::from_str("[features]\nfile_viewer = false").unwrap();
+        assert!(!s.features.file_viewer);
         assert!(s.features.automations);
-        assert!(s.features.file_viewer);
         assert!(s.features.global_search);
         assert!(s.features.info_panel);
         assert!(s.features.shell_pane);
@@ -720,22 +670,14 @@ mod tests {
     fn mouse_feature_flag_parses() {
         let s: Settings = toml::from_str("[features]\nmouse = false").unwrap();
         assert!(!s.features.mouse);
-        assert!(s.features.tasks, "untouched flags stay enabled");
+        assert!(s.features.file_viewer, "untouched flags stay enabled");
     }
 
     #[test]
     fn notifications_feature_flag_parses() {
         let s: Settings = toml::from_str("[features]\nnotifications = false").unwrap();
         assert!(!s.features.notifications);
-        assert!(s.features.tasks, "untouched flags stay enabled");
-    }
-
-    #[test]
-    fn soft_delete_feature_flag_defaults_false_and_parses() {
-        assert!(!FeatureFlags::default().soft_delete);
-        let s: Settings = toml::from_str("[features]\nsoft_delete = true").unwrap();
-        assert!(s.features.soft_delete);
-        assert!(s.features.tasks, "untouched flags stay enabled");
+        assert!(s.features.file_viewer, "untouched flags stay enabled");
     }
 
     #[test]
@@ -820,7 +762,7 @@ mod tests {
         // On by default for 1.0 (it makes a network call to GitHub).
         let s: Settings = toml::from_str("[features]").unwrap();
         assert!(s.features.version_check, "version_check defaults on");
-        assert!(s.features.tasks, "other flags still default on");
+        assert!(s.features.file_viewer, "other flags still default on");
 
         let s: Settings = toml::from_str("[features]\nversion_check = false").unwrap();
         assert!(!s.features.version_check);
@@ -832,7 +774,7 @@ mod tests {
         // On by default for 1.0 (network call + writes to disk).
         let s: Settings = toml::from_str("[features]").unwrap();
         assert!(s.features.auto_update, "auto_update defaults on");
-        assert!(s.features.tasks, "other flags still default on");
+        assert!(s.features.file_viewer, "other flags still default on");
 
         let s: Settings = toml::from_str("[features]\nauto_update = false").unwrap();
         assert!(!s.features.auto_update);
@@ -841,8 +783,8 @@ mod tests {
 
     #[test]
     fn feature_flag_type_mismatch_is_rejected() {
-        let err = toml::from_str::<Settings>("[features]\ntasks = \"no\"").unwrap_err();
-        assert!(err.to_string().contains("tasks"));
+        let err = toml::from_str::<Settings>("[features]\nfile_viewer = \"no\"").unwrap_err();
+        assert!(err.to_string().contains("file_viewer"));
     }
 
     #[test]
@@ -851,7 +793,7 @@ mod tests {
 
         // A live UI-panel flag is not a restart-only difference.
         let mut live = base.clone();
-        live.features.tasks = !live.features.tasks;
+        live.features.file_viewer = !live.features.file_viewer;
         assert!(!base.restart_only_differs(&live));
 
         // A restart-only feature flag, a scalar, and a notification knob all are.
@@ -899,7 +841,6 @@ mod tests {
         // omission in `restart_only_differs` (which would wrongly toast "applied
         // live"). Each binding is consumed by `cases`, so none goes unused.
         let FeatureFlags {
-            tasks,
             automations,
             file_viewer,
             global_search,
@@ -909,7 +850,6 @@ mod tests {
             perf_hud,
             mouse,
             notifications,
-            soft_delete,
             version_check,
             auto_update,
         } = FeatureFlags::default();
@@ -917,7 +857,6 @@ mod tests {
         // compile-time guard (an unused binding would otherwise be the only
         // warning, not an error).
         let _ = (
-            tasks,
             automations,
             file_viewer,
             global_search,
@@ -927,7 +866,6 @@ mod tests {
             perf_hud,
             mouse,
             notifications,
-            soft_delete,
             version_check,
             auto_update,
         );
@@ -935,15 +873,13 @@ mod tests {
         // `live` flags gate UI panels read from `App.features` every frame, so
         // flipping one is NOT a restart-only difference; the rest are read once
         // at startup and MUST register as one.
-        let live: [fn(&mut FeatureFlags); 8] = [
-            |f| f.tasks = !f.tasks,
+        let live: [fn(&mut FeatureFlags); 6] = [
             |f| f.file_viewer = !f.file_viewer,
             |f| f.global_search = !f.global_search,
             |f| f.info_panel = !f.info_panel,
             |f| f.shell_pane = !f.shell_pane,
             |f| f.code_review = !f.code_review,
             |f| f.perf_hud = !f.perf_hud,
-            |f| f.soft_delete = !f.soft_delete,
         ];
         let restart: [fn(&mut FeatureFlags); 5] = [
             |f| f.automations = !f.automations,
@@ -994,17 +930,16 @@ mod tests {
         // it agree, and only a live row may be taken.
         let base = Settings::default();
         let other: Settings = toml::from_str(
-            "multiplexer = \"rmux\"\nconfig_version = 2\nscrollback_lines = 1\n\
+            "config_version = 2\nscrollback_lines = 1\n\
              hidden_terminal_secs = 1\nstream_panes = true\ntwo_panel_min_cols = 1\nthree_panel_min_cols = 1\n\
-             audit_retention_days = 1\ndeleted_retention_days = 1\ngit_poll_secs = 1\n\
-             [features]\ntasks = false\nautomations = false\nfile_viewer = false\n\
+             git_poll_secs = 1\n\
+             [features]\nautomations = false\nfile_viewer = false\n\
              global_search = false\ninfo_panel = false\nshell_pane = false\n\
              code_review = false\nperf_hud = false\nmouse = false\nnotifications = false\n\
-             soft_delete = true\nversion_check = false\nauto_update = false\n\
+             version_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
-             [remote]\ntransitive_sessions = true\n\
              [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n\
-             [fleet]\nenabled = true\n",
+             [fleet]\nprogram = \"/opt/fleet\"\n",
         )
         .unwrap();
         let adopted = base.with_live_from(&other);

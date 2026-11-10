@@ -52,6 +52,6 @@ pub use multiplexer::{BackendChoice, Multiplexer};
 pub use pane::{AppCopy, AppCopyRequest, PaneInfo, Session, SessionParser, TermSignals};
 pub use platform::Platform;
 pub use registry::BackendRegistry;
-pub use route::{Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
+pub use route::{host_of_key, Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
 pub use session_id::SessionId;
 pub use settings::MuxSettings;

@@ -1,4 +1,4 @@
-//! `thurbox-cli notify` — diagnose OS desktop notifications, and send one.
+//! `thurbox-cli notify` — diagnose OS desktop notifications.
 //!
 //! The default (no flags) prints which delivery backend thurbox would use on
 //! this host, whether it can actually deliver, whether click-to-focus is
@@ -9,55 +9,53 @@
 //! With `--test`, it fires a sample notification *synchronously* so the user
 //! can confirm end-to-end that a banner/toast actually appears.
 //!
-//! `notify send` is the same delivery for a script, a hook or an Exec
-//! automation (issue #1519): it honours both off switches and the configured
-//! backend, never touches a session's state, and with `--key` drops a repeat
-//! inside `--min-interval`, across processes, through a lease in
-//! `event_cursors`. The failing-run alert of `automation tick` is built on
-//! `send` (issue #1508).
+//! `notify send` delivers one notification of the caller's own, from a script
+//! or an Exec automation, with an optional dedupe key.
 
 use std::time::Duration;
 
 use clap::{Args, Subcommand};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::notifications::{self, DeliveryBackend, Notification};
 use crate::session::settings::{NotificationBackend, Settings};
-use crate::session::SessionId;
-use crate::storage::current_time_millis;
-use crate::storage::event_cursors::LockSubject;
-use crate::storage::Database;
 
 use super::output::{kv, CommandOutput};
 use super::CommandError;
 
-/// `notify` subcommand arguments.
+/// `notify` arguments.
 #[derive(Args, Debug)]
 pub struct NotifyArgs {
-    #[command(subcommand)]
-    pub action: Option<Action>,
     /// Fire a sample notification to confirm delivery works end-to-end.
     #[arg(long)]
     pub test: bool,
+    #[command(subcommand)]
+    pub action: Option<Action>,
 }
 
+/// Run the `notify` command.
+pub fn run(args: NotifyArgs, settings: &Settings) -> Result<CommandOutput, CommandError> {
+    match args.action {
+        Some(Action::Send(send_args)) => send(send_args, settings),
+        None => Ok(diagnose(args.test, settings)),
+    }
+}
+
+/// `notify` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Send a desktop notification through the configured backend. Exits 0
-    /// with `suppressed` when notifications are off or the key is deduped.
+    /// Deliver one notification now, e.g. from a script or an Exec
+    /// automation. Exits 1 when delivery fails.
     Send(SendArgs),
 }
 
+/// `notify send` arguments.
 #[derive(Args, Debug)]
 pub struct SendArgs {
     #[arg(long)]
     pub title: String,
     #[arg(long)]
     pub body: String,
-    /// The session the notification is about (id, key or name). Clicking it
-    /// focuses that session where the backend supports it.
-    #[arg(long)]
-    pub session: Option<String>,
     /// Drop a repeat of this key inside `--min-interval`, across processes.
     #[arg(long, requires = "min_interval")]
     pub key: Option<String>,
@@ -70,27 +68,17 @@ pub struct SendArgs {
     pub min_interval: Option<u64>,
 }
 
-/// The longest `--min-interval`: a year, far inside what a lease expiry in
-/// milliseconds can hold.
+/// The longest `--min-interval`: a year.
 const MAX_MIN_INTERVAL_SECS: u64 = 365 * 24 * 60 * 60;
 
 /// How long a send waits for the backend. The toast and macOS paths wait on a
-/// child process, and one that never returns must not hold up the tick that
-/// sends an alert, nor every scheduled run behind it.
+/// child process, and one that never returns must not hold up the script or
+/// the automation that sent it.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// One notification [`send`] is asked to deliver.
-pub(crate) struct Message {
-    pub title: String,
-    pub body: String,
-    pub session: Option<SessionId>,
-    /// The dedupe key and how long a delivery of it holds off its repeats.
-    pub dedupe: Option<(String, u64)>,
-}
-
-/// What became of a [`Message`].
+/// What became of a send.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Sent {
+enum Sent {
     Delivered,
     /// `disabled` or `deduped`.
     Suppressed(&'static str),
@@ -98,7 +86,7 @@ pub(crate) enum Sent {
 }
 
 impl Sent {
-    pub fn to_json(&self) -> Value {
+    fn to_json(&self) -> serde_json::Value {
         match self {
             Sent::Delivered => json!({ "delivered": true, "suppressed": null, "error": null }),
             Sent::Suppressed(why) => {
@@ -109,61 +97,59 @@ impl Sent {
     }
 }
 
-/// The subject a dedupe key is leased under.
-fn dedupe_subject(key: &str) -> LockSubject {
-    LockSubject::Notification(key.to_string())
-}
-
-/// Deliver `m` synchronously, unless notifications are off or its key was
-/// delivered inside its interval. Changes no session state.
+/// Deliver one notification, unless notifications are off or its key was
+/// delivered inside its interval.
 ///
-/// The key is leased before delivery, so two processes racing on one key
-/// deliver once; a delivery that fails gives the lease back, so the retry is
-/// not deduped against a notification nobody saw.
-/// Whether either off switch is set.
-fn disabled(s: &Settings) -> bool {
-    !s.features.notifications || s.notifications.backend == NotificationBackend::Off
-}
-
-pub(crate) fn send(db: &Database, m: &Message, s: &Settings) -> Sent {
-    if disabled(s) {
-        return Sent::Suppressed("disabled");
+/// The key is held in `notify-dedupe.json` in the data directory, under the
+/// file lock every process takes, before delivery: two processes racing on
+/// one key deliver once. A delivery that fails gives back the hold it took,
+/// and only that one, so the retry is not deduped against a notification
+/// nobody saw, and a newer hold of the same key survives a late failure.
+fn send(args: SendArgs, s: &Settings) -> Result<CommandOutput, CommandError> {
+    if !s.features.notifications || s.notifications.backend == NotificationBackend::Off {
+        return Ok(CommandOutput::new(
+            Sent::Suppressed("disabled").to_json(),
+            "Notification suppressed (disabled).",
+        ));
     }
-    let leased = match &m.dedupe {
-        Some((key, secs)) => {
-            let now = current_time_millis();
-            if let Err(e) = db.prune_notification_leases(now) {
-                tracing::debug!("prune notification leases: {e}");
-            }
-            let subject = dedupe_subject(key);
+    let hold = match (&args.key, args.min_interval) {
+        (Some(key), Some(secs)) => {
+            let now = now_ms();
             let expires = now.saturating_add(secs.saturating_mul(1000));
-            match db.take_lease(&subject, expires, now) {
-                Ok(true) => Some((subject, expires)),
-                Ok(false) => return Sent::Suppressed("deduped"),
-                Err(e) => return Sent::Failed(format!("dedupe lease: {e}")),
+            if !dedupe::take(key, expires, now)? {
+                return Ok(CommandOutput::new(
+                    Sent::Suppressed("deduped").to_json(),
+                    format!("Notification suppressed: {key} was sent within its interval."),
+                ));
             }
+            Some((key.clone(), expires))
         }
-        None => None,
+        _ => None,
     };
     let n = Notification {
-        session_id: m.session.unwrap_or_default(),
-        title: m.title.clone(),
-        body: m.body.clone(),
+        session_id: String::new(),
+        title: args.title,
+        body: args.body,
         sound: s.notifications.sound,
     };
-    match deliver(n, notifications::detect_backend(s.notifications.backend)) {
+    let sent = match deliver(n, notifications::detect_backend(s.notifications.backend)) {
         Ok(()) => Sent::Delivered,
         Err(e) => {
-            // Only the hold this send took: past its interval another send
-            // may have taken the key, and that hold is not ours to give back.
-            if let Some((subject, expires)) = leased {
-                if let Err(e) = db.release_lease(&subject, expires) {
-                    tracing::warn!("give back notification lease: {e}");
+            if let Some((key, expires)) = &hold {
+                if let Err(e) = dedupe::give_back(key, *expires) {
+                    tracing::warn!("give back notification key {key}: {e}");
                 }
             }
             Sent::Failed(e)
         }
-    }
+    };
+    Ok(match &sent {
+        Sent::Failed(e) => {
+            let msg = format!("Notification failed: {e}");
+            CommandOutput::failed(sent.to_json(), msg.clone(), msg)
+        }
+        _ => CommandOutput::new(sent.to_json(), "Notification delivered."),
+    })
 }
 
 /// Deliver on a thread of its own and wait at most [`DELIVERY_TIMEOUT`]. A
@@ -181,64 +167,58 @@ fn deliver(n: Notification, backend: DeliveryBackend) -> Result<(), String> {
     })
 }
 
-/// Forget `key`'s last delivery, so its next send is not deduped.
-pub(crate) fn forget(db: &Database, key: &str) -> rusqlite::Result<()> {
-    db.drop_lease(&dedupe_subject(key))
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
 }
 
-/// Run the `notify` command.
-pub fn run(
-    args: NotifyArgs,
-    db: &Database,
-    settings: &Settings,
-) -> Result<CommandOutput, CommandError> {
-    match args.action {
-        Some(Action::Send(send_args)) => run_send(db, send_args, settings),
-        None => Ok(diagnose(args.test, settings)),
-    }
-}
+/// The dedupe keys: key → when its hold ends (unix millis), in
+/// `notify-dedupe.json`, rewritten whole under the file lock.
+mod dedupe {
+    use std::collections::BTreeMap;
 
-fn run_send(
-    db: &Database,
-    args: SendArgs,
-    settings: &Settings,
-) -> Result<CommandOutput, CommandError> {
-    // Before the session is looked up: with notifications off a hook naming a
-    // session that is already gone still exits 0.
-    if disabled(settings) {
-        let mut json = Sent::Suppressed("disabled").to_json();
-        json["session_id"] = Value::Null;
-        return Ok(CommandOutput::new(
-            json,
-            "Notification suppressed (disabled).",
-        ));
+    type Holds = BTreeMap<String, u64>;
+
+    fn edit<T>(change: impl FnOnce(&mut Holds) -> T) -> Result<T, String> {
+        let path =
+            crate::paths::notify_dedupe_file().ok_or("could not resolve the data directory")?;
+        crate::paths::with_file_lock(&path, || {
+            let mut holds: Holds = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .unwrap_or_default();
+            let answer = change(&mut holds);
+            let text = serde_json::to_string_pretty(&holds).map_err(|e| e.to_string())?;
+            crate::paths::write_atomically(&path, text).map_err(|e| e.to_string())?;
+            Ok(answer)
+        })
+        .map_err(|e| format!("dedupe key lock: {e}"))?
     }
-    let session = match &args.session {
-        Some(reference) => Some(super::session_ref::resolve(db, reference)?.id),
-        None => None,
-    };
-    let sent = send(
-        db,
-        &Message {
-            title: args.title,
-            body: args.body,
-            session,
-            dedupe: args.key.zip(args.min_interval),
-        },
-        settings,
-    );
-    let mut json = sent.to_json();
-    json["session_id"] = session.map_or(Value::Null, |id| Value::String(id.to_string()));
-    Ok(match sent {
-        Sent::Delivered => CommandOutput::new(json, "Notification delivered."),
-        Sent::Suppressed(why) => {
-            CommandOutput::new(json, format!("Notification suppressed ({why})."))
-        }
-        Sent::Failed(e) => {
-            let msg = format!("Notification failed: {e}");
-            CommandOutput::failed(json, msg.clone(), msg)
-        }
-    })
+
+    /// Hold `key` until `expires`, unless a hold of it is still running at
+    /// `now`. Whether this call took it.
+    pub(super) fn take(key: &str, expires: u64, now: u64) -> Result<bool, String> {
+        edit(|holds| {
+            holds.retain(|_, until| *until > now);
+            if holds.contains_key(key) {
+                return false;
+            }
+            holds.insert(key.to_string(), expires);
+            true
+        })
+    }
+
+    /// Release the hold of `key` that ends at `expires`, if it is still that
+    /// one.
+    pub(super) fn give_back(key: &str, expires: u64) -> Result<(), String> {
+        edit(|holds| {
+            if holds.get(key) == Some(&expires) {
+                holds.remove(key);
+            }
+        })
+    }
 }
 
 /// The report `notify` with no subcommand prints. Reads the settings (for the
@@ -297,7 +277,7 @@ fn run_test(feature_on: bool, backend: DeliveryBackend, sound: bool) -> CommandO
     }
 
     let n = Notification {
-        session_id: SessionId::default(),
+        session_id: String::new(),
         title: "thurbox · test".into(),
         body: "Notifications are working. This is a test from `thurbox-cli notify --test`.".into(),
         sound,

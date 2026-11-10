@@ -393,9 +393,8 @@ pub struct TaskStatus {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub catch_ups: u32,
     /// The key of the catch-up note owed to a revived or resumed session,
-    /// until its delivery is known. A record from before the rename holds
-    /// it as `resume`, under a `resume/<n>` key, and is read the same way.
-    #[serde(default, alias = "resume", skip_serializing_if = "Option::is_none")]
+    /// until its delivery is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catch_up: Option<String>,
     /// After a failed or unknown attempt: the manager does not reconcile
     /// this Task again before then.

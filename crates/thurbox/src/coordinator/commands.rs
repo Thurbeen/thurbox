@@ -97,9 +97,8 @@ impl App {
                 keys,
             } => self.apply_program(owner, name, program, argv, *close, keys.as_deref()),
             // The editor wants a controlling tty, which only this thread can hand
-            // it — see `Command::Editor`. Its setting is read first, off the
-            // loop (`open_requested_editor`).
-            Command::Editor { session } => self.snapshots.request_editor(session),
+            // it — see `Command::Editor` and `open_requested_editor`.
+            Command::Editor { session } => self.editor_request = Some(session.clone()),
             Command::Diff { session } => {
                 // Drop the answer; the request at the top of the next iteration
                 // recomputes it on the worker.
@@ -218,6 +217,17 @@ impl App {
 
     /// `Command::Shell`: a companion shell beside a session's agent.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
+        let seen = self
+            .shells
+            .records
+            .get(session)
+            .map(|record| record.pane.clone());
+        self.open_shell(session, seen);
+    }
+
+    /// Open `session`'s companion shell. `seen` is the shell pane the row
+    /// records now, which the answer is matched against.
+    pub(crate) fn open_shell(&mut self, session: &str, seen: Option<String>) {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         // Resolved from the snapshot rather than the live
         // `Session`: an adopted one carries no cwd of its own.
@@ -226,11 +236,6 @@ impl App {
             .current()
             .session(session)
             .and_then(|row| self.terminals.launch_cwd(row));
-        let seen = self
-            .snapshots
-            .current()
-            .session(session)
-            .and_then(|row| row.shell_backend_id.clone());
         if let Err(e) =
             self.terminals
                 .open_shell(session, rows, cols, cwd.as_deref(), seen.as_deref())
@@ -239,27 +244,28 @@ impl App {
         }
     }
 
-    /// Store a theme the picker or a plugin chose. Queued on the snapshot's
-    /// database worker, so a lock another process holds delays the write and
-    /// not the frame (issue #1474).
+    /// Store a theme the picker or a plugin chose in `interface.json`, on a
+    /// thread of its own so a slow disk delays the write and not the frame.
     pub(crate) fn store_chosen_theme(&mut self) {
         if let Some(name) = self.themes.take_chosen() {
-            self.snapshots.persist_theme(&name);
+            std::thread::spawn(move || {
+                if let Err(e) =
+                    thurbox::config::interface_state::update(|state| state.theme = Some(name))
+                {
+                    tracing::warn!("could not store the chosen theme: {e}");
+                }
+            });
         }
     }
 
-    /// `Command::Editor`, once its setting has been read: hand the configured
-    /// editor this thread's tty.
-    ///
-    /// The setting is read off the loop (`SnapshotStore::request_editor`)
-    /// rather than through a connection opened here, whose prune of aged
-    /// history waited out the busy timeout whenever another process held the
-    /// write lock (issue #1474).
+    /// `Command::Editor`: hand the configured editor (`interface.json`) this
+    /// thread's tty.
     fn open_requested_editor(&mut self, terminal: &mut DefaultTerminal) {
-        let Some(request) = self.snapshots.take_editor() else {
+        let Some(session) = self.editor_request.take() else {
             return;
         };
-        let row = self.snapshots.current().session(&request.session);
+        let state = thurbox::config::interface_state::load();
+        let row = self.snapshots.current().session(&session);
         // A Fleet Task on another host names directories there.
         if row.is_some_and(|row| !row.workspace_reachable()) {
             self.toast("this Task's workspace is on another machine; no editor opens here");
@@ -267,7 +273,7 @@ impl App {
         }
         let dirs = row.map(|row| row.member_dirs.clone()).unwrap_or_default();
         self.toast(
-            match open_editor(terminal, &dirs, request.command, request.mode) {
+            match open_editor(terminal, &dirs, state.editor_command, state.editor_mode) {
                 Ok(message) => message,
                 Err(e) => e,
             },
@@ -344,9 +350,7 @@ impl App {
                 .tracked_commands
                 .iter()
                 .filter(|(id, tracked)| {
-                    !live.contains(id)
-                        && !tracked.failed
-                        && matches!(tracked.kind, "create" | "fork")
+                    !live.contains(id) && !tracked.failed && tracked.kind == "create"
                 })
                 .filter_map(|(_, tracked)| tracked.name.clone())
                 .collect();
@@ -420,22 +424,6 @@ impl App {
             if tracked.failed {
                 continue;
             }
-            // A repair that relaunched nothing — its session deleted meanwhile,
-            // or a delete or restart holding the row — replaced no pane and
-            // has nothing to announce. "restarted <name>" and a
-            // `session.post_restart` for a session a driver just deleted would
-            // be as wrong as the error this used to be.
-            if self.commands.take_did_nothing(id) {
-                continue;
-            }
-            // A command that replaced the session's pane must be followed by
-            // letting go of the old one, or the interface keeps painting a pane
-            // that no longer exists — a session that looks restarted and takes no
-            // keys. This is told rather than detected: see `Terminals::forget`.
-            if matches!(tracked.kind, "restart" | "restore") && !tracked.session.is_empty() {
-                self.terminals.forget(&tracked.session);
-                self.dirty = true;
-            }
             if let Some(message) =
                 thurbox::kernel::messages::done(tracked.kind, tracked.label.as_deref())
             {
@@ -468,19 +456,11 @@ impl App {
             .current()
             .session(&session)
             .map(|row| row.name.clone())
-            .filter(|label| !label.is_empty())
-            // An automation names no session; its own `#<id>` or name is what
-            // the message band and `command.failed`'s `subject` should carry.
-            .or_else(|| match &command {
-                Command::Automation { .. } | Command::AutomationSave { .. } => command.subject(),
-                _ => None,
-            });
+            .filter(|label| !label.is_empty());
         // What `session.post_*` will need once the command has finished and its
         // row is gone (a delete) or only just arrived (a create).
         let name = match &command {
-            Command::Create { name, .. } | Command::Fork { name, .. } => {
-                Some(name.clone()).filter(|n| !n.is_empty())
-            }
+            Command::Create { name, .. } => Some(name.clone()).filter(|n| !n.is_empty()),
             _ => None,
         };
         let force = matches!(command, Command::Delete { force: true, .. });

@@ -36,6 +36,7 @@ test-scripts:
     bats scripts/ci/release-line.bats
     bats packaging/winget/winget.bats
     bats scripts/dev/e2e/windows-vm.bats
+    bats scripts/dev/lib/sandbox-env.bats
 
 # Format Rust + website code.
 fmt:

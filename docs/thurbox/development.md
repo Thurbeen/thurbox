@@ -4,8 +4,8 @@ How to set up a reproducible thurbox dev environment and run the app in an
 isolated sandbox.
 
 The repository is one Cargo workspace: thurbox is the member at
-`crates/thurbox`, and the trees that are not a crate (`ui/`, `extensions/`,
-`examples/`, `vendor/`) stay at the root. Cargo commands run from the root and
+`crates/thurbox`, and the trees that are not a crate (`ui/`, `examples/`,
+`vendor/`) stay at the root. Cargo commands run from the root and
 cover every member; a source path in these pages (`src/…`, `tests/…`) is the
 thurbox crate's.
 
@@ -16,7 +16,7 @@ thurbox crate's.
 The `flake.nix` provides the tools CI uses — the Rust toolchain (read from
 `rust-toolchain.toml`), interactive Bash, `tmux`, `shellcheck`, `bats`, Node,
 `cargo-nextest`, `cargo-deny`, `cocogitto`, `just`, the three Lua gates
-(`selene`, `stylua`, `lua-language-server`), `sqlite`, `jq`, and the demo stack
+(`selene`, `stylua`, `lua-language-server`), `jq`, and the demo stack
 (`vhs`/`ffmpeg`/`ttyd`). Interactive Bash is explicit because the real-pane
 tests exercise Readline's bracketed-paste mode; Nix's stdenv Bash omits those
 interactive builtins.
@@ -293,8 +293,8 @@ Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-demo`,
 `just sandbox-demo-big`, `just sandbox-shell`, `just sandbox-clean [profile]`.
 
 The sandbox points `THURBOX_CONFIG_DIR` at its own root, so the interface
-materialises at `<sandbox>/thurbox-config/ui/` along with agents, settings and the
-database. `--fresh` is therefore a clean first-run interface every time — which is
+materialises at `<sandbox>/thurbox-config/ui/` along with its settings and
+state. `--fresh` is therefore a clean first-run interface every time — which is
 how the plugin lifecycle (delivery, removal, restore) is exercised without touching
 your real one.
 
@@ -327,12 +327,12 @@ The isolation logic is one helper, `scripts/dev/lib/sandbox-env.sh`, sourced by
 `tests/tui_e2e.rs` isolates the same way in Rust — private profile dirs, a short
 private `TMUX_TMPDIR` — so it never touches a real profile either.
 
-### Example: watch a session's status hook end-to-end
+### Example: drive a sandbox session from its shell
 
 ```bash
 scripts/dev/sandbox.sh --shell
-# inside the sandbox shell (thurbox/thurbox-cli target the sandbox):
-thurbox-cli session create --name demo --repo-path "$PWD" --agent claude
-thurbox-cli session signal --state blocked --session <id>   # what an agent hook does
-thurbox-cli session list --json | jq '.[].name'
+# inside the sandbox shell (fleet/thurbox-cli target the sandbox's own Fleet):
+fleet list task                       # every session is a Fleet Task
+fleet send <task> "hello"             # type into its agent
+fleet get task <task> | jq .status    # one Task, as JSON
 ```

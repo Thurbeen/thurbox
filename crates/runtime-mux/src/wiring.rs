@@ -97,9 +97,9 @@ pub fn local_only(settings: &MuxSettings) -> BackendRegistry {
 ///
 /// Registration is by adapter, never by OS (ADR-31): a
 /// machine — this one or a host — is served by every multiplexer an adapter
-/// implements, whatever its platform or its preference. Those decide only what
-/// an unqualified route means ([`HostRegistry::qualify`]) and which backend is
-/// the default; a binary that is not installed is reported when its backend
+/// implements, whatever its platform or its preference. Those decide only which
+/// multiplexer a host key means ([`HostDef::default_route`]) and which backend
+/// is the default; a binary that is not installed is reported when its backend
 /// is first asked to start, by name.
 ///
 /// `table` must serve this platform's default multiplexer, which the registry
@@ -118,14 +118,14 @@ fn registry_from(
             .map(|(_, factory)| factory)?;
         let spec = match host {
             None => BackendSpec {
-                route: Route::local(Some(mux)),
+                route: Route::local(mux),
                 launcher: None,
                 platform,
                 host: None,
                 settings: settings.clone(),
             },
             Some(host) => BackendSpec {
-                route: host.route(Some(mux)),
+                route: host.route(mux),
                 launcher: Some(HostLauncher::for_host(host)),
                 platform: host.platform(),
                 host: Some(host.clone()),
@@ -169,11 +169,11 @@ mod tests {
         }
     }
 
-    /// What a host's unqualified rows have always meant is served — psmux on
-    /// a host that prefers it, tmux on one that prefers a multiplexer nothing
-    /// implements — and what nothing implements is never served.
+    /// A host's own multiplexer is served when an adapter implements it —
+    /// psmux on a host that prefers it, tmux on one that names none — and
+    /// what nothing implements is never served.
     #[test]
-    fn each_host_serves_what_its_unqualified_rows_mean() {
+    fn each_host_serves_its_own_multiplexer() {
         let hosts = hosts(&[
             ("plain", None),
             ("win", Some("psmux")),
@@ -182,18 +182,16 @@ mod tests {
         ]);
         let registry = for_hosts(&hosts, &MuxSettings::default());
         for host in &hosts.hosts {
-            let meant = hosts.qualify(&host.route(None));
-            assert!(registry.supports(&meant), "{}", meant.format());
-            assert!(
-                !registry.supports(&host.route(Some(Multiplexer::Herdr))),
+            let own = host.default_route();
+            assert_eq!(
+                registry.supports(&own),
+                own.mux != Multiplexer::Herdr,
                 "{}",
-                host.name
+                own.format()
             );
         }
-        assert_eq!(
-            hosts.qualify(&hosts.hosts[1].route(None)).mux,
-            Some(Multiplexer::Psmux)
-        );
+        assert_eq!(hosts.hosts[0].default_route().mux, Multiplexer::Tmux);
+        assert_eq!(hosts.hosts[1].default_route().mux, Multiplexer::Psmux);
     }
 
     #[test]
@@ -207,13 +205,13 @@ mod tests {
         }
         assert_eq!(
             registry.default_route(),
-            &Route::local(Some(Multiplexer::platform_default()))
+            &Route::local(Multiplexer::platform_default())
         );
     }
 
     /// Registration is by adapter, never by OS (ADR-31): every adapter here
     /// is registered for this machine and for every host whichever OS either
-    /// is, and the platform only picks what an unqualified route means.
+    /// is, and the platform only picks which backend is the default.
     #[test]
     fn every_adapter_is_registered_whatever_the_platform() {
         use crate::shell::simulate_local;
@@ -226,7 +224,7 @@ mod tests {
                 );
                 for mux in [Multiplexer::Tmux, Multiplexer::Psmux, Multiplexer::Rmux] {
                     assert!(
-                        registry.supports(&Route::local(Some(mux))),
+                        registry.supports(&Route::local(mux)),
                         "{} on a {} machine has an adapter and is not registered",
                         mux.name(),
                         platform.name()
@@ -235,7 +233,7 @@ mod tests {
                 for mux in [Multiplexer::Tmux, Multiplexer::Psmux, Multiplexer::Rmux] {
                     for host in ["plain", "win"] {
                         assert!(
-                            registry.supports(&Route::remote(Via::Ssh, host, Some(mux))),
+                            registry.supports(&Route::remote(Via::Ssh, host, mux)),
                             "{} on host {host} from a {} machine is not registered",
                             mux.name(),
                             platform.name()
@@ -248,7 +246,7 @@ mod tests {
                 };
                 assert_eq!(
                     registry.default_route(),
-                    &Route::local(Some(default)),
+                    &Route::local(default),
                     "on a {} machine",
                     platform.name()
                 );
@@ -356,15 +354,15 @@ mod tests {
                     let registry = registry_from(PROBES, &hosts, &MuxSettings::default());
                     let mut routes: Vec<(Route, Option<&HostDef>)> = Multiplexer::ALL
                         .into_iter()
-                        .map(|mux| (Route::local(Some(mux)), None))
+                        .map(|mux| (Route::local(mux), None))
                         .collect();
                     for host in &hosts.hosts {
                         for mux in Multiplexer::ALL {
-                            routes.push((host.route(Some(mux)), Some(host)));
+                            routes.push((host.route(mux), Some(host)));
                         }
                     }
                     for (route, host) in routes {
-                        let mux = route.mux.expect("qualified");
+                        let mux = route.mux;
                         let at = format!("{} from a {} machine", route.format(), local.name());
                         assert_eq!(Route::parse(&route.format()).as_ref(), Ok(&route), "{at}");
                         let backend = registry
@@ -409,16 +407,15 @@ mod tests {
                     }
                     assert_eq!(
                         registry.default_route(),
-                        &Route::local(Some(Multiplexer::default_for(local))),
+                        &Route::local(Multiplexer::default_for(local)),
                         "the default is this platform's own multiplexer"
                     );
                 });
             }
         }
 
-        /// The platform picks what an unqualified local route means and which
-        /// adapter is the default; the adapters registered are the same set
-        /// either way.
+        /// The platform picks which adapter is the default; the adapters
+        /// registered are the same set either way.
         #[test]
         fn the_platform_never_decides_what_is_registered() {
             let hosts = placements();

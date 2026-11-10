@@ -2,9 +2,8 @@
 //!
 //! Allows multiple `SessionBackend` implementations to coexist, each keyed by
 //! the qualified [`Route`] it serves. A container only: what fills it for a
-//! running process is [`crate::wiring`], and settling a row's
-//! unqualified route is `HostRegistry::qualify`'s — this looks up exactly the
-//! route it is asked for and never substitutes another.
+//! running process is [`crate::wiring`]. It looks up exactly the route it is
+//! asked for and never substitutes another.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,8 +38,7 @@ impl BackendRegistry {
         self.backends.insert(route, backend);
     }
 
-    /// The backend serving exactly `route`. An unqualified route matches
-    /// nothing: which multiplexer it means is decided before this is asked.
+    /// The backend serving exactly `route`.
     pub fn get(&self, route: &Route) -> Option<&Arc<dyn SessionBackend>> {
         self.backends.get(route)
     }
@@ -99,7 +97,7 @@ pub fn inert() -> BackendRegistry {
 /// [`inert`], also serving each of `routes` with a backend of its own.
 #[cfg(any(test, feature = "test-support"))]
 pub fn inert_serving(routes: &[Route]) -> BackendRegistry {
-    let local = Route::local(Some(crate::Multiplexer::platform_default()));
+    let local = Route::local(crate::Multiplexer::platform_default());
     let mut registry = BackendRegistry::new(local.clone(), stub::stub(&local));
     for route in routes {
         registry.register(route.clone(), stub::stub(route));
@@ -394,7 +392,7 @@ mod tests {
     use crate::{Multiplexer, Via};
 
     fn local(mux: Multiplexer) -> Route {
-        Route::local(Some(mux))
+        Route::local(mux)
     }
 
     #[test]
@@ -410,17 +408,14 @@ mod tests {
     fn a_route_finds_only_the_backend_registered_for_it() {
         let default = local(Multiplexer::Tmux);
         let mut registry = BackendRegistry::new(default.clone(), stub(&default));
-        let remote = Route::remote(Via::Ssh, "box", Some(Multiplexer::Tmux));
+        let remote = Route::remote(Via::Ssh, "box", Multiplexer::Tmux);
         registry.register(remote.clone(), stub(&remote));
 
         assert_eq!(registry.get(&remote).unwrap().name(), "ssh:box:tmux");
-        // Another multiplexer on the same machine is another backend, and an
-        // unqualified route is not quietly the default one.
+        // Another multiplexer on the same machine is another backend.
         for missing in [
             remote.with_mux(Multiplexer::Rmux),
-            Route::remote(Via::Ssh, "box", None),
-            Route::remote(Via::Wsl, "box", Some(Multiplexer::Tmux)),
-            Route::local(None),
+            Route::remote(Via::Wsl, "box", Multiplexer::Tmux),
             local(Multiplexer::Psmux),
         ] {
             assert!(registry.get(&missing).is_none(), "{missing}");
@@ -435,9 +430,9 @@ mod tests {
     #[test]
     fn availability_is_registration_for_every_mux_on_every_machine() {
         let places = [
-            Route::local(None),
-            Route::remote(Via::Ssh, "box", None),
-            Route::remote(Via::Wsl, "Ubuntu", None),
+            Route::local(Multiplexer::Tmux),
+            Route::remote(Via::Ssh, "box", Multiplexer::Tmux),
+            Route::remote(Via::Wsl, "Ubuntu", Multiplexer::Tmux),
         ];
         for registered in Multiplexer::ALL {
             let default = local(Multiplexer::Tmux);
@@ -468,7 +463,7 @@ mod tests {
         let default = local(Multiplexer::Tmux);
         let here = typed_stub(&default);
         let mut registry = BackendRegistry::new(default, here.clone());
-        let remote = Route::remote(Via::Ssh, "box", Some(Multiplexer::Tmux));
+        let remote = Route::remote(Via::Ssh, "box", Multiplexer::Tmux);
         let there = typed_stub(&remote);
         registry.register(remote, there.clone());
 
@@ -488,7 +483,7 @@ mod tests {
     fn routes_and_backends_list_everything_registered() {
         let default = local(Multiplexer::Tmux);
         let mut registry = BackendRegistry::new(default.clone(), stub(&default));
-        let extra = Route::remote(Via::Ssh, "box", Some(Multiplexer::Psmux));
+        let extra = Route::remote(Via::Ssh, "box", Multiplexer::Psmux);
         registry.register(extra.clone(), stub(&extra));
 
         let mut routes: Vec<String> = registry.routes().map(Route::format).collect();

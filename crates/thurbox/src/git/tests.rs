@@ -1,18 +1,14 @@
 //! `git`'s tests, kept together.
 //!
-//! They were one module before the file was split and they stay one: many
-//! exercise a parser against the *pair* of scripts that feed it (POSIX and
-//! PowerShell), which is a claim about two files agreeing, and splitting them
-//! by which file happens to hold the parser would hide that.
+//! They were one module before the file was split and they stay one: the
+//! helpers that build scratch repositories serve every file's tests.
 
 use super::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use crate::paths::TestPathGuard;
 use crate::session::HostDef;
-use crate::shell::posix_quote;
 
 #[test]
 fn git_program_scrubs_inherited_location_env() {
@@ -53,7 +49,7 @@ fn seed_repo(dir: &Path, file: &str, contents: &str) -> String {
         vec!["add", "-A"],
         vec!["commit", "-m", "seed"],
     ] {
-        run_git(git_command(None, dir, &args), "git").expect("seed");
+        run_git(git_command(dir, &args), "git").expect("seed");
     }
     head_commit(dir).expect("head")
 }
@@ -69,7 +65,7 @@ fn cloning_a_plugin_delivers_its_files_and_reports_the_commit() {
     let commit = seed_repo(&origin, "plugins/40_x.lua", "return {}\n");
     std::fs::write(origin.join("payload.bin"), [0x00u8, 0xff, 0xfe, 0x01]).expect("write");
     for args in [vec!["add", "-A"], vec!["commit", "-m", "payload"]] {
-        run_git(git_command(None, &origin, &args), "git").expect("commit");
+        run_git(git_command(&origin, &args), "git").expect("commit");
     }
     let commit = {
         let _ = commit;
@@ -300,154 +296,6 @@ fn scan_child_repos_missing_parent_is_empty() {
 }
 
 #[test]
-fn create_or_attach_worktree_is_idempotent() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
-    std::fs::create_dir(&repo).unwrap();
-    let git = |args: &[&str]| {
-        let ok = git_program()
-            .args(args)
-            .current_dir(&repo)
-            .output()
-            .expect("run git")
-            .status
-            .success();
-        assert!(ok, "git {args:?} failed");
-    };
-    git(&["init", "-q"]);
-    git(&["config", "user.email", "t@example.com"]);
-    git(&["config", "user.name", "t"]);
-    git(&["config", "commit.gpgsign", "false"]);
-    std::fs::write(repo.join("file.txt"), "hi").unwrap();
-    git(&["add", "."]);
-    git(&["commit", "-qm", "init"]);
-    let base = String::from_utf8(
-        git_program()
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&repo)
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap()
-    .trim()
-    .to_string();
-
-    let _guard = TestPathGuard::new(tmp.path().join("data"));
-
-    let p1 = create_or_attach_worktree(&repo, "feat/x", &base).expect("first creates");
-    assert!(p1.exists());
-    let p2 = create_or_attach_worktree(&repo, "feat/x", &base).expect("second reuses");
-    assert_eq!(p1, p2);
-    // Worktree dir gone but branch remains: re-attach a worktree to it.
-    remove_worktree(&repo, &p1).expect("remove worktree");
-    let p3 = create_or_attach_worktree(&repo, "feat/x", &base).expect("third reattaches");
-    assert_eq!(p1, p3);
-    assert!(p3.exists());
-}
-
-/// Compute the 16-char hex repo hash used in worktree paths.
-fn repo_hash(repo_path: &Path) -> String {
-    stable_repo_hash(&repo_path.display().to_string())
-}
-
-#[test]
-fn worktree_path_simple_branch() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/home/user/repo");
-    let result = worktree_path(repo, "main").unwrap();
-    let hash = repo_hash(repo);
-    assert_eq!(result, base.join("worktrees").join(&hash).join("main"));
-}
-
-#[test]
-fn worktree_path_slash_branch() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/home/user/repo");
-    let result = worktree_path(repo, "feature/foo").unwrap();
-    let hash = repo_hash(repo);
-    assert_eq!(
-        result,
-        base.join("worktrees").join(&hash).join("feature-foo")
-    );
-}
-
-#[test]
-fn worktree_path_nested_slashes() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/home/user/repo");
-    let result = worktree_path(repo, "feature/team/task").unwrap();
-    let hash = repo_hash(repo);
-    assert_eq!(
-        result,
-        base.join("worktrees").join(&hash).join("feature-team-task")
-    );
-}
-
-#[test]
-fn worktree_path_no_slashes_unchanged() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/repo");
-    let result = worktree_path(repo, "my-branch").unwrap();
-    let hash = repo_hash(repo);
-    assert_eq!(result, base.join("worktrees").join(&hash).join("my-branch"));
-}
-
-#[test]
-fn worktree_path_trailing_slash() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/repo");
-    let result = worktree_path(repo, "branch/").unwrap();
-    let hash = repo_hash(repo);
-    assert_eq!(result, base.join("worktrees").join(&hash).join("branch-"));
-}
-
-#[test]
-fn worktree_path_leading_slash() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/repo");
-    let result = worktree_path(repo, "/branch").unwrap();
-    let hash = repo_hash(repo);
-    assert_eq!(result, base.join("worktrees").join(&hash).join("-branch"));
-}
-
-#[test]
-fn worktree_path_different_repos_produce_different_hashes() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let path_a = worktree_path(Path::new("/repo/a"), "main").unwrap();
-    let path_b = worktree_path(Path::new("/repo/b"), "main").unwrap();
-    assert_ne!(path_a, path_b);
-    assert_eq!(path_a.file_name(), path_b.file_name());
-}
-
-#[test]
-fn worktree_path_same_repo_is_deterministic() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/home/user/repo");
-    let first = worktree_path(repo, "main").unwrap();
-    let second = worktree_path(repo, "main").unwrap();
-    assert_eq!(first, second);
-}
-
-#[test]
-fn stable_repo_hash_is_pinned_fnv1a() {
-    // Pin the exact output so a future swap back to a non-stable hasher
-    // (e.g. DefaultHasher/SipHash, whose digest varies across builds) is
-    // caught: these are the canonical FNV-1a 64-bit hashes for the inputs.
-    assert_eq!(stable_repo_hash(""), "cbf29ce484222325");
-    assert_eq!(stable_repo_hash("a"), "af63dc4c8601ec8c");
-    assert_eq!(stable_repo_hash("/home/user/repo"), "96e5ae60e8caf52a");
-}
-
-#[test]
 fn resolve_base_ref_none_without_remote() {
     // A repo with no upstream and no remote refs resolves to no base ref,
     // so sync surfaces an error rather than rebasing onto a missing
@@ -474,7 +322,7 @@ fn resolve_base_ref_none_without_remote() {
     git(&["add", "."]);
     git(&["commit", "-qm", "init"]);
 
-    assert_eq!(resolve_base_ref(None, repo), None);
+    assert_eq!(resolve_base_ref(repo), None);
 }
 
 #[test]
@@ -516,125 +364,10 @@ fn resolve_base_ref_prefers_upstream() {
     );
     run(&work, &["push", "-q", "-u", "origin", "HEAD"]);
 
-    assert_eq!(
-        resolve_base_ref(None, &work),
-        Some("@{upstream}".to_string())
-    );
+    assert_eq!(resolve_base_ref(&work), Some("@{upstream}".to_string()));
 }
 
-#[test]
-fn default_branch_prefers_main_over_master() {
-    let branches = vec![
-        "develop".to_string(),
-        "master".to_string(),
-        "main".to_string(),
-    ];
-    // Uses a non-existent path so the git command fails, exercising the fallback.
-    let result = default_branch(Path::new("/nonexistent"), &branches);
-    assert_eq!(result, Some("main".to_string()));
-}
-
-#[test]
-fn default_branch_falls_back_to_master() {
-    let branches = vec!["develop".to_string(), "master".to_string()];
-    let result = default_branch(Path::new("/nonexistent"), &branches);
-    assert_eq!(result, Some("master".to_string()));
-}
-
-#[test]
-fn default_branch_returns_none_when_no_candidates() {
-    let branches = vec!["develop".to_string(), "feature".to_string()];
-    let result = default_branch(Path::new("/nonexistent"), &branches);
-    assert_eq!(result, None);
-}
-
-#[test]
-fn default_branch_returns_none_for_empty_branches() {
-    let result = default_branch(Path::new("/nonexistent"), &[]);
-    assert_eq!(result, None);
-}
-
-#[test]
-fn transient_error_detects_could_not_write_index() {
-    assert!(is_transient_error("error: could not write index"));
-}
-
-#[test]
-fn transient_error_detects_unable_to_write_new_index() {
-    assert!(is_transient_error("fatal: Unable to write new index file"));
-}
-
-#[test]
-fn transient_error_detects_index_lock_exists() {
-    assert!(is_transient_error(
-        "fatal: Unable to create '/repo/.git/index.lock': File exists."
-    ));
-}
-
-#[test]
-fn transient_error_detects_another_git_process() {
-    assert!(is_transient_error(
-        "Another git process seems to be running in this repository"
-    ));
-}
-
-#[test]
-fn transient_error_rejects_auth_failure() {
-    assert!(!is_transient_error(
-        "fatal: Authentication failed for 'https://github.com/repo.git'"
-    ));
-}
-
-#[test]
-fn transient_error_rejects_merge_conflict() {
-    assert!(!is_transient_error(
-        "CONFLICT (content): Merge conflict in src/main.rs"
-    ));
-}
-
-#[test]
-fn transient_error_rejects_empty_string() {
-    assert!(!is_transient_error(""));
-}
-
-#[test]
-fn transient_error_matches_within_anyhow_chain() {
-    // is_transient_error is called with format!("{e:#}") which includes anyhow context
-    assert!(is_transient_error(
-        "git stash failed: could not write index"
-    ));
-    assert!(is_transient_error(
-        "git stash failed: fatal: Unable to create '/repo/.git/index.lock': File exists."
-    ));
-}
-
-#[test]
-fn try_remove_by_age_removes_old_lock() {
-    let dir = tempfile::tempdir().unwrap();
-    let lock = dir.path().join("index.lock");
-    std::fs::write(&lock, "").unwrap();
-
-    // Backdate the file's mtime to exceed STALE_LOCK_AGE
-    let old_time = std::time::SystemTime::now() - Duration::from_secs(120);
-    let times = std::fs::FileTimes::new().set_modified(old_time);
-    let file = std::fs::File::options().write(true).open(&lock).unwrap();
-    file.set_times(times).unwrap();
-
-    try_remove_by_age(&lock);
-    assert!(!lock.exists(), "old lock should have been removed");
-}
-
-#[test]
-fn try_remove_by_age_preserves_fresh_lock() {
-    let dir = tempfile::tempdir().unwrap();
-    let lock = dir.path().join("index.lock");
-    std::fs::write(&lock, "").unwrap();
-
-    try_remove_by_age(&lock);
-    assert!(lock.exists(), "fresh lock should be preserved");
-}
-
-// ── remote / ssh helpers ────────────────────────────────────────
+// ── stderr, and the host launcher ───────────────────────────────
 
 fn host(dest: &str, wt_dir: Option<&str>) -> HostDef {
     HostDef {
@@ -657,98 +390,11 @@ fn program_and_args(cmd: &Command) -> (String, Vec<String>) {
 
 #[test]
 fn git_command_local_uses_git_with_args() {
-    let cmd = git_command(None, Path::new("/repo"), &["branch", "--list"]);
+    let cmd = git_command(Path::new("/repo"), &["branch", "--list"]);
     let (prog, args) = program_and_args(&cmd);
     assert_eq!(prog, "git");
     assert_eq!(args, ["branch", "--list"]);
     assert_eq!(cmd.get_current_dir(), Some(Path::new("/repo")));
-}
-
-#[test]
-fn git_command_remote_wraps_in_ssh() {
-    let h = host("me@box", None);
-    let cmd = git_command(
-        Some(&h),
-        Path::new("/srv/repo"),
-        &["worktree", "add", "-b", "x"],
-    );
-    let (prog, args) = program_and_args(&cmd);
-    assert_eq!(prog, "ssh");
-    // User ssh_opts first, then the always-appended set (fail-fast hardening
-    // plus multiplexing when the machine has an `~/.ssh` —
-    // crate::shell::ssh_appended_opts), then destination + remote git.
-    let mut expected: Vec<String> = vec!["-o".into(), "ControlMaster=auto".into()];
-    expected.extend(
-        crate::shell::ssh_appended_opts()
-            .iter()
-            .map(|s| s.to_string()),
-    );
-    expected.extend(
-        [
-            "me@box",
-            "git",
-            "-C",
-            "/srv/repo",
-            "worktree",
-            "add",
-            "-b",
-            "x",
-        ]
-        .iter()
-        .map(|s| s.to_string()),
-    );
-    assert_eq!(args, expected);
-    // No local current_dir is set for the remote variant.
-    assert_eq!(cmd.get_current_dir(), None);
-}
-
-#[test]
-fn git_command_wsl_wraps_in_wsl_exe() {
-    let h = HostDef::wsl("Ubuntu");
-    let cmd = git_command(
-        Some(&h),
-        Path::new("/home/me/repo"),
-        &["worktree", "add", "-b", "x"],
-    );
-    let (prog, args) = program_and_args(&cmd);
-    assert_eq!(prog, "wsl.exe");
-    // A Unix caller passes `--cd /` so wsl.exe doesn't inherit (or mangle,
-    // via a prefix-sibling distro name) a caller cwd missing from the
-    // target distro — see `shell::wsl_command`.
-    #[cfg(unix)]
-    let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
-    #[cfg(not(unix))]
-    let prefix: &[&str] = &["-d", "Ubuntu"];
-    let expected: Vec<&str> = prefix
-        .iter()
-        .copied()
-        .chain(["git", "-C", "/home/me/repo", "worktree", "add", "-b", "x"])
-        .collect();
-    assert_eq!(args, expected);
-    // The child cwd is left to the OS default; `--cd` is the control.
-    assert_eq!(cmd.get_current_dir(), None);
-}
-
-#[test]
-fn host_shell_c_wsl_passes_script_unquoted_via_exec() {
-    // WSL: `--exec` hands argv to the in-distro process verbatim, so the
-    // multi-statement script travels as a single *unquoted* arg. Without
-    // it, wsl.exe substitutes `$…` inside the script and a pre-quoted
-    // script arrives as one literal command word ("not found").
-    let h = HostDef::wsl("Ubuntu");
-    let cmd = host_shell_c(&h, "mkdir -p /a && ln -s /b /a/b");
-    let (prog, args) = program_and_args(&cmd);
-    assert_eq!(prog, "wsl.exe");
-    #[cfg(unix)]
-    let prefix: &[&str] = &["-d", "Ubuntu", "--cd", "/"];
-    #[cfg(not(unix))]
-    let prefix: &[&str] = &["-d", "Ubuntu"];
-    let expected: Vec<&str> = prefix
-        .iter()
-        .copied()
-        .chain(["-e", "sh", "-c", "mkdir -p /a && ln -s /b /a/b"])
-        .collect();
-    assert_eq!(args, expected);
 }
 
 /// A Windows host, declared the only way thurbox declares one.
@@ -769,7 +415,7 @@ const PQ_ADVISORY: &str = "\
 
 #[test]
 fn the_post_quantum_advisory_is_not_reported_as_the_error() {
-    // Verbatim, this block is FIRST in the buffer, so every remote failure
+    // Verbatim, this block is FIRST in the buffer, so every failure
     // read as "connection is not using a post-quantum key…" and the real
     // cause was pushed below the fold — or off the end of a narrow band.
     let stderr = format!("{PQ_ADVISORY}\nfatal: not a git repository");
@@ -787,60 +433,8 @@ fn an_advisory_alone_leaves_nothing_to_report() {
 }
 
 #[test]
-fn powershell_clixml_stderr_is_decoded_to_its_message() {
-    // Captured verbatim from a real Windows SSH host: `powershell.exe` does
-    // not write error records as text when stderr is redirected, so this
-    // markup is what a Windows failure actually arrives as.
-    let stderr = format!(
-        "{PQ_ADVISORY}\n#< CLIXML\n<Objs Version=\"1.1.0.1\" \
-         xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">\
-         <Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\">\
-         <T>System.Management.Automation.PSCustomObject</T></TN><MS>\
-         <I64 N=\"SourceId\">1</I64><PR N=\"Record\">\
-         <AV>Preparing modules for first use.</AV></PR></MS></Obj>\
-         <S S=\"Error\">Get-ChildItem : Access to the path is \
-         denied._x000D__x000A_</S>\
-         <S S=\"Error\">    + CategoryInfo : PermissionDenied_x000D__x000A_</S>\
-         </Objs>"
-    );
-    let decoded = reportable_stderr(stderr.as_bytes());
-    assert_eq!(
-        decoded,
-        "Get-ChildItem : Access to the path is denied.\n    + CategoryInfo : PermissionDenied"
-    );
-    assert!(!decoded.contains("CLIXML"), "envelope survived: {decoded}");
-    assert!(!decoded.contains("<Objs"), "envelope survived: {decoded}");
-    assert!(
-        !decoded.contains("Preparing modules"),
-        "a progress record is not an error: {decoded}"
-    );
-}
-
-#[test]
-fn clixml_carrying_no_error_reports_the_exit_status_instead() {
-    // The shape a script that exits non-zero *silently* produces: an
-    // envelope with only a progress record. Reporting it verbatim is how
-    // `#< CLIXML <Objs Version=…` reached the user.
-    let stderr = "#< CLIXML\n<Objs Version=\"1.1.0.1\"><Obj S=\"progress\" \
-                  RefId=\"0\"><AV>Preparing modules for first use.</AV></Obj></Objs>";
-    assert_eq!(reportable_stderr(stderr.as_bytes()), "");
-}
-
-#[test]
-fn a_native_commands_own_stderr_survives_the_envelope() {
-    // `[Console]::Error.WriteLine` and any native command write raw text,
-    // which can be interleaved with an envelope. Both halves are kept.
-    let stderr = "#< CLIXML\nno such directory: C:/Users/me/nope\n\
-                  <Objs Version=\"1.1.0.1\"><Obj S=\"progress\" RefId=\"0\" /></Objs>";
-    assert_eq!(
-        reportable_stderr(stderr.as_bytes()),
-        "no such directory: C:/Users/me/nope"
-    );
-}
-
-#[test]
 fn posix_stderr_is_passed_through_untouched() {
-    // No advisory, no envelope: the POSIX path must be unaffected.
+    // No advisory: the stderr must be unaffected.
     assert_eq!(
         reportable_stderr(b"sh: 1: cd: can't cd to /nope"),
         "sh: 1: cd: can't cd to /nope"
@@ -869,98 +463,11 @@ fn a_line_merely_containing_asterisks_is_not_an_advisory() {
 }
 
 #[test]
-fn a_malformed_underscore_x_is_literal_text() {
-    // `_x` only opens an escape when four hex digits and a `_` follow.
-    // Guessing otherwise would corrupt a message that merely contains `_x`.
-    for text in [
-        "_x",
-        "_xZZZZ_",
-        "_x00_",
-        "_x000D",
-        "path_x_thing",
-        "_x000Dtail",
-    ] {
-        assert_eq!(unescape_clixml(text), text, "{text} must pass through");
-    }
-    // `from_str_radix` accepts a leading sign, so this once decoded to a
-    // character: four *hex digits* are required, not four parseable chars.
-    assert_eq!(unescape_clixml("_x+12_"), "_x+12_");
-}
-
-#[test]
-fn a_well_formed_underscore_x_decodes_and_keeps_its_surroundings() {
-    assert_eq!(unescape_clixml("a_x000D__x000A_b"), "a\r\nb");
-    assert_eq!(unescape_clixml("_x0041_"), "A");
-    // Lower-case hex is valid too.
-    assert_eq!(unescape_clixml("_x000d_"), "\r");
-}
-
-#[test]
-fn xml_entities_decode_with_the_ampersand_last() {
-    assert_eq!(
-        unescape_clixml("&lt;Objs&gt; &quot;x&quot; &apos;y&apos;"),
-        "<Objs> \"x\" 'y'"
-    );
-    // `&amp;lt;` is a literal `&lt;`, which only holds if `&amp;` is
-    // substituted after the others rather than before.
-    assert_eq!(unescape_clixml("&amp;lt;"), "&lt;");
-    assert_eq!(unescape_clixml("a &amp; b"), "a & b");
-}
-
-#[test]
-fn describe_exit_names_sshs_reserved_code_without_claiming_ssh() {
-    // 255 means the command never ran, which is a different sentence from
-    // "the command failed" — but the same helper serves `wsl.exe`, which
-    // has no such convention, so it must not say ssh.
-    let described = describe_exit(Some(255));
-    assert!(described.contains("255"), "{described}");
-    assert!(described.contains("never reached"), "{described}");
-    assert!(!described.contains("ssh"), "{described}");
-
-    assert_eq!(describe_exit(Some(1)), "exit 1, no error output");
-    assert_eq!(describe_exit(None), "terminated without an exit code");
-}
-
-#[test]
-fn powershell_quote_doubles_only_the_single_quote() {
-    assert_eq!(powershell_quote("C:/Users/me"), "'C:/Users/me'");
-    assert_eq!(powershell_quote("o'brien"), "'o''brien'");
-    // `\` and `$` are literal inside a single-quoted PowerShell string,
-    // which is exactly why it is the right quote for a Windows path.
-    assert_eq!(powershell_quote(r"C:\Users\$env:X"), r"'C:\Users\$env:X'");
-    assert_eq!(powershell_quote(""), "''");
-}
-
-#[test]
 fn a_psmux_host_is_a_windows_host_and_a_wsl_distro_is_not() {
     assert!(windows_host().is_windows());
     assert!(!host("me@box", None).is_windows());
     // A distro runs `tmux` inside Linux, whatever the machine hosting it.
     assert!(!HostDef::wsl("Ubuntu").is_windows());
-}
-
-#[test]
-fn a_windows_host_is_probed_with_powershell_not_sh() {
-    // `sh -c …` on a native-Windows host fails with PowerShell's
-    // CommandNotFoundException — which is what stopped the repo picker
-    // listing a directory there at all.
-    let cmd = host_probe(&windows_host(), "test -d /a", "Test-Path /a");
-    let (prog, args) = program_and_args(&cmd);
-    assert_eq!(prog, "ssh");
-    assert!(
-        args.iter().any(|a| a == "powershell"),
-        "expected the powershell transport; got {args:?}"
-    );
-    assert!(
-        !args.iter().any(|a| a.contains("test -d")),
-        "the posix script must not be sent to a windows host: {args:?}"
-    );
-    // And a POSIX host still gets `sh`, untouched.
-    let (_, posix) = program_and_args(&host_probe(&host("me@box", None), "test -d /a", "x"));
-    assert!(
-        posix.iter().any(|a| a == posix_quote("sh").as_str()),
-        "{posix:?}"
-    );
 }
 
 #[test]
@@ -999,189 +506,7 @@ fn the_powershell_payload_is_utf16le_base64_so_no_shell_can_rewrite_it() {
 }
 
 #[test]
-fn the_windows_probe_scripts_quote_a_path_holding_a_quote() {
-    // `'` is the only character special inside a PowerShell single-quoted
-    // literal — `\` and `$` are not, which is what makes it right for a
-    // Windows path.
-    let path = "C:/Users/o'brien/repos";
-    for script in [
-        list_dir_entries_script_windows(path),
-        classify_path_script_windows(path),
-        scan_child_repos_script_windows(path),
-    ] {
-        assert!(
-            script.contains("'C:/Users/o''brien/repos'"),
-            "quote not doubled: {script}"
-        );
-    }
-}
-
-#[test]
-fn the_windows_probe_scripts_emit_the_same_protocol_as_the_posix_ones() {
-    // The point of the pair: every parser below stays transport-neutral.
-    assert_eq!(
-        parse_dir_listing("!missing"),
-        DirListing::Missing,
-        "the windows listing writes the same sentinel"
-    );
-    let listing = list_dir_entries_script_windows("C:/a");
-    assert!(listing.contains("'!missing'"), "{listing}");
-    assert!(listing.contains("'g '"), "{listing}");
-    assert!(listing.contains("'d '"), "{listing}");
-    // Hidden entries are included, matching the POSIX loop's `* .*`.
-    assert!(listing.contains("-Force"), "{listing}");
-
-    let classify = classify_path_script_windows("C:/a");
-    for word in ["'missing'", "'git'", "'dir'"] {
-        assert!(classify.contains(word), "{word} missing from {classify}");
-    }
-
-    // The scan skips `.`-prefixed names (the POSIX `*` glob's rule) and says
-    // why it failed rather than exiting mute.
-    let scan = scan_child_repos_script_windows("C:/a");
-    assert!(scan.contains("StartsWith('.')"), "{scan}");
-    assert!(scan.contains("[Console]::Error.WriteLine"), "{scan}");
-    assert!(!scan.contains("-Force"), "hidden must stay skipped: {scan}");
-}
-
-#[test]
-fn host_shell_c_ssh_posix_quotes_script() {
-    // SSH space-joins its trailing args, so the script must be POSIX-quoted
-    // to survive as a single `sh -c` argument.
-    let h = host("me@box", None);
-    let cmd = host_shell_c(&h, "mkdir -p /a && ln -s /b /a/b");
-    let (prog, args) = program_and_args(&cmd);
-    assert_eq!(prog, "ssh");
-    // The script arg is single-quoted as a whole.
-    assert!(
-        args.iter().any(|a| a == "'mkdir -p /a && ln -s /b /a/b'"),
-        "script should be posix-quoted for ssh; got {args:?}"
-    );
-}
-
-#[test]
-fn browse_scripts_posix_quote_the_user_typed_path() {
-    // The dir/path is user-typed and embedded in a `sh -c` script — a
-    // single quote or `$` must arrive literally, never as shell syntax.
-    let tricky = "/srv/it's $HOME";
-    for script in [
-        list_dir_entries_script(tricky),
-        classify_path_script(tricky),
-        scan_child_repos_script(tricky),
-    ] {
-        assert!(
-            script.contains(r#"'/srv/it'\''s $HOME'"#),
-            "path must be posix-quoted in: {script}"
-        );
-    }
-    // The listing script's protocol pieces are present.
-    let script = list_dir_entries_script("/srv");
-    assert!(script.contains("!missing"));
-    assert!(script.contains("printf 'g %s\\n'"));
-    assert!(script.contains("printf 'd %s\\n'"));
-}
-
-#[test]
-fn collect_scanned_children_joins_and_sorts() {
-    let parent = Path::new("/srv/projects");
-    let repos = collect_scanned_children(parent, "web\napi\n\n*\n").unwrap();
-    assert_eq!(
-        repos,
-        vec![
-            PathBuf::from("/srv/projects/api"),
-            PathBuf::from("/srv/projects/web"),
-        ]
-    );
-}
-
-#[test]
-fn parse_dir_listing_reads_the_line_protocol() {
-    // `g`/`d` tagged lines, sorted; unknown lines skipped, not fatal.
-    let listing = parse_dir_listing("g thurbox\nd scratch\nnoise\ng api server\n");
-    assert_eq!(
-        listing,
-        DirListing::Entries(vec![
-            ("api server".into(), true),
-            ("scratch".into(), false),
-            ("thurbox".into(), true),
-        ])
-    );
-    assert_eq!(parse_dir_listing("!missing\n"), DirListing::Missing);
-    assert_eq!(parse_dir_listing(""), DirListing::Entries(Vec::new()));
-}
-
-#[test]
-fn parse_path_class_reads_the_single_word() {
-    assert_eq!(parse_path_class("git\n").unwrap(), PathClass::Git);
-    assert_eq!(parse_path_class("dir\n").unwrap(), PathClass::Dir);
-    assert_eq!(parse_path_class("missing\n").unwrap(), PathClass::Missing);
-    assert!(parse_path_class("garbage").is_err());
-}
-
-#[test]
-fn dir_file_probe_script_quotes_and_carries_the_protocol() {
-    // Both paths are embedded in a `sh -c` script — a single quote or `$`
-    // must arrive literally, never as shell syntax.
-    let script = dir_file_probe_script("/srv/it's $HOME", "/srv/it's $HOME/hooks.json");
-    assert!(
-        script.contains(r#"'/srv/it'\''s $HOME'"#),
-        "dir must be posix-quoted in: {script}"
-    );
-    assert!(
-        script.contains(r#"'/srv/it'\''s $HOME/hooks.json'"#),
-        "file must be posix-quoted in: {script}"
-    );
-    for sentinel in ["'@nodir'", "'@file'", "'@notfile'", "'@nofile'"] {
-        assert!(
-            script.contains(sentinel),
-            "{sentinel} missing from {script}"
-        );
-    }
-    // A missing guard dir answers alone — the file must not be consulted.
-    assert!(script.contains("echo '@nodir'; exit 0"), "{script}");
-}
-
-#[test]
-fn parse_dir_file_probe_reads_each_sentinel() {
-    assert_eq!(
-        parse_dir_file_probe("@nodir\n").unwrap(),
-        DirFileProbe::NoDir
-    );
-    assert_eq!(
-        parse_dir_file_probe("@nofile\n").unwrap(),
-        DirFileProbe::NoFile
-    );
-    assert_eq!(
-        parse_dir_file_probe("@notfile\n").unwrap(),
-        DirFileProbe::NotFile
-    );
-    assert!(parse_dir_file_probe("garbage\n").is_err());
-    assert!(parse_dir_file_probe("").is_err());
-}
-
-#[test]
-fn parse_dir_file_probe_returns_content_verbatim() {
-    // Content is everything after the `@file` line, byte-exact — including a
-    // line that *looks* like a sentinel (file content is remote-controlled
-    // text and may legitimately start with `@nodir`) and a body with no
-    // trailing newline.
-    assert_eq!(
-        parse_dir_file_probe("@file\n{\n  \"a\": 1\n}\n").unwrap(),
-        DirFileProbe::File("{\n  \"a\": 1\n}\n".into())
-    );
-    assert_eq!(
-        parse_dir_file_probe("@file\n@nodir\nno newline at end").unwrap(),
-        DirFileProbe::File("@nodir\nno newline at end".into())
-    );
-    // An empty file is `@file` with nothing after its newline.
-    assert_eq!(
-        parse_dir_file_probe("@file\n").unwrap(),
-        DirFileProbe::File(String::new())
-    );
-}
-
-#[test]
-fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
+fn list_dir_entries_flags_git_repos_and_follows_symlinks() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("repo").join(".git")).unwrap();
@@ -1191,13 +516,11 @@ fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(root.join("plain"), root.join("link")).unwrap();
 
-    let DirListing::Entries(entries) =
-        list_dir_entries_on(None, &root.display().to_string()).unwrap()
-    else {
+    let DirListing::Entries(entries) = list_dir_entries(&root.display().to_string()) else {
         panic!("existing dir must not be Missing");
     };
     // Hidden entries included (the picker filters); files excluded; a
-    // symlink to a dir is listed (the `ls -p` gap this fixes).
+    // symlink to a dir is listed.
     assert!(entries.contains(&(".hidden".to_string(), false)));
     assert!(entries.contains(&("repo".to_string(), true)));
     assert!(entries.contains(&("plain".to_string(), false)));
@@ -1206,58 +529,9 @@ fn list_dir_entries_local_flags_git_repos_and_follows_symlinks() {
     assert!(entries.contains(&("link".to_string(), false)));
 
     assert_eq!(
-        list_dir_entries_on(None, &root.join("nope").display().to_string()).unwrap(),
+        list_dir_entries(&root.join("nope").display().to_string()),
         DirListing::Missing
     );
-}
-
-#[test]
-fn expand_remote_tilde_passes_plain_paths_through() {
-    // No `~` prefix → no remote round-trip, byte-identical passthrough
-    // (including a mid-path `~`, which is not a home reference).
-    let h = HostDef::wsl("Ubuntu");
-    assert_eq!(
-        expand_remote_tilde(&h, "/home/me/repos").unwrap(),
-        "/home/me/repos"
-    );
-    assert_eq!(expand_remote_tilde(&h, "/data/~x").unwrap(), "/data/~x");
-}
-
-#[test]
-fn remote_workspace_dir_derives_base_from_worktrees_dir() {
-    // With a configured worktrees_dir the path is pure (no host round-trip):
-    // base = its parent, mirroring the local `<data root>/workspaces` layout.
-    let h = host("me@box", Some("/data/wt"));
-    let ws = remote_workspace_dir(&h, "abc-123").unwrap();
-    assert_eq!(ws, "/data/workspaces/abc-123");
-}
-
-#[test]
-fn remote_workspace_dir_rejects_empty_id() {
-    // An empty sanitized segment would make ensure/remove `rm -rf` the
-    // workspaces *root* — must error like the local builder.
-    let h = host("me@box", Some("/data/wt"));
-    assert!(remote_workspace_dir(&h, "").is_err());
-    assert!(remote_workspace_dir(&h, " .- ").is_err());
-}
-
-#[test]
-fn worktree_path_for_remote_uses_configured_dir() {
-    let h = host("me@box", Some("/data/wt"));
-    let path = worktree_path_for(Some(&h), Path::new("/srv/repo"), "feature/foo").unwrap();
-    let s = path.display().to_string();
-    assert!(s.starts_with("/data/wt/"), "got {s}");
-    assert!(s.ends_with("/feature-foo"), "got {s}");
-}
-
-#[test]
-fn worktree_path_for_local_matches_worktree_path() {
-    let base = PathBuf::from("/test/data");
-    let _guard = TestPathGuard::new(&base);
-    let repo = Path::new("/home/user/repo");
-    let via_for = worktree_path_for(None, repo, "main").unwrap();
-    let direct = worktree_path(repo, "main").unwrap();
-    assert_eq!(via_for, direct);
 }
 
 // ── parse_repo_name_from_url ────────────────────────────────────
@@ -1308,233 +582,7 @@ fn parse_url_trailing_slash() {
     );
 }
 
-/// A peer that reads the whole payload is the ordinary path, and one that dies
-/// holding the pipe open is the path that used to leak an `ssh` per attempt:
-/// `write_all` returned `EPIPE`, the `?` skipped the wait, and `Child`'s `Drop`
-/// neither killed nor reaped it. Unix-only because both need a POSIX shell.
-#[cfg(unix)]
-mod stream_into_child {
-    use std::process::{Command, Stdio};
-
-    fn peer(script: &str) -> std::process::Child {
-        Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn the test peer")
-    }
-
-    #[test]
-    fn a_payload_the_peer_reads_is_delivered() {
-        let child = peer("cat > /dev/null; echo done");
-        let out = super::super::stream_into_child(child, &vec![b'x'; 1 << 20], "test-copy")
-            .expect("a peer that reads the payload succeeds");
-        assert_eq!(String::from_utf8_lossy(&out).trim(), "done");
-    }
-
-    #[test]
-    fn a_peer_that_dies_mid_payload_reports_its_own_stderr() {
-        // Big enough to outrun the pipe buffer, so the write is still going
-        // when the peer exits and `write_all` really does see `EPIPE`.
-        let child = peer("echo 'no room on device' >&2; exit 1");
-        let error = super::super::stream_into_child(child, &vec![b'x'; 8 << 20], "test-copy")
-            .expect_err("a peer that exits mid-payload fails");
-        // The remote's reason, not our end noticing a broken pipe.
-        assert!(
-            format!("{error:#}").contains("no room on device"),
-            "{error:#}"
-        );
-    }
-
-    #[test]
-    fn a_peer_that_dies_silently_still_returns() {
-        // Nothing on stderr to explain it: the write error is the fallback, and
-        // the point is that this returns at all rather than waiting forever.
-        let child = peer("exit 1");
-        let error = super::super::stream_into_child(child, &vec![b'x'; 8 << 20], "test-copy")
-            .expect_err("a silent peer still fails");
-        assert!(format!("{error:#}").contains("test-copy"), "{error:#}");
-    }
-}
-
-/// A peer that stops taking the payload, or exits while something it started
-/// still holds its stderr, must not hold the caller with it. Both stopped the
-/// automation heartbeat: a binary upload to a Windows host stalled mid-write,
-/// and once that ssh was killed, the connection master it had forked kept the
-/// stderr pipe open, so the wait that followed never ended either.
-mod stream_into_child_bounded {
-    use std::process::{Child, Command, Stdio};
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
-
-    const STALL: Duration = Duration::from_secs(1);
-    const WATCHDOG: Duration = Duration::from_secs(20);
-
-    #[cfg(unix)]
-    fn peer(script: &str) -> Child {
-        Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn the test peer")
-    }
-
-    #[cfg(windows)]
-    fn peer(script: &str) -> Child {
-        use std::os::windows::process::CommandExt;
-        Command::new("cmd")
-            .raw_arg(format!("/d /c \"{script}\""))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn the test peer")
-    }
-
-    /// Run the stream on a thread so a regression fails this test instead of
-    /// hanging the suite.
-    fn bounded(child: Child, bytes: Vec<u8>) -> anyhow::Result<Vec<u8>> {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(super::super::stream_into_child_within(
-                child,
-                &bytes,
-                "test-copy",
-                STALL,
-            ));
-        });
-        rx.recv_timeout(WATCHDOG)
-            .unwrap_or_else(|_| panic!("stream_into_child still blocked after {WATCHDOG:?}"))
-    }
-
-    #[test]
-    fn a_peer_that_stops_reading_fails_once_the_stall_bound_passes() {
-        #[cfg(unix)]
-        let child = peer("sleep 30");
-        #[cfg(windows)]
-        let child = peer("ping -n 30 127.0.0.1 >nul");
-        let started = Instant::now();
-        let error = bounded(child, vec![b'x'; 8 << 20]).expect_err("a stalled peer fails");
-        assert!(format!("{error:#}").contains("stalled"), "{error:#}");
-        assert!(started.elapsed() >= STALL, "{:?}", started.elapsed());
-    }
-
-    #[test]
-    fn a_peer_whose_stderr_outlives_it_still_returns() {
-        #[cfg(unix)]
-        let child = peer("sleep 30 >/dev/null & cat >/dev/null; echo done");
-        #[cfg(windows)]
-        let child = peer("start /b ping -n 30 127.0.0.1 >nul & find /v \"\" >nul & echo done");
-        let out =
-            bounded(child, b"line\n".repeat(1 << 16)).expect("the peer read it all and exited 0");
-        assert_eq!(String::from_utf8_lossy(&out).trim(), "done");
-    }
-}
-
 // ── listing the worktrees a repo already has ───────────────────────────────
-
-#[test]
-fn parse_worktree_list_keeps_only_linked_named_branches() {
-    // The first `worktree` stanza is always the main checkout, which is the
-    // repo itself rather than something to open a session on.
-    let porcelain = "\
-worktree /repo
-HEAD 1111111111111111111111111111111111111111
-branch refs/heads/main
-
-worktree /repo/.worktrees/tooltips
-HEAD 2222222222222222222222222222222222222222
-branch refs/heads/feat/dynamic-tooltips
-
-worktree /elsewhere/detached
-HEAD 3333333333333333333333333333333333333333
-detached
-
-worktree /repo/.worktrees/stale
-HEAD 4444444444444444444444444444444444444444
-branch refs/heads/gone
-prunable gitdir file points to non-existent location
-
-worktree /repo/bare
-bare
-";
-    let found = parse_worktree_list(porcelain);
-    assert_eq!(
-        found,
-        vec![ExistingWorktree {
-            path: PathBuf::from("/repo/.worktrees/tooltips"),
-            branch: "feat/dynamic-tooltips".to_string(),
-        }]
-    );
-}
-
-#[test]
-fn parse_worktree_list_handles_empty_and_trailing_output() {
-    assert!(parse_worktree_list("").is_empty());
-    // No trailing blank line after the last stanza.
-    let one = "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\nworktree /wt\nHEAD 2\nbranch refs/heads/x";
-    assert_eq!(parse_worktree_list(one).len(), 1);
-    assert_eq!(parse_worktree_list(one)[0].branch, "x");
-}
-
-#[test]
-fn parse_worktree_list_keeps_a_path_that_contains_spaces() {
-    // Only the FIRST space separates the key from its value, so a checkout
-    // under a directory with a space in it is not truncated.
-    let porcelain = "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n\
-worktree /My Projects/repo/.worktrees/a b\nHEAD 2\nbranch refs/heads/x\n";
-    let found = parse_worktree_list(porcelain);
-    assert_eq!(
-        found[0].path,
-        PathBuf::from("/My Projects/repo/.worktrees/a b")
-    );
-}
-
-#[test]
-fn parse_worktree_list_keeps_a_locked_worktree() {
-    // Locked is not prunable: the checkout is on disk and openable.
-    let porcelain = "worktree /repo\nHEAD 1\nbranch refs/heads/main\n\n\
-worktree /wt\nHEAD 2\nbranch refs/heads/x\nlocked in use\n";
-    assert_eq!(parse_worktree_list(porcelain).len(), 1);
-}
-
-#[test]
-fn list_worktrees_reports_a_worktree_at_a_foreign_path() {
-    // The point of the feature: a worktree the user (or their agent) made at
-    // an arbitrary location is found, not just ones under thurbox's own dir.
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
-    seed_repo(&repo, "file.txt", "hi");
-
-    assert!(list_worktrees(&repo).unwrap().is_empty());
-
-    let foreign = repo.join(".worktrees").join("tooltips");
-    run_git(
-        {
-            let mut c = git_program();
-            c.args(["worktree", "add", "-b", "feat/tooltips"])
-                .arg(&foreign)
-                .current_dir(&repo);
-            c
-        },
-        "git worktree add",
-    )
-    .expect("add worktree");
-
-    let found = list_worktrees(&repo).unwrap();
-    assert_eq!(found.len(), 1, "expected exactly one linked worktree");
-    assert_eq!(found[0].branch, "feat/tooltips");
-    assert_eq!(
-        found[0].path.canonicalize().unwrap(),
-        foreign.canonicalize().unwrap()
-    );
-}
 
 /// Run `git` in `dir`, failing the test on anything but a clean exit.
 fn git_in(dir: &Path, args: &[&str]) {
@@ -2240,12 +1288,12 @@ fn a_polled_stat_costs_nine_subprocesses_cold_and_two_warm() {
 fn a_new_directory_is_created_empty_or_initialised() {
     let dir = tempfile::tempdir().expect("tempdir");
     let empty = dir.path().join("deep/er/empty");
-    create_repo_dir(None, &empty, &NewRepo::Empty).expect("empty");
+    create_repo_dir(&empty, &NewRepo::Empty).expect("empty");
     assert!(empty.is_dir());
     assert!(!empty.join(".git").exists());
 
     let init = dir.path().join("fresh");
-    create_repo_dir(None, &init, &NewRepo::Init).expect("init");
+    create_repo_dir(&init, &NewRepo::Init).expect("init");
     assert!(is_git_repo(&init));
 }
 
@@ -2256,7 +1304,6 @@ fn a_clone_lands_in_the_new_directory() {
     seed_repo(&source, "README.md", "hello");
     let target = dir.path().join("code/cloned");
     create_repo_dir(
-        None,
         &target,
         &NewRepo::Clone {
             url: source.to_string_lossy().to_string(),
@@ -2275,7 +1322,7 @@ fn a_failed_clone_takes_away_the_directory_it_created() {
         .join("no-such-repo")
         .to_string_lossy()
         .to_string();
-    let error = create_repo_dir(None, &target, &NewRepo::Clone { url }).unwrap_err();
+    let error = create_repo_dir(&target, &NewRepo::Clone { url }).unwrap_err();
     assert!(format!("{error:#}").contains("clone"), "{error:#}");
     assert!(!target.exists(), "no half-made directory is left behind");
 }
@@ -2286,7 +1333,7 @@ fn a_directory_that_already_holds_something_is_refused_and_kept() {
     let target = dir.path().join("taken");
     std::fs::create_dir_all(&target).expect("mkdir");
     std::fs::write(target.join("keep.txt"), "mine").expect("write");
-    let error = create_repo_dir(None, &target, &NewRepo::Init).unwrap_err();
+    let error = create_repo_dir(&target, &NewRepo::Init).unwrap_err();
     assert!(format!("{error:#}").contains("not empty"), "{error:#}");
     assert!(target.join("keep.txt").is_file());
     assert!(!target.join(".git").exists());
@@ -2297,7 +1344,7 @@ fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
     let dir = tempfile::tempdir().expect("tempdir");
     let target = dir.path().join("mkdir-ed");
     std::fs::create_dir_all(&target).expect("mkdir");
-    create_repo_dir(None, &target, &NewRepo::Init).expect("init into empty");
+    create_repo_dir(&target, &NewRepo::Init).expect("init into empty");
     assert!(is_git_repo(&target));
 
     let other = dir.path().join("also-empty");
@@ -2307,312 +1354,9 @@ fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
         .join("no-such-repo")
         .to_string_lossy()
         .to_string();
-    create_repo_dir(None, &other, &NewRepo::Clone { url }).unwrap_err();
+    create_repo_dir(&other, &NewRepo::Clone { url }).unwrap_err();
     assert!(
         other.is_dir(),
         "a directory the user made is not ours to remove"
     );
-}
-
-/// Run the remote POSIX script here, through `sh -c`, as a host's shell would.
-fn run_new_repo_script(path: &Path, what: &NewRepo) -> std::process::Output {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(create_repo_dir_script(&path.to_string_lossy(), what));
-    scrub_git_location_env(&mut cmd);
-    cmd.output().expect("sh")
-}
-
-#[test]
-fn the_remote_script_creates_initialises_and_clones_as_the_local_path_does() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let init = dir.path().join("with space/init");
-    assert!(run_new_repo_script(&init, &NewRepo::Init).status.success());
-    assert!(is_git_repo(&init));
-
-    let empty = dir.path().join("empty");
-    assert!(run_new_repo_script(&empty, &NewRepo::Empty)
-        .status
-        .success());
-    assert!(empty.is_dir());
-
-    let source = dir.path().join("source");
-    seed_repo(&source, "README.md", "hello");
-    let cloned = dir.path().join("it's cloned");
-    let url = source.to_string_lossy().to_string();
-    assert!(run_new_repo_script(&cloned, &NewRepo::Clone { url })
-        .status
-        .success());
-    assert!(cloned.join("README.md").is_file());
-}
-
-#[test]
-fn the_remote_script_refuses_what_is_taken_and_cleans_up_what_it_made() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let taken = dir.path().join("taken");
-    std::fs::create_dir_all(&taken).expect("mkdir");
-    std::fs::write(taken.join("keep.txt"), "mine").expect("write");
-    let refused = run_new_repo_script(&taken, &NewRepo::Init);
-    assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("not empty"));
-    assert!(taken.join("keep.txt").is_file());
-
-    let target = dir.path().join("cloned");
-    let url = dir
-        .path()
-        .join("no-such-repo")
-        .to_string_lossy()
-        .to_string();
-    assert!(
-        !run_new_repo_script(&target, &NewRepo::Clone { url: url.clone() })
-            .status
-            .success()
-    );
-    assert!(!target.exists());
-
-    // A directory that was already there, empty, was not this script's to make,
-    // so it is not this script's to remove either.
-    let theirs = dir.path().join("theirs");
-    std::fs::create_dir_all(&theirs).expect("mkdir");
-    assert!(!run_new_repo_script(&theirs, &NewRepo::Clone { url })
-        .status
-        .success());
-    assert!(theirs.is_dir());
-}
-
-#[test]
-fn the_windows_script_quotes_the_path_and_the_url() {
-    let script = create_repo_dir_script_windows(
-        "C:/code/it's",
-        &NewRepo::Clone {
-            url: "https://example.com/o'k.git".into(),
-        },
-    );
-    assert!(script.contains("'C:/code/it''s'"), "{script}");
-    assert!(
-        script.contains("'https://example.com/o''k.git'"),
-        "{script}"
-    );
-    assert!(script.contains("clone"), "{script}");
-    // A create that fails must fail loudly rather than pass with no folder, and
-    // must not be told to succeed over something already there.
-    assert!(script.contains("-ErrorAction Stop"), "{script}");
-    assert!(!script.contains("-Force -Path"), "{script}");
-}
-
-#[test]
-fn worktree_stats_on_a_host_asks_the_host_and_never_the_local_disk() {
-    // A path that is a perfectly good work tree HERE, handed to a host that
-    // cannot be reached (nothing listens on port 1): a stat that ran `git`
-    // locally would answer; one that goes through the host cannot, and says
-    // `None`. A remote session's `cwd` is a path on its host, and reading it
-    // locally is what left the delete confirmation unable to read its state.
-    let tmp = tempfile::tempdir().unwrap();
-    let git = |args: &[&str]| {
-        let out = git_program()
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("run git");
-        assert!(out.status.success(), "{args:?}");
-    };
-    git(&["init", "-q"]);
-    assert!(
-        worktree_stats(tmp.path(), None).is_some(),
-        "a local work tree"
-    );
-
-    let unreachable = HostDef {
-        name: "h".into(),
-        destination: "nobody@127.0.0.1".into(),
-        ssh_opts: vec!["-p".into(), "1".into(), "-o".into(), "BatchMode=yes".into()],
-        ..Default::default()
-    };
-    assert!(
-        worktree_stats_on(Some(&unreachable), tmp.path(), None).is_none(),
-        "the host was asked, not this machine's disk"
-    );
-}
-
-#[test]
-fn worktree_changed_paths_names_what_has_content_to_hash() {
-    let status = "# branch.oid abc\0\
-                  1 .M N... 100644 100644 100644 h1 h1 edited.rs\0\
-                  1 M. N... 100644 100644 100644 h1 h2 staged only.rs\0\
-                  1 .D N... 100644 100644 000000 h1 h1 gone.rs\0\
-                  2 RM N... 100644 100644 100644 h1 h1 R100 new name.rs\0old name.rs\0\
-                  u UU N... 100644 100644 100644 100644 h1 h2 h3 conflict.rs\0\
-                  ? untracked file.txt\0\
-                  ? nested/\0";
-    assert_eq!(
-        worktree_changed_paths(status),
-        [
-            "edited.rs",
-            "new name.rs",
-            "conflict.rs",
-            "untracked file.txt"
-        ]
-    );
-}
-
-#[test]
-fn worktree_changed_paths_hashes_no_more_untracked_files_than_the_diff_reads() {
-    // The diff reads the first UNTRACKED_FILE_CAP untracked files; hashing the
-    // rest every check would cost a read per file for nothing it shows. Their
-    // status lines still move the fingerprint when one comes or goes.
-    let mut status = String::from("1 .M N... 100644 100644 100644 h1 h1 edited.rs\0");
-    for n in 0..UNTRACKED_FILE_CAP + 50 {
-        status.push_str(&format!("? build/out-{n:04}.o\0"));
-    }
-    let paths = worktree_changed_paths(&status);
-    assert_eq!(paths.len(), 1 + UNTRACKED_FILE_CAP);
-    assert_eq!(paths[0], "edited.rs");
-    assert_eq!(
-        paths[UNTRACKED_FILE_CAP],
-        format!("build/out-{:04}.o", UNTRACKED_FILE_CAP - 1)
-    );
-}
-
-#[test]
-fn the_diff_fingerprint_moves_with_content_the_status_cannot_see() {
-    // An already-modified file edited again stays ` M` in the status and keeps
-    // its line counts; only its content says the diff changed.
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path();
-    git_in(dir, &["init", "-q", "--initial-branch=main"]);
-    git_in(dir, &["config", "user.email", "t@example.com"]);
-    git_in(dir, &["config", "user.name", "t"]);
-    git_in(dir, &["config", "commit.gpgsign", "false"]);
-    commit_file(dir, "a.txt", "one\n", "init");
-
-    std::fs::write(dir.join("a.txt"), "two\n").unwrap();
-    let first = diff_fingerprint_on(None, dir, None).expect("fingerprint");
-    assert_eq!(diff_fingerprint_on(None, dir, None).as_ref(), Some(&first));
-
-    std::fs::write(dir.join("a.txt"), "six\n").unwrap();
-    let edited = diff_fingerprint_on(None, dir, None).expect("fingerprint");
-    assert_ne!(edited, first, "an edit with the same counts must move it");
-
-    std::fs::write(dir.join("b.txt"), "new\n").unwrap();
-    let untracked = diff_fingerprint_on(None, dir, None).expect("fingerprint");
-    assert_ne!(untracked, edited, "a new untracked file must move it");
-
-    // Against a base, the range's two ends.
-    let ranged = diff_fingerprint_on(None, dir, Some("main")).expect("fingerprint");
-    commit_file(dir, "c.txt", "c\n", "more");
-    assert_ne!(diff_fingerprint_on(None, dir, Some("main")), Some(ranged));
-}
-
-/// What the Windows stream-copy sends: every line short enough for `$input`
-/// to hand over as one ordinary string, and the lines joined back together —
-/// what the host's script does — decode to exactly the bytes shipped,
-/// including a final partial line.
-#[test]
-fn a_windows_payload_is_base64_lines_that_join_back_to_the_bytes() {
-    use base64::Engine as _;
-    let bytes: Vec<u8> = (0..10_000u32).map(|i| (i * 31 % 256) as u8).collect();
-    let sent = base64_lines(&bytes);
-    let text = String::from_utf8(sent).expect("ascii");
-    assert!(text.ends_with('\n'));
-    assert!(text.lines().all(|l| !l.is_empty() && l.len() <= 76));
-    let joined: String = text.lines().collect();
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(joined)
-        .expect("decodes");
-    assert_eq!(decoded, bytes);
-    assert!(base64_lines(&[]).is_empty());
-}
-
-/// A one-commit repository on `main` for the branch-ownership tests below.
-fn committed_repo(dir: &Path) -> PathBuf {
-    let repo = dir.join("repo");
-    seed_repo(&repo, "file.txt", "hi");
-    repo
-}
-
-fn local_branch_exists(repo: &Path, branch: &str) -> bool {
-    branch_exists(repo, &format!("refs/heads/{branch}"))
-}
-
-#[test]
-fn a_branch_thurbox_created_goes_with_its_worktree() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = committed_repo(tmp.path());
-    let _guard = TestPathGuard::new(tmp.path().join("data"));
-
-    let wt = create_worktree(&repo, "feat/x", "main").expect("create");
-    assert!(branch_created_by_thurbox_on(None, &repo, "feat/x"));
-    remove_worktree(&repo, &wt).expect("remove worktree");
-
-    assert!(delete_created_branch_on(None, &repo, "feat/x").expect("delete"));
-    assert!(!local_branch_exists(&repo, "feat/x"));
-    // Gone already: the second teardown of the same branch is a no-op, not an
-    // error.
-    assert!(!delete_created_branch_on(None, &repo, "feat/x").expect("idempotent"));
-}
-
-#[test]
-fn a_branch_with_unmerged_commits_is_still_deleted() {
-    // `-D`, not `-d`: a squash-merged branch never becomes an ancestor of its
-    // base, so `-d` would refuse every branch that actually landed.
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = committed_repo(tmp.path());
-    let _guard = TestPathGuard::new(tmp.path().join("data"));
-
-    let wt = create_worktree(&repo, "feat/ahead", "main").expect("create");
-    std::fs::write(wt.join("new.txt"), "ahead").unwrap();
-    for args in [vec!["add", "-A"], vec!["commit", "-m", "ahead"]] {
-        run_git(git_command(None, &wt, &args), "git").expect("commit");
-    }
-    remove_worktree(&repo, &wt).expect("remove worktree");
-
-    assert!(delete_created_branch_on(None, &repo, "feat/ahead").expect("delete"));
-    assert!(!local_branch_exists(&repo, "feat/ahead"));
-}
-
-#[test]
-fn a_branch_thurbox_only_attached_to_is_kept() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = committed_repo(tmp.path());
-    let _guard = TestPathGuard::new(tmp.path().join("data"));
-    run_git(
-        git_command(None, &repo, &["branch", "users-own"]),
-        "git branch",
-    )
-    .expect("branch");
-
-    // The same entry point a `--worktree-branch` spawn takes: the branch exists,
-    // so the worktree is attached to it rather than created with `-b`.
-    let wt = create_worktree(&repo, "users-own", "main").expect("attach");
-    assert!(!branch_created_by_thurbox_on(None, &repo, "users-own"));
-    remove_worktree(&repo, &wt).expect("remove worktree");
-
-    assert!(!delete_created_branch_on(None, &repo, "users-own").expect("kept"));
-    assert!(local_branch_exists(&repo, "users-own"));
-}
-
-#[test]
-fn a_branch_whose_worktree_directory_vanished_is_pruned_then_deleted() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = committed_repo(tmp.path());
-    let _guard = TestPathGuard::new(tmp.path().join("data"));
-
-    let wt = create_worktree(&repo, "feat/gone", "main").expect("create");
-    // Still registered, so git would refuse `branch -D` without the prune.
-    std::fs::remove_dir_all(&wt).unwrap();
-
-    assert!(delete_created_branch_on(None, &repo, "feat/gone").expect("delete"));
-    assert!(!local_branch_exists(&repo, "feat/gone"));
-}
-
-#[test]
-fn a_created_branch_still_checked_out_is_an_error_not_a_deletion() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = committed_repo(tmp.path());
-    let _guard = TestPathGuard::new(tmp.path().join("data"));
-
-    create_worktree(&repo, "feat/live", "main").expect("create");
-
-    assert!(delete_created_branch_on(None, &repo, "feat/live").is_err());
-    assert!(local_branch_exists(&repo, "feat/live"));
 }

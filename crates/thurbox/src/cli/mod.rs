@@ -5,68 +5,45 @@
 //! `--json` (compact), `--pretty` (indented JSON), `--toon`, or `--text`. See
 //! [`output::Format`] for the precedence and [`toon`] for the format itself.
 //!
-//! The CLI is intentionally thin: it parses arguments, calls into
-//! `storage::Database`, `session_ops`, or a session's backend through the
-//! registry it is handed, and prints the result. It hosts no TUI or event loop;
-//! `ui` sends bounded requests to a separately running interface.
+//! The CLI is intentionally thin: it parses arguments, reads or writes
+//! thurbox's own files, and prints the result. Sessions are Fleet's: `fleet`
+//! is their command line (ADR-41). It hosts no TUI or event loop; `ui` sends
+//! bounded requests to a separately running interface.
 //!
 //! It is also an **AXI** (`axi/1.0-2026-07`, <https://axi.md>) — an interface
-//! shaped for an agent rather than for a person at a keyboard. Four of that
+//! shaped for an agent rather than for a person at a keyboard. Three of that
 //! spec's rules are structural and live here rather than in any one
-//! subcommand: output is TOON down a pipe (principle 1), running the binary
-//! with no subcommand prints live state instead of a usage dump
-//! ([`home::run`], principle 8), every result can carry `help[N]:` next steps
-//! ([`output::AgentView`], principle 9), and errors are structured on stdout
-//! with the exit code saying which kind they are — [`EXIT_ERROR`],
-//! [`EXIT_USAGE`], [`EXIT_AMBIGUOUS`], and for a verb that waits or claims
-//! [`EXIT_TIMEOUT`], [`EXIT_CONFLICT`], [`EXIT_GONE`] ([`error_output`],
+//! subcommand: output is TOON down a pipe (principle 1), every result can
+//! carry `help[N]:` next steps ([`output::AgentView`], principle 9), and errors
+//! are structured on stdout with the exit code saying which kind they are —
+//! [`EXIT_ERROR`], [`EXIT_USAGE`], [`EXIT_AMBIGUOUS`] ([`error_output`],
 //! principle 6). The rest are per-command and marked where they are met.
 //!
 //! One consequence of principle 6 is a rule the entrypoint enforces: **stdout
 //! carries exactly one document per invocation**. A command that renders a
-//! report and *then* asks for a non-zero exit (`session doctor`, `config
-//! validate`) has already written it, so its failure comes back as
-//! [`Outcome::Failed`] and the sentence explaining the exit goes to stderr —
-//! see [`Outcome`].
-//!
-//! That is also why the exit code is only half a contract in one direction: an
-//! `error` key on stdout implies a non-zero exit, but a non-zero exit does
-//! **not** imply an `error` key. `session doctor` on a broken session exits 1
-//! with its report — the report *is* the answer, and a caller that gates on
-//! `$?` before parsing throws away every diagnosis it will ever ask for.
+//! report and *then* asks for a non-zero exit (`config validate`) has already
+//! written it, so its failure comes back as [`Outcome::Failed`] and the
+//! sentence explaining the exit goes to stderr — see [`Outcome`].
 
 use clap::{Parser, Subcommand};
 
 use crate::session::settings::Settings;
-use crate::storage::Database;
 
 #[cfg(test)]
 mod tests;
 
-pub mod action;
-pub mod agents;
-pub mod automations;
+pub mod automation;
 pub mod config;
 pub mod doctor;
 pub mod editor;
-pub mod extensions;
-pub mod home;
-pub mod identity;
-pub mod messages;
 pub mod notify;
 pub mod output;
 pub mod perf;
 pub mod plugins;
-pub mod runtime;
-pub mod session_doctor;
-pub mod session_ref;
-pub mod sessions;
-pub mod tasks;
 pub mod toon;
 pub mod ui;
 pub mod update;
 pub mod version;
-pub mod watch;
 
 use output::{CommandOutput, Format, FormatFlags};
 
@@ -74,64 +51,24 @@ use output::{CommandOutput, Format, FormatFlags};
 pub const EXIT_ERROR: i32 = 1;
 /// The invocation was wrong: an unknown flag, a missing argument, a bad value.
 pub const EXIT_USAGE: i32 = 2;
-/// The session reference — or, for a pane verb, the window it names — matched
-/// more than one candidate.
+/// A reference matched more than one candidate: several running interfaces
+/// answer `ui` and none was chosen.
 ///
-/// Its own code because the answer is different in kind: "no such session" is
-/// something a driver reconciles by creating one, while "several sessions
-/// answer to that name" is something only an operator can settle. AXI
-/// principle 6 asks the two to exit differently, and string-matching the
-/// message was the only way to tell them apart.
+/// Its own code because the answer is different in kind: "none" is something
+/// a driver reconciles, while "several" is something only an operator can
+/// settle. AXI principle 6 asks the two to exit differently.
 pub const EXIT_AMBIGUOUS: i32 = 3;
-/// What was waited for did not happen in time: `automation run --wait` whose
-/// run timed out.
-///
-/// 4, 5 and 6 are the codes the orchestrator-platform design reserves for
-/// every verb that waits or claims (#1470 maps typed errors onto them), so a
-/// new verb takes one of these rather than inventing its own.
-pub const EXIT_TIMEOUT: i32 = 4;
-/// Somebody else already holds it: a key or name taken under `--on-existing
-/// fail`, a run already in flight, a pane another live session claims.
-pub const EXIT_CONFLICT: i32 = 5;
-/// The subject left while the call was waiting on it or acting on it: an
-/// automation deleted under `automation run --wait`, a pane that vanished
-/// mid-call.
-pub const EXIT_GONE: i32 = 6;
 
 /// A failure that left nothing on stdout, and the exit code it deserves.
-///
-/// Operation errors keep their classification through JSON and delegated host
-/// calls. Text-only diagnostics use `Other`; display code never infers a kind
-/// from a message.
 #[derive(Debug)]
 pub struct CommandError {
     pub message: String,
     pub exit_code: i32,
-    pub error: crate::session_ops::OpError,
 }
 
 impl From<String> for CommandError {
     fn from(message: String) -> Self {
-        crate::session_ops::OpError::Other(message).into()
-    }
-}
-
-impl From<crate::session_ops::OpError> for CommandError {
-    fn from(error: crate::session_ops::OpError) -> Self {
-        use crate::session_ops::OpError;
-        let exit_code = match &error {
-            OpError::Usage(_) => EXIT_USAGE,
-            OpError::Ambiguous(_) => EXIT_AMBIGUOUS,
-            OpError::Timeout(_) => EXIT_TIMEOUT,
-            OpError::Conflict(_) => EXIT_CONFLICT,
-            OpError::Gone(_) => EXIT_GONE,
-            _ => EXIT_ERROR,
-        };
-        Self {
-            message: error.to_string(),
-            exit_code,
-            error,
-        }
+        Self::with_code(message, EXIT_ERROR)
     }
 }
 
@@ -144,19 +81,18 @@ impl From<&str> for CommandError {
 impl CommandError {
     /// A failure with an exit code of its own.
     pub fn with_code(message: impl Into<String>, exit_code: i32) -> Self {
-        let message = message.into();
-        let kind = match exit_code {
+        Self {
+            message: message.into(),
+            exit_code,
+        }
+    }
+
+    /// The failure's kind, as the structured error names it.
+    pub fn kind(&self) -> &'static str {
+        match self.exit_code {
             EXIT_USAGE => "usage",
             EXIT_AMBIGUOUS => "ambiguous",
-            EXIT_TIMEOUT => "timeout",
-            EXIT_CONFLICT => "conflict",
-            EXIT_GONE => "gone",
             _ => "other",
-        };
-        Self {
-            error: crate::session_ops::OpError::from_kind(kind, message.clone()),
-            message,
-            exit_code,
         }
     }
 }
@@ -178,9 +114,8 @@ impl std::fmt::Display for CommandError {
     }
 }
 
-/// Drive thurbox's sessions, tasks, automations and interface without the TUI.
-///
-/// Run with no subcommand for the current state of this machine's sessions.
+/// thurbox's interface files and a running interface, without the TUI.
+/// Sessions are Fleet's: drive them with `fleet`.
 // `version` is spelled out rather than left bare: clap's implicit form reads
 // `CARGO_PKG_VERSION`, which is the static `0.0.0-dev` marker this project
 // never bumps, so `--version` reported a dev build on every release while the
@@ -191,7 +126,8 @@ impl std::fmt::Display for CommandError {
     name = "thurbox-cli",
     version = crate::update::version_check::current_version(),
     about,
-    after_help = EXAMPLES
+    after_help = EXAMPLES,
+    arg_required_else_help = true
 )]
 pub struct Cli {
     /// Output JSON — every field, the format scripts parse.
@@ -219,19 +155,12 @@ pub struct Cli {
     pub full: bool,
 
     /// Force human-readable output even when piped.
-    // `id = "text_format"` disambiguates from subcommand positional args also
-    // named `text` (e.g. `sessions::Action::Send`). Without the explicit id,
-    // clap registers two args with id "text" (this bool flag and the String
-    // positional), and `get_one::<String>("text")` at parse time panics with
-    // a TypeId downcast mismatch.
     #[arg(long, global = true, id = "text_format")]
     pub text: bool,
 
-    /// The operation to run. Absent means the home view — AXI principle 8 asks
-    /// a bare invocation for live state, not a usage manual, so this is
-    /// `Option` rather than required.
+    /// The operation to run.
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
 }
 
 /// Worked examples for `--help`. AXI principle 10 asks every help surface for
@@ -239,15 +168,11 @@ pub struct Cli {
 /// guess the shape of an invocation.
 const EXAMPLES: &str = "\
 Examples:
-  thurbox-cli                                  live state: sessions, inbox, tasks
-  thurbox-cli session list                     every session, with status and branch
-  thurbox-cli session create --name fix-ci --repo-path . --worktree-branch fix/ci
-  thurbox-cli session capture <id> --lines 50  what an agent's pane is showing
-  thurbox-cli ui instances --json            running local interface IDs
-  thurbox-cli agent launch-args claude          what to run so its hooks report
-  thurbox-cli message send --to <id> --kind result --body 'done'
-  thurbox-cli session list --json | jq         full records for a script
+  thurbox-cli ui instances --json              running local interface IDs
+  thurbox-cli config show                      the effective configuration
+  thurbox-cli editor set 'code --wait'         what Ctrl+O opens
   thurbox-cli doctor                           is the multiplexer/agent installed?
+  fleet get tasks                              the sessions, which are Fleet's
 
 Output is human-readable in a terminal and TOON when piped; --json restores the
 full JSON record on any command.";
@@ -259,70 +184,26 @@ pub enum Command {
         #[command(subcommand)]
         action: editor::Action,
     },
-    /// The agent registry: how thurbox would launch a registered agent.
-    Agent {
-        #[command(subcommand)]
-        action: agents::Action,
-    },
-    /// Manage sessions.
-    Session {
-        #[command(subcommand)]
-        action: sessions::Action,
-    },
-    /// Manage automations (scheduled agent runs).
-    #[command(alias = "auto")]
+    /// Scheduled runs: create, list, change, remove and fire them.
     Automation {
         #[command(subcommand)]
-        action: automations::Action,
-    },
-    /// Manage tasks (todo list).
-    #[command(alias = "todo")]
-    Task {
-        #[command(subcommand)]
-        action: tasks::Action,
-    },
-    /// Send/read inter-session messages (the mailbox queue).
-    #[command(alias = "msg")]
-    Message {
-        #[command(subcommand)]
-        action: messages::Action,
+        action: automation::Action,
     },
     /// Validate or inspect the config files.
     Config {
         #[command(subcommand)]
         action: config::Action,
     },
-    /// Install, activate and deactivate opt-in extensions.
-    #[command(alias = "ext")]
-    Extension {
-        #[command(subcommand)]
-        action: extensions::Action,
-    },
     /// Print the version; `--check` queries GitHub for a newer release.
     Version(version::VersionArgs),
     /// Download, verify, and replace the installed binaries with the latest release.
     Update(update::UpdateArgs),
-    /// Diagnose OS desktop notifications (`--test` fires a sample), or `send`
-    /// one from a script, a hook or an automation.
+    /// Diagnose OS desktop notifications; `--test` fires a sample.
     Notify(notify::NotifyArgs),
     /// Print the perf snapshot a running TUI publishes (THURBOX_PERF_LOG or
     /// the perf HUD must be active in that TUI); `--plugins` for the per-pane
     /// table.
     Perf(perf::PerfArgs),
-    /// Stream the session event log — one line per transition, so nothing
-    /// driving thurbox has to poll.
-    ///
-    /// Every writer appends its event in the same transaction as the change, so
-    /// two transitions in the same instant are two events. Each carries a
-    /// monotonic `seq` (`--since` resumes from it), a `reason`, the
-    /// `from_state` → `to_state`, and the gating fields `session get`
-    /// publishes. `--json` for one JSON object per line.
-    Watch(watch::WatchArgs),
-    /// What thurbox runs besides sessions (the automation heartbeat keeper).
-    Runtime {
-        #[command(subcommand)]
-        action: runtime::Action,
-    },
     /// Interface plugins: where they live, start one, check it loads.
     Plugin {
         #[command(subcommand)]
@@ -344,46 +225,7 @@ pub enum Command {
     },
     /// Whether this machine has what a session needs: the multiplexer, each
     /// registered agent's command, and the launcher for every configured host.
-    ///
-    /// The companion to `session doctor`, which asks whether an *existing*
-    /// session's status hooks are wired. This one names no session, so it
-    /// answers on a machine where nothing has been created yet.
     Doctor,
-}
-
-/// Build the additional-repo list for a multi-repo `Spawn` from the repeatable
-/// `--add-repo`/`--add-dir` flags shared by `session create` and `task create`.
-///
-/// Each `--add-repo` token is `PATH` or `PATH@BASE` — the repo gets its own
-/// isolated worktree on the spawn's shared `--worktree`/`--worktree-branch`,
-/// off `BASE` (falling back to the primary's base when omitted). Each
-/// `--add-dir` token is attached as-is (no worktree). The base is split on the
-/// last `@`, so paths without `@` (the norm) are taken verbatim.
-pub(crate) fn parse_extra_repos(
-    add_repo: &[String],
-    add_dir: &[String],
-) -> Vec<crate::session::ExtraRepo> {
-    use crate::session::ExtraRepo;
-    let mut extra: Vec<ExtraRepo> = Vec::new();
-    for tok in add_repo {
-        let (path, base) = match tok.rsplit_once('@') {
-            Some((p, b)) if !p.is_empty() && !b.is_empty() => (p.to_string(), Some(b.to_string())),
-            _ => (tok.clone(), None),
-        };
-        extra.push(ExtraRepo {
-            repo_path: std::path::PathBuf::from(path),
-            worktree: true,
-            base_branch: base,
-        });
-    }
-    for dir in add_dir {
-        extra.push(ExtraRepo {
-            repo_path: std::path::PathBuf::from(dir),
-            worktree: false,
-            base_branch: None,
-        });
-    }
-    extra
 }
 
 /// What a completed invocation asks the process to do next.
@@ -401,85 +243,10 @@ pub enum Outcome {
     /// Rendered, and the command asks for a non-zero exit. Nothing more may go
     /// to stdout; the message is a diagnostic for stderr.
     ///
-    /// `code` is `None` for the ordinary "it ran and failed" case, and `Some`
-    /// only where the command's own exit code *is* the answer — `session exec
-    /// --exit-passthrough`. The entrypoint owns what `None` resolves to, so the
-    /// exit-code constants stay in one place.
-    Failed { message: String, code: Option<i32> },
+    Failed { message: String },
 }
 
-/// The backend registry an invocation drives sessions through: built by the
-/// process's composition root, once, and only when a command first needs it.
-///
-/// Most invocations never touch a backend — every agent hook runs `thurbox-cli
-/// session signal` — while building the registry reads `hosts.toml` and, on
-/// Windows and inside WSL, runs `wsl.exe` to discover distros. So the root
-/// hands down how to build it, and the commands that act on a session ask.
-pub struct Backends<'a> {
-    registry: std::cell::OnceCell<crate::backend::BackendRegistry>,
-    build: &'a dyn Fn() -> crate::backend::BackendRegistry,
-    local: std::cell::OnceCell<crate::backend::BackendRegistry>,
-    build_local: Option<&'a dyn Fn() -> crate::backend::BackendRegistry>,
-}
-
-impl<'a> Backends<'a> {
-    /// A registry `build` makes the first time one is asked for.
-    pub fn lazy(build: &'a dyn Fn() -> crate::backend::BackendRegistry) -> Self {
-        Self {
-            registry: std::cell::OnceCell::new(),
-            build,
-            local: std::cell::OnceCell::new(),
-            build_local: None,
-        }
-    }
-
-    /// The same, plus how to build a registry of this machine's backends
-    /// alone — no `hosts.toml`, no distro discovery — for a command that only
-    /// ever acts on a local row ([`Self::local`]).
-    pub fn with_local(
-        mut self,
-        build_local: &'a dyn Fn() -> crate::backend::BackendRegistry,
-    ) -> Self {
-        self.build_local = Some(build_local);
-        self
-    }
-
-    /// A registry already built — a test's, with its own backends registered.
-    pub fn ready(registry: crate::backend::BackendRegistry) -> Backends<'static> {
-        fn built() -> crate::backend::BackendRegistry {
-            unreachable!("a ready registry is never built again")
-        }
-        Backends {
-            registry: std::cell::OnceCell::from(registry),
-            build: &built,
-            local: std::cell::OnceCell::new(),
-            build_local: None,
-        }
-    }
-
-    /// The registry, built on the first ask.
-    pub fn get(&self) -> &crate::backend::BackendRegistry {
-        self.registry.get_or_init(self.build)
-    }
-
-    /// A registry serving this machine's routes: the full one when it is
-    /// already built or there is no cheaper way, else one of local backends
-    /// only. Never the answer for a row on a host.
-    pub fn local(&self) -> &crate::backend::BackendRegistry {
-        match (self.registry.get(), self.build_local) {
-            (Some(full), _) => full,
-            (None, Some(build_local)) => self.local.get_or_init(build_local),
-            (None, None) => self.get(),
-        }
-    }
-
-    /// Every registry anything asked for — what the root shuts down.
-    pub fn built(&self) -> impl Iterator<Item = &crate::backend::BackendRegistry> {
-        self.registry.get().into_iter().chain(self.local.get())
-    }
-}
-
-/// Run a parsed CLI invocation against `db`, rendering the result in the
+/// Run a parsed CLI invocation, rendering the result in the
 /// resolved [`Format`] (human in a terminal, TOON down a pipe, or whatever
 /// `--json`/`--pretty`/`--toon`/`--text` forced).
 ///
@@ -487,71 +254,23 @@ impl<'a> Backends<'a> {
 /// wants a non-zero exit comes back as [`Outcome::Failed`].
 /// `settings` are the ones this process loaded: every value a command reads
 /// from `settings.toml` comes from here, never from process state.
-pub fn run(
-    cli: Cli,
-    db: &Database,
-    backends: &Backends<'_>,
-    settings: &Settings,
-) -> Result<Outcome, CommandError> {
-    // A peer probing this machine looks for its CLI under the data dir; keep
-    // that pointer true (a readlink when it already is).
-    crate::session_ops::host_cli::advertise_running_cli();
+pub fn run(cli: Cli, settings: &Settings) -> Result<Outcome, CommandError> {
     let format = Format::resolve(FormatFlags {
         json: cli.json,
         pretty: cli.pretty,
         text: cli.text,
         toon: cli.toon,
     });
-    // `watch` is the one command that is a *stream* rather than a document: it
-    // writes a line per change for as long as it runs, so the one-document rule
-    // below (and the renderer it exists for) does not apply to it.
-    if let Some(Command::Watch(args)) = cli.command {
-        watch::run(db, backends, args, format)?;
-        return Ok(Outcome::Ok);
-    }
-    if let Some(Command::Ui {
+    if let Command::Ui {
         instance,
         action: ui::Action::Watch { since, once: false },
-    }) = cli.command
+    } = cli.command
     {
         ui::stream(instance, since)?;
         return Ok(Outcome::Ok);
     }
 
-    let mut output: CommandOutput = match cli.command {
-        // No subcommand: live state, not a usage dump (AXI principle 8).
-        None => home::run(db)?,
-        Some(mut command) => {
-            // Legacy sharing peers send exactly `session delete <id> --json`.
-            // It is indistinguishable from a local JSON caller, so preserve undo
-            // for both; new peers and destructive JSON callers specify the mode.
-            // stderr says so, because stdout is the caller's document and a
-            // script moving to `--json` otherwise changes what it deletes
-            // without a word. A peer reads stderr only from a failed call.
-            let mut kept_soft = false;
-            if cli.json {
-                if let Command::Session {
-                    action:
-                        sessions::Action::Delete {
-                            force: false, soft, ..
-                        },
-                } = &mut command
-                {
-                    kept_soft = !*soft;
-                    *soft = true;
-                }
-            }
-            let output = dispatch(command, db, backends, settings)?;
-            if kept_soft {
-                eprintln!(
-                    "warning: a flagless `session delete --json` is a soft delete (restorable, \
-                     windows reaped after the undo window); pass --force for immediate teardown \
-                     or --soft to keep this behaviour without this warning"
-                );
-            }
-            output
-        }
-    };
+    let mut output = dispatch(cli.command, settings)?;
     if cli.full {
         output.agent.max_text = None;
     }
@@ -563,14 +282,11 @@ pub fn run(
 
     println!("{}", format.render(&output));
     // A command can render normally yet still request a non-zero exit (e.g.
-    // `config validate` on an invalid file, `session doctor` on a broken one).
+    // `config validate` on an invalid file).
     // Its report is the answer and is already on stdout, so the failure travels
     // as an outcome rather than an `Err` the caller would print again.
     Ok(match output.failure {
-        Some(message) => Outcome::Failed {
-            message,
-            code: output.exit_code,
-        },
+        Some(message) => Outcome::Failed { message },
         None => Outcome::Ok,
     })
 }
@@ -593,47 +309,25 @@ fn parse_fields(spec: &str) -> Vec<String> {
 }
 
 /// Route one subcommand to the module that owns it.
-fn dispatch(
-    command: Command,
-    db: &Database,
-    backends: &Backends<'_>,
-    settings: &Settings,
-) -> Result<CommandOutput, CommandError> {
+fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, CommandError> {
     Ok(match command {
-        Command::Editor { action } => editor::run(action, db)?,
-        Command::Agent { action } => agents::run(action, db, backends)?,
-        Command::Session { action } => sessions::run(action, db, backends, settings)?,
-        Command::Automation { action } => automations::run(action, db, backends, settings)?,
-        Command::Task { action } => tasks::run(action, db, backends)?,
-        Command::Message { action } => messages::run(action, db)?,
-        Command::Config { action } => {
-            let validating = matches!(action, config::Action::Validate);
-            let output = config::run(action, db, settings)?;
-            if validating
-                && output.failure.is_none()
-                && crate::session_ops::state_hooks::configured()
-            {
-                automations::arm_heartbeat(backends.local(), settings);
-            }
-            output
-        }
-        Command::Extension { action } => extensions::run(action, db, backends, settings)?,
-        Command::Version(args) => version::run(args, settings.features.version_check),
+        Command::Editor { action } => editor::run(action)?,
+        Command::Automation { action } => automation::run(action, &settings.fleet.program)?,
+        Command::Config { action } => config::run(action, settings)?,
+        Command::Version(args) => version::run(
+            args,
+            settings.features.version_check,
+            &settings.fleet.program,
+        ),
         Command::Update(args) => update::run(args, settings.features.auto_update),
-        Command::Notify(args) => notify::run(args, db, settings)?,
-        Command::Perf(args) => perf::run(db, args.plugins)?,
-        // Never returns a document: it *is* the document, one line at a time,
-        // written as each change lands. Handled before dispatch for that
-        // reason — see `run`.
-        Command::Watch(_) => unreachable!("handled in run(), which owns the stream"),
-        Command::Runtime { action } => runtime::run(action, backends),
-        // The only command that needs no database: a plugin is a file.
+        Command::Notify(args) => notify::run(args, settings)?,
+        Command::Perf(args) => perf::run(args.plugins)?,
         Command::Plugin { action } => plugins::run(action)?,
         Command::Ui { instance, action } => ui::run(instance, action)?,
         Command::Schema { instance } => ui::schema(instance)?,
-        // Reads the machine, not the database: what is installed is not
-        // something thurbox recorded.
-        Command::Doctor => doctor::run()?,
+        // Reads the machine: what is installed is not something thurbox
+        // recorded.
+        Command::Doctor => doctor::run(&settings.fleet.program)?,
     })
 }
 
@@ -646,25 +340,10 @@ fn dispatch(
 /// that produced nothing. `suggestion` says what to do about it in prose and
 /// `next` is that same advice as something runnable, which is the difference
 /// between an error an agent can act on and one it can only report.
-pub fn error_output(message: &str, suggestion: &str, next: &str, format: Format) -> String {
-    typed_error_output(
-        &crate::session_ops::OpError::Other(message.to_string()),
-        suggestion,
-        next,
-        format,
-    )
-}
-
-pub fn typed_error_output(
-    error: &crate::session_ops::OpError,
-    suggestion: &str,
-    next: &str,
-    format: Format,
-) -> String {
-    let message = error.to_string();
+pub fn error_output(error: &CommandError, suggestion: &str, next: &str, format: Format) -> String {
     let out = CommandOutput::new(
-        serde_json::json!({ "error": message, "error_kind": error.kind(), "suggestion": suggestion }),
-        format!("error: {message}\n  {suggestion}"),
+        serde_json::json!({ "error": error.message, "error_kind": error.kind(), "suggestion": suggestion }),
+        format!("error: {}\n  {suggestion}", error.message),
     )
     .help([next]);
     format.render(&out)

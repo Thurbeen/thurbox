@@ -4,9 +4,8 @@
 > interface and cite `src/app/*` / `src/ui/*`, both deleted when the plugin kernel
 > took the binary name (ADR-23). They are kept because the *findings* are what the
 > kernel was built against, and several are load-bearing in it today — the
-> demand-driven loop, the 250 ms floor, output-driven dirty marking, and reading the
-> hook rows only when `PRAGMA data_version` moves all carried across, in
-> `src/main.rs` and `src/kernel/` rather than `src/app/`.
+> demand-driven loop, the 250 ms floor and output-driven dirty marking all carried
+> across, in `src/main.rs` and `src/kernel/` rather than `src/app/`.
 >
 > **ADR-P13 below is the current shape**, and the one to read first if you are
 > changing the loop.
@@ -123,21 +122,11 @@ wall-clock-free `u64` counters bumped at the render/tick hot paths:
 | `ordered_sessions_rebuilds` | session-list order rebuilt vs. served from cache |
 | `parser_locks_render` | central pane locked a vt100 parser to render (one per terminal frame) |
 | `automation_entries_built` | automations-pane entry list built |
-| `hook_state_loads` | `refresh_session_statuses` actually reloaded the persisted hook columns (`load_hook_states`) — gated on a `data_version` change (ADR-P6), so it stays flat while idle |
-| `external_poll_checks` / `external_poll_reloads` | `poll_external_changes` ran its cheap `PRAGMA data_version` check / found a change and did a full shared-state reload |
 | `review_builds_dispatched` / `review_builds_applied` | code-review diff builds handed to the background worker / applied back on the UI thread (ADR-P8) |
-| `restore_seed_prefetches` | restore history captures prefetched in parallel, one per matched pane (ADR-P9) |
 | `agent_meta_syncs` | a session's OSC title/notification actually re-read (gated on the reader thread's meta generation, ADR-P10) |
-| `data_version_checks` | the status refresh actually ran its `PRAGMA data_version` read (throttled ~10×/s, ADR-P10) |
 
-`hook_state_loads` is the regression gate for ADR-P6: it climbs once at startup
-and then only when an external `session signal` commits, instead of ~1 per tick.
-`external_poll_reloads` stays 0 with no other writer. Tick-driven counters are
-asserted in the `#[test]` units in `super::tests`
-(`perf_hook_states_cached_across_idle_ticks`,
-`perf_hook_states_reload_on_external_change`,
-`perf_external_poll_never_reloads_without_external_writes`), not the render-path
-acceptance harness (which skips `tick`).
+Tick-driven counters are asserted in the `#[test]` units in `super::tests`, not
+the render-path acceptance harness (which skips `tick`).
 
 The acceptance harness (`src/app/acceptance.rs`) asserts on
 `App::perf_counters()` — e.g. *idle iterations skip the paint*, *the session
@@ -221,34 +210,17 @@ won't pay off.
 **Choice**: The gating automated perf tests are the counter assertions
 (ADR-P2). Heavier measurement is **opt-in and local**:
 
-- **Time-to-first-frame**: launch with `THURBOX_PERF_LOG=1`; `run_loop` logs one
-  `startup …` line to `~/.local/share/thurbox/thurbox.log` with a **phase
-  breakdown** that sums to roughly `first_frame_ms` —
-  `config_init_ms` (config-file loads + local backend ready), `db_open_ms`,
-  `theme_activate_ms` (persisted-theme lookup + custom-theme publish),
-  `extension_heal_ms` (self-heal + built-in hooks wiring + agents reload),
-  `app_new_ms` (`App::new`: keybindings load, settings snapshot, channels),
-  `restore_ms` (the synchronous local-session restore — remote backends restore
-  on background threads, off this phase; see ADR-P7), `heartbeat_ms` (arming
-  the automation-heartbeat window), and `first_frame_ms` (total to first
-  paint).
-  When restore is the long pole, the same flag also emits per-backend
-  `restore_discover` lines (`discover_ms`; for a remote backend the line comes
-  from its background thread) and per-session `restore_adopt` lines
-  (`adopt_ms`) so the *sequential* restore can be attributed. Note `restore_adopt`
-  covers both restore paths — **adopt** (a live tmux pane is re-attached) and
-  **respawn** (no live pane matched, so a fresh agent is launched); on a cold
-  socket (e.g. after a reboot) every session respawns. For the adopt path, an
-  `adopt_split` line (in `tmux_compat::Server::adopt`) further breaks `adopt_ms` into
-  `capture_ms` (the independent `tmux capture-pane` subprocess — the only part
-  that could run in parallel across sessions) and `connect_ms` (the
-  control-mode attach). This split was the deciding measurement for
-  parallelizing restore: the control-mode connection is serialized by a single
-  mutex held across each command's full round-trip
-  (`tmux_compat::Server::with_control`), so `connect_ms` is inherently sequential and
-  only `capture_ms` can be overlapped — which ADR-P9 now does (on the startup
-  restore path `capture_ms` reads ≈ 0 and a `restore_capture_prefetch` line
-  reports the overlapped batch).
+- **Time-to-first-frame**: launch with `THURBOX_PERF_LOG=1`; the loop logs one
+  `startup …` line to `thurbox.log.<date>` in the data directory with a **phase
+  breakdown** — `config_init_ms`, `snapshot_open_ms` (starting the Fleet watch),
+  `theme_activate_ms`, `ui_build_ms` (building the Lua interface) and
+  `first_frame_ms` (process start to first paint).
+  For an adopted pane, an `adopt_split` line (in `tmux_compat::Server::adopt`)
+  breaks the adopt into `capture_ms` (the independent `tmux capture-pane`
+  subprocess) and `connect_ms` (the control-mode attach). The control-mode
+  connection is serialized by a single mutex held across each command's full
+  round-trip (`tmux_compat::Server::with_control`), so `connect_ms` is
+  inherently sequential and only `capture_ms` can be overlapped.
   Off by default — never affects normal runs or the smoke test; the timing reads
   are gated on the flag so there is zero overhead otherwise.
 - **Binary size**: the non-gating `binary-size` CI job
@@ -285,118 +257,17 @@ regressions without flakiness or new dependencies.
 
 ## ADR-P6: Reload the session-status hooks only on a `data_version` change
 
-**Choice**: `refresh_session_statuses` (`src/app/mod.rs`) used to run
-`Database::load_hook_states` — an indexed scan of the `sessions` table — on
-*every* tick (~100×/s) to derive each session's status. It now caches the hook
-rows (`App::cached_hook_states`) and reloads them only when the DB's
-`PRAGMA data_version` moves since the last load (`App::hook_states_version`).
-The pragma is an in-memory counter read (no table access), so the per-tick cost
-drops from a full scan + row mapping + UUID parsing + HashMap build to a single
-integer compare. The per-tick *derivation* (spinner, the output-quiescence
-`working → Idle` fallback, done/seen logic) still runs every tick against the
-cache, so status latency is unchanged. `load_hook_states` itself uses
-`prepare_cached` so the reload, when it happens, skips the SQL re-parse.
-
-Two writers don't move *this* connection's `data_version`, so they're handled
-explicitly: the deferred `seen_at` marks are applied **write-through** into the
-cache (otherwise a just-acknowledged `done` session would re-derive to `Done`
-next tick), and the restart path's `clear_hook_state` calls
-`App::invalidate_hook_state_cache` (forces a reload). External
-`thurbox-cli session signal` writes come from another connection and *do* bump
-`data_version`, so they're picked up on the next tick as before.
-
-**The v2 gate**: `SnapshotStore` polls `data_version` on its 400 ms cadence,
-through the one thread that owns its connection (`kernel::snapshot::db`, from
-issue #1474): the event loop sends the poll and applies the answer when it
-lands, so a write lock another process holds stalls that thread's busy wait,
-never a frame. The loop's own writes — acknowledging a `done`, recording a
-pane, a remote hook report — queue on the same thread and are corrected in place
-at once; the perf snapshot and the theme the picker chose queue there too, and
-correct no row. A read answered before the latest queued row write is discarded
-and asked again, so it cannot undo a correction. The loop opens no connection
-of its own: opening one prunes aged history, a write that waits out the busy
-timeout under another process's lock. The editor setting is read on a thread of
-its own when the editor key asks for it, so it never waits behind a queued
-write. Each queued write
-carries what the loop saw when it decided on it — the turn's stamp, the pane the
-row held — and storage checks that again under the write lock, so a write held
-back by another process's lock is dropped, and the rows re-read, once what it
-was decided against has moved.
-Schema v49 adds trigger-maintained row and hook-liveness generations. A commit
-that only publishes perf telemetry moves neither. A same-state hook still
-refreshes the monotonic `hook_state_at` (liveness and the Codex submission race),
-but moves only liveness: the store reads hook columns and updates its cached
-stamps, without reloading sessions, tasks, automations, or claiming focus.
-A repeated `done` after acknowledgement still becomes visible as a new completion.
-Working/blocked continue to fold against output on each tick. State transitions
-and other row changes still take the full refresh. The generations are read
-before the rows, leaving a concurrent commit for the next poll; errors retry.
-Triggers cover legacy writers too and follow additive migrations automatically.
-Since v55 they leave out the bookkeeping nothing on screen reads: the audit
-log, `event_cursors` (the export cursor and every lock) and the teardown
-sweep's backoff keys, each of which rebuilt the whole snapshot.
-`session signal` uses
-`Database::open_for_signal`, which skips migrations and retention for a current
-schema and falls back to the full open for a new or older database.
-
-Alongside this, `Database::initialize` (`src/storage/schema/mod.rs`) sets the
-WAL-friendly performance pragmas `synchronous = NORMAL`, `cache_size = -8000`
-(8 MB), `mmap_size = 64 MB`, and `temp_store = MEMORY`.
-
-**Why**: ADR-P1 made *rendering* demand-driven, but `tick` still ran every
-≤10 ms and re-scanned the sessions table for hook state each time — pure waste
-on the overwhelmingly common idle tick where nothing signalled. The
-content-derived `data_version` gate is self-invalidating for cross-process
-writes (the common case) and can't miss them; the two same-connection writers
-are few and explicitly handled.
-
-**Rejected**:
-
-- *Tie the reload to the 250 ms sync poll* (`poll_external_changes`) — would add
-  up to 250 ms of latency to a status change (blocked/working/done), a visible
-  regression; the dedicated per-tick `data_version` read keeps ~10 ms latency.
-- *A second `has_external_changes`-style cursor* — that method mutates the
-  shared `last_data_version` used by the sync poll; reusing it would make the
-  two consumers steal each other's change edges. A read-only `data_version()`
-  avoids the coupling.
+> **Superseded in v3 (ADR-41).** thurbox has no database. A session is a Fleet
+> Task, read through `fleet watch`, and its state is Fleet's
+> `status.sessionState`. Plugins still read a snapshot and never drive it.
 
 ---
 
 ## ADR-P7: Restore remote-backed sessions in the background
 
-**Choice**: `App::restore_sessions` (`src/app/mod.rs`) partitions the resumable
-sessions by `is_remote_backend(backend_type)`. Local sessions keep the
-synchronous discover + adopt path (sub-second). Each **remote** (`ssh:<host>` /
-`wsl:<distro>`) backend is readied + discovered on its **own thread** — all
-hosts in parallel — via `App::start_remote_restore`; its sessions wait in
-`App::remote_restore` and are adopted on the main thread by
-`App::poll_remote_restore` (a `tick` step) once the host reports. A
-late-arriving adoption restores the user's prior selection instead of stealing
-focus, and a session already adopted meanwhile (e.g. by the DB sync) is
-skipped. An unknown-host backend still leaves its sessions un-adopted, exactly
-like before. The per-backend `restore_discover` perf line is emitted from the
-background thread; `restore_ms` in the `startup` line now covers only the
-local, synchronous part.
-
-**Why**: readying a remote backend means an ssh connect + remote tmux server
-bring-up — observed at 15–30 s per host on real hardware, unbounded when a host
-is powered off. With sessions persisted on two lab hosts, the first frame took
-~50 s (the hosts were probed **serially**, before `run_loop` ever painted).
-The expensive part needs no `&mut App` — only `ensure_ready()` + `discover()`
-on an `Arc<dyn SessionBackend>` (`Send + Sync`) — so it moves off-thread
-wholesale; adoption itself reuses the control-mode connection the thread
-already brought up and is cheap on the main thread.
-
-**Rejected**:
-
-- *Parallelizing the synchronous restore across hosts* — turns 50 s into
-  max-per-host (still 15–30 s, still unbounded for a down host) and keeps the
-  first frame hostage to the slowest machine.
-- *An ssh `ConnectTimeout` default* — caps the down-host case but does nothing
-  for a reachable-but-slow host, and silently changes user ssh behavior.
-- *Adopting on the background thread too* — `restore_single_session` mutates
-  `App` (session list, wizard state on the respawn path); shipping a built
-  `Session` across the channel would split that invariant for no measured win.
+> **Superseded in v3 (ADR-41).** thurbox restores no sessions: a session is a
+> Fleet Task, and Fleet keeps it. Attaching a pane, which is the step that
+> connects to a host, runs on a worker (`kernel::terminal::attach`, ADR-P24).
 
 ---
 
@@ -446,14 +317,13 @@ plugin reads as `thurbox.diffs[<session>]` — `pending` / `failed` / `ready`, w
 `files`, `body`, `truncated`, `raw_bytes` and `untracked_omitted`. Five things
 about it are worth stating because each was wrong once:
 
-- **The base is `sessions.base_branch`, never the session's own branch.** The loop
+- **The base is the row's `base_branch`, never the session's own branch.** The loop
   passed `SessionRow.branch` — a session's *own* worktree branch — so the range was
   `<own-branch>..HEAD`, which is empty. Every worktree-backed session published a
   `ready` diff with no files: a confident wrong answer, and the inversion of the
   intent, since the sessions that *have* a base were the ones showing nothing. The
-  snapshot now carries `base_branch` beside `branch` (a bulk read, on the schedule
-  the hook columns already use) and `None` still means "diff the uncommitted
-  changes".
+  snapshot carries `base_branch` beside `branch`, and `None` means "diff the
+  uncommitted changes".
 - **The request follows the selection, not the focused pane.** It was driven by
   `focused_session`, re-derived each frame from the focused plugin's *session
   surface* — so only a pane drawing a terminal ever asked for a diff, and a pane
@@ -470,7 +340,7 @@ about it are worth stating because each was wrong once:
   a coding agent produces — so a session with **no** base branch, which is exactly
   the scratch worktree someone watches an agent work in, reported "no changes" after
   three files had been written. v1 had the same gap; the consequence is worse here
-  because that is the default target. `git::working_diff_on` now folds each
+  because that is the default target. `git::working_diff` now folds each
   untracked file in as `git diff --no-index -- /dev/null <path>`, which emits an
   ordinary `new file mode` patch and needed nothing downstream to change: the
   numstat record arrives in the *rename* shape (empty path, `/dev/null`, real name),
@@ -518,46 +388,16 @@ about it are worth stating because each was wrong once:
 
 ## ADR-P9: Prefetch restore's history captures in parallel
 
-**Choice**: The sequential local-session restore adopts one session at a time,
-and ADR-P5's `adopt_split` measurement shows each adopt is `capture_ms` (an
-independent `tmux capture-pane` subprocess) + `connect_ms` (the control-mode
-attach, serialized by the connection mutex — inherently sequential). Restore
-now runs all matched panes' captures **in parallel** up front
-(`App::prefetch_capture_seeds`, a bounded `std::thread::scope` fan-out capped
-at 8 concurrent subprocesses) and passes each seed into the adopt:
-`PaneStream::adopt` takes `seed: Option<Vec<u8>>` (`None` = capture
-inline, exactly the old behavior — used by mid-run adopts, shell-pane
-re-adoption, and the remote restore path) and the new
-`PaneStream::capture_history` exposes the capture as its own trait method.
-With N sessions the restore's capture cost drops from `N × capture_ms` to
-roughly one `capture_ms`; `adopt_split` now logs `capture_ms ≈ 0` on the
-startup path, and a `restore_capture_prefetch` line (`sessions`,
-`prefetch_ms`) reports the overlapped batch.
-
-Gate: `restore_seed_prefetches` (one per prefetched pane) +
-`perf_restore_prefetches_capture_seeds` (`src/app/mod.rs` tests — a recording
-backend asserts every adopt received a prefetched seed and the capture ran
-exactly once per session; count-based, no timing).
-
-**Why**: startup time is dominated by restore once a few sessions exist, and
-the capture half is the only slice that parallelizes without touching the
-control-mode serialization ADR-P5 documents.
-
-**Rejected**:
-
-- *Parallelizing whole adopts* — `connect_pane` shares one control-mode
-  connection guarded by a mutex held across each command round-trip; threads
-  would just queue on it.
-- *Unbounded capture fan-out* — a 50-session restore would fork 50
-  subprocesses at once; the cap keeps the burst bounded with the same
-  wall-clock win.
+> **Superseded in v3 (ADR-41).** thurbox restores no sessions, so there is no
+> startup batch of captures to prefetch. `PaneStream::adopt` still takes an
+> optional seed; `None` captures inline.
 
 ---
 
 ## ADR-P10: Cut the idle tick's per-session churn
 
-**Choice**: two reductions in `refresh_session_statuses`' ~100 Hz work, both
-gated by counters:
+**Choice**: a reduction in `refresh_session_statuses`' ~100 Hz work, gated by a
+counter:
 
 - **Agent meta generation gate.** `apply_session_status_fields` called
   `session.agent_title()` + `session.notification()` for every session every
@@ -572,35 +412,16 @@ gated by counters:
   value lands). Gate: `agent_meta_syncs` +
   `perf_agent_meta_cached_across_idle_ticks` /
   `perf_agent_meta_resyncs_on_change`.
-- **Throttled `data_version` read.** The ADR-P6 cache still ran its `PRAGMA
-  data_version` `query_row` every tick (~100 rusqlite round-trips/s). The
-  read now runs every `HOOK_VERSION_CHECK_TICKS` (10 ticks ≈ 100 ms) — except
-  when the cache was explicitly invalidated (a remote hook event or restart
-  wrote on our own connection, which the pragma can't see; those check
-  immediately). Worst case an external `session signal` displays ~100 ms
-  late instead of ~10 ms — far below the 250 ms coupling ADR-P6 rejected as
-  visible. Gate: `data_version_checks` +
-  `perf_data_version_read_is_throttled` (and
-  `perf_hook_states_reload_on_external_change` now ticks through a full
-  throttle window before asserting).
 
-**Why**: with the render loop demand-driven (ADR-P1) and the hook reload
-cached (ADR-P6), these two were the largest remaining per-tick costs, and
-both scale with session count. Neither changes any user-visible latency
-budget.
+**Why**: with the render loop demand-driven (ADR-P1), this was among the
+largest remaining per-tick costs, and it scales with session count. It changes
+no user-visible latency budget.
 
 **Rejected**:
 
-- *Sharing `poll_external_changes`' cursor for the hook check* — still the
-  ADR-P6 rejection: `has_external_changes` mutates the shared
-  `last_data_version`, so two consumers would steal each other's edges.
-- *Gating the whole status derivation on the generation* — the
-  output-quiescence `working → Idle` fallback and the spinner are
-  time-driven; they must run every tick regardless.
-- *Deferred follow-ups* (measure first via the new observability):
-  extension self-heal gating on a fingerprint (watch `extension_heal_ms`),
-  and an adaptive idle poll interval for the 100 Hz loop itself (idle CPU
-  was not a reported pain point; the tick is now cheap).
+- *Deferred follow-up* (measure first via the new observability): an adaptive
+  idle poll interval for the 100 Hz loop itself (idle CPU was not a reported
+  pain point; the tick is now cheap).
 
 ---
 
@@ -635,13 +456,10 @@ only** and never CI-asserted (the counters remain the sole regression gate):
   `[features] perf_hud`): a floating, non-modal overlay with the same
   counters/percentiles/slow-ops, refreshed by the existing 250 ms forced-redraw floor.
 - **External inspection**: while timing is active the TUI also publishes a
-  JSON snapshot (counters + percentiles + slow ops + the startup phases) into
-  the SQLite `metadata` table (`perf_snapshot` key, ~every 5–10 s), read by
+  JSON snapshot (counters + percentiles + slow ops + the startup phases) to
+  `perf.json` in the data directory, written atomically, read by
   **`thurbox-cli perf`** (`--json` for machine output). Publishing is gated on
-  timing being active. In v2 it uses the snapshot store's own connection,
-  avoiding a full database open and its own `data_version` edge. Other stores
-  exclude `perf_snapshot` from their snapshot generations, so they do not
-  rebuild either; the CLI still reads the newest JSON.
+  timing being active.
 
 **The v2 implementation** (the bullets above name v1 modules that went with
 `src/app`; the design carried over, the file names did not):
@@ -666,10 +484,9 @@ only** and never CI-asserted (the counters remain the sole regression gate):
 - **Slow ops** wrap `interface_reload` (the whole reload: rebuild, sources,
   declarations) and `input_dispatch` (a keypress, which runs plugin Lua and so
   is where a slow plugin is felt). ≥5 ms rings, ≥100 ms also warns.
-- **Startup phases are v2's own**: config, DB open, theme activate, extension
-  heal, heartbeat, **`ui_build_ms`** (building the Lua interface — a cost v1
-  did not have) and `first_frame_ms`. There is no `restore_ms`: v2 has no
-  synchronous restore phase.
+- **Startup phases** are config, starting the Fleet watch (`snapshot_open_ms`),
+  theme activate, **`ui_build_ms`** (building the Lua interface) and
+  `first_frame_ms`.
 - **The subscriber had to be restored.** v2's TUI shipped without one at all,
   so every `tracing` call in the process — the panic hook's included — was
   dropped rather than written. `main` now installs the daily rolling
@@ -716,8 +533,8 @@ duration.
   Split into `App::select_backend` (registry lookup, cheap, UI thread) and the
   free `ensure_backend_ready` (blocking), which the async path now calls
   **inside** its `spawn_blocking` closure. The synchronous `do_spawn_session`
-  (automations/tasks/restore, which need the id back immediately) calls it on
-  its own thread by contract.
+  (automations, which need the id back immediately) calls it on its own thread
+  by contract.
 
 *Feedback* — `App::pending_spawn` (`PendingSpawn` + `SpawnPhase`), which lives
 for the **whole wizard**: from the repo being chosen until the session is live,
@@ -742,7 +559,7 @@ strand a placeholder row forever).
   is inserted rather than appended, the widget's item indices are offset past it
   when mapping back to session indices (hitboxes and the selected item).
 - An **animated badge** in the status row (`⠹ NEW  Creating worktree(s)… feat/x
-  · 14s`), reusing the `Ctrl+S` sync spinner's surface, with an elapsed counter
+  · 14s`), with an elapsed counter
   so a long wait reads as progressing rather than hung.
 - `SpawnPhase::is_working()` splits the three shell-out phases from
   `Configuring` (a wizard modal is open). A `Configuring` spawn keeps its row and
@@ -761,11 +578,10 @@ the synchronous `list_dir_on` probes that ran in the key handler. The modal
 stays fully interactive while a fetch is in flight (spinner rows/labels);
 supersession is handled by restarting the task (the orphaned worker's send
 fails harmlessly) plus a per-picker-instance `repo_picker_gen` stamp so a
-result that outlives its modal (Esc + reopen) is dropped — including a parent
-import's DB writes. Local targets compute inline (`std::fs` is instant, and
-the acceptance harness runs without a Tokio runtime). Listings are cached per
-`(picker instance, dir)`; an in-browser Tab bypasses the cache as an explicit
-refresh. Gates: `poll_repo_dir_listing_*`, `poll_repo_path_check_*`,
+result that outlives its modal (Esc + reopen) is dropped. Local targets compute
+inline (`std::fs` is instant, and the acceptance harness runs without a Tokio
+runtime). Listings are cached per `(picker instance, dir)`; an in-browser Tab
+bypasses the cache as an explicit refresh. Gates: `poll_repo_dir_listing_*`, `poll_repo_path_check_*`,
 `poll_repo_parent_import_*` (`src/app/mod.rs` tests);
 `repo_picker_browser_*` (`src/app/acceptance.rs`).
 
@@ -774,9 +590,7 @@ new hazard: `branch_list` and `worktree_create` carry `new_session` state across
 a thread boundary, so a second `Ctrl+N` in that window would overwrite the repo
 the in-flight job is resolving — repo A's branch list would land on repo B's
 config, cutting a worktree from a branch B may not have. `start_new_session`
-therefore refuses re-entry while `new_session_in_flight()`, and drops anything
-the caller staged (a task-spawn's `pending_task_prompt` would otherwise be
-`take()`n by the session already in flight — the wrong one).
+therefore refuses re-entry while `new_session_in_flight()`.
 
 **Why**: the phases were *already* mostly backgrounded (ADR-P8's shape), but the
 progress was announced with a `status_message` — and those expire after
@@ -880,36 +694,6 @@ fetch stuck for the process lifetime. Each is now a TTL, an in-flight marker, or
 generation counter. **If you add a cache to the loop, give it an age**; the review
 that found these is in the history, and they were one field each.
 
-`PaneProbe::known` — what holds each session's pane, which is what lets the
-interface say `running` instead of `idle` for an agent a harness launched — is a
-`PANE_PROBE_TTL` (2 s) cache under the same rule. It is also the case for
-**asking narrowly**: the answer costs one `display-message` plus one `ps`, so it
-is asked only about rows whose `hook_state` is null. A session whose agent
-reports for itself already has a better answer than a process listing can give,
-and probing it would put a subprocess per session on every refresh — which is
-the cost the interface declined by skipping the check altogether, at the price
-of the dot it then drew.
-
-A cached verdict cannot be trusted to publish, though, because eviction and a
-rebuild race: a hook state read fresh off the database can reach `assess`
-*before* the poll that would have evicted the now-stale entry catches up (the
-cache is invalidated by the row set `poll_pane_probes` last computed, one tick
-behind the read that just changed `hook.state`). So the actual invariant lives
-in `assess` itself: a pane verdict is folded in only when `hook.state` is
-`None`, never unconditionally. `best_state` already answers from the hook
-columns whenever they hold anything, so this changes nothing about the derived
-status — it only stops a verdict cached before the hook onset from being
-attached to a row that now speaks for itself.
-
-`retain` and the in-place `apply_hook_states` clear stay, but as the weaker
-guarantees they actually are: `retain` is hygiene (a cache that outlives the
-question it answers wastes a subprocess re-asking it, `assess`'s gate is what
-keeps a stale answer off the screen), and `apply_hook_states` clears
-`detected_agent` because that path corrects its row directly and never reaches
-`assess` at all — a hook write landing through this process's own connection
-never moves `PRAGMA data_version`, so no refresh, and no `assess` call, ever
-follows it.
-
 An age can be a **generation key** rather than a clock, and then *which* key you
 pick is the whole of the correctness. `GitStats::known` caches `merged` — is this
 branch's work already on origin's default? — keyed on the **commit** it was
@@ -951,7 +735,7 @@ garbage to move a gate, so pacing there would hide a full VM. It collects at all
 resident heap the collector's own pace lets garbage pile up to the ceiling, where
 a `luaL_Buffer` allocation (`string.rep`, `table.concat`) fails without an
 emergency collection. Size alone is not pressure — the first version rebuilt
-an interface that loads above nine-tenths on every loop iteration (#1553), ~7
+an interface that loads above nine-tenths on every loop iteration, ~7
 times a second at ~75% of a core. Within 1/32 of the ceiling is `Exhausted`;
 past nine-tenths and grown by 1/20 since the heap was last accepted as resident
 is `Grown`. A second rebuild due within 10 s of the last is not taken: `Grown`
@@ -1140,8 +924,7 @@ interface. Three fixes:
   `ctx.elapsed` as `floor(elapsed * 8)`, so it advanced 8 times a second whether
   or not anything was moving — and at the 4fps idle floor that invalidated every
   pure pane on every frame. It now lives in `Epoch::animation`, advanced by the
-  loop only while something animates (a `working` session, a command in flight —
-  background housekeeping is not one, ADR-P22).
+  loop only while something animates (a `working` session, a command in flight).
   This was a bug against this capability's own requirement that an idle
   interface rebuild nothing, not a tuning choice.
 - **An adaptive poll timeout.** The loop blocked in `event::poll(10ms)`
@@ -1354,9 +1137,7 @@ were enough:
   processes; untracked diffs render counts and patch from one invocation;
   `hosts.toml` loads once per process; pane pids resolve through one
   `list-panes` per backend per second instead of one serialized round trip per
-  session; the focus-request `DELETE` rides the snapshot's `data_version`
-  gate; `upsert_session` is one transaction instead of N+5 autocommits; the
-  bookmarks worker reopens the database without replaying the schema pass.
+  session.
 
 **Consequences**: under a streaming agent the publish is now group reuse plus
 the one pane whose surface moved — the terminal grid conversion ADR-P17 names
@@ -1374,86 +1155,11 @@ exactly as the Lua path does, the bug the focus request used to hit.
 
 ## ADR-P19: A remote round trip is not a local one, and neither is unpaced (2026-08-28)
 
-**Context**: shared sessions (ADR-24) gave the loop two new pieces of periodic
-work against a host, and both inherited a cadence sized for a local process.
-
-`Terminals::sync` used to exclude remote rows from window discovery outright —
-"a remote spawn drives control mode and records the real pane id, so a remote
-row is not something a window name can fix". Sharing made that false: a row
-mirrored from a host's database names the pane the host reported, or none, and
-its window is found on the host's server by name like a local one. So the
-filter went. What went with it was the *reason* it was there — a remote
-listing is `ssh <host> tmux list-windows`, not a fork on this machine. The
-throttle behind it was a single process-wide `discovered_at`, so every backend
-with an unresolved row was surveyed at `DISCOVERY_INTERVAL` (500 ms). A remote
-row that cannot attach — a host that is down, a mirrored row whose pane is
-gone — therefore held a backend permanently unresolved and cost **two ssh
-commands a second, forever**: `ensure_ready()` (the connect) and `discover()`
-(the listing). `ATTACH_RETRY_INTERVAL`'s 20 s backoff, which exists for exactly
-this host, guards only the attach; discovery ran beside it unpaced, and each
-survey re-issued the connect the instant the previous one gave up.
-
-The mirror worker had two of its own. It reopened the database with
-`Database::open` every `MIRROR_INTERVAL` per host — the constructor that
-replays the migrations, re-issues the WAL pragma (**which takes the write
-lock**) and runs both retention prunes, against the database the loop is
-reading. That is the cost `kernel::repos` had already paid and fixed. And
-`host_cli::usable` caches a `Yes` for the process lifetime — correct, a host's
-CLI does not change under us — so a host reachable at its first probe and down
-since keeps a usable verdict, and every pass ran its ssh out to the connect
-timeout, six times a minute.
-
-**Choice**: pace each piece of work by what it actually costs.
-
-- **Discovery is throttled per backend**, at that backend's own interval:
-  `DISCOVERY_INTERVAL` (500 ms) locally — it is also how fast a fresh local
-  spawn finds its window, so it stays tight — and `REMOTE_DISCOVERY_INTERVAL`
-  (5 s) over ssh or `wsl.exe`, where nothing is waiting on it the way a local
-  spawn is. `discovery_due` holds *when a backend may next be surveyed* rather
-  than when it last was, stamped when a survey **returns** — so the interval
-  separates one round trip from the next however long it took, and a slow one is
-  not re-issued the instant it gives up. `refresh_mirrors` paces itself the same
-  way; in both, the in-flight set is what holds a second attempt off while the
-  first is still out.
-- **A survey that learned nothing backs off to `ATTACH_RETRY_INTERVAL`** — it
-  could not ready its backend or could not list it, and the next one a moment
-  later learns the same nothing. A down host is now probed on one schedule
-  instead of two. `Terminals::forget` clears that backoff, for the reason it
-  already clears the attach failure: a local restart records no pane id, so the
-  session is resolved by name and a held-off listing would freeze it just as
-  long.
-- **The mirror worker uses `Database::open_existing`**, following
-  `kernel::repos`: the TUI ran the schema pass at startup.
-- **A mirror pass that could not run backs off to `MIRROR_RETRY_INTERVAL`**
-  (60 s). The verdict cache and the pass cadence are separate questions; the
-  pass is the one that pays for an unreachable host.
-- **An idle host is not re-listed** (2026-10-14). A pass used to pull the
-  host's full `session list` and `session list --deleted` every time, and the
-  deleted list used to grow without retention: a long-lived host cost ~122 KB a pass, ~0.74 MB a
-  minute, with nothing happening. The pass now asks `session revision` first —
-  the host's `rows_version` (schema v49), which its own triggers move on every
-  write either list could show — and reuses the lists it last pulled while the
-  number holds (`mirror::host_lists`). Reconciling still runs every pass, so a
-  change on the observer's side is handled as before. A host CLI that does not
-  advertise `session_revision` in `version --json` is listed in full, as
-  before. Measured as a pair over a real `ssh` connection (to the same
-  machine, with the host side's data directory pointed at a seeded database
-  whose `session list --deleted` is 121 KB; no live sessions, interface idle,
-  two 120 s windows, the ControlMaster socket's `bytes_received` from
-  `ss -tinpH`): **731 KB/min** before (24 ssh execs, 24 full listings), **2.1
-  KB/min** after (12 execs, each a `session revision`, no listing). Pinned end
-  to end over a stand-in `ssh` by
-  `shared_sessions::an_idle_host_is_not_listed_again`.
-
-**Consequence**: a down host costs a bounded handful of ssh attempts a minute
-rather than a continuous stream, and the mirror stops taking the database's
-write lock on a timer. The rule this closes out for remote work is ADR-P13's,
-one level up: a cache carries an age, and so does a *probe* — anything issued
-on a timer against a host needs an interval sized to the round trip, and a
-failure needs an interval of its own. Pinned by
-`kernel::terminal::tests::{a_remote_backend_is_surveyed_on_its_own_cadence,
-a_survey_that_learned_nothing_backs_off_to_the_attach_retry,
-a_mirror_pass_that_could_not_run_backs_its_host_off}`.
+> **Superseded in v3 (ADR-41).** thurbox discovers no windows and mirrors no
+> host: a session is a Fleet Task, and its pane is the one Fleet names. The rule
+> stays: anything issued on a timer against a host needs an interval sized to the
+> round trip, and a failure needs an interval of its own
+> (`ATTACH_RETRY_INTERVAL`).
 
 ---
 
@@ -1566,9 +1272,8 @@ second to move a spinner glyph: the centre pane, which draws a terminal surface,
 and all three closed float probes, which draw nothing at all.
 
 The harness could not see it, because `sh` runs no status hook and nothing ever
-reported `working`. `perf-run.sh -w N` now signals N sessions the way a hook does
-(`THURBOX_SESSION` plus `session signal`), which made it measurable — and it was
-the largest single cost left:
+reported `working`. `perf-run.sh -w N` marks N sessions `working`, which made it
+measurable — and it was the largest single cost left:
 
 | 19 sessions, 3 printing, 255x62 | CPU | pane trees from cache |
 |---|---|---|
@@ -1655,46 +1360,8 @@ not at the top of a render that usually draws nothing moving.
 
 ## ADR-P22: Background housekeeping is invisible to the interface (2026-09-04)
 
-**Context**: the deleted-session sweep is dispatched on the command bus every
-`REAP_INTERVAL` (5s) for as long as thurbox runs (ADR-26). The bus records every
-command it accepts, and three things read that record: `status_rows` reserves a
-message-band row while anything is in flight, the band captions it with the
-command's kind, and `advance_animation` counts it as something moving. So the
-sweep flashed "reap" through the band and reflowed every pane twice every five
-seconds — and a reflow forces a *full* repaint (ADR-P1), which is the most
-expensive frame there is. Its completion also went through `poll_command_bus`,
-re-reading the snapshot and marking a data change 12 times a minute on an
-interface nobody was touching.
-
-**Decision**: a command answers `is_housekeeping()`, true for `Reap` alone, and
-the bus keeps **no in-flight record** of one. Not a filter at each reader — a
-single `dispatch` branch, so the sweep is absent from `inflight()`,
-`has_inflight()`, `first_running()`, `is_busy()` and therefore from
-`thurbox.commands`, the band, the arrangement and the animation clock at once.
-The work still runs on its own worker thread, unchanged; a failure is reported
-through `tracing` rather than the band, which is where the rest of the sweep
-already speaks.
-
-**Rejected**:
-
-- *Excluding it in `status_rows`* — the cheapest edit and the wrong one: the
-  same row still reaches plugins through `thurbox.commands` and still animates
-  the clock, so the flicker would come back through whichever reader was not
-  patched. There are four.
-- *Slowing `REAP_INTERVAL`* — makes the flash rarer, not absent, and the cadence
-  is the undo window's business, not the render loop's.
-- *Moving the sweep back onto the UI thread* — it opens the database and can
-  reach a multiplexer; that is exactly what the bus exists to keep off the frame.
-
-**Consequences**: a reaped row leaves the list on the next due snapshot refresh
-rather than the instant the sweep finishes. That is the right trade — nobody is
-waiting on a sweep, and the row it collects has been invisible for the whole undo
-window already. Anything a *person* dispatched is unaffected: it still takes the
-band, still captions it, still animates. Pinned by
-`kernel::command::tests::housekeeping_is_never_reported_in_flight` and
-`chrome::a_housekeeping_sweep_neither_captions_the_band_nor_reflows_the_frame`,
-which asserts both halves — the sweep placing no `status` slot and moving no
-pane, a delete still doing both.
+> **Superseded in v3 (ADR-41).** thurbox dispatches no background sweep: a
+> deleted session is a deleted Fleet Task, and Fleet releases it.
 
 ---
 
@@ -1820,8 +1487,8 @@ is unmeasured".
   have.
 - **The budget covers the lock, not just the answer** (`tmux_compat::Server::ctrl_command_within`).
   One backend is one connection is one serialized queue, and the plain
-  `with_control` holds that lock across a whole round trip — the mirror pass and
-  the attach worker share it with the loop, so an unbounded wait for the lock
+  `with_control` holds that lock across a whole round trip — the attach
+  worker shares it with the loop, so an unbounded wait for the lock
   would reintroduce the freeze with none of the waiting done on our own command.
 - **Neither path reconnects.** A reconnect is the unbounded wait this exists to
   avoid; the callers that *can* wait still reconnect on their own schedule.
@@ -1892,7 +1559,7 @@ where a reader of the test will meet it.
 **Context**: every ADR above this one is about a frame. This one is about the
 processes an idle thurbox starts. `GitStats` re-stats each session's worktree on
 a fixed 5 s TTL, off the render path, which is correct and was never the
-problem; the problem is the multiplier. Issue #1167 measured `git` running **298
+problem; the problem is the multiplier. A measurement found `git` running **298
 times in 30 seconds** on an instance holding 16 sessions — no agent responsible,
 the interface itself the parent of every one. The floor is two subprocesses per
 session per TTL, but the ceiling is nine: a branch that is *ahead of the default
@@ -1946,7 +1613,7 @@ than ahead of it.
 
 **Rejected**:
 
-- *Only making the TTL a setting* (what the issue offered a PR for) — it makes a
+- *Only making the TTL a setting* — it makes a
   badly-scaling loop adjustable rather than making it scale, and leaves the
   merge check, the dominant cost, running at whatever the operator picked.
 - *Keying the `false` on the commit alone*, with no clock. A branch lands
@@ -1956,7 +1623,7 @@ than ahead of it.
 - *Polling only what the screen shows.* The kernel does not know which rows a
   plugin drew — panes are Lua and the list is theirs — and a snapshot that
   answered differently depending on who looked would break the one rule this
-  module has (ADR-P6: plugins read a snapshot, they do not drive it).
+  module has: plugins read a snapshot, they do not drive it.
 - *Watching the worktree with an fs notifier instead of polling.* A watch per
   session, recursive, over directories an agent writes constantly — more
   machinery and more wakeups than the thing it replaces, and it still cannot
@@ -2159,12 +1826,11 @@ change):
 | reader | what it needs | answer now |
 |---|---|---|
 | the reader thread | every byte, in order | unchanged: it still reads and feeds every byte — except on an ssh host, where a pane with no grid streams no output and its signals come from a subscription (ADR-P30) |
-| `output_generation`, `millis_since_output`, `sync_printing`, the stuck-`working` quiescence (hook state), notifications | `last_output_at`, `exited` | atomics, untouched by the parser; unchanged |
+| `output_generation`, `millis_since_output`, `sync_printing`, notifications | `last_output_at`, `exited` | atomics, untouched by the parser; unchanged |
 | `sync_meta` (the activity line, notification text) | OSC 0/1/2, BEL, OSC 9/777 | the two-cell parser still runs the `TermSignals` callbacks; a title and mouse modes set before the interface attached are replayed from tmux's pane formats at attach, as the full adopt does |
 | the content search (ADR-P26) | every row of history | reads the pane back from tmux on its worker (below) |
 | `hyperlink_paints`, the link scan, selection, mouse | the visible grid | only painted surfaces, which ask for their grid first |
 | `visible_text` (the Copy command) | the visible grid | a pane with no grid answers "nothing to copy" rather than two blank rows |
-| `thurbox-cli session capture`, `doctor` | history | never the interface: `tmux capture-pane` |
 | the session list, queue and plugin panes | the snapshot | never the parser |
 
 **Weighed**:
@@ -2198,7 +1864,7 @@ reader installs it between two reads. Nothing is lost or repeated because
 nothing about the rebuild depends on timing. The paint requests the restore
 without waiting and paints blank until it lands.
 Installing the snapshot moves the output generation and triggers a repaint, so
-the first nonblank frame is current (#1242). A host that stopped answering
+the first nonblank frame is current. A host that stopped answering
 cannot stall a paint; the request is repeated only after two seconds without
 an answer. Companion shell creation and re-adoption likewise run on workers.
 On a backend with ordered snapshots, a new companion shell also starts dormant.
@@ -2233,7 +1899,7 @@ is its reader thread (its stack and malloc arena, ~135 KiB), not its grid.
 On the benchmark harness, same machine before and after, 50 sessions
 attached and idle went from 104 to 48.3 MiB for the whole host, under Herdr's
 57.4, with CPU and keystroke latency unchanged and the stale first view
-(#1242) gone: see the section revisiting it in
+gone: see the section revisiting it in
 [benchmark-multiplexers.md](benchmark-multiplexers.md).
 
 **Costs**, measured on 20 sessions of 1,000 history rows at 200x50, release
@@ -2379,7 +2045,7 @@ printing. The idle case then sends two keys in one input burst and separates
 the agent's replies, so replacing a pending wait fails the counter assertion.
 
 **Also**: `session create` ran 27 processes, 20 of them `tmux set-option`
-re-applying the same server options twice (#1243). The options are now one tmux
+re-applying the same server options twice. The options are now one tmux
 command list (`config_command_list`; a best-effort option is given `-q` so an
 option an older tmux lacks cannot stop the ones after it), and on the common path
 that list rides behind `has-session` and ahead of `new-window` in the same
@@ -2437,13 +2103,12 @@ signals in that ADR's table.
 
 | reader | signal | while the output is held back |
 |---|---|---|
-| `sync_printing`, the stuck-`working` and latched-`blocked` folds, `millis_since_output` | `last_output_at` | stamped when the window's `#{window_activity}` moves, once a second at most |
+| `sync_printing`, `millis_since_output` | `last_output_at` | stamped when the window's `#{window_activity}` moves, once a second at most |
 | `sync_meta`, the activity line | OSC 0/1/2 title | `#{pane_title}`, replayed as an OSC 2 |
 | a key encoded for the pane once shown | input modes: cursor and keypad application modes, bracketed paste, cursor visibility, mouse tracking | the pane's `*_flag` formats, replayed set or reset |
-| the hook status | `@thurbox_state` | unchanged: it already rides a subscription, not the output |
 | the content search, `output_generation` | the pane's text, and that it changed | read back from tmux, as before; activity moves the generation |
-| `needs_attention` (BEL) | — | nothing reads it any more |
-| `sync_meta`, the notification text | OSC 9/777 | **lost**: tmux parses and drops both, so nothing but the output carries them. The row falls back to `Blocked`, and an OS notification body to `Waiting for input` |
+| `needs_attention` (BEL) | — | not read |
+| `sync_meta`, the notification text | OSC 9/777 | **lost**: tmux parses and drops both, so nothing but the output carries them. |
 
 **Choice**: when a pane on an ssh host drops its grid, its output is paused for
 this client (`refresh-client -A '%N:pause'`) and a format subscription of its
@@ -2527,19 +2192,13 @@ scripts/dev/perf-run.sh -n 20 -p 3 -b 1000 --search 'a b' --typing  # while typi
 scripts/dev/perf-run.sh --bin-dir DIR          # another build's binaries, e.g. a release
 ```
 
-Two traps it now handles, both of which report a plausible number rather than
-failing:
-
-- **It must measure its own process.** `pgrep -x thurbox` finds the developer's
-  own running thurbox first, and every configuration then reports that instance:
-  idle or loaded, one session or twenty, all ~17% of a core. The run is
-  identified by its private `XDG_DATA_HOME` in `/proc/<pid>/environ` instead.
-  (`pgrep -f "$BIN_DIR/thurbox"` has the matching problem from the other end —
-  it also matches `thurbox-cli`.)
-- **The TUI starts before the sessions exist.** The v1→v2 consent gate fires for
-  a profile with session history and no acknowledgment, and waits for a keypress;
-  seeding first left the binary sitting on the gate for the whole run, reporting
-  a very restful 0%.
+**It must measure its own process**, a trap that reports a plausible number
+rather than failing. `pgrep -x thurbox` finds the developer's own running
+thurbox first, and every configuration then reports that instance: idle or
+loaded, one session or twenty, all ~17% of a core. The run is identified by its
+private `XDG_DATA_HOME` in `/proc/<pid>/environ` instead. (`pgrep -f
+"$BIN_DIR/thurbox"` has the matching problem from the other end — it also
+matches `thurbox-cli`.)
 
 A reading from either is only comparable with another at the same terminal size
 and session count, so both pin theirs.
@@ -2547,7 +2206,8 @@ and session count, so both pin theirs.
 A third instrument answers a different question — how thurbox compares with
 the alternatives, not with itself: `just bench-multiplexers` runs raw tmux,
 Herdr and thurbox through the same scenarios with the same stand-in agent.
-Its results and method are in [benchmark-multiplexers.md](benchmark-multiplexers.md).
+Its method is in [benchmark-multiplexers.md](benchmark-multiplexers.md); it keeps no
+results, so run it to measure a build.
 
 **And on a busy machine, trust the counters over the CPU.** A percentage from
 `/proc` is a real measurement of a shared machine: taken while something else was
@@ -2565,8 +2225,8 @@ was. `uptime` before believing a percentage.
 
 ## Investigation 2026-07-09: where the time actually goes
 
-A measurement pass over the render loop, the tick, the draw path, startup, the
-database, and the mailbox wake. Ranked by **measured** impact. Anything not
+A measurement pass over the render loop, the tick, the draw path and startup.
+Ranked by **measured** impact. Anything not
 measured is called out under [Honest gaps](#honest-gaps) rather than guessed at.
 
 ### Method
@@ -2577,9 +2237,8 @@ measured is called out under [Honest gaps](#honest-gaps) rather than guessed at.
   from a debug build.
 - **Isolation**: every binary ran with `HOME`, `THURBOX_CONFIG_DIR`,
   `THURBOX_DATA_DIR`, `THURBOX_SOCKET` and `TMUX_TMPDIR` redirected to
-  throwaway directories, so no measurement touched real config, the real
-  database, or the real tmux socket. Database work ran against a **copy** of
-  `thurbox.db`; `EXPLAIN QUERY PLAN` was never pointed at the live file.
+  throwaway directories, so no measurement touched real config, real data, or
+  the real tmux socket.
 - **Loop timing**: the built-in instrumentation, not a new dependency —
   `THURBOX_PERF_LOG=1 thurbox` inside a scratch tmux pane, reading the
   `startup` and `perf_window` lines (ADR-P11) from
@@ -2587,8 +2246,6 @@ measured is called out under [Honest gaps](#honest-gaps) rather than guessed at.
 - **Load generator**: a synthetic agent declared in a scratch `agents.toml` —
   a throttled producer (100 lines/s/session) and an unthrottled one (`yes`) —
   driven at 0, 4 sessions.
-- **Database**: `sqlite3` against the copy (544 session rows, 22,726
-  `audit_log` rows), 200 iterations per statement.
 - **Subprocess costs**: `git worktree add`, `git fetch`, and `ssh` timed
   directly with a monotonic clock, five/three runs each.
 
@@ -2638,44 +2295,7 @@ off-thread (`do_spawn_session_async` at `src/app/mod.rs:3733`, drained by
 `poll_worktree_create`/`poll_session_spawn` in `tick_core`). The automation
 spawn path never received the same treatment.
 
-#### 3. The mailbox wake reports success at a pane nothing is listening to
-
-`send_prompt_now` (`crates/runtime-mux/src/tmux_compat/server.rs`) targets the
-session's tmux window and treats a zero exit from `send-keys` as delivery.
-thurbox sets `remain-on-exit=on` on an agent's window (`keeps_dead_pane`,
-`crates/runtime-mux/src/tmux_compat/server.rs`;
-at the time of this measurement it was asked for session-wide in `SESSION_OPTS`,
-which — being a window option — actually reached only whichever window was
-current), so an agent that exits or crashes **leaves its window and pane in
-place**.
-
-Measured against a pane whose process was killed (`pane_dead=1`, window still
-listed):
-
-| Target | `send-keys` exit | bytes delivered |
-| --- | --- | --- |
-| live pane | 0 | 18 |
-| **dead pane** (`remain-on-exit`) | **0** | **0** |
-| missing window | 1 | 0 |
-
-So `{"woke": true}` meant "tmux accepted the keystrokes", not "an agent
-received them". `cli::messages::enqueue_and_wake` set `woke = true` on that
-`Ok(())`, and the recipient never acted because there was no process to act.
-The message itself was always durably queued — only the liveness report lied.
-
-This is **not** the automation freeze and shares no mechanism with it: no event
-loop, no blocking call, no starvation. It is a false-positive liveness signal
-in a headless CLI path. Five call sites shared it — the mailbox wake
-(`src/cli/messages.rs:300`), `session send` (`src/cli/sessions.rs:299`),
-`task run` (`src/cli/tasks.rs:310,333`), and the **headless `Send` automation**
-(`src/cli/automations.rs:545,571`), which recorded a `Success` run for a prompt
-that went nowhere.
-
-Fixed here: `send_prompt_now` now refuses a dead pane, so all five callers
-report the truth. A missing window still surfaces through `send-keys`, because
-`display-message` against one exits 0 printing nothing.
-
-#### 4. Output-driven repaint runs at the full loop rate (~100 fps)
+#### 3. Output-driven repaint runs at the full loop rate (~100 fps)
 
 ADR-P1's demand-driven paint holds while idle, but any agent output marks the
 UI dirty, so during a streaming turn the loop paints on essentially every
@@ -2709,14 +2329,8 @@ means "looked at", not "not looked at".
   widget is scoped to modals, the perf HUD, and the review pane. Frame p50
   0.5–1.0 ms, worst max 7.81 ms.
 - **Startup.** `first_frame_ms` = **46 ms** (no sessions), **67 ms** (4
-  sessions), **152 ms** (4 sessions including restore + adopt). Nothing is
+  sessions), **152 ms** (4 sessions including adopt). Nothing is
   enumerated eagerly that need not be.
-- **The database.** The only per-tick statements are `PRAGMA data_version`
-  (**0.0062 ms**) and, behind it, `load_hook_states` (**0.014 ms**).
-  `EXPLAIN QUERY PLAN` gives `SCAN sessions USING INDEX idx_sessions_active`,
-  returning 3 active rows out of 544. `audit_log` (22,726 rows) and
-  `automation_runs` are never read from the loop. No missing index; no full
-  scan; the ADR-P6 cache does what it claims.
 - **The session-order cache (ADR-P3).** Signature is an O(sessions) hash with
   no allocation and is status-independent, so streaming output and spinner
   ticks reuse the cached order.
@@ -2726,9 +2340,9 @@ means "looked at", not "not looked at".
 - **Remote SSH.** Both configured hosts were **up** during this pass
   (the Linux host 317 ms rc=0; the Windows host connects, returns `ALIVE`) — ssh
   returns 255 on connect failure, and neither did. No **active** session is
-  remote: all 3 live sessions are `local-tmux`; the 8 `ssh:*` rows are
-  soft-deleted. Backends are registered lazily (`App::select_backend`) and
-  readied on background threads (ADR-P7/P12), so a down host cannot block
+  remote: all 3 live sessions are `local-tmux`. Backends are registered lazily
+  (`App::select_backend`) and readied on background threads (ADR-P12), so a
+  down host cannot block
   `tick_core`. For
   the paths reachable here, "keep the TUI usable when remote SSH hosts fail"
   holds.
@@ -2739,9 +2353,8 @@ means "looked at", not "not looked at".
 | --- | --- | --- | --- | --- |
 | R1 | Move the new-session `git fetch` off the UI thread, mirroring `poll_worktree_create` | Removes the only multi-second freeze on the normal interactive path (~2 s, unbounded) | Medium: needs a loading state + a `poll_*` drain | Yes — **done**, ADR-P12 |
 | R2 | Route the automation `Spawn` through the existing `do_spawn_session_async` | Removes a ~93 ms x repos + tmux-spawn freeze per fire | Low–medium: the async path already exists | **No** — must edit `src/app/automation.rs`, reserved by `fix/automation-exec-nonblocking` |
-| R3 | Refuse a dead pane in `send_prompt_now` | `woke`/run-status stop lying; applies to all five callers | One tmux round-trip per send | Yes — **applied in this PR** |
-| R4 | Clamp output-driven repaint to ~30 fps | ~3x less TUI CPU while agents stream (65.6 % -> ~20 % of a core) | Low (one clamp) but needs an input-latency measurement first | Yes — **not done**, see gaps |
-| R5 | Skip the spinner repaint when the spinner cell is off-screen | Minor; subsumed by R4 whenever output is flowing | Low | Yes |
+| R3 | Clamp output-driven repaint to ~30 fps | ~3x less TUI CPU while agents stream (65.6 % -> ~20 % of a core) | Low (one clamp) but needs an input-latency measurement first | Yes — **not done**, see gaps |
+| R4 | Skip the spinner repaint when the spinner cell is off-screen | Minor; subsumed by R3 whenever output is flowing | Low | Yes |
 
 R2 is the one that overlaps the in-flight `Exec` fix. Both arms live in
 `fire_automation`, so landing them separately would conflict; the
@@ -2752,12 +2365,12 @@ worktree/spawn offload should ride with that branch or follow it.
 - **The chronic freeze was not reproduced.** Under worst-case synthetic output
   nothing on the UI thread exceeded 16 ms and zero slow ops were logged. If a
   continuous freeze is real, the evidence points *away* from the render/tick
-  loop; the tmux server pegging ~99 % of a core (finding 4) and the host
+  loop; the tmux server pegging ~99 % of a core (finding 3) and the host
   terminal emulator are the untested candidates.
 - **No real agent CLI was exercised.** `HOME` was isolated, so no authenticated
   `claude`/`codex` ran. A real agent's output — full-screen TUI repaints, wide
   ANSI runs — has a different vt100 shape than the synthetic producers used
-  here, so finding 4's frame times are a lower bound.
+  here, so finding 3's frame times are a lower bound.
 - **No CPU profile by symbol.** `perf`, `cargo-flamegraph` and `valgrind` are
   all absent on this machine and `perf_event_paranoid = 2`; `criterion` is not
   a dependency and there is no `benches/`. Per ADR-P5 none were added just to
@@ -2781,7 +2394,7 @@ worktree/spawn offload should ride with that branch or follow it.
 | I want to… | Do this |
 | --- | --- |
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
-| Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `db_open_ms`, `theme_activate_ms`, `extension_heal_ms`, `heartbeat_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
+| Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `snapshot_open_ms`, `theme_activate_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
 | Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~1000 iterations: counter deltas + frame/republish/tick percentiles + slow ops) |
 | Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms + the plugin whose call was longest), or the slow-op list in `perf_window` |
 | Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |

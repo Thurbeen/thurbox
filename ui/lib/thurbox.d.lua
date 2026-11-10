@@ -455,15 +455,6 @@
 ---@field git? thurbox.GitStats
 ---@field attach_error? string Why this session's terminal is not live.
 
----@class (exact) thurbox.DeletedSession
----@field id string
----@field name string
----@field agent string
----@field deleted_at integer Epoch millis, against `thurbox.taken_at_ms`.
----@field worktrees integer
----@field partial boolean Restoring recovers committed work only.
----@field restore_refusal? string Set when the restore would refuse, and why.
-
 ---@class (exact) thurbox.Repo
 ---@field path string
 ---@field name string
@@ -474,42 +465,12 @@
 ---| "unknown"
 
 ---@class (exact) thurbox.Agent
----@field name string
----@field command string
----@field presence thurbox.Presence Whether `command` resolves to something runnable. `unknown` is not `missing`: it means nothing was looked at.
+---@field name string A harness Fleet has a profile for.
 
 ---@class (exact) thurbox.Host
 ---@field name string
 ---@field detail string
 ---@field backend string
----@field platform "posix"|"windows"
----@field multiplexer? string
----@field available_multiplexers string[] Installed there and native to its platform. While `probing`, only its platform default and `multiplexer`.
----@field probing boolean The host has not yet said which multiplexers it has.
-
---- The local multiplexer every session's window is created in.
----@class (exact) thurbox.Mux
----@field binary string What a create here runs when nothing names one: the configured multiplexer, else the platform default when installed, else the one that is.
----@field configured? string
----@field available string[]
----@field presence thurbox.Presence
----@field advice string What to do about it; empty when there is nothing to do.
-
---- Whether the binaries a session needs are installed, as the kernel last
---- looked. Probed on the kernel's schedule behind a TTL — reading it is a table
---- lookup, never a `which`.
----@class (exact) thurbox.Preflight
----@field mux thurbox.Mux
-
----@class (exact) thurbox.Task
----@field id integer
----@field title string
----@field description? string
----@field status string
----@field source string
----@field url? string
----@field created_at integer Epoch seconds.
----@field updated_at integer
 
 ---@class (exact) thurbox.AutomationRun
 ---@field id integer
@@ -611,7 +572,6 @@
 ---@field ok? boolean
 
 ---@class (exact) thurbox.Features
----@field tasks boolean
 ---@field automations boolean
 ---@field file_viewer boolean
 ---@field global_search boolean
@@ -621,7 +581,6 @@
 ---@field perf_hud boolean
 ---@field mouse boolean
 ---@field notifications boolean
----@field soft_delete boolean
 ---@field version_check boolean
 ---@field auto_update boolean
 
@@ -630,7 +589,6 @@
 ---@class (exact) thurbox.Settings
 ---@field features thurbox.Features
 ---@field two_panel_min_cols integer
----@field three_panel_min_cols integer
 ---@field scrollback_lines integer
 
 ---@class (exact) thurbox.BookmarkRow
@@ -659,26 +617,6 @@
 ---@field loading boolean
 ---@field error? string
 ---@field entries thurbox.BrowseEntry[]
-
---- Base branches, served only while `store.want_branches` asks.
----@class (exact) thurbox.Branches
----@field host string
----@field repo string
----@field loading boolean
----@field error? string
----@field list string[]
-
----@class (exact) thurbox.WorktreeEntry
----@field path string
----@field branch string
-
---- The worktrees a repo already has, served while `store.want_worktrees` asks.
----@class (exact) thurbox.Worktrees
----@field host string
----@field repo string
----@field loading boolean
----@field error? string
----@field list thurbox.WorktreeEntry[]
 
 ---@class (exact) thurbox.SystemMetrics
 ---@field cpu_percent number
@@ -806,18 +744,12 @@
 ---@class (exact) thurbox.Api
 ---@field api integer The plugin API contract number. It moves only when a field is removed or changes meaning; declare `requires_api` to need a newer one.
 ---@field sessions thurbox.Session[]
----@field deleted thurbox.DeletedSession[]
 ---@field repos thurbox.Repo[]
----@field agents thurbox.Agent[]
----@field agent_default string What a bare launch would use.
+---@field agents? thurbox.Agent[] Nil until Fleet has said which harnesses it has.
 ---@field settings thurbox.Settings
 ---@field bookmarks thurbox.Bookmarks
 ---@field browse thurbox.Browse
----@field branches thurbox.Branches
----@field worktrees thurbox.Worktrees
----@field hosts thurbox.Host[]
----@field preflight thurbox.Preflight
----@field tasks thurbox.Task[]
+---@field hosts? thurbox.Host[] Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.
 ---@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
 ---@field diffs table<string, thurbox.Diff>

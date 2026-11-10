@@ -81,7 +81,7 @@ fleet-api          pure           types and ports
 fleet-controllers  pure           controllers and gate   -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
-fleet-runtime      adapter        exec, thurbox-cli, fake, term-bridge -> api, exec,
+fleet-runtime      adapter        exec, fake, term-bridge -> api, exec,
 term-stream
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
 fleet-gateway      adapter        curl (Slack, Discord), fake -> api, exec
@@ -252,6 +252,13 @@ Guarantees, each with its test:
   generation. The same result again is a no-op. Within one generation a
   different result is refused; a result for a newer generation replaces the
   older one. A result for `status.brief.generation` concludes the Task.
+- **Label.** `fleet label task TASK KEY=VALUE…` sets each label on the Task
+  in one compare-and-swap write and changes nothing else: the spec, the
+  generation and the other labels stay. A label only Fleet writes (the
+  Conversation and parent labels, a plugin's creator label) is refused with
+  exit 1. `apply` cannot relabel a Task a Conversation made, since it refuses
+  a manifest that carries those labels; `label` keeps them as they are, and
+  leaves the creator label to the store, which keeps it on every update.
 - **Amend.** `fleet amend TASK` appends `{text, reason?, outputs?, from, at,
   generation}` to `spec.amendments`, increments `metadata.generation` and
   queues an inbox entry with `amends` under
@@ -852,9 +859,8 @@ workspace, environment), for a runtime that starts the argv itself; the
 manager completes it with the environment it froze and the signal file, as
 for a spawn. `create_dir` makes a directory with its missing parents on a host
 and says whether it made it; `remove_dir` removes one and what it holds, a
-directory already gone included. The thurbox adapter does both on the local host
-and refuses any other, since thurbox has no verb that makes or removes a
-directory on a remote host. Each adapter reports its longest single operation
+directory already gone included. The exec adapter runs each as a bounded
+command on the host, through the runtime's `exec` verb. Each adapter reports its longest single operation
 (`operation_bound`), and `fleet reconcile` refuses a lease that could not
 outlast it.
 
@@ -865,39 +871,11 @@ outlast it.
   `resume` are `start` of its resume argv. A session's id is its runtime key,
   `<keyPrefix>.<uid>`, so a restart keeps it. `ready`, `workspace_trust` and
   a running agent's `at_rest` read the agent's signals; `lost` is an
-  `exited` process. It cannot pause: `paused` stays Unknown.
+  `exited` process. `release` is `stop` with `release: true`. `brief` is
+  `input` of the text, and only the agent's prompt hook proves it.
+  It cannot pause: `paused` stays Unknown. It passes no model to its
+  harness, so a spawn with `spec.model` fails.
   `e2e_runtime_exec` drives the real `runtime-mux` through it.
-- **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
-  thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
-  repeated create return the session holding the key. The brief's delivery
-  is journaled in the session's own metadata. Every brief, amendment, catch-up
-  note and inbox entry goes to the agent's own inbox through `message send`,
-  never into the terminal composer, so a working turn takes it. Thurbox
-  picks the route and reports it; the receipt records it as `deliveredVia`.
-  A `mailbox` answer is no delivery: the controller raises `BriefUndelivered`
-  or `DeliveryQueued` and never sends that text again.
-  `spec.model` reaches the harness as the variable `runtime.modelEnv` names
-  for it. Before Codex's first
-  lifecycle report, readiness additionally accepts its initial empty composer:
-  a matching owned session, corroborated live Codex process, no reported or
-  contradicted hook, and a visible-pane capture placing the cursor at the
-  initial prompt under the welcome screen. Missing or different evidence
-  remains Unknown. This input-only proof never authorizes release; `at_rest`
-  still requires idle, done or stopped. `e2e_runtime` covers initial delivery,
-  reconnect, dialog/cursor guards, delivery to a working session and
-  unchanged deletion safety.
-  thurbox keeps a session's row across a reboot. `lost` is `session get`
-  reporting `hook_corroboration: "missing"`, and `revive` is `session
-  restart --if-missing`, which resumes the conversation in the same row and
-  worktree. A session with no window is at rest. `paused` reads `stopped`
-  and `activity: "stopped"` from `session get`. `pause` is
-  `session stop` and `resume` is `session start`, each after checking that
-  the key still belongs to the recorded id. `e2e_task_pause` covers both.
-  The adapter passes the harness profile's hooks and Codex trust as
-  `--agent-arg`s; thurbox's agent registry still builds the rest of the
-  argv and resumes the conversation itself. thurbox merges a claude agent's
-  several `--settings` into one, so the profile's hooks and thurbox's own
-  both run.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process: it records
   the harness profile's launch and resume argv, and plays each agent's
@@ -923,20 +901,15 @@ rules:
   a `repositories` workspace.
 - **Refusal.** A workspace the adapter cannot make, or may not make, is
   `Known(Failed)` at spawn, never Unknown. A repository the adapter has no
-  source for is `Known(Unmapped { url })`. A harness the adapter knows no
-  workspace-trust interface for is `Known(TrustUnmapped { harness })`. The
-  adapter answers both before any external call.
+  source for is `Known(Unmapped { url })`. A runtime can answer
+  `Known(TrustUnmapped { harness })` for a harness it knows no
+  workspace-trust interface for. An adapter answers both before any
+  external call. No shipped runtime answers `TrustUnmapped`.
 
-Thurbox maps a `{dir}` to `--repo-path`. It maps the workspace Fleet made
-for a `{repositories}` Task to `--repo-path dir` and one `--add-dir` per
-`extraDirs` entry, and makes no worktree: Fleet makes and cleans every
-repositories workspace through the [workspace
-contract](#workspace-contract). A `{repositories}` spawn that reaches the
-adapter unmade fails.
-
-- `release` runs `session delete --force`: thurbox removes the window.
-- Cleanup is best effort. Fleet reads a delete that exits 0 as released,
-  even when thurbox reports a remote teardown error.
+The exec adapter starts a `{dir}` session in that directory. It starts a
+`{repositories}` session in the `dir` of the workspace Fleet made, and the
+harness profile adds one `--add-dir` per `extraDirs` entry. A
+`{repositories}` spawn that reaches the adapter unmade fails.
 
 ### Workspace trust
 
@@ -954,55 +927,53 @@ The trust root is the directory the agent keys the session's trust on:
 - Additional repositories get no trust. Neither agent loads their project
   settings.
 
-`runtime.workspaceTrust` gives each thurbox harness one interface:
+The [harness profile](controllers/task.md#harness-profiles) gives each
+harness its trust at spawn:
 
-| Interface | Default harnesses | At spawn | `workspace_trust` answers |
-| --- | --- | --- | --- |
-| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. Initial readiness treats the harness as Codex, as it always treats `codex`. | `Trusted` when the row's `agent_args` are exactly that pair, the row's cwd and worktrees are the Task's workspace, and a readable screen shows no Codex trust dialog before its first hook. `Mismatch` otherwise. Unknown when thurbox does not report them or the screen cannot be read. Readiness also refuses a screen showing that dialog. |
-| `claude` | `claude`, `claude-code` | Adds nothing. | `Trusted` once Claude reported a hook. `Unsupported` while Claude's trust dialog is current at the cursor. Unknown otherwise. |
-| `none` | none | Adds nothing. | `Trusted`. |
-| not listed | any other | Starts nothing: `TrustUnmapped`. | `Unsupported`, naming `runtime.workspaceTrust`, for a session that already exists. |
+| Harness | At spawn |
+| --- | --- |
+| `codex` | The launch argv adds `-c projects={"<root>"={trust_level="trusted"}}`. This override trusts the root for this session only. |
+| `claude`, `claude-code` | Nothing. Claude Code has no per-session trust interface. |
+| any other | Nothing. |
 
-These rules hold for every interface:
+The exec runtime answers `workspace_trust` from the agent's signals and
+screen, in this order:
+
+1. An agent that reported a state other than its start is `Trusted`. Hooks
+   run only in a trusted workspace.
+2. Signals that cannot be read are Unknown.
+3. Before the first report, the runtime reads the screen through `capture`.
+   A Codex or Claude Code trust dialog is `Untrusted` with the gap
+   `Unsupported`. Its message asks a person to trust the directory once in
+   the session.
+4. Codex's initial empty composer, with Codex in the foreground, is
+   `Trusted`: the launch override trusts the workspace.
+5. Any other screen, or a screen that cannot be read, is Unknown.
+
+The fake runtime answers from each session's `trusted` flag and its
+`workspaceTrust` fault. The port also defines the gap `Mismatch`, for a
+session that is not the one the runtime would start for its workspace. No
+shipped runtime answers it.
+
+These rules hold for every harness:
 
 - The spawn intent records the harness and workspace. The trust that a spawn
   adds follows from them alone, so a respawn under the same intent adds the
   same trust.
-- The map is keyed by thurbox agent name, not by agent family. Thurbox does
-  not report an agent's family. An agent entry such as `codex-coder` runs
-  no session until `runtime.workspaceTrust` maps it. Its Task waits in
-  Pending with `TrustUnmapped`, and the message names the entry to set.
-  A session started without its trust could not gain it later.
-- Codex's override lives in the session's own arguments. Thurbox keeps it
-  and replays it on restart, resume and fork. Fleet writes no Codex
-  configuration file.
-- Codex keeps only the last `-c projects=` on its command line. An agent
-  entry or a wrapper that passes its own `projects` override therefore loses
-  it to Fleet's, or replaces Fleet's. A replaced override shows Codex's
-  dialog, which the probe reports as `Mismatch`. The `[projects]` table in
-  Codex's `config.toml` merges with the override, so keep other trusted
-  roots there. Codex 0.165.0 showed this behaviour.
-- An adopted session is checked like any other. A session without the exact
-  override, or in another directory, is `Mismatch` and never gets a brief.
-  The way out is to delete the Task and apply it again. Deleting only the
-  session makes the Task `WorkerGone`, which is never respawned.
-- A trust root loses any trailing separator. A root with a `.`, `..` or
-  empty component is refused, because only its host can resolve it.
-- On the local host, the trust root is resolved through symlinks, as Codex
-  resolves its cwd. A remote host gets the path as configured. A remote
-  symlink makes Codex show its dialog, which the probe reports as
-  `Mismatch`.
-- A filesystem root, or the local user's home, is never a trust root. A
-  `codex` spawn there fails.
-- Fleet never sends a key to a dialog. Claude Code has no per-session trust
-  interface; its only documented one persists in `~/.claude.json` on the
-  host. A person trusts the repository once, by the dialog or that file.
-  A thurbox `session.pre_launch` script can write that file before each
-  launch. The Task's message names the folder.
+- Codex's override lives in the session's own arguments. The resume argv
+  keeps it. Fleet writes no Codex configuration file.
+- Codex keeps only the last `-c projects=` on its command line. A wrapper
+  that passes its own `projects` override therefore loses it to Fleet's, or
+  replaces Fleet's. The `[projects]` table in Codex's `config.toml` merges
+  with the override, so keep other trusted roots there.
+- Fleet never sends a key to a dialog. Claude Code's only documented trust
+  interface persists in `~/.claude.json` on the host. A person trusts the
+  repository once, by the dialog or that file. The Task's message names the
+  host.
 
-`e2e_workspace_trust` covers each interface, adoption, mismatch, Unknown and
-recovery. Its rows and screens come from thurbox-cli 2.76.1, Codex 0.164.0
-and Claude Code 2.1.312.
+`e2e_workspace_trust` covers an agent that waits for trust and trust that
+cannot be read, on the fake runtime. `e2e_runtime_exec` covers a Codex Task
+on `runtime-mux` that is briefed before its first turn ends.
 
 ## Signal contract
 
@@ -1057,14 +1028,13 @@ The `worktree` adapter serves the local host and refuses any other:
 - Workspace `key` is the directory `<root>/<key>`. Each repository is a
   worktree at `<root>/<key>/<name>` on the branch `<branchPrefix>/<key>`
   of its source checkout, from its `ref` or the source's `HEAD`.
-- `workspaces.repositories`, with `runtime.repositories` when a `[runtime]`
-  section has it, maps each URL to its source checkout.
+- `workspaces.repositories` maps each URL to its source checkout.
 - A `file://` URL names an absolute directory used as it is: no worktree,
   no source mapping, never removed.
 - `dir` is the first repository's directory. A worktree's trust root is its
   source checkout.
 - Each other repository's directory is in `extraDirs`, in the Task's order.
-  The runtime spans them as they are (`--add-dir` for thurbox).
+  The harness profile spans them as they are, with `--add-dir`.
 - The marker `<root>/<key>/.fleet-workspace.json` is written last. A
   directory without it is partial.
 - A branch left by an earlier attempt is checked out again, so no commit
@@ -1169,7 +1139,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|version`.
+init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -1211,9 +1181,14 @@ store's create is
 exclusive, so two clients applying one name at once get one object and one
 refusal. A view creates its Tasks this way.
 
+`fleet repositories --json` prints `{"repositories": {URL: source}}`: the
+repository map, each URL a Task's `repositories` workspace may name and its
+checkout on this machine. A view that makes a worktree per session looks the
+chosen checkout up there before it applies a Task.
+
 `fleet runtime hosts --json` prints `{"hosts": [...]}`: the names under
-`[hosts]`, the hosts a Task may name, or `null` when one `[runtime]` serves
-any host. `fleet version --json` lists the `harnesses` with a profile of
+`[hosts]`, the hosts a Task may name, or `null` when the fake `[runtime]`
+serves any host. `fleet version --json` lists the `harnesses` with a profile of
 their own; any other harness name is run as a program. A view checks a
 Task against both before it applies it.
 
@@ -1312,10 +1287,10 @@ the repository map's reload.
 ## Tests
 
 The `e2e_*` suites drive the real `fleet` binary against an isolated store,
-the fake host or a stub `thurbox-cli`, and, for `e2e_forge`, the fake forge
-or the same stub copied as `az`, `curl`, `gh` and `glab`, across process
+the fake host or `runtime-mux`, and, for `e2e_forge`, the fake forge
+or a stub copied as `az`, `curl`, `gh` and `glab`, across process
 restarts and injected faults; `e2e_inbox` covers `fleet send` and delivery on
-both the fake host and the stub; `e2e_task_amend` covers `fleet amend`, its
+the fake host; `e2e_task_amend` covers `fleet amend`, its
 delivery to the same session, its refusals, `--if-generation` and the result
 rules on the fake host; `e2e_forge_controller` covers `fleet declare`,
 the join and the relay against the fake forge and the fake host.

@@ -3,16 +3,11 @@
 //! `validate` strictly parses every config file and fails (exit 1) when any
 //! is invalid — usable as a dotfiles CI check. `show` prints the *effective*
 //! resolved configuration and where each value came from.
-//!
-//! The agent module's loaders are reached via fully-qualified paths (no
-//! `use crate::agent`) to keep the cli module free of an `agent` import —
-//! see tests/architecture_rules.rs::cli_module_isolation.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::cli::output::{self, CommandOutput};
-use crate::storage::Database;
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
@@ -20,18 +15,10 @@ pub enum Action {
     Validate,
     /// Print the effective configuration and where each value came from.
     Show,
-    /// Record that the interface change has been seen, so the first-launch prompt
-    /// does not appear.
-    ///
-    /// For a profile nobody needs to warn: a provisioned machine, a container, or
-    /// the demo recorder, which seeds sessions and would otherwise meet a gate
-    /// meant for someone upgrading from v1.
-    AcceptInterface,
 }
 
 pub fn run(
     action: Action,
-    db: &Database,
     settings: &crate::session::settings::Settings,
 ) -> Result<CommandOutput, String> {
     match action {
@@ -50,17 +37,9 @@ pub fn run(
             }
         }
         Action::Show => {
-            let report = show(db, settings)?;
+            let report = show(settings);
             let human = render_show(&report);
             Ok(CommandOutput::new(report, human))
-        }
-        Action::AcceptInterface => {
-            db.acknowledge_v2()
-                .map_err(|e| format!("could not record the acknowledgement: {e}"))?;
-            Ok(CommandOutput::new(
-                serde_json::json!({ "accepted": true }),
-                "interface change acknowledged; the first-launch prompt is off\n".to_string(),
-            ))
         }
     }
 }
@@ -137,63 +116,33 @@ fn validate_plugin_state() -> (Value, bool) {
     (file_report(path, problems, exists), ok)
 }
 
-fn validate_keybindings() -> (Value, bool) {
-    let path = crate::paths::keybindings_file();
-    // Parse-only: nothing reads this file's *semantics* any more (the registry
-    // owns chords, and its one-time migration reads the JSON itself), so the
-    // check is "is it well-formed", not "does it name v1 actions" — the v1
-    // action tables left the binary with the rest of the dead keymap.
-    match crate::storage::keybindings::load_keybindings_json() {
-        Ok(Some(_)) => (file_report(path, Vec::new(), true), true),
-        Ok(None) => (file_report(path, Vec::new(), false), true),
-        Err(e) => (file_report(path, vec![e], true), false),
-    }
-}
-
 /// Validate every config file. Returns the full report plus the list of files
 /// that failed (empty = all valid).
 fn validate() -> (Value, Vec<String>) {
-    let (agents, agents_ok) = validate_file(
-        crate::agent::agent_config::agents_config_path(),
-        |contents| {
-            crate::agent::agent_config::parse_for_reload(contents).map(|(_, warnings)| warnings)
-        },
-    );
     // Through the loader's own parse, so an entry the load refuses — a host
     // name holding `:` — fails validation rather than vanishing silently.
     let (hosts, hosts_ok) = validate_file(crate::config::hosts::hosts_config_path(), |c| {
         crate::config::hosts::parse_hosts(c).map(|(_, warnings)| warnings)
     });
-    let (settings, settings_ok) = validate_toml::<crate::session::settings::Settings>(
+    // A key thurbox retired is reported at startup, never a failure here: a v2
+    // file stays valid.
+    let (settings, settings_ok) = validate_file(
         crate::config::settings::settings_config_path(),
-        "settings.toml",
+        crate::config::settings::unknown_keys,
     );
     let (themes, themes_ok) = validate_toml::<crate::theme::ThemesFile>(
         crate::config::themes::themes_config_path(),
         "themes.toml",
     );
-    let (hooks, hooks_ok) = validate_toml::<crate::session::HooksFile>(
-        crate::config::hooks::hooks_config_path(),
-        "hooks.toml",
-    );
     let (ui_json, ui_ok) = validate_ui_json();
     let (plugin_state, plugin_state_ok) = validate_plugin_state();
-    // Parsed only to report where it is and whether it is well-formed; its
-    // verdict is not in the failure list, because nothing reads it.
-    let (keybindings, _kb_ok) = validate_keybindings();
 
     let failed: Vec<String> = [
-        ("agents.toml", agents_ok),
         ("hosts.toml", hosts_ok),
         ("settings.toml", settings_ok),
         ("themes.toml", themes_ok),
-        ("hooks.toml", hooks_ok),
         ("ui.json", ui_ok),
         ("plugin-state.json", plugin_state_ok),
-        // Deliberately NOT in the failure list: nothing reads it, so a malformed
-        // one cannot break anything and calling it invalid would send an upgrader
-        // to fix a file that no longer matters.
-        ("keybindings.json (v1, ignored)", true),
     ]
     .iter()
     .filter(|(_, ok)| !ok)
@@ -202,14 +151,11 @@ fn validate() -> (Value, Vec<String>) {
 
     let report = json!({
         "valid": failed.is_empty(),
-        "agents_toml": agents,
         "hosts_toml": hosts,
         "settings_toml": settings,
         "themes_toml": themes,
-        "hooks_toml": hooks,
         "ui_json": ui_json,
         "plugin_state_json": plugin_state,
-        "keybindings_json_legacy": keybindings,
     });
     (report, failed)
 }
@@ -217,14 +163,11 @@ fn validate() -> (Value, Vec<String>) {
 /// Render `config validate` as a per-file status list.
 fn render_validate(report: &Value, failed: &[String]) -> String {
     let files = [
-        ("agents.toml", "agents_toml"),
         ("hosts.toml", "hosts_toml"),
         ("settings.toml", "settings_toml"),
         ("themes.toml", "themes_toml"),
-        ("hooks.toml", "hooks_toml"),
         ("ui.json", "ui_json"),
         ("plugin-state.json", "plugin_state_json"),
-        ("keybindings.json (v1, ignored)", "keybindings_json_legacy"),
     ];
     let mut lines = Vec::new();
     for (label, key) in files {
@@ -270,24 +213,6 @@ fn render_show(report: &Value) -> String {
         sections.push(format!("Paths\n{}", output::kv(&pairs)));
     }
 
-    let agents = &report["agents"];
-    let names = agents["names"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
-    sections.push(format!(
-        "Agents\n{}",
-        output::kv(&[
-            ("default", output::dash(agents["default"].as_str())),
-            ("names", names),
-        ])
-    ));
-
     let editor = &report["editor"];
     sections.push(format!(
         "Editor\n{}",
@@ -302,63 +227,37 @@ fn render_show(report: &Value) -> String {
         output::kv(&[("active", output::dash(report["theme"].as_str()))])
     ));
 
+    let fleet = &report["fleet"];
+    sections.push(format!(
+        "Fleet\n{}",
+        output::kv(&[
+            ("program", output::dash(fleet["program"].as_str())),
+            ("version", output::dash(fleet["version"].as_str())),
+            ("config", output::dash(fleet["config"].as_str())),
+            ("data dir", output::dash(fleet["data_dir"].as_str())),
+        ])
+    ));
+
     sections.push(format!(
         "Sessions\n{}",
         output::kv(&[("tmux socket", output::dash(report["tmux_socket"].as_str()))])
     ));
 
-    // The lifecycle hooks in force, one line each: event, then the command.
-    let hooks: Vec<(&str, String)> = report["hooks"]
-        .as_array()
-        .map(|list| {
-            list.iter()
-                .map(|h| {
-                    let command = h["command"].as_str().unwrap_or_default();
-                    let timeout = h["timeout_secs"]
-                        .as_u64()
-                        .map(|t| format!("  (timeout {t}s)"))
-                        .unwrap_or_default();
-                    (
-                        h["event"].as_str().unwrap_or_default(),
-                        format!("{command}{timeout}"),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    sections.push(match hooks.is_empty() {
-        true => "Lifecycle hooks\n  (none)".to_string(),
-        false => format!("Lifecycle hooks\n{}", output::kv(&hooks)),
-    });
-
     sections.join("\n\n")
 }
 
-fn show(db: &Database, settings: &crate::session::settings::Settings) -> Result<Value, String> {
-    let agents = crate::agent::agent_config::load_or_seed();
-    // The *effective* host set: configured SSH/WSL hosts plus auto-discovered
-    // WSL distros — matching what `--host` and the TUI picker actually offer
-    // (`config validate` stays file-only).
-    let hosts = crate::config::hosts::load_all();
+fn show(settings: &crate::session::settings::Settings) -> Value {
     let (custom_themes, _) = crate::config::themes::load_or_seed_with_warnings();
-    let (hooks, _) = crate::config::hooks::load_or_seed_with_warnings();
+    let state = crate::config::interface_state::load();
+    let (editor, editor_source) = resolve_editor(state.editor_command);
 
-    // Editor resolution mirrors the TUI's Ctrl+O chain: DB → $VISUAL → $EDITOR.
-    let (editor, editor_source) = resolve_editor(db);
-    let editor_mode = db.get_editor_mode().unwrap_or_default();
-    let overridden_actions = overridden_action_names();
-
-    Ok(json!({
+    json!({
         "paths": {
-            "agents_toml": crate::agent::agent_config::agents_config_path()
-                .map(|p| p.display().to_string()),
             "hosts_toml": crate::config::hosts::hosts_config_path()
                 .map(|p| p.display().to_string()),
             "settings_toml": crate::config::settings::settings_config_path()
                 .map(|p| p.display().to_string()),
             "themes_toml": crate::config::themes::themes_config_path()
-                .map(|p| p.display().to_string()),
-            "hooks_toml": crate::config::hooks::hooks_config_path()
                 .map(|p| p.display().to_string()),
             // The interface is config like the rest of it, and it was the one
             // thing this command could not tell you the location of — which is
@@ -370,39 +269,27 @@ fn show(db: &Database, settings: &crate::session::settings::Settings) -> Result<
                 .map(|p| p.display().to_string()),
             "plugin_state_json": crate::kernel::registry::decisions_file()
                 .map(|p| p.display().to_string()),
-            // v1's file. Reported so an upgrader can see where their old
-            // rebindings went, and flagged because nothing reads it now: the
-            // interface keeps rebindings in `ui.json`.
-            "keybindings_json_legacy": crate::paths::keybindings_file()
+            "interface_json": crate::config::file::path("interface.json")
                 .map(|p| p.display().to_string()),
-            "database": crate::paths::database_file().map(|p| p.display().to_string()),
         },
         // Not a path, but the same question: which instance is this? A
         // relocated data dir gets a socket of its own, so the name is resolved
         // rather than constant and worth reporting where the dirs are.
         "tmux_socket": crate::backend::instance::local_socket_name(),
-        "agents": { "default": agents.default_name(), "names": agents.names() },
-        "hosts": {
-            "names": hosts.names(),
-            // Which of them share their sessions through their own database
-            // (ADR-24) — every host unless its entry says `share_sessions = false`.
-            "shared": hosts.hosts.iter().filter(|h| h.shareable()).map(|h| h.name.as_str()).collect::<Vec<_>>(),
-        },
         "settings": settings,
-        "keybindings": { "overridden_actions": overridden_actions },
-        "editor": { "command": editor, "source": editor_source, "mode": editor_mode.as_db_value() },
-        "theme": db.get_active_theme().ok().flatten(),
+        // Fleet runs every session (ADR-41): which one, and what it reads.
+        "fleet": super::doctor::FleetFacts::read(&settings.fleet.program).document(),
+        "editor": { "command": editor, "source": editor_source, "mode": state.editor_mode.as_db_value() },
+        "theme": state.theme,
         "custom_themes": custom_themes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
-        "hooks": hooks.hooks,
-    }))
+    })
 }
 
 /// Resolve the effective editor command + its source, mirroring the TUI's
-/// Ctrl+O chain: DB (editor_command) → $VISUAL → $EDITOR → unset.
-fn resolve_editor(db: &Database) -> (Option<String>, &'static str) {
-    let db_editor = db.get_editor_command().ok().flatten();
-    if let Some(cmd) = db_editor.filter(|c| !c.is_empty()) {
-        return (Some(cmd), "database (editor_command)");
+/// Ctrl+O chain: `interface.json` → $VISUAL → $EDITOR → unset.
+fn resolve_editor(stored: Option<String>) -> (Option<String>, &'static str) {
+    if let Some(cmd) = stored.filter(|c| !c.is_empty()) {
+        return (Some(cmd), "interface.json (editor_command)");
     }
     if let Some(v) = nonempty_env("VISUAL") {
         return (Some(v), "$VISUAL");
@@ -418,22 +305,6 @@ fn nonempty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
-/// The sorted action names overridden in keybindings.json (empty when none).
-fn overridden_action_names() -> Vec<String> {
-    match crate::storage::keybindings::load_keybindings_json() {
-        Ok(Some(jsonbody)) => {
-            serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&jsonbody)
-                .map(|m| {
-                    let mut keys: Vec<String> = m.into_keys().collect();
-                    keys.sort();
-                    keys
-                })
-                .unwrap_or_default()
-        }
-        _ => Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,64 +317,6 @@ mod tests {
         let (v, failed) = validate();
         assert!(failed.is_empty(), "got failures: {failed:?}");
         assert_eq!(v["valid"], json!(true));
-    }
-
-    #[test]
-    fn validate_fails_with_exit_error_on_malformed_agents_toml() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _g = TestPathGuard::new(tmp.path());
-        let path = crate::agent::agent_config::agents_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "not toml {{{").unwrap();
-
-        let (_, failed) = validate();
-        assert!(failed.iter().any(|f| f == "agents.toml"), "got: {failed:?}");
-    }
-
-    #[test]
-    fn validate_fails_on_an_unknown_agents_toml_placeholder() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _g = TestPathGuard::new(tmp.path());
-        let path = crate::agent::agent_config::agents_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "[[agents]]\nname = \"ok\"\ncommand = \"x\"\n\
-             [[agents]]\nname = \"coder\"\ncommand = \"x\"\n\
-             setup = [\"scripts/role.sh {rol}\"]\nvars = { role = \"coder\" }\n",
-        )
-        .unwrap();
-
-        let (report, failed) = validate();
-        assert!(failed.iter().any(|f| f == "agents.toml"), "got: {failed:?}");
-        assert!(
-            report.to_string().contains("unknown placeholder {rol}"),
-            "the message names the placeholder: {report}"
-        );
-    }
-
-    #[test]
-    fn a_broken_v1_keybindings_file_does_not_fail_validation() {
-        // It used to, and must not: nothing reads `keybindings.json` any more —
-        // the interface keeps rebindings in `ui.json`. Failing validation over it
-        // would send an upgrader to fix a file that cannot affect anything. It is
-        // still *reported*, so they can see where the old rebindings went.
-        let tmp = tempfile::tempdir().unwrap();
-        let _g = TestPathGuard::new(tmp.path());
-        crate::storage::keybindings::save_keybindings_json(
-            r#"{ "QuitApp": ["ctrl+a"], "NewSession": ["ctrl+a"] }"#,
-        )
-        .unwrap();
-
-        let (report, failed) = validate();
-        assert!(
-            !failed.iter().any(|f| f.starts_with("keybindings.json")),
-            "a file nothing reads cannot make the config invalid: {failed:?}"
-        );
-        assert!(
-            report["keybindings_json_legacy"]["path"].is_string(),
-            "still reported, so an upgrader can find it: {report}"
-        );
     }
 
     #[test]
@@ -566,64 +379,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_fails_on_a_misspelt_hook_field_naming_the_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _g = TestPathGuard::new(tmp.path());
-        let path = crate::config::hooks::hooks_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "[[hooks]]\nevent = \"session.post_create\"\ncommand = \"true\"\ntimeout_sec = 5\n",
-        )
-        .unwrap();
-
-        let (report, failed) = validate();
-        assert!(failed.iter().any(|f| f == "hooks.toml"), "got: {failed:?}");
-        assert!(
-            report["hooks_toml"]["problems"]
-                .as_array()
-                .is_some_and(|p| !p.is_empty()),
-            "{report}"
-        );
-        assert!(render_validate(&report, &failed).contains("✗ hooks.toml"));
-    }
-
-    #[test]
-    fn show_lists_the_lifecycle_hooks_in_force() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _g = TestPathGuard::new(tmp.path());
-        let db = Database::open_in_memory().unwrap();
-        let path = crate::config::hooks::hooks_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "[[hooks]]\nevent = \"session.pre_create\"\ncommand = \"check\"\n\
-             [[hooks]]\nevent = \"session.post_delete\"\ncommand = \"clean\"\ntimeout_secs = 5\n",
-        )
-        .unwrap();
-
-        let v = show(&db, &Default::default()).unwrap();
-        assert_eq!(v["hooks"][0]["event"], json!("session.pre_create"));
-        assert_eq!(v["hooks"][0]["command"], json!("check"));
-        assert_eq!(v["hooks"][1]["timeout_secs"], json!(5));
-        assert!(v["paths"]["hooks_toml"].is_string());
-        let text = render_show(&v);
-        assert!(text.contains("session.post_delete"), "{text}");
-        assert!(text.contains("clean  (timeout 5s)"), "{text}");
-    }
-
-    #[test]
     fn show_reports_effective_settings_and_editor_source() {
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
-        let db = Database::open_in_memory().unwrap();
-        db.set_editor_command("code --wait").unwrap();
+        crate::config::interface_state::update(|s| s.editor_command = Some("code --wait".into()))
+            .unwrap();
 
-        let v = show(&db, &Default::default()).unwrap();
+        let v = show(&Default::default());
         assert_eq!(v["editor"]["command"], json!("code --wait"));
-        assert_eq!(v["editor"]["source"], json!("database (editor_command)"));
+        assert_eq!(
+            v["editor"]["source"],
+            json!("interface.json (editor_command)")
+        );
         assert!(v["settings"]["scrollback_lines"].is_number());
-        assert_eq!(v["settings"]["features"]["tasks"], json!(true));
-        assert_eq!(v["agents"]["default"], json!("claude"));
+        assert_eq!(v["settings"]["features"]["mouse"], json!(true));
     }
 }

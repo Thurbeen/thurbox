@@ -34,7 +34,7 @@ Task ──owns one, spawn to release──▶ Session
 | --- | --- |
 | `id` | The runtime's own identifier for the Session. |
 | `host` | The runtime host the Session runs on. |
-| `key` | Fleet's deterministic key, `<name>.<uid>`. The thurbox adapter stores it as `<keyPrefix>.<uid>`. |
+| `key` | Fleet's deterministic key, `<name>.<uid>`. The exec adapter gives the runtime `<keyPrefix>.<uid>`. |
 
 ## States
 
@@ -45,13 +45,13 @@ Unknown answers prove nothing and keep the last state. Nothing in Fleet
 decides on the state; a view reads it. Activity is read only of a session
 that may be paused, or while a send waits for its prompt proof.
 
-| State | Meaning | Proved by | Thurbox adapter |
+| State | Meaning | Proved by | Exec adapter |
 | --- | --- | --- | --- |
-| `Gone` | A readable session list no longer shows the Session under its key, or shows another Session there. | `find` is `Known(None)`, or names a different Session. | `session list` without the key. |
-| `Lost` | The runtime holds the Session, but its agent's window is gone, as after a host reboot. | `lost` is `Known(true)`. | `session get` reports `hook_corroboration: "missing"` on a session that is not stopped. |
-| `Paused` | The agent is stopped, by Fleet or by anyone else. The row, workspace and conversation are kept. | `paused` is `Known(true)`. | `session get` reports `stopped: true` or `activity: "stopped"`. |
+| `Gone` | A readable session list no longer shows the Session under its key, or shows another Session there. | `find` is `Known(None)`, or names a different Session. | `inspect` answers `none` for the key. |
+| `Lost` | The runtime holds the Session, but its agent's window is gone, as after a host reboot. | `lost` is `Known(true)`. | `inspect` answers `exited` for the key. |
+| `Paused` | The agent is stopped, by Fleet or by anyone else. The row, workspace and conversation are kept. | `paused` is `Known(true)`. | Never: `paused` is Unknown, because the adapter cannot pause. |
 | `Idle` | The agent waits for input. | Its hooks last reported `idle`. | The same: the adapter reports no activity. |
-| `Running` | The runtime holds the Session and nothing proves its agent stopped, lost or idle. | Its hooks last reported `working`, `prompt` or `blocked`, or any proof of presence: `find` names the Session, `lost` or `paused` is `Known(false)`. | The row is listed and neither stopped nor missing its window. |
+| `Running` | The runtime holds the Session and nothing proves its agent stopped, lost or idle. | Its hooks last reported `working`, `prompt` or `blocked`, or any proof of presence: `find` names the Session, `lost` or `paused` is `Known(false)`. | `inspect` answers `running` for the key. |
 
 The strongest proof wins when one pass answers several probes: `Gone`
 over `Lost`, `Lost` over `Paused`, `Paused` over the agent's activity.
@@ -103,6 +103,6 @@ This definition is the first step toward the
 Thurbox is one view and Fleet runs Sessions behind the runtime port. The
 second step added a Workspace that Fleet materializes; see
 [Workspaces and the workspace port](../architecture.md#workspaces-and-the-workspace-port).
-The following steps add an `attach` call on the runtime port for a live
-terminal, and a Fleet-owned multiplexer adapter.
+The runtime port's `attach` gives a view a live terminal, and `runtime-mux`
+is the default runtime.
 See [Sessions and the runtime port](../architecture.md#sessions-and-the-runtime-port).

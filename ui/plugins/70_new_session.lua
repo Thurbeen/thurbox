@@ -4,21 +4,21 @@
 -- background tasks and a generation counter on this. Here it is one file: a step
 -- machine over reads the kernel publishes, ending in one `create` command.
 --
--- The steps are v1's, in v1's order, and each is skipped exactly where v1 skips
--- it:
+-- A session is a Fleet Task (ADR-41), and the steps ask for what a Task takes:
 --
---   host  → repo → [base branch] → name → [branch name] → [agent] → create
+--   host  → repo → name → [agent] → create
 --
 -- plus a detour off the repo step for a typed path that does not exist yet:
 --
 --   repo → new folder (git init / leave it empty) → repo
 --                     (clone into it)         → clone URL → repo
 --
--- `host` is skipped when nothing is configured, `base branch` and `branch name`
--- only appear when some repository is in worktree mode, and `agent` is skipped
--- when there is one or none. Nothing here waits: every listing, path check and
--- branch list is a READ the kernel serves from a worker
--- (`kernel::repos`), asked for by leaving a key in `store`.
+-- `host` is always asked: this machine is a choice at once, and the hosts
+-- Fleet names join the open step when they arrive. `agent` is skipped when
+-- there is one harness or none. Fleet makes the session's
+-- workspace, so there is no branch to name. Nothing here waits: every listing
+-- and path check is a READ the kernel serves from a worker (`kernel::repos`),
+-- asked for by leaving a key in `store`.
 --
 -- WHY ONE PLUGIN AND NOT SIX. The kernel renders every floating plugin each
 -- frame purely to discover it is not floating, so six closed modals would cost
@@ -51,27 +51,20 @@ local function browse()
   return (thurbox and thurbox.browse) or {}
 end
 
-local function branches()
-  return (thurbox and thurbox.branches) or {}
-end
-
-local function worktrees_read()
-  return (thurbox and thurbox.worktrees) or {}
-end
-
+--- Every host Fleet defines, `local` first when it does; `nil` until Fleet
+--- has answered, which is pending, not empty.
 local function hosts()
-  return (thurbox and thurbox.hosts) or {}
+  return thurbox and thurbox.hosts
 end
 
 local function agents()
   return (thurbox and thurbox.agents) or {}
 end
 
---- Whether the binaries this session needs are installed, as the kernel last
---- looked. Already an answer — the kernel probes on its own schedule behind a
---- TTL, so reading it here costs a table lookup, never a `which`.
-local function preflight()
-  return (thurbox and thurbox.preflight) or {}
+--- Whether Fleet has said which agents it has. Until it has, the list is
+--- pending, not empty, and nothing is created without one.
+local function agents_known()
+  return thurbox ~= nil and thurbox.agents ~= nil
 end
 
 --- The spinner frame for this paint, from the flow's own clock.
@@ -114,16 +107,7 @@ local function load()
   return state.flow
 end
 
---- Assigned once the repo step's row model exists below. Declared here because
---- `save` is the one choke point every flow mutation passes through, which makes
---- it the only place "which repo is the cursor on" can be answered without each
---- of the eight cursor-moving sites remembering to ask.
-local track_worktrees
-
 local function save(flow)
-  if track_worktrees then
-    track_worktrees(flow)
-  end
   state.flow = flow
 end
 
@@ -139,22 +123,13 @@ local function fresh()
     -- hand does there is type part of a repository's name. The other focus is
     -- `input`, the path field.
     focus = "search",
-    selected = {},
-    worktree = {},
     collapsed = {},
     input = textinput.new(""),
     search = textinput.new(""),
     browse = false,
     browse_index = 1,
     select_newest = false,
-    base = nil,
-    branch_index = 1,
-    -- The repo whose existing worktrees are showing as child rows, and the one
-    -- chosen to open (`{ path, branch }`) once one has been.
-    wt_repo = nil,
-    open_worktree = nil,
     name = textinput.new(""),
-    branch = textinput.new(""),
     agent_index = 1,
     -- The detour for a typed path that does not exist: where, and which of
     -- `FOLDER_CHOICES` the cursor is on.
@@ -177,8 +152,6 @@ local function ask(flow)
   if not flow then
     store.want_bookmarks = nil
     store.want_browse = nil
-    store.want_branches = nil
-    store.want_worktrees = nil
     return
   end
   store.want_bookmarks = flow.host or ""
@@ -203,20 +176,6 @@ local function ask(flow)
   else
     store.want_browse = nil
   end
-
-  local primary = flow.primary
-  if flow.step == "branch" and primary then
-    store.want_branches = (flow.host or "") .. "\0" .. primary
-  else
-    store.want_branches = nil
-  end
-
-  -- Read worktrees only for the repository the operator has expanded.
-  if flow.step == "repo" and flow.wt_repo then
-    store.want_worktrees = (flow.host or "") .. "\0" .. flow.wt_repo
-  else
-    store.want_worktrees = nil
-  end
 end
 
 -- ── The repo step's row model ──────────────────────────────────────────────
@@ -230,8 +189,7 @@ end
 
 local function rows_for(flow)
   local query = flow.search.value or ""
-  local entries = repo_picker.rows(bookmarks().rows or {}, query, flow.collapsed)
-  return repo_picker.with_worktrees(entries, flow.wt_repo, worktrees_read())
+  return repo_picker.rows(bookmarks().rows or {}, query, flow.collapsed)
 end
 
 --- The row the cursor is on, or nil when the list is empty.
@@ -239,38 +197,11 @@ local function current_row(flow)
   return repo_picker.current(rows_for(flow), flow.cursor)
 end
 
---- Keep an explicit expansion while moving between its repo and child rows.
-track_worktrees = function(flow)
-  if not flow or flow.step ~= "repo" or not flow.wt_repo then
-    return
-  end
-  local entry = repo_picker.current(rows_for(flow), flow.cursor)
-  local row = entry and entry.row
-  if not row or (not row.is_worktree and row.path ~= flow.wt_repo) then
-    flow.wt_repo = nil
-    if row then
-      flow.cursor = repo_picker.index_of(rows_for(flow), row.path) or 1
-    end
-  end
-end
-
-local function chosen(flow)
-  return repo_picker.chosen(bookmarks().rows or {}, flow.selected, flow.worktree)
-end
-
---- The repository the cursor stands in for when nothing is ticked, or nil.
----
---- "Ticked, else the cursor row": type part of a name and confirm, with no
---- `space` in between. A folder header is not a repository, and a worktree row
---- is opened rather than gathered, so neither stands in.
-local function cursor_stand_in(flow)
-  local worktrees, plain = chosen(flow)
-  if #worktrees > 0 or #plain > 0 then
-    return nil
-  end
+--- The repository the cursor is on, or nil. A folder header is not one.
+local function cursor_repo(flow)
   local entry = current_row(flow)
   local row = entry and entry.row
-  if row and not row.is_parent and not row.is_worktree then
+  if row and not row.is_parent then
     return row
   end
   return nil
@@ -280,13 +211,14 @@ local function browse_entries(flow)
   return pathpicker.entries(flow.input and flow.input.value or "", browse().entries or {})
 end
 
---- A repository-memory write has been issued: tick the row it lands as (see
+--- A repository-memory write has been issued: put the cursor on the row it
+--- lands as (see
 --- `select_newest` in the render), and clear a search typed before the path
---- was — one the new row need not match, which would hide it once ticked.
+--- was — one the new row need not match, which would hide it.
 ---
 --- `path` is the path exactly as issued, and the failures already on record
 --- are noted too: a new failure for that path is this write's, and a write that
---- never landed has no row to tick (see the render). Another write failing
+--- never landed has no row to pick (see the render). Another write failing
 --- meanwhile says nothing about this one.
 local function await_new_row(flow, path)
   flow.select_newest = true
@@ -370,8 +302,8 @@ end
 --- What has been decided so far, for the title's trail.
 ---
 --- A breadcrumb rather than `step 2 of 4`, because the flow is CONDITIONAL: the
---- host step is skipped when no host is configured, and the branch steps only
---- happen for a worktree. A count would have to lie about one of those.
+--- agent step is skipped when there is nothing to choose. A count would have
+--- to lie about it.
 local function trail(flow)
   if not flow then
     return ""
@@ -381,8 +313,7 @@ local function trail(flow)
     parts[#parts + 1] = flow.host
   end
   if (flow.primary or "") ~= "" then
-    local extra = #(flow.extras or {})
-    parts[#parts + 1] = leaf(flow.primary) .. (extra > 0 and (" +" .. extra) or "")
+    parts[#parts + 1] = leaf(flow.primary)
   end
   if #parts == 0 then
     return ""
@@ -403,27 +334,15 @@ local function frame(title, rows_height, children, flow)
   })
 end
 
---- Assigned below, once `spawns_directly` exists: the warning needs to know
---- whether this step is the last one before the session is created.
-local preflight_warning
-
 --- A refusal this flow made itself, on its own row. Empty when there is none, so
 --- the row is spent either way and the modal does not change height as messages
 --- come and go.
----
---- The same row carries the preflight warning when there is no refusal to show:
---- what is already known to be missing is exactly as urgent as a refusal, and
---- spending a second row on it would move every step's height for a state most
---- machines are never in.
 local function message_row(flow)
-  local text, colour = flow.message, theme.bad
-  if not text then
-    text, colour = preflight_warning(flow)
-  end
+  local text = flow.message
   return {
     type = "text",
     len = 1,
-    text = { { { text = text and (" " .. text) or "", style = { fg = colour } } } },
+    text = { { { text = text and (" " .. text) or "", style = { fg = theme.bad } } } },
   }
 end
 
@@ -465,11 +384,11 @@ end
 
 -- ── The steps ──────────────────────────────────────────────────────────────
 
---- v1's host picker: the local machine first, then each host with the detail
---- that tells two apart.
+--- The host picker: each host Fleet defines, with the detail that tells two
+--- apart. Fleet's `local` is offered only when Fleet defines it.
 local function host_labels()
-  local labels = { "local" }
-  for _, host in ipairs(hosts()) do
+  local labels = {}
+  for _, host in ipairs(hosts() or {}) do
     labels[#labels + 1] = host.name .. "  (" .. (host.detail or "") .. ")"
   end
   return labels
@@ -477,153 +396,19 @@ end
 
 local function render_host(flow)
   local labels = host_labels()
+  if hosts() == nil then
+    labels = { "Asking Fleet for its hosts…" }
+  end
+  -- Fleet's answer replaces the list under an open step, and can shorten it.
+  if flow.host_index > #labels then
+    flow.host_index = math.max(#labels, 1)
+    save(flow)
+  end
   local height = #labels
   return frame("Run On", height + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
     message_row(flow),
     modal.footer({ { "j/k", "navigate" } }, "Select"),
-  }, flow)
-end
-
-local function picker_mux_order(options)
-  local ordered = {}
-  local has_rmux = false
-  for _, name in ipairs(options) do
-    if name == "rmux" then
-      has_rmux = true
-    else
-      ordered[#ordered + 1] = name
-    end
-  end
-  if has_rmux then
-    local after = #ordered
-    for index, name in ipairs(ordered) do
-      if name == "tmux" then
-        after = index
-        break
-      end
-    end
-    table.insert(ordered, after + 1, "rmux")
-  end
-  return ordered
-end
-
---- The flow's host row, or nil for the local machine.
-local function flow_host(flow)
-  if (flow.host or "") == "" then
-    return nil
-  end
-  for _, host in ipairs(hosts()) do
-    if host.backend == flow.host then
-      return host
-    end
-  end
-  return nil
-end
-
---- The multiplexers the flow's machine offers (only those installed there —
---- the kernel's answer), the one configured for it if any, and what it runs
---- when nothing is configured.
-local function mux_options(flow)
-  if (flow.host or "") == "" then
-    local mux = preflight().mux or {}
-    return picker_mux_order(mux.available or {}), mux.configured, mux.binary
-  end
-  local host = flow_host(flow)
-  if not host then
-    return {}, nil, nil
-  end
-  return picker_mux_order(host.available_multiplexers or {}),
-    host.multiplexer,
-    host.platform == "windows" and "psmux" or "tmux"
-end
-
-local function mux_index(options, name)
-  for index, option in ipairs(options) do
-    if option == name then
-      return index
-    end
-  end
-  return 0
-end
-
---- Settle the multiplexer for the flow's machine, and say whether that is a
---- question worth asking: only when there is a real choice — two or more
---- installed and nothing configured — or when nothing usable is there, which
---- the step then says.
-local function choose_mux(flow)
-  local options, configured, default = mux_options(flow)
-  if configured and configured ~= "default" then
-    flow.mux_name = configured
-    flow.mux_guessed = false
-    return mux_index(options, configured) == 0
-  end
-  flow.mux_name = mux_index(options, default) > 0 and default or options[1]
-  flow.mux_guessed = true
-  -- A host still being asked may have more to offer than its default.
-  local host = flow_host(flow)
-  return #options ~= 1 or (host ~= nil and host.probing == true)
-end
-
---- The multiplexer the step stands on. A guess — the default, picked before a
---- host's probe answered — follows the options when the answer leaves it out,
---- so the step never sits on a row it no longer has; a choice (configured, or
---- moved to) is kept and reported unavailable instead.
-local function settled_mux(flow)
-  local options, _, default = mux_options(flow)
-  if not flow.mux_guessed or mux_index(options, flow.mux_name) > 0 then
-    return flow.mux_name
-  end
-  return mux_index(options, default) > 0 and default or options[1]
-end
-
---- Where the flow goes once the machine is settled: the multiplexer step when
---- `choose_mux` says it is a question, the repositories otherwise.
-local function after_host(flow)
-  flow.step = choose_mux(flow) and "multiplexer" or "repo"
-end
-
---- Why nothing can be offered, and what to install: the kernel's own advice
---- for this machine, and the platform's multiplexer for a host.
-local function no_mux_rows(flow)
-  local host = flow_host(flow)
-  local where, advice
-  if host then
-    where = "on " .. host.name
-    advice = host.platform == "windows" and "install psmux there: https://github.com/psmux/psmux"
-      or "install tmux 3.2 or newer (or rmux) there"
-  else
-    where = "on this machine"
-    local mux = preflight().mux or {}
-    advice = (mux.advice or "") ~= "" and mux.advice or "run: thurbox-cli doctor"
-  end
-  return {
-    { type = "text", len = 1, text = "  No multiplexer is installed " .. where },
-    { type = "text", len = 1, text = "  " .. advice },
-  }
-end
-
-local function render_mux(flow)
-  local options, configured = mux_options(flow)
-  local chosen = settled_mux(flow)
-  local index = mux_index(options, chosen)
-  local warning
-  if configured and configured ~= "default" and mux_index(options, configured) == 0 then
-    warning = configured .. " is unavailable for this host"
-  end
-  if not warning and chosen and index == 0 and #options > 0 then
-    warning = chosen .. " is unavailable for this host"
-  end
-  local host = flow_host(flow)
-  if not warning and host and host.probing then
-    warning = "Looking for multiplexers on " .. host.name .. "…"
-  end
-  local rows = #options > 0 and selector_rows(options, index, #options) or no_mux_rows(flow)
-  local height = #rows
-  return frame("Multiplexer", height + 4, {
-    { type = "box", len = height, children = rows },
-    { type = "text", len = 1, text = warning or "" },
-    modal.footer({ { "j/k", "navigate" } }, index > 0 and "Select" or nil),
   }, flow)
 end
 
@@ -639,7 +424,7 @@ local BROWSE_ROW = "browse:"
 local REPO_ROW = "repo:"
 
 --- One row of the bookmark list. v1's `bookmark_item`, marker for marker.
-local function repo_row(entry, selected, flow, is_cursor)
+local function repo_row(entry, flow, is_cursor, marked)
   local row = entry.row
   local style = is_cursor and { fg = theme.accent, bold = true } or { fg = theme.text }
   if row.is_parent then
@@ -649,25 +434,12 @@ local function repo_row(entry, selected, flow, is_cursor)
     }
   end
 
-  -- An existing worktree: not a thing to tick, a thing to open. So no checkbox,
-  -- and the branch is what identifies it — the directory name is usually a
-  -- shortened form of the branch, and the branch is what the work is on.
-  if row.is_worktree then
-    return {
-      { text = "  ↳ ", style = { fg = theme.muted } },
-      { text = row.name, style = style },
-      {
-        text = "  " .. widgets.middle_truncate(row.branch or "", math.max(8, ROW_COLS - 30)),
-        style = { fg = theme.muted },
-      },
-    }
-  end
-
-  local spans = {}
+  -- The cursor row is the choice `enter` carries on, so it is marked as the
+  -- other pickers mark theirs, whichever field has focus.
+  local spans = { { text = marked and "▸ " or "  ", style = style } }
   if row.parent then
     spans[#spans + 1] = { text = "  ", style = style }
   end
-  spans[#spans + 1] = { text = selected and "[x] " or "[ ] ", style = style }
   -- The label leads, because it is the answer to "what would picking this do";
   -- the path still follows it, muted, because it is the answer to "where".
   if row.label then
@@ -685,8 +457,8 @@ local function repo_row(entry, selected, flow, is_cursor)
   else
     -- Middle-truncated: the leaf is what identifies a repository, and it is the
     -- half an end-truncation drops. `avail` is what the row has left after the
-    -- indent, the checkbox, and any label ahead of the path.
-    local used = 4 + (row.parent and 2 or 0) + (row.label and (widgets.len(row.label) + 2) or 0)
+    -- indent and any label ahead of the path.
+    local used = 2 + (row.parent and 2 or 0) + (row.label and (widgets.len(row.label) + 2) or 0)
     local avail = math.max(8, ROW_COLS - used)
     spans[#spans + 1] = {
       text = widgets.middle_truncate(row.path, avail),
@@ -694,72 +466,20 @@ local function repo_row(entry, selected, flow, is_cursor)
     }
   end
 
-  if selected and flow.worktree[row.path] then
-    spans[#spans + 1] = { text = " [wt]", style = { fg = theme.accent } }
-  end
-  -- A known non-repository reads as a plain directory: selectable, but `w` will
-  -- not take.
+  -- A known non-repository reads as a plain directory: still a workspace.
   if row.is_git == false then
     spans[#spans + 1] = { text = " (dir)", style = { fg = theme.muted } }
   end
   return spans
 end
 
---- Does `enter` spawn straight away, with nothing left to ask?
+--- Does `enter` on the name spawn straight away, with nothing left to ask?
 ---
---- A fork inherits its source's agent, and one agent is not a question — both
---- of those commit directly (see `after_name`, which is what actually decides
---- it). Shared by the repo list's worktree row and the name/branch fields so
---- their pills and `after_name` cannot drift apart.
-local function spawns_directly(flow)
-  return flow.fork ~= nil or #agents() <= 1
-end
-
---- What is already known to be missing for the session about to be created.
----
---- The whole point of the flow knowing this: the multiplexer and the agent are
---- looked for *while the user is still choosing*, so the answer does not arrive
---- as a dead pane after they have committed. Returns the sentence and the
---- colour to draw it in, or nothing when there is nothing to say.
----
---- Only ever about the local machine. A remote host's binaries live on the
---- host, and thurbox has not looked there — `unknown` is not `missing`, and
---- reporting one as the other is a claim it has not earned.
-preflight_warning = function(flow)
-  if (flow.host or "") ~= "" then
-    return nil
-  end
-  local mux = preflight().mux
-  if mux and mux.presence == "missing" then
-    -- Nothing can be created at all without it, so it outranks the agent.
-    --
-    -- The advice in full where it fits, and where it does not — every phrasing
-    -- that names a package *and* a link is longer than this row — the command
-    -- that prints it along with every directory searched. A sentence cut off at
-    -- "install tmux 3.2 or newer — the p" is worse than one that ends.
-    local sentence = "⚠ " .. mux.binary .. " is not installed — " .. (mux.advice or "")
-    if widgets.len(sentence) > ROW_COLS then
-      sentence = "⚠ " .. mux.binary .. " is not installed — run: thurbox-cli doctor"
-    end
-    return sentence, theme.bad
-  end
-  -- A fork's agent is the source session's, resolved server-side (see
-  -- `commit`) — flow.agent_index was never assigned to mean anything for one,
-  -- so there is nothing here to check.
-  if flow.fork then
-    return nil
-  end
-  -- The agent is the last question, so it is only settled on that step; a flow
-  -- with a single agent never asks, and the answer is settled from the start.
-  if flow.step ~= "agent" and not spawns_directly(flow) then
-    return nil
-  end
-  local picked = agents()[widgets.clamp(flow.agent_index, #agents())]
-  if picked and picked.presence == "missing" then
-    return "⚠ " .. picked.command .. " is not installed — its pane will exit at once",
-      theme.warn
-  end
-  return nil
+--- One agent is not a question (see `after_name`, which is what actually
+--- decides it). Shared by the name field's pill and `after_name` so they cannot
+--- drift apart.
+local function spawns_directly()
+  return agents_known() and #agents() <= 1
 end
 
 local function render_repo(flow)
@@ -804,7 +524,7 @@ local function render_repo(flow)
       list[#list + 1] = {
         type = "text",
         len = 1,
-        text = { repo_row(entry, flow.selected[path] == true, flow, is_cursor) },
+        text = { repo_row(entry, flow, is_cursor, position == cursor) },
         style = row_hover(id, is_cursor),
         id = id,
         role = "row",
@@ -947,33 +667,20 @@ local function render_repo(flow)
   if flow.focus == "search" then
     hints = {
       { "↑/↓", "nav" },
-      { "space", "tick" },
-      { "alt+w", "worktree" },
       { "del", "forget" },
       { "tab", "path" },
     }
-    local entry = entries[widgets.clamp(flow.cursor, #entries)]
-    if entry and entry.row.is_worktree then
-      -- An existing worktree is not a selection to gather but a thing to open —
-      -- but `enter` only spawns straight from here when nothing is left to ask
-      -- (see `spawns_directly`); otherwise it advances to the agent step same as
-      -- every other row.
-      primary = spawns_directly(flow) and "Open" or "Next"
+    -- `enter` carries the row under the cursor, and with none on a host
+    -- `after_repos` refuses and stays here: a remote target has no local home
+    -- to stand in for a repository. So there is nothing to advance to and
+    -- nothing is offered — which on a host whose memory is still empty is the
+    -- whole of that step until a path is added. Spelled as an `if`:
+    -- `cond and nil or "Next"` is always "Next", because `and` yielding nil
+    -- falls through to the `or`.
+    if not cursor_repo(flow) and (flow.host or "") ~= "" then
+      primary = nil
     else
-      -- `enter` carries the TICKED rows, not the row under the cursor, and with
-      -- none ticked on a host `after_repos` refuses and stays here: a remote
-      -- target has no local home to stand in for a repository. So there is
-      -- nothing to advance to and nothing is offered — which on a host whose
-      -- memory is still empty is the whole of that step until a path is added.
-      -- Spelled as an `if`: `cond and nil or "Next"` is always "Next", because
-      -- `and` yielding nil falls through to the `or`.
-      local worktrees, plain = chosen(flow)
-      local nothing_to_carry = #worktrees == 0 and #plain == 0 and not cursor_stand_in(flow)
-      if nothing_to_carry and (flow.host or "") ~= "" then
-        primary = nil
-      else
-        primary = "Next"
-      end
+      primary = "Next"
     end
     -- `esc` clears a typed query before it closes anything.
     if query ~= "" then
@@ -1015,14 +722,6 @@ local function render_repo(flow)
   end
   -- Stacked: this step has more keys than one row can name beside its pills,
   -- and a hint cut off at the pill is a key nobody learns (forget was).
-  if flow.focus == "search" then
-    children[#children + 1] = {
-      type = "text",
-      len = 1,
-      text = "← close worktrees  → expand worktrees",
-      style = { fg = theme.muted },
-    }
-  end
   children[#children + 1] = modal.footer(hints, primary, { cancel = cancel, stack = true })
 
   -- The height is the sum of what was actually built, plus the two border rows.
@@ -1033,7 +732,7 @@ local function render_repo(flow)
   for _, child in ipairs(children) do
     height = height + (child.len or 1)
   end
-  return frame("Select Repos", height, children, flow)
+  return frame("Select Repo", height, children, flow)
 end
 
 --- What can go into a folder made for a path that did not exist, in the order
@@ -1098,57 +797,17 @@ local function render_clone(flow)
   }, flow)
 end
 
-local function render_branch(flow)
-  local list = branches()
-  local names = list.list or {}
-  if list.loading or #names == 0 then
-    local text = list.error or (spinner(flow) .. " fetching and listing branches…")
-    return frame("Base Branch", 5, {
-      {
-        type = "text",
-        len = 1,
-        text = {
-          { { text = " " .. text, style = { fg = list.error and theme.bad or theme.muted } } },
-        },
-      },
-      message_row(flow),
-      -- No confirm pill: there is nothing to select yet, and one offered here
-      -- would be a button that does nothing when pressed.
-      modal.footer({ { "esc", "cancel" } }, nil),
-    }, flow)
-  end
-  local height = math.min(#names, REPO_LIST_MAX)
-  return frame("Base Branch", height + 4, {
-    {
-      type = "box",
-      len = height,
-      children = selector_rows(names, widgets.clamp(flow.branch_index, #names), height),
-    },
-    message_row(flow),
-    modal.footer({ { "j/k", "navigate" } }, "Select"),
-  }, flow)
-end
-
---- Does `enter` on this field end the flow?
----
---- The name is the last question only sometimes: the worktree flow asks for a
---- branch name after it, and a name followed by a choice of agent is not the
---- end either. A fork inherits its source's agent, and one agent is not a
---- question — both of those spawn straight from the field. Mirrors
---- `after_name`, which is what actually decides it.
-local function field_creates(flow)
-  if flow.step == "name" and flow.base then
-    return false
-  end
-  return spawns_directly(flow)
+--- Does `enter` on the name field end the flow? Mirrors `after_name`, which is
+--- what actually decides it.
+local function field_creates()
+  return spawns_directly()
 end
 
 local function render_field(title, label, field, flow, placeholder)
   -- What `enter` would actually take: the typed value, or the placeholder
-  -- standing in for it. The name step's suggestion is a real answer — `on_key`
-  -- takes it from an untouched field — while the branch step has no such
-  -- default, and neither has a repository whose leaf is no kind of name (the
-  -- home directory the flow falls back to). When that resolves to nothing,
+  -- standing in for it. The suggestion is a real answer — `on_key` takes it
+  -- from an untouched field — except for a repository whose leaf is no kind of
+  -- name (the home directory the flow falls back to). When that resolves to nothing,
   -- `enter` is refused with "cannot be empty", so no pill is offered until
   -- there is something to confirm. The field is where that gets fixed, and it
   -- already has the caret in it.
@@ -1165,28 +824,35 @@ local function render_field(title, label, field, flow, placeholder)
     message_row(flow),
     modal.footer(
       { { "enter", "confirm" }, { "esc", "cancel" } },
-      resolved ~= "" and (field_creates(flow) and "Create" or "Next") or nil
+      resolved ~= "" and (field_creates() and "Create" or "Next") or nil
     ),
   }, flow)
 end
 
 local function render_agent(flow)
-  -- v1's label: the name alone when the two are the same, else `name
-  -- (command)`, so two entries wrapping the same CLI are distinguishable.
-  --
-  -- Local presence only, same as preflight_warning above: a remote host's
-  -- binaries live on the host and thurbox has not looked there.
-  local local_host = (flow.host or "") == ""
+  if not agents_known() then
+    return frame("Coding Agent", 5, {
+      {
+        type = "text",
+        len = 1,
+        text = {
+          {
+            {
+              text = " " .. spinner(flow) .. " Asking Fleet for its agents…",
+              style = { fg = theme.muted },
+            },
+          },
+        },
+      },
+      message_row(flow),
+      -- No pill: there is nothing to choose yet.
+      modal.footer({ { "esc", "cancel" } }, nil),
+    }, flow)
+  end
+  -- The harnesses Fleet has profiles for, by name.
   local labels = {}
   for _, agent in ipairs(agents()) do
-    local label = (agent.name == agent.command) and agent.name
-      or (agent.name .. "  (" .. agent.command .. ")")
-    -- Marked on the row rather than only in the warning below it, so the cost
-    -- of each choice is visible while the cursor is moving over the others.
-    if local_host and agent.presence == "missing" then
-      label = label .. "  ⚠ not installed"
-    end
-    labels[#labels + 1] = label
+    labels[#labels + 1] = agent.name
   end
   local height = math.max(1, math.min(#labels, REPO_LIST_MAX))
   return frame("Coding Agent", height + 4, {
@@ -1204,24 +870,6 @@ end
 
 -- ── Advancing ──────────────────────────────────────────────────────────────
 
---- v1's `session_name_to_branch`: lowercase alphanumerics, every run of spaces,
---- dashes and underscores collapsed to one dash, trimmed.
-local function branch_from_name(name)
-  local out = {}
-  for _, code in utf8.codes(name) do
-    local char = utf8.char(code)
-    if char:match("[%w]") then
-      out[#out + 1] = char:lower()
-    elseif (char == " " or char == "-" or char == "_") and out[#out] ~= "-" then
-      out[#out + 1] = "-"
-    end
-  end
-  return (table.concat(out):gsub("^%-+", ""):gsub("%-+$", ""))
-end
-
---- Where the flow goes after the repositories are chosen. v1's three-way split
---- in `submit_repo_picker`, with its ordering: worktrees first, then plain
---- directories, then nothing at all.
 --- The name to use when the field is left empty: the repository's own.
 ---
 --- Shown as a PLACEHOLDER rather than written into the field. Prefilling the value
@@ -1232,12 +880,6 @@ end
 --- typing behaves normally, and `Enter` on an untouched field is a valid answer
 --- with the answer visible before you press it.
 local function suggested_name(flow)
-  -- A fork's default is the name it was handed, not the repository's leaf: the
-  -- field starts prefilled, and clearing it must fall back to the same answer
-  -- rather than to something about the directory.
-  if flow and flow.fork then
-    return flow.fork_name or ""
-  end
   local name = leaf(flow and flow.primary)
   if name == "" or name == "~" then
     return ""
@@ -1245,42 +887,12 @@ local function suggested_name(flow)
   return name
 end
 
---- A flow that exists only to name a fork.
----
---- v1's `fork_active_session` prepared the spawn and opened the SAME name modal the
---- creation flow uses, then spawned straight from it — the agent, the directory and
---- the worktrees all came from the source session, so there was nothing left to ask.
---- This is that, entered from `store.fork` rather than from a key: the sessions pane
---- knows which session and what the derived name is, and this knows how to ask.
-local function fork_flow(handover)
-  local flow = fresh()
-  flow.step = "name"
-  flow.fork = handover.session
-  flow.fork_name = handover.name or ""
-  textinput.set(flow.name, flow.fork_name)
-  return flow
-end
-
+--- Where the flow goes once the repository is chosen: the name. A session's
+--- workspace is its repository directory, and Fleet makes it (ADR-41).
 local function after_repos(flow)
-  local worktrees, plain = chosen(flow)
-  flow.extras = {}
-  if #worktrees > 0 then
-    flow.primary = worktrees[1]
-    for index = 2, #worktrees do
-      flow.extras[#flow.extras + 1] = { path = worktrees[index], worktree = true }
-    end
-    for _, path in ipairs(plain) do
-      flow.extras[#flow.extras + 1] = { path = path, worktree = false }
-    end
-    flow.step = "branch"
-    flow.branch_index = 1
-    return flow
-  end
-  if #plain > 0 then
-    flow.primary = plain[1]
-    for index = 2, #plain do
-      flow.extras[#flow.extras + 1] = { path = plain[index], worktree = false }
-    end
+  local row = cursor_repo(flow)
+  if row then
+    flow.primary = row.path
     flow.step = "name"
     return flow
   end
@@ -1298,85 +910,34 @@ end
 
 --- Issue the one command the whole flow exists to produce, and close.
 local function commit(flow)
-  if flow.fork then
-    -- Everything else about a fork is the source session's, resolved by the
-    -- kernel: the agent, the host, the directory, the shared worktrees and the
-    -- parent link. The only thing this flow decides is the name.
-    command("fork", { session = flow.fork, text = flow.name.value })
-    save(nil)
-    ask(nil)
-    return
-  end
   local picked = agents()[flow.agent_index]
-  local agent = picked and picked.name or nil
-  -- Opening an existing worktree: the branch is the one already checked out
-  -- there, there is no base to branch off, and the name is left to the kernel,
-  -- which takes it from the worktree directory.
-  local open = flow.open_worktree
   command("create", {
-    text = (open and "") or flow.name.value,
+    text = flow.name.value,
     repo = flow.primary,
-    branch = (open and open.branch) or (flow.base and flow.branch.value) or nil,
-    base = (not open) and flow.base or nil,
-    worktree_path = open and open.path or nil,
-    agent = agent,
+    agent = picked and picked.name or nil,
     host = (flow.host ~= "" and flow.host) or nil,
-    multiplexer = flow.mux_name,
-    extras = flow.extras or {},
   })
   save(nil)
   ask(nil)
 end
 
---- After the name (and the branch name, in the worktree flow): the agent step,
---- or straight to creating when there is nothing to choose. v1's
---- `finish_prepare_spawn`.
+--- After the name: the agent step, or straight to creating when there is
+--- nothing to choose. v1's `finish_prepare_spawn`.
 local function after_name(flow)
-  -- v1: "Fork flow — role already set, spawn directly." A fork inherits its
-  -- source's agent, so offering the agent step would invite changing the one thing
-  -- a fork cannot change.
-  if flow.fork then
-    commit(flow)
-    return nil
-  end
   local list = agents()
-  if #list <= 1 then
+  if agents_known() and #list <= 1 then
     flow.agent_index = 1
     commit(flow)
     return nil
   end
   flow.step = "agent"
   flow.agent_index = 1
-  for index, agent in ipairs(list) do
-    if agent.name == (thurbox and thurbox.agent_default) then
-      flow.agent_index = index
-    end
-  end
   return flow
 end
 
---- Carry the repo step on to the next question: the ticked rows, else the row
---- under the cursor.
----
---- An existing worktree under the cursor is not a selection to gather: it names
---- its own repo, branch and directory, so there is nothing left to ask — unless
---- rows are ticked, which are what the reader has been gathering.
+--- Carry the repo step on to the next question with the row under the cursor.
 local function confirm_repos(flow)
-  local stand_in = cursor_stand_in(flow)
-  if stand_in then
-    flow.selected[stand_in.path] = true
-  end
-  local entry = current_row(flow)
-  local row = entry and entry.row
-  local worktrees, plain = chosen(flow)
-  if row and row.is_worktree and #worktrees == 0 and #plain == 0 then
-    flow.primary = row.parent
-    flow.extras = {}
-    flow.open_worktree = { path = row.path, branch = row.branch }
-    save(after_name(flow))
-  else
-    save(after_repos(flow))
-  end
+  save(after_repos(flow))
   ask(load())
 end
 
@@ -1399,15 +960,8 @@ end
 local function move_selection(flow, step)
   if flow.step == "host" then
     flow.host_index = widgets.clamp(flow.host_index + step, #host_labels())
-  elseif flow.step == "multiplexer" then
-    local options = mux_options(flow)
-    local index = widgets.clamp(mux_index(options, settled_mux(flow)) + step, #options)
-    flow.mux_name = options[index]
-    flow.mux_guessed = false
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
-  elseif flow.step == "branch" then
-    flow.branch_index = widgets.clamp(flow.branch_index + step, #(branches().list or {}))
   elseif flow.step == "agent" then
     flow.agent_index = widgets.clamp(flow.agent_index + step, #agents())
   elseif flow.step == "new_folder" then
@@ -1428,10 +982,6 @@ return {
     local selection = flow.cursor or 1
     if flow.step == "host" then
       selection = flow.host_index
-    elseif flow.step == "multiplexer" then
-      selection = mux_index(mux_options(flow), settled_mux(flow))
-    elseif flow.step == "branch" then
-      selection = flow.branch_index
     elseif flow.step == "agent" then
       selection = flow.agent_index
     elseif flow.step == "new_folder" then
@@ -1452,9 +1002,9 @@ return {
   -- of them is a function of inputs already in the cache key. The `ask` wants
   -- derive from the flow (state version), so a skipped render would only have
   -- re-written identical values — the kernel re-reads the persisted store keys
-  -- each publish either way. The fork handover and `select_newest` consumption
-  -- are transitions whose triggering writes (store.fork, the bookmark command
-  -- landing) bump the state version or the epoch first, so the frame that must
+  -- each publish either way. The `select_newest` consumption is a transition
+  -- whose triggering write (the bookmark command landing) bumps the epoch
+  -- first, so the frame that must
   -- run always misses the cache. Floats render every frame even while closed;
   -- this is what makes the closed flow actually cost nothing.
   pure = true,
@@ -1488,17 +1038,11 @@ return {
     {
       key = "space",
       action = "new_session.toggle",
-      desc = "select a repository, or fold a folder",
+      desc = "fold a folder",
       group = "New session",
     },
-    -- Chords rather than letters: the repo step types every letter into its
-    -- search, so a bare `w` or `d` is part of a repository's name there.
-    {
-      key = "alt+w",
-      action = "new_session.worktree",
-      desc = "give a repository its own worktree",
-      group = "New session",
-    },
+    -- A chord rather than a letter: the repo step types every letter into its
+    -- search, so a bare `d` is part of a repository's name there.
     {
       -- Not `ctrl+d`: that is the global delete-session chord, and a float's
       -- claim on a global chord is a conflict the registry reports.
@@ -1514,19 +1058,18 @@ return {
       group = "New session",
     },
     -- Confirm the repo step from any focus — the path field included — with the
-    -- ticked rows, else the cursor row. `ctrl+enter` reaches a terminal only
-    -- under the kitty keyboard protocol; `alt+enter` is the same action for
-    -- every other terminal.
+    -- cursor row. `ctrl+enter` reaches a terminal only under the kitty keyboard
+    -- protocol; `alt+enter` is the same action for every other terminal.
     {
       key = "ctrl+enter",
       action = "new_session.confirm",
-      desc = "go on with the ticked repositories, or the one under the cursor",
+      desc = "go on with the repository under the cursor",
       group = "New session",
     },
     {
       key = "alt+enter",
       action = "new_session.confirm",
-      desc = "go on with the ticked repositories, or the one under the cursor",
+      desc = "go on with the repository under the cursor",
       group = "New session",
     },
     {
@@ -1541,14 +1084,6 @@ return {
 
   render = function(ctx)
     local flow = load()
-    if not flow and type(store.fork) == "table" and store.fork.session then
-      -- Taken here because this is where "is the float open" is decided, and the
-      -- handover has to become a flow before that question is asked. Cleared as it
-      -- is taken, so a cancelled fork does not reopen on the next frame.
-      flow = fork_flow(store.fork)
-      store.fork = nil
-      save(flow)
-    end
     ask(flow)
     if not flow then
       -- Not floating: the flow is closed, and a closed modal draws nothing.
@@ -1561,7 +1096,7 @@ return {
     flow.elapsed = ctx.elapsed
     flow.suggestion = flow.step == "repo" and flow.focus == "input" and suggestion_for(flow) or ""
 
-    -- A path just added is selected, which is v1's select-or-add. The row cannot
+    -- A path just added is under the cursor, which is v1's select-or-add. The row cannot
     -- be found by name — the expansion of a `~` on a remote host happened on the
     -- worker — so it is found by RECENCY: memory is published most-recent-first
     -- and an add touches recency, so the row asked for is the newest one.
@@ -1572,7 +1107,7 @@ return {
     if flow.select_newest and not bookmark_pending() and not bookmarks().loading then
       -- A failure that was not on record when the write was issued is this
       -- write's: the newest row is then whatever was newest before it, and
-      -- ticking that would pick a repository nobody chose.
+      -- picking that would pick a repository nobody chose.
       local failed = false
       for _, item in ipairs((thurbox and thurbox.commands) or {}) do
         if
@@ -1592,9 +1127,8 @@ return {
       end
       local newest = not failed and repo_picker.newest(bookmarks().rows or {})
       if newest then
-        flow.selected[newest.path] = true
-        -- The cursor follows the selection rather than resetting to the top, for
-        -- the same reason: the top row is no longer the row just added.
+        -- The cursor goes to it rather than resetting to the top: the top row
+        -- is no longer the row just added.
         flow.cursor = repo_picker.index_of(rows_for(flow), newest.path) or 1
       end
       flow.select_newest = nil
@@ -1606,16 +1140,10 @@ return {
 
     if flow.step == "host" then
       return render_host(flow)
-    elseif flow.step == "multiplexer" then
-      return render_mux(flow)
     elseif flow.step == "repo" then
       return render_repo(flow)
-    elseif flow.step == "branch" then
-      return render_branch(flow)
     elseif flow.step == "name" then
       return render_field("Session Name", "Name", flow.name, flow, suggested_name(flow))
-    elseif flow.step == "worktree" then
-      return render_field("Branch Name", "Branch", flow.branch, flow)
     elseif flow.step == "new_folder" then
       return render_new_folder(flow)
     elseif flow.step == "clone" then
@@ -1635,9 +1163,6 @@ return {
         return true
       end
       local flow = fresh()
-      if #hosts() == 0 then
-        after_host(flow)
-      end
       save(flow)
       ask(flow)
       return true
@@ -1649,10 +1174,7 @@ return {
     end
     -- Every step with a text field types the letters `j`/`k`; the repo step
     -- always has one focused (its search or its path).
-    local typing = flow.step == "repo"
-      or flow.step == "name"
-      or flow.step == "worktree"
-      or flow.step == "clone"
+    local typing = flow.step == "repo" or flow.step == "name" or flow.step == "clone"
     local in_search = flow.step == "repo" and flow.focus == "search"
     flow.message = nil
 
@@ -1688,32 +1210,6 @@ return {
         local path = entry.row.path
         if entry.row.is_parent then
           flow.collapsed[path] = not flow.collapsed[path] or nil
-        else
-          flow.selected[path] = not flow.selected[path] or nil
-          if not flow.selected[path] then
-            flow.worktree[path] = nil
-          end
-        end
-      end
-      save(flow)
-      return true
-    elseif action == "new_session.worktree" then
-      if dropdown_open(flow) then
-        return false
-      end
-      local entry = current_row(flow)
-      if entry and not entry.row.is_parent then
-        if entry.row.is_git == false then
-          -- v1's refusal, in v1's words: worktree mode needs a repository, and
-          -- the directory stays selectable without it.
-          flow.message =
-            "Not a git repo — worktree mode needs one (it can still be added as a plain dir)"
-        else
-          local path = entry.row.path
-          flow.worktree[path] = not flow.worktree[path] or nil
-          if flow.worktree[path] then
-            flow.selected[path] = true
-          end
         end
       end
       save(flow)
@@ -1735,8 +1231,6 @@ return {
           flow.message = "Part of a folder — forget the folder header instead"
         else
           command("bookmark", { host = flow.host, repo = entry.row.path, action = "remove" })
-          flow.selected[entry.row.path] = nil
-          flow.worktree[entry.row.path] = nil
         end
       end
       save(flow)
@@ -1805,13 +1299,17 @@ return {
 
     if flow.step == "host" then
       if name == "enter" then
-        local index = flow.host_index
-        flow.host = index > 1 and (hosts()[index - 1].backend or "") or ""
-        after_host(flow)
+        local chosen = (hosts() or {})[flow.host_index]
+        if not chosen then
+          -- Fleet has not answered yet, or defines no host: nothing to run on.
+          return true
+        end
+        flow.host = chosen.backend or ""
+        flow.step = "repo"
         flow.cursor = 1
         -- Bookmarks are host-scoped, so the choices change with the host: an
-        -- earlier host's selection must not carry over.
-        flow.selected, flow.worktree, flow.collapsed = {}, {}, {}
+        -- earlier host's folding must not carry over.
+        flow.collapsed = {}
         save(flow)
         ask(flow)
         return true
@@ -1819,63 +1317,24 @@ return {
       return false
     end
 
-    if flow.step == "multiplexer" then
-      flow.mux_name = settled_mux(flow)
-      if name == "enter" and mux_index(mux_options(flow), flow.mux_name) > 0 then
-        flow.step = "repo"
-        save(flow)
-        ask(flow)
-        return true
-      end
-      return false
-    end
-
-    if flow.step == "branch" then
-      if name == "enter" then
-        local names = branches().list or {}
-        local chosen_branch = names[widgets.clamp(flow.branch_index, #names)]
-        if chosen_branch then
-          flow.base = chosen_branch
-          flow.step = "name"
-          save(flow)
-        end
-        return true
-      end
-      return false
-    end
-
-    if flow.step == "name" or flow.step == "worktree" then
-      local field = flow.step == "name" and flow.name or flow.branch
+    if flow.step == "name" then
+      local field = flow.name
       if name == "enter" then
         local value = (field.value or ""):match("^%s*(.-)%s*$")
         -- An untouched name field takes the suggestion the placeholder was
         -- showing, so `Enter` straight through is a valid answer and the answer
-        -- was visible before the key was pressed. A branch has no such default:
-        -- there is no obvious name for a branch that does not exist yet.
-        if value == "" and flow.step == "name" then
+        -- was visible before the key was pressed.
+        if value == "" then
           value = suggested_name(flow)
           field.value = value
           field.cursor = #value
         end
         if value == "" then
-          flow.message = flow.step == "name" and "Session name cannot be empty"
-            or "Branch name cannot be empty"
+          flow.message = "Session name cannot be empty"
           save(flow)
           return true
         end
-        if flow.step == "name" then
-          flow.name.value = value
-          if flow.base then
-            -- The worktree flow names the branch next, prefilled from the
-            -- session name exactly as v1 prefills it.
-            textinput.set(flow.branch, branch_from_name(value))
-            flow.step = "worktree"
-            save(flow)
-            return true
-          end
-        else
-          flow.branch.value = value
-        end
+        flow.name.value = value
         save(after_name(flow))
         return true
       end
@@ -1888,7 +1347,9 @@ return {
 
     if flow.step == "agent" then
       if name == "enter" then
-        commit(flow)
+        if agents_known() then
+          commit(flow)
+        end
         return true
       end
       return false
@@ -1967,7 +1428,7 @@ return {
           local dir = (browse().dir or "")
           local joined = (dir == "/" and "/" or (dir .. "/")) .. entry.name
           if name == "enter" then
-            -- A session can use any directory; git-ness only governs worktrees.
+            -- A session can use any directory, a git repository or not.
             command("bookmark", { host = flow.host, repo = joined, action = "add" })
             textinput.clear(flow.input)
             flow.browse = false
@@ -1986,22 +1447,7 @@ return {
     end
 
     if flow.focus == "search" then
-      if
-        (name == "left" and flow.wt_repo)
-        or (name == "right" and flow.search.cursor == widgets.chars(flow.search.value or ""))
-      then
-        local entry = current_row(flow)
-        local row = entry and entry.row
-        if name == "left" and flow.wt_repo then
-          flow.cursor = repo_picker.index_of(rows_for(flow), flow.wt_repo) or 1
-          flow.wt_repo = nil
-        elseif name == "right" and row and not row.is_parent and not row.is_worktree then
-          flow.wt_repo = row.path
-        end
-        save(flow)
-        ask(flow)
-        return true
-      elseif name == "tab" then
+      if name == "tab" then
         enter_path_field(flow)
         save(flow)
         ask(flow)
@@ -2140,15 +1586,6 @@ return {
     end
     if flow.step == "host" then
       flow.host_index = index
-    elseif flow.step == "multiplexer" then
-      local options = mux_options(flow)
-      if not options[index] then
-        return false
-      end
-      flow.mux_name = options[index]
-      flow.mux_guessed = false
-    elseif flow.step == "branch" then
-      flow.branch_index = index
     elseif flow.step == "agent" then
       flow.agent_index = index
     elseif flow.step == "new_folder" then

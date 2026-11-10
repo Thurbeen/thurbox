@@ -231,8 +231,8 @@ impl ThemeModal {
                 else {
                     return Outcome::Stay(None);
                 };
-                // Applied here and stored by the loop where v1 persists it —
-                // `metadata.active_theme` — so a restart keeps it and every
+                // Applied here and stored by the loop in `interface.json`
+                // (`store_chosen_theme`), so a restart keeps it and every
                 // other thurbox process takes it when it next starts.
                 // Chosen, so there is nothing to put back — clearing this is
                 // what stops the close below from reverting the choice.

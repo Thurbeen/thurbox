@@ -59,19 +59,10 @@ The archive still contains exactly `thurbox` and `thurbox-cli`, which is what th
 rule at the top of this file requires. The kernel inherited the *name*; nothing was
 added or removed, so no installed updater notices anything but a new version.
 
-A profile with v1 history meets `kernel::consent` on its first launch: it is asked
-once, before the interface takes the terminal, and declining turns `auto_update`
-off and prints how to reinstall 1.x. That gate is the only reason replacing an
-interface under an unchanged binary name is defensible.
-
-That off-switch is reversible, and only by the gate that threw it. Declining
-records a marker in `metadata` alongside the `settings.toml` write, and a later
-**accept** puts `auto_update` back only when that marker is present — so someone
-who declined once and returned to v2 is not left pinned forever, while an
-`auto_update = false` the *user* set is never overridden. The marker is the whole
-mechanism: without it the two cases are indistinguishable on disk, and the accept
-branch has to choose between overturning a preference and stranding a profile.
-It is taken in one `DELETE … RETURNING`, so it acts once.
+2.x asked a profile with v1 history once, on its first launch, before the
+interface took the terminal: declining turned `auto_update` off and printed how
+to reinstall 1.x. That gate is what made replacing an interface under an
+unchanged binary name defensible. 3.0 removed it with the database it read.
 
 ### Auto-update does not cross a major, and that has to be shipped to v1
 
@@ -88,7 +79,8 @@ take it. Closing that needs a **1.x maintenance cut carrying this change**,
 released the way this section describes — dispatch `cd.yml` from `v1.x` with an
 explicit `version`, which publishes with `make_latest: false` and skips the
 package channels. Until such a cut exists, the only reliable hold for an existing
-1.x install is `auto_update = false`, which is what the consent gate writes.
+1.x install is `auto_update = false`, which is what 2.x's first-launch question
+wrote when it was declined.
 
 Note the ordering trap when you do cut it: the guard reads the running binary's
 own major, so it is the *1.x* build that must contain it. Landing it on `main`
@@ -211,6 +203,23 @@ maintenance release is cut by dispatching `cd.yml` from `v2.x` with an explicit
 version: it is tagged and built, published without "Latest" while a 3.x tag is
 higher, and still pushed to the 2.x package names as the newest 2.x.
 
+### The v3 hold
+
+`main` carries 3.x work before 3.0.0 is cut. A `feat` or `fix` on it would
+otherwise cut a 2.x release that ships that work to every 2.x user and channel,
+and the line rule does not stop that: the version is still on line 2.
+
+So the tree holds its releases. While `.github/release-hold` exists,
+`scripts/ci/release-line.sh` answers `held=true` and `cd.yml` tags and
+publishes nothing, on a push or a dispatch, whatever the version. The run
+passes: it is a skip, not a refusal. The hold is a file in the tree, so a
+`v2.x` branch cut before it was added does not carry it, and 2.x maintenance
+releases go on as described above.
+
+The pull request that cuts 3.0.0 lifts the hold: it deletes
+`.github/release-hold` in the same change that sets `RELEASE_LINE = 3`. The
+tests in `scripts/ci/release-line.bats` that read the real tree change with it.
+
 ## The Nix flake is not a release channel
 
 `flake.nix` builds whatever ref it is pointed at, and nothing in `cd.yml`
@@ -227,7 +236,7 @@ share the release's sessions, so it can't carry `-dev`. The runtime
 auto-update and `thurbox-cli update` from trying to replace a binary in the
 read-only Nix store. Anyone who wants a release pins the flake input to its
 tag. The binary still reports `0.0.0-unstable-…`, dated to the tagged commit. Being unreleased has one
-more effect: `official_ref()` fetches official extensions from `main` rather
+more effect: `official_ref()` fetches official panes from `main` rather
 than from a tag, which is the same thing a source build does.
 
 ## Checklist for a release that changes artifacts

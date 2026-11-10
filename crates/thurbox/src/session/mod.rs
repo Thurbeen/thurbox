@@ -1,17 +1,8 @@
-pub mod agent_def;
 pub mod automation;
-pub mod background_work;
-pub mod extension_def;
-pub mod hook_def;
 pub mod hook_status;
-pub mod launch_failure;
-pub mod message;
-pub mod op_error;
 pub mod plugin_spec;
 pub mod review;
 pub mod settings;
-pub mod shared;
-pub mod task;
 
 // The host model a route names, the hyperlink table a pane fills and the
 // identity a window is stamped with are the multiplexer runtime's; a session
@@ -19,147 +10,21 @@ pub mod task;
 pub use runtime_mux::SessionId;
 pub use runtime_mux::{host_def, hyperlink, multiplexer, platform, route};
 
-pub use agent_def::{AgentDef, AgentRegistry};
-pub use automation::{
-    parse_hhmm, preset_to_cron, Automation, AutomationAction, AutomationRun, AutomationRunStatus,
-    AutomationSchedule, ExtraRepo, RunSettings, SchedulePreset,
-};
-pub use extension_def::{
-    AgentPatch, ConfigMerge, ConfigMergeFormat, ExtensionAutomation, ExtensionDef, ExtensionFile,
-    ExtensionSession, ExtensionSymlink, ExternalFile,
-};
-pub use hook_def::{
-    HookContext, HookEvent, HookWorktree, HooksFile, LifecycleHook, DEFAULT_HOOK_TIMEOUT_SECS,
-};
-pub use hook_status::{
-    age_secs, best_state, classify_foreground, contradicts, coverage_for, derive_state,
-    is_interactive_shell, with_output_quiescence, with_reachability, Activity, AgentHookCoverage,
-    Assessment, Corroboration, Coverage, CoverageSource, HookDelivery, SessionState, StateSource,
-    StateSupport, AGENT_HOOK_COVERAGE, WORKING_QUIET_MS,
-};
+pub use automation::{parse_hhmm, preset_to_cron, AutomationSchedule, SchedulePreset};
+pub use hook_status::{SessionState, WORKING_QUIET_MS};
 pub use host_def::{HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
-pub use launch_failure::{
-    LaunchFailure, LaunchFailureReason, LAUNCH_FAILURE_META, LAUNCH_REPORTED_META,
-};
-pub use message::SessionMessage;
 pub use multiplexer::{BackendChoice, Multiplexer};
-pub use op_error::OpError;
 pub use platform::Platform;
 pub use plugin_spec::{
     LockEntry, PackageFile, PackageManifest, PluginEntry, PluginLock, PluginSpec,
 };
-pub use review::{
-    parse_unified_diff, Classification, CommentAnchor, DiffFile, DiffHunk, DiffLine, DiffLineKind,
-    FileStatus, ReviewComment, Side,
-};
-pub use route::{Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
-pub use shared::{SharedSession, SharedWorktree};
-pub use task::{Task, TaskStatus, SOURCE_LOCAL};
+pub use review::FileStatus;
+pub use route::{host_of_key, Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
 
 /// The session meta keys published to interface plugins as `session.meta`
-/// (ADR-40). The snapshot reader, `session meta` and `fork` all name this one
-/// constant, so they cannot disagree about which keys a plugin sees.
+/// (ADR-40).
 pub const PUBLISHED_META_PREFIX: &str = "ui.";
-
-/// The session meta keys thurbox writes for itself — an agent's messaging
-/// socket, a Codex conversation id — which `session meta set` and `unset`
-/// refuse, since a change from outside would point delivery or a resume at
-/// something else.
-pub const RESERVED_META_PREFIX: &str = "thurbox.";
-
-/// The session meta key `session bind-codex` records a Codex session's
-/// conversation under: what a restart resumes, a fork forks and a message is
-/// delivered to — or `picker-required` when no event proved which one.
-pub const CODEX_CONVERSATION_META: &str = "thurbox.codex_conversation_id";
-
-use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
-
-/// Default agent name used when none is configured. Matches the `default`
-/// entry of the seeded `agents.toml`; the live default comes from the loaded
-/// [`AgentRegistry`].
-pub const DEFAULT_AGENT_NAME: &str = "claude";
-
-/// SQLite `metadata` key used to signal "focus this session" between
-/// processes. The `notifications` module writes it from the OS notification
-/// click handler; the running TUI reads + clears it on each tick via
-/// [`crate::storage::Database::take_pending_focus_session_id`]. Defined here
-/// in the pure-data layer so both sides reference one source of truth
-/// without crossing module boundaries.
-pub const PENDING_FOCUS_SESSION_ID_KEY: &str = "pending_focus_session_id";
-
-/// The states `session signal` accepts — the single source for the CLI's
-/// value parser, the interface's live drain of each backend's status channel
-/// (`Terminals::drain_hook_events`), and the headless status poll
-/// (`session_ops::remote_hooks::poll_hook_states`). One list, so a future state (e.g. `error`
-/// once exit-code derivation lands) can't be accepted by the CLI yet silently
-/// dropped by the remote channels.
-///
-/// `background` is the one word here that is not a turn edge: the turn is at
-/// rest and sub-work it started is still running (issue #1510). Any agent may
-/// signal it; claude reaches it through `session signal --work-start`, which
-/// counts the work in flight so a turn that ends with some still running
-/// stores `background` instead of `done`. [`TURN_STATES`] is the other four.
-pub const HOOK_STATES: [&str; 5] = ["working", "blocked", "done", "idle", "background"];
-
-/// The four turn edges of [`HOOK_STATES`] — what an agent's wiring has to
-/// report to cover a turn in full. `background` is left out: it exists only
-/// for an agent that can see its own sub-work start and end, so an agent that
-/// cannot is not the less covered for it.
-pub const TURN_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
-
-/// How to start a session's process when there is no `agents.toml` entry to
-/// look it up in — a session created from a raw command.
-///
-/// The registry is the normal source of a launch: an agent name is resolved to
-/// an [`AgentDef`] at every launch, so editing `agents.toml` and restarting
-/// picks the change up. A raw command has no entry to re-resolve, so the recipe
-/// travels with the session itself and is replayed verbatim on restart. That
-/// difference is the whole reason this type exists, and it is why the recipe is
-/// stored **only** for command sessions: persisting one for a registry agent
-/// would freeze it at creation time and quietly break that edit-and-restart
-/// loop.
-///
-/// A recipe is deliberately not a conversation: it says how to start a process,
-/// never how to resume one. Resuming and forking are the [`AgentDef`] arg
-/// groups' job, which is why a command session can be restarted but not
-/// resumed — see `docs/thurbox/features.md`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct LaunchRecipe {
-    /// The executable, as given. Resolved on `PATH` by the multiplexer at
-    /// launch, exactly like an [`AgentDef`]'s `command`.
-    pub command: String,
-    /// Arguments passed after `command`, one token per element (never a shell
-    /// string — nothing here goes through a shell).
-    pub args: Vec<String>,
-    /// Extra environment for the process, on top of the `THURBOX_*` identity
-    /// vars every session gets. Sorted, so a restart's env is byte-identical to
-    /// the spawn's rather than hash-order-dependent.
-    pub env: BTreeMap<String, String>,
-}
-
-impl LaunchRecipe {
-    /// Whether this recipe says anything at all. An empty command is the same
-    /// as having no recipe — the caller wants a registry agent.
-    pub fn is_empty(&self) -> bool {
-        self.command.is_empty()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct WorktreeInfo {
-    pub repo_path: PathBuf,
-    pub worktree_path: PathBuf,
-    pub branch: String,
-    /// Whether thurbox checked this worktree out itself — see
-    /// [`crate::session::SharedWorktree::created_by_thurbox`]. Carried here so the
-    /// `SharedWorktree` → `WorktreeInfo` → `SharedWorktree` round trip that
-    /// restore performs cannot quietly turn a borrowed worktree into ours.
-    pub created_by_thurbox: bool,
-}
 
 /// Agent metrics collected from the Claude CLI statusline mechanism.
 #[derive(Debug, Clone, Default)]
@@ -270,170 +135,4 @@ pub struct GitStats {
     /// *about*, so a caller caching that answer keys it on this rather than on
     /// the worktree — see `git::worktree_stats`. `None` on an unborn branch.
     pub head: Option<String>,
-}
-
-pub struct SessionInfo {
-    pub id: SessionId,
-    pub name: String,
-    /// Name of the coding agent driving this session (e.g. `"claude"`).
-    pub agent: String,
-    pub worktrees: Vec<WorktreeInfo>,
-    pub agent_session_id: Option<String>,
-    pub cwd: Option<PathBuf>,
-    pub additional_dirs: Vec<PathBuf>,
-    pub backend_id: Option<String>,
-    pub shell_backend_id: Option<String>,
-    /// Bare host name (e.g. `devbox`) when the session runs on a remote
-    /// `ssh:<host>` backend; `None` for local sessions. Drives the remote
-    /// indicator in the session list. Set by the agent layer at spawn/adopt.
-    pub remote_host: Option<String>,
-    /// Agent metrics from the agent's statusline (Claude only).
-    pub agent_metrics: Option<AgentMetrics>,
-    /// Latest OSC window title the agent emitted (live activity text),
-    /// captured from the terminal and refreshed each tick. Agent-neutral.
-    pub agent_activity: Option<String>,
-    /// Message text from the agent's latest attention notification (OSC 9/777),
-    /// shown as the status when the session reads [`SessionState::Blocked`].
-    pub notification: Option<String>,
-    /// Real git state of the session's worktree(s), refreshed periodically by
-    /// the app layer. `None` until first computed (or for non-git sessions).
-    pub git_stats: Option<GitStats>,
-    /// Cached display names for repos, resolved from git remote or directory name.
-    /// Order: worktree repos first, then non-worktree additional dirs.
-    /// Populated by the app layer at spawn/restore time.
-    pub repo_display_names: Vec<String>,
-    /// Parent session (lead/worker relationship for orchestration).
-    /// `None` for top-level sessions. Purely informational.
-    pub parent_session_id: Option<SessionId>,
-    /// Manual position in the session list. `None` = never moved: renders
-    /// after all ordered sessions, in creation order.
-    pub display_order: Option<i64>,
-    /// Why hooks-driven status is degraded/absent on this (remote) session —
-    /// e.g. the hooks config was stripped for the host, or provisioning
-    /// failed. Set at spawn time, transient (never persisted); rendered as a
-    /// hint in the info panel. `None` = healthy or local.
-    pub hook_wiring: Option<String>,
-}
-
-impl SessionInfo {
-    pub fn new(name: String) -> Self {
-        Self {
-            id: SessionId::default(),
-            name,
-            agent: DEFAULT_AGENT_NAME.to_string(),
-            worktrees: Vec::new(),
-            agent_session_id: None,
-            cwd: None,
-            additional_dirs: Vec::new(),
-            backend_id: None,
-            shell_backend_id: None,
-            remote_host: None,
-            agent_metrics: None,
-            agent_activity: None,
-            notification: None,
-            git_stats: None,
-            repo_display_names: Vec::new(),
-            parent_session_id: None,
-            display_order: None,
-            hook_wiring: None,
-        }
-    }
-}
-
-/// A queued command for a session, inserted by MCP and processed by the TUI.
-#[derive(Debug, Clone)]
-pub struct SessionCommand {
-    pub id: i64,
-    pub session_id: SessionId,
-    pub command: String,
-    pub created_at: u64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SessionConfig {
-    /// Desired thurbox [`SessionId`] for the spawned session. When set, the
-    /// spawn path uses this id instead of minting a fresh one — so the id is
-    /// known *before* launch (to inject it into the process env as
-    /// `THURBOX_SESSION`) and can be reused across a respawn so a session's
-    /// identity is stable for life. `None` mints a new id at spawn.
-    pub session_id: Option<SessionId>,
-    /// Display name captured for this launch. A rename does not mutate an
-    /// existing process; the next launch resolves the persisted current name.
-    pub session_name: String,
-    /// Resume an existing agent session (process restart of a known session).
-    pub resume_session_id: Option<String>,
-    /// Pin a session id on a fresh spawn (agents that support it).
-    pub agent_session_id: Option<String>,
-    pub cwd: Option<PathBuf>,
-    /// Name of the agent definition to launch (looked up in the registry).
-    pub agent: String,
-    /// Backend to spawn on (registry name, e.g. `ssh:devbox`). `None`/empty
-    /// selects the registry default (`local-tmux`).
-    pub backend: Option<String>,
-    /// Fork from an existing session's conversation (agents that support it).
-    pub fork_session_id: Option<String>,
-    /// Environment variables injected into the spawned session process
-    /// (thurbox-internal: session id, metrics dir, etc.).
-    pub env: HashMap<String, String>,
-    /// Session labels merged after environment resource attributes.
-    pub telemetry_attrs: BTreeMap<String, String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_id_display_is_uuid_format() {
-        let id = SessionId::default();
-        let display = id.to_string();
-        assert_eq!(display.len(), 36);
-        assert_eq!(display.chars().filter(|&c| c == '-').count(), 4);
-    }
-
-    #[test]
-    fn session_id_default_is_unique() {
-        assert_ne!(SessionId::default(), SessionId::default());
-    }
-
-    #[test]
-    fn session_info_new_defaults() {
-        let info = SessionInfo::new("Test".to_string());
-        assert_eq!(info.name, "Test");
-        assert_eq!(info.agent, DEFAULT_AGENT_NAME);
-        assert!(info.worktrees.is_empty());
-        assert!(info.agent_session_id.is_none());
-        assert!(info.cwd.is_none());
-        assert!(info.backend_id.is_none());
-        assert!(info.agent_metrics.is_none());
-        assert!(info.agent_activity.is_none());
-        assert!(info.notification.is_none());
-    }
-
-    #[test]
-    fn default_agent_name_is_claude() {
-        assert_eq!(DEFAULT_AGENT_NAME, "claude");
-    }
-
-    #[test]
-    fn session_config_default_is_empty() {
-        let config = SessionConfig::default();
-        assert!(config.resume_session_id.is_none());
-        assert!(config.agent_session_id.is_none());
-        assert!(config.cwd.is_none());
-        assert_eq!(config.agent, "");
-        assert!(config.env.is_empty());
-    }
-
-    #[test]
-    fn worktree_info_stores_fields() {
-        let wt = WorktreeInfo {
-            repo_path: PathBuf::from("/repo"),
-            worktree_path: PathBuf::from("/repo/.git/thurbox-worktrees/feat"),
-            branch: "feat".to_string(),
-            created_by_thurbox: true,
-        };
-        assert_eq!(wt.repo_path, PathBuf::from("/repo"));
-        assert_eq!(wt.branch, "feat");
-    }
 }

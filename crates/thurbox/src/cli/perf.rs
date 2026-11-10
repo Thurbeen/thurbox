@@ -2,7 +2,7 @@
 //!
 //! The TUI writes a JSON snapshot (counters, frame/republish/tick timing
 //! percentiles, slow ops, startup phase breakdown, and the per-plugin report)
-//! into the SQLite `metadata` table while perf timing is active —
+//! to `perf.json` in the data directory while perf timing is active —
 //! `THURBOX_PERF_LOG=1` or an open perf HUD (F12). `kernel::perf::snapshot_json`
 //! owns the shape; this renders it. This command prints the latest one, so a
 //! running instance can be inspected from outside without tailing
@@ -10,8 +10,6 @@
 //! `docs/thurbox/performance.md`.
 
 use serde_json::{json, Value};
-
-use crate::storage::Database;
 
 use super::output::{kv, CommandOutput};
 
@@ -33,10 +31,9 @@ const NO_PLUGINS_HINT: &str = "This perf snapshot has no per-plugin section: the
      is older than `perf --plugins`.";
 
 /// Run the `perf` command: print the last published snapshot.
-pub fn run(db: &Database, plugins: bool) -> Result<CommandOutput, String> {
-    let raw = db
-        .get_perf_snapshot()
-        .map_err(|e| format!("failed to read perf snapshot: {e}"))?;
+pub fn run(plugins: bool) -> Result<CommandOutput, String> {
+    let raw =
+        crate::paths::perf_snapshot_file().and_then(|path| std::fs::read_to_string(path).ok());
     let Some(raw) = raw else {
         return Ok(CommandOutput::failed(
             json!({ "snapshot": null }),
@@ -134,10 +131,9 @@ fn render_human(s: &Value) -> String {
         pairs.push((
             "startup",
             format!(
-                "config {}ms · db {}ms · heal {}ms · ui {}ms · first frame {}ms",
+                "config {}ms · snapshot {}ms · ui {}ms · first frame {}ms",
                 u(startup, &["config_init_ms"]),
-                u(startup, &["db_open_ms"]),
-                u(startup, &["extension_heal_ms"]),
+                u(startup, &["snapshot_open_ms"]),
                 u(startup, &["ui_build_ms"]),
                 u(startup, &["first_frame_ms"]),
             ),
@@ -254,10 +250,22 @@ fn render_plugins(s: &Value) -> CommandOutput {
 mod tests {
     use super::*;
 
+    fn isolated() -> (tempfile::TempDir, crate::paths::TestPathGuard) {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = crate::paths::TestPathGuard::new(dir.path());
+        (dir, guard)
+    }
+
+    fn publish(json: &str) {
+        let path = crate::paths::perf_snapshot_file().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
+
     #[test]
     fn missing_snapshot_exits_nonzero_with_hint() {
-        let db = Database::open_in_memory().unwrap();
-        let out = run(&db, false).unwrap();
+        let _env = isolated();
+        let out = run(false).unwrap();
         assert!(out.human.contains("THURBOX_PERF_LOG=1"));
         assert!(out.failure.is_some(), "no snapshot → non-zero exit");
     }
@@ -269,16 +277,16 @@ mod tests {
         "frame":{"p50_us":900,"p95_us":4000,"max_us":30000,"samples":7},
         "republish":{"p50_us":800,"p95_us":2000,"max_us":9000,"samples":7},
         "tick":{"p50_us":250,"p95_us":500,"max_us":1000,"samples":100},
-        "startup":{"config_init_ms":3,"db_open_ms":11,"extension_heal_ms":15,
+        "startup":{"config_init_ms":3,"snapshot_open_ms":11,
                    "ui_build_ms":40,"first_frame_ms":120},
         "slow_ops":[{"op":"interface_reload","ms":320,"plugin":null},
                     {"op":"input_dispatch","ms":140,"plugin":"files"}]}"#;
 
     #[test]
     fn snapshot_renders_counters_and_slow_ops() {
-        let db = Database::open_in_memory().unwrap();
-        db.set_perf_snapshot(SNAPSHOT).unwrap();
-        let out = run(&db, false).unwrap();
+        let _env = isolated();
+        publish(SNAPSHOT);
+        let out = run(false).unwrap();
         assert!(out.failure.is_none());
         assert!(out.human.contains("pid 42"));
         assert!(out.human.contains("interface_reload"));
@@ -298,9 +306,9 @@ mod tests {
 
     #[test]
     fn a_snapshot_from_before_plugins_says_so_rather_than_printing_nothing() {
-        let db = Database::open_in_memory().unwrap();
-        db.set_perf_snapshot(SNAPSHOT).unwrap();
-        let out = run(&db, true).unwrap();
+        let _env = isolated();
+        publish(SNAPSHOT);
+        let out = run(true).unwrap();
         assert!(out.failure.is_some());
         assert!(out.human.contains("per-plugin"), "{}", out.human);
     }
@@ -309,17 +317,16 @@ mod tests {
     fn a_wide_pane_name_keeps_the_columns_after_it_aligned() {
         // Two rows with identical numbers: whatever the names are made of, both
         // lines must occupy the same terminal columns.
-        let db = Database::open_in_memory().unwrap();
+        let _env = isolated();
         let row =
             |name: &str| format!(r#"{{"name":"{name}","total_us":1200,"renders":3,"reused":1}}"#);
-        db.set_perf_snapshot(&format!(
+        publish(&format!(
             r#"{{"pid":1,"captured_at":0,"plugin_window":{{"frames":3,"frame_total_us":9000}},
                 "plugins":[{},{}]}}"#,
             row("files"),
             row("名前ペイン"),
-        ))
-        .unwrap();
-        let out = run(&db, true).unwrap();
+        ));
+        let out = run(true).unwrap();
         let widths: Vec<usize> = out
             .human
             .lines()

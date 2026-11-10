@@ -3,7 +3,7 @@
 //! The CLI calls these and nothing below them, so every rule lives here
 //! once.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestSpec};
 use fleet_api::conversation::{
@@ -180,6 +180,65 @@ fn upsert(
     Err(StoreError::Busy(format!(
         "{}/{name}: kept conflicting with other writers",
         obj.kind
+    )))
+}
+
+/// The labels only Fleet writes: the Conversation's controller when it
+/// creates a Task, and a plugin's host. `fleet label` refuses them.
+const PROTECTED_LABELS: [&str; 5] = [
+    CONVERSATION_LABEL,
+    CONVERSATION_UID_LABEL,
+    fleet_api::talk::PARENT_LABEL,
+    fleet_api::talk::PARENT_UID_LABEL,
+    fleet_api::plugin::CREATOR,
+];
+
+/// Set `labels` on the Task `name` and change nothing else of it: its spec,
+/// generation and other labels stay. A label only Fleet writes is refused,
+/// and the ones the Task carries are kept, which `apply` cannot do for a
+/// Task a Conversation made.
+pub fn label(
+    store: &dyn Store,
+    name: &str,
+    labels: &BTreeMap<String, String>,
+) -> Result<Object, StoreError> {
+    if let Some(key) = labels
+        .keys()
+        .find(|key| PROTECTED_LABELS.contains(&key.as_str()))
+    {
+        return Err(StoreError::Invalid(format!(
+            "the label {key} is written by Fleet alone"
+        )));
+    }
+    for _ in 0..CAS_TRIES {
+        let current = match store.get(task::KIND, name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                return Err(StoreError::NotFound(format!("{}/{name}", task::KIND)));
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        };
+        // The update replaces the labels. The ones only Fleet writes go back
+        // as they are, except the creator label, which the store refuses
+        // from a writer and keeps itself.
+        let mut merged = current.metadata.labels.clone();
+        merged.remove(fleet_api::plugin::CREATOR);
+        merged.extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
+        match store.update_spec(
+            task::KIND,
+            name,
+            current.spec.clone(),
+            Some(merged),
+            current.metadata.resource_version,
+            FieldManager::Apply,
+        ) {
+            Err(StoreError::Conflict { .. }) => continue,
+            done => return done,
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        task::KIND
     )))
 }
 

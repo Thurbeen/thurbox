@@ -379,10 +379,6 @@ pub struct Registry {
     /// `plugin-state.json`, and so whether writing them back is an edit or an
     /// erasure.
     origin: Origin,
-    /// Set when load could not write `plugin-state.json`: until a restart
-    /// migrates them, `ui.json` still carries trust and the disabled set, so
-    /// its writes keep them rather than erase choices the store never received.
-    unmigrated: bool,
     /// Moves whenever anything published from this registry does — the
     /// declarations, a rebinding, a setting, the disabled set, a trust grant.
     ///
@@ -416,8 +412,8 @@ enum Origin {
 }
 
 impl Registry {
-    /// Load persisted overrides, migrating v1's bindings and a legacy
-    /// `ui.json`'s trust and disabled tables on first run.
+    /// Load persisted overrides: `ui.json`'s chords, settings and pills, and
+    /// `plugin-state.json`'s trust and disabled set.
     ///
     /// The one constructor that reads `ui.json` and `plugin-state.json`, and so
     /// the one whose registry may write them back — see the private `Origin`,
@@ -427,66 +423,21 @@ impl Registry {
             origin: Origin::File,
             ..Self::default()
         };
-        let (bindings, settings, pills, legacy_trusted, legacy_disabled, mut warnings) =
-            read_overrides();
+        let (bindings, settings, pills, mut warnings) = read_overrides();
         registry.binding_overrides = bindings;
         registry.setting_overrides = settings;
         registry.pill_overrides = pills;
-
-        // Trust and the disabled set used to be two more tables of `ui.json`.
-        // They move to their own store the first time a release that has one
-        // reads them: the store is written before `ui.json` loses them, so an
-        // interruption between the two leaves both copies, and the store wins.
-        let legacy = !legacy_trusted.is_empty() || !legacy_disabled.is_empty();
-        let (create_store, clear_legacy) = match read_decisions() {
-            Decisions::Absent => {
-                registry.trusted = legacy_trusted;
-                registry.disabled = legacy_disabled;
-                (legacy, legacy)
-            }
-            // An interrupted migration or a restored `ui.json` leaves the
-            // tables behind. Only `ui.json` is cleaned: rewriting the store
-            // from this read could put back a grant another process revoked
-            // since.
+        match read_decisions() {
+            Decisions::Absent => {}
             Decisions::Read(trusted, disabled, notes) => {
                 registry.trusted = trusted;
                 registry.disabled = disabled;
                 warnings.extend(notes);
-                (false, legacy)
             }
-            // Migrating over a store that did not parse would replace it with
-            // the legacy tables and leave nothing to repair.
-            // `config validate` names the file instead.
-            Decisions::Unreadable(note) => {
-                warnings.push(note);
-                (false, false)
-            }
-        };
-        if clear_legacy {
-            let moved = if create_store {
-                registry.persist_decisions()
-            } else {
-                Ok(())
-            };
-            registry.unmigrated = moved.is_err();
-            if let Err(e) = moved.and_then(|()| registry.persist_overrides()) {
-                warnings.push(format!(
-                    "moving trust and the disabled set out of ui.json: {e}"
-                ));
-            }
+            // `config validate` names the file.
+            Decisions::Unreadable(note) => warnings.push(note),
         }
 
-        if registry.binding_overrides.is_empty() {
-            let (migrated, notes) = migrate_v1_bindings();
-            if !migrated.is_empty() {
-                warnings.push(format!(
-                    "migrated {} keybinding override(s) from v1",
-                    migrated.len()
-                ));
-                registry.binding_overrides = migrated;
-            }
-            warnings.extend(notes);
-        }
         registry.load_warnings = warnings;
         registry
     }
@@ -910,7 +861,7 @@ impl Registry {
         {
             focus.arguments.push(ActionArgument {
                 name: "session_id".into(),
-                kind: "uuid".into(),
+                kind: "string".into(),
                 required: true,
             });
         } else {
@@ -921,7 +872,7 @@ impl Registry {
                 scope: "global".into(),
                 arguments: vec![ActionArgument {
                     name: "session_id".into(),
-                    kind: "uuid".into(),
+                    kind: "string".into(),
                     required: true,
                 }],
                 effect: "ui-write".into(),
@@ -962,32 +913,22 @@ impl Registry {
             if action.owner == "sessions"
                 && matches!(
                     action.name.as_str(),
-                    "sessions.open"
-                        | "sessions.rename"
-                        | "sessions.fork"
-                        | "sessions.editor"
-                        | "sessions.delete"
-                        | "sessions.force_delete"
-                        | "sessions.restart"
-                        | "sessions.sync"
+                    "sessions.open" | "sessions.rename" | "sessions.editor" | "sessions.delete"
                 )
                 && action.argument("session_id").is_none()
             {
                 action.arguments.push(ActionArgument {
                     name: "session_id".into(),
-                    kind: "uuid".into(),
+                    kind: "string".into(),
                     required: false,
                 });
             }
-            if matches!(
-                action.name.as_str(),
-                "sessions.delete" | "sessions.force_delete" | "sessions.restart" | "sessions.sync"
-            ) {
+            if matches!(action.name.as_str(), "sessions.delete") {
                 action.destructive = true;
                 action.effect = "kernel-write".into();
                 action.arguments = vec![ActionArgument {
                     name: "session_id".into(),
-                    kind: "uuid".into(),
+                    kind: "string".into(),
                     required: true,
                 }];
                 if action.owner != "sessions" {
@@ -1159,10 +1100,6 @@ impl Registry {
             "pills".to_string(),
             serde_json::to_value(&self.pill_overrides).map_err(|e| e.to_string())?,
         );
-        if self.unmigrated {
-            json.insert("trusted".to_string(), serde_json::json!(self.trusted));
-            json.insert("disabled".to_string(), serde_json::json!(self.disabled));
-        }
 
         let text = serde_json::to_string_pretty(&serde_json::Value::Object(json))
             .map_err(|e| e.to_string())?;
@@ -1314,11 +1251,10 @@ pub fn normalise_chord(raw: &str) -> String {
 
 /// Parse `ui.json` the way the kernel does, and report what it complained about.
 ///
-/// For `thurbox-cli config validate`, which was checking v1's `keybindings.json`
-/// — a file nothing reads now — and not this one, which the interface reads on
-/// every launch for rebindings, band order, trust and the disabled set.
+/// For `thurbox-cli config validate`: the interface reads it on every launch
+/// for rebindings, settings and band order.
 pub fn validate_overrides() -> Vec<String> {
-    read_overrides().5
+    read_overrides().3
 }
 
 /// Problems with `plugin-state.json`, the store trust and the disabled set
@@ -1360,8 +1296,6 @@ fn read_decisions() -> Decisions {
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Decisions::Absent,
-        // Not absent: legacy tables standing in for it could restore a revoked
-        // grant.
         Err(e) => return Decisions::Unreadable(format!("{}: {e}", path.display())),
     };
     match serde_json::from_str::<serde_json::Value>(&text) {
@@ -1388,14 +1322,11 @@ fn overrides_path() -> Option<PathBuf> {
 }
 
 /// What `ui.json` carries: rebound chords, changed settings, reordered pills,
-/// the trust and disabled tables a release before `plugin-state.json` kept
-/// there, and anything worth warning about.
+/// and anything worth warning about.
 type Overrides = (
     BTreeMap<String, String>,
     BTreeMap<String, Value>,
     BTreeMap<String, serde_json::Value>,
-    BTreeMap<String, Granted>,
-    BTreeSet<String>,
     Vec<String>,
 );
 
@@ -1441,7 +1372,7 @@ fn read_overrides() -> Overrides {
         Ok(value) => value,
         Err(e) => {
             let mut unreadable = Overrides::default();
-            unreadable.5.push(format!("{}: {e}", path.display()));
+            unreadable.3.push(format!("{}: {e}", path.display()));
             return unreadable;
         }
     };
@@ -1451,8 +1382,6 @@ fn read_overrides() -> Overrides {
         read_bindings(&parsed),
         read_settings(&parsed),
         read_pills(&parsed, &mut warnings),
-        read_trusted(&parsed, &mut warnings),
-        read_disabled(&parsed),
         warnings,
     )
 }
@@ -1519,7 +1448,7 @@ fn read_pills(
     pills
 }
 
-/// The `trusted` table of `plugin-state.json` (or of a legacy `ui.json`): path
+/// The `trusted` table of `plugin-state.json`: path
 /// → the grant made to it.
 fn read_trusted(
     parsed: &serde_json::Value,
@@ -1545,7 +1474,7 @@ fn read_trusted(
     trusted
 }
 
-/// The `disabled` table of `plugin-state.json` (or of a legacy `ui.json`): the
+/// The `disabled` table of `plugin-state.json`: the
 /// files present but not loaded.
 fn read_disabled(parsed: &serde_json::Value) -> BTreeSet<String> {
     let Some(list) = parsed.get("disabled").and_then(|v| v.as_array()) else {
@@ -1574,73 +1503,6 @@ fn read_grant(granted: &serde_json::Value) -> Option<Granted> {
         digest: digest.to_string(),
     })
 }
-
-/// Bring v1's `keybindings.json` overrides forward.
-///
-/// v1 keyed overrides by `Action` name and stored a *list* of chords; v2 keys by
-/// a plugin's action id and stores one. Only actions with an obvious equivalent
-/// are carried — the rest are reported rather than guessed at, because silently
-/// binding a key to the wrong thing is worse than not binding it.
-fn migrate_v1_bindings() -> (BTreeMap<String, String>, Vec<String>) {
-    let mut migrated = BTreeMap::new();
-    let mut notes = Vec::new();
-
-    let Some(path) = crate::paths::keybindings_file() else {
-        return (migrated, notes);
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (migrated, notes);
-    };
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
-        notes.push(format!(
-            "{}: could not be parsed; not migrated",
-            path.display()
-        ));
-        return (migrated, notes);
-    };
-    let Some(map) = parsed.as_object() else {
-        return (migrated, notes);
-    };
-
-    let mut unmapped = Vec::new();
-    for (action, chords) in map {
-        let Some(chord) = chords
-            .as_array()
-            .and_then(|list| list.first())
-            .and_then(|v| v.as_str())
-            .or_else(|| chords.as_str())
-        else {
-            continue;
-        };
-        match V1_ACTIONS.iter().find(|(v1, _)| v1 == action) {
-            Some((_, v2)) => {
-                migrated.insert((*v2).to_string(), normalise_chord(chord));
-            }
-            None => unmapped.push(action.clone()),
-        }
-    }
-    if !unmapped.is_empty() {
-        unmapped.sort();
-        notes.push(format!(
-            "not migrated (no v2 equivalent yet): {}",
-            unmapped.join(", ")
-        ));
-    }
-    (migrated, notes)
-}
-
-/// v1 `Action` name → v2 plugin action id.
-///
-/// Only the ones the bare core actually provides. Extended as each pane lands,
-/// which is why the unmapped remainder is reported rather than dropped.
-const V1_ACTIONS: [(&str, &str); 6] = [
-    ("SelectNextSession", "sessions.next"),
-    ("SelectPreviousSession", "sessions.previous"),
-    ("DeleteSession", "sessions.delete"),
-    ("RestartSession", "sessions.restart"),
-    ("SessionListMoveDown", "sessions.move_down"),
-    ("SessionListMoveUp", "sessions.move_up"),
-];
 
 fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
@@ -2008,15 +1870,6 @@ mod tests {
         let mut registry = Registry::default();
         let error = registry.rebind("nope.nothing", Some("ctrl+n")).unwrap_err();
         assert!(error.contains("no action"), "{error}");
-    }
-
-    #[test]
-    fn v1_action_names_map_onto_v2_actions() {
-        // Migration is only as good as this table; every entry must name an
-        // action the bare core actually declares.
-        for (v1, v2) in V1_ACTIONS {
-            assert!(!v1.is_empty() && v2.contains('.'), "{v1} -> {v2}");
-        }
     }
 
     #[test]

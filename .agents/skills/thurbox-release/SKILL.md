@@ -23,9 +23,9 @@ Every push to `main` automatically triggers the release workflow:
    - **Artifact relevance** (`check-release`'s `shipped` step): the diff since
      the last tag must touch something a user installs (`src/`, `tests/`,
      `ui/`, `examples/`, `build.rs`, `Cargo.toml`/`Cargo.lock`,
-     `rust-toolchain.toml`, `Cross.toml`, `extensions/`, `packaging/`,
-     `scripts/install.{sh,ps1}`, `cd.yml`). `extensions/` and `examples/panes/`
-     are there although no binary carries them: a bare-name install resolves
+     `rust-toolchain.toml`, `Cross.toml`, `packaging/`,
+     `scripts/install.{sh,ps1}`, `cd.yml`). `examples/panes/`
+     is there although no binary carries it: a bare-name install resolves
      against the release *tag*, so a change never tagged is one nobody can
      install. `ui/` and `examples/lua/` are there more directly still — both are
      `include_str!`d into the binary, so they are bytes a user installs.
@@ -45,6 +45,10 @@ Every push to `main` automatically triggers the release workflow:
    `src/update/version_check.rs`, or the run fails before tagging — so a stray
    `BREAKING CHANGE:` footer cannot cut the next major. The step also decides
    `channels` (below). Rules: `docs/thurbox/releasing.md`, "v2 and v3".
+   Before that, the same script holds every release while the tree carries
+   `.github/release-hold` (`held=true`: a clean skip on a push or a dispatch).
+   `main` holds while it carries unreleased 3.x work; the 3.0.0 pull request
+   deletes the file ("The v3 hold").
 4. **Automated Release** (if needed):
    - Determines semantic version (feat→minor, fix/perf→patch, breaking→major,
      which the release-line step then refuses)

@@ -342,13 +342,11 @@ pub fn init(
                 None => absolute(data_root)?.join("store-v1"),
             };
             config["data"]["dir"] = toml::Value::String(store_dir.to_string_lossy().into_owned());
-            // runtime-mux and nothing else, whatever runtime the pinned
-            // starter names: no fallback, so a missing multiplexer is
-            // reported by name at the first start.
+            // runtime-mux and nothing else: no fallback, so a missing
+            // multiplexer is reported by name at the first start.
             let table = config
                 .as_table_mut()
                 .ok_or("config template must be a table")?;
-            table.remove("runtime");
             table.insert("runtimes".into(), default_runtimes(&instance)?);
             table.insert("hosts".into(), default_hosts()?);
             // The three shipped ready policies, as the config page shows

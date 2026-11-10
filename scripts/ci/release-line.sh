@@ -3,8 +3,14 @@
 # release-line.sh <version> <channels-major>
 #
 # The release gate for major versions, run by cd.yml's check-release before
-# anything is tagged. Two decisions, both printed as `key=value` lines for
+# anything is tagged. Three decisions, all printed as `key=value` lines for
 # $GITHUB_OUTPUT:
+#
+# 0. `held=true` when the tree carries .github/release-hold: nothing is
+#    released from it, on a push or a dispatch, whatever the version. `main`
+#    holds while it carries the next major's unreleased work; the pull request
+#    that cuts that major deletes the file. A maintenance branch cut before the
+#    hold does not carry it, so its releases are untouched.
 #
 # 1. The version must be on the line the source declares
 #    (`RELEASE_LINE` in crates/thurbox/src/update/version_check.rs). `cog bump --auto` turns
@@ -20,13 +26,22 @@
 #    highest tag of that major. Those names stay on that major for good, so a
 #    user who never opts in to the next one never gets it from `brew upgrade`.
 #
-# THURBOX_RELEASE_LINE_SOURCE overrides the source file (tests).
+# THURBOX_RELEASE_LINE_SOURCE overrides the source file, and
+# THURBOX_RELEASE_HOLD_FILE the hold file (tests).
 
 set -euo pipefail
 
 version="${1:?usage: release-line.sh <version> <channels-major>}"
 channels_major="${2:?usage: release-line.sh <version> <channels-major>}"
 source_file="${THURBOX_RELEASE_LINE_SOURCE:-crates/thurbox/src/update/version_check.rs}"
+hold_file="${THURBOX_RELEASE_HOLD_FILE:-.github/release-hold}"
+
+if [ -f "$hold_file" ]; then
+  echo "::notice::not releasing $version: releases are held ($hold_file): $(head -1 "$hold_file")" >&2
+  echo "held=true"
+  echo "channels=false"
+  exit 0
+fi
 
 bare="${version#v}"
 major="${bare%%.*}"
@@ -55,5 +70,6 @@ if [ "$major" = "$channels_major" ]; then
   fi
 fi
 
+echo "held=false"
 echo "line=$line"
 echo "channels=$channels"

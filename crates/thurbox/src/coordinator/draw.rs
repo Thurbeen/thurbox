@@ -240,10 +240,8 @@ impl App {
             let s = &self.startup;
             tracing::info!(
                 config_init_ms = s.config_init_ms,
-                db_open_ms = s.db_open_ms,
+                snapshot_open_ms = s.snapshot_open_ms,
                 theme_activate_ms = s.theme_activate_ms,
-                extension_heal_ms = s.extension_heal_ms,
-                heartbeat_ms = s.heartbeat_ms,
                 ui_build_ms = s.ui_build_ms,
                 first_frame_ms = s.first_frame_ms,
                 "startup"

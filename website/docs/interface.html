@@ -21,8 +21,8 @@ breadcrumb: 'Interface'
 <p>
   Not a setting, and not a theme: the panes themselves are files. thurbox ships a small set and
   reads whatever is in the directory, so adding one is adding a file and removing one is deleting
-  it. Your sessions, worktrees, tasks and automations are untouched by any of it &mdash; they live
-  in the database, not the interface.
+  it. Your sessions, worktrees and automations are untouched by any of it &mdash; sessions are
+  Fleet's, and automations live in <code>automations.json</code>, not the interface.
 </p>
 
 <h2 id="ask-the-agent">
@@ -30,9 +30,9 @@ breadcrumb: 'Interface'
   <a href="#ask-the-agent" class="heading-anchor">#</a>
 </h2>
 <p>
-  You do not have to learn Lua to change the interface. From
-  <strong>any</strong>
-  session, in whichever coding CLI you run, ask in English:
+  You do not have to learn Lua to change the interface. Open a session in the interface directory
+  (<code>thurbox-cli plugin dir</code> prints it) and, in whichever coding CLI you run, ask in
+  English:
 </p>
 <ul class="prompts">
   <li>Add my project logs within a dedicated pane on the right in the thurbox UI.</li>
@@ -49,14 +49,9 @@ breadcrumb: 'Interface'
   <li>Install the info panel plugin.</li>
 </ul>
 <p>
-  That works because thurbox ships a built-in
-  <a href="extensions.html">ui-skill extension</a>
-  : a
-  <code>thurbox-ui</code>
-  skill installed into each coding CLI's own skill directory, which loads only when the request is
-  about the interface. It tells the agent that
-  <code>thurbox-cli plugin dir</code>
-  finds the directory and
+  That works because the directory ships an
+  <code>AGENTS.md</code>
+  that any coding CLI loads as context without being asked. It tells the agent that
   <code>thurbox-cli plugin check</code>
   is how it verifies its own work, and warns it off the mistakes that are invisible until runtime
   &mdash; building under a recursively watched directory, or writing inside a cloned plugin's own
@@ -64,14 +59,7 @@ breadcrumb: 'Interface'
   <kbd>F10</kbd>
   and the change is on your screen.
 </p>
-<p>
-  Want the agent looking at the files directly instead? Point a session at the directory &mdash; it
-  ships an
-  <code>AGENTS.md</code>
-  that any coding CLI loads as context without being asked:
-</p>
-<pre data-wrap><code class="language-bash">thurbox-cli plugin dir          # prints the directory
-thurbox-cli session create --name ui --repo-path ~/.config/thurbox/ui</code></pre>
+<pre data-wrap><code class="language-bash">thurbox-cli plugin dir          # prints the directory</code></pre>
 
 <h3 id="ask-the-agent-worked">
   What a prompt like &ldquo;add a CPU/RAM pane on the left&rdquo; actually does
@@ -152,8 +140,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
     ├── 20_agent.lua        the agent terminal
     ├── 65_search.lua       global search
     ├── 60_confirm.lua      the confirm float
-    ├── 70_new_session.lua  the new-session flow
-    └── 80_restore.lua      the restore list</pre>
+    └── 70_new_session.lua  the new-session flow</pre>
   </div>
 </div>
 <p>
@@ -323,7 +310,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
 <p>
   A bare name resolves to the repository's examples at
   <em>this binary's release tag</em>
-  , exactly as an extension name does; URLs and filesystem paths work too. The rules delivery
+  ; URLs and filesystem paths work too. The rules delivery
   already follows carry over unchanged: a managed file you edited is preserved and reported, and one
   you deleted stays deleted.
 </p>

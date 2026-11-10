@@ -6,11 +6,10 @@
 //! render path.
 //!
 //! The kernel's events are **derived by diffing published state**, never raised
-//! by the code that mutates it. A session created by `thurbox-cli`, a cron tick
+//! by the code that mutates it. A session created by `fleet`, a schedule
 //! or a second interface looks exactly like one the creation flow made, and no
 //! mutation site anywhere can forget to fire — the failure mode of the other
-//! design, which is also the one that would have put a kernel concern inside
-//! `session_ops`, a layer the kernel may not `use`.
+//! design, which would have put a kernel concern inside Fleet.
 //!
 //! The set is a closed enumeration ([`KERNEL_EVENTS`]) with one reader for each
 //! of its three uses: the loader validates a subscription against it, the help
@@ -156,16 +155,6 @@ pub const KERNEL_EVENTS: &[EventSpec] = &[
         name: "session.post_delete",
         when: "this interface finished deleting a session",
         fields: &["session", "name", "force"],
-    },
-    EventSpec {
-        name: "session.post_restart",
-        when: "this interface finished restarting a session",
-        fields: &["session", "name", "agent", "repo", "cwd", "branch"],
-    },
-    EventSpec {
-        name: "session.post_restore",
-        when: "this interface finished restoring a session",
-        fields: &["session", "name", "agent", "repo", "cwd", "branch"],
     },
     EventSpec {
         name: "focus.session",
@@ -472,7 +461,7 @@ mod tests {
             repos: vec!["thurbox".into()],
             branch: Some(format!("feat/{id}")),
             base_branch: None,
-            backend: "local-tmux".into(),
+            backend: "local:tmux".into(),
             backend_id: None,
             remote_host: None,
             agent_session_id: None,

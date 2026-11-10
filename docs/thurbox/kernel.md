@@ -1,11 +1,11 @@
 # The plugin kernel
 
-thurbox is a session engine with a Lua-driven renderer. The kernel owns no
+thurbox is the interface to Fleet's sessions, with a Lua-driven renderer. The kernel owns no
 pane: the session list, the terminal and every other surface that shows *your
 work* is a plugin under `ui/`. The bundled set is currently **three** — the
-session list, the agent pane and the search strip — plus five floats that fill
-no slot: the new-session flow, the confirmation, the rename field, the context
-menu and the restore list;
+session list, the agent pane and the search strip — plus four floats that fill
+no slot: the new-session flow, the confirmation, the rename field and the context
+menu;
 the interface was cut back to its core, and v1's other surfaces are not
 bundled. It does own the **system modals** — help, settings, the theme picker
 and the interface's own file list — which are chrome about thurbox itself
@@ -28,12 +28,7 @@ error, so an archive that dropped the name `thurbox` would end auto-update for
 every install already out there, silently and unfixably. Inheriting the name was
 the only safe direction — see `docs/thurbox/releasing.md`.
 
-A profile with v1 history is asked once, before the interface takes the terminal
-(`kernel::consent`): it names every surface that is gone, says the database is
-shared and unmigrated, and declining turns auto-update off and prints how to
-reinstall 1.x.
-
-Two of those surfaces are answered by panes rather than by the kernel, which is
+Two of v1's surfaces that are gone are answered by panes rather than by the kernel, which is
 the mechanism working as designed:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) (v1's diff
 reviewer, the first consumer of `thurbox.diffs`) and
@@ -96,7 +91,7 @@ attempt reported. The circularity is broken by plugins declaring their size
 **3. Snapshot-read, command-write.** Reads are served from an in-memory snapshot
 and return instantly. Writes are commands that are accepted and surface later.
 Lua never blocks and never awaits, so no plugin — including ones nobody has
-written — can stall the loop on SQLite, git, or an unreachable host.
+written — can stall the loop on Fleet, git, or an unreachable host.
 
 **4. Capabilities by absence.** An ungranted capability is not in the
 environment. Not blocked; absent. The file viewer needs file contents, so the
@@ -469,9 +464,9 @@ conversion less often:
   `20_agent.lua`'s `chrome()` already does, would take a 30-row list from ~90
   nodes to ~32.
 - **Stop probing closed modals.** Every floating plugin is rendered full-screen
-  each frame purely to discover it is not floating. Five bundled plugins float
-  now (the creation flow, the confirmation, the rename field, the context menu
-  and the restore list), so the probe is paid on every frame unless the float
+  each frame purely to discover it is not floating. Four bundled plugins float
+  now (the creation flow, the confirmation, the rename field and the context
+  menu), so the probe is paid on every frame unless the float
   declares `pure = true` — which is the lever ADR-P16 added for it.
 
 Dependencies are built with `opt-level = 3` even in dev builds
@@ -483,7 +478,6 @@ thurbox from a checkout and an unoptimised Lua VM is felt in the UI.
 Nothing measures it. v1's parity test went with v1, so no test compares the
 two: `tests/frames.rs` pins what v2 draws, but against itself rather than
 against what v1 drew. The behavioural gaps — the longer and more serious list —
-are not inventoried anywhere. What exists is prose: the consent gate names every
-surface that is gone (`kernel::consent`), and `docs/thurbox/features.md` says per
-surface what replaced it. Of v1's three paneless surfaces, code review and the
+are not inventoried anywhere. What exists is prose: `docs/thurbox/features.md` says per surface what
+replaced it. Of v1's three paneless surfaces, code review and the
 info panel are out-of-tree panes; the file viewer has no replacement.

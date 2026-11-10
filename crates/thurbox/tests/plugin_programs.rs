@@ -346,7 +346,7 @@ fn a_plugin_can_read_the_platform_it_is_running_on() {
 
     let themes = thurbox::kernel::theme::Themes::load(None);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     let snapshot = thurbox::kernel::snapshot::Snapshot::default();
     let registry = thurbox::kernel::registry::Registry::default();
     host.publish(&thurbox::kernel::host::Published {

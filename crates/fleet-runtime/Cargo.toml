@@ -1,6 +1,6 @@
 [package]
 name = "fleet-runtime"
-description = "Implementations of fleet's runtime contract: thurbox-cli, and a fake host for tests."
+description = "Implementations of fleet's runtime contract: runtime protocol programs, and a fake host for tests."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

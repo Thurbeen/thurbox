@@ -417,62 +417,28 @@ fn data_directory_override_and_config_precedence_keep_all_commands_in_one_store(
 }
 
 #[test]
-fn installed_up_runs_real_thurbox_adapter_and_preserves_unknown_session_identity() {
-    let env = Env::without_tools("installed-up");
-    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
-    let path = env.root.join("config").join(".").join("fleet/config.toml");
-    let mut config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    let prefix = config["runtimes"]["mux"]["keyPrefix"].clone();
-    set_runtime(
-        &mut config,
-        toml::Value::Table(toml::map::Map::from_iter([
-            ("kind".into(), toml::Value::String("thurbox".into())),
-            (
-                "cli".into(),
-                toml::Value::String(support::stub_exe().to_string_lossy().into_owned()),
-            ),
-            ("callTimeoutMs".into(), toml::Value::Integer(3000)),
-            ("keyPrefix".into(), prefix),
-        ])),
-    );
-    fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
-    fs::create_dir_all(env.stub_dir()).unwrap();
-    let mut command = installed(&env, &["up", "--poll-ms", "100"]);
-    command.env("FLEET_STUB_DIR", env.stub_dir());
-    let _resident = Running(command.spawn().unwrap());
-    let get = || wait(installed(&env, &["get", "task", "vega"]).spawn().unwrap());
-    until(|| get().code == Some(0));
-    until(|| get().ok().json()["status"]["phase"] == "Briefed");
-    let original = get().ok().json();
-    assert_config_instruction(original["spec"]["brief"].as_str().unwrap(), &path);
-    assert_eq!(env.stub_calls_of("create"), 1);
-    // Unreachable rows are explicit Unknown, never evidence of absence.
-    let lock_path = env.stub_dir().join("state.lock");
-    let mut lock = None;
-    until(|| {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(file) => {
-                lock = Some(file);
-                true
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-            Err(e) => panic!("stub lock: {e}"),
-        }
-    });
-    env.edit_stub(|s| {
-        s["sessions"][0]["state"] = serde_json::json!("unreachable");
-    });
-    drop(lock);
-    fs::remove_file(lock_path).unwrap();
+fn up_never_reads_a_session_it_cannot_see_as_gone() {
+    let env = fake_bootstrap("up-unknown-host");
+    let _resident = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
+    until(|| env.status("vega")["phase"] == "Briefed");
+    let original = env.get("vega");
+    assert_config_instruction(original["spec"]["brief"].as_str().unwrap(), &env.config);
+    assert_eq!(env.calls("spawn"), 1);
+    // An unreadable host is explicit Unknown, never evidence of absence.
+    env.host().set_host("local", "unknown").unwrap();
     thread::sleep(Duration::from_millis(600));
-    assert_eq!(env.stub_calls_of("create"), 1);
-    assert_eq!(
-        get().ok().json()["status"]["session"],
-        original["status"]["session"]
+    assert_eq!(env.calls("spawn"), 1);
+    let now = env.get("vega");
+    assert_eq!(now["status"]["session"], original["status"]["session"]);
+    assert!(
+        now["status"]["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["type"] != "WorkerGone"),
+        "{:#}",
+        now["status"]
     );
 }
 
@@ -892,260 +858,303 @@ fn explicit_config_and_store_work_without_native_home_variables() {
     assert!(store.join("store.json").is_file());
 }
 
-/// A `fleet up` whose output is read while it runs: both streams land in
-/// one buffer, so a chatty child never blocks on a full pipe.
-struct Up {
-    child: std::process::Child,
-    output: std::sync::Arc<std::sync::Mutex<String>>,
-}
+/// `fleet up` reloading its repository map, on the runtime `init` writes:
+/// `runtime-mux` over a tmux server of its own. Without either program
+/// these tests say so and skip.
+#[cfg(unix)]
+mod reload {
+    use super::*;
+    use std::path::{Path, PathBuf};
 
-impl Up {
-    fn start(env: &Env) -> Up {
-        let mut child = env.spawn(&["up", "--poll-ms", "100"]);
-        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-            let output = output.clone();
-            thread::spawn(move || {
-                use std::io::BufRead;
-                if let Some(pipe) = pipe {
-                    for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-                        let mut o = output.lock().unwrap();
-                        o.push_str(&line);
-                        o.push('\n');
+    /// A `fleet up` whose output is read while it runs: both streams land in
+    /// one buffer, so a chatty child never blocks on a full pipe.
+    struct Up {
+        child: std::process::Child,
+        output: std::sync::Arc<std::sync::Mutex<String>>,
+    }
+
+    impl Up {
+        fn start(env: &Env) -> Up {
+            let mut child = env.spawn(&["up", "--poll-ms", "100"]);
+            let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+            let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+                let output = output.clone();
+                thread::spawn(move || {
+                    use std::io::BufRead;
+                    if let Some(pipe) = pipe {
+                        for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                            let mut o = output.lock().unwrap();
+                            o.push_str(&line);
+                            o.push('\n');
+                        }
                     }
-                }
-            });
-        };
-        drain(child.stdout.take().map(|p| Box::new(p) as _));
-        drain(child.stderr.take().map(|p| Box::new(p) as _));
-        Up { child, output }
-    }
+                });
+            };
+            drain(child.stdout.take().map(|p| Box::new(p) as _));
+            drain(child.stderr.take().map(|p| Box::new(p) as _));
+            Up { child, output }
+        }
 
-    fn output(&self) -> String {
-        self.output.lock().unwrap().clone()
-    }
+        fn output(&self) -> String {
+            self.output.lock().unwrap().clone()
+        }
 
-    /// The same process is still serving: it never exited.
-    fn assert_running(&mut self) {
-        assert!(
-            self.child.try_wait().unwrap().is_none(),
-            "fleet up exited:\n{}",
-            self.output()
-        );
-    }
-}
-
-impl Drop for Up {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn until_within(bound: Duration, mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + bound;
-    while !predicate() {
-        assert!(
-            Instant::now() < deadline,
-            "automatic progress did not happen"
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// `init`, then the stub thurbox-cli as the runtime and a scratch store:
-/// what `fleet up` needs, with no real session or host.
-fn thurbox_bootstrap(name: &str) -> Env {
-    let mut env = Env::thurbox(name);
-    env.set_var(
-        "LOCALAPPDATA",
-        &env.root.join("local-data").to_string_lossy(),
-    );
-    env.set_var("APPDATA", &env.root.join("config").to_string_lossy());
-    let stub: toml::Value = toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
-    fs::remove_file(&env.config).unwrap();
-    env.fleet(&["init"]).ok();
-    let mut config: toml::Value =
-        toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
-    set_runtime(&mut config, stub["runtime"].clone());
-    config["data"]["dir"] = toml::Value::String(env.data.to_string_lossy().into_owned());
-    fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
-    env
-}
-
-const APP_URL: &str = "https://example.invalid/org/app";
-
-/// A git checkout with one commit, which Fleet's worktree adapter makes
-/// the Task's workspace from.
-fn app_source(env: &Env) -> String {
-    let src = env.root.join("src").join("app");
-    if !src.exists() {
-        fs::create_dir_all(&src).unwrap();
-        for args in [
-            &["init", "-q", "-b", "main"][..],
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@example.test",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "first",
-            ],
-        ] {
-            let mut git = std::process::Command::new("git");
-            for var in fleet_runtime::worktree::GIT_LOCATION {
-                git.env_remove(var);
-            }
-            let out = git.arg("-C").arg(&src).args(args).output().unwrap();
-            assert!(out.status.success(), "{out:?}");
+        /// The same process is still serving: it never exited.
+        fn assert_running(&mut self) {
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "fleet up exited:\n{}",
+                self.output()
+            );
         }
     }
-    src.to_string_lossy().into_owned()
-}
 
-/// The directory Fleet made for the Task `name`.
-fn workspace_dir(env: &Env, name: &str) -> Option<String> {
-    env.get(name)["status"]["workspace"]["dir"]
-        .as_str()
-        .map(str::to_string)
-}
+    impl Drop for Up {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
 
-fn repositories_task(name: &str) -> serde_json::Value {
-    let mut t = support::task(name, true);
-    t["spec"]["workspace"] = serde_json::json!({"repositories": [{"name": "app", "url": APP_URL}]});
-    t
-}
+    /// A private `TMUX_TMPDIR`, short enough for a socket path, whose server
+    /// and agents die with it.
+    struct Sockets(PathBuf);
 
-/// The config text with `runtime.repositories` mapping `url` to `source`.
-fn with_mapping(config: &str, url: &str, source: &str) -> String {
-    let mut config: toml::Value = toml::from_str(config).unwrap();
-    config["runtime"].as_table_mut().unwrap().insert(
-        "repositories".into(),
-        toml::Value::Table(toml::map::Map::from_iter([(
-            url.to_string(),
-            toml::Value::String(source.to_string()),
-        )])),
-    );
-    toml::to_string(&config).unwrap()
-}
+    impl Drop for Sockets {
+        fn drop(&mut self) {
+            let _ = Command::new("tmux")
+                .env("TMUX_TMPDIR", &self.0)
+                .env_remove("TMUX")
+                .args(["-L", "runtime-mux", "kill-server"])
+                .output();
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
-/// The `session create` argv thurbox-cli was given for the Task `name`.
-fn create_of(env: &Env, name: &str) -> Option<Vec<String>> {
-    env.stub_calls()
-        .iter()
-        .filter(|c| c["argv"][0] == "session" && c["argv"][1] == "create")
-        .map(|c| {
-            c["argv"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|a| a.as_str().unwrap().to_string())
-                .collect::<Vec<_>>()
-        })
-        .find(|argv| argv.windows(2).any(|w| w[0] == "--name" && w[1] == name))
-}
+    /// Each agent notes that it started in its own directory, then waits.
+    const AGENT: &str = "#!/bin/sh\ntouch started\nexec sleep 300\n";
 
-fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
-    argv.iter()
-        .position(|a| a == flag)
-        .map(|i| argv[i + 1].as_str())
-}
+    /// `init`, with its `runtime-mux` found beside `fleet`, a private tmux
+    /// server, stand-in agents on PATH and a scratch store.
+    fn mux_bootstrap(name: &str) -> Option<(Env, Sockets)> {
+        let program = Path::new(env!("CARGO_BIN_EXE_fleet"))
+            .parent()?
+            .join("runtime-mux");
+        if !program.is_file() {
+            eprintln!(
+                "skipping: no runtime-mux binary; build it with `cargo build -p runtime-mux`"
+            );
+            return None;
+        }
+        if Command::new("tmux").arg("-V").output().is_err() {
+            eprintln!("skipping: tmux is not installed");
+            return None;
+        }
+        let mut env = Env::new(name);
+        env.set_var(
+            "LOCALAPPDATA",
+            &env.root.join("local-data").to_string_lossy(),
+        );
+        env.set_var("APPDATA", &env.root.join("config").to_string_lossy());
+        fs::remove_file(&env.config).unwrap();
+        env.fleet(&["init"]).ok();
+        let mut config: toml::Value =
+            toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
+        config["runtimes"]["mux"]["program"] =
+            toml::Value::String(program.to_string_lossy().into_owned());
+        config["data"]["dir"] = toml::Value::String(env.data.to_string_lossy().into_owned());
+        fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
 
-fn spawned_reason(env: &Env, name: &str) -> String {
-    env.status(name)["conditions"]
-        .as_array()
-        .and_then(|cs| cs.iter().find(|c| c["type"] == "WorkspaceReady"))
-        .and_then(|c| c["reason"].as_str())
-        .unwrap_or("")
-        .to_string()
-}
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir())
+            .unwrap_or_else(std::env::temp_dir);
+        let sockets = Sockets(base.join(format!("fb-{name}-{}", std::process::id())));
+        let _ = fs::remove_dir_all(&sockets.0);
+        fs::create_dir_all(&sockets.0).unwrap();
+        env.set_var("TMUX_TMPDIR", &sockets.0.to_string_lossy());
 
-#[test]
-fn up_reloads_runtime_repositories_without_a_restart() {
-    let env = thurbox_bootstrap("up-reload-repositories");
-    let mut up = Up::start(&env);
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
-    let vega = env.get("vega")["metadata"]["uid"].clone();
+        let bin = env.root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        for agent in ["claude", "codex"] {
+            fs::write(bin.join(agent), AGENT).unwrap();
+            fs::set_permissions(bin.join(agent), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::var("PATH").unwrap_or_default();
+        env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+        Some((env, sockets))
+    }
 
-    // Unmapped: refused before any session create, and the refusal spends
-    // no spawn attempt, so the Task cannot run out of them while it waits.
-    env.apply(repositories_task("app")).ok();
-    until(|| spawned_reason(&env, "app") == "RepositoryUnmapped");
-    let status = env.get("app")["status"].clone();
-    assert_eq!(status["phase"], "Pending", "{status:#}");
-    assert_eq!(
-        status["spawnAttempts"].as_u64().unwrap_or(0),
-        0,
-        "{status:#}"
-    );
-    support::assert_condition(&status, "NeedsAttention", "True", "RepositoryUnmapped");
-    assert!(create_of(&env, "app").is_none());
+    fn until_within(bound: Duration, mut predicate: impl FnMut() -> bool) {
+        let deadline = Instant::now() + bound;
+        while !predicate() {
+            assert!(
+                Instant::now() < deadline,
+                "automatic progress did not happen"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
 
-    // A partial edit is refused and reported; the process keeps serving.
-    let valid = fs::read_to_string(&env.config).unwrap();
-    fs::write(&env.config, format!("{valid}\n[runtime.repositories\n")).unwrap();
-    until(|| up.output().contains("config reload refused"));
-    up.assert_running();
+    const APP_URL: &str = "https://example.invalid/org/app";
 
-    // A valid edit maps the repository: the same process spawns the Task.
-    fs::write(
-        &env.config,
-        with_mapping(&valid, APP_URL, &app_source(&env)),
-    )
-    .unwrap();
-    until_within(Duration::from_secs(60), || {
-        env.status("app")["phase"] == "Briefed"
-    });
-    let create = create_of(&env, "app").expect("app spawned");
-    assert_eq!(
-        after(&create, "--repo-path"),
-        workspace_dir(&env, "app").as_deref(),
-        "{create:?}"
-    );
-    support::assert_condition(
-        &env.get("app")["status"],
-        "NeedsAttention",
-        "False",
-        "Resolved",
-    );
-    up.assert_running();
+    /// A git checkout with one commit, which Fleet's worktree adapter makes
+    /// the Task's workspace from.
+    fn app_source(env: &Env) -> String {
+        let src = env.root.join("src").join("app");
+        if !src.exists() {
+            fs::create_dir_all(&src).unwrap();
+            for args in [
+                &["init", "-q", "-b", "main"][..],
+                &[
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@example.test",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "first",
+                ],
+            ] {
+                let mut git = std::process::Command::new("git");
+                for var in fleet_runtime::worktree::GIT_LOCATION {
+                    git.env_remove(var);
+                }
+                let out = git.arg("-C").arg(&src).args(args).output().unwrap();
+                assert!(out.status.success(), "{out:?}");
+            }
+        }
+        src.to_string_lossy().into_owned()
+    }
 
-    // An invalid mapping is refused as a whole: the last valid one stays in
-    // force for a Task created after it.
-    let mapped = fs::read_to_string(&env.config).unwrap();
-    fs::write(&env.config, with_mapping(&valid, APP_URL, "src/app")).unwrap();
-    until(|| up.output().contains("must be an absolute path"));
-    env.apply(repositories_task("app2")).ok();
-    until(|| env.status("app2")["phase"] == "Briefed");
-    let create = create_of(&env, "app2").expect("app2 spawned");
-    assert_eq!(
-        after(&create, "--repo-path"),
-        workspace_dir(&env, "app2").as_deref(),
-        "{create:?}"
-    );
+    fn repositories_task(name: &str) -> serde_json::Value {
+        let mut t = support::task(name, true);
+        t["spec"]["workspace"] =
+            serde_json::json!({"repositories": [{"name": "app", "url": APP_URL}]});
+        t
+    }
 
-    // A startup-only setting is not switched while the process runs: a new
-    // key prefix is reported and waits for the next start.
-    let mut renamed: toml::Value = toml::from_str(&mapped).unwrap();
-    renamed["runtime"]
-        .as_table_mut()
-        .unwrap()
-        .insert("keyPrefix".into(), toml::Value::String("other".into()));
-    fs::write(&env.config, toml::to_string(&renamed).unwrap()).unwrap();
-    until(|| up.output().contains("restart fleet up to apply"));
-    env.apply(repositories_task("app3")).ok();
-    until(|| env.status("app3")["phase"] == "Briefed");
-    let create = create_of(&env, "app3").expect("app3 spawned");
-    assert!(
-        after(&create, "--key").is_some_and(|k| k.starts_with("fleet.")),
-        "{create:?}"
-    );
+    /// The config text with `workspaces.repositories` mapping `url` to
+    /// `source`.
+    fn with_mapping(config: &str, url: &str, source: &str) -> String {
+        let mut config: toml::Value = toml::from_str(config).unwrap();
+        let workspaces = config
+            .as_table_mut()
+            .unwrap()
+            .entry("workspaces")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        workspaces.as_table_mut().unwrap().insert(
+            "repositories".into(),
+            toml::Value::Table(toml::map::Map::from_iter([(
+                url.to_string(),
+                toml::Value::String(source.to_string()),
+            )])),
+        );
+        toml::to_string(&config).unwrap()
+    }
 
-    up.assert_running();
-    assert_eq!(env.get("vega")["metadata"]["uid"], vega);
+    /// The agent of the Task `name` started in the workspace Fleet made.
+    fn started_in_its_workspace(env: &Env, name: &str) -> bool {
+        env.get(name)["status"]["workspace"]["dir"]
+            .as_str()
+            .is_some_and(|dir| Path::new(dir).join("started").exists())
+    }
+
+    fn workspace_reason(env: &Env, name: &str) -> String {
+        env.status(name)["conditions"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["type"] == "WorkspaceReady"))
+            .and_then(|c| c["reason"].as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    #[test]
+    fn up_reloads_the_repository_map_without_a_restart() {
+        let Some((env, _sockets)) = mux_bootstrap("up-reload-repositories") else {
+            return;
+        };
+        let mut up = Up::start(&env);
+        until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
+        let vega = env.get("vega")["metadata"]["uid"].clone();
+
+        // Unmapped: refused before any session starts, and the refusal spends
+        // no spawn attempt, so the Task cannot run out of them while it waits.
+        env.apply(repositories_task("app")).ok();
+        until(|| workspace_reason(&env, "app") == "RepositoryUnmapped");
+        let status = env.get("app")["status"].clone();
+        assert_eq!(status["phase"], "Pending", "{status:#}");
+        assert_eq!(
+            status["spawnAttempts"].as_u64().unwrap_or(0),
+            0,
+            "{status:#}"
+        );
+        assert!(status["session"].is_null(), "{status:#}");
+        support::assert_condition(&status, "NeedsAttention", "True", "RepositoryUnmapped");
+
+        // A partial edit is refused and reported; the process keeps serving.
+        let valid = fs::read_to_string(&env.config).unwrap();
+        fs::write(&env.config, format!("{valid}\n[workspaces.repositories\n")).unwrap();
+        until(|| up.output().contains("config reload refused"));
+        up.assert_running();
+
+        // A valid edit maps the repository: the same process starts the
+        // Task's agent in the worktree it makes.
+        fs::write(
+            &env.config,
+            with_mapping(&valid, APP_URL, &app_source(&env)),
+        )
+        .unwrap();
+        until_within(Duration::from_secs(60), || {
+            started_in_its_workspace(&env, "app")
+        });
+        support::assert_condition(
+            &env.get("app")["status"],
+            "NeedsAttention",
+            "False",
+            "Resolved",
+        );
+        up.assert_running();
+
+        // An invalid mapping is refused as a whole: the last valid one stays
+        // in force for a Task created after it.
+        let mapped = fs::read_to_string(&env.config).unwrap();
+        fs::write(&env.config, with_mapping(&valid, APP_URL, "src/app")).unwrap();
+        until(|| up.output().contains("must be an absolute path"));
+        env.apply(repositories_task("app2")).ok();
+        until_within(Duration::from_secs(60), || {
+            started_in_its_workspace(&env, "app2")
+        });
+
+        // A startup-only setting is not switched while the process runs: a
+        // new key prefix is reported and waits for the next start.
+        let mut renamed: toml::Value = toml::from_str(&mapped).unwrap();
+        let prefix = renamed["runtimes"]["mux"]["keyPrefix"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        renamed["runtimes"]["mux"]["keyPrefix"] = toml::Value::String("other".into());
+        fs::write(&env.config, toml::to_string(&renamed).unwrap()).unwrap();
+        until(|| up.output().contains("restart fleet up to apply"));
+        env.apply(repositories_task("app3")).ok();
+        until_within(Duration::from_secs(60), || {
+            started_in_its_workspace(&env, "app3")
+                && env.get("app3")["status"]["session"]["id"].is_string()
+        });
+        let session = env.get("app3")["status"]["session"]["id"].clone();
+        assert!(
+            session
+                .as_str()
+                .is_some_and(|k| k.starts_with(&format!("{prefix}."))),
+            "{session}"
+        );
+
+        up.assert_running();
+        assert_eq!(env.get("vega")["metadata"]["uid"], vega);
+    }
 }
 
 fn starter_task(env: &Env) -> (std::path::PathBuf, serde_json::Value) {

@@ -214,8 +214,8 @@ Runs the real binary under load and reports CPU. Its failures are plausible
 numbers rather than errors, so read it for the two it already guards: it must
 identify its OWN process (a developer's running thurbox answers to `pgrep -x
 thurbox` first, and every configuration then reports that instance's CPU), and
-the TUI must start before any session exists, or the v1->v2 consent gate waits
-for a keypress and the run reports 0%.
+the TUI must start before any session exists, or the run measures the start
+rather than the steady state.
 
 A reading is only comparable with another at the same terminal size and session
 count, so both stay explicit parameters and neither acquires a default that
@@ -339,13 +339,13 @@ staging discipline, the review gate) and the configuration of external tooling
 such as .publish.yaml, so a root-level config file is not automatically
 docs/thurbox/config.md's. docs/thurbox/review.md owns the house rules a change is reviewed
 against - the per-path blocks above, the trees excluded from review, and this
-ownership map. docs/thurbox/agents.md owns each built-in coding agent's exact
-configuration and the checklist for adding one. docs/thurbox/kernel.md owns the
+ownership map. docs/thurbox/agents.md says where an agent is defined now:
+Fleet's harness profiles. docs/thurbox/kernel.md owns the
 kernel's shape and its five rules, and docs/thurbox/plugins.md owns interface-plugin
 authoring. docs/thurbox/development.md owns the dev environment and the runtime
 sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/thurbox/releasing.md owns the release process and
-docs/thurbox/orchestration.md the control-plane pattern. docs/thurbox/benchmark-multiplexers.md
+docs/thurbox/orchestration.md what thurbox adds to Fleet's orchestration. docs/thurbox/benchmark-multiplexers.md
 owns how thurbox compares with raw tmux and Herdr as a host for agent sessions,
 and the method of the harness under scripts/bench/ that measures it. docs/README.md owns the
 system: the split between thurbox, Fleet and the runtimes, which page owns
@@ -360,7 +360,7 @@ the operating guidance a coding agent needs on every turn, and a code change
 that invalidates or extends a documented decision updates the owning doc in the
 same change. The per-subsystem working reference lives in the skills under
 .agents/skills/ (thurbox-testing, thurbox-performance, thurbox-release,
-thurbox-agents, thurbox-remote-hosts, thurbox-cli, thurbox-extensions,
+thurbox-remote-hosts, thurbox-cli,
 thurbox-session-status, thurbox-kernel, thurbox-ui-surfaces,
 thurbox-demo-media), which AGENTS.md indexes: detail an agent needs only when
 working on that subsystem belongs in its skill rather than back in AGENTS.md,

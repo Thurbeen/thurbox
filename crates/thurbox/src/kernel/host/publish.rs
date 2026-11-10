@@ -129,9 +129,6 @@ impl LuaHost {
             build_agents(&self.lua, snapshot)
         })?;
         set(&table, "agents", agents)?;
-        // What a bare launch would use, so a flow preselects it rather than
-        // whichever agent happens to be first.
-        set(&table, "agent_default", snapshot.agent_default.clone())?;
 
         // `name` identifies, `detail` distinguishes on screen, `backend` is what
         // a command and a bookmark scope are keyed by — a flow needs all three,
@@ -143,39 +140,8 @@ impl LuaHost {
         })?;
         set(&table, "hosts", hosts)?;
 
-        // Whether the multiplexer every local session's window lives in is
-        // installed. Same gate as `agents` — it is probed on the kernel's
-        // schedule behind a TTL and lands in the snapshot, so reading it here
-        // costs a table only when the answer moves.
-        let preflight = self.group("preflight", [epoch.snapshot, 0, 0, 0], || {
-            let table = self.lua.create_table().map_err(|e| e.to_string())?;
-            let mux = self.lua.create_table().map_err(|e| e.to_string())?;
-            set(&mux, "binary", snapshot.mux.binary.clone())?;
-            set(&mux, "configured", snapshot.mux.configured.clone())?;
-            set(&mux, "available", snapshot.mux.available.clone())?;
-            set(&mux, "presence", snapshot.mux.presence.as_str())?;
-            set(&mux, "advice", snapshot.mux.advice.clone())?;
-            set(&table, "mux", Value::Table(mux))?;
-            Ok(Value::Table(table))
-        })?;
-        set(&table, "preflight", preflight)?;
-
         self.publish_repo_reads(&table, repo_store, wants, epoch)?;
         self.publish_settings(&table, settings)?;
-
-        // Built from the snapshot alone, so it changes when the database does
-        // and not once a frame.
-        let deleted = self.group("deleted", [epoch.snapshot, 0, 0, 0], || {
-            build_deleted(&self.lua, snapshot)
-        })?;
-        set(&table, "deleted", deleted)?;
-
-        // Built from the snapshot alone, so it changes when the database does
-        // and not once a frame.
-        let tasks = self.group("tasks", [epoch.snapshot, 0, 0, 0], || {
-            build_tasks(&self.lua, snapshot)
-        })?;
-        set(&table, "tasks", tasks)?;
 
         // Built from the snapshot alone, so it changes when the database does
         // and not once a frame.
@@ -399,7 +365,6 @@ impl LuaHost {
         let features = self.lua.create_table().map_err(|e| e.to_string())?;
         let flags = &settings.features;
         for (name, value) in [
-            ("tasks", flags.tasks),
             ("automations", flags.automations),
             ("file_viewer", flags.file_viewer),
             ("global_search", flags.global_search),
@@ -409,7 +374,6 @@ impl LuaHost {
             ("perf_hud", flags.perf_hud),
             ("mouse", flags.mouse),
             ("notifications", flags.notifications),
-            ("soft_delete", flags.soft_delete),
             ("version_check", flags.version_check),
             ("auto_update", flags.auto_update),
         ] {
@@ -420,14 +384,11 @@ impl LuaHost {
         published
             .set("features", features)
             .map_err(|e| e.to_string())?;
-        // The two the arrangement needs, and the one a terminal pane may want to
-        // show. The notification knobs are deliberately absent: nothing a plugin
+        // The one the arrangement needs, and the one a terminal pane may want
+        // to show. The notification knobs are deliberately absent: nothing a plugin
         // draws depends on them.
         published
             .set("two_panel_min_cols", settings.two_panel_min_cols)
-            .map_err(|e| e.to_string())?;
-        published
-            .set("three_panel_min_cols", settings.three_panel_min_cols)
             .map_err(|e| e.to_string())?;
         published
             .set("scrollback_lines", settings.scrollback_lines)
@@ -480,34 +441,6 @@ impl LuaHost {
             self.build_browse(store, wants).map(Value::Table)
         })?;
         set(table, "browse", browse_value)?;
-
-        let branches_key = fnv64([
-            &b"branches"[..],
-            wants
-                .branches
-                .as_ref()
-                .map(|(host, repo)| format!("{host}\0{repo}"))
-                .unwrap_or_else(|| "\x01none".to_string())
-                .as_bytes(),
-        ]);
-        let branches_value = self.group("branches", [epoch.data, branches_key, 0, 0], || {
-            self.build_branches(store, wants).map(Value::Table)
-        })?;
-        set(table, "branches", branches_value)?;
-
-        let worktrees_key = fnv64([
-            &b"worktrees"[..],
-            wants
-                .worktrees
-                .as_ref()
-                .map(|(host, repo)| format!("{host}\0{repo}"))
-                .unwrap_or_else(|| "\x01none".to_string())
-                .as_bytes(),
-        ]);
-        let worktrees_value = self.group("worktrees", [epoch.data, worktrees_key, 0, 0], || {
-            self.build_worktrees(store, wants).map(Value::Table)
-        })?;
-        set(table, "worktrees", worktrees_value)?;
 
         Ok(())
     }
@@ -606,96 +539,6 @@ impl LuaHost {
         }
         Ok(browse)
     }
-
-    fn build_branches(
-        &self,
-        store: &crate::kernel::repos::RepoStore,
-        wants: &crate::kernel::repos::Wants,
-    ) -> Result<Table, String> {
-        use crate::kernel::repos::Branches;
-
-        let branches = self.lua.create_table().map_err(|e| e.to_string())?;
-        if let Some((host, repo)) = &wants.branches {
-            branches
-                .set("host", host.clone())
-                .map_err(|e| e.to_string())?;
-            branches
-                .set("repo", repo.clone())
-                .map_err(|e| e.to_string())?;
-            let known = store.branches(host, repo);
-            branches
-                .set("loading", matches!(known, None | Some(Branches::Pending)))
-                .map_err(|e| e.to_string())?;
-            branches
-                .set(
-                    "error",
-                    match known {
-                        Some(Branches::Failed(message)) => to_lua_string(&self.lua, message)?,
-                        _ => Value::Nil,
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-            let list = self.lua.create_table().map_err(|e| e.to_string())?;
-            if let Some(Branches::Ready(names)) = known {
-                for (index, name) in names.iter().enumerate() {
-                    list.set(index + 1, name.clone())
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-            branches.set("list", list).map_err(|e| e.to_string())?;
-        }
-        Ok(branches)
-    }
-
-    /// Publish the worktrees a repository already has, for the repo picker.
-    ///
-    /// Shaped like [`build_branches`](Self::build_branches) — same
-    /// `host`/`repo`/`loading`/`error`/`list` contract — so a plugin reads both
-    /// the same way; the rows carry `path` and `branch` rather than a bare name
-    /// because opening one needs the path git reported, not a derived one.
-    fn build_worktrees(
-        &self,
-        store: &crate::kernel::repos::RepoStore,
-        wants: &crate::kernel::repos::Wants,
-    ) -> Result<Table, String> {
-        use crate::kernel::repos::Worktrees;
-
-        let worktrees = self.lua.create_table().map_err(|e| e.to_string())?;
-        if let Some((host, repo)) = &wants.worktrees {
-            worktrees
-                .set("host", host.clone())
-                .map_err(|e| e.to_string())?;
-            worktrees
-                .set("repo", repo.clone())
-                .map_err(|e| e.to_string())?;
-            let known = store.worktrees(host, repo);
-            worktrees
-                .set("loading", matches!(known, None | Some(Worktrees::Pending)))
-                .map_err(|e| e.to_string())?;
-            worktrees
-                .set(
-                    "error",
-                    match known {
-                        Some(Worktrees::Failed(message)) => to_lua_string(&self.lua, message)?,
-                        _ => Value::Nil,
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-            let list = self.lua.create_table().map_err(|e| e.to_string())?;
-            if let Some(Worktrees::Ready(found)) = known {
-                for (index, entry) in found.iter().enumerate() {
-                    let item = self.lua.create_table().map_err(|e| e.to_string())?;
-                    item.set("path", entry.path.display().to_string())
-                        .map_err(|e| e.to_string())?;
-                    item.set("branch", entry.branch.clone())
-                        .map_err(|e| e.to_string())?;
-                    list.set(index + 1, item).map_err(|e| e.to_string())?;
-                }
-            }
-            worktrees.set("list", list).map_err(|e| e.to_string())?;
-        }
-        Ok(worktrees)
-    }
 }
 
 fn build_sessions(
@@ -732,15 +575,8 @@ fn build_sessions(
             "detected_agent",
             opt_lua_string(lua, row.detected_agent.as_deref())?,
         )?;
+        set(&entry, "status", to_lua_string(lua, row.status.as_str())?)?;
         let attach_error = attach_errors.get(&row.id).map(String::as_str);
-        set(
-            &entry,
-            "status",
-            to_lua_string(
-                lua,
-                crate::session::with_reachability(row.status, &row.backend, attach_error).as_str(),
-            )?,
-        )?;
         set(&entry, "backend", to_lua_string(lua, &row.backend)?)?;
         set(&entry, "repo", opt_lua_string(lua, row.repo.as_deref())?)?;
         set(
@@ -849,92 +685,36 @@ fn build_repos(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(repos))
 }
 
+/// `nil` until Fleet has said which harnesses it has: a flow must tell a
+/// pending list from an empty one.
 fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
+    let Some(known) = &snapshot.agents else {
+        return Ok(Value::Nil);
+    };
     let agents = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, agent) in snapshot.agents.iter().enumerate() {
+    for (index, agent) in known.iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
         set(&item, "name", agent.name.clone())?;
-        // v1's picker labels a row `name  (command)` when the two differ, so
-        // the command travels with the name.
-        set(&item, "command", agent.command.clone())?;
-        // `present` / `missing` / `unknown`, so a flow can warn on the choice
-        // being made instead of letting the user find out from a pane that
-        // died. Three words rather than a boolean: a remote host's binaries
-        // were never looked at, and saying "missing" about them would be a
-        // claim thurbox has not earned.
-        set(&item, "presence", agent.presence.as_str())?;
         agents.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(agents))
 }
 
+/// `nil` until Fleet has said which hosts it defines: a flow must tell a
+/// pending list from one with no remote host.
 fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
+    let Some(known) = &snapshot.hosts else {
+        return Ok(Value::Nil);
+    };
     let hosts = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, host) in snapshot.hosts.iter().enumerate() {
+    for (index, host) in known.iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
         set(&item, "name", host.name.clone())?;
         set(&item, "detail", host.detail.clone())?;
         set(&item, "backend", host.backend.clone())?;
-        set(&item, "platform", host.platform.clone())?;
-        set(&item, "multiplexer", host.multiplexer.clone())?;
-        set(
-            &item,
-            "available_multiplexers",
-            host.available_multiplexers.clone(),
-        )?;
-        set(&item, "probing", host.probing)?;
         hosts.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(hosts))
-}
-
-fn build_deleted(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
-    let deleted = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, row) in snapshot.deleted.iter().enumerate() {
-        let item = lua.create_table().map_err(|e| e.to_string())?;
-        set(&item, "id", row.id.clone())?;
-        set(&item, "name", row.name.clone())?;
-        set(&item, "agent", row.agent.clone())?;
-        // Epoch millis, so `widgets.time_ago` can measure it against
-        // `taken_at_ms` — the instant these rows were read.
-        set(&item, "deleted_at", row.deleted_at)?;
-        set(&item, "worktrees", row.worktrees)?;
-        // Restoring this one recovers committed work only.
-        set(&item, "partial", row.partial)?;
-        // Nil when the restore would simply run — the pane asks if and only if
-        // this is a string, and shows it as the reason.
-        set(&item, "restore_refusal", row.restore_refusal.clone())?;
-        deleted
-            .raw_set(index + 1, item)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(Value::Table(deleted))
-}
-
-fn build_tasks(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
-    let tasks = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, row) in snapshot.tasks.iter().enumerate() {
-        let item = lua.create_table().map_err(|e| e.to_string())?;
-        set(&item, "id", row.id)?;
-        set(&item, "title", row.title.clone())?;
-        set(
-            &item,
-            "description",
-            opt_lua_string(lua, row.description.as_deref())?,
-        )?;
-        set(&item, "status", row.status.clone())?;
-        set(&item, "source", row.source.clone())?;
-        set(
-            &item,
-            "url",
-            opt_lua_string(lua, row.external_url.as_deref())?,
-        )?;
-        // Epoch seconds, so the detail view can date a task.
-        set(&item, "created_at", row.created_at)?;
-        set(&item, "updated_at", row.updated_at)?;
-        tasks.raw_set(index + 1, item).map_err(|e| e.to_string())?;
-    }
-    Ok(Value::Table(tasks))
 }
 
 fn build_automations(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {

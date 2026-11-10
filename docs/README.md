@@ -107,7 +107,7 @@ to a repository of its own with nothing to untangle.
 | `session_meta`, `session_events`, `session_relaunches`, `session_intents`, `session_loss_suspects`, `session_lifecycle_clock` | dropped: Fleet's receipts and Known/Unknown observation |
 | `session_messages` | `status.inbox`, `fleet send` |
 | `tasks` | Tasks with `dispatch: false` |
-| `automations`, `automation_runs`, `automation_suspensions` | a Fleet schedule kind, to design |
+| `automations`, `automation_runs`, `automation_suspensions` | `automations.json` beside thurbox's `settings.toml`, fired by thurbox; a Fleet schedule kind, to design, would replace it |
 | `event_cursors`, `snapshot_versions` | `fleet watch --since` |
 | `audit_log`, `telemetry_export` | Fleet's store history and `fleet-telemetry` |
 | `repo_bookmarks`, `review_comments`, `review_marks`, settings, keybindings | thurbox interface files |
@@ -116,7 +116,7 @@ to a repository of its own with nothing to untangle.
 
 ## Open
 
-- A schedule kind in Fleet to replace automations.
+- A schedule kind in Fleet to replace thurbox's `automations.json`.
 - Fork and `restart --fresh`: a conversation field on the Task, or dropped.
 - `hooks.toml` beyond `pre_launch`: harness settings or a Fleet plugin.
 - Shared hosts (ADR-24): one Fleet store per operator is assumed.
@@ -125,8 +125,7 @@ to a repository of its own with nothing to untangle.
   `stream_panes` in thurbox's `settings.toml` opens local tmux panes through
   `runtime-mux view` for that measurement.
 - Windows (psmux) at the cutover, or after Linux and macOS.
-- VEGA stays a separate starter repository; Fleetlens moves under
-  `extensions/`.
+- VEGA stays a separate starter repository.
 
 ## Layout
 
@@ -141,7 +140,7 @@ docs/
 │   ├── features.md · performance.md · kernel.md · plugins.md
 │   ├── agents.md · config.md · orchestration.md · releasing.md · review.md
 │   ├── development.md · tutorial.md
-│   └── benchmark-multiplexers.md + benchmark-multiplexers/
+│   └── benchmark-multiplexers.md
 ├── fleet/                     the engine
 │   ├── README.md              its index
 │   ├── architecture.md        components, ports, flow, and the target (+ .svg)
@@ -155,10 +154,10 @@ docs/
 
 Naming: one directory per component, each with a `README.md` index. Pages are
 lower-case and hyphenated, one per subject; a subject gets a directory only
-when it has several pages of one kind (`controllers/`, `resources/`) or data
-(`benchmark-multiplexers/`). A diagram is an SVG with light and dark palettes,
-named after the page or section that embeds it and kept beside it. A new
-component joins as a directory beside these three.
+when it has several pages of one kind (`controllers/`, `resources/`). A
+diagram is an SVG with light and dark palettes, named after the page or
+section that embeds it and kept beside it. A new component joins as a
+directory beside these three.
 
 ## Keeping docs current
 

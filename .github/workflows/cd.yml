@@ -41,7 +41,9 @@ jobs:
       # artifact-relevance gate (`shipped`): a `feat`/`fix` that touches only
       # the website, docs, or CI config bumps nothing shippable, so it must not
       # cut a release. See the `shipped` step for the rationale + path list.
-      should_release: ${{ steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false' }}
+      # And by the hold (`line`): a tree carrying .github/release-hold
+      # releases nothing, on a push or a dispatch.
+      should_release: ${{ steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false' && steps.line.outputs.held != 'true' }}
       version: ${{ steps.parse.outputs.version }}
       # The exact `cog bump` args create-tag runs. Computed here in bash (not
       # via a YAML `${{ && || }}` ternary in create-tag) so the forced-version
@@ -144,15 +146,13 @@ jobs:
           # bare-name install resolves against the release TAG
           # (`official_set_base`), so a change that is never tagged is one nobody
           # can install.
-          # `extensions/`, `ui/` and `examples/lua/` are here for the same reason
-          # and, more directly, because all three are `include_str!`d into the
-          # binary — `extensions/` now holds only the built-ins, whose assets
-          # `session_ops::builtin_*` embed — so they are
-          # bytes a user installs. A releasable span confined to a pane fix would
+          # `ui/` and `examples/lua/` are here for the same reason and, more
+          # directly, because both are `include_str!`d into the binary, so they
+          # are bytes a user installs. A releasable span confined to a pane fix would
           # otherwise be suppressed as "no shipped artifact changed" — no tag, no
           # binaries, no channel pushes — and the `ui` commit scope cannot separate
           # a pane fix from a website one, so the type gate will not catch it either.
-          SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|extensions/|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
+          SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
 
           LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 
@@ -221,7 +221,9 @@ jobs:
         # `tee` swallow the script's refusal.
         shell: bash
         run: |
-          # Refuses — failing the run before anything is tagged — a version
+          # Holds every release while the tree carries .github/release-hold
+          # (`held=true`, a clean skip, not a failure). Otherwise refuses —
+          # failing the run before anything is tagged — a version
           # whose major is not the source's RELEASE_LINE, which is what stops a
           # `BREAKING CHANGE:` footer from cutting the next major on its own.
           # Also decides `channels`. The rules and their tests are in

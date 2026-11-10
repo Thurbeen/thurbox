@@ -1,5 +1,5 @@
-//! `notify send` and the failing-run alert built on it (issues #1519, #1508),
-//! driven through the real binary in an isolated instance.
+//! `notify send` and its dedupe key, driven through the real binary in an
+//! isolated instance.
 //!
 //! Delivery is asserted against a private bus with a stand-in notification
 //! daemon (`support/notification_bus.rs`); every command here points the bus
@@ -98,12 +98,6 @@ impl Instance {
     fn send(&self, bus: Option<&str>, extra: &[&str]) -> Value {
         self.ok(bus, &send_args(extra))
     }
-
-    #[cfg(target_os = "linux")]
-    fn db(&self) -> thurbox::storage::Database {
-        thurbox::storage::Database::open(&self.path("data").join("thurbox.db"))
-            .expect("open the instance database")
-    }
 }
 
 fn send_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
@@ -139,13 +133,10 @@ const DEDUPED: &[&str] = &["--key", "build-failure", "--min-interval", "60"];
 #[test]
 fn notify_send_honours_the_notifications_feature_switch() {
     let instance = Instance::new("notifications = false", "backend = 'dbus'");
-    // An off switch short-circuits before the bus, the dedupe key or a
-    // session is looked at.
+    // An off switch short-circuits before the bus or the dedupe key is
+    // looked at.
     assert_disabled(&instance.send(Some(NO_BUS), DEDUPED));
     assert_disabled(&instance.send(Some(NO_BUS), DEDUPED));
-    // Not even a session that does not exist turns a disabled send into a
-    // failure: a hook naming its own, already deleted, session still exits 0.
-    assert_disabled(&instance.send(Some(NO_BUS), &["--session", "nobody"]));
 }
 
 #[test]
@@ -298,39 +289,6 @@ fn a_failed_delivery_reports_its_error_and_keeps_the_key() {
     assert_eq!(retry["delivered"], true, "{retry}");
     assert_eq!(bus.shown().len(), 1);
 }
-
-/// `--session` names the session the notification is about; sending it never
-/// touches that session's state.
-#[cfg(target_os = "linux")]
-#[test]
-fn notify_send_attaches_a_session_and_leaves_its_state_alone() {
-    let instance = Instance::with_backend("dbus", "");
-    let bus = NotificationBus::start(&instance.path("runtime"));
-    let address = bus.address();
-    let id = seed_session(&instance, "reviewer");
-    instance.ok(
-        Some(&address),
-        &["session", "signal", "--session", &id, "--state", "blocked"],
-    );
-    let before = instance.ok(Some(&address), &["session", "show", "reviewer"]);
-    let seq = instance.db().latest_session_event_seq().unwrap();
-
-    let value = instance.send(Some(&address), &["--session", "reviewer"]);
-    assert_eq!(value["delivered"], true, "{value}");
-    assert_eq!(value["session_id"], id.as_str(), "{value}");
-
-    let after = instance.ok(Some(&address), &["session", "show", "reviewer"]);
-    assert_eq!(after["state"], before["state"], "{after}");
-    assert_eq!(after["state"], "blocked", "{after}");
-    assert_eq!(instance.db().latest_session_event_seq().unwrap(), seq);
-
-    let unknown = instance.run(Some(&address), &send_args(&["--session", "nobody"]));
-    assert!(!unknown.status.success(), "{}", describe(&unknown));
-    assert_eq!(bus.shown().len(), 1, "nothing sent for an unknown session");
-}
-
-/// Put a stand-in `powershell.exe` running `body` first on `PATH`, so the
-/// `windows` backend runs it. `{pid}` in `body` names `<root>/notifier.pid`.
 #[cfg(unix)]
 fn fake_toast(instance: &Instance, body: &str) -> String {
     use std::os::unix::fs::PermissionsExt;
@@ -478,108 +436,4 @@ fn a_late_failure_keeps_a_newer_hold() {
     let repeat = instance.send(Some(&address), &held);
     assert_eq!(repeat["suppressed"], "deduped", "{repeat}");
     assert_eq!(bus.shown().len(), 1);
-}
-
-#[cfg(target_os = "linux")]
-fn seed_session(instance: &Instance, name: &str) -> String {
-    let row = thurbox::session::SharedSession {
-        id: thurbox::session::SessionId::default(),
-        name: name.into(),
-        agent: "claude".into(),
-        backend_id: String::new(),
-        backend_type: "local-tmux".into(),
-        agent_session_id: None,
-        cwd: None,
-        additional_dirs: Vec::new(),
-        worktrees: Vec::new(),
-        shell_backend_id: None,
-        parent_session_id: None,
-        display_order: None,
-        tombstone: false,
-        tombstone_at: None,
-        key: None,
-    };
-    instance.db().upsert_session(&row).expect("persist");
-    row.id.to_string()
-}
-
-#[cfg(target_os = "linux")]
-fn fail_once(instance: &Instance, bus: &str, id: &str) -> Value {
-    instance.ok(Some(bus), &["automation", "run", id]);
-    instance.ok(Some(bus), &["automation", "tick"])
-}
-
-#[cfg(target_os = "linux")]
-fn exec(instance: &Instance, bus: &str, name: &str, command: &str) -> String {
-    let doc = instance.ok(
-        Some(bus),
-        &[
-            "automation",
-            "create",
-            "--name",
-            name,
-            "--trigger",
-            "hourly",
-            "--command",
-            command,
-        ],
-    );
-    doc["id"].as_i64().expect("an automation id").to_string()
-}
-
-/// With the alert on, a failing run raises one notification; the failures
-/// after it are deduplicated until the automation succeeds again.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_failing_run_alerts_once_per_failing_streak_when_opted_in() {
-    let instance = Instance::with_backend("dbus", "on_automation_failure = true\n");
-    let bus = NotificationBus::start(&instance.path("runtime"));
-    let address = bus.address();
-    let id = exec(&instance, &address, "nightly-sync", "exit 3");
-
-    let tick = fail_once(&instance, &address, &id);
-    assert_eq!(tick["fired"][0]["status"], "error", "{tick}");
-    assert_eq!(tick["alerts"][0]["delivered"], true, "{tick}");
-    let shown = bus.shown();
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    assert!(shown[0].summary.contains("nightly-sync"), "{shown:?}");
-    assert!(shown[0].body.contains("exit 3"), "{shown:?}");
-
-    let tick = fail_once(&instance, &address, &id);
-    assert_eq!(tick["alerts"][0]["suppressed"], "deduped", "{tick}");
-    assert_eq!(
-        bus.shown().len(),
-        1,
-        "a second failure in a row is not news"
-    );
-
-    instance.ok(
-        Some(&address),
-        &["automation", "edit", &id, "--command", "true"],
-    );
-    let tick = fail_once(&instance, &address, &id);
-    assert_eq!(tick["fired"][0]["status"], "success", "{tick}");
-    instance.ok(
-        Some(&address),
-        &["automation", "edit", &id, "--command", "exit 4"],
-    );
-    fail_once(&instance, &address, &id);
-    assert_eq!(bus.shown().len(), 2, "a new streak alerts again");
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_failing_run_raises_nothing_by_default() {
-    let instance = Instance::with_backend("dbus", "");
-    let bus = NotificationBus::start(&instance.path("runtime"));
-    let address = bus.address();
-    let id = exec(&instance, &address, "nightly-sync", "exit 3");
-
-    let tick = fail_once(&instance, &address, &id);
-    assert_eq!(tick["fired"][0]["status"], "error", "{tick}");
-    assert!(
-        tick["alerts"].as_array().is_none_or(Vec::is_empty),
-        "{tick}"
-    );
-    assert!(bus.shown().is_empty(), "{:?}", bus.shown());
 }

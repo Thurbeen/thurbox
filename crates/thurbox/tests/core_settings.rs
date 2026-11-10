@@ -47,7 +47,7 @@ fn the_file_is_what_is_in_force() {
     let _home = isolate();
     write_settings(
         "[features]\n\
-         soft_delete = false\n\
+         shell_pane = false\n\
          perf_hud = false\n\
          mouse = false\n\
          \n\
@@ -58,7 +58,7 @@ fn the_file_is_what_is_in_force() {
 
     let (config, warnings) = Config::load();
     assert!(warnings.is_empty(), "{warnings:?}");
-    assert!(!config.features().soft_delete);
+    assert!(!config.features().shell_pane);
     assert!(!config.features().perf_hud);
     assert!(!config.features().mouse);
     assert!(!config.in_force().notifications.sound);
@@ -70,85 +70,10 @@ fn a_restart_only_value_is_in_force_as_loaded() {
     // What every consumer of a restart-only value is built with: there is no
     // process-wide copy to fall back on, so the loaded document is the answer.
     let _home = isolate();
-    write_settings("audit_retention_days = 7\n");
+    write_settings("git_poll_secs = 7\n");
 
     let (config, _) = Config::load();
-    assert_eq!(config.in_force().audit_retention_days, 7);
-}
-
-#[test]
-fn audit_history_is_pruned_to_the_configured_retention() {
-    // Each binary prunes once it has loaded its settings, with the retention
-    // they name — `Database::open` knows no setting.
-    let _home = isolate();
-    write_settings("audit_retention_days = 1\n");
-    let (config, _) = Config::load();
-
-    let path = thurbox::paths::database_file().expect("db path");
-    let db = thurbox::storage::Database::open(&path).expect("open");
-    let old = thurbox::storage::current_time_millis() - 5 * 24 * 60 * 60 * 1000;
-    db.conn_ref()
-        .execute(
-            "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
-             VALUES (?1, 'session', 'x', 'created')",
-            rusqlite::params![old as i64],
-        )
-        .expect("insert");
-
-    assert_eq!(
-        db.prune_audit_log(config.in_force().audit_retention_days)
-            .expect("prune"),
-        1
-    );
-}
-
-#[test]
-fn the_cli_prunes_audit_history_to_the_configured_retention() {
-    // The sweep runs in the binary once it has loaded its settings, so drive
-    // the binary: a setting no startup path reads is the failure this file is
-    // about.
-    // The child resolves its files from THURBOX_CONFIG_DIR/THURBOX_DATA_DIR,
-    // which `isolate` exports; `set_test_dir` steers only this process.
-    let home = isolate();
-    std::fs::write(
-        home.path().join("config/settings.toml"),
-        "audit_retention_days = 1\n",
-    )
-    .expect("write settings.toml");
-    let path = home.path().join("data/thurbox.db");
-    let db = thurbox::storage::Database::open(&path).expect("open");
-    let aged = |days: u64| thurbox::storage::current_time_millis() - days * 24 * 60 * 60 * 1000;
-    for (id, at) in [("aged", aged(5)), ("fresh", aged(0))] {
-        db.conn_ref()
-            .execute(
-                "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
-                 VALUES (?1, 'session', ?2, 'created')",
-                rusqlite::params![at as i64, id],
-            )
-            .expect("insert");
-    }
-    drop(db);
-
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-        .args(["version", "--json"])
-        .output()
-        .expect("run thurbox-cli");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let db = thurbox::storage::Database::open(&path).expect("reopen");
-    let kept: Vec<String> = db
-        .conn_ref()
-        .prepare("SELECT entity_id FROM audit_log WHERE entity_type = 'session' ORDER BY entity_id")
-        .expect("prepare")
-        .query_map([], |row| row.get(0))
-        .expect("query")
-        .collect::<Result<_, _>>()
-        .expect("rows");
-    assert_eq!(kept, ["fresh"], "the aged entry outlived a 1-day retention");
+    assert_eq!(config.in_force().git_poll_secs, 7);
 }
 
 // ── Reload ─────────────────────────────────────────────────────────────────
@@ -156,16 +81,16 @@ fn the_cli_prunes_audit_history_to_the_configured_retention() {
 #[test]
 fn a_live_change_on_disk_applies_without_a_restart() {
     let _home = isolate();
-    write_settings("[features]\nsoft_delete = true\n");
+    write_settings("[features]\nshell_pane = true\n");
     let (mut config, _) = Config::load();
-    assert!(config.features().soft_delete);
+    assert!(config.features().shell_pane);
 
-    write_settings("[features]\nsoft_delete = false\n");
+    write_settings("[features]\nshell_pane = false\n");
     // The poll is throttled and mtime-based; a fresh read is what the loop would
     // eventually do, so drive `adopt` with what the file now says.
     let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::Live);
-    assert!(!config.features().soft_delete);
+    assert!(!config.features().shell_pane);
 }
 
 #[test]
@@ -205,19 +130,19 @@ fn a_restart_only_change_is_reported_rather_than_implied() {
 #[test]
 fn an_unreadable_file_keeps_what_was_in_force() {
     let _home = isolate();
-    write_settings("[features]\nsoft_delete = false\n");
+    write_settings("[features]\nshell_pane = false\n");
     let (mut config, _) = Config::load();
-    assert!(!config.features().soft_delete);
+    assert!(!config.features().shell_pane);
 
     // Not valid TOML at all.
-    write_settings("[features\nsoft_delete = ???\n");
+    write_settings("[features\nshell_pane = ???\n");
     let outcome = config.poll();
     assert!(
         matches!(outcome, None | Some(Reloaded::Failed(_))),
         "{outcome:?}"
     );
     assert!(
-        !config.features().soft_delete,
+        !config.features().shell_pane,
         "a broken file must not silently reset a switch to its default"
     );
 }
@@ -225,11 +150,11 @@ fn an_unreadable_file_keeps_what_was_in_force() {
 #[test]
 fn our_own_write_is_not_reported_as_an_outside_edit() {
     let _home = isolate();
-    write_settings("[features]\nsoft_delete = true\n");
+    write_settings("[features]\nshell_pane = true\n");
     let (mut config, _) = Config::load();
 
     let mut edited = Settings::default();
-    edited.features.soft_delete = false;
+    edited.features.shell_pane = false;
     thurbox::config::settings::save_settings(&edited).expect("save");
     config.mark_saved();
 
@@ -263,7 +188,7 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     // The next visit, with the modal (and its draft) long since dropped: change
     // something else entirely.
     let mut draft = config.on_disk().clone();
-    draft.features.soft_delete = false;
+    draft.features.shell_pane = false;
     // Still `NeedsRestart`: the earlier change is pending until the next launch,
     // and saying otherwise would report it as applied.
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
@@ -274,7 +199,7 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
         !next_launch.features.mouse,
         "the restart-only change was reverted by an unrelated later save"
     );
-    assert!(!next_launch.features.soft_delete, "and the live one landed");
+    assert!(!next_launch.features.shell_pane, "and the live one landed");
 }
 
 /// The other half of the same rule: what is *in force* still refuses the
@@ -302,10 +227,10 @@ fn saving_preserves_the_files_comments() {
     let _home = isolate();
     write_settings(
         "# my notes about this profile\n\
-         audit_retention_days = 30\n",
+         git_poll_secs = 30\n",
     );
     let mut edited = Settings::default();
-    edited.features.soft_delete = false;
+    edited.features.shell_pane = false;
     thurbox::config::settings::save_settings(&edited).expect("save");
 
     let written = read_settings();
@@ -337,7 +262,7 @@ fn session_row() -> thurbox::kernel::snapshot::SessionRow {
         repos: vec!["thurbox".into()],
         branch: Some("fix/osc52".into()),
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,
         agent_session_id: None,
@@ -371,7 +296,7 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
     let (bindings, declared) = host.declarations();
     registry.declare(bindings, declared);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     let snapshot = thurbox::kernel::snapshot::Snapshot {
         sessions: vec![session_row()],
         ..Default::default()
@@ -477,36 +402,10 @@ fn confirmation(host: &thurbox::kernel::host::LuaHost, settings: &Settings) -> O
     )
 }
 
-fn with_soft_delete(on: bool) -> Settings {
-    let mut settings = Settings::default();
-    settings.features.soft_delete = on;
-    settings
-}
-
 #[test]
-fn deleting_with_soft_delete_on_asks_and_remains_reversible() {
+fn deleting_confirms_and_itemises_the_loss() {
     let host = host();
-    let settings = with_soft_delete(true);
-    publish_with(&host, &settings);
-    press(&host, "sessions", "ctrl+d");
-
-    assert!(host.drain_commands().is_empty());
-    assert!(confirmation(&host, &settings).is_some());
-    press(&host, "confirm", "y");
-    assert_eq!(
-        host.drain_commands(),
-        vec![thurbox::kernel::command::Command::Delete {
-            session: "11111111-1111-1111-1111-111111111111".into(),
-            force: false,
-        }],
-    );
-    assert!(confirmation(&host, &settings).is_none());
-}
-
-#[test]
-fn deleting_with_soft_delete_off_confirms_and_itemises_the_loss() {
-    let host = host();
-    let settings = with_soft_delete(false);
+    let settings = Settings::default();
     publish_with(&host, &settings);
     press(&host, "sessions", "ctrl+d");
 
@@ -543,7 +442,7 @@ fn deleting_with_soft_delete_off_confirms_and_itemises_the_loss() {
 #[test]
 fn declining_the_confirmation_deletes_nothing() {
     let host = host();
-    let settings = with_soft_delete(false);
+    let settings = Settings::default();
     publish_with(&host, &settings);
     press(&host, "sessions", "ctrl+d");
     assert!(confirmation(&host, &settings).is_some());
@@ -627,4 +526,31 @@ fn a_raised_column_threshold_leaves_only_the_central_pane() {
     .map(|slot| slot.slot)
     .collect();
     assert!(placed.iter().any(|slot| slot == "sessions"), "{placed:?}");
+}
+
+/// A v2 file names a key 3.0 no longer reads on every load. That notice must
+/// not stop a reload: a later edit to a live switch still applies.
+#[test]
+fn a_retired_key_does_not_block_a_live_reload() {
+    let _home = isolate();
+    write_settings("multiplexer = \"tmux\"\n[features]\nshell_pane = true\n");
+    let (mut config, warnings) = Config::load();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("`multiplexer` is no longer read")),
+        "{warnings:?}"
+    );
+
+    write_settings("multiplexer = \"tmux\"\n[features]\nshell_pane = false\n");
+    let path = thurbox::config::settings::settings_config_path().expect("path");
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|file| file.set_modified(later))
+        .expect("move the mtime");
+
+    assert_eq!(config.poll(), Some(Reloaded::Live));
+    assert!(!config.features().shell_pane, "the edit is in force");
 }

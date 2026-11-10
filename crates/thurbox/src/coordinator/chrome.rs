@@ -1,5 +1,5 @@
 //! The chrome the kernel paints itself, and the terminal the whole interface
-//! sits in: the host-service helpers (`snapshots_db`, the URL opener, the
+//! sits in: the host-service helpers (the URL opener, the
 //! editor launcher), the terminal-mode setup and teardown the loop and the
 //! panic hook share, and the rects and renderers for the error panel and the
 //! perf HUD.
@@ -12,15 +12,6 @@ use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 
 use thurbox::kernel::host::KeyPress;
-
-/// A connection for start-up's own reads and repairs, before the loop runs.
-///
-/// Never from the loop: opening one prunes aged history, a write that waits out
-/// the busy timeout while another process holds the write lock. The loop's
-/// database work goes through the snapshot store's worker (issue #1474).
-pub(crate) fn snapshots_db() -> Option<thurbox::storage::Database> {
-    thurbox::paths::database_file().and_then(|path| thurbox::storage::Database::open(&path).ok())
-}
 
 /// Can a link actually be opened here?
 ///

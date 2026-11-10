@@ -24,7 +24,7 @@ same sweep as the Task controller, through the Forge port.
 | [fleet-controllers](../../crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest, Forge, Gateway, Conversation and Listener decisions, and the plugin admission gate | Receives time and observations as values; returns probes and a plan without I/O. |
 | [fleet-api](../../crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
 | [fleet-store](../../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
-| [fleet-runtime](../../crates/fleet-runtime/src/lib.rs) | Session operations through any program speaking the [runtime protocol](../runtime/README.md#the-runtime-protocol) (`exec`), through thurbox, or the file-backed fake host; the protocol's conformance suite | Converts external answers to Known/Unknown; retains identity and delivery keys; shares no type with any runtime's code. |
+| [fleet-runtime](../../crates/fleet-runtime/src/lib.rs) | Session operations through any program speaking the [runtime protocol](../runtime/README.md#the-runtime-protocol) (`exec`), or the file-backed fake host; the protocol's conformance suite | Converts external answers to Known/Unknown; retains identity and delivery keys; shares no type with any runtime's code. |
 | [fleet-forge](../../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
 | [fleet-gateway](../../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API or Discord's REST API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
 | [fleet-plugin](../../crates/fleet-plugin/src/lib.rs) | Bounded calls to a registered plugin process through the `Plugins` port | The only crate that runs a plugin; every call is one bounded process through fleet-exec. |
@@ -129,8 +129,8 @@ The [initialization guide](configuration.md#configuration-and-customization) own
 managed/editable files, source provenance and startup/recovery instructions.
 
 The runtime is chosen in versioned TOML config, not a separate resource.
-Thurbox owns host connections and session execution. Fleet calls it through
-bounded processes; the fake runtime provides persisted fault injection for
+A runtime program owns host connections and session execution. Fleet calls
+it through bounded processes; the fake runtime provides persisted fault injection for
 isolated tests. Runtime operations report their worst-case duration so the
 CLI can reject a lease too short to outlast them.
 
@@ -174,9 +174,9 @@ port; the runtime runs the session in it.
 This split is the first step toward the
 [target architecture](architecture-target.svg), where Thurbox
 is one view among others and Fleet runs Sessions behind the runtime port.
-Workspace materialization, the agent's lifecycle hooks (`fleet signal`),
-proven delivery and the harness profiles have moved out of the Thurbox
-runtime adapter into Fleet. The `exec` runtime kind is built:
+Fleet owns workspace materialization, the agent's lifecycle hooks
+(`fleet signal`), proven delivery and the harness profiles. Every real
+runtime is the `exec` runtime kind:
 `[runtimes.<name>]` names a program that speaks the
 [runtime protocol](../runtime/README.md#the-runtime-protocol),
 `[hosts.<name>]` names the runtime serving each host, and `fleet init`
@@ -330,7 +330,7 @@ platform name appears above the port.
 The Task controller runs sessions and records worker claims. It does not
 verify that an artifact merged, conduct reviews, manage a forge or dispatch
 a hierarchy. Registered [controller plugins](controllers/plugin.md) define their
-own kinds and act through admitted plans. Connection details stay with thurbox;
+own kinds and act through admitted plans. Connection details stay with the runtime;
 credentials stay with the agent and host.
 
 V2 does not read or migrate v1 queue records or configuration. Root
@@ -370,9 +370,9 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
   starts one, and starts it again when it exits. A `fleet up` that exits with
   6 found the lease held, which is no error.
 
-`[fleet] enabled` in thurbox's `settings.toml` selects the Fleet engine at
-startup ([thurbox's configuration](../thurbox/config.md#fleet--the-session-engine)).
-Off, thurbox's own engine still runs the sessions over its database.
+Fleet is thurbox's only engine: `[fleet] program` in thurbox's
+`settings.toml` names the binary
+([thurbox's configuration](../thurbox/config.md#fleet--the-session-engine)).
 
 An interactive session is a Task with no brief: it spawns and waits for its
 user. Built: it stays Spawned with `Briefed=False/Interactive`, and its inbox

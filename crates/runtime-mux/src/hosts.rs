@@ -19,23 +19,24 @@ use crate::{HostDef, HostRegistry, WslRepairPlan};
 /// commented-out example, but no active hosts.
 pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hosts.toml
 #
-# Each [[hosts]] entry describes an off-local target thurbox can run agent
-# sessions on: a remote machine over SSH, or a local WSL distro. A host named
-# "<name>" registers a session backend ("ssh:<name>" or "wsl:<name>"), offered
-# in the new-session host picker (TUI) and selectable with
-# `thurbox-cli session create --host <name>`. The agent process, its tmux
-# window, and any git worktrees all live on the host (or inside the distro);
-# only the TUI runs locally.
+# runtime-mux's host config. Each [[hosts]] entry says how to reach an
+# off-local machine: a remote machine over SSH as "ssh:<name>", or a local WSL
+# distro as "wsl:<name>", and which multiplexer runs there (`multiplexer`, tmux
+# by default).
 #
-# SSH hosts: thurbox shells out to the system `ssh` binary, so authentication,
-# keys, and connection details all come from your ~/.ssh/config — thurbox never
-# handles credentials itself. The remote host needs `tmux` >= 3.2 and `git`.
+# Which host runs a session is Fleet's choice: Fleet's config names its hosts
+# ([hosts.<name>]) and the runtime that runs each. thurbox reads this file to
+# reattach a companion shell on such a host; its diffs, git stats and plugin
+# runs read this machine only, and a session on another host runs in its
+# directory there, with no worktree.
 #
-# WSL distros are AUTO-DISCOVERED (via `wsl.exe -l -q`) and appear in the host
-# picker with NO config here — only add a [[hosts]] entry with kind = "wsl"
-# when you want to override defaults (e.g. worktrees_dir). The distro needs
-# `tmux` >= 3.2 and `git` installed inside it; worktrees live in the distro's
-# own Linux filesystem (fast), not on /mnt/c.
+# SSH hosts: the system `ssh` binary is used, so authentication, keys, and
+# connection details all come from your ~/.ssh/config — no credentials are
+# handled here. The remote host needs `tmux` >= 3.2.
+#
+# WSL distros are AUTO-DISCOVERED (via `wsl.exe -l -q`) with NO config here —
+# only add a [[hosts]] entry with kind = "wsl" when you want to override
+# defaults (e.g. the distro name). The distro needs `tmux` >= 3.2 inside it.
 #
 # Running thurbox INSIDE a distro discovers its siblings, but never the distro
 # itself: that one is this machine, and a session on it is a plain local
@@ -57,8 +58,8 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 # Fields per [[hosts]] entry:
 #
 #   name           (string, required)
-#       Short, unique identifier. Registers the backend as "ssh:<name>" /
-#       "wsl:<name>" and is the value `--host` expects. Example: "devbox".
+#       Short, unique identifier. The host picker offers it as "ssh:<name>" /
+#       "wsl:<name>". Example: "devbox".
 #       May not contain ':' — that separates it from the multiplexer in a
 #       session's route — and an entry that does is ignored with a warning.
 #
@@ -85,9 +86,8 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       Host tmux session name that groups thurbox's windows.
 #
 #   worktrees_dir  (string, optional)
-#       Absolute directory (on the host / inside the distro) under which git
-#       worktrees are created. When unset, thurbox uses
-#       $HOME/.local/share/thurbox/worktrees there ($HOME resolved on first use).
+#       Read by thurbox 2.x, which made worktrees on the host. No effect since
+#       3.0: Fleet makes worktrees on its own machine only.
 #
 #   multiplexer    (string, optional, default: "tmux")
 #       Multiplexer binary on the host. Set to "psmux" when an SSH host is a
@@ -102,16 +102,9 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       A WSL distro is always POSIX, whatever this says.
 #
 #   share_sessions (bool, optional, default: true)
-#       The host's own thurbox database is the record of the sessions on it:
-#       thurbox mirrors that database into this one (a session made on the
-#       host, or by another thurbox reaching it, shows up here) and creates,
-#       deletes, restarts and restores sessions there by running the host's
-#       own `thurbox-cli` — which it provisions under
-#       ~/.local/share/thurbox/bin/ on the host when the host has none
-#       (a release archive of this thurbox's version, checksum-verified;
-#       a dev build ships its own binary under thurbox-dev/bin/ instead).
-#       Set to false to use the host exactly as before: worktrees and hooks
-#       driven from here, nothing mirrored, nothing installed there.
+#       Since 3.0 it only matters when `socket` is unset: false lets the
+#       default socket be used on the host. thurbox 2.x also mirrored the
+#       host's sessions; 3.0 mirrors nothing.
 #
 #   path_prepend   (array of strings, optional, default: [])
 #       Directories put first on the agent's PATH on the host. thurbox reads
@@ -123,13 +116,8 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       host's $HOME); anything else is ignored. Example: ["~/.local/bin"].
 #
 #   otel_endpoint  (string, optional, default: unset)
-#       The OTLP endpoint a session on this host exports to while
-#       settings.toml [telemetry] is on, as the HOST reaches it — the
-#       local `endpoint` would name the host itself there. Unset, sessions
-#       on the host get only their resource attributes. On a shared host
-#       the agent's pane is launched by the host's own CLI from the host's
-#       own [telemetry]; `session exec` and `agent launch-args` run from
-#       here still use this endpoint.
+#       Read by thurbox 2.x to point a host's agents at a collector. No effect
+#       since 3.0: Fleet's harness profiles configure an agent.
 #
 config_version = 1
 
@@ -138,10 +126,10 @@ config_version = 1
 # ──────────────────────────────────────────────────────────────────────────
 #
 # Relies on your ~/.ssh/config for auth and connection tuning. Registers the
-# "ssh:laptop" backend, selectable in the host picker / with --host laptop.
+# "ssh:laptop" host, selectable in the host picker.
 #
 # [[hosts]]
-# name = "laptop"               # → backend "ssh:laptop", value for --host
+# name = "laptop"               # → host "ssh:laptop"
 # destination = "me@laptop"     # "user@host" or a ~/.ssh/config Host alias
 #
 # ──────────────────────────────────────────────────────────────────────────
@@ -160,22 +148,19 @@ config_version = 1
 # # Optional overrides, shown with their defaults:
 # # socket = "thurbox"          # remote `tmux -L` socket; change to avoid a clash
 # # session = "thurbox"         # remote tmux session grouping thurbox windows
-# # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"  # abs remote path
 # # multiplexer = "tmux"        # set to "psmux" for a Windows remote host
 # # platform = "posix"          # "windows" for a Windows host (unset: psmux ⇒ windows)
 # # path_prepend = []           # e.g. ["~/.local/bin"]: first on the agent's PATH
-# # otel_endpoint = "http://localhost:4318"  # the host's own OTLP collector
 #
 # ──────────────────────────────────────────────────────────────────────────
 # WSL distro — only needed to OVERRIDE auto-discovery (distros appear with no
-# entry here). Use this to pin a custom worktrees_dir or distro name.
+# entry here). Use this to pin a distro name.
 # ──────────────────────────────────────────────────────────────────────────
 #
 # [[hosts]]
-# name = "ubuntu"               # → backend "wsl:ubuntu", value for --host
+# name = "ubuntu"               # → host "wsl:ubuntu"
 # kind = "wsl"
 # distro = "Ubuntu-22.04"       # the wsl.exe distro name (defaults to `name`)
-# # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"  # abs path in WSL
 "#;
 
 /// Where `hosts.toml` comes from: the embedder's config directory, injected.
@@ -281,7 +266,7 @@ pub fn load_all(config: &dyn HostsConfig) -> HostRegistry {
 /// distro, where interop puts it on `PATH` — and the callers on the TUI's hot
 /// paths (the snapshot rebuild, `session_ops::resolve_host` per diff request,
 /// the metrics/usage sampler, the command drain) were each paying that per
-/// call. The same reasoning as `git::remote::remote_home_cache`: `hosts.toml`
+/// call. `hosts.toml`
 /// is read once at startup — the backend registry is built from it then — so
 /// repointing a host already requires a restart, and this cache can never be
 /// staler than the registry it feeds.
@@ -464,7 +449,7 @@ pub fn served_host_names(config: &dyn HostsConfig) -> Result<HashSet<String>, St
     augment_with(&mut reg, config.discover_wsl_hosts()?);
     let loopback = loopback
         .iter()
-        .filter_map(|name| Some(crate::Route::parse(name).ok()?.host()?.to_string()));
+        .filter_map(|name| crate::host::host_of_key(name).map(str::to_string));
     Ok(reg
         .hosts
         .into_iter()

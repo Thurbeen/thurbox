@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use super::execute::{Engine, Outcome};
+use super::execute::Outcome;
 use super::fleet::Fleet;
 use super::{Command, Executor};
 
@@ -80,22 +80,15 @@ pub(super) struct Progress {
 struct Done {
     id: u64,
     error: Option<String>,
-    /// Succeeded having done nothing ([`Outcome::Nothing`]).
-    did_nothing: bool,
 }
 
 impl Done {
     fn from_result(id: u64, result: Result<Outcome, String>) -> Self {
         match result {
-            Ok(outcome) => Self {
-                id,
-                error: None,
-                did_nothing: outcome == Outcome::Nothing,
-            },
+            Ok(Outcome::Done) => Self { id, error: None },
             Err(error) => Self {
                 id,
                 error: Some(error),
-                did_nothing: false,
             },
         }
     }
@@ -117,42 +110,16 @@ pub struct CommandBus {
     pending: Arc<Mutex<SessionQueues>>,
     /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
-    /// Commands that succeeded having done nothing, until the loop asks
-    /// ([`Self::take_did_nothing`]). A success leaves the in-flight list at
-    /// once, so this is the only place that fact survives to be reported.
-    did_nothing: std::collections::HashSet<u64>,
-    /// What runs each command: thurbox's own engine or Fleet.
+    /// What runs each command: Fleet, through its command line.
     executor: Arc<dyn Executor>,
 }
 
 impl CommandBus {
-    /// A bus over thurbox's own engine: the process's one backend registry,
-    /// and the reap sweep's `deleted_retention_days` as `settings` say.
-    pub fn new(
-        backends: Arc<crate::backend::BackendRegistry>,
-        settings: &crate::session::settings::Settings,
-    ) -> Self {
-        Self::with_executor(Arc::new(Engine {
-            backends,
-            deleted_retention_days: settings.deleted_retention_days,
-        }))
-    }
-
     /// A bus whose session commands act through Fleet's command line,
-    /// `program` (ADR-41): `fleet apply`, `send` and `delete`. Every other
-    /// command runs on thurbox's own engine, built as [`Self::new`] builds it.
-    pub fn fleet(
-        program: std::path::PathBuf,
-        backends: Arc<crate::backend::BackendRegistry>,
-        settings: &crate::session::settings::Settings,
-    ) -> Self {
-        Self::with_executor(Arc::new(Fleet {
-            program,
-            engine: Engine {
-                backends,
-                deleted_retention_days: settings.deleted_retention_days,
-            },
-        }))
+    /// `program` (ADR-41): `fleet apply`, `send` and `delete`. The interface's
+    /// own files (settings, repository memory) are written here.
+    pub fn fleet(program: std::path::PathBuf) -> Self {
+        Self::with_executor(Arc::new(Fleet { program }))
     }
 
     fn with_executor(executor: Arc<dyn Executor>) -> Self {
@@ -167,7 +134,6 @@ impl CommandBus {
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed_at: Vec::new(),
-            did_nothing: std::collections::HashSet::new(),
             executor,
         }
     }
@@ -176,9 +142,6 @@ impl CommandBus {
     /// same non-empty session execute in dispatch order; other work is independent.
     pub fn dispatch(&self, command: Command) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if command.is_housekeeping() {
-            return self.dispatch_housekeeping(command, id);
-        }
         let entry = InFlight {
             id,
             kind: command.kind(),
@@ -240,23 +203,6 @@ impl CommandBus {
         id
     }
 
-    /// Run background housekeeping on a worker, unrecorded.
-    ///
-    /// Deliberately touches neither the in-flight list nor the completion
-    /// channel: a row there is drawn, captioned and counted as activity, while
-    /// this work needs no separate interface activity — see
-    /// [`Command::is_housekeeping`]. Its failures go to the log.
-    fn dispatch_housekeeping(&self, command: Command, id: u64) -> u64 {
-        let progress = self.progress_tx.clone();
-        let executor = Arc::clone(&self.executor);
-        std::thread::spawn(move || {
-            if let Err(e) = executor.execute(&command, id, &progress) {
-                tracing::warn!(command = command.kind(), "housekeeping failed: {e}");
-            }
-        });
-        id
-    }
-
     /// Report a command finished, as a worker would.
     ///
     /// The worker path is a thread and a channel; a test that wants to observe
@@ -264,27 +210,7 @@ impl CommandBus {
     /// thread.
     #[doc(hidden)]
     pub fn finish_for_test(&self, id: u64, error: Option<String>) {
-        let _ = self.finished_tx.send(Done {
-            id,
-            error,
-            did_nothing: false,
-        });
-    }
-
-    /// [`Self::finish_for_test`] for a command that succeeded having done
-    /// nothing.
-    #[doc(hidden)]
-    pub fn finish_doing_nothing_for_test(&self, id: u64) {
-        let _ = self
-            .finished_tx
-            .send(Done::from_result(id, Ok(Outcome::Nothing)));
-    }
-
-    /// Whether a finished command succeeded having done nothing — a repair
-    /// whose session was deleted, or that stood down. Answered once: the fact
-    /// is forgotten as it is read.
-    pub fn take_did_nothing(&mut self, id: u64) -> bool {
-        self.did_nothing.remove(&id)
+        let _ = self.finished_tx.send(Done { id, error });
     }
 
     /// Fold finished commands into the in-flight list.
@@ -330,9 +256,6 @@ impl CommandBus {
                 // nothing left to say.
                 None => {
                     list.retain(|entry| entry.id != done.id);
-                    if done.did_nothing {
-                        self.did_nothing.insert(done.id);
-                    }
                 }
                 Some(error) => {
                     if let Some(entry) = list.iter_mut().find(|entry| entry.id == done.id) {

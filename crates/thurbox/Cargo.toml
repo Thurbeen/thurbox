@@ -23,6 +23,9 @@ categories = ["command-line-utilities"]
 # The multiplexer runtime: session backends, hosts and launchers (ADR-41).
 # Linked directly until Fleet drives the runtimes; crates/architecture.toml.
 runtime-mux = { path = "../runtime-mux" }
+# An exec automation runs in a process group (a job object on Windows), so
+# its deadline ends what it started too.
+process-wrap = { workspace = true }
 # The stream pane speaks the terminal stream (kernel::terminal::stream_pane).
 term-stream = { path = "../term-stream" }
 
@@ -77,17 +80,12 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.0"
 toml_edit = "0.25"
 
-# Storage
-rusqlite = { version = "0.41", features = ["bundled"] }
-
-# OpenTelemetry export of thurbox's own session metrics and session event logs
-# (ADR-37, `telemetry`), and of the interface's own diagnostic logs through the
+# OpenTelemetry export of the interface's own diagnostic logs through the
 # tracing bridge (ADR-38). OTLP over HTTP/protobuf with reqwest's blocking
-# client: `thurbox-cli automation tick` runs without a tokio runtime, and the
-# interface's batch processor exports from a thread of its own.
-opentelemetry = { version = "0.33.1", default-features = false, features = ["metrics", "logs"] }
-opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["metrics", "logs"] }
-opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["metrics", "logs", "http-proto", "reqwest-blocking-client"] }
+# client: the interface's batch processor exports from a thread of its own.
+opentelemetry = { version = "0.33.1", default-features = false, features = ["logs"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["logs"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client"] }
 opentelemetry-appender-tracing = { version = "0.33.1", default-features = false }
 
 # System metrics

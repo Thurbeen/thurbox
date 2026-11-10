@@ -4,7 +4,7 @@
 -- `store.confirm`:
 --
 --   store.confirm = {
---     question = "Delete fix-osc52 and its worktree?",
+--     question = "Delete fix-osc52 for good?",
 --     lines = { "3 uncommitted files", "2 commits not on origin" },
 --     command = "delete",
 --     options = { session = id, force = true },
@@ -18,8 +18,8 @@
 -- question: `store` is written by every pane and this one holds `sessions`, so a
 -- question is only its author's words. The pane that asked is named beside it.
 --
--- v1 has two bespoke modals for this (`ConfirmDelete`, `ConfirmRestore`), each
--- with the risk assessment welded in.
+-- v1 has a bespoke modal for this (`ConfirmDelete`), with the risk assessment
+-- welded in.
 
 local modal = require("lib.modal")
 local theme = require("lib.theme")
@@ -30,35 +30,22 @@ local widgets = require("lib.widgets")
 --- `store` is written by every pane, and this one holds `sessions` because it
 --- ships with thurbox — so anything it would forward, any pane could issue
 --- through it. A `send` or a `create` behind a question its author wrote is the
---- capability laundered, so only the changes the shipped panes ask about pass.
-local FORWARDS = { delete = true, restart = true, restore = true, sync = true }
+--- capability laundered, so only the change the shipped panes ask about passes.
+local FORWARDS = { delete = true }
 
---- A session's name, from the live list or the restore list, for the line
---- that says what will happen to it.
+--- A session's name, for the line that says what will happen to it.
 local function session_name(id)
-  for _, rows in ipairs({ thurbox.sessions or {}, thurbox.deleted or {} }) do
-    for _, row in ipairs(rows) do
-      if row.id == id then
-        return row.name or id
-      end
+  for _, row in ipairs(thurbox.sessions or {}) do
+    if row.id == id then
+      return row.name or id
     end
   end
   return id or "a session"
 end
 
 --- What `y` will do, in words made here from the command it issues.
-local function consequence(kind, options)
-  local name = session_name(options.session)
-  if kind == "delete" then
-    return options.force and ("Delete " .. name .. " and its worktree for good")
-      or ("Delete " .. name)
-  elseif kind == "restart" then
-    return "Restart " .. name
-  elseif kind == "restore" then
-    return options.force and ("Restore " .. name .. " with only its committed work")
-      or ("Restore " .. name)
-  end
-  return "Sync " .. name .. " with the branch it came from"
+local function consequence(_, options)
+  return "Delete " .. session_name(options.session) .. " for good"
 end
 
 --- The request this last drew, which is the one `y` issues.
@@ -84,7 +71,7 @@ end
 
 return {
   name = "confirm",
-  -- A force delete and a restart are issued from here, on the user's `y`.
+  -- A delete is issued from here, on the user's `y`.
   -- Granted without asking while this file is the one thurbox ships.
   capabilities = { "sessions" },
   ui_state = function()

@@ -2,7 +2,8 @@
 
 Each adapter creates sessions the way that host's own documentation says to do
 it headlessly, and nothing cleverer: ``tmux new-window``, Herdr's ``tab create``
-plus ``pane run``, ``thurbox-cli session create --command``. The scenarios only
+plus ``pane run``, and for thurbox a Fleet Task (``fleet apply``) that the
+``fleet up`` it runs on spawns. The scenarios only
 ever talk to this interface, so a number in the report is never one host's
 special path against another's general one.
 
@@ -212,8 +213,9 @@ class Tmux(Host):
 
 HERDR_CONFIG = f"""\
 # Hermetic benchmark config. `onboarding = false` is what finishing the
-# first-run welcome writes, answered here for the same reason thurbox's v2
-# question is. The headless size matches the size tmux sessions are created at.
+# first-run welcome writes: a returning user never sees it, so it is answered
+# here rather than timed. The headless size matches the size tmux sessions are
+# created at.
 # No network. Everything else default.
 onboarding = false
 
@@ -342,6 +344,8 @@ class Herdr(Host):
         return {"herdr": self.herdr("--version").stdout.strip()}
 
 
+
+
 # --- thurbox -------------------------------------------------------------------
 
 
@@ -353,10 +357,36 @@ version_check = false
 auto_update = false
 """
 
+# thurbox runs every session as a Fleet Task (ADR-41), on the runtime-mux
+# runtime. `fleet up` refuses to start without a starter Task/vega; this one is
+# never dispatched, so no agent runs for it. Same shape as
+# scripts/dev/lib/sandbox-env.sh's tbx_sandbox_fleet.
+FLEET_CONFIG = """\
+version = 1
+
+[data]
+dir = "store"
+
+[runtimes.mux]
+program = "{runtime}"
+callTimeoutMs = 10000
+keyPrefix = "bench"
+
+[hosts.local]
+runtime = "mux"
+
+[starter]
+workspace = "starter"
+"""
+
+#: The socket runtime-mux keeps the sessions on, named outright so teardown can
+#: find it by name.
+THURBOX_SOCKET = "bench-thurbox"
+
 
 class Thurbox(Host):
     name = "thurbox"
-    # Ctrl+Q, the kernel's reserved quit: the interface exits and tmux keeps
+    # Ctrl+Q, the kernel's reserved quit: the interface exits and Fleet keeps
     # the sessions.
     detach_keys = b"\x11"
 
@@ -365,35 +395,90 @@ class Thurbox(Host):
         env = sandbox.env
         env["THURBOX_CONFIG_DIR"] = os.path.join(env["XDG_CONFIG_HOME"], "thurbox")
         env["THURBOX_DATA_DIR"] = os.path.join(env["XDG_DATA_HOME"], "thurbox")
-        # Named outright, like scripts/dev/lib/sandbox-env.sh does, so teardown
-        # can find it by name.
-        env["THURBOX_SOCKET"] = "bench-thurbox"
+        env["RUNTIME_MUX_SOCKET"] = THURBOX_SOCKET
         os.makedirs(env["THURBOX_CONFIG_DIR"], exist_ok=True)
         os.makedirs(env["THURBOX_DATA_DIR"], exist_ok=True)
         with open(os.path.join(env["THURBOX_CONFIG_DIR"], "settings.toml"), "w") as f:
             f.write(THURBOX_SETTINGS)
+        fleet_dir = os.path.join(env["XDG_CONFIG_HOME"], "fleet")
+        os.makedirs(os.path.join(fleet_dir, "starter"), exist_ok=True)
+        env["FLEET_CONFIG"] = os.path.join(fleet_dir, "config.toml")
+        with open(env["FLEET_CONFIG"], "w") as f:
+            f.write(FLEET_CONFIG.format(runtime=tools["runtime-mux"]))
+        vega = {
+            "apiVersion": "fleet/v1alpha1",
+            "kind": "Task",
+            "metadata": {"name": "vega"},
+            "spec": {
+                "harness": "sh",
+                "host": "local",
+                "workspace": {"dir": sandbox.work},
+                "dispatch": False,
+            },
+        }
+        with open(os.path.join(fleet_dir, "starter", "task.json"), "w") as f:
+            json.dump([vega], f)
         self.cli = tools["thurbox-cli"]
+        self.fleet_bin = tools["fleet"]
+        self.runtime = tools["runtime-mux"]
         self.tui = tools["thurbox"]
-        self.tmux_base = [tools["tmux"], "-L", "bench-thurbox"]
-        # The one-time "this is the v2 interface" question a profile is asked on
-        # its first launch. A returning user never sees it, so it is answered
-        # here rather than timed.
-        self.thurbox("config", "accept-interface")
+        self.tmux_base = [tools["tmux"], "-L", THURBOX_SOCKET]
+        self.manager = None
 
-    def thurbox(self, *args, check=True):
-        return self.sb.run([self.cli] + list(args), check=check)
+    def fleet(self, *args, check=True, input=None):
+        return self.sb.run([self.fleet_bin] + list(args), check=check, input=input)
+
+    def start_manager(self):
+        """The `fleet up` that spawns the sessions, as a user running thurbox
+        headlessly keeps one (the interface starts one when none runs)."""
+        self.manager = subprocess.Popen(
+            [self.fleet_bin, "up"],
+            env=self.sb.env,
+            cwd=self.sb.work,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     def create(self, name):
-        args = ["session", "create", "--name", name, "--repo-path", self.sb.work, "--json"]
-        agent = self.sb.agent_argv(name)
-        args += ["--command", agent[0]]
-        for a in agent[1:]:
-            args += ["--arg", a]
-        self.thurbox(*args)
+        # A harness is one program: a wrapper `exec`s the agent, so the
+        # session still runs one process, the stand-in agent's own.
+        wrapper = os.path.join(self.sb.agents, f"{name}.sh")
+        with open(wrapper, "w") as f:
+            f.write("#!/bin/sh\nexec " + shlex.join(self.sb.agent_argv(name)) + "\n")
+        os.chmod(wrapper, 0o755)
+        task = {
+            "apiVersion": "fleet/v1alpha1",
+            "kind": "Task",
+            "metadata": {"name": name, "labels": {"thurbox.dev/name": name}},
+            "spec": {
+                "harness": wrapper,
+                "host": "local",
+                "workspace": {"dir": self.sb.work},
+                "dispatch": True,
+            },
+        }
+        self.fleet("apply", "--create-only", "-f", "-", input=json.dumps(task))
+        if self.manager is None or self.manager.poll() is not None:
+            self.start_manager()
         self.names.append(name)
 
+    def managers(self):
+        """Every live `fleet up` of this sandbox: ours, and one an interface
+        started, which thurbox names its log after (`fleet-up-<pid>.log`)."""
+        pids = []
+        if self.manager is not None and self.manager.poll() is None:
+            pids.append(self.manager.pid)
+        data = self.sb.env["THURBOX_DATA_DIR"]
+        for entry in os.listdir(data) if os.path.isdir(data) else []:
+            pid = entry.removeprefix("fleet-up-").removesuffix(".log")
+            if entry.startswith("fleet-up-") and pid.isdigit() and bl.start_time(int(pid)):
+                pids.append(int(pid))
+        return pids
+
     def server_pids(self):
-        return self._tmux_server_pid(self.tmux_base)
+        return self._tmux_server_pid(self.tmux_base) + self.managers()
 
     def client_argv(self):
         return [self.tui]
@@ -404,29 +489,48 @@ class Thurbox(Host):
         client.write(b"\r")
 
     def capture(self, name, lines):
-        n = str(lines if lines is not None else 10_000_000)
-        return self.thurbox("session", "capture", name, "--lines", n, "--text").stdout
+        # The runtime protocol's `capture`, on the key Fleet started the
+        # session under.
+        task = json.loads(self.fleet("get", "task", name).stdout)
+        request = {
+            "protocol": 1,
+            "key": task["status"]["session"]["id"],
+            "lines": lines if lines is not None else 10_000_000,
+        }
+        out = self.sb.run([self.runtime, "capture"], input=json.dumps(request))
+        answer = json.loads(out.stdout)
+        if not isinstance(answer.get("known"), dict):
+            raise RuntimeError(f"runtime-mux capture of {name}: {answer}")
+        return answer["known"]["screen"]["text"]
 
     def teardown(self):
+        # SIGTERM: a manager finishes its sweep and releases its lease.
+        for pid in self.managers():
+            bl.kill_tree(pid, sig=signal.SIGTERM, started=bl.start_time(pid))
+        if self.manager is not None:
+            try:
+                self.manager.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                bl.kill_tree(self.manager.pid)
         self._kill_tmux_server(self.tmux_base)
 
     def recover(self):
-        # What brings a thurbox session back after its tmux server died is the
-        # interface, which respawns every row it surveys without a pane.
+        # What brings the sessions back after their server died is a `fleet
+        # up`, which revives every unfinished Task's session; the interface
+        # starts one when none holds the lease.
         return "client"
 
     def layout_after_restart(self):
-        out = self.thurbox("session", "list", "--json", check=False)
+        out = self.fleet("list", "task", "--json", check=False)
         if out.returncode != 0:
             return {"listed": 0}
-        rows = json.loads(out.stdout)
-        rows = rows.get("sessions", rows) if isinstance(rows, dict) else rows
-        return {"listed": len(rows)}
+        listed = {t["metadata"]["name"] for t in json.loads(out.stdout)}
+        return {"listed": len(listed & set(self.names))}
 
     def versions(self):
-        # Only the version and schema: the rest of the answer is paths.
-        out = json.loads(self.thurbox("version", "--json").stdout)
-        return {"thurbox": f"{out['version']} (schema v{out['schema_version']})"}
+        out = json.loads(self.sb.run([self.cli, "version", "--json"]).stdout)
+        fleet = json.loads(self.fleet("version", "--json").stdout)
+        return {"thurbox": out["version"], "fleet": fleet.get("version", "?")}
 
 
 HOSTS = {"tmux": Tmux, "herdr": Herdr, "thurbox": Thurbox}

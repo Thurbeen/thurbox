@@ -39,10 +39,10 @@ copy, as `init --update` does.
 After the first `up`, the harness of `Task/vega` is immutable.
 `init --harness` refuses a different harness at that point.
 
-Fleet trusts the `codex`, `claude` and `claude-code` harnesses in their
-workspaces by default. For another harness, set
-[`runtime.workspaceTrust`](#native-fleet-configuration-fleettoml) before the first `up`. Without that
-entry, `Task/vega` waits and starts no session.
+Fleet starts the `codex` harness with a launch override that trusts its
+workspace. Claude Code can show its trust dialog in a new workspace. Fleet
+never answers that dialog: trust the folder once in the session, and the
+brief follows. See [workspace trust](contracts.md#workspace-trust).
 
 ### Running `fleet up`
 
@@ -100,10 +100,9 @@ per-instance session key prefix. It writes
 edit it to change the bound. `[starter] workspace` selects the workspace.
 Its `task.json` is a runnable JSON array containing one Task. Before first
 `up`, edit its brief and customize `AGENTS.md`, prompts and skills.
-To set `spec.model` on the thurbox runtime, first configure the matching `[runtime.modelEnv]`
-harness-to-variable mapping; the starter does not assume a Codex model
-environment variable. A runtime under `[runtimes]` refuses a Task that sets
-`spec.model`: it has no such mapping yet. After creation, reconnect keeps the stored immutable
+No runtime under `[runtimes]` passes a model to its harness: it refuses a
+Task that sets `spec.model`. Give the model in the harness's own
+configuration instead. After creation, reconnect keeps the stored immutable
 Task inputs. Updated instructions can be read from the workspace; changing
 Task inputs requires deliberate deletion/recreation after session release.
 VEGA's rendered brief names the exact config file for all Task operations and
@@ -202,8 +201,8 @@ for data roots, managed files, conflict handling and per-instance paths.
 Relative `data.dir`, `runtime.dir`, `starter.workspace`, a fake forge host's
 `dir` and a fake gateway account's `dir` resolve beside the TOML file. A
 runtime executable should be a PATH name or absolute path;
-`runtimes.<name>.program` and `runtime.cli` are passed to process execution
-without rebasing them beside TOML.
+`runtimes.<name>.program` is passed to process execution without rebasing it
+beside TOML.
 Provider source paths are always absolute and manager-local, even for remote
 Tasks; they never inherit TOML's relative-path rule.
 
@@ -244,31 +243,11 @@ For ordinary `apply`/`reconcile`, the starter section is optional. A second
 Fleet installation on the same runtime needs a distinct `keyPrefix`. Store,
 workspace and config must remain separate paths.
 
-### Thurbox and fake runtimes
+### Fake runtime
 
-`[runtime]`, a single table, configures the thurbox adapter, which drives
-`thurbox-cli`, or the offline fake. It excludes `[runtimes]` and `[hosts]`:
-a file with both is refused. The thurbox adapter is kept while thurbox moves
-onto Fleet, and goes with thurbox's own session engine.
-
-```toml
-version = 1
-
-[data]
-dir = "store"
-
-[runtime]
-kind = "thurbox"
-cli = "thurbox-cli"
-callTimeoutMs = 15000
-keyPrefix = "fleet"
-
-[runtime.modelEnv]
-claude-code = "ANTHROPIC_MODEL"
-```
-
-A second Fleet installation talking to the same Thurbox hosts needs a
-distinct `keyPrefix`.
+`[runtime]`, a single table, configures the offline fake runtime for tests
+and trials. It excludes `[runtimes]` and `[hosts]`: a file with both is
+refused. See the [offline fake-runtime example](#offline-fake-runtime-example).
 
 ### Fields
 
@@ -281,17 +260,11 @@ distinct `keyPrefix`.
 | `runtimes.<name>.callTimeoutMs` | `15000` | Bound for each call, 1 to 300000; the manager lease must outlast the runtime's reported worst case. |
 | `runtimes.<name>.keyPrefix` | `fleet` | The first part of every key Fleet gives the runtime, `<keyPrefix>.<uid>`; at most 32 lowercase letters, digits and `-`. |
 | `hosts.<name>.runtime` | Required for each host | The `[runtimes.<name>]` serving the host. A host naming no runtime, and a runtime no host names, are refused at load. A Task whose `spec.host` is not listed fails its spawn. |
-| `runtime.kind` | Required when configuring `[runtime]` | `thurbox` or `fake`; excludes `[runtimes]` and `[hosts]`. |
-| `runtime.cli` | Thurbox: PATH `thurbox-cli` (`thurbox-cli.exe` on Windows) | Bounded Thurbox CLI executable. |
-| `runtime.callTimeoutMs` | Thurbox: `15000` | Bound for each Thurbox call; manager lease must outlast the runtime's reported worst case. |
-| `runtime.keyPrefix` | Thurbox: `fleet` | Session identity prefix; at most 32 lowercase letters/digits/`-`, starting/ending with letter/digit. |
-| `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
-| `runtime.repositories` | Empty | The thurbox or fake runtime's older place for `workspaces.repositories`; the two are one map, and a URL in both is refused at load. Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees. A `file://` URL needs no entry: it names a directory used as it is. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-the-repository-map). |
-| `runtime.workspaceTrust` | Thurbox: `codex` is `codex`; `claude` and `claude-code` are `claude` | Harness name to its workspace-trust interface: `codex`, `claude` or `none`. Any other value is refused at load. A Task whose harness is not listed starts no session and waits in Pending with `TrustUnmapped`; the refusal spends no spawn attempt. A running `fleet up` applies a new entry after a restart. See [workspace trust](contracts.md#workspace-trust). |
+| `runtime.kind` | Required when configuring `[runtime]` | `fake`; excludes `[runtimes]` and `[hosts]`. |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
 | `workspaces.kind` | `worktree`; `fake` with the fake runtime and no section | `worktree` or `fake`. Fleet makes each `repositories` workspace before the spawn and cleans it after the release, with or without this section; the section only picks the adapter and its settings. See [the workspace port](contracts.md#workspace-contract). |
 | `workspaces.root` | Worktree: `<data dir>/workspaces` | The directory that holds every workspace on the local host, relative to this config file. |
-| `workspaces.repositories` | Empty | Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees, whatever the runtime: `[runtimes.<name>]` included. The same rules as `runtime.repositories`, which adds to it. A running `fleet up` reloads it; see [Reloading](#reloading-the-repository-map). |
+| `workspaces.repositories` | Empty | Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees, whatever the runtime. A `file://` URL needs no entry: it names a directory used as it is. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. With `[runtimes]`, a running `fleet up` reloads this table; see [Reloading](#reloading-the-repository-map). |
 | `workspaces.git` | Worktree: PATH `git` | The `git` executable. |
 | `workspaces.callTimeoutMs` | Worktree: `30000` | Bound for each `git` command. The manager lease must outlast the adapter's reported worst case. |
 | `workspaces.branchPrefix` | Worktree: `fleet` | The first part of each workspace branch, `<branchPrefix>/<session key>`. Lowercase letters, digits and `-`. |
@@ -305,9 +278,9 @@ resource commands in one workflow should use the same `--config` path.
 
 #### Reloading the repository map
 
-`fleet up` reads this file again before each sweep. It applies the
-repository map (`workspaces.repositories` and `runtime.repositories`) only,
-so a new mapping needs no restart:
+With `[runtimes]`, `fleet up` reads this file again before each sweep. It
+applies the repository map (`workspaces.repositories`) only, so a new mapping
+needs no restart:
 
 - A valid file replaces the map. The next spawn uses it, and a Task waiting
   with `RepositoryUnmapped` spawns at its next retry.
@@ -316,27 +289,6 @@ so a new mapping needs no restart:
 - A change to any other setting is not applied. `fleet up` reports it once
   and asks for a restart. A running process never switches its store, lease
   holder, runtime or key prefix.
-
-`runtime.modelEnv` extends/overrides the built-in `claude` and `claude-code`
-entries, both `ANTHROPIC_MODEL`. An explicit/inherited Task model requires a
-mapping for its selected harness; Fleet does not invent a Codex variable.
-Choose the variable supported by the installed harness. Model selection wins
-over the same environment key from providers or Task overrides. For configured
-Tasks, both variable selection and value freeze with the private launch
-snapshot; later TOML mapping changes do not alter that execution.
-
-`runtime.workspaceTrust` extends/overrides the built-in entries, which come
-from the [harness profiles](controllers/task.md#harness-profiles). The keys are
-thurbox agent names, so map each alias of an agent, such as
-`codex-coder = "codex"`. Map `codex`
-only to a harness that runs Codex: the interface puts Codex's `-c` option on
-the harness's command line, and another harness reads `-c` differently.
-Claude Code reads it as `--continue`. Set `none`
-only for a harness that has no workspace-trust gate. `none` approves nothing
-for a harness that has one: that harness can then receive its brief inside a
-trust prompt. Codex keeps only the last `-c projects=` it is given. Keep any
-other roots you trust in the `[projects]` table of Codex's `config.toml`,
-which merges with Fleet's override.
 
 Every session Fleet starts gets `FLEET_SIGNAL_FILE` in its environment: the
 file under `<data dir>/signals` its hooks append to through `fleet signal`
@@ -576,7 +528,7 @@ workspace = { dir = "/work/anywhere" }
 | `gateway.reactions` | On: `queued = "hourglass_flowing_sand"`, `working = "eyes"`, `replied = "white_check_mark"` | The reactions that mark a person's message: `queued` while admission holds the request for its Task, `working` once the Task exists or Fleet relayed the message to it, when `queued` is removed, and `replied` once Fleet posted in the thread, when `working` is removed. Each is a platform emoji name, which each adapter maps as its [adapter page](controllers/gateway-adapters.md#capabilities) says. A name left out keeps its default. `false` turns reactions off, and `true` keeps the defaults. Refused when a name is empty or holds whitespace, when two name one emoji, or for another key. |
 | `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, `discord`, or `fake` with a `dir`, in this build, and later `telegram` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity (Slack: the team or enterprise id, optional; Discord: the guild id, required); `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart (Discord: a snowflake, as is `team`); `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; Discord: `discord-gateway`, an authenticated connection; `fake`: `connection`), and an envelope claiming another is refused; `messageContent`, Discord only, default `false`, whether the application holds the privileged message content intent, which sets the `intents` that `fleet gateway account` prints; `cli`, default `curl`, and the platform's credential reference, here `curlConfig`, required for Slack and Discord, an absolute path Fleet passes to `curl -K` and never reads. The [Slack](controllers/gateway-adapters.md#configuration) and [Discord](controllers/gateway-adapters.md#configuration-1) adapter pages list each platform's keys and errors. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
-| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, `"*"`, the wildcard, or `"dm:*"`, the DM entry (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host (the thurbox runtime creates it on the local host only), recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel id belongs to at most one route. A route lists at least one channel and names at least one person in `allow` or one bot in `allowBots`. |
+| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, `"*"`, the wildcard, or `"dm:*"`, the DM entry (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel id belongs to at most one route. A route lists at least one channel and names at least one person in `allow` or one bot in `allowBots`. |
 
 A wildcard route has `"*"` in `channels`. It covers every channel of its
 account that the account's listener delivers, with these exceptions:
@@ -693,8 +645,8 @@ Each Fleet process reads its own environment. Set the variables where
 `fleet up` runs to export the manager's sweeps. Set them for a worker's
 session to export that worker's `fleet result` and `fleet declare` calls.
 
-A session never inherits the manager's `OTEL_*` variables. The runtime
-removes them from each `thurbox-cli` call. A session receives only the
+A session never inherits the manager's `OTEL_*` variables. A session receives
+only the
 `OTEL_*` variables that its Task declares in `spec.env`, a TaskConfig or an
 EnvProvider.
 

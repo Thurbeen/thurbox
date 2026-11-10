@@ -6,9 +6,9 @@
 //! **backend** at startup ([`detect_backend`]):
 //!
 //! - **dbus** (`org.freedesktop.Notifications`) on a normal Linux desktop.
-//!   Click-to-focus works: the dbus action callback writes a
-//!   `pending_focus_session_id` into the SQLite `metadata` table, which the
-//!   running TUI picks up next tick via its normal external-state poll.
+//!   Click-to-focus works: the dbus action callback, a thread of the TUI's own
+//!   process, leaves the session for the loop to take
+//!   ([`take_focus_request`]).
 //! - **Windows toast** under WSL when no dbus notification daemon is reachable.
 //!   We shell out to `powershell.exe` and raise a WinRT toast, so notifications
 //!   appear in the Windows Action Center. Click-to-focus is *not* supported on
@@ -35,12 +35,10 @@
 //! channel, so the UI tick is never stalled by a slow/missing notification
 //! daemon.
 //!
-//! Architecture: leaf module. Depends only on `session` (the `SessionId` /
-//! `NotificationBackend` types) and `paths` (for the DB path the click callback
-//! writes to). Never reaches into `app` / `agent` / `ui`.
+//! Architecture: leaf module. Depends only on `session` (the
+//! `NotificationBackend` type) and `paths`. Never reaches into `app` /
+//! `agent` / `ui`.
 
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
@@ -50,7 +48,6 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use crate::session::settings::NotificationBackend;
-use crate::session::{SessionId, PENDING_FOCUS_SESSION_ID_KEY};
 
 /// The resolved delivery mechanism, decided once at startup from the
 /// configured [`NotificationBackend`] plus host probing. This is the concrete
@@ -104,9 +101,10 @@ impl DeliveryBackend {
 /// One notification to fire. Cheap to clone/move across the channel.
 #[derive(Debug, Clone)]
 pub struct Notification {
-    /// Stable session identifier — also the value written into the
-    /// `pending_focus_session_id` metadata key when the user clicks.
-    pub session_id: SessionId,
+    /// The session's id as the snapshot carries it (a Fleet Task's name) —
+    /// also what a click asks the loop to focus. Empty for a notification no
+    /// session raised (`thurbox-cli notify`), which a click focuses nothing for.
+    pub session_id: String,
     /// Title shown by the OS (e.g. `"my-feature · claude"`).
     pub title: String,
     /// Body text (e.g. the agent's last OSC notification message, or a
@@ -124,6 +122,13 @@ pub struct NotificationSender {
 }
 
 impl NotificationSender {
+    /// A sender whose notifications land on `tx` instead of a desktop, for a
+    /// test that reads what would have been delivered.
+    #[cfg(test)]
+    pub(crate) fn to(tx: Sender<Notification>) -> Self {
+        Self { tx }
+    }
+
     /// Best-effort send. A full channel or a dead receiver drops the
     /// notification silently (notifications are advisory; we never block
     /// the UI tick on them).
@@ -242,7 +247,7 @@ fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let handle = notif.show()?;
-    let session_id = n.session_id;
+    let session_id = n.session_id.clone();
     // wait_for_action blocks until the user clicks, dismisses, or the
     // notification times out — run it on its own short-lived thread so the
     // dispatcher can move on to the next queued notification.
@@ -251,9 +256,7 @@ fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
         .spawn(move || {
             handle.wait_for_action(|action| match action {
                 "default" | "open" => {
-                    if let Err(e) = write_focus_request(session_id) {
-                        warn!("failed to record click-to-focus request: {e}");
-                    }
+                    write_focus_request(session_id);
                 }
                 _ => {}
             });
@@ -320,15 +323,14 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
     }
     // Click-to-focus: `terminal-notifier -execute "<cmd>"` runs the command
     // via `/bin/sh -c` when the user clicks the banner. We point it at
-    // `thurbox-cli session focus <id>`, which writes the same
-    // `pending_focus_session_id` metadata row the Linux dbus path writes;
-    // the TUI's external-state poll then switches active_index. We resolve
+    // `thurbox-cli ui action session.focus --session <id>`, which asks the
+    // running interface to focus it. We resolve
     // an *absolute* `thurbox-cli` path from the running binary's directory
     // — the click handler runs under launchd's environment, which has a
     // very sparse PATH, so a bare `thurbox-cli` would often not resolve.
     // If we can't locate the CLI binary the click is simply non-interactive
     // (the banner still shows).
-    if let Some(focus_cmd) = thurbox_cli_focus_command(n.session_id) {
+    if let Some(focus_cmd) = thurbox_cli_focus_command(&n.session_id) {
         cmd.arg("-execute").arg(focus_cmd);
     }
     let status = run_notifier(&mut cmd)?.status;
@@ -344,18 +346,20 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
 /// `thurbox-cli` binary next to the running executable — the path probe
 /// is cached, the resolution is not, because `current_exe()` is cheap.
 #[cfg(target_os = "macos")]
-fn thurbox_cli_focus_command(session_id: SessionId) -> Option<String> {
+fn thurbox_cli_focus_command(session_id: &str) -> Option<String> {
+    if session_id.is_empty() {
+        return None;
+    }
     let exe = std::env::current_exe().ok()?;
     let parent = exe.parent()?;
     let cli = parent.join("thurbox-cli");
     if !cli.exists() {
         return None;
     }
-    // SessionId is a UUID (hex + dashes), shell-safe without quoting.
     Some(format!(
-        "{} session focus {}",
+        "{} ui action session.focus --session {}",
         sh_single_quote(&cli.to_string_lossy()),
-        session_id
+        sh_single_quote(session_id)
     ))
 }
 
@@ -665,34 +669,23 @@ fn detect_powershell() -> bool {
     crate::paths::which_on_path("powershell.exe")
 }
 
-/// SQLite `metadata` key the click handler writes to. The TUI's
-/// `poll_external_changes` reads + clears it on the next tick. The constant
-/// is defined in `session::` so both writer (here) and reader
-/// (`storage::settings`) point at the same value without crossing module
-/// boundaries.
-pub const FOCUS_REQUEST_KEY: &str = PENDING_FOCUS_SESSION_ID_KEY;
-
-/// Resolve the DB path the same way the rest of thurbox does. Returned as a
-/// PathBuf so the click handler can open a short-lived connection without
-/// holding any global state.
-#[cfg(target_os = "linux")]
-fn db_path() -> Option<PathBuf> {
-    crate::paths::database_file()
-}
+/// The session a notification click asked to focus, until the loop takes it.
+static FOCUS_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 
 /// Click handler: record the focus request from the wait-for-action thread.
-///
-/// Through `storage` like every other write in the crate. It used to be a raw
-/// `rusqlite` statement on a connection opened here, which is the one place the
-/// SQL for a thurbox table lived outside the module that owns it — and the
-/// carve-out the architecture rules had to be written around. A fresh
-/// connection per click is still right: clicks are rare and the dispatcher
-/// thread has no handle of its own.
 #[cfg(target_os = "linux")]
-fn write_focus_request(session_id: SessionId) -> Result<(), Box<dyn std::error::Error>> {
-    let path = db_path().ok_or("could not resolve thurbox DB path")?;
-    crate::storage::Database::open_existing(&path)?.set_pending_focus_session_id(session_id)?;
-    Ok(())
+fn write_focus_request(session_id: String) {
+    if session_id.is_empty() {
+        return;
+    }
+    if let Ok(mut slot) = FOCUS_REQUEST.lock() {
+        *slot = Some(session_id);
+    }
+}
+
+/// The session the last notification click asked to focus, handed out once.
+pub fn take_focus_request() -> Option<String> {
+    FOCUS_REQUEST.lock().ok()?.take()
 }
 
 #[cfg(test)]
@@ -744,19 +737,11 @@ mod tests {
         drop(rx);
         let sender = NotificationSender { tx };
         sender.send(Notification {
-            session_id: SessionId::default(),
+            session_id: String::new(),
             title: "t".into(),
             body: "b".into(),
             sound: false,
         });
-    }
-
-    #[test]
-    fn focus_request_key_is_stable() {
-        // Documenting the contract: the metadata key is part of the
-        // cross-process protocol with the TUI poll loop. Changing it is a
-        // breaking change for any in-flight clicks across an upgrade.
-        assert_eq!(FOCUS_REQUEST_KEY, "pending_focus_session_id");
     }
 
     #[test]

@@ -252,8 +252,8 @@ impl App {
                     let target = args
                         .get("session_id")
                         .and_then(Value::as_str)
-                        .and_then(|id| uuid::Uuid::parse_str(id).ok())
-                        .map(|id| id.to_string());
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string);
                     let instance = self
                         .control
                         .as_ref()
@@ -413,10 +413,14 @@ impl App {
                 "destructive action needs only session_id".into(),
             ));
         }
+        // A session's id as the snapshot carries it: a Fleet Task's name.
         let target = object["session_id"]
             .as_str()
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .ok_or(("invalid_arguments", "session_id must be a UUID".into()))?
+            .filter(|id| !id.is_empty())
+            .ok_or((
+                "invalid_arguments",
+                "session_id must be a session's id".into(),
+            ))?
             .to_string();
         let row = self.snapshots.current().session(&target).ok_or((
             "stale_target",
@@ -517,24 +521,10 @@ impl App {
             return json!({"ok": false, "error": {"code": "audit_unavailable", "message": "cannot record destructive action"}});
         }
         let result: Result<(), (&'static str, String)> = match pending.action.as_str() {
-            "sessions.force_delete" | "sessions.delete" | "sessions.restart" | "sessions.sync" => {
-                let inner = match pending.action.as_str() {
-                    "sessions.force_delete" => Command::Delete {
-                        session: pending.target.clone(),
-                        force: true,
-                    },
-                    "sessions.delete" => Command::Delete {
-                        session: pending.target.clone(),
-                        force: false,
-                    },
-                    "sessions.restart" => Command::Restart {
-                        session: pending.target.clone(),
-                        if_missing: false,
-                        fresh: false,
-                    },
-                    _ => Command::Sync {
-                        session: pending.target.clone(),
-                    },
+            "sessions.force_delete" | "sessions.delete" => {
+                let inner = Command::Delete {
+                    session: pending.target.clone(),
+                    force: pending.action == "sessions.force_delete",
                 };
                 self.dispatch_tracked(Command::Guarded {
                     inner: Box::new(inner),
@@ -615,10 +605,11 @@ impl App {
                 let id = object
                     .get("session_id")
                     .and_then(Value::as_str)
-                    .ok_or(("invalid_arguments", "session_id must be a string".into()))?;
-                if uuid::Uuid::parse_str(id).is_err() {
-                    return Err(("invalid_arguments", "session_id must be a UUID".into()));
-                }
+                    .filter(|id| !id.is_empty())
+                    .ok_or((
+                        "invalid_arguments",
+                        "session_id must be a session's id".into(),
+                    ))?;
                 if self.snapshots.current().session(id).is_none() {
                     return Err((
                         "session_not_found",

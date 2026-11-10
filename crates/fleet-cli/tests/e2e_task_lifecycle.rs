@@ -750,8 +750,36 @@ fn version_reports_every_schema() {
 }
 
 #[test]
+fn a_runtime_section_is_the_fake_and_carries_no_repository_map() {
+    let env = Env::new("runtime-section");
+    let refused = |config: &str, why: &str| {
+        std::fs::write(&env.config, config).expect("config");
+        let run = env.fleet(&["reconcile", "--json"]);
+        assert_ne!(run.code, Some(0), "{config} must be refused: {run:?}");
+        run.stderr_has(why);
+    };
+    refused(
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"thurbox\"\n",
+        "unknown runtime kind \"thurbox\"",
+    );
+    refused(
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"fake\"\ndir = \"fake\"\n\n[runtime.repositories]\n\"https://example.test/r\" = \"/src/r\"\n",
+        "unknown field `repositories`",
+    );
+    std::fs::write(
+        &env.config,
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"fake\"\ndir = \"fake\"\n",
+    )
+    .expect("config");
+    assert_eq!(
+        env.fleet(&["version", "--json"]).ok().json()["runtimes"],
+        json!(["exec", "fake"])
+    );
+}
+
+#[test]
 fn the_core_runs_with_no_fleet_extension_and_no_tools_on_path() {
-    // No thurbox-cli, no fleet extension, no Lua pane, no shell: PATH is an
+    // No runtime program, no fleet extension, no Lua pane, no shell: PATH is an
     // empty directory and HOME is the test's own. The whole lifecycle still
     // runs, because the foundation reaches nothing outside its data
     // directory and the configured runtime.
@@ -1031,17 +1059,248 @@ fn a_reboot_revives_the_session_and_resumes_the_brief_once() {
         ],
         "the brief once, then one catch-up note"
     );
+    // The revived worker is told it was restarted, and given its brief
+    // again, for the generation it was briefed for.
+    assert_eq!(session.texts.len(), 2, "{:#?}", session.texts);
+    let note = &session.texts[1];
+    assert!(note.contains("restarted"), "{note}");
+    assert!(note.contains("Do the work for t1."), "{note}");
+    assert!(note.contains("generation 1"), "{note}");
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
     assert_condition(&st, "SessionLost", "False", "Revived");
 
     let again = env.reconcile().ok().json();
     assert_eq!(again["effects"], 0, "{again:#}");
+    // The generation the worker was briefed for still fences its result.
+    env.fleet(&result_args(
+        "2",
+        &["--output", "prUrl=\"https://example.test/pr/1\""],
+    ))
+    .code(1)
+    .stderr_has("stale generation 2");
     env.fleet(&result_args(
         "1",
         &["--output", "prUrl=\"https://example.test/pr/1\""],
     ))
     .ok();
+}
+
+#[test]
+fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
+    let env = Env::new("host-unknown-scope");
+    env.host().set_host("remote", "up").unwrap();
+    let mut far = task("far", true);
+    far["spec"]["host"] = json!("remote");
+    // The fake host reads no remote agent's prompt hook: the runtime's own
+    // answer proves this harness's brief.
+    far["spec"]["harness"] = json!("aider");
+    env.apply(far).ok();
+    env.reconcile().ok();
+    let st = env.status("far");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+
+    // The remote host stops answering. Its Task is Unknown: no WorkerGone
+    // clock, no respawn. A local Task carries on in the same run.
+    env.host().set_host("remote", "unknown").unwrap();
+    env.apply(task("near", true)).ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(env.status("near")["phase"], "Briefed");
+    let st = env.status("far");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert!(
+        st["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["type"] != "WorkerGone"),
+        "{st:#}"
+    );
+    assert!(
+        report["unknowns"].to_string().contains("remote"),
+        "{report:#}"
+    );
+    assert_eq!(env.calls("spawn"), 2, "nothing respawned");
+
+    // A host known to be down is False: nothing is spawned there.
+    env.host().set_host("remote", "down").unwrap();
+    let mut blocked = task("blocked", true);
+    blocked["spec"]["host"] = json!("remote");
+    env.apply(blocked).ok();
+    env.reconcile().ok();
+    assert_condition(
+        &env.status("blocked"),
+        "HostReachable",
+        "False",
+        "Unreachable",
+    );
+    assert_eq!(env.calls("spawn"), 2);
+}
+
+#[test]
+fn a_release_whose_answer_is_unknown_is_never_assumed_done() {
+    // The release happened but its answer was lost: the finalizer holds the
+    // record until a later attempt knows it is done.
+    let env = setup("release-answer-lost", true);
+    env.reconcile().ok();
+    env.host()
+        .set_at_rest(&env.session_key("t1"), true)
+        .unwrap();
+    env.fault(Fault::new("release", "unknown").performed());
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["finalizers"], json!(["fleet.dev/release"]));
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    env.fleet(&["get", "task", "t1"]).code(3);
+
+    // The release never answers. After three attempts, each after a wait,
+    // a person is asked; the finalizer holds the record meanwhile.
+    let env = setup("release-unknown", true);
+    env.reconcile().ok();
+    env.host()
+        .set_at_rest(&env.session_key("t1"), true)
+        .unwrap();
+    env.fault(Fault::new("release", "unknown").times(3));
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    for _ in 0..2 {
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    let st = env.status("t1");
+    assert_condition(&st, "Released", "False", "ReleaseFailed");
+    assert_condition(&st, "NeedsAttention", "True", "ReleaseFailed");
+    assert_eq!(st["finalizers"], json!(["fleet.dev/release"]));
+    assert_eq!(env.calls("release"), 3);
+}
+
+#[test]
+fn a_different_session_reusing_the_key_does_not_hide_a_vanished_worker() {
+    let env = setup("worker-identity", true);
+    env.reconcile().ok();
+    let original = env.get("t1")["status"]["session"]["id"].clone();
+    // Another session now holds the Task's key: the one Fleet started is gone.
+    let key = env.session_key("t1");
+    env.host()
+        .update(|s| s.sessions.get_mut(&key).unwrap().id = "fake-other".into())
+        .unwrap();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_condition(&st, "WorkerGone", "True", "SessionGone");
+    assert_condition(&st, "NeedsAttention", "True", "WorkerGone");
+    assert_eq!(env.get("t1")["status"]["session"]["id"], original);
+    assert_eq!(env.calls("spawn"), 1, "never respawned");
+    assert_eq!(env.calls("brief"), 1, "never rebriefed");
+}
+
+#[test]
+fn a_new_store_never_adopts_a_session_an_old_store_left_behind() {
+    let env = setup("two-stores", true);
+    env.reconcile().ok();
+    assert_eq!(env.host().state().unwrap().sessions.len(), 1);
+    // A fresh data directory on the same host: same names, same order.
+    let cfg = fs::read_to_string(&env.config).unwrap();
+    fs::write(
+        &env.config,
+        cfg.replace("dir = \"data\"", "dir = \"data2\""),
+    )
+    .unwrap();
+    env.apply(task("t1", true)).ok();
+    env.reconcile().ok();
+    let sessions = env.host().state().unwrap().sessions;
+    assert_eq!(
+        sessions.len(),
+        2,
+        "the second store's t1 has its own session: {sessions:#?}"
+    );
+}
+
+#[test]
+fn slow_probes_never_outlive_the_lease() {
+    let env = setup("slow-probes", true);
+    // Each probe fits the lease; the probes of one Task together do not.
+    for probe in ["host", "find", "ready"] {
+        env.fault(Fault::new(probe, "normal").delay(1_200).times(2));
+    }
+    env.fleet(&["reconcile", "--json", "--lease-ttl-ms", "3000"])
+        .ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+}
+
+#[test]
+fn a_spec_that_would_reach_a_runtime_as_a_flag_is_refused_when_written() {
+    let env = Env::new("flag-shaped-spec");
+    for (field, value) in [("harness", "--help"), ("host", "-x")] {
+        let mut t = task("dash", false);
+        t["spec"][field] = json!(value);
+        env.apply(t).code(1).stderr_has(field);
+    }
+    env.fleet(&["get", "task", "dash"]).code(3);
+}
+
+#[test]
+fn a_reboot_revives_only_work_in_flight_or_feedback() {
+    let env = Env::new("reboot-scope");
+    env.apply(task("done", true)).ok();
+    env.apply(task("held", false)).ok();
+    env.reconcile().ok();
+    env.fleet(&[
+        "result",
+        "done",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://example.test/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("done")["phase"], "Concluded");
+    assert_eq!(env.status("held")["phase"], "Pending");
+
+    env.host().reboot().unwrap();
+    env.expire_session_check("done");
+    env.reconcile().ok();
+    assert_eq!(env.calls("revive"), 0, "a concluded worker rests");
+    assert_eq!(env.status("held")["phase"], "Pending", "held stays held");
+    assert_eq!(env.calls("spawn"), 1);
+
+    // Feedback for the concluded worker brings its session back to read it.
+    env.fleet(&["send", "done", "Review: rename the flag."])
+        .ok();
+    env.reconcile().ok();
+    assert_eq!((env.calls("revive"), env.calls("spawn")), (1, 1));
+    // The note that it was restarted goes first; the feedback follows it.
+    let texts = env
+        .host()
+        .session(&env.session_key("done"))
+        .unwrap()
+        .unwrap()
+        .texts;
+    assert_eq!(texts.len(), 3, "{texts:#?}");
+    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
+    assert_eq!(texts[2], "Review: rename the flag.");
+    assert_eq!(env.status("done")["phase"], "Concluded");
+}
+
+#[test]
+fn a_task_deleted_after_a_reboot_releases_its_lost_session() {
+    let env = setup("reboot-delete", true);
+    env.reconcile().ok();
+    let key = env.session_key("t1");
+    env.host().reboot().unwrap();
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("revive"), 0, "a deleted Task is not revived");
+    // Whether a lost session is at rest is the runtime's to say.
+    env.host().set_at_rest(&key, true).unwrap();
+    env.reconcile().ok();
+    assert_eq!(env.calls("revive"), 0);
+    let session = env.host().session(&key).unwrap().unwrap();
+    assert!(session.released, "{session:#?}");
+    env.fleet(&["get", "task", "t1"]).code(3);
 }
 
 #[test]

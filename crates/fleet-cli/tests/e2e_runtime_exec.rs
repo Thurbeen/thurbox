@@ -176,6 +176,26 @@ fn a_missing_multiplexer_is_reported_by_name_at_the_first_start() {
     assert!(status["session"].is_null(), "{status:#}");
 }
 
+/// A view asks which repositories Fleet can make a worktree of, and where
+/// their checkouts are, before it applies a Task that names one.
+#[test]
+fn the_repository_map_is_listed_for_a_view() {
+    let env = Env::new("repository-map");
+    fs::write(
+        &env.config,
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[workspaces.repositories]\n\"https://example.com/app\" = \"/src/app\"\n",
+    )
+    .expect("config");
+    let map = env.fleet(&["repositories", "--json"]).ok().json();
+    assert_eq!(
+        map,
+        json!({"repositories": {"https://example.com/app": "/src/app"}})
+    );
+    let none = Env::new("repository-map-empty");
+    let empty = none.fleet(&["repositories", "--json"]).ok().json();
+    assert_eq!(empty, json!({"repositories": {}}));
+}
+
 /// A view asks which hosts a Task may name, and which harnesses Fleet has a
 /// profile for, before it applies one.
 #[test]
@@ -1096,4 +1116,78 @@ fn a_tty_attach_runs_through_the_bridge_end_to_end() {
     // The detach ended the tmux client, not the agent.
     env.reconcile().ok();
     assert_eq!(env.status("t1")["sessionState"], "Running");
+}
+
+#[test]
+fn the_lease_outlasts_one_whole_runtime_operation() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("lease");
+    let env = mux_env("runtime-mux-lease", &program, &sockets);
+    // One operation is two calls of up to 2 s each, with their grace: a
+    // lease that cannot hold it is refused before anything runs.
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        cfg.replace("callTimeoutMs = 10000", "callTimeoutMs = 2000"),
+    )
+    .expect("config");
+    env.apply(support::task("t1", false)).ok();
+    env.fleet(&["reconcile", "--lease-ttl-ms", "5000"])
+        .code(1)
+        .stderr_has("lease");
+    assert!(env.get("t1")["status"]["phase"].is_null(), "nothing ran");
+    // The default lease is sized to hold it.
+    env.reconcile().ok();
+    assert_eq!(env.get("t1")["status"]["phase"], "Pending");
+}
+
+#[test]
+fn a_message_typed_into_the_agent_is_recorded_as_one_the_route_may_hold() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("may-hold");
+    let mut env = mux_env("runtime-mux-may-hold", &program, &sockets);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "briefed", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+
+    env.fleet(&["send", "t1", "are you there?"]).ok();
+    reconcile_until(&env, "the message delivered", |env| {
+        env.get("t1")["status"]["deliveries"]["receipts"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty())
+    });
+    // A typed text may sit in the composer: a fact about the route, which
+    // no person can clear, so it raises nothing.
+    let status = env.get("t1")["status"].clone();
+    let receipt = &status["deliveries"]["receipts"][0];
+    assert_eq!(receipt["mayHold"], true, "{status:#}");
+    assert_eq!(receipt["deliveredVia"], "input", "{status:#}");
+    assert!(
+        status["conditions"].as_array().is_some_and(|cs| !cs
+            .iter()
+            .any(|c| c["type"] == "NeedsAttention" && c["status"] == "True")),
+        "{status:#}"
+    );
 }

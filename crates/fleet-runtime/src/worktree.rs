@@ -333,7 +333,7 @@ impl WorktreeWorkspaces {
                 if !Path::new(&source).is_absolute() {
                     return Err(EffectOutcome::Failed {
                         why: format!(
-                            "runtime.repositories: the source {source:?} of {} must be an absolute path",
+                            "workspaces.repositories: the source {source:?} of {} must be an absolute path",
                             r.url
                         ),
                     });

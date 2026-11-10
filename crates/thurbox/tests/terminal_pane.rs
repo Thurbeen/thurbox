@@ -42,7 +42,7 @@ fn row(name: &str) -> SessionRow {
         repos: vec!["thurbox".into()],
         branch: Some(format!("feat/{name}")),
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,
         agent_session_id: None,
@@ -79,7 +79,7 @@ fn publish(host: &LuaHost) {
     let themes = Themes::load(None);
     let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &sample(),

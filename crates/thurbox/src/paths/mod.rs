@@ -2,7 +2,7 @@
 //!
 //! This module provides a unified interface for resolving paths to:
 //! - Config files (`~/.config/thurbox[-dev]/config.toml`)
-//! - SQLite database (`~/.local/share/thurbox[-dev]/thurbox.db`)
+//! - The interface's data files (`~/.local/share/thurbox[-dev]/`)
 //! - Log directories (`~/.local/share/thurbox[-dev]/`)
 //!
 //! Dev builds (`0.0.0-dev`) use `thurbox-dev` subdirectories to avoid
@@ -43,8 +43,8 @@ use std::path::{Path, PathBuf};
 
 /// Env var pinning the resolved config app dir for a child process (an agent
 /// whose hook calls `thurbox-cli`), so it targets the same config the spawning
-/// thurbox uses regardless of XDG/binary-flavor/tmux-server-env drift. Injected
-/// at spawn ([`crate::session_ops`]); consumed by `config_app_dir`.
+/// thurbox uses regardless of XDG/binary-flavor/tmux-server-env drift. Consumed
+/// by `config_app_dir`.
 pub const CONFIG_DIR_OVERRIDE_ENV: &str = "THURBOX_CONFIG_DIR";
 /// Data counterpart of [`CONFIG_DIR_OVERRIDE_ENV`] (`THURBOX_DATA_DIR`).
 pub const DATA_DIR_OVERRIDE_ENV: &str = "THURBOX_DATA_DIR";
@@ -98,6 +98,28 @@ pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);
         })
+}
+
+/// Run `change` holding an exclusive lock on `<path>.lock`, so a
+/// read-change-write of `path` by another process (a second interface, or
+/// `thurbox-cli`) waits for this one instead of losing its update. The lock is
+/// the operating system's (`flock` on Unix, `LockFileEx` on Windows): a
+/// process that dies releases it. Locking a sibling file rather than `path`
+/// itself is what keeps [`write_atomically`]'s rename possible, since the
+/// rename replaces the file a lock on `path` would be held on.
+pub(crate) fn with_file_lock<T>(path: &Path, change: impl FnOnce() -> T) -> std::io::Result<T> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(PathBuf::from(name))?;
+    lock.lock()?;
+    Ok(change())
 }
 
 /// Create the staged file, on Unix already no more open than the file it will
@@ -251,8 +273,7 @@ fn data_base() -> Option<PathBuf> {
 /// The unit-test harness (`cargo test`/`nextest`) frequently runs *inside* a
 /// live thurbox session (the dev shell is itself an agent session), whose env
 /// carries `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` pointing at the developer's
-/// **real** config/data dirs (injected so an agent's `thurbox-cli` hook targets
-/// the same DB — see `session_ops::inject_thurbox_env`). Honoring those in tests
+/// **real** config/data dirs. Honoring those in tests
 /// — or falling through to the real `$HOME/.config/thurbox` — let any unguarded
 /// test that writes config (settings save, hooks install, keybindings) clobber
 /// the user's live settings. So in test builds the XDG fallback ignores the
@@ -340,12 +361,11 @@ fn data_app_dir() -> Option<PathBuf> {
 /// The data directory when this instance has been **relocated** — i.e.
 /// [`DATA_DIR_OVERRIDE_ENV`] names a directory other than the XDG default.
 /// `None` for a default instance, *including* one whose `THURBOX_DATA_DIR`
-/// merely restates the default: thurbox injects that variable into every
-/// session it spawns (`session_ops::inject_thurbox_env`), so "the variable is
-/// set" is a different question from "this instance was moved".
+/// merely restates the default: a session started from inside thurbox can
+/// inherit that variable, so "the variable is set" is a different question
+/// from "this instance was moved".
 ///
-/// A relocated instance keeps its own database, and so its own record of which
-/// sessions exist; `backend::mux_settings` hands this to the runtime to put
+/// A relocated instance keeps its own files; `backend::mux_settings` hands this to the runtime to put
 /// those sessions on a tmux socket of their own instead of the operator's
 /// shared server.
 #[cfg(not(test))]
@@ -395,7 +415,7 @@ pub enum PathKind {
     /// The *file* is legacy and read only for migration, but the path is not:
     /// every config location is derived from it by
     /// `with_file_name`/`parent().join(..)` — `agents.toml`, `hosts.toml`,
-    /// `settings.toml`, `themes.toml`, `extensions/`, `ui/`, `ui.json`,
+    /// `settings.toml`, `themes.toml`, `ui/`, `ui.json`,
     /// `plugin-state.json`. So this is
     /// the single place the `thurbox` / `thurbox-dev` split enters for all of
     /// them, and calling it "migration only" invited the conclusion that the
@@ -403,20 +423,20 @@ pub enum PathKind {
     Config,
     /// Log directory: `~/.local/share/thurbox/`
     LogDir,
-    /// SQLite database: `~/.local/share/thurbox/thurbox.db`
-    Database,
+    /// The perf snapshot a running interface publishes:
+    /// `~/.local/share/thurbox/perf.json`
+    PerfSnapshot,
+    /// The repositories the creation flow remembers:
+    /// `~/.local/share/thurbox/bookmarks.json`
+    Bookmarks,
+    /// The dedupe keys `notify send` holds:
+    /// `~/.local/share/thurbox/notify-dedupe.json`
+    NotifyDedupe,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
     MetricsDir,
-    /// Embedded built-in extensions materialized for install:
-    /// `~/.local/share/thurbox/builtin-extensions/`
-    BuiltinExtensionsDir,
-    /// Git worktrees: `~/.local/share/thurbox/worktrees/`
-    WorktreesDir,
     /// Per-session multi-repo symlink workspaces:
     /// `~/.local/share/thurbox/workspaces/`
     WorkspacesDir,
-    /// User keybindings JSON file: `~/.config/thurbox/keybindings.json`
-    KeybindingsFile,
 }
 
 /// Path resolution strategy (thread-local).
@@ -452,13 +472,12 @@ pub fn resolve(kind: PathKind) -> Option<PathBuf> {
 fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
     match kind {
         PathKind::Config => xdg_config_subpath("config.toml"),
-        PathKind::Database => xdg_data_subpath(&["thurbox.db"]),
+        PathKind::PerfSnapshot => xdg_data_subpath(&["perf.json"]),
+        PathKind::Bookmarks => xdg_data_subpath(&["bookmarks.json"]),
+        PathKind::NotifyDedupe => xdg_data_subpath(&["notify-dedupe.json"]),
         PathKind::LogDir => xdg_data_subpath(&[]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
-        PathKind::BuiltinExtensionsDir => xdg_data_subpath(&["builtin-extensions"]),
-        PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
         PathKind::WorkspacesDir => xdg_data_subpath(&["workspaces"]),
-        PathKind::KeybindingsFile => xdg_config_subpath("keybindings.json"),
     }
 }
 
@@ -467,12 +486,11 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
     match kind {
         PathKind::Config => base.join("config.toml"),
         PathKind::LogDir => base.to_path_buf(),
-        PathKind::Database => base.join("thurbox.db"),
+        PathKind::PerfSnapshot => base.join("perf.json"),
+        PathKind::Bookmarks => base.join("bookmarks.json"),
+        PathKind::NotifyDedupe => base.join("notify-dedupe.json"),
         PathKind::MetricsDir => base.join("metrics"),
-        PathKind::BuiltinExtensionsDir => base.join("builtin-extensions"),
-        PathKind::WorktreesDir => base.join("worktrees"),
         PathKind::WorkspacesDir => base.join("workspaces"),
-        PathKind::KeybindingsFile => base.join("keybindings.json"),
     }
 }
 
@@ -490,16 +508,29 @@ pub fn log_directory() -> Option<PathBuf> {
     resolve(PathKind::LogDir)
 }
 
-/// Resolve the database file path.
+/// The perf snapshot a running interface publishes and `thurbox-cli perf`
+/// reads.
 ///
-/// Returns: `$XDG_DATA_HOME/thurbox/thurbox.db` or `$HOME/.local/share/thurbox/thurbox.db`
-pub fn database_file() -> Option<PathBuf> {
-    resolve(PathKind::Database)
+/// Returns: `$XDG_DATA_HOME/thurbox/perf.json` or `$HOME/.local/share/thurbox/perf.json`
+pub fn perf_snapshot_file() -> Option<PathBuf> {
+    resolve(PathKind::PerfSnapshot)
+}
+
+/// The dedupe keys `notify send` holds, and when each hold ends.
+pub fn notify_dedupe_file() -> Option<PathBuf> {
+    resolve(PathKind::NotifyDedupe)
+}
+
+/// The repositories the creation flow remembers.
+///
+/// Returns: `$XDG_DATA_HOME/thurbox/bookmarks.json` or `$HOME/.local/share/thurbox/bookmarks.json`
+pub fn bookmarks_file() -> Option<PathBuf> {
+    resolve(PathKind::Bookmarks)
 }
 
 /// Validate that `name` is a safe single-segment identifier — non-empty,
-/// no dot-prefix, no slashes / backslashes / `..`, max 64 chars. Used by
-/// `session_ops::spawn` to guard names that become on-disk paths.
+/// no dot-prefix, no slashes / backslashes / `..`, max 64 chars: a name that
+/// becomes an on-disk path.
 pub fn validate_safe_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("Name cannot be empty".into());
@@ -523,22 +554,6 @@ pub fn metrics_directory() -> Option<PathBuf> {
     resolve(PathKind::MetricsDir)
 }
 
-/// Directory where embedded built-in extensions are materialized so the
-/// extension installer can treat them as a local source.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/builtin-extensions/` or
-/// `$HOME/.local/share/thurbox/builtin-extensions/`
-pub fn builtin_extensions_directory() -> Option<PathBuf> {
-    resolve(PathKind::BuiltinExtensionsDir)
-}
-
-/// Resolve the worktrees directory path.
-///
-/// Returns: `$XDG_DATA_HOME/thurbox/worktrees/` or `$HOME/.local/share/thurbox/worktrees/`
-pub fn worktrees_directory() -> Option<PathBuf> {
-    resolve(PathKind::WorktreesDir)
-}
-
 /// The data directory this instance actually resolved — the override when one
 /// is set, the XDG default otherwise.
 ///
@@ -556,14 +571,6 @@ pub fn data_directory() -> Option<PathBuf> {
 /// `$HOME/.local/share/thurbox/workspaces/`
 pub fn workspaces_directory() -> Option<PathBuf> {
     resolve(PathKind::WorkspacesDir)
-}
-
-/// Resolve the user keybindings file path.
-///
-/// Returns: `$XDG_CONFIG_HOME/thurbox/keybindings.json` or
-/// `$HOME/.config/thurbox/keybindings.json`.
-pub fn keybindings_file() -> Option<PathBuf> {
-    resolve(PathKind::KeybindingsFile)
 }
 
 /// Returns true if a Claude transcript file `<agent_session_id>.jsonl` exists
@@ -613,7 +620,7 @@ pub fn claude_transcript_path(
 /// This is primarily intended for testing. All paths will resolve under the given base:
 /// - `config_file()` → `base/config.toml`
 /// - `log_directory()` → `base/`
-/// - `database_file()` → `base/thurbox.db`
+/// - `perf_snapshot_file()` → `base/perf.json`
 ///
 /// # Note
 ///
@@ -910,8 +917,8 @@ pub(crate) fn unique_link_name(name: &str, used: &mut std::collections::HashSet<
 
 /// Validate that a manifest-supplied path is a safe relative path (no absolute
 /// root, no `..` components) — the shared path-traversal guard for payloads
-/// delivered under a directory the caller controls (extension installs, and
-/// anything else that joins untrusted relative paths onto a base).
+/// delivered under a directory the caller controls (anything that joins
+/// untrusted relative paths onto a base).
 ///
 /// This is the one canonical implementation (see also [`safe_join`]).
 /// `session::plugin_spec::validate_destination` deliberately keeps its own,

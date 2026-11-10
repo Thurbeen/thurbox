@@ -1,47 +1,48 @@
 //! Pausing an idle agent session and resuming it when work arrives, end to
-//! end: the real `fleet` binary, its file store, TaskController and the
-//! thurbox adapter driving the bounded `thurbox-cli` stand-in. The agent's
-//! activity is what its hooks report through `fleet signal`.
+//! end: the real `fleet` binary, its file store, TaskController and the fake
+//! host. The agent's activity is what its hooks report through `fleet
+//! signal`.
 
 mod support;
 
+use fleet_runtime::{FakeSession, Fault};
 use serde_json::{Value, json};
-use support::{Env, assert_condition, object, runtime_config, wait};
+use support::{Env, assert_condition, object, wait};
 
 const PAUSE_AFTER_MS: u64 = 600_000;
 
-/// A Task on the thurbox stub whose TaskConfig pauses it when idle.
+/// A Task whose TaskConfig pauses it when idle.
 fn task(name: &str) -> Value {
     let mut t = support::task(name, true);
-    t["spec"]["workspace"]["dir"] = json!(format!("/work/{name}"));
     t["spec"]["configRef"] = json!({"name": "pausing"});
     t
 }
 
 /// A Task with no pause setting.
 fn plain_task(name: &str) -> Value {
-    let mut t = support::task(name, true);
-    t["spec"]["workspace"]["dir"] = json!(format!("/work/{name}"));
-    t
+    support::task(name, true)
 }
 
 fn setup(name: &str, tasks: Vec<Value>) -> Env {
-    let env = Env::thurbox(name);
-    let mut items = runtime_config();
+    let env = Env::new(name);
+    let mut items = Vec::new();
     if tasks.iter().any(|t| !t["spec"]["configRef"].is_null()) {
-        items.as_array_mut().unwrap().push(object(
+        items.push(object(
             "TaskConfig",
             "pausing",
             json!({"pauseAfterMs": PAUSE_AFTER_MS}),
         ));
     }
-    items.as_array_mut().unwrap().extend(tasks);
-    env.apply(items).ok();
+    items.extend(tasks);
+    env.apply(json!(items)).ok();
     env
 }
 
-fn calls(env: &Env, sub: &str) -> usize {
-    env.stub_calls_of(sub)
+fn session(env: &Env) -> FakeSession {
+    env.host()
+        .session(&env.session_key("t1"))
+        .unwrap()
+        .expect("a session")
 }
 
 /// What the agent's hooks report: `idle`, `active` (working), or nothing,
@@ -70,25 +71,21 @@ fn expire_idle(env: &Env, name: &str) {
     let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert!(
         obj["status"]["idleSince"].is_u64(),
-        "no idle time to expire: {:#} {:#}",
+        "no idle time to expire: {:#} {:#?}",
         obj["status"],
-        env.stub_sessions()[0]
+        session(env)
     );
     obj["status"]["idleSince"] = json!(0);
     std::fs::write(&path, obj.to_string()).unwrap();
 }
 
+/// Every text the session was given, in order.
 fn sent(env: &Env) -> Vec<String> {
-    env.stub_sessions()[0]["sent"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t.as_str().unwrap().to_string())
-        .collect()
+    session(env).texts
 }
 
 fn stopped(env: &Env) -> bool {
-    env.stub_sessions()[0]["stopped"] == true
+    session(env).paused
 }
 
 /// Brief the Task, then let it be seen idle for longer than `pauseAfterMs`.
@@ -96,15 +93,12 @@ fn pause(env: &Env, name: &str) {
     env.reconcile().ok();
     assert_eq!(env.status(name)["phase"], "Briefed");
     assert!(
-        env.stub_sessions()[0]["env"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("FLEET_SIGNAL_FILE")),
+        session(env).env.contains_key("FLEET_SIGNAL_FILE"),
         "the agent was given its signal file"
     );
     set_activity(env, Some("idle"));
     env.reconcile().ok();
-    assert_eq!(calls(env, "stop"), 0, "idle, but not for long enough yet");
+    assert_eq!(env.calls("pause"), 0, "idle, but not for long enough yet");
     expire_idle(env, name);
     env.reconcile().ok();
 }
@@ -114,7 +108,7 @@ fn an_idle_task_is_paused_and_an_entry_resumes_it_after_a_catch_up_note() {
     let env = setup("pause-resume", vec![task("t1")]);
     pause(&env, "t1");
 
-    assert_eq!(calls(&env, "stop"), 1);
+    assert_eq!(env.calls("pause"), 1);
     assert!(stopped(&env));
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
@@ -130,15 +124,15 @@ fn an_idle_task_is_paused_and_an_entry_resumes_it_after_a_catch_up_note() {
 
     // A paused session rests: nothing is stopped twice, nothing restarts.
     env.reconcile().ok();
-    assert_eq!(calls(&env, "stop"), 1);
-    assert_eq!(calls(&env, "start"), 0);
-    assert_eq!(calls(&env, "restart"), 0);
+    assert_eq!(env.calls("pause"), 1);
+    assert_eq!(env.calls("resume"), 0);
+    assert_eq!(env.calls("revive"), 0);
 
     env.fleet(&["send", "t1", "next message"]).ok();
     env.fleet(&["send", "t1", "and another"]).ok();
     env.reconcile().ok();
 
-    assert_eq!(calls(&env, "start"), 1, "one resume for both entries");
+    assert_eq!(env.calls("resume"), 1, "one resume for both entries");
     assert!(!stopped(&env));
     let st = env.status("t1");
     assert_condition(&st, "Paused", "False", "Resumed");
@@ -153,7 +147,7 @@ fn an_idle_task_is_paused_and_an_entry_resumes_it_after_a_catch_up_note() {
     // Nothing is sent twice.
     env.reconcile().ok();
     assert_eq!(sent(&env).len(), 4);
-    assert_eq!(calls(&env, "start"), 1);
+    assert_eq!(env.calls("resume"), 1);
 }
 
 #[test]
@@ -178,7 +172,7 @@ fn unknown_activity_never_pauses() {
     assert!(env.get("t1")["status"]["idleSince"].is_null());
     set_activity(&env, Some("idle"));
     env.reconcile().ok();
-    assert_eq!(calls(&env, "stop"), 0);
+    assert_eq!(env.calls("pause"), 0);
 }
 
 #[test]
@@ -189,7 +183,7 @@ fn a_task_without_a_pause_setting_is_never_paused() {
     for _ in 0..3 {
         env.reconcile().ok();
     }
-    assert_eq!(calls(&env, "stop"), 0);
+    assert_eq!(env.calls("pause"), 0);
     assert!(env.get("t1")["status"]["idleSince"].is_null());
 }
 
@@ -214,14 +208,14 @@ fn a_concluded_task_is_paused_too() {
     env.reconcile().ok();
     expire_idle(&env, "t1");
     env.reconcile().ok();
-    assert_eq!(calls(&env, "stop"), 1);
+    assert_eq!(env.calls("pause"), 1);
     let st = env.status("t1");
     assert_eq!(st["phase"], "Concluded");
     assert_condition(&st, "Paused", "True", "Idle");
 
     env.fleet(&["send", "t1", "Review: rename the flag."]).ok();
     env.reconcile().ok();
-    assert_eq!(calls(&env, "start"), 1);
+    assert_eq!(env.calls("resume"), 1);
     let texts = sent(&env);
     assert_eq!(texts.len(), 3, "{texts:#?}");
     assert!(texts[1].contains("already recorded"), "{}", texts[1]);
@@ -234,17 +228,21 @@ fn a_session_stopped_outside_fleet_resumes_on_the_next_entry() {
     // the inbox for good, and nothing said why.
     let env = setup("pause-external", vec![plain_task("t1")]);
     env.reconcile().ok();
-    env.edit_stub(|s| {
-        s["sessions"][0]["stopped"] = json!(true);
-        s["sessions"][0]["state"] = json!("stopped");
-    });
+    let key = env.session_key("t1");
+    env.host()
+        .update(|s| {
+            let x = s.sessions.get_mut(&key).unwrap();
+            x.paused = true;
+            x.ready = false;
+        })
+        .unwrap();
     env.reconcile().ok();
     assert_condition(&env.status("t1"), "Paused", "True", "External");
-    assert_eq!(calls(&env, "start"), 0, "nothing to deliver yet");
+    assert_eq!(env.calls("resume"), 0, "nothing to deliver yet");
 
     env.fleet(&["send", "t1", "are you there?"]).ok();
     env.reconcile().ok();
-    assert_eq!(calls(&env, "start"), 1);
+    assert_eq!(env.calls("resume"), 1);
     let texts = sent(&env);
     assert_eq!(texts.len(), 3, "{texts:#?}");
     assert!(texts[1].contains("Do the work for t1."), "{}", texts[1]);
@@ -262,7 +260,7 @@ fn a_held_task_is_never_resumed() {
     env.apply(json!([held])).ok();
     env.fleet(&["send", "t1", "wait"]).ok();
     env.reconcile().ok();
-    assert_eq!(calls(&env, "start"), 0);
+    assert_eq!(env.calls("resume"), 0);
     assert!(stopped(&env));
 }
 
@@ -271,10 +269,12 @@ fn deleting_a_paused_task_releases_it() {
     let env = setup("pause-delete", vec![task("t1")]);
     pause(&env, "t1");
     assert!(stopped(&env));
+    let key = env.session_key("t1");
     env.fleet(&["delete", "task", "t1"]).ok();
     env.reconcile().ok();
-    assert_eq!(calls(&env, "start"), 0, "a deleted Task is not resumed");
-    assert!(env.stub_sessions().is_empty(), "{:#?}", env.stub_sessions());
+    assert_eq!(env.calls("resume"), 0, "a deleted Task is not resumed");
+    let released = env.host().session(&key).unwrap().expect("a session");
+    assert!(released.released, "{released:#?}");
     env.fleet(&["get", "task", "t1"]).code(3);
 }
 
@@ -282,11 +282,11 @@ fn deleting_a_paused_task_releases_it() {
 fn a_pause_whose_answer_was_lost_is_read_back_and_never_repeated() {
     let env = setup("pause-lost-answer", vec![task("t1")]);
     // The stop happens, and its answer never comes back.
-    env.stub_fault("stop", "hang-after", 1);
+    env.fault(Fault::new("pause", "unknown").performed());
     pause(&env, "t1");
     assert!(stopped(&env));
     env.reconcile().ok();
-    assert_eq!(calls(&env, "stop"), 1, "read back, never repeated");
+    assert_eq!(env.calls("pause"), 1, "read back, never repeated");
     assert_condition(&env.status("t1"), "Paused", "True", "Idle");
 }
 
@@ -294,11 +294,11 @@ fn a_pause_whose_answer_was_lost_is_read_back_and_never_repeated() {
 fn a_resume_whose_answer_was_lost_is_read_back_and_never_repeated() {
     let env = setup("resume-lost-answer", vec![task("t1")]);
     pause(&env, "t1");
-    env.stub_fault("start", "hang-after", 1);
+    env.fault(Fault::new("resume", "unknown").performed());
     env.fleet(&["send", "t1", "next message"]).ok();
     env.reconcile().ok();
     env.reconcile().ok();
-    assert_eq!(calls(&env, "start"), 1, "read back, never repeated");
+    assert_eq!(env.calls("resume"), 1, "read back, never repeated");
     assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
     let texts = sent(&env);
     assert_eq!(texts.len(), 3, "{texts:#?}");

@@ -918,7 +918,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// terminal keeping `settings.scrollback_lines` holds, on the socket the
     /// instance's data directory names (ADR-12).
     pub fn local(settings: &MuxSettings) -> Self {
-        let name = crate::Route::local(Some(M::MULTIPLEXER)).format();
+        let name = crate::Route::local(M::MULTIPLEXER).format();
         let socket = local_socket(settings);
         let mut transport = TmuxTransport::local(M::MULTIPLEXER.name());
         if M::SOCKET_DIR && crate::shell::local_platform() == Platform::Posix {
@@ -1009,7 +1009,7 @@ impl<M: TmuxCompatible> Server<M> {
             transport,
             host_socket(host),
             session,
-            host.route(Some(M::MULTIPLEXER)).format(),
+            host.route(M::MULTIPLEXER).format(),
             settings.scrollback_lines,
         );
         backend.host = Some(host.clone());
@@ -6824,7 +6824,7 @@ done
                         assert_eq!(backend.transport.launcher(), launcher, "{case}");
                         assert_eq!(
                             backend.name(),
-                            host.route(Some(Multiplexer::Tmux)).format(),
+                            host.route(Multiplexer::Tmux).format(),
                             "{case}"
                         );
                         assert!(!backend.capabilities().needs_liveness_poll, "{case}");

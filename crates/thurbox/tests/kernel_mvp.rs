@@ -66,7 +66,7 @@ fn publish_full(
     let themes = themes();
     let registry = registry(host);
     let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let repos = thurbox::kernel::repos::RepoStore::new();
     host.publish(&thurbox::kernel::host::Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
@@ -178,7 +178,7 @@ fn row(name: &str, repo: &str, status: &str) -> SessionRow {
         repos: vec![repo.to_string()],
         branch: Some(format!("feat/{name}")),
         base_branch: None,
-        backend: "local-tmux".to_string(),
+        backend: "local:tmux".to_string(),
         backend_id: Some("%1".to_string()),
         agent_session_id: None,
         remote_host: None,
@@ -296,9 +296,9 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
     let host = host();
     let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
     // The interface is three panes — the list, the centre and the search strip —
-    // plus five floats that occupy no slot at all: the creation flow, the
-    // confirmation, the rename field, the context menu and the restore list. The
-    // view of the interface's own files is
+    // plus four floats that occupy no slot at all: the creation flow, the
+    // confirmation, the rename field and the context menu. The view of the
+    // interface's own files is
     // NOT among them: it is a tab of the settings modal, because a recovery tool
     // that is itself a plugin can be the thing that is broken. Every other v1
     // surface was removed with its plugin, and its slot with it — see
@@ -312,8 +312,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
             "rename",
             "menu",
             "search",
-            "new_session",
-            "restore"
+            "new_session"
         ],
         "the bundled set changed"
     );
@@ -350,7 +349,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
         .collect();
     assert!(focusable.contains(&"sessions"), "{focusable:?}");
     assert!(focusable.contains(&"agent"), "{focusable:?}");
-    for float in ["new_session", "confirm", "rename", "menu", "restore"] {
+    for float in ["new_session", "confirm", "rename", "menu"] {
         assert!(!focusable.contains(&float), "{focusable:?}");
     }
     let floating: Vec<&str> = host
@@ -360,7 +359,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
         .collect();
     assert_eq!(
         floating,
-        ["confirm", "rename", "menu", "new_session", "restore"],
+        ["confirm", "rename", "menu", "new_session"],
         "a float must also be excluded from the focus ring, or Tab would land on \
          a pane that draws nothing"
     );
@@ -1322,7 +1321,7 @@ fn a_malformed_command_is_reported_against_the_plugin() {
 
 #[test]
 fn work_in_flight_is_drawn_instead_of_the_status() {
-    // Without this a restart looks like nothing happened until the next
+    // Without this a rename looks like nothing happened until the next
     // snapshot. v1 needed a whole PendingSpawn type for the same reason. A
     // delete is the one command with no row left to annotate — see
     // `a_session_being_deleted_leaves_the_list_at_once`.
@@ -1330,7 +1329,7 @@ fn work_in_flight_is_drawn_instead_of_the_status() {
     let target = sample().sessions[0].id.clone();
     let inflight = vec![InFlight {
         id: 1,
-        kind: "restart",
+        kind: "rename",
         session: target,
         subject: None,
         host: None,
@@ -1341,7 +1340,7 @@ fn work_in_flight_is_drawn_instead_of_the_status() {
     publish_with(&host, &sample(), &Default::default(), &inflight);
     let screen = paint(&host, index_of(&host, "sessions"), 46, 12).join("\n");
     assert!(screen.contains('◌'), "pending marker missing:\n{screen}");
-    assert!(screen.contains("restart"), "{screen}");
+    assert!(screen.contains("rename"), "{screen}");
 }
 
 #[test]
@@ -1765,21 +1764,14 @@ fn a_create_command_carries_what_the_flow_chose() {
         "create",
         Args {
             repo: Some("/tmp/demo".into()),
-            branch: Some("feat/x".into()),
             agent: Some("claude".into()),
             ..Args::default()
         },
     )
     .expect("parse");
     match parsed {
-        Command::Create {
-            repo,
-            branch,
-            agent,
-            ..
-        } => {
+        Command::Create { repo, agent, .. } => {
             assert_eq!(repo, "/tmp/demo");
-            assert_eq!(branch.as_deref(), Some("feat/x"));
             assert_eq!(agent.as_deref(), Some("claude"));
         }
         other => panic!("expected create, got {other:?}"),
@@ -1892,73 +1884,10 @@ fn a_bookmark_clone_needs_a_url_that_cannot_pass_for_an_option() {
 }
 
 #[test]
-fn a_create_carries_every_member_with_the_mode_it_was_given() {
-    use thurbox::kernel::command::{Args, Command, ExtraMember};
-    let parsed = Command::parse(
-        "create",
-        Args {
-            repo: Some("/src/thurbox".into()),
-            branch: Some("feat/x".into()),
-            base: Some("origin/main".into()),
-            host: Some("ssh:devbox".into()),
-            extras: vec![
-                ExtraMember {
-                    path: "/src/website".into(),
-                    worktree: true,
-                },
-                ExtraMember {
-                    path: "/reference".into(),
-                    worktree: false,
-                },
-            ],
-            ..Args::default()
-        },
-    )
-    .expect("parse");
-    match parsed {
-        Command::Create {
-            base, host, extras, ..
-        } => {
-            assert_eq!(base.as_deref(), Some("origin/main"));
-            assert_eq!(host.as_deref(), Some("ssh:devbox"));
-            assert_eq!(extras.len(), 2);
-            assert!(extras[0].worktree, "a member can take its own worktree");
-            assert!(!extras[1].worktree, "or be attached as it is");
-        }
-        other => panic!("expected create, got {other:?}"),
-    }
-}
-
-#[test]
 fn creating_without_a_repo_is_refused() {
     use thurbox::kernel::command::{Args, Command};
     let error = Command::parse("create", Args::default()).unwrap_err();
     assert!(error.contains("needs a repo"), "{error}");
-}
-
-#[test]
-fn fork_and_sync_name_their_session() {
-    use thurbox::kernel::command::{Args, Command};
-    let fork = Command::parse(
-        "fork",
-        Args {
-            session: "s1".into(),
-            ..Args::default()
-        },
-    )
-    .expect("parse fork");
-    assert_eq!(fork.kind(), "fork");
-    assert_eq!(fork.session(), "s1");
-
-    let sync = Command::parse(
-        "sync",
-        Args {
-            session: "s1".into(),
-            ..Args::default()
-        },
-    )
-    .expect("parse sync");
-    assert_eq!(sync.kind(), "sync");
 }
 
 #[test]
@@ -2185,181 +2114,7 @@ fn a_creation_into_a_fresh_repo_brings_its_own_header() {
     assert!(screen.contains("creating"), "{screen}");
 }
 
-#[test]
-fn a_force_deleted_restore_is_refused_without_best_effort() {
-    use thurbox::kernel::command::{Args, Command};
-    let plain = Command::parse(
-        "restore",
-        Args {
-            session: "s1".into(),
-            ..Args::default()
-        },
-    )
-    .expect("parse");
-    match plain {
-        Command::Restore { best_effort, .. } => assert!(!best_effort),
-        other => panic!("{other:?}"),
-    }
-
-    let explicit = Command::parse(
-        "restore",
-        Args {
-            session: "s1".into(),
-            force: true,
-            ..Args::default()
-        },
-    )
-    .expect("parse");
-    match explicit {
-        Command::Restore { best_effort, .. } => assert!(best_effort),
-        other => panic!("{other:?}"),
-    }
-}
-
-/// Isolate a `CommandBus` test from the developer's real database.
-///
-/// By environment variable, not `paths::set_test_dir`: the bus dispatches each
-/// command on its own worker thread, and that override is thread-local, so a
-/// worker would resolve the developer's real `THURBOX_DATA_DIR` and open (or
-/// create) a database there. `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` are
-/// process-wide and are what the worker thread reads; nextest runs one process
-/// per test, so setting them here is safe.
-///
-/// Materialises the schema up front, as a real thurbox process does at boot
-/// before it dispatches anything: the command worker opens the database it is
-/// *given* (`open_existing`) rather than re-running `schema::initialize` on
-/// every command, so a test that skips this step hits a database file that was
-/// never created and fails before its own assertion is ever reached.
-fn isolate() -> tempfile::TempDir {
-    let home = tempfile::tempdir().expect("tempdir");
-    let config = home.path().join("config");
-    let data = home.path().join("data");
-    std::fs::create_dir_all(&config).expect("mkdir");
-    std::fs::create_dir_all(&data).expect("mkdir");
-    std::env::set_var("THURBOX_CONFIG_DIR", &config);
-    std::env::set_var("THURBOX_DATA_DIR", &data);
-    thurbox::paths::set_test_dir(&data);
-    let path = thurbox::paths::database_file().expect("database path");
-    thurbox::storage::Database::open(&path).expect("open database");
-    home
-}
-
-#[test]
-fn a_creation_that_cannot_start_reports_why_and_leaves_nothing() {
-    use thurbox::kernel::command::{Args, Command, CommandBus, Phase as CmdPhase};
-
-    let _home = isolate();
-    let mut bus = CommandBus::new(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
-        &Default::default(),
-    );
-    bus.dispatch(
-        Command::parse(
-            "create",
-            Args {
-                repo: Some("/definitely/not/a/repo".into()),
-                ..Args::default()
-            },
-        )
-        .expect("parse"),
-    );
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        bus.poll();
-        if let Some(failed) = bus
-            .inflight()
-            .into_iter()
-            .find(|entry| entry.phase == CmdPhase::Failed)
-        {
-            assert_eq!(failed.kind, "create");
-            assert!(
-                failed
-                    .error
-                    .as_deref()
-                    .unwrap_or("")
-                    .contains("not a directory"),
-                "{:?}",
-                failed.error
-            );
-            // And it is still grouped by the repo it was for, so the pending
-            // row can show the failure where the session would have appeared.
-            assert!(failed.subject.is_some());
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("the failure never surfaced");
-}
-
-#[test]
-fn opening_a_worktree_that_is_not_there_reports_why_before_spawning() {
-    use thurbox::kernel::command::{Args, Command, CommandBus, Phase as CmdPhase};
-
-    // `repo` is validated up front so a bad path fails here rather than minutes
-    // later inside git. A `worktree_path` deserves the same: the picker only
-    // ever offers paths git itself reported, but `create` is reachable from
-    // `thurbox-cli` and any plugin, where a stale or mistyped path would
-    // otherwise become the cwd of a pane that cannot start in it.
-    let repo = tempfile::TempDir::new().expect("tempdir");
-
-    let _home = isolate();
-    let mut bus = CommandBus::new(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
-        &Default::default(),
-    );
-    bus.dispatch(
-        Command::parse(
-            "create",
-            Args {
-                repo: Some(repo.path().display().to_string()),
-                branch: Some("feat/x".into()),
-                worktree_path: Some("/definitely/not/a/worktree".into()),
-                ..Args::default()
-            },
-        )
-        .expect("parse"),
-    );
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        bus.poll();
-        if let Some(failed) = bus
-            .inflight()
-            .into_iter()
-            .find(|entry| entry.phase == CmdPhase::Failed)
-        {
-            assert_eq!(failed.kind, "create");
-            let error = failed.error.as_deref().unwrap_or("");
-            assert!(
-                error.contains("/definitely/not/a/worktree"),
-                "the error names the path that is missing: {error:?}"
-            );
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("the failure never surfaced");
-}
-
 // --- workflow panes --------------------------------------------------------
-
-#[test]
-fn task_and_automation_commands_validate_their_arguments() {
-    use thurbox::kernel::command::{Args, Command};
-
-    assert!(Command::parse("task", Args::default()).is_err());
-    assert!(Command::parse(
-        "task",
-        Args {
-            text: Some("a new task".into()),
-            ..Args::default()
-        }
-    )
-    .is_ok());
-    assert!(Command::parse("dispatch", Args::default()).is_err());
-    assert!(Command::parse("automation", Args::default()).is_err());
-}
 
 /// One pane file in an otherwise empty interface, for the automation tests.
 fn lone_pane(source: &str) -> (tempfile::TempDir, LuaHost) {
@@ -2431,67 +2186,6 @@ fn an_automation_row_carries_what_a_pane_needs_to_manage_it() {
              1700000060000|1699990000000|1699000000000|1699500000000|nil|nil|12|s1"
         ),
         "{painted}"
-    );
-}
-
-/// Create and edit travel as typed fields, never as a command line a shell
-/// would read, and a malformed write fails in the pane that issued it.
-#[test]
-fn a_pane_creates_and_edits_an_automation_with_typed_fields() {
-    use thurbox::kernel::command::{AutomationDraft, Command};
-
-    let (_dir, host) = lone_pane(
-        r#"return { name = "pane", slot = "a",
-  render = function()
-    command("automation", { action = "create", name = "nightly", trigger = "daily",
-      time = "09:30", weekday = 1, timezone = "UTC", prompt = "it's $(rm -rf ~)",
-      repo = "/srv/app", branch = "feat/x", base = "main", agent = "claude", flag = false })
-    command("automation", { action = "edit", number = 7, name = "renamed",
-      command = "make sync", timezone = "" })
-    local edit_without_id = pcall(command, "automation", { action = "edit" })
-    local unknown = pcall(command, "automation", { action = "rename", number = 1 })
-    return { text = tostring(edit_without_id) .. " " .. tostring(unknown) }
-  end }"#,
-    );
-    publish(&host, &snapshot(Vec::new()));
-    let painted = paint(&host, index_of(&host, "pane"), 40, 1).join("");
-    assert!(painted.starts_with("false false"), "{painted}");
-    assert_eq!(
-        host.drain_issued(),
-        vec![
-            (
-                "plugins/10_pane.lua".to_string(),
-                Command::AutomationSave {
-                    id: None,
-                    draft: AutomationDraft {
-                        name: Some("nightly".into()),
-                        trigger: Some("daily".into()),
-                        time: Some("09:30".into()),
-                        weekday: Some(1),
-                        timezone: Some("UTC".into()),
-                        prompt: Some("it's $(rm -rf ~)".into()),
-                        enabled: Some(false),
-                        repo: Some("/srv/app".into()),
-                        branch: Some("feat/x".into()),
-                        base: Some("main".into()),
-                        agent: Some("claude".into()),
-                        ..AutomationDraft::default()
-                    },
-                },
-            ),
-            (
-                "plugins/10_pane.lua".to_string(),
-                Command::AutomationSave {
-                    id: Some(7),
-                    draft: AutomationDraft {
-                        name: Some("renamed".into()),
-                        command: Some("make sync".into()),
-                        timezone: Some(String::new()),
-                        ..AutomationDraft::default()
-                    },
-                },
-            ),
-        ]
     );
 }
 
@@ -2742,85 +2436,6 @@ fn a_child_whose_parent_is_elsewhere_keeps_its_place() {
         screen.contains('↳'),
         "an out-of-group child should be marked rather than moved:\n{screen}"
     );
-}
-
-#[test]
-fn the_spawn_pipeline_reports_the_stage_it_reached() {
-    // "working" is exactly the wrong answer when the question is *why is this
-    // slow*: a stalled fetch and a stalled ssh connect look identical without
-    // the stage name.
-    //
-    // Asserted on the pipeline's own callback rather than by watching the bus,
-    // because a command that fails quickly overwrites its stage with `failed`
-    // before a poll can see it — a race in the observer, not in the report.
-    use std::sync::{Arc, Mutex};
-    use thurbox::session_ops::spawn::{
-        spawn_session_headless_with_progress, SpawnPhase, SpawnRequest,
-    };
-
-    let db = thurbox::storage::Database::open_in_memory().expect("db");
-    let repo = tempfile::tempdir().expect("tempdir");
-    let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
-
-    let recorder = {
-        let seen = seen.clone();
-        move |phase: SpawnPhase| {
-            seen.lock().expect("lock").push(phase.as_str());
-        }
-    };
-
-    // Fails partway — the point is what it reported before it did.
-    let _ = spawn_session_headless_with_progress(
-        &db,
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        SpawnRequest {
-            name: "probe".into(),
-            telemetry_attrs: Default::default(),
-            repo_path: repo.path().to_path_buf(),
-            worktree_branch: None,
-            base_branch: None,
-            existing_worktree: None,
-            agent: None,
-            command: None,
-            args: Vec::new(),
-            agent_args: Vec::new(),
-            env: Default::default(),
-            resume_session_id: None,
-            agent_session_id: None,
-            host: None,
-            multiplexer: None,
-            parent_session_id: None,
-            task_id: None,
-            extra_repos: Vec::new(),
-            fork_session_id: None,
-            inherit_worktrees: Vec::new(),
-            key: None,
-            session_id: None,
-            reports_as: None,
-            on_existing: Default::default(),
-        },
-        Some(&recorder),
-    );
-
-    let stages = seen.lock().expect("lock").clone();
-    assert!(!stages.is_empty(), "the pipeline reported no stage at all");
-    assert_eq!(stages[0], "resolving", "{stages:?}");
-    // Every reported stage is one of the named ones, not free text.
-    for stage in &stages {
-        assert!(
-            [
-                "resolving",
-                "hooks",
-                "host",
-                "worktrees",
-                "backend",
-                "launching",
-                "persisting"
-            ]
-            .contains(stage),
-            "unexpected stage {stage:?}"
-        );
-    }
 }
 
 #[test]

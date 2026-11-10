@@ -64,14 +64,14 @@ OUT_DIR=$(CDPATH= cd -- "$OUT_DIR" && pwd)
 
 # --- Preflight: required tools ----------------------------------------------
 missing=
-for tool in cargo git tmux vhs sqlite3; do
+for tool in cargo git tmux vhs; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 [ -n "$missing" ] && die "missing required tool(s):$missing (vhs needs ffmpeg + ttyd)"
 
 # --- Build the dev binaries (BEFORE the HOME override so cargo finds ~/.cargo) -
 log "Building thurbox (dev) ..."
-cargo build --bin thurbox --bin thurbox-cli >&2
+cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux >&2
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
 CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
 export THURBOX_BIN
@@ -106,7 +106,7 @@ fi
 # mktemp root with fresh HOME + XDG_* — and crucially UNSETS any inherited
 # THURBOX_CONFIG_DIR / THURBOX_DATA_DIR. paths.rs honors those ahead of XDG, so an
 # inherited override (e.g. from a thurbox-dev direnv/sandbox shell) would silently
-# defeat XDG isolation and make the dev binary read/WRITE your REAL db + config.
+# defeat XDG isolation and make the dev binary read/WRITE your REAL config.
 # `fresh` => the root is removed on teardown. Build the binaries BEFORE this (done
 # above) so cargo still resolves your real ~/.cargo before HOME is overridden.
 # shellcheck source=scripts/dev/lib/sandbox-env.sh
@@ -116,26 +116,18 @@ tbx_sandbox_init_full fresh
 
 SANDBOX="$TBX_SANDBOX_ROOT"
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
-DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"
-mkdir -p "$CFG_DIR" "$(dirname "$DB_FILE")"
+mkdir -p "$CFG_DIR"
+# The sessions are this sandbox's Fleet Tasks (exports FLEET_CONFIG).
+tbx_sandbox_fleet
 
 cleanup() { tbx_sandbox_teardown; }
 trap cleanup EXIT INT TERM
 
-# --- Agent registry ----------------------------------------------------------
-{
-    # shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
-    first=$(printf '%s\n' $AGENTS | head -n1)
-    echo "default = \"$first\""
-    if [ "$STUB" -eq 1 ]; then
-        # A long-lived shell so the tmux pane stays alive and the panel renders.
-        printf '\n[[agents]]\nname = "stub"\ncommand = "sh"\nargs = ["-c", "echo ui-review stub agent; exec sh"]\n'
-    else
-        for a in $AGENTS; do
-            printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$(agent_command "$a")"
-        done
-    fi
-} > "$CFG_DIR/agents.toml"
+# The stub as a program Fleet can run: a harness takes no arguments.
+if [ "$STUB" -eq 1 ]; then
+    printf '#!/bin/sh\necho ui-review stub agent\nexec sh\n' > "$CFG_DIR/stub-agent.sh"
+    chmod +x "$CFG_DIR/stub-agent.sh"
+fi
 
 # --- Keybinding overrides (VHS can't type Ctrl+, , Ctrl+/, or F-keys) --------
 # Two of the screens under review open on chords VHS cannot emit:
@@ -196,45 +188,40 @@ git -C "$DEMO_REPO" -c user.email=ui@thurbox -c user.name=ui add -A
 git -C "$DEMO_REPO" -c user.email=ui@thurbox -c user.name=ui commit -q -m "init sample project"
 DEMO_BASE_BRANCH=$(git -C "$DEMO_REPO" symbolic-ref --short HEAD)
 
-# --- Seed sessions + tasks + an automation ----------------------------------
+# --- Seed sessions + an automation -------------------------------------------
+# Isolation tripwire: the sessions are Tasks in the store FLEET_CONFIG names, so
+# a FLEET_CONFIG outside the sandbox would seed — and screenshot — your real
+# Fleet. Abort before any write.
+case "${FLEET_CONFIG:-}" in
+    "$SANDBOX"/*) ;;
+    *) die "sandbox isolation breach — FLEET_CONFIG (${FLEET_CONFIG:-unset}) is outside $SANDBOX" ;;
+esac
+
+# Fleet runs claude and codex from its own harness profiles, and any other name
+# as the program of that name.
+harness_for() {
+    case "$1" in
+        claude) echo claude-code ;;
+        stub) echo "$CFG_DIR/stub-agent.sh" ;;
+        *) agent_command "$1" ;;
+    esac
+}
 log "Seeding sessions for:$AGENTS"
 for a in $AGENTS; do
-    "$CLI_BIN" session create --name "$a" --repo-path "$DEMO_REPO" --agent "$a" >/dev/null
+    tbx_fleet_session "$a" "$DEMO_REPO" "$(harness_for "$a")" \
+        || die "creating session '$a' failed"
 done
 
-# Isolation tripwire: at this point (CLI-only, no TUI yet) the sandbox DB must
-# hold EXACTLY the sessions we just seeded, all rooted under $SANDBOX. If the
-# count is off or any cwd escapes the sandbox, isolation has broken — abort
-# LOUDLY rather than read/pollute the caller's real thurbox database.
-# shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
-want=$(printf '%s\n' $AGENTS | grep -c .)
-got=$(sqlite3 "$DB_FILE" "SELECT count(*) FROM sessions WHERE deleted_at IS NULL" 2>/dev/null || echo "?")
-escaped=$(sqlite3 "$DB_FILE" \
-    "SELECT cwd FROM sessions WHERE deleted_at IS NULL AND cwd NOT LIKE '$SANDBOX%'" \
-    2>/dev/null || true)
-if [ "$got" != "$want" ] || [ -n "$escaped" ]; then
-    die "sandbox isolation breach — refusing to continue.
-  DB:       $DB_FILE
-  expected: $want session(s), all under $SANDBOX
-  found:    $got session(s)${escaped:+, incl. cwd(s) OUTSIDE the sandbox:
-$escaped}
-This means THURBOX_DATA_DIR/THURBOX_CONFIG_DIR (or similar) pointed the dev
-binary at your real data. Aborting before any further writes."
-fi
-
-# A worktree session on its own branch, created LAST so the TUI selects it on
-# launch. There is no review view to point at a diff any more, but the branch is
-# what the session list renders beside the name and what the search strip matches
-# on, so a session that actually has one keeps those screens honest.
+# A session on a branch of its own, created LAST so the TUI selects it on
+# launch. The branch is what the session list renders beside the name and what
+# the search strip matches on, so a session that actually has one keeps those
+# screens honest. Fleet runs a session in the directory it is given, so the
+# worktree is made here.
 # shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
 review_agent=$(printf '%s\n' $AGENTS | head -n1)
-"$CLI_BIN" session create --name "review" --repo-path "$DEMO_REPO" \
-    --agent "$review_agent" --worktree-branch "review/demo" \
-    --base-branch "$DEMO_BASE_BRANCH" >/dev/null
-REVIEW_WT=$(git -C "$DEMO_REPO" worktree list --porcelain \
-    | awk '/^worktree /{p=substr($0,10)} $0=="branch refs/heads/review/demo"{print p}')
-if [ -n "$REVIEW_WT" ]; then
-    cat > "$REVIEW_WT/src/lib.rs" <<'EOF'
+REVIEW_WT="$SANDBOX/worktrees/review"
+git -C "$DEMO_REPO" worktree add -q -b review/demo "$REVIEW_WT" "$DEMO_BASE_BRANCH"
+cat > "$REVIEW_WT/src/lib.rs" <<'EOF'
 pub fn add(a: i64, b: i64) -> i64 {
     a.wrapping_add(b)
 }
@@ -243,50 +230,34 @@ pub fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b)
 }
 EOF
-    cat > "$REVIEW_WT/src/greet.rs" <<'EOF'
+cat > "$REVIEW_WT/src/greet.rs" <<'EOF'
 pub fn greet(name: &str) -> String {
     format!("hello, {name}!")
 }
 EOF
-    cat > "$REVIEW_WT/src/main.rs" <<'EOF'
+cat > "$REVIEW_WT/src/main.rs" <<'EOF'
 mod greet;
 
 fn main() {
     println!("{}", greet::greet("sample-project"));
 }
 EOF
-    git -C "$REVIEW_WT" -c user.email=ui@thurbox -c user.name=ui add -A
-    git -C "$REVIEW_WT" -c user.email=ui@thurbox -c user.name=ui \
-        commit -q -m "feat: add greeting + checked arithmetic"
-fi
+git -C "$REVIEW_WT" -c user.email=ui@thurbox -c user.name=ui add -A
+git -C "$REVIEW_WT" -c user.email=ui@thurbox -c user.name=ui \
+    commit -q -m "feat: add greeting + checked arithmetic"
+tbx_fleet_session review "$REVIEW_WT" "$(harness_for "$review_agent")" \
+    || die "creating session 'review' failed"
 
-# The first-launch interface prompt exists for somebody upgrading from v1. This
-# sandbox profile is a minute old, but it has sessions — which is the signal the
-# gate reads. Without this the tape spends its keystrokes answering the prompt and
-# the closing Ctrl+Q *declines* it, so every screenshot is of the gate.
-"$CLI_BIN" config accept-interface >/dev/null 2>&1 \
-    || log "warning: could not pre-accept the interface prompt (screens may show the gate)"
-
-# Tasks and automations no longer have panes, so nothing below is screenshotted.
-# It is seeded anyway: the rows are real state the session list and search read
-# past, and an empty database is a less honest thing to review than a populated
-# one.
-log "Seeding tasks + an automation"
-"$CLI_BIN" task create --title "Write integration tests" >/dev/null 2>&1 || true
-"$CLI_BIN" task create --title "Triage failing CI" --status in_progress >/dev/null 2>&1 || true
-"$CLI_BIN" task create --title "Document the search feature" >/dev/null 2>&1 || true
+# Automations no longer have a pane, so nothing below is screenshotted. One is
+# seeded anyway: search reads past it, and empty state is a less honest thing to
+# review than a populated one.
+log "Seeding an automation"
 "$CLI_BIN" automation create --name "nightly-triage" --trigger daily \
     --time "09:00" --repo "$DEMO_REPO" \
     --prompt "Triage failing CI and summarize blockers" >/dev/null 2>&1 || true
 
-# Give the agent panes a moment to boot.
-sleep 5
-
 # --- Persist the TUI theme so the launched TUI starts in it ------------------
-sqlite3 "$DB_FILE" \
-    "INSERT INTO metadata (key, value) VALUES ('active_theme', '$DEMO_THEME') \
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value" \
-    || log "warning: could not set theme (continuing with default)"
+printf '{"theme": "%s"}\n' "$DEMO_THEME" > "$CFG_DIR/interface.json"
 
 # --- Render the tape: substitute placeholders then run VHS -------------------
 TAPE_SRC="$SKILL_DIR/tapes/screenshots.tape"

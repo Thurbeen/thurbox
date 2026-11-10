@@ -1,101 +1,17 @@
-//! Automations — named, schedulable agent runs.
+//! An automation's schedule: a one-shot or a recurring cron trigger, and the
+//! math that finds its next fire time. The automation itself is
+//! `config::automations`'s.
 //!
-//! An automation fires on a schedule (one-shot or recurring cron) and, when it
-//! fires, either pastes a prompt into an existing session (`Send`) or spawns a
-//! new session — optionally on a fresh git worktree — and prompts it (`Spawn`).
-//!
-//! This module is pure data + schedule math (no local crate imports), matching
-//! the architecture rule for `session`. Persistence lives in
-//! `storage::automations`; every verb — save, fire, the tick — lives in
-//! `session_ops::automations`.
+//! Pure data + schedule math (no local crate imports), matching the
+//! architecture rule for `session`.
 
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono::{TimeZone, Utc};
-use serde::{Deserialize, Serialize};
 
-use super::SessionId;
-
-/// An additional repository attached to a multi-repo `Spawn`, beyond the
-/// primary `repo_path`.
-///
-/// Each extra repo either gets its **own isolated worktree** — on the session's
-/// shared `worktree_branch`, off its own `base_branch` — so its changes stay
-/// isolated and PR-able per repo (the flow default), or is attached **as-is** as
-/// an additional directory in the multi-repo symlink workspace (no new branch).
-/// The whole list is persisted as JSON in the `action_extra_repos` column, so an
-/// empty list (the common single-repo case) stores `NULL` and is byte-identical
-/// to the pre-multi-repo behavior.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExtraRepo {
-    /// Absolute path to the repository (worktree mode) or directory (dir mode).
-    pub repo_path: PathBuf,
-    /// `true` = create a worktree on the session's shared branch off
-    /// `base_branch`; `false` = attach the directory as-is (no branch).
-    pub worktree: bool,
-    /// Base branch for the worktree when `worktree` is `true`. `None` falls back
-    /// to the primary repo's base (`base_branch` on the `Spawn`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_branch: Option<String>,
-}
-
-/// A persisted automation definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Automation {
-    /// Optional lifetime owner, set only by an explicit request.
-    pub owner_session_id: Option<SessionId>,
-    pub id: i64,
-    pub name: String,
-    pub enabled: bool,
-    pub schedule: AutomationSchedule,
-    /// IANA timezone name (e.g. `"Europe/Zurich"`). `None` = system local time.
-    pub timezone: Option<String>,
-    pub action: AutomationAction,
-    /// Text sent to the target session when the automation fires.
-    pub prompt: String,
-    pub created_at: u64,
-    pub updated_at: u64,
-    pub last_run_at: Option<u64>,
-    /// Next fire time (unix millis). `None` once a one-shot has fired or a
-    /// schedule can no longer produce an occurrence.
-    pub next_run_at: Option<u64>,
-    /// An opaque address a driver gives the automation, unique where set: what
-    /// makes `automation create --key` idempotent.
-    pub key: Option<String>,
-    /// How a fire runs: its deadline, and an exec's directory and environment.
-    pub run: RunSettings,
-}
-
-/// How long a run may take when the automation names no timeout. Long enough
-/// for a sync or a report, short enough that a hung one is noticed within the
-/// hour the heartbeat ticks sixty times in.
+/// How long an automation's run may take when it names no deadline.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
-/// How an automation's fires run.
-///
-/// The timeout is every run's deadline: an exec is killed at it, and a run of
-/// any kind still marked running past it is recorded as timed out by the next
-/// tick. The directory and environment are an exec's alone — a send types into
-/// a pane and a spawn launches an agent, neither of which runs a command here.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RunSettings {
-    /// `None` = [`DEFAULT_TIMEOUT_SECS`].
-    pub timeout_secs: Option<u64>,
-    /// Where an exec runs; `None` = the user's home directory.
-    pub cwd: Option<PathBuf>,
-    /// Variables an exec runs with on top of what it inherits, in key order.
-    pub env: Vec<(String, String)>,
-}
-
-impl RunSettings {
-    /// The deadline a run of this automation gets.
-    pub fn timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS))
-    }
-}
-
-/// When an automation fires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutomationSchedule {
     /// Fire exactly once at the given unix-millisecond timestamp.
@@ -107,33 +23,6 @@ pub enum AutomationSchedule {
 }
 
 impl AutomationSchedule {
-    /// Storage discriminant (`schedule_kind` column).
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Once { .. } => "once",
-            Self::Cron { .. } => "cron",
-        }
-    }
-
-    /// Storage payload (`schedule_spec` column).
-    pub fn spec(&self) -> String {
-        match self {
-            Self::Once { at } => at.to_string(),
-            Self::Cron { expr } => expr.clone(),
-        }
-    }
-
-    /// Reconstruct from the stored `(schedule_kind, schedule_spec)` columns.
-    pub fn from_parts(kind: &str, spec: &str) -> Option<Self> {
-        match kind {
-            "once" => spec.parse().ok().map(|at| Self::Once { at }),
-            "cron" => Some(Self::Cron {
-                expr: spec.to_string(),
-            }),
-            _ => None,
-        }
-    }
-
     /// The schedule as a `trigger` value: `cron:<expr>` or `at:<unix_millis>`.
     ///
     /// The spelling [`parse_trigger`] reads, so an editor can hand a stored
@@ -185,116 +74,6 @@ impl AutomationSchedule {
     }
 }
 
-/// What an automation does when it fires.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AutomationAction {
-    /// Paste the prompt into an existing running session.
-    Send { session_id: SessionId },
-    /// Spawn a new session (optionally on a fresh worktree) and prompt it.
-    ///
-    /// A single-repo spawn leaves `extra_repos` empty (the common case). When it
-    /// is non-empty the session spans multiple repos: the primary plus each
-    /// extra, launched in a per-session symlink workspace. See [`ExtraRepo`].
-    Spawn {
-        repo_path: PathBuf,
-        /// `None` = run in the repo root; `Some` = create/use a worktree branch.
-        worktree_branch: Option<String>,
-        /// Base branch for a new worktree (default `main`).
-        base_branch: Option<String>,
-        /// Agent name; `None` = registry default.
-        agent: Option<String>,
-        /// Additional repositories spanned by this session (empty = single-repo).
-        extra_repos: Vec<ExtraRepo>,
-    },
-    /// Run a shell command headlessly (`sh -c <command>`), no agent/session.
-    ///
-    /// Used by deterministic scheduled jobs (e.g. the task-integration sync
-    /// extensions): the command is run by thurbox's automation scheduler — TUI
-    /// and headless `automation tick` alike — and its exit status is recorded in
-    /// the run history. There is no model in the loop.
-    Exec { command: String },
-}
-
-impl AutomationAction {
-    /// Storage discriminant (`action_kind` column).
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Send { .. } => "send",
-            Self::Spawn { .. } => "spawn",
-            Self::Exec { .. } => "exec",
-        }
-    }
-}
-
-/// Outcome of a single automation fire, kept for history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutomationRunStatus {
-    /// Recorded when a fire starts and replaced by its outcome when it ends,
-    /// so a run that never returns still shows.
-    Running,
-    Success,
-    Error,
-    Skipped,
-    /// Killed at its deadline, or still marked running past it — a firer that
-    /// hung or died.
-    TimedOut,
-}
-
-impl AutomationRunStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Success => "success",
-            Self::Error => "error",
-            Self::Skipped => "skipped",
-            Self::TimedOut => "timed_out",
-        }
-    }
-
-    /// Parse a status stored in the database, defaulting unknown values to
-    /// `Error`.
-    pub fn from_db(s: &str) -> Self {
-        match s {
-            "running" => Self::Running,
-            "success" => Self::Success,
-            "skipped" => Self::Skipped,
-            "timed_out" => Self::TimedOut,
-            _ => Self::Error,
-        }
-    }
-}
-
-/// A recorded automation fire.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AutomationRun {
-    pub id: i64,
-    pub automation_id: i64,
-    pub started_at: u64,
-    pub status: AutomationRunStatus,
-    /// Free-text detail: error message, skip reason, human summary.
-    pub detail: String,
-    /// Session this run sent to / spawned, when one exists. `None` on
-    /// pre-v28 rows (the TUI falls back to parsing `detail` for those).
-    pub related_session_id: Option<super::SessionId>,
-    /// When the run ended; `None` while it runs, and on rows from before v56.
-    pub finished_at: Option<u64>,
-    /// An exec's exit code; `None` for a send or spawn, a killed exec, and
-    /// rows from before v56.
-    pub exit_code: Option<i32>,
-    /// The tail of an exec's standard output and error, each its own.
-    pub stdout_tail: Option<String>,
-    pub stderr_tail: Option<String>,
-}
-
-impl AutomationRun {
-    /// How long the run took, once it has ended.
-    pub fn duration_ms(&self) -> Option<u64> {
-        self.finished_at
-            .map(|end| end.saturating_sub(self.started_at))
-    }
-}
-
-/// A scheduling preset offered in the CLI/TUI. Each compiles to a cron string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchedulePreset {
     Hourly,
@@ -393,54 +172,6 @@ pub fn check_timezone(timezone: &str) -> Result<(), String> {
     })
 }
 
-/// Parse a relative duration like `30m`, `2h`, `1h30m`, `45s`, or `1d` into
-/// milliseconds. Units: `s`, `m`, `h`, `d`. Whitespace between tokens is
-/// allowed. Returns `None` if empty, malformed, or a number lacks a unit.
-pub fn parse_duration(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let mut total: u64 = 0;
-    let mut num = String::new();
-    let mut any = false;
-    for ch in s.chars() {
-        if ch.is_ascii_digit() {
-            num.push(ch);
-        } else if !ch.is_whitespace() {
-            total = total.checked_add(duration_token_ms(&num, ch)?)?;
-            num.clear();
-            any = true;
-        }
-    }
-    // A trailing number with no unit is invalid.
-    if !num.is_empty() {
-        return None;
-    }
-    any.then_some(total)
-}
-
-/// Convert one `<digits><unit>` token into milliseconds. `digits` is the number
-/// accumulated so far (must be non-empty) and `unit` the unit char (`s`/`m`/
-/// `h`/`d`, case-insensitive). Returns `None` on a missing number, unknown
-/// unit, or arithmetic overflow.
-fn duration_token_ms(digits: &str, unit: char) -> Option<u64> {
-    if digits.is_empty() {
-        return None;
-    }
-    let n: u64 = digits.parse().ok()?;
-    let unit_ms: u64 = match unit.to_ascii_lowercase() {
-        's' => 1_000,
-        'm' => 60_000,
-        'h' => 3_600_000,
-        'd' => 86_400_000,
-        _ => return None,
-    };
-    n.checked_mul(unit_ms)
-}
-
-/// Parse an `HH:MM` string into `(hour, minute)`. Returns `None` if malformed
-/// or out of range.
 pub fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
     let (h, m) = s.split_once(':')?;
     let hour: u32 = h.parse().ok()?;
@@ -548,19 +279,6 @@ mod tests {
     }
 
     #[test]
-    fn schedule_round_trips_through_parts() {
-        for s in [
-            AutomationSchedule::Once { at: 42 },
-            AutomationSchedule::Cron {
-                expr: "0 9 * * 1-5".to_string(),
-            },
-        ] {
-            let back = AutomationSchedule::from_parts(s.kind(), &s.spec()).unwrap();
-            assert_eq!(s, back);
-        }
-    }
-
-    #[test]
     fn preset_compiles_to_expected_cron() {
         assert_eq!(
             preset_to_cron(SchedulePreset::Hourly, 9, 30, 1),
@@ -572,20 +290,6 @@ mod tests {
             "0 9 * * 1-5"
         );
         assert_eq!(preset_to_cron(SchedulePreset::Weekly, 9, 0, 0), "0 9 * * 0");
-    }
-
-    #[test]
-    fn parse_duration_valid_and_invalid() {
-        assert_eq!(parse_duration("30m"), Some(1_800_000));
-        assert_eq!(parse_duration("2h"), Some(7_200_000));
-        assert_eq!(parse_duration("1h30m"), Some(5_400_000));
-        assert_eq!(parse_duration("1d"), Some(86_400_000));
-        assert_eq!(parse_duration("45s"), Some(45_000));
-        assert_eq!(parse_duration("1h 30m"), Some(5_400_000));
-        assert_eq!(parse_duration(""), None);
-        assert_eq!(parse_duration("30"), None); // no unit
-        assert_eq!(parse_duration("m"), None); // no number
-        assert_eq!(parse_duration("30x"), None); // bad unit
     }
 
     #[test]

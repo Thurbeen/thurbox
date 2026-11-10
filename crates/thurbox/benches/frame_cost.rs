@@ -107,7 +107,7 @@ fn snapshot(sessions: usize) -> Snapshot {
                 repos: vec![repo.into()],
                 branch: Some(format!("feat/thing-{nth}")),
                 base_branch: Some("main".into()),
-                backend: "local-tmux".into(),
+                backend: "local:tmux".into(),
                 backend_id: Some(format!("%{nth}")),
                 remote_host: None,
                 agent_session_id: Some(format!("00000000-0000-0000-0000-{nth:012}")),
@@ -159,7 +159,7 @@ impl World {
             themes: themes(),
             registry: registry(host),
             diffs: thurbox::kernel::diff::DiffStore::new(),
-            repos: thurbox::kernel::repos::RepoStore::with_hosts(Default::default()),
+            repos: thurbox::kernel::repos::RepoStore::new(),
             inventory,
         }
     }

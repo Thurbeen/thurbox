@@ -1,15 +1,14 @@
--- A tasks pane, as a plugin.
+-- A to-do list pane, as a plugin.
 --
 -- NOT bundled. Install it into your interface with:
 --
 --     thurbox-cli plugin install tasks
 --
--- v1 had a tasks column on `F5`/`Ctrl+W` and v2 removed it with the rest of
--- `src/ui`. The records never went anywhere — `thurbox.tasks` is in the snapshot
--- and the kernel takes `task` commands — so the pane is a file you can add back,
--- which is the whole claim the interface rests on. Nothing here is privileged:
--- reads come from the snapshot, writes go out as commands, and it declares no
--- capabilities, so it needs no trust.
+-- The list is a scratch list for this run of thurbox: it lives in the pane's
+-- `state`, which outlives an interface reload but not a restart (thurbox gives
+-- a plugin no storage that does). Nothing here is privileged: it reads nothing
+-- but its own state, issues no command, and declares no capabilities, so it
+-- needs no trust.
 --
 -- What it shows that the other examples do not:
 --
@@ -31,7 +30,7 @@ local ORDER = { "todo", "in_progress", "done" }
 local GLYPH = { todo = "☐", in_progress = "◐", done = "☑" }
 
 --- Colour per status, from theme ROLES rather than colours, so this pane looks
---- right under all thirty-six palettes without knowing any of them.
+--- right under every palette without knowing any of them.
 local function status_style(status)
   if status == "done" then
     return { fg = theme.muted }
@@ -41,8 +40,15 @@ local function status_style(status)
   return { fg = theme.text }
 end
 
+--- The list, read whole and written whole: `state` hands back a fresh table on
+--- every read, so an item changed in place would not be kept. `state` lives in
+--- memory, so the list ends when thurbox quits.
 local function tasks()
-  return (thurbox and thurbox.tasks) or {}
+  return state.tasks or {}
+end
+
+local function save(list)
+  state.tasks = list
 end
 
 --- The next status in the cycle, so one key moves a task forward.
@@ -55,35 +61,23 @@ local function next_status(current)
   return ORDER[1]
 end
 
---- Per-pane state. `store` survives a frame; `state` would persist across
+--- Per-pane UI state. `store` survives a frame; `state` would persist across
 --- restarts, which a cursor position has no business doing.
+---@return { cursor: integer, adding: table?, armed: table? }
 local function ui()
-  store.tasks_ui = store.tasks_ui or { cursor = 1, adding = nil, armed = nil }
+  store.tasks_ui = store.tasks_ui or { cursor = 1 }
   return store.tasks_ui
 end
 
-local function selected()
-  local list = tasks()
-  local at = widgets.clamp(ui().cursor, #list)
-  return list[at], at
-end
-
---- One row: glyph, title, and the source when it did not come from here.
 local function row_of(task, is_cursor)
   local style = status_style(task.status)
   if is_cursor then
     style = { fg = theme.accent, bold = true }
   end
-  local spans = {
+  return {
     { text = "  " .. (GLYPH[task.status] or "☐") .. " ", style = style },
     { text = task.title or "(untitled)", style = style },
   }
-  -- A task synced from a tracker is not yours to rename, and saying where it
-  -- came from is the difference between that being obvious and being a surprise.
-  if task.source and task.source ~= "local" then
-    spans[#spans + 1] = { text = "  " .. task.source, style = { fg = theme.muted } }
-  end
-  return spans
 end
 
 local function counts()
@@ -116,13 +110,12 @@ return {
     { key = "space", action = "tasks.cycle", desc = "todo → doing → done", group = "Tasks" },
     { key = "n", action = "tasks.new", desc = "new task", group = "Tasks" },
     { key = "x", action = "tasks.remove", desc = "delete (twice)", group = "Tasks" },
-    { key = "enter", action = "tasks.dispatch", desc = "hand to the agent", group = "Tasks" },
   },
 
   render = function(ctx)
     local list = tasks()
-    local state = ui()
-    state.cursor = widgets.clamp(state.cursor, #list)
+    local view = ui()
+    view.cursor = widgets.clamp(view.cursor, #list)
 
     local children = {}
     local open, done = counts()
@@ -131,20 +124,20 @@ return {
       children[#children + 1] = {
         type = "text",
         len = 1,
-        text = theme.dim("  nothing on the list — n to add one"),
+        text = theme.dim("  nothing on the list — n to add one (kept until thurbox quits)"),
       }
     else
       local rows = {}
       for index, task in ipairs(list) do
         rows[#rows + 1] = {
-          spans = row_of(task, index == state.cursor and ctx.focused),
-          id = tostring(task.id),
+          spans = row_of(task, index == view.cursor and ctx.focused),
+          id = tostring(index),
         }
       end
       local height = math.max(1, math.min(ctx.height - 5, ROWS_MAX))
       local body = widgets.list({
         rows = rows,
-        selected = state.cursor,
+        selected = view.cursor,
         height = height,
       })
       body.fill = 1
@@ -153,21 +146,21 @@ return {
 
     -- The `input` kind, drawn only while it is wanted: a field that is always
     -- there is a row spent on nothing most of the time.
-    if state.adding then
-      children[#children + 1] = textinput.node(state.adding, {
+    if view.adding then
+      children[#children + 1] = textinput.node(view.adding, {
         label = "New task",
         focused = true,
       })
     end
 
-    if state.armed then
+    if view.armed then
       children[#children + 1] = {
         type = "text",
         len = 1,
         text = {
           {
             { text = "  delete ", style = { fg = theme.bad } },
-            { text = state.armed.title or "", style = { fg = theme.bad, bold = true } },
+            { text = view.armed.title or "", style = { fg = theme.bad, bold = true } },
             { text = "?  x again to confirm", style = { fg = theme.bad } },
           },
         },
@@ -188,7 +181,6 @@ return {
     children[#children + 1] = widgets.hints({
       { "space", "status" },
       { "n", "new" },
-      { "enter", "to agent" },
       { "x", "delete" },
     })
 
@@ -200,8 +192,10 @@ return {
   end,
 
   on_action = function(action)
-    local state = ui()
-    local task = selected()
+    local view = ui()
+    local list = tasks()
+    local at = widgets.clamp(view.cursor, #list)
+    local task = list[at]
 
     if action == "tasks.open" then
       command("focus", { text = "tasks" })
@@ -210,38 +204,33 @@ return {
     if action == "tasks.down" or action == "tasks.up" then
       -- Any movement disarms: an armed delete that survives the cursor moving
       -- off it is a delete aimed at whatever you land on.
-      state.armed = nil
+      view.armed = nil
       local step = action == "tasks.down" and 1 or -1
-      state.cursor = widgets.clamp(state.cursor + step, #tasks())
+      view.cursor = widgets.clamp(view.cursor + step, #list)
       return true
     end
     if action == "tasks.new" then
-      state.adding = textinput.new("")
+      view.adding = textinput.new("")
       return true
     end
     if not task then
       return false
     end
     if action == "tasks.cycle" then
-      state.armed = nil
-      command("task", { number = task.id, status = next_status(task.status) })
-      return true
-    end
-    if action == "tasks.dispatch" then
-      state.armed = nil
-      -- `dispatch` follows the task's own action, as `thurbox-cli task run` does.
-      -- A plain todo has none, and the refusal arrives as `command.failed`.
-      command("dispatch", { number = task.id })
+      view.armed = nil
+      task.status = next_status(task.status)
+      save(list)
       return true
     end
     if action == "tasks.remove" then
       -- Armed rather than confirmed in a modal: a modal for every delete is what
       -- teaches people to dismiss modals without reading them.
-      if state.armed and state.armed.id == task.id then
-        state.armed = nil
-        command("task", { number = task.id, reset = true })
+      if view.armed and view.armed.at == at then
+        view.armed = nil
+        table.remove(list, at)
+        save(list)
       else
-        state.armed = { id = task.id, title = task.title }
+        view.armed = { at = at, title = task.title }
       end
       return true
     end
@@ -251,22 +240,24 @@ return {
   -- Keys the pane did not declare arrive here, which is how the input field gets
   -- ordinary letters without every one of them being an action.
   on_key = function(key)
-    local state = ui()
-    if not state.adding then
+    local view = ui()
+    if not view.adding then
       return false
     end
     if key.name == "enter" then
-      local title = (state.adding.value or ""):match("^%s*(.-)%s*$")
+      local title = (view.adding.value or ""):match("^%s*(.-)%s*$")
       if title ~= "" then
-        command("task", { text = title })
+        local list = tasks()
+        list[#list + 1] = { title = title, status = "todo" }
+        save(list)
       end
-      state.adding = nil
+      view.adding = nil
       return true
     end
     if key.name == "esc" then
-      state.adding = nil
+      view.adding = nil
       return true
     end
-    return textinput.key(state.adding, key)
+    return textinput.key(view.adding, key)
   end,
 }

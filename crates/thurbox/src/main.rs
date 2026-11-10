@@ -97,19 +97,9 @@ const LINK_SCAN_INTERVAL: Duration = Duration::from_millis(250);
 const PERF_WINDOW_TICKS: u64 = 1000;
 
 /// How often the JSON snapshot is written while timing is active. Slower than
-/// the log line because it is a database write every other thurbox connection
-/// pays for with a `data_version` bump.
+/// the log line because each one rewrites `perf.json`, which `thurbox-cli perf`
+/// reads.
 const PERF_PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
-
-/// How often the loop asks the database whether any soft-deleted session's undo
-/// window has closed.
-///
-/// Slow on purpose: it is a consequence of time passing, and the row's own
-/// `deleted_at` is what answers it, so nothing is lost by asking late. A pass
-/// with nothing overdue costs one SELECT on a worker thread and consults no
-/// multiplexer; the price of asking often would be a thread and a connection
-/// per tick for an answer that changes every ten seconds at most.
-const REAP_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The floor between two paints.
 ///
@@ -310,18 +300,17 @@ struct App {
     /// avoid. Bounded, because key auto-repeat makes presses faster than
     /// answers.
     paste_targets: Vec<String>,
+    /// Terminal input held behind a paste of image paths into a remote
+    /// session, oldest first, while a worker asks whether the files are this
+    /// machine's. Everything typed or pasted meanwhile queues behind it, so an
+    /// `Enter` cannot overtake the paste it follows.
+    held_input: coordinator::input::HeldInput,
     /// How many of [`Self::paste_targets`] the question now out was asked for.
     ///
     /// The answer describes the clipboard at the moment it was asked, so it is
     /// spent only on the presses already made by then; the rest wait for a
     /// question of their own.
     probed_presses: usize,
-    /// Image drops being copied to a remote session's host, delivered by
-    /// [`Interface::poll_image_drops`] when the copy ends.
-    ///
-    /// A thread each, because the copy is an ssh round trip plus the file's
-    /// bytes and the interface must keep painting meanwhile.
-    image_drops: Vec<coordinator::input::PendingDrop>,
     notifier: Notifier,
     perf: Counters,
     /// Wall-clock stats, populated only while timing is active (ADR-P11).
@@ -419,6 +408,9 @@ struct App {
     /// for focus a frame before the slot exists, and judging that request against
     /// the frame that already painted refuses the focus its chord existed to give.
     pending_focus: Option<usize>,
+    /// The session a `Command::Editor` asked to open the editor over, until
+    /// the loop hands the editor its tty.
+    editor_request: Option<String>,
     /// Every identified node of the frame just painted, in paint order.
     ///
     /// Rebuilt each frame and scanned in reverse, so the innermost node under a
@@ -438,6 +430,8 @@ struct App {
     /// already refused to pay it per iteration, and this extends the same
     /// reasoning to the attach seed size.
     screen_size: (u16, u16),
+    /// The companion shells this interface knows (`coordinator::ShellBook`).
+    shells: coordinator::ShellBook,
     /// The text under the current selection, read while the frame that painted
     /// it is still in hand.
     ///
@@ -489,9 +483,6 @@ struct App {
     /// Whether the focused pane holds the caret in a field of its own, so a
     /// paste is typing for it rather than text for a terminal.
     focused_typing: bool,
-    /// The session the list had selected last frame, so moving off one can
-    /// acknowledge the finished turn it was showing.
-    last_selected_session: Option<String>,
     /// Index into the host's focusable plugins.
     focus: usize,
     /// Where focus was before the last deliberate move, so `Esc` can go back.
@@ -631,15 +622,6 @@ struct App {
     /// settings modal's Interface tab lists it too — one join per frame, read
     /// by both.
     inventory: Vec<thurbox::kernel::inventory::Row>,
-    /// Sessions with a relaunch in flight, so a respawn is dispatched once per
-    /// session rather than every frame its window is still missing. A failed
-    /// restart clears its entry, so a session still missing its agent is tried
-    /// again rather than stuck until thurbox restarts.
-    respawned: std::collections::HashSet<String>,
-    /// When the loop last asked the database for soft-deleted sessions whose
-    /// undo window has closed, so their agents are let go rather than left
-    /// running forever. See [`REAP_INTERVAL`].
-    last_reap: Instant,
     /// Whether a bookmark command is still running.
     ///
     /// Repository memory is the one read the flow can *change*, so its cached

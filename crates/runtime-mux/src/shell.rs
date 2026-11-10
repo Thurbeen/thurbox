@@ -210,7 +210,7 @@ pub fn ssh_command(destination: &str, ssh_opts: &[String]) -> Command {
 /// so this is the whole rule — unlike [`posix_quote`] there is no safe-token
 /// fast path, because the callers embed the result in larger PowerShell
 /// expressions where a bare token could be re-parsed. One implementation for
-/// what had grown three (`tmux`, `git::remote`, and a near-copy in
+/// what had grown three (`tmux`, thurbox's remote git, and a near-copy in
 /// `notifications`).
 pub fn powershell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
@@ -289,7 +289,7 @@ impl std::error::Error for CommandLineTooLong {}
 /// `wsl.exe -d <distro>`.
 ///
 /// One implementation of a construction that had grown several copies —
-/// `git::command::host_launcher`, `git::remote::host_shell_c` and the
+/// thurbox's remote git launcher, its `sh -c` helper and the
 /// transport's prefix branch — each one
 /// more place for the two quoting rules below to drift apart. It launches, and
 /// nothing else: it names no multiplexer and adds no `-L`, so the tmux
@@ -795,7 +795,7 @@ pub fn windows_arg_quote(s: &str) -> String {
 /// This is the WSL analogue of [`ssh_command`], but `wsl.exe`'s argument
 /// forwarding is subtly different from ssh's plain space-join (observed against
 /// current `wsl.exe`; callers that need argv to arrive verbatim bypass the
-/// shell entirely by appending `-e`/`--exec` — see `git::remote::host_shell_c`):
+/// shell entirely by appending `-e`/`--exec` — see [`HostLauncher::shell_c`]):
 ///
 /// - a **whitespace-free** token reaches the in-distro shell for interpretation
 ///   exactly like over ssh — POSIX-quote it the same way (the shell strips the
@@ -803,7 +803,7 @@ pub fn windows_arg_quote(s: &str) -> String {
 /// - an argument **containing whitespace** is preserved as a single word — do
 ///   *not* pre-quote a multi-word `sh -c` script for WSL, or the quotes arrive
 ///   literally and the shell treats the whole blob as one command name (see
-///   `git::remote::host_shell_c`, which branches on this).
+///   [`HostLauncher::shell_c`], which branches on this).
 ///
 /// No `--` separator is used (none of thurbox's commands start with a `-`,
 /// matching the SSH path which also omits it).

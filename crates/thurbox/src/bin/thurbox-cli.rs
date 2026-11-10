@@ -1,29 +1,20 @@
-//! Thurbox CLI binary — scriptable access to the same state the TUI shows.
-//! Session commands work headlessly; `ui` targets a running TUI instance.
+//! Thurbox CLI binary — scriptable access to thurbox's own files and to a
+//! running interface. Sessions are Fleet's: `fleet` is their command line.
 //!
 //! This entrypoint owns the parts of the AXI contract (`axi/1.0-2026-07`) that
 //! are about the *process* rather than about any one command: a failure that
 //! left nothing to print is a structured document on **stdout**, and the exit
 //! code says which kind of failure it was — `0` success, `1` the command ran
 //! and failed, `2` the invocation was wrong, `3` the reference matched more
-//! than one session or automation, and for a verb that waits or claims `4` it
-//! timed out, `5` somebody else holds it, `6` its subject went away. An agent
-//! reads one stream and one status; splitting the answer across stdout and
-//! stderr costs it a retry to find out what happened.
+//! than one running interface. An agent reads one stream and one status;
+//! splitting the answer across stdout and stderr costs it a retry to find out
+//! what happened.
 //!
 //! The exit code is the *only* half of that contract a caller may invert. An
 //! `error` key on stdout implies a non-zero exit; the converse does not hold,
-//! because a command whose report *is* the answer (`session doctor`, `config
-//! validate`) prints that report and asks for a non-zero exit anyway. Gate on
-//! the document, not on `$?`.
-//!
-//! The other half of that promise is that stdout carries **exactly one**
-//! document. A command that renders its report and then asks for a non-zero
-//! exit (`session doctor` on a broken session, `config validate` on an invalid
-//! file) comes back as [`cli::Outcome::Failed`]: the report is the answer, the
-//! exit code carries the verdict, and the sentence explaining it goes to
-//! stderr — appending a second document there would break `jq` and every other
-//! single-document parser on exactly the commands an integrator scripts.
+//! because a command whose report *is* the answer (`config validate`) prints
+//! that report and asks for a non-zero exit anyway. Gate on the document, not
+//! on `$?`.
 
 use clap::Parser;
 use thurbox::cli::{self, output::Format, output::FormatFlags, Cli, EXIT_ERROR, EXIT_USAGE};
@@ -49,149 +40,33 @@ fn main() {
         toon: cli.toon,
     });
 
-    // The heartbeat runs `automation tick` with its output thrown away, so a
-    // tick that fails before the command records its own outcome — no
-    // database, a panic — has to be recorded from here or it leaves no trace.
-    let ticking = matches!(
-        &cli.command,
-        Some(cli::Command::Automation {
-            action: cli::automations::Action::Tick
-        })
-    );
-    if ticking {
-        let report = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            record_failed_tick(&format!("panicked: {info}"));
-            report(info);
-        }));
-    }
-
     // Loaded once and handed to everything that reads one. Warnings go to the
     // WARN-level stderr logger; `config validate` is the loud path.
     let (settings, _) = thurbox::config::settings::load_or_seed_with_warnings();
 
-    let Some(db_path) = thurbox::paths::database_file() else {
-        if ticking {
-            record_failed_tick("cannot resolve the database path");
-        }
-        fail(
-            "cannot resolve the database path",
-            "set HOME (or THURBOX_DATA_DIR) and run the command again",
-            "thurbox-cli config show",
-            format,
-        );
-    };
-
-    let signal = matches!(
-        &cli.command,
-        Some(cli::Command::Session {
-            action: cli::sessions::Action::Signal { .. }
-        })
-    );
-    let open = if signal {
-        thurbox::storage::Database::open_for_signal
-    } else {
-        thurbox::storage::Database::open
-    };
-    let db = match open(&db_path) {
-        Ok(db) => db,
-        Err(e) => fail(
-            &{
-                let message = format!("cannot open the database at {}: {e}", db_path.display());
-                if ticking {
-                    record_failed_tick(&message);
-                }
-                message
-            },
-            "check the file is readable and not held by another process, then retry",
-            "thurbox-cli config show",
-            format,
-        ),
-    };
-
-    // The one-time WSL row repair schema v47 marks as owed. Driven from here as
-    // well as from the TUI boot: the mark is written by whichever binary opens
-    // the database first, and a headless-driven install need never launch the
-    // interface — until the repair runs, a mislabelled row reads as remote, so
-    // the reap sweep refuses to kill windows it believes are elsewhere and
-    // leaks them. Costs one indexed lookup when nothing is owed, which is every
-    // invocation after the first.
-    // `warn!`, not `info!`: the logger installed above filters to WARN with no
-    // `RUST_LOG` set, and this is the one record that a one-time rewrite of
-    // persisted rows happened — the owed mark is gone afterwards, so the TUI
-    // cannot report it later.
-    for notice in thurbox::session_ops::repair_wsl_loopback_rows(&db) {
-        tracing::warn!("{notice}");
-    }
-    // Every agent hook runs `session signal`, which skips the retention sweep
-    // for the same reason `open_for_signal` skips the schema pass.
-    if !signal {
-        db.prune_history(settings.audit_retention_days);
-    }
-
-    // The one registry this process drives backends through, built here at its
-    // composition root — on the first command that acts on a session, and
-    // never for the ones that do not. Registration only: nothing connects
-    // until a backend is asked something.
-    let build = || thurbox::backend::wiring::configured(&settings).0;
-    // This machine's backends alone, for `session signal` — run by every
-    // agent hook, so it must not pay for reading every host.
-    let build_local = || thurbox::backend::wiring::local_only(&settings);
-    let backends = cli::Backends::lazy(&build).with_local(&build_local);
-    let outcome = cli::run(cli, &db, &backends, &settings);
-    // Before any exit below, which runs no destructor.
-    for registry in backends.built() {
-        registry.shutdown_all();
-    }
-    match outcome {
+    match cli::run(cli, &settings) {
         Ok(cli::Outcome::Ok) => {}
         // The report is already on stdout and is the answer; only the verdict
         // is left to carry, and it carries as an exit code.
-        Ok(cli::Outcome::Failed { message, code }) => {
+        Ok(cli::Outcome::Failed { message }) => {
             eprintln!("{message}");
-            // A command that asked for a specific code meant it: `session exec
-            // --exit-passthrough` exists so an in-session command's own code
-            // reaches the caller intact, and collapsing it here would make the
-            // flag a lie. Everything else takes the generic failure code.
-            std::process::exit(code.unwrap_or(EXIT_ERROR));
+            std::process::exit(EXIT_ERROR);
         }
         // A runtime failure, not a bad invocation: clap already answered those
-        // with its own wording and exit 2. Advising `--help` here misattributes
-        // "that session has exited" to the arguments, and points at a page that
-        // cannot fix it — so the suggestion sends the caller to the state the
-        // message is about. The code travels with the message: an ambiguous
-        // session reference is a different answer from a missing one, and only
-        // the failure itself knows which it was.
+        // with its own wording and exit 2.
         Err(e) => {
             println!(
                 "{}",
-                cli::typed_error_output(
-                    &e.error,
+                cli::error_output(
+                    &e,
                     "the command ran and failed; the message says what went wrong",
-                    "thurbox-cli",
+                    "thurbox-cli --help",
                     format
                 )
             );
             std::process::exit(e.exit_code)
         }
     }
-}
-
-/// Record an `automation tick` that failed before it could record itself.
-fn record_failed_tick(error: &str) {
-    use thurbox::session_ops::automations::tick_log;
-    tick_log::record(&tick_log::failed(error));
-}
-
-/// Print a structured failure on stdout and exit [`EXIT_ERROR`].
-fn fail(message: &str, suggestion: &str, next: &str, format: Format) -> ! {
-    fail_with(message, suggestion, next, format, EXIT_ERROR)
-}
-
-/// [`fail`], with the exit code the failure asked for.
-fn fail_with(message: &str, suggestion: &str, next: &str, format: Format, code: i32) -> ! {
-    println!("{}", cli::error_output(message, suggestion, next, format));
-    std::process::exit(code)
 }
 
 /// Turn a clap outcome into an exit.
@@ -231,8 +106,8 @@ fn exit_from_clap(e: &clap::Error) -> ! {
 
     println!(
         "{}",
-        cli::typed_error_output(
-            &thurbox::session_ops::OpError::Usage(message),
+        cli::error_output(
+            &cli::CommandError::with_code(message, EXIT_USAGE),
             "this binary's commands and flags are listed by --help",
             "thurbox-cli --help",
             format_from_raw_args(),

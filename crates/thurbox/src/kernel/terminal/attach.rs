@@ -1,6 +1,5 @@
-//! Attaching a session's pane: the worker that adopts it, the failures that
-//! keep a pane from looking empty, and the panes adopted by name that the loop
-//! persists.
+//! Attaching a session's pane: the worker that adopts it, and the failures
+//! that keep a pane from looking empty.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -17,9 +16,6 @@ pub(super) struct Attach {
     /// Why a session could not be attached, so the pane can say so instead of
     /// looking empty. Kept per session and cleared on a successful attach.
     pub(super) failed: HashMap<String, Failure>,
-    /// The survey count each live session was attached at, so a lost pane is
-    /// judged only by a listing taken after the attach.
-    pub(super) live_since: HashMap<String, u64>,
     /// Moves whenever the set of attach failures does. Published on each
     /// session row, so it gates that group alongside `meta_version`.
     pub(super) failed_version: u64,
@@ -32,20 +28,15 @@ pub(super) struct Attach {
     /// the result is collected here.
     pub(super) attaching: HashMap<String, String>,
     pub(super) attached: (Sender<Attached>, Receiver<Attached>),
-    /// Panes adopted by window-name resolution, waiting for the loop to persist
-    /// their id onto the row ([`Terminals::drain_adopted_panes`]).
-    pub(super) adopted: Vec<(String, String)>,
 }
 
 impl Attach {
     pub(super) fn new() -> Self {
         Self {
             failed: HashMap::new(),
-            live_since: HashMap::new(),
             failed_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
-            adopted: Vec::new(),
         }
     }
 }
@@ -78,10 +69,6 @@ pub(super) struct Attached {
     /// rather than assumed: the readying happens on the worker, and until it
     /// has, no second attach on that backend may start.
     pub(super) readied: bool,
-    /// Whether the pane was resolved by window name rather than taken from the
-    /// row's own `backend_id` — a successful adoption is then worth persisting,
-    /// so the legacy row stops depending on its (non-unique) name.
-    pub(super) via_name: bool,
     pub(super) session_handle: Result<crate::backend::Session, String>,
 }
 
@@ -91,9 +78,6 @@ pub(super) struct Attached {
 /// it a session whose host was offline at startup stays dead for the life of the
 /// process, because the candidate pane never changes.
 pub(super) const ATTACH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// What a remote session shows while the connection it lost is re-opened.
-pub(super) const LOST_CONNECTION: &str = "lost the connection to its host; reconnecting";
 
 impl Terminals {
     /// Start an attach for every row that is neither live nor attaching, unless
@@ -107,7 +91,7 @@ impl Terminals {
                 self.attach_fleet(row, rows, cols);
                 continue;
             }
-            let (candidate, via_name) = self.candidate_pane(row);
+            let candidate = row.backend_id.clone();
             // The same attempt would fail the same way; a different one is worth
             // making.
             if self.attach.failed.get(&row.id).is_some_and(|failure| {
@@ -126,23 +110,7 @@ impl Terminals {
             if !self.backend_is_ready(&backend) && self.opening(&backend) {
                 continue;
             }
-            self.start_attach(row, backend_id, via_name, rows, cols);
-        }
-    }
-
-    /// The pane to attach `row` to, and whether it was found by window name.
-    ///
-    /// The row's own pane id, unless a listing contradicts it: a contradicted
-    /// one is worth less than the window name that produced it, and falling
-    /// through to `None` here is also what lets [`Self::missing_agents`]
-    /// relaunch a session whose window is gone for good.
-    pub(super) fn candidate_pane(
-        &self,
-        row: &crate::kernel::snapshot::SessionRow,
-    ) -> (Option<String>, bool) {
-        match row.backend_id.clone() {
-            Some(id) if !self.pane_is_stale(row, &id) => (Some(id), false),
-            _ => (self.pane_by_name(row), true),
+            self.start_attach(row, backend_id, rows, cols);
         }
     }
 
@@ -162,69 +130,24 @@ impl Terminals {
     /// transport — both record the pane they spawned — and a row whose window
     /// was re-adopted somewhere else.
     pub(super) fn drop_lost_panes(&mut self, snapshot: &Snapshot) {
-        let lost: Vec<(String, Option<String>, bool)> = snapshot
+        let lost: Vec<(String, Option<String>)> = snapshot
             .sessions
             .iter()
             .filter_map(|row| {
                 let live = self.live.get(&row.id)?;
-                let remote = crate::session::Route::is_remote_key(&row.backend);
-                let moved = row.backend_id.as_deref().is_some_and(|id| {
-                    !id.is_empty()
-                        && id != live.session.backend_id()
-                        // A local id may evict a live pane only when a listing
-                        // actually places it in this session's own window —
-                        // otherwise an id left over from a previous tmux server
-                        // drops the pane just resolved by name, on every frame,
-                        // forever. Remote rows are never surveyed, so there is no
-                        // listing to ask and the row's own id has to stand.
-                        && (remote || self.pane_placed(row, id))
-                });
-                let surveyed_after_attach =
-                    self.attach.live_since.get(&row.id).is_some_and(|seen| {
-                        self.discovery
-                            .surveys
-                            .get(&self.key(&row.backend))
-                            .is_some_and(|now| now > seen)
-                    });
-                let confirmed_missing = surveyed_after_attach
-                    && self.liveness(row) == crate::backend::BackendLiveness::Missing;
-                (live.session.has_exited() || moved || confirmed_missing).then(|| {
-                    (
-                        row.id.clone(),
-                        row.backend_id.clone(),
-                        remote && !confirmed_missing,
-                    )
-                })
+                let moved = row
+                    .backend_id
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty() && id != live.session.backend_id());
+                (live.session.has_exited() || moved)
+                    .then(|| (row.id.clone(), row.backend_id.clone()))
             })
             .collect();
-        for (id, pane, remote) in lost {
+        for (id, pane) in lost {
             self.live.remove(&id);
-            self.attach.live_since.remove(&id);
-            if remote {
-                // The backend has to be readied again before the next attach can
-                // adopt anything: the connection this session died with is the
-                // one every other session on that host shares.
-                self.ready.borrow_mut().clear();
-                self.fail(&id, pane, LOST_CONNECTION.to_string());
-                // And tried again on the next frame rather than after
-                // `ATTACH_RETRY_INTERVAL`. The connection ending says nothing
-                // about the host: it is re-opened on demand, usually at once
-                // (a command that timed out has often replaced it already), and
-                // holding every session on the host as unreachable for the
-                // interval is what made a working host read as down. An attempt
-                // that does fail records its own error and waits as usual.
-                if let Some(failure) = self.attach.failed.get_mut(&id) {
-                    failure.at = failure
-                        .at
-                        .checked_sub(ATTACH_RETRY_INTERVAL)
-                        .unwrap_or(failure.at);
-                }
-            } else {
-                // Locally the pane is simply gone. Recorded against the pane that
-                // died, so the retry rule treats a *different* candidate — the
-                // one a restart just created — as worth trying at once.
-                self.fail(&id, pane, "session has no pane yet".to_string());
-            }
+            // Recorded against the pane that died, so the retry rule treats a
+            // *different* candidate as worth trying at once.
+            self.fail(&id, pane, "session has no pane yet".to_string());
         }
     }
 
@@ -235,8 +158,7 @@ impl Terminals {
 
     /// Whether some worker is already opening this backend's connection.
     pub(super) fn opening(&self, backend: &str) -> bool {
-        self.discovery.discovering.contains(backend)
-            || self.attach.attaching.values().any(|name| name == backend)
+        self.attach.attaching.values().any(|name| name == backend)
     }
 
     /// Attach a Fleet session's pane on a worker, through the stream `fleet
@@ -263,19 +185,22 @@ impl Terminals {
         let scrollback = self.scrollback;
         let runtime = self.runtime.clone();
         let notices = super::stream_pane::Notices::new(self.input_notices.0.clone(), &row.name);
+        let shell = self
+            .shell_route(row.remote_host.as_deref())
+            .and_then(|route| self.backend_on(&route));
         self.attach
             .attaching
             .insert(session.clone(), super::fleet::BACKEND.to_string());
         std::thread::spawn(move || {
             // The pane's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
-            let result = super::fleet::open(&program, &session, rows, cols, scrollback, notices);
+            let result =
+                super::fleet::open(&program, &session, rows, cols, scrollback, notices, shell);
             let _ = tx.send(Attached {
                 session,
                 pane: key,
                 backend: super::fleet::BACKEND.to_string(),
                 readied: false,
-                via_name: false,
                 session_handle: result,
             });
         });
@@ -290,7 +215,6 @@ impl Terminals {
         &mut self,
         row: &crate::kernel::snapshot::SessionRow,
         backend_id: String,
-        via_name: bool,
         rows: u16,
         cols: u16,
     ) {
@@ -302,22 +226,6 @@ impl Terminals {
             );
             return;
         };
-        // A row whose agent has no definition is not attached. Nothing here
-        // launches the agent (that is `session_ops`), so the definition itself
-        // is not needed — only that there is one, as there always had to be.
-        if self
-            .agents
-            .get(&row.agent)
-            .or_else(|| self.agents.default_agent())
-            .is_none()
-        {
-            self.fail(
-                &row.id,
-                Some(backend_id),
-                format!("no agent definition for {}", row.agent),
-            );
-            return;
-        }
         // The host a remote session's list row names, resolved here rather
         // than inside the backend contract, which reads no global config.
         let remote_host = crate::kernel::snapshot::remote_host_of(&row.backend);
@@ -403,24 +311,11 @@ impl Terminals {
                     adopted.info.remote_host = remote_host;
                     adopted
                 });
-            // Adopted by name, so the window carries no stamp — this is the one
-            // moment its owner is known for certain (the name resolved to
-            // exactly one window). Stamping it here is what stops the row
-            // depending on a name a later namesake could take; the pane id is
-            // persisted for the same reason, by `drain_adopted_panes`.
-            if via_name && result.is_ok() {
-                if let Err(e) =
-                    backend.stamp_window(&pane, &session, crate::backend::WindowRole::Agent)
-                {
-                    tracing::debug!(session = %session, "could not stamp the adopted window: {e:#}");
-                }
-            }
             let _ = tx.send(Attached {
                 session,
                 pane,
                 backend: backend_name,
                 readied,
-                via_name,
                 session_handle: result,
             });
         });
@@ -430,25 +325,11 @@ impl Terminals {
     pub(super) fn collect_attached(&mut self, rows: u16, cols: u16) {
         while let Ok(done) = self.attach.attached.1.try_recv() {
             self.attach.attaching.remove(&done.session);
-            let seen_at = self
-                .discovery
-                .surveys
-                .get(&done.backend)
-                .copied()
-                .unwrap_or(0);
             if done.readied {
                 self.ready.borrow_mut().insert(done.backend);
             }
             match done.session_handle {
                 Ok(session) => {
-                    self.attach.live_since.insert(done.session.clone(), seen_at);
-                    // A pane that had to be resolved by window name is worth
-                    // persisting: names are not unique, so the row must not
-                    // depend on one past this first adoption. The loop drains
-                    // these and writes the id back (`drain_adopted_panes`).
-                    if done.via_name {
-                        self.attach.adopted.push((done.session.clone(), done.pane));
-                    }
                     self.live.insert(
                         done.session.clone(),
                         Live {
@@ -471,14 +352,6 @@ impl Terminals {
                 Err(e) => self.fail(&done.session, Some(done.pane), e),
             }
         }
-    }
-
-    /// Take the panes adopted by window-name resolution since the last call,
-    /// as `(session id, pane id)` pairs for the loop to persist. Legacy rows
-    /// (spawned before local spawns recorded their pane id) migrate this way:
-    /// one successful adoption, and the row stops depending on its name.
-    pub fn drain_adopted_panes(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.attach.adopted)
     }
 
     /// Record why a session has no pane, and what was tried.
