@@ -137,25 +137,25 @@ impl BackendChoice {
         explicit: Option<&str>,
         local_default: Option<&str>,
     ) -> Result<Self, String> {
-        let unqualified = match &host {
-            Some(host) => host.route(None),
-            None => Route::local(None),
-        };
         let configured = match &host {
             Some(host) => host.multiplexer.as_deref(),
             None => local_default,
         };
         let multiplexer = match explicit.or(configured).unwrap_or("default") {
-            // What an unqualified route means here — the one rule
-            // `Route::multiplexer` holds for rows written before routes did.
-            "default" => unqualified.multiplexer(
-                Multiplexer::platform_default(),
-                host.as_ref().and_then(HostDef::multiplexer),
-            ),
+            // A host's own multiplexer, else this machine's.
+            "default" => host
+                .as_ref()
+                .map_or(Multiplexer::platform_default(), |host| {
+                    host.default_route().mux
+                }),
             name => Multiplexer::parse(name)?,
         };
+        let route = match &host {
+            Some(host) => host.route(multiplexer),
+            None => Route::local(multiplexer),
+        };
         Ok(Self {
-            route: unqualified.with_mux(multiplexer),
+            route,
             host,
             multiplexer,
         })
@@ -194,10 +194,7 @@ mod tests {
         let chosen = BackendChoice::resolve(Some(host), None, None).unwrap();
         assert_eq!(chosen.backend_type(), "ssh:example:tmux");
         let local = BackendChoice::resolve(None, None, None).unwrap();
-        assert_eq!(
-            local.route,
-            Route::local(Some(Multiplexer::platform_default()))
-        );
+        assert_eq!(local.route, Route::local(Multiplexer::platform_default()));
         assert_eq!(
             local.backend_type(),
             format!("local:{}", Multiplexer::platform_default().name())

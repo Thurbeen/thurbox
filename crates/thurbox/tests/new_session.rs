@@ -102,7 +102,7 @@ fn source_session() -> SessionRow {
         member_dirs: Vec::new(),
         branch: Some("feat/fix-osc52".into()),
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,
         agent_session_id: None,

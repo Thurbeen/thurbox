@@ -246,11 +246,18 @@ impl HostDef {
             && is_current_wsl_distro(&self.name, current)
     }
 
-    /// The key this host's machine goes by, multiplexer unsaid: `ssh:<name>`
-    /// or `wsl:<name>` — what the host picker carries and what a row written
-    /// before routes named their multiplexer says.
+    /// The host key this machine goes by, multiplexer unsaid: `ssh:<name>`
+    /// or `wsl:<name>`, what the host picker carries.
     pub fn backend_name(&self) -> String {
-        self.route(None).format()
+        format!("{}{}", self.via().prefix(), self.name)
+    }
+
+    fn via(&self) -> Via {
+        if self.is_wsl() {
+            Via::Wsl
+        } else {
+            Via::Ssh
+        }
     }
 
     /// A short detail string for the host picker (the SSH destination, or
@@ -304,11 +311,15 @@ impl HostDef {
         self.platform() == Platform::Windows
     }
 
-    /// The route to this host served by `mux` — or unqualified, the way a row
-    /// written before routes named their multiplexer reads.
-    pub fn route(&self, mux: Option<Multiplexer>) -> Route {
-        let via = if self.is_wsl() { Via::Wsl } else { Via::Ssh };
-        Route::remote(via, self.name.clone(), mux)
+    /// The route to this host served by `mux`.
+    pub fn route(&self, mux: Multiplexer) -> Route {
+        Route::remote(self.via(), self.name.clone(), mux)
+    }
+
+    /// The route to this host served by its own multiplexer: the one its
+    /// entry names, else tmux.
+    pub fn default_route(&self) -> Route {
+        self.route(self.multiplexer().unwrap_or(Multiplexer::Tmux))
     }
 }
 
@@ -332,44 +343,28 @@ impl HostRegistry {
     }
 
     /// The host a route runs on — `None` for a local route, or one naming a
-    /// host this registry does not describe. The one resolver from a persisted
-    /// `backend_type` to its host: the host comes back exactly as configured,
-    /// whatever multiplexer the route names, so nothing downstream reads a
-    /// platform off a route.
+    /// host this registry does not describe. The host comes back exactly as
+    /// configured, whatever multiplexer the route names, so nothing downstream
+    /// reads a platform off a route.
     ///
     /// The route's `ssh:`/`wsl:` prefix is **not** checked against the host's
     /// own [`kind`](HostDef::kind): `ssh:ubuntu` finds a host named `ubuntu`
     /// even if it is a WSL distro. That is deliberate — a name is unique across
     /// kinds (`hosts::load_all` dedupes by it), and the only way the two
-    /// disagree is a persisted `backend_type` written before the host's kind
-    /// was changed, where resolving to the host that now carries that name is
-    /// what lets the session re-adopt instead of going unreachable.
+    /// disagree is a key written before the host's kind was changed, where
+    /// resolving to the host that now carries that name keeps it reachable.
     pub fn host_of(&self, route: &Route) -> Option<&HostDef> {
         self.get(route.host()?)
     }
 
-    /// `route` with its multiplexer settled against this machine and the host
-    /// it names — [`Route::qualify`] with the inputs a running thurbox has.
-    pub fn qualify(&self, route: &Route) -> Route {
-        route.qualify(
-            Multiplexer::platform_default(),
-            self.host_of(route).and_then(HostDef::multiplexer),
-        )
-    }
-
-    /// Look up a host by **either** spelling: a route (`ssh:devbox`,
-    /// `ssh:devbox:tmux`) or the bare name.
-    ///
-    /// The two spellings both circulate as "the host" and which one a caller
-    /// holds depends on where it came from — a session row and the interface's
-    /// host picker carry the backend name, `hosts.toml` and `--host` carry the
-    /// bare one. Resolving only one of them is the mistake this exists to stop:
-    /// the new-session flow handed `spawn` a backend name and every remote
-    /// creation failed with "Unknown host 'ssh:devbox'".
+    /// Look up a host by any of its spellings: the bare name (`devbox`), the
+    /// host key the host picker carries (`ssh:devbox`), or a route
+    /// (`ssh:devbox:tmux`). A host key names no multiplexer: the host found
+    /// here gives it ([`HostDef::default_route`]).
     pub fn resolve(&self, key: &str) -> Option<&HostDef> {
-        match Route::parse(key) {
-            Ok(route) if route.is_remote() => self.host_of(&route),
-            _ => self.get(key),
+        match super::route::host_of_key(key) {
+            Some(host) => self.get(host),
+            None => self.get(key),
         }
     }
 
@@ -496,11 +491,7 @@ mod tests {
                 config_version: None,
                 hosts: vec![host.clone()],
             };
-            let keys = ["tmux", "psmux", "rmux", "herdr"]
-                .map(|mux| format!("ssh:box:{mux}"))
-                .into_iter()
-                .chain(["ssh:box".to_string()]);
-            for key in keys {
+            for key in ["tmux", "psmux", "rmux", "herdr"].map(|mux| format!("ssh:box:{mux}")) {
                 let route = Route::parse(&key).expect("a route");
                 let resolved = hosts.host_of(&route).expect("box resolves");
                 assert_eq!(
@@ -548,7 +539,7 @@ mod tests {
                             BackendChoice::resolve(Some(host.clone()), Some(chosen.name()), None)
                                 .unwrap();
                         assert_eq!(choice.multiplexer, chosen, "{case}");
-                        assert_eq!(choice.route, host.route(Some(chosen)), "{case}");
+                        assert_eq!(choice.route, host.route(chosen), "{case}");
                         let route = Route::parse(&choice.backend_type()).unwrap();
                         let via = match kind {
                             HostKind::Ssh => Via::Ssh,
@@ -556,10 +547,9 @@ mod tests {
                         };
                         assert_eq!(route.via(), Some(via), "{case}");
                         assert_eq!(route.host(), Some("box"), "{case}");
-                        assert_eq!(route.mux, Some(chosen), "{case}");
+                        assert_eq!(route.mux, chosen, "{case}");
                         let resolved = hosts.host_of(&route).expect("box resolves");
                         assert_eq!(resolved.platform(), os, "{case}");
-                        assert_eq!(hosts.qualify(&route), route, "{case}");
                     }
                 }
             }
@@ -574,7 +564,7 @@ mod tests {
         use super::super::BackendChoice;
         for chosen in Multiplexer::ALL {
             let choice = BackendChoice::resolve(None, Some(chosen.name()), None).unwrap();
-            assert_eq!(choice.route, Route::local(Some(chosen)));
+            assert_eq!(choice.route, Route::local(chosen));
             assert_eq!(choice.backend_type(), format!("local:{}", chosen.name()));
         }
     }
@@ -612,10 +602,8 @@ mod tests {
     #[test]
     fn the_backend_prefix_is_not_checked_against_the_hosts_kind() {
         // A name is unique across kinds, so the prefix carries no information
-        // the name does not — and the one case where they disagree is a
-        // persisted `backend_type` written before the host's kind changed, where
-        // matching on the name is what lets the session re-adopt rather than go
-        // unreachable. Asserted so the leniency is a decision, not an accident.
+        // the name does not. Asserted so the leniency is a decision, not an
+        // accident.
         let hosts = registry();
         assert_eq!(
             hosts.resolve("ssh:Ubuntu").map(|h| h.kind),
@@ -703,11 +691,32 @@ mod tests {
             reg.host_of(&Route::parse(key).expect("a route"))
                 .map(|h| h.name.as_str())
         };
-        assert_eq!(host_of("ssh:devbox"), Some("devbox"));
+        assert_eq!(host_of("ssh:devbox:tmux"), Some("devbox"));
         assert_eq!(host_of("ssh:devbox:psmux"), Some("devbox"));
-        assert_eq!(host_of("wsl:Ubuntu"), Some("Ubuntu"));
-        assert_eq!(host_of("local-tmux"), None);
-        assert_eq!(host_of("ssh:nope"), None);
+        assert_eq!(host_of("wsl:Ubuntu:tmux"), Some("Ubuntu"));
+        assert_eq!(host_of("local:tmux"), None);
+        assert_eq!(host_of("ssh:nope:tmux"), None);
+    }
+
+    /// A host key names no multiplexer: `hosts.toml` gives it, so a user
+    /// never types one.
+    #[test]
+    fn a_host_key_resolves_to_its_hosts_own_multiplexer() {
+        let hosts = registry();
+        let route = |key: &str| hosts.resolve(key).map(HostDef::default_route);
+        assert_eq!(
+            route("ssh:devbox"),
+            Some(Route::remote(Via::Ssh, "devbox", Multiplexer::Tmux))
+        );
+        assert_eq!(
+            route("ssh:winbox"),
+            Some(Route::remote(Via::Ssh, "winbox", Multiplexer::Psmux))
+        );
+        assert_eq!(
+            route("wsl:Ubuntu"),
+            Some(Route::remote(Via::Wsl, "Ubuntu", Multiplexer::Tmux))
+        );
+        assert_eq!(route("ssh:nope"), None);
     }
 
     #[test]
@@ -720,10 +729,6 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let qualified = |key: &str| registry.qualify(&Route::parse(key).unwrap()).mux;
-        assert_eq!(qualified("ssh:example"), Some(Multiplexer::Tmux));
-        assert_eq!(qualified("ssh:example:rmux"), Some(Multiplexer::Rmux));
-        assert_eq!(qualified("ssh:example:psmux"), Some(Multiplexer::Psmux));
         // The host comes back as configured, whichever route found it.
         let host = registry
             .host_of(&Route::parse("ssh:example:psmux").unwrap())

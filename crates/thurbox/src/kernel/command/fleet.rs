@@ -176,10 +176,11 @@ impl Fleet {
     fn host(&self, route: Option<&str>) -> Result<String, String> {
         let host = match route.filter(|route| !route.is_empty()) {
             None => "local".to_string(),
-            Some(route) => crate::session::Route::parse(route)
-                .map_err(|_| format!("not a host: {route}"))?
-                .host()
-                .unwrap_or("local")
+            Some(route) if crate::session::Route::parse(route).is_ok_and(|r| r.is_local()) => {
+                "local".to_string()
+            }
+            Some(route) => crate::session::host_of_key(route)
+                .ok_or_else(|| format!("not a host: {route}"))?
                 .to_string(),
         };
         let answer = self.json(&["runtime", "hosts", "--json"])?;

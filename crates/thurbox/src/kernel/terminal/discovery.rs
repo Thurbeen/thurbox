@@ -1,25 +1,17 @@
 //! Discovery: each backend's window list, surveyed on a worker and paced per
-//! backend, which resolves a row with no pane of its own and tells a window
-//! that is gone from one not looked for yet.
+//! backend, which tells a window that is gone from one not looked for yet.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 
 use super::attach::ATTACH_RETRY_INTERVAL;
 use super::Terminals;
-use crate::kernel::snapshot::Snapshot;
 
 /// The discovery side of [`Terminals`]: what each backend's last survey found,
 /// when each may next be surveyed, and what is in flight.
 pub(super) struct Discovery {
-    /// Panes found by window name, per backend: `tb-<name>` → pane id.
-    ///
-    /// The legacy resolution path: rows persisted before local spawns recorded
-    /// their pane id (and psmux spawns from before they learned theirs) carry
-    /// no id of their own, and are matched to a pane through this listing. Without it
-    /// such a session is real, its agent is running, and the interface says
-    /// "session has no pane yet" forever. It also validates a *carried* id —
-    /// see [`Self::pane_is_stale`].
+    /// Each backend's last window listing, which validates the pane id a row
+    /// carries — see [`Terminals::pane_is_stale`].
     pub(super) discovered: HashMap<String, WindowPanes>,
     /// When each backend may next be surveyed. It is a round trip per backend
     /// — a local process, or an ssh command — so it is throttled per backend
@@ -296,67 +288,6 @@ impl Terminals {
             .discovered
             .get(&self.key(&row.backend))
             .is_some_and(|windows| windows.places_agent(&row.id, &row.name, pane))
-    }
-
-    /// The pane of this session's own agent window, as the listing places it.
-    ///
-    /// `None` when there is no such window — the agent has not been launched
-    /// yet, or has been killed — when the only window of that name is stamped
-    /// for a different session, and when the name is ambiguous: keystrokes
-    /// going to the wrong agent are worse than a pane that says why it is not
-    /// attached.
-    pub(super) fn pane_by_name(&self, row: &crate::kernel::snapshot::SessionRow) -> Option<String> {
-        self.discovery
-            .discovered
-            .get(&self.key(&row.backend))?
-            .agent_window(&row.id, &row.name)
-            .pane()
-    }
-
-    /// Sessions whose agent is gone: the window they name does not exist on a
-    /// backend we have successfully looked at.
-    ///
-    /// This is v1's restore-time question. When it finds no matching window v1
-    /// **respawns** the agent (`respawn_stale_session`), which is how a session
-    /// survives a reboot or a dead tmux server — restart thurbox and the agents
-    /// come back. Answering it needs the survey to have actually happened:
-    /// "we have not looked yet" and "we looked and it is gone" are the same
-    /// silence otherwise, and relaunching on the first would spawn a second agent
-    /// beside a perfectly good one.
-    pub fn missing_agents(&self, snapshot: &Snapshot) -> Vec<String> {
-        snapshot
-            .sessions
-            .iter()
-            .filter(|row| !self.live.contains_key(&row.id))
-            .filter(|row| !self.attach.attaching.contains_key(&row.id))
-            // A session parked by `session stop` has no pane *because that was
-            // asked for*. Everything below reads a missing pane as damage and
-            // repairs it, which here would mean the interface silently undoing
-            // the stop within a tick of it happening.
-            .filter(|row| !row.stopped)
-            // A listing that predates the row cannot speak for it: a session
-            // created after the last one is simply not in it, and relaunching on
-            // that silence kills the agent the spawn just started. So everything
-            // below is read from a listing taken *since* the row appeared.
-            .filter(|row| self.surveyed_since(row))
-            // A row that names a live pane is not missing its agent — it is failing
-            // to attach to one, which is a different problem with a different fix.
-            // A row naming a pane the listing does not place in its own window *is*
-            // missing it: that is the phantom id a restarted tmux server left
-            // behind, and nothing else will clear it.
-            .filter(
-                |row| match row.backend_id.as_deref().filter(|id| !id.is_empty()) {
-                    None => true,
-                    Some(pane) => !self.pane_placed(row, pane),
-                },
-            )
-            // Only a listing that positively says the window is *absent* may
-            // relaunch. An ambiguous name — several windows, none of them
-            // stamped — resolves to nothing, and respawning on that is how a
-            // third agent appears beside the two that already collide.
-            .filter(|row| self.liveness(row).permits_relaunch())
-            .map(|row| row.id.clone())
-            .collect()
     }
 
     pub(super) fn liveness(

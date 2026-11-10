@@ -728,10 +728,9 @@ impl Command {
             // settle on one. Left prefixed, the session list drew a creation
             // under a machine named `ssh:devbox` beside the real `devbox`.
             Command::Create { host, .. } => host.as_deref().map(|name| {
-                crate::session::Route::parse(name)
-                    .ok()
-                    .and_then(|route| route.host().map(str::to_string))
-                    .unwrap_or_else(|| name.to_string())
+                crate::session::host_of_key(name)
+                    .unwrap_or(name)
+                    .to_string()
             }),
             _ => None,
         }

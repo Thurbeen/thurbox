@@ -48,7 +48,7 @@ fn row(id: &str, name: &str) -> SessionRow {
         repos: vec!["thurbox".into()],
         branch: Some("main".into()),
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,
         agent_session_id: None,

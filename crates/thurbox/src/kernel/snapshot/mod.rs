@@ -808,7 +808,7 @@ fn read_mux(
     use crate::session::{Multiplexer, Route};
     let available: Vec<Multiplexer> = crate::backend::preflight::local_multiplexers()
         .into_iter()
-        .filter(|mux| served.contains(&Route::local(Some(*mux))))
+        .filter(|mux| served.contains(&Route::local(*mux)))
         .collect();
     // What a bare local create would run: the configured one, else the one
     // the picker preselects. Named here so the warning names it too.
@@ -869,7 +869,7 @@ fn hosts_from(
                     host.multiplexer(),
                 )
                 .into_iter()
-                .filter(|mux| served.contains(&host.route(Some(*mux))))
+                .filter(|mux| served.contains(&host.route(*mux)))
                 .map(|mux| mux.name().to_string())
                 .collect(),
                 probing: answer == crate::backend::host_path::MuxProbe::Pending,
@@ -887,10 +887,7 @@ fn hosts_from(
 /// creations-in-flight by the latter, so a second spelling put a creation under
 /// a machine that did not exist.
 pub(super) fn remote_host_of(backend: &str) -> Option<String> {
-    crate::session::Route::parse(backend)
-        .ok()?
-        .host()
-        .map(str::to_string)
+    crate::session::host_of_key(backend).map(str::to_string)
 }
 
 pub(crate) fn repo_name(cwd: &Option<PathBuf>, repo_path: Option<&PathBuf>) -> Option<String> {
@@ -935,7 +932,7 @@ mod tests {
     fn a_remote_backend_yields_its_host_name() {
         assert_eq!(remote_host_of("ssh:devbox").as_deref(), Some("devbox"));
         assert_eq!(remote_host_of("wsl:Ubuntu").as_deref(), Some("Ubuntu"));
-        assert_eq!(remote_host_of("local-tmux"), None);
+        assert_eq!(remote_host_of("local:tmux"), None);
     }
 
     #[test]
@@ -1005,9 +1002,9 @@ mod tests {
                 .expect("chmod");
         };
         let served = [
-            crate::session::Route::local(Some(crate::session::Multiplexer::Tmux)),
-            crate::session::Route::local(Some(crate::session::Multiplexer::Psmux)),
-            crate::session::Route::local(Some(crate::session::Multiplexer::Rmux)),
+            crate::session::Route::local(crate::session::Multiplexer::Tmux),
+            crate::session::Route::local(crate::session::Multiplexer::Psmux),
+            crate::session::Route::local(crate::session::Multiplexer::Rmux),
         ]
         .into_iter()
         .collect();
@@ -1049,7 +1046,7 @@ mod tests {
         crate::backend::host_path::seed_multiplexers(&probed, Some(vec![Multiplexer::Rmux]));
         let served: std::collections::HashSet<_> = [&probed, &pending]
             .into_iter()
-            .flat_map(|host| Multiplexer::ALL.map(|mux| host.route(Some(mux))))
+            .flat_map(|host| Multiplexer::ALL.map(|mux| host.route(mux)))
             .collect();
         let rows = hosts_from(&[probed, pending], &served, false);
         assert_eq!(rows[0].available_multiplexers, vec!["rmux"]);

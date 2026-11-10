@@ -21,9 +21,9 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #
 # Each [[hosts]] entry describes an off-local target thurbox can run agent
 # sessions on: a remote machine over SSH, or a local WSL distro. A host named
-# "<name>" registers a session backend ("ssh:<name>" or "wsl:<name>"), offered
-# in the new-session host picker (TUI) and selectable with
-# `thurbox-cli session create --host <name>`. The agent process, its tmux
+# "<name>" is offered in the new-session host picker as "ssh:<name>" or
+# "wsl:<name>", and its sessions run on the multiplexer the entry names
+# (`multiplexer`, tmux by default). The agent process, its tmux
 # window, and any git worktrees all live on the host (or inside the distro);
 # only the TUI runs locally.
 #
@@ -57,8 +57,8 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 # Fields per [[hosts]] entry:
 #
 #   name           (string, required)
-#       Short, unique identifier. Registers the backend as "ssh:<name>" /
-#       "wsl:<name>" and is the value `--host` expects. Example: "devbox".
+#       Short, unique identifier. The host picker offers it as "ssh:<name>" /
+#       "wsl:<name>". Example: "devbox".
 #       May not contain ':' — that separates it from the multiplexer in a
 #       session's route — and an entry that does is ignored with a warning.
 #
@@ -138,10 +138,10 @@ config_version = 1
 # ──────────────────────────────────────────────────────────────────────────
 #
 # Relies on your ~/.ssh/config for auth and connection tuning. Registers the
-# "ssh:laptop" backend, selectable in the host picker / with --host laptop.
+# "ssh:laptop" host, selectable in the host picker.
 #
 # [[hosts]]
-# name = "laptop"               # → backend "ssh:laptop", value for --host
+# name = "laptop"               # → host "ssh:laptop"
 # destination = "me@laptop"     # "user@host" or a ~/.ssh/config Host alias
 #
 # ──────────────────────────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ config_version = 1
 # ──────────────────────────────────────────────────────────────────────────
 #
 # [[hosts]]
-# name = "ubuntu"               # → backend "wsl:ubuntu", value for --host
+# name = "ubuntu"               # → host "wsl:ubuntu"
 # kind = "wsl"
 # distro = "Ubuntu-22.04"       # the wsl.exe distro name (defaults to `name`)
 # # worktrees_dir = "/home/me/.local/share/thurbox/worktrees"  # abs path in WSL
@@ -464,7 +464,7 @@ pub fn served_host_names(config: &dyn HostsConfig) -> Result<HashSet<String>, St
     augment_with(&mut reg, config.discover_wsl_hosts()?);
     let loopback = loopback
         .iter()
-        .filter_map(|name| Some(crate::Route::parse(name).ok()?.host()?.to_string()));
+        .filter_map(|name| crate::host::host_of_key(name).map(str::to_string));
     Ok(reg
         .hosts
         .into_iter()

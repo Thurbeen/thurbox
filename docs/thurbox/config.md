@@ -636,32 +636,19 @@ When creation is delegated to a host's own Thurbox CLI, that CLI advertises
 whether it accepts a multiplexer choice. Older compatible CLIs can still use
 their platform default; a non-default choice requires updating the host CLI.
 
-The resolved choice is recorded in each new session's `backend_type`, its
-**route**. One parser (`session::Route`) reads every spelling a row has ever
-carried:
+The resolved choice is a session's **route**. One parser (`session::Route`)
+reads it, and every route names its multiplexer:
 
-| `backend_type` | machine | multiplexer |
+| route | machine | multiplexer |
 |---|---|---|
-| `""`, `tmux`, `local-tmux` | this one | unqualified |
 | `local:<mux>` | this one | `<mux>` |
-| `local-<mux>` (read only, any mux but tmux) | this one | `<mux>` |
-| `ssh:<host>`, `wsl:<distro>` | that host | unqualified |
 | `ssh:<host>:<mux>`, `wsl:<distro>:<mux>` | that host | `<mux>` |
 
-Every machine is qualified the same way, `<machine>:<mux>`. New rows always
-name their multiplexer (`ssh:devbox:tmux`, `local:psmux`), so
-a later change of preference cannot reinterpret them. Rows written before
-routes did are **unqualified**, are never migrated, and keep the meaning they
-were written with: a local one is the platform default, and a remote one is
-psmux when the host's `multiplexer` is `psmux` and tmux otherwise. So a host
-whose preference moves to `rmux` still has its old rows attached, deleted,
-torn down and polled with tmux.
-
-`local-tmux` was written for the platform default before routes named a
-multiplexer, which is psmux on native Windows, so it still reads that way
-there. An explicit local tmux is `local:tmux`, so the two can no longer be
-confused. An older build does not know the `local:` spelling and cannot attach
-a local session created by this one.
+Any other key, such as `local-tmux`, `tmux` or the empty key, names no route
+and is refused. The host picker carries a **host key**, `ssh:<host>` or
+`wsl:<distro>`, which names a machine only: `hosts.toml` resolves it, and the
+host's `multiplexer` (tmux by default) completes the route. A user never types
+a multiplexer to pick a host.
 
 A host name may not contain `:`, which separates it from the multiplexer in a
 route. `hosts.toml` ignores such an entry with a warning, and

@@ -498,7 +498,7 @@ mod tests {
                 "s1",
                 PathBuf::from("/definitely/not/a/repo"),
                 None,
-                "local-tmux",
+                "local:tmux",
             )
         };
         ask(&mut store);
@@ -526,7 +526,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
         assert!(started.elapsed() < std::time::Duration::from_millis(200));
         assert_eq!(store.get("s1"), Some(&Diff::Pending));
@@ -549,9 +549,9 @@ mod tests {
     #[test]
     fn a_second_request_does_not_recompute() {
         let mut store = DiffStore::new();
-        store.request("s1", PathBuf::from("/tmp"), None, "local-tmux");
+        store.request("s1", PathBuf::from("/tmp"), None, "local:tmux");
         let first = store.get("s1").cloned();
-        store.request("s1", PathBuf::from("/tmp"), None, "local-tmux");
+        store.request("s1", PathBuf::from("/tmp"), None, "local:tmux");
         assert_eq!(store.get("s1").cloned(), first);
     }
 
@@ -608,7 +608,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
         assert_eq!(
             store.get("s1"),
@@ -621,7 +621,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
         // The old answer stays published while the recompute is in flight —
         // replacing it with `Pending` would blank the pane every TTL.
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn invalidating_allows_a_recompute() {
         let mut store = DiffStore::new();
-        store.request("s1", PathBuf::from("/tmp"), None, "local-tmux");
+        store.request("s1", PathBuf::from("/tmp"), None, "local:tmux");
         store.invalidate("s1");
         assert!(store.get("s1").is_none());
     }
@@ -659,7 +659,7 @@ mod tests {
             "s1",
             PathBuf::from("/definitely/not/a/repo"),
             None,
-            "local-tmux",
+            "local:tmux",
         );
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -748,11 +748,10 @@ mod tests {
 
     #[test]
     fn only_ssh_backends_are_fingerprinted() {
-        assert!(over_ssh("ssh:devbox"));
+        assert!(over_ssh("ssh:devbox:tmux"));
         assert!(over_ssh("ssh:devbox:rmux"));
-        assert!(!over_ssh("tmux"));
-        assert!(!over_ssh("local-tmux"));
-        assert!(!over_ssh("wsl:Ubuntu"));
+        assert!(!over_ssh("local:tmux"));
+        assert!(!over_ssh("wsl:Ubuntu:tmux"));
     }
 
     /// The property the file list was changed for: **the body is capped and the list
@@ -1018,7 +1017,7 @@ mod tests {
             "s1",
             PathBuf::from("/srv/worktree"),
             Some("main".into()),
-            "ssh:host-that-is-not-configured",
+            "ssh:host-that-is-not-configured:tmux",
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while std::time::Instant::now() < deadline {

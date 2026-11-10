@@ -53,7 +53,7 @@ pub use review::{
     parse_unified_diff, Classification, CommentAnchor, DiffFile, DiffHunk, DiffLine, DiffLineKind,
     FileStatus, ReviewComment, Side,
 };
-pub use route::{Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
+pub use route::{host_of_key, Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
 pub use shared::{SharedSession, SharedWorktree};
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 
@@ -357,7 +357,7 @@ pub struct SessionConfig {
     /// Name of the agent definition to launch (looked up in the registry).
     pub agent: String,
     /// Backend to spawn on (registry name, e.g. `ssh:devbox`). `None`/empty
-    /// selects the registry default (`local-tmux`).
+    /// selects the registry default (`local:tmux`).
     pub backend: Option<String>,
     /// Fork from an existing session's conversation (agents that support it).
     pub fork_session_id: Option<String>,

@@ -317,7 +317,7 @@ fn snapshot(pane: &str) -> Snapshot {
             repos: Vec::new(),
             branch: None,
             base_branch: None,
-            backend: "local-tmux".into(),
+            backend: "local:tmux".into(),
             backend_id: Some(pane.into()),
             remote_host: None,
             agent_session_id: None,

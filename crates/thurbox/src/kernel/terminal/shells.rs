@@ -54,18 +54,16 @@ impl Terminals {
         };
     }
 
-    /// The qualified route of the multiplexer a Fleet session's companion
-    /// shell runs on: this machine's own for a local Task, else the route of
-    /// the `hosts.toml` host its Fleet host is named as, so a WSL host keeps
-    /// its `wsl:` place. `None` when no such host is configured.
+    /// The route of the multiplexer a Fleet session's companion shell runs
+    /// on: this machine's own for a local Task, else the route of the
+    /// `hosts.toml` host its Fleet host is named as, on that host's own
+    /// multiplexer, so a WSL host keeps its `wsl:` place. `None` when no such
+    /// host is configured.
     pub fn shell_route(&self, remote_host: Option<&str>) -> Option<crate::session::Route> {
-        let route = match remote_host {
-            None => {
-                crate::session::Route::local(Some(crate::session::Multiplexer::platform_default()))
-            }
-            Some(host) => self.hosts.get(host)?.route(None),
-        };
-        Some(self.hosts.qualify(&route))
+        Some(match remote_host {
+            None => crate::session::Route::local(crate::session::Multiplexer::platform_default()),
+            Some(host) => self.hosts.get(host)?.default_route(),
+        })
     }
 
     /// The backend registered for `route`, if any.

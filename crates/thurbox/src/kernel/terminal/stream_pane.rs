@@ -40,8 +40,8 @@ impl View {
     }
 }
 
-/// Whether a session on `backend` (its row's route, `local:tmux` or a legacy
-/// unqualified `tmux`) is viewed through a stream: a local tmux one only.
+/// Whether a session on `backend`, its row's route, is viewed through a
+/// stream: a local tmux one only.
 pub fn views(backend: &str) -> bool {
     crate::session::route::Route::parse(backend).is_ok_and(|r| r.is_local_tmux())
 }
@@ -490,16 +490,12 @@ mod tests {
     #[test]
     fn a_local_tmux_session_is_viewed_through_a_stream_and_no_other() {
         assert!(super::views("local:tmux"));
-        // An unqualified row is on the platform's default multiplexer:
-        // `Route::parse` reads `local-tmux`, `tmux` and the empty route so.
-        for unqualified in ["local-tmux", "tmux", ""] {
-            assert_eq!(super::views(unqualified), !cfg!(windows), "{unqualified:?}");
-        }
         for other in [
             "local:rmux",
-            "local-rmux",
             "local:psmux",
-            "local-psmux",
+            "local-tmux",
+            "tmux",
+            "",
             "psmux",
             "ssh:box:tmux",
             "ssh:box",

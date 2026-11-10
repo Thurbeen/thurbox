@@ -36,7 +36,7 @@ fn have_tmux() -> bool {
 
 #[test]
 fn the_recording_backend_keeps_the_contract() {
-    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    let fake = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
     backend_contract::suite(&*fake);
     backend_contract::lifecycle(&*fake);
     backend_contract::pane_io(&*fake);
@@ -102,7 +102,7 @@ fn the_registered_rmux_backend_keeps_the_contract() {
     }
     let _cleanup = Cleanup(socket);
     let registry = thurbox::backend::wiring::local_only(&Default::default());
-    let route = Route::local(Some(Multiplexer::Rmux));
+    let route = Route::local(Multiplexer::Rmux);
     let backend = registry.get(&route).expect("rmux route must be registered");
     backend_contract::suite(backend.as_ref());
     backend_contract::lifecycle(backend.as_ref());
@@ -263,7 +263,7 @@ fn a_missing_rmux_window_never_borrows_a_live_panes_pid() {
 /// instead would make every teardown through it look finished.
 #[test]
 fn an_unreachable_fake_answers_nothing_rather_than_nothing_there() {
-    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    let fake = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
     let pane = fake.open("tb-far", "row", WindowRole::Agent);
     fake.set_reachable(false);
     assert!(fake.discover().is_err(), "a listing that did not happen");
@@ -281,7 +281,7 @@ fn an_unreachable_fake_answers_nothing_rather_than_nothing_there() {
 /// authorises a relaunch — the fake lists them the way a multiplexer would.
 #[test]
 fn an_ambiguous_fake_listing_never_permits_a_relaunch() {
-    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    let fake = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
     fake.open("tb-twin", "", WindowRole::Agent);
     fake.open("tb-twin", "", WindowRole::Agent);
     let index = WindowIndex::from_listing(fake.discover().unwrap());
@@ -294,7 +294,7 @@ fn an_ambiguous_fake_listing_never_permits_a_relaunch() {
 /// the older window, as the tmux adapter's sweep does (ADR-25).
 #[test]
 fn a_stamp_two_windows_carry_is_kept_by_the_newer() {
-    let fake = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+    let fake = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
     let old = fake.open("tb-x", "", WindowRole::Agent);
     let new = fake.open("tb-x", "", WindowRole::Agent);
     fake.stamp_window(&old, "row", WindowRole::Agent).unwrap();
@@ -654,7 +654,7 @@ fn default_startup_observation_refuses_changed_owner_or_role() {
     use thurbox::backend::{Owner, WindowSpec};
     for role in [WindowRole::Agent, WindowRole::Shell, WindowRole::Program] {
         for wrong_owner in [true, false] {
-            let backend = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+            let backend = RecordingBackend::new(&Route::local(Multiplexer::Rmux));
             let changed = backend.clone();
             backend.on_next_pane_state(move || {
                 let window = changed.windows().into_iter().next().unwrap();

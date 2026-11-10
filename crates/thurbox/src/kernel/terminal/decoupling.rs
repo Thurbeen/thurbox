@@ -329,7 +329,7 @@ impl crate::backend::StatusChannel for Recorder {
 
 impl crate::backend::SessionBackend for Recorder {
     fn name(&self) -> &str {
-        "local-tmux"
+        "local:tmux"
     }
     fn capabilities(&self) -> crate::backend::Capabilities {
         crate::backend::Capabilities {
@@ -947,7 +947,7 @@ async fn a_replacement_shell_takes_its_own_first_frame_size() {
     })
     .await
     .expect("the old shell to exit");
-    let row = super::tests::row(&harness.id, "local-tmux", Some(AGENT_PANE));
+    let row = super::tests::row(&harness.id, "local:tmux", Some(AGENT_PANE));
     harness
         .terminals
         .record_shell(&harness.id, Some(SHELL_PANE.to_string()));

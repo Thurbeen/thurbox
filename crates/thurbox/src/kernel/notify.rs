@@ -177,7 +177,7 @@ mod tests {
             repos: Vec::new(),
             branch: None,
             base_branch: None,
-            backend: "local-tmux".into(),
+            backend: "local:tmux".into(),
             backend_id: None,
             remote_host: None,
             agent_session_id: None,

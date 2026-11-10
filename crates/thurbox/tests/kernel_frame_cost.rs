@@ -135,7 +135,7 @@ fn row(id: &str, name: &str) -> SessionRow {
         repos: Vec::new(),
         branch: None,
         base_branch: None,
-        backend: "local-tmux".into(),
+        backend: "local:tmux".into(),
         backend_id: Some("%1".into()),
         remote_host: None,
         agent_session_id: None,
@@ -1281,7 +1281,7 @@ fn idle_samples_only_rebuild_their_readers() {
 fn selecting_another_session_releases_the_previous_diff() {
     let mut diffs = thurbox::kernel::diff::DiffStore::new();
     diffs.set_for_test("old", thurbox::kernel::diff::Diff::Failed("held".into()));
-    diffs.request("new", "/no/such/repo".into(), None, "local-tmux");
+    diffs.request("new", "/no/such/repo".into(), None, "local:tmux");
     assert!(
         diffs.get("old").is_none(),
         "a previous selection's diff is still retained"

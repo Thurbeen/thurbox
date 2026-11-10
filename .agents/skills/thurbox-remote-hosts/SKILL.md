@@ -206,11 +206,13 @@ session), never on the loop, ADR-P12).
 
 - **Data**: `session::HostDef` (with `kind: HostKind {Ssh, Wsl}`) /
   `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use
-  it). A row's `backend_type` is read by one parser, `session::Route`
-  (machine × optional multiplexer; grammar and legacy meaning in
-  `docs/thurbox/config.md` → *Multiplexer choice and existing sessions*), and
-  resolved by one resolver, `HostRegistry::host_of` / `qualify`: the host
-  comes back as configured, never with a platform read off the route.
+  it). A route is read by one parser, `session::Route` (machine ×
+  multiplexer, always both; grammar in `docs/thurbox/config.md` →
+  *Multiplexer choice and existing sessions*), and resolved by one resolver,
+  `HostRegistry::host_of`: the host comes back as configured, never with a
+  platform read off the route. A host key (`ssh:<host>`) resolves through
+  `HostRegistry::resolve`, and `HostDef::default_route` gives its
+  multiplexer.
   `session_ops::windows::backend_for` finds the backend a row's route names in
   the injected registry, refusing a route none serves (ADR-29);
   `session_ops::server_key`

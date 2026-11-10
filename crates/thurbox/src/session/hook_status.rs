@@ -1847,7 +1847,7 @@ mod tests {
             SessionState::Working
         );
         assert_eq!(
-            with_reachability(SessionState::Done, "local-tmux", None),
+            with_reachability(SessionState::Done, "local:tmux", None),
             SessionState::Done
         );
     }
@@ -1855,13 +1855,17 @@ mod tests {
     #[test]
     fn a_remote_session_with_no_pane_is_unreachable() {
         assert_eq!(
-            with_reachability(SessionState::Idle, "ssh:devbox", Some("host unreachable")),
+            with_reachability(
+                SessionState::Idle,
+                "ssh:devbox:tmux",
+                Some("host unreachable")
+            ),
             SessionState::Unreachable
         );
         assert_eq!(
             with_reachability(
                 SessionState::Working,
-                "wsl:ubuntu",
+                "wsl:ubuntu:tmux",
                 Some("connect timed out")
             ),
             SessionState::Unreachable
@@ -1876,7 +1880,7 @@ mod tests {
         assert_eq!(
             with_reachability(
                 SessionState::Idle,
-                "local-tmux",
+                "local:tmux",
                 Some("session has no pane yet")
             ),
             SessionState::Idle

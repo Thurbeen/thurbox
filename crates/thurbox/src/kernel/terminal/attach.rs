@@ -1,6 +1,5 @@
-//! Attaching a session's pane: the worker that adopts it, the failures that
-//! keep a pane from looking empty, and the panes adopted by name that the loop
-//! persists.
+//! Attaching a session's pane: the worker that adopts it, and the failures
+//! that keep a pane from looking empty.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -32,9 +31,6 @@ pub(super) struct Attach {
     /// the result is collected here.
     pub(super) attaching: HashMap<String, String>,
     pub(super) attached: (Sender<Attached>, Receiver<Attached>),
-    /// Panes adopted by window-name resolution, waiting for the loop to persist
-    /// their id onto the row ([`Terminals::drain_adopted_panes`]).
-    pub(super) adopted: Vec<(String, String)>,
 }
 
 impl Attach {
@@ -45,7 +41,6 @@ impl Attach {
             failed_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
-            adopted: Vec::new(),
         }
     }
 }
@@ -78,10 +73,6 @@ pub(super) struct Attached {
     /// rather than assumed: the readying happens on the worker, and until it
     /// has, no second attach on that backend may start.
     pub(super) readied: bool,
-    /// Whether the pane was resolved by window name rather than taken from the
-    /// row's own `backend_id` — a successful adoption is then worth persisting,
-    /// so the legacy row stops depending on its (non-unique) name.
-    pub(super) via_name: bool,
     pub(super) session_handle: Result<crate::backend::Session, String>,
 }
 
@@ -107,7 +98,7 @@ impl Terminals {
                 self.attach_fleet(row, rows, cols);
                 continue;
             }
-            let (candidate, via_name) = self.candidate_pane(row);
+            let candidate = self.candidate_pane(row);
             // The same attempt would fail the same way; a different one is worth
             // making.
             if self.attach.failed.get(&row.id).is_some_and(|failure| {
@@ -126,24 +117,19 @@ impl Terminals {
             if !self.backend_is_ready(&backend) && self.opening(&backend) {
                 continue;
             }
-            self.start_attach(row, backend_id, via_name, rows, cols);
+            self.start_attach(row, backend_id, rows, cols);
         }
     }
 
-    /// The pane to attach `row` to, and whether it was found by window name.
-    ///
-    /// The row's own pane id, unless a listing contradicts it: a contradicted
-    /// one is worth less than the window name that produced it, and falling
-    /// through to `None` here is also what lets [`Self::missing_agents`]
-    /// relaunch a session whose window is gone for good.
+    /// The pane to attach `row` to: the row's own pane id, unless a listing
+    /// contradicts it.
     pub(super) fn candidate_pane(
         &self,
         row: &crate::kernel::snapshot::SessionRow,
-    ) -> (Option<String>, bool) {
-        match row.backend_id.clone() {
-            Some(id) if !self.pane_is_stale(row, &id) => (Some(id), false),
-            _ => (self.pane_by_name(row), true),
-        }
+    ) -> Option<String> {
+        row.backend_id
+            .clone()
+            .filter(|id| !self.pane_is_stale(row, id))
     }
 
     /// Let go of a session whose pane died, so it is re-attached rather than
@@ -279,7 +265,6 @@ impl Terminals {
                 pane: key,
                 backend: super::fleet::BACKEND.to_string(),
                 readied: false,
-                via_name: false,
                 session_handle: result,
             });
         });
@@ -294,7 +279,6 @@ impl Terminals {
         &mut self,
         row: &crate::kernel::snapshot::SessionRow,
         backend_id: String,
-        via_name: bool,
         rows: u16,
         cols: u16,
     ) {
@@ -407,24 +391,11 @@ impl Terminals {
                     adopted.info.remote_host = remote_host;
                     adopted
                 });
-            // Adopted by name, so the window carries no stamp — this is the one
-            // moment its owner is known for certain (the name resolved to
-            // exactly one window). Stamping it here is what stops the row
-            // depending on a name a later namesake could take; the pane id is
-            // persisted for the same reason, by `drain_adopted_panes`.
-            if via_name && result.is_ok() {
-                if let Err(e) =
-                    backend.stamp_window(&pane, &session, crate::backend::WindowRole::Agent)
-                {
-                    tracing::debug!(session = %session, "could not stamp the adopted window: {e:#}");
-                }
-            }
             let _ = tx.send(Attached {
                 session,
                 pane,
                 backend: backend_name,
                 readied,
-                via_name,
                 session_handle: result,
             });
         });
@@ -446,13 +417,6 @@ impl Terminals {
             match done.session_handle {
                 Ok(session) => {
                     self.attach.live_since.insert(done.session.clone(), seen_at);
-                    // A pane that had to be resolved by window name is worth
-                    // persisting: names are not unique, so the row must not
-                    // depend on one past this first adoption. The loop drains
-                    // these and writes the id back (`drain_adopted_panes`).
-                    if done.via_name {
-                        self.attach.adopted.push((done.session.clone(), done.pane));
-                    }
                     self.live.insert(
                         done.session.clone(),
                         Live {
@@ -475,14 +439,6 @@ impl Terminals {
                 Err(e) => self.fail(&done.session, Some(done.pane), e),
             }
         }
-    }
-
-    /// Take the panes adopted by window-name resolution since the last call,
-    /// as `(session id, pane id)` pairs for the loop to persist. Legacy rows
-    /// (spawned before local spawns recorded their pane id) migrate this way:
-    /// one successful adoption, and the row stops depending on its name.
-    pub fn drain_adopted_panes(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.attach.adopted)
     }
 
     /// Record why a session has no pane, and what was tried.

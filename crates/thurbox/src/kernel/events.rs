@@ -471,7 +471,7 @@ mod tests {
             repos: vec!["thurbox".into()],
             branch: Some(format!("feat/{id}")),
             base_branch: None,
-            backend: "local-tmux".into(),
+            backend: "local:tmux".into(),
             backend_id: None,
             remote_host: None,
             agent_session_id: None,

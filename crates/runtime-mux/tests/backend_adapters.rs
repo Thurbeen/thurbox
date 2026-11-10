@@ -31,15 +31,15 @@ fn host(name: &str, platform: Platform, preferred: Option<&str>) -> HostDef {
 fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
     assert_eq!(
         TmuxBackend::local(&runtime_mux::MuxSettings::default()).name(),
-        Route::local(Some(Multiplexer::Tmux)).format()
+        Route::local(Multiplexer::Tmux).format()
     );
     assert_eq!(
         PsmuxBackend::local(&runtime_mux::MuxSettings::default()).name(),
-        Route::local(Some(Multiplexer::Psmux)).format()
+        Route::local(Multiplexer::Psmux).format()
     );
     assert_eq!(
         RmuxBackend::local(&runtime_mux::MuxSettings::default()).name(),
-        Route::local(Some(Multiplexer::Rmux)).format()
+        Route::local(Multiplexer::Rmux).format()
     );
     for host in [
         host("linux", Platform::Posix, None),
@@ -48,15 +48,15 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
     ] {
         assert_eq!(
             TmuxBackend::for_host(&host, &runtime_mux::MuxSettings::default()).name(),
-            host.route(Some(Multiplexer::Tmux)).format()
+            host.route(Multiplexer::Tmux).format()
         );
         assert_eq!(
             PsmuxBackend::for_host(&host, &runtime_mux::MuxSettings::default()).name(),
-            host.route(Some(Multiplexer::Psmux)).format()
+            host.route(Multiplexer::Psmux).format()
         );
         assert_eq!(
             RmuxBackend::for_host(&host, &runtime_mux::MuxSettings::default()).name(),
-            host.route(Some(Multiplexer::Rmux)).format()
+            host.route(Multiplexer::Rmux).format()
         );
     }
 }

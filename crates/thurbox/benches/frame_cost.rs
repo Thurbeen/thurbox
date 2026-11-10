@@ -107,7 +107,7 @@ fn snapshot(sessions: usize) -> Snapshot {
                 repos: vec![repo.into()],
                 branch: Some(format!("feat/thing-{nth}")),
                 base_branch: Some("main".into()),
-                backend: "local-tmux".into(),
+                backend: "local:tmux".into(),
                 backend_id: Some(format!("%{nth}")),
                 remote_host: None,
                 agent_session_id: Some(format!("00000000-0000-0000-0000-{nth:012}")),
