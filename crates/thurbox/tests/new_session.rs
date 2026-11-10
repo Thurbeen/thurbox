@@ -431,6 +431,7 @@ fn opening_with_no_hosts_starts_at_the_repositories() {
 
 /// Opened before Fleet has said which hosts it defines, the flow waits on the
 /// host step instead of skipping it, and offers the hosts once they arrive.
+#[cfg(unix)]
 #[test]
 fn opening_before_fleet_names_its_hosts_waits_for_them() {
     let host = host();
@@ -445,6 +446,7 @@ fn opening_before_fleet_names_its_hosts_waits_for_them() {
 }
 
 /// A Fleet that defines no `local` host offers none.
+#[cfg(unix)]
 #[test]
 fn local_is_offered_only_when_fleet_defines_it() {
     let host = host();
