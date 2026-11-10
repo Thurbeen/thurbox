@@ -123,20 +123,6 @@ tbx_sandbox_fleet
 cleanup() { tbx_sandbox_teardown; }
 trap cleanup EXIT INT TERM
 
-# --- Agent registry ----------------------------------------------------------
-{
-    # shellcheck disable=SC2086 # $AGENTS is a space-separated list, split on purpose
-    first=$(printf '%s\n' $AGENTS | head -n1)
-    echo "default = \"$first\""
-    if [ "$STUB" -eq 1 ]; then
-        # A long-lived shell so the tmux pane stays alive and the panel renders.
-        printf '\n[[agents]]\nname = "stub"\ncommand = "sh"\nargs = ["-c", "echo ui-review stub agent; exec sh"]\n'
-    else
-        for a in $AGENTS; do
-            printf '\n[[agents]]\nname = "%s"\ncommand = "%s"\n' "$a" "$(agent_command "$a")"
-        done
-    fi
-} > "$CFG_DIR/agents.toml"
 # The stub as a program Fleet can run: a harness takes no arguments.
 if [ "$STUB" -eq 1 ]; then
     printf '#!/bin/sh\necho ui-review stub agent\nexec sh\n' > "$CFG_DIR/stub-agent.sh"
