@@ -114,7 +114,7 @@ does not require later ready/merge gates unless requested. Do not infer publicat
 authorization for Tasks whose requested result did not include it.
 After reconciliation, Concluded keeps its session until deletion. Delete only
 when the user authorizes cleanup and the conversation no longer needs it.
-Deleting a Task deletes its session, and the runtime then cleans the workspace
-as configured: by default Fleet removes a `repositories` Task's worktrees and
-keeps their branches, committing unpushed changes onto a preserved ref first.
-Confirm the work is pushed or no longer needed anyway. A `dir` Task's directory stays.
+Deleting a Task deletes its session, and the runtime then releases the
+workspace: it removes a `git+` URL's worktree and keeps its branch, committing
+unpushed changes onto a preserved ref first. Confirm the work is pushed or no
+longer needed anyway. A `file://` URL's directory stays.

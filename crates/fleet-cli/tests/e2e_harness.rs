@@ -21,6 +21,8 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
     let env = Env::new("harness-profiles");
     let mut codex = support::task("c1", true);
     codex["spec"]["harness"] = json!("codex");
+    // Codex is trusted in exactly the directory it starts in.
+    codex["spec"]["workspace"] = json!([format!("file://{}/work/c1", env.root.display())]);
     env.apply(json!([support::task("t1", true), codex])).ok();
     env.reconcile().ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");

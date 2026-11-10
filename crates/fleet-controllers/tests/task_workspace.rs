@@ -1,5 +1,5 @@
-//! TaskController with the workspace port: Fleet makes a `{repositories}`
-//! workspace before the spawn and cleans it after the release. Each case is
+//! TaskController with a workspace: the runtime makes a Task's URL list
+//! before the first start and releases it after the session. Each case is
 //! one transition or one Unknown of the workspace's lifecycle.
 
 use fleet_api::condition::ConditionStatus;
@@ -19,7 +19,7 @@ fn task(status: Option<TaskStatus>) -> Object {
         "kind": "Task",
         "metadata": {"name": "t", "uid": "u7", "generation": 1, "resourceVersion": 7, "finalizers": ["fleet.dev/release"]},
         "spec": {"harness": "claude-code", "brief": "do it", "dispatch": true,
-                 "workspace": {"repositories": [{"name": "app", "url": "https://example.test/app", "ref": "main"}]}}
+                 "workspace": ["git+https://example.test/app.git#main", "git+https://example.test/docs.git"]}
     }))
     .unwrap();
     if let Some(s) = status {
@@ -38,7 +38,6 @@ fn input(obj: &Object, observations: Observations, now: u64) -> TaskInput<'_> {
         task: obj,
         observations,
         now,
-        materialize: true,
     }
 }
 
@@ -72,9 +71,7 @@ fn ws() -> WorkspaceRef {
     WorkspaceRef {
         key: "t.u7".into(),
         host: "local".into(),
-        dir: "/w/t.u7/app".into(),
-        extra_dirs: vec!["/w/t.u7/docs".into()],
-        trust_root: Some("/src/app".into()),
+        dirs: vec!["/w/t.u7/app".into(), "/w/t.u7/docs".into()],
     }
 }
 
@@ -105,7 +102,7 @@ fn materializing(outcome: Option<Observation<EffectOutcome>>) -> Object {
 }
 
 #[test]
-fn a_repositories_task_materializes_before_it_spawns() {
+fn a_url_task_has_its_workspace_made_before_it_spawns() {
     let (plan, st) = run(&task(None), host_up());
     assert_eq!(st.phase, Phase::Pending);
     assert_eq!(cond(&st, "WorkspaceReady").1, "Materializing");
@@ -115,14 +112,21 @@ fn a_repositories_task_materializes_before_it_spawns() {
         st.intents.contains_key(MATERIALIZE_1),
         "intent before effect"
     );
-    let Action::Materialize { host, key, .. } = &plan.effects[0].action else {
+    let Action::Materialize { host, key, urls } = &plan.effects[0].action else {
         panic!("{:?}", plan.effects[0].action);
     };
     assert_eq!((host.as_str(), key.as_str()), ("local", "t.u7"));
+    assert_eq!(
+        urls,
+        &vec![
+            "git+https://example.test/app.git#main".to_string(),
+            "git+https://example.test/docs.git".to_string()
+        ]
+    );
 }
 
 #[test]
-fn the_spawn_runs_in_the_workspace_fleet_made() {
+fn the_spawn_runs_in_the_workspace_the_runtime_made() {
     let obj = materializing(Some(Observation::Known(EffectOutcome::Materialized {
         workspace: Box::new(ws()),
         adopted: false,
@@ -139,15 +143,22 @@ fn the_spawn_runs_in_the_workspace_fleet_made() {
     };
     assert_eq!(spec.ready, Some(ws()));
     assert_eq!(spec.host, "local");
+    // The agent starts in the first directory and spans the others.
+    let argv = spec.launch_argv().unwrap();
+    assert!(argv.iter().any(|a| a == "/w/t.u7/docs"), "{argv:?}");
 }
 
 #[test]
-fn a_lost_answer_is_settled_by_the_workspace_key_never_by_a_second_materialize() {
+fn a_lost_answer_is_settled_under_the_same_key_never_by_a_new_attempt() {
     for outcome in [None, Some(Observation::unknown("lost"))] {
         let obj = materializing(outcome);
         assert!(probes(&obj).contains(&Probe::FindWorkspace {
             host: "local".into(),
-            key: "t.u7".into()
+            key: "t.u7".into(),
+            urls: vec![
+                "git+https://example.test/app.git#main".into(),
+                "git+https://example.test/docs.git".into()
+            ],
         }));
         // Unreadable: nothing concludes, nothing is sent.
         let (plan, st) = run(
@@ -223,38 +234,45 @@ fn refused_materializes_are_bounded_and_stall_without_a_spawn() {
 }
 
 #[test]
-fn an_unmapped_repository_gives_its_attempt_back() {
-    let obj = materializing(Some(Observation::Known(EffectOutcome::Unmapped {
-        url: "https://example.test/app".into(),
+fn an_unsupported_url_gives_its_attempt_back_and_spawns_nothing() {
+    let obj = materializing(Some(Observation::Known(EffectOutcome::Unsupported {
+        url: "git+https://example.test/docs.git".into(),
     })));
-    let (_, st) = run(&obj, host_up());
+    let (plan, st) = run(&obj, host_up());
+    assert!(plan.effects.is_empty(), "{:?}", plan.effects);
+    assert_eq!(st.phase, Phase::Pending);
     assert_eq!(st.materialize_attempts, 0);
-    assert_eq!(cond(&st, "NeedsAttention").1, "RepositoryUnmapped");
+    assert_eq!(
+        cond(&st, "WorkspaceReady"),
+        (ConditionStatus::False, "WorkspaceUnsupported".into())
+    );
+    assert_eq!(cond(&st, "NeedsAttention").1, "WorkspaceUnsupported");
     let (plan, st) = run_at(&task(Some(st)), host_up(), NOW + RETRY_DELAY_MS);
     assert_eq!(plan.effects[0].key, MATERIALIZE_1);
     assert_eq!(st.materialize_attempts, 1);
 }
 
 #[test]
-fn a_dir_task_or_a_runtime_that_materializes_plans_no_materialize() {
-    let mut dir = task(None);
-    dir.spec["workspace"] = json!({"dir": "/w"});
-    let (plan, st) = run(&dir, host_up());
-    assert!(matches!(plan.effects[0].action, Action::Spawn(_)));
-    assert!(st.workspace.is_none());
-    let obj = task(None);
-    let input = TaskInput {
-        materialize: false,
-        ..input(&obj, host_up(), NOW)
-    };
-    let plan = TaskController.reconcile(&input).unwrap();
+fn an_empty_workspace_plans_no_workspace_call() {
+    let mut empty = task(None);
+    empty.spec["workspace"] = json!([]);
+    let (plan, st) = run(&empty, host_up());
     let Action::Spawn(spec) = &plan.effects[0].action else {
         panic!("{:?}", plan.effects);
     };
     assert_eq!(spec.ready, None);
+    assert!(st.workspace.is_none());
 }
 
-/// A released Task whose workspace Fleet made.
+#[test]
+fn a_file_url_is_made_through_the_runtime_too() {
+    let mut file = task(None);
+    file.spec["workspace"] = json!(["file:///w"]);
+    let (plan, _) = run(&file, host_up());
+    assert_eq!(plan.effects[0].key, MATERIALIZE_1);
+}
+
+/// A released Task whose workspace the runtime made.
 fn released() -> TaskStatus {
     let mut st = TaskStatus {
         phase: Phase::Releasing,
@@ -329,37 +347,26 @@ fn the_workspace_is_cleaned_after_the_release_and_only_then_let_go() {
 }
 
 #[test]
-fn a_task_deleted_mid_materialization_looks_the_workspace_up_before_letting_go() {
+fn a_task_deleted_mid_workspace_call_releases_the_key_before_letting_go() {
     let obj = deleting(materializing(None));
-    assert!(probes(&obj).contains(&Probe::FindWorkspace {
-        host: "local".into(),
-        key: "t.u7".into()
-    }));
-    let (plan, _) = run(
-        &obj,
-        Observations {
-            workspace: Some(Observation::unknown("cannot read")),
-            ..Default::default()
-        },
+    // Deletion never makes a workspace to learn what to release.
+    assert!(
+        !probes(&obj)
+            .iter()
+            .any(|p| matches!(p, Probe::FindWorkspace { .. })),
+        "{:?}",
+        probes(&obj)
     );
-    assert!(plan.remove_finalizer.is_none() && plan.effects.is_empty());
-    let (plan, _) = run(
-        &obj,
-        Observations {
-            workspace: Some(Observation::Known(Some(ws()))),
-            ..Default::default()
-        },
-    );
+    let (plan, _) = run(&obj, Observations::default());
+    assert!(plan.remove_finalizer.is_none());
     assert_eq!(
         plan.effects[0].action,
-        Action::CleanWorkspace { workspace: ws() }
+        Action::CleanWorkspace {
+            workspace: WorkspaceRef {
+                key: "t.u7".into(),
+                host: "local".into(),
+                dirs: Vec::new(),
+            }
+        }
     );
-    let (plan, _) = run(
-        &obj,
-        Observations {
-            workspace: Some(Observation::Known(None)),
-            ..Default::default()
-        },
-    );
-    assert_eq!(plan.remove_finalizer.as_deref(), Some("fleet.dev/release"));
 }

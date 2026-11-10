@@ -852,7 +852,7 @@ fn a_task_alone_runs_from_apply_to_release_and_retired_kinds_are_refused() {
     env.apply(json!({
         "apiVersion": "fleet/v1alpha1", "kind": "Task", "metadata": {"name": "solo"},
         "spec": {"harness": "claude-code", "host": "local", "brief": "Do it.",
-                 "workspace": {"dir": "work/solo"}, "dispatch": true}
+                 "workspace": [], "dispatch": true}
     }))
     .ok()
     .stdout_has("Task/solo created");

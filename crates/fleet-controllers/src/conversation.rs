@@ -31,7 +31,7 @@ use fleet_api::conversation::{
 use fleet_api::gateway::{
     Admission, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
     HISTORY_FIRST_READ, History, HistoryObservation, HistoryQuery, Marker, Message, RouteConfig,
-    Starter, Verified, admit, earns_refusal, starts_task,
+    RouteWorkspace, Starter, Verified, admit, earns_refusal, starts_task,
 };
 use fleet_api::meta::{API_VERSION, Millis, Object, ObjectMeta};
 use fleet_api::plan::{
@@ -1029,13 +1029,15 @@ impl Pass<'_, '_> {
         self.st.task.as_ref().map_or(0, |t| t.n).max(recorded) + 1
     }
 
-    /// The thread's own workspace: on a `dir` route, the route's base
-    /// directory and this Conversation's name, the same for every Task the
-    /// thread starts; a `repositories` workspace as the route gives it.
+    /// The thread's own workspace: on a `{base}` route, the `file://` URL
+    /// of the route's base directory and this Conversation's name, the same
+    /// for every Task the thread starts; a URL list as the route gives it.
     fn workspace(&self, route: &RouteConfig) -> task::Workspace {
-        match route.workspace.dir() {
-            Some(base) => task::Workspace::at(thread_dir(base, &self.input.object.metadata.name)),
-            None => route.workspace.clone(),
+        match &route.workspace {
+            RouteWorkspace::Base(b) => {
+                task::Workspace::at(thread_dir(&b.base, &self.input.object.metadata.name))
+            }
+            RouteWorkspace::Urls(w) => w.clone(),
         }
     }
 
@@ -1068,8 +1070,8 @@ impl Pass<'_, '_> {
 
     /// Ask the manager to create the tie's Task under its key, intent
     /// first, with the thread's own directory as the precondition on a
-    /// `dir` route. A `repositories` route shares no directory, so its
-    /// create has none.
+    /// `{base}` route. A URL list route shares no directory Fleet made, so
+    /// its create has none.
     fn plan_create(&mut self, counted: bool) {
         let (Some(route), Some(brief)) = (
             self.input.defaults.route.clone(),
@@ -1090,9 +1092,11 @@ impl Pass<'_, '_> {
         self.creates.push(Create {
             key,
             object,
-            exclusive: self.workspace(&route).dir().map(|dir| Exclusive {
-                workspace: dir.to_string(),
-            }),
+            exclusive: route
+                .workspace
+                .base_dir()
+                .and(self.workspace(&route).dir().map(str::to_string))
+                .map(|dir| Exclusive { workspace: dir }),
         });
         // The receipt lands in the same manager step; should it not, look
         // for the Task after one interval.

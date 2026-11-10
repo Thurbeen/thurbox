@@ -101,8 +101,8 @@ and `sessionState` through `fleet list task` and `fleet status`.
 This definition is the first step toward the
 [target architecture](../architecture-target.svg), where
 Thurbox is one view and Fleet runs Sessions behind the runtime port. The
-second step added a Workspace that Fleet materializes; see
-[Workspaces and the workspace port](../architecture.md#workspaces-and-the-workspace-port).
+second step added a Workspace that the runtime makes from the Task's URLs;
+see [Workspaces](../architecture.md#workspaces).
 The runtime port's `attach` gives a view a live terminal, and `runtime-mux`
 is the default runtime.
 See [Sessions and the runtime port](../architecture.md#sessions-and-the-runtime-port).

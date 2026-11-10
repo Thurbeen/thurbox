@@ -126,9 +126,6 @@ pub struct Manager<'a> {
         &'a [fleet_api::plugin::Registration],
     )>,
     pub forge: Option<&'a dyn Forge>,
-    /// The workspace port; `None` only for a manager built without one, in
-    /// which case the runtime makes every workspace itself.
-    pub workspaces: Option<&'a dyn fleet_api::workspace::Workspaces>,
     /// The signal port: the file each session's hooks report to, and what
     /// it says. `None`: no session gets one, and what Fleet would learn
     /// from it stays Unknown.
@@ -853,8 +850,7 @@ impl Manager<'_> {
                 }
             };
             if let Some(holder) = tasks.iter().find(|t| {
-                t.spec["workspace"]["dir"]
-                    .as_str()
+                fleet_api::task::spec_dir(&t.spec)
                     .is_some_and(|d| fleet_api::task::normalise_dir(d) == wanted)
             }) {
                 let busy = EffectOutcome::WorkspaceBusy {
@@ -866,7 +862,7 @@ impl Manager<'_> {
         // The directory first, recorded when this call made it, whatever
         // the create then answers: Fleet removes it when the thread retires.
         let mut made = None;
-        if let Some(dir) = obj.spec["workspace"]["dir"].as_str() {
+        if let Some(dir) = create.exclusive.as_ref().map(|e| e.workspace.as_str()) {
             let host = match self.task_host(obj) {
                 Observation::Known(Ok(h)) => h,
                 Observation::Known(Err(why)) => {
@@ -1016,8 +1012,7 @@ impl Manager<'_> {
             }
         };
         if let Some(holder) = tasks.iter().find(|t| {
-            t.spec["workspace"]["dir"]
-                .as_str()
+            fleet_api::task::spec_dir(&t.spec)
                 .is_some_and(|d| fleet_api::task::normalise_dir(d) == wanted)
         }) {
             return Observation::Known(EffectOutcome::WorkspaceBusy {
@@ -1879,7 +1874,6 @@ impl Manager<'_> {
             task: obj,
             observations: Observations::default(),
             now: self.clock.now(),
-            materialize: self.workspaces.is_some(),
         };
         let ctl = TaskController;
         for probe in ctl.probes(&input)? {
@@ -1895,7 +1889,7 @@ impl Manager<'_> {
                 let first = matches!(effect.action, Action::Spawn(_));
                 if let Some(spawn) = effect.action.launch_mut() {
                     spawn.harness = execution.harness.clone();
-                    // A workspace Fleet made decides the host it runs on.
+                    // The host the runtime made the workspace on is where it runs.
                     if first {
                         spawn.host = spawn
                             .ready
@@ -2066,11 +2060,8 @@ impl Manager<'_> {
                 note("paused", o.why());
                 obs.paused = Some(o);
             }
-            Probe::FindWorkspace { host, key: k } => {
-                let o = match self.workspaces {
-                    Some(w) => w.find(host, k),
-                    None => Observation::unknown("no [workspaces] adapter is configured"),
-                };
+            Probe::FindWorkspace { host, key: k, urls } => {
+                let o = rt.find_workspace(host, k, urls);
                 note(&format!("findWorkspace on {host}"), o.why());
                 obs.workspace = Some(o);
             }
@@ -2103,22 +2094,9 @@ impl Manager<'_> {
     }
 
     fn perform(&self, effect: &Effect) -> Observation<EffectOutcome> {
-        let no_port = || {
-            Observation::Known(EffectOutcome::Failed {
-                why: "no [workspaces] adapter is configured".into(),
-            })
-        };
         match &effect.action {
-            Action::Materialize {
-                host,
-                key,
-                repositories,
-            } => self
-                .workspaces
-                .map_or_else(no_port, |w| w.materialize(host, key, repositories)),
-            Action::CleanWorkspace { workspace } => {
-                self.workspaces.map_or_else(no_port, |w| w.clean(workspace))
-            }
+            Action::Materialize { host, key, urls } => self.runtime.workspace(host, key, urls),
+            Action::CleanWorkspace { workspace } => self.runtime.release_workspace(workspace),
             Action::Spawn(spec) => self.runtime.spawn(spec),
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),

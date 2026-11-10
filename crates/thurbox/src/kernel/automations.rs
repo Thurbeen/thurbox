@@ -168,7 +168,9 @@ fn spawn(
     let task_name = super::command::task_name(&name);
     let mut spec = serde_json::json!({
         "host": "local",
-        "workspace": {"dir": repo},
+        // The automation runs in the repository as it is, as a person's
+        // session there would before it asked for a worktree.
+        "workspace": [super::command::dir_url("file", repo)],
         "dispatch": true,
     });
     if let Some(agent) = agent {

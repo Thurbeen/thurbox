@@ -66,13 +66,13 @@ impl super::Executor for Fleet {
                 if let Some(agent) = agent {
                     self.harness(agent)?;
                 }
-                // Fleet makes worktrees on its own machine only (its worktree
-                // adapter refuses any other host), so a session elsewhere
-                // runs in the repository directory there, as it is.
+                // A session on this machine gets a worktree of a git
+                // repository; a session elsewhere runs in the directory
+                // there, as it is.
                 let workspace = if host == "local" {
-                    self.worktree_of(&crate::paths::expand_tilde(repo))?
+                    workspace_of(&crate::paths::expand_tilde(repo))
                 } else {
-                    json!({"dir": repo})
+                    json!([dir_url("file", std::path::Path::new(repo))])
                 };
                 let mut spec = json!({
                     "host": host,
@@ -184,51 +184,6 @@ impl Fleet {
         Ok(host)
     }
 
-    /// The `repositories` workspace for the checkout at `dir`, so Fleet
-    /// makes the session a git worktree of its own. Fleet makes worktrees of
-    /// mapped repositories only (`[workspaces.repositories]`, a URL to its
-    /// checkout here), so an unmapped one is refused with the line to add,
-    /// never run in the checkout instead.
-    fn worktree_of(&self, dir: &std::path::Path) -> Result<serde_json::Value, String> {
-        // A directory that is no git repository (the installed interface the
-        // picker offers to edit) has no worktree to make: it runs as it is.
-        // Decided from the filesystem, not from asking `git`, so a `git` that
-        // cannot run never passes for a directory with no repository. A bare
-        // repository keeps its files where a checkout keeps `.git`.
-        let bare =
-            dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
-        if !bare && !dir.ancestors().any(|at| at.join(".git").exists()) {
-            return Ok(json!({"dir": dir}));
-        }
-        let answer = self.json(&["repositories", "--json"])?;
-        let same = |source: &str| {
-            let canonical = |path: &std::path::Path| {
-                std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-            };
-            canonical(std::path::Path::new(source)) == canonical(dir)
-        };
-        let url = answer["repositories"].as_object().and_then(|map| {
-            map.iter()
-                .find(|(_, source)| source.as_str().is_some_and(same))
-                .map(|(url, _)| url.clone())
-        });
-        let Some(url) = url else {
-            return Err(format!(
-                "Fleet maps no repository at {dir}, so it cannot give the session a worktree: \
-                 add \"<its URL>\" = \"{dir}\" under [workspaces.repositories] in Fleet's config",
-                dir = dir.display()
-            ));
-        };
-        // Fleet names a workspace's repository as it names a Task, so a
-        // checkout called `My_Repo` is `my-repo`.
-        let name = dir
-            .file_name()
-            .map(|n| task_name(&n.to_string_lossy()))
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "repo".to_string());
-        Ok(json!({"repositories": [{"name": name, "url": url}]}))
-    }
-
     /// Refuse an agent Fleet has no harness profile for: Fleet would run a
     /// program named as the agent, which is not the command thurbox's
     /// registry runs for it (`shell` is `bash -i`).
@@ -319,6 +274,36 @@ impl Fleet {
             .unwrap_or(stderr.trim());
         Err(format!("fleet {}: {why}", args[0]))
     }
+}
+
+/// The workspace of the directory at `dir` on this machine: a `git+file`
+/// URL for a git repository, so the runtime makes the session a worktree of
+/// its own, and a `file` URL for any other directory, used as it is.
+fn workspace_of(dir: &std::path::Path) -> serde_json::Value {
+    // Decided from the filesystem, not from asking `git`, so a `git` that
+    // cannot run never passes for a directory with no repository. A bare
+    // repository keeps its files where a checkout keeps `.git`.
+    let bare =
+        dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
+    let git = bare || dir.ancestors().any(|at| at.join(".git").exists());
+    json!([dir_url(if git { "git+file" } else { "file" }, dir)])
+}
+
+/// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
+/// whitespace) percent-encoded, as the runtime decodes them.
+pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
+    let mut url = format!("{scheme}://");
+    for c in dir.to_string_lossy().chars() {
+        if c == '%' || c == '?' || c == '#' || c.is_whitespace() {
+            let mut buf = [0; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                url.push_str(&format!("%{b:02X}"));
+            }
+        } else {
+            url.push(c);
+        }
+    }
+    url
 }
 
 #[cfg(test)]

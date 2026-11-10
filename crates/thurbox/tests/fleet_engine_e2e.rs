@@ -156,18 +156,9 @@ impl Fleet {
         self.root.path().join("data")
     }
 
-    /// Map `repo` in Fleet's `[workspaces.repositories]`, which a session
-    /// thurbox creates must be: Fleet makes it a worktree of the mapped
-    /// checkout.
+    /// Make `repo` a git repository, of which a session gets a worktree.
     fn map(&self, repo: &Path) {
         git_init(repo);
-        let config = self.root.path().join("fleet.toml");
-        let mut text = std::fs::read_to_string(&config).expect("config");
-        text.push_str(&format!(
-            "\n[workspaces.repositories]\n\"https://example.invalid/repo\" = \"{}\"\n",
-            repo.display()
-        ));
-        std::fs::write(&config, text).expect("a repository map");
     }
 
     fn run(&self, args: &[&str]) -> Run {
@@ -263,7 +254,7 @@ fn task(name: &str) -> Value {
             "harness": "claude-code",
             "host": "local",
             "brief": format!("Do the work for {name}."),
-            "workspace": {"dir": format!("work/{name}")},
+            "workspace": [format!("file:///work/{name}")],
         }
     })
 }
@@ -309,7 +300,7 @@ fn the_snapshot_shows_each_fleet_task_as_a_session_and_follows_a_deletion() {
     let alpha = store.current().session("alpha").expect("by name").clone();
     assert_eq!(alpha.agent, "claude-code");
     assert_eq!(alpha.backend, "fleet");
-    assert_eq!(alpha.cwd.as_deref(), Some(Path::new("work/alpha")));
+    assert_eq!(alpha.cwd.as_deref(), Some(Path::new("/work/alpha")));
 
     // The controller releases a deleted Task, then it leaves the store.
     fleet.run(&["delete", "task", "beta"]).ok();
@@ -410,9 +401,11 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert_eq!(gamma["spec"]["harness"], "claude-code");
     assert_eq!(gamma["spec"]["host"], "local");
     assert_eq!(gamma["spec"]["dispatch"], true);
+    // A repository on this machine: the runtime makes the session a
+    // worktree of its own.
     assert_eq!(
-        gamma["spec"]["workspace"]["repositories"],
-        json!([{"name": "repo", "url": "https://example.invalid/repo"}])
+        gamma["spec"]["workspace"],
+        json!([format!("git+file://{}", repo.display())])
     );
     assert!(gamma["spec"]["brief"].is_null(), "{gamma:#}");
 
@@ -583,12 +576,12 @@ fn a_confirmed_delete_is_checked_then_deletes_the_task() {
         member_dirs: vec![PathBuf::from(cwd)],
     };
 
-    let moved = run_command(&mut bus, guarded("beta", "work/elsewhere"))
+    let moved = run_command(&mut bus, guarded("beta", "/work/elsewhere"))
         .expect_err("the target moved since it was confirmed");
     assert!(moved.contains("confirmation target changed"), "{moved}");
     assert!(fleet.get("beta").unwrap()["metadata"]["deletionTimestamp"].is_null());
 
-    run_command(&mut bus, guarded("alpha", "work/alpha")).expect("the confirmed delete");
+    run_command(&mut bus, guarded("alpha", "/work/alpha")).expect("the confirmed delete");
     assert!(fleet.get("alpha").unwrap()["metadata"]["deletionTimestamp"].is_u64());
 }
 
@@ -604,7 +597,7 @@ impl SnapshotSource for Fed {
 fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
     let mut row = thurbox::kernel::snapshot::fleet::row_of(&json!({
         "metadata": {"name": name},
-        "spec": {"harness": "claude-code", "workspace": {"dir": cwd}},
+        "spec": {"harness": "claude-code", "workspace": [format!("file://{}", cwd.display())]},
     }));
     row.backend = backend.into();
     row
@@ -879,7 +872,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let work = fleet.root.path().join("work");
     std::fs::create_dir_all(&work).expect("work");
     let mut t1 = task("t1");
-    t1["spec"]["workspace"] = json!({"dir": work});
+    t1["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     t1["spec"]["dispatch"] = json!(true);
     fleet.apply(t1);
     fleet.run(&["reconcile"]).ok();

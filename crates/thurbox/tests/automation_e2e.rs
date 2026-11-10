@@ -213,8 +213,8 @@ fn a_spawn_creates_a_task_and_queues_its_prompt() {
     let applied: Value = serde_json::from_str(entries.next().expect("the Task")).expect("JSON");
     assert_eq!(applied["metadata"]["name"], task, "{applied}");
     assert_eq!(
-        applied["spec"]["workspace"]["dir"],
-        repo.to_string_lossy().as_ref()
+        applied["spec"]["workspace"],
+        serde_json::json!([format!("file://{}", repo.display())])
     );
     assert_eq!(applied["spec"]["harness"], "claude");
     assert_eq!(applied["spec"]["dispatch"], true);

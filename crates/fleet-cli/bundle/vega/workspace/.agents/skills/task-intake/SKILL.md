@@ -41,57 +41,37 @@ Record the user's ordering and limits on the Tasks, not in your memory:
 
 status-digest shows these labels and how to change them.
 
-Give each Task its own workspace, in exactly one of two forms:
+Give each Task its own workspace: a list of absolute URLs, one per
+repository or directory the worker needs.
 
-- `{"repositories": [{"name", "url", "ref"}]}` for every Task. Fleet owns the
-  checkout: it makes a git worktree of each repository for this Task alone, on
-  a branch it names, and removes the worktrees when the Task is deleted. Never
-  clone, add a worktree or prepare a checkout yourself, and never name a branch
-  in the spec; Fleet has no branch, base, worktree or cleanup field.
-  - Use the exact URL mapped in the Mission Control config's
-    `workspaces.repositories`, for example the canonical
-    `https://github.com/OWNER/REPO`; Fleet matches it byte for byte, with no
-    `.git` or SSH normalization. An unmapped URL leaves the Task Pending with
-    `NeedsAttention`/`RepositoryUnmapped`, without spending a spawn attempt, so
-    add the mapping yourself, never a checkout or a directory in its place:
-    1. Find an existing source checkout on this machine whose `origin` is that
-       URL (`git -C PATH remote get-url origin`) and which has no branch named
-       after `workspaces.branchPrefix` (`fleet` by default). If there is none,
-       several, or the mapping needs anything else, ask the user and wait.
-    2. Write a candidate copy of the config that adds
-       `"URL" = "/absolute/source/path"` under `[workspaces.repositories]` and
-       changes nothing else. Check it against a new empty scratch directory
-       outside Fleet's data, which opens the runtime the way `fleet up` does
-       without touching the live store:
-       `fleet --config CANDIDATE --data-dir EMPTY_DIR reconcile --max-passes 1 --json`.
-       Only when it exits 0, keep the old config as a backup and put the
-       candidate in its place; then remove the scratch directory. A
-       `fleet list` passing proves nothing: it does not open the runtime.
-    3. A running `fleet up` re-reads `workspaces.repositories` before each
-       sweep, so the mapping applies without a restart and a waiting Task then
-       spawns. An invalid edit leaves the last valid mapping in force. Other
-       config settings need a restart: leave those to the user, and never stop
-       the engine yourself.
-  - `ref` is optional: the base of the worktree, read in the mapped source
-    checkout. Fleet does not fetch, so name a remote-tracking ref such as
-    `origin/main` and have the worker confirm its base against the forge
-    before relying on it.
-  - The first repository is the primary, and the worker starts in its
-    worktree. Say in the brief which repository each part of the work belongs
-    to.
+- A `git+` URL for every repository, for example
+  `git+https://github.com/OWNER/REPO.git#main`. The host's runtime owns the
+  checkout: it makes a worktree of the repository for this Task alone, on a
+  branch named after the session, and removes it when the Task is deleted.
+  Never clone, add a worktree or prepare a checkout yourself. No mapping or
+  config edit is needed: the URL is the whole request.
+  - `#REF` is optional: the base of the worktree, such as `#main`. The
+    runtime fetches the repository before it makes the worktree.
+  - `?branch=NAME` names the worktree's branch, made from the base when it
+    does not exist. Leave it out unless the user names a branch.
+  - A local repository with no remote is `git+file:///absolute/path`.
+  - The first URL is where the worker starts; the others are extra
+    directories it spans. Say in the brief which repository each part of the
+    work belongs to.
   - Deleting the Task removes its worktrees. Changes their branch does not
-    hold are first committed onto a preserved ref in the source checkout, and
-    branches are kept. Brief workers to push, declare or record anything that
-    must survive before they record their result.
-- `{"dir": PATH}` only when the user explicitly asks for that exception, for
-  example for work that has no repository: an existing absolute directory on the
-  target host, outside Fleet's data directory and outside this workspace.
-  Fleet neither creates nor isolates it, so never share one between live Tasks.
-  Put only the Task's inputs and outputs in it; the worker makes any checkout it
-  needs. Without that request, ask the user for a repository or a `dir`
-  exception.
-  Existing `dir` Tasks finish in place; their specs are immutable, so never
-  rewrite or move them.
+    hold are first committed onto a preserved ref, and branches are kept.
+    Brief workers to push, declare or record anything that must survive
+    before they record their result.
+  - A URL whose scheme the host's runtime does not handle leaves the Task
+    Pending with `NeedsAttention`/`WorkspaceUnsupported`. Ask the user and
+    wait.
+- `file:///PATH` only when the user explicitly asks for that exception, for
+  example for work that has no repository: an existing absolute directory on
+  the target host, outside Fleet's data directory and outside this
+  workspace. The runtime uses it as it is and isolates nothing, so never
+  share one between live Tasks. Put only the Task's inputs and outputs in
+  it; the worker makes any checkout it needs. Without that request, ask the
+  user for a repository or a directory exception.
 
 Write the manifest with a JSON serializer to `dispatch/NAME.json` in this
 workspace, replacing every example value, and never echo the brief in a reply.
@@ -121,9 +101,7 @@ fleet get task vega | jq -r .metadata.uid
     "harness": "codex",
     "host": "local",
     "brief": "Inspect the repository instructions and report the requested finding. Run its required checks. Do not publish without authorization. Ask Mission Control by declaring a Question and wait for the answer in your inbox. Record the result through fleet result using the generation of the delivered brief.",
-    "workspace": {"repositories": [
-      {"name": "app", "url": "https://forge.example/acme/app", "ref": "origin/main"}
-    ]},
+    "workspace": ["git+https://forge.example/acme/app.git#main"],
     "dispatch": false
   }
 }
@@ -192,9 +170,7 @@ Apply a provider, then its config, then the Task, for example:
     "configRef": {"name": "reviewer"},
     "env": {"PROJECT_MODE": "focused"},
     "brief": "Review the repository instructions and report findings. Do not publish. Record your result with the delivered brief generation.",
-    "workspace": {"repositories": [
-      {"name": "app", "url": "https://forge.example/acme/app", "ref": "origin/main"}
-    ]},
+    "workspace": ["git+https://forge.example/acme/app.git#main"],
     "dispatch": false
   }
 }

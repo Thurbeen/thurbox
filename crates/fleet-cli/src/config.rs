@@ -33,12 +33,6 @@ pub struct Config {
     /// may name.
     #[serde(default)]
     pub hosts: BTreeMap<String, HostConfig>,
-    /// The `[workspaces]` section: the adapter through which Fleet makes a
-    /// `{repositories}` workspace before the spawn. Absent: git worktrees
-    /// under `<data dir>/workspaces` (the fake runtime's own host, for the
-    /// fake).
-    #[serde(default)]
-    pub workspaces: Option<WorkspacesConfig>,
     #[serde(default)]
     pub starter: Option<StarterConfig>,
     #[serde(default)]
@@ -133,8 +127,11 @@ pub struct ProgramConfig {
     /// Arguments before the verb.
     #[serde(default)]
     pub args: Vec<String>,
-    /// The bound on every call.
+    /// The bound on every call but `workspace`.
     pub call_timeout_ms: Option<u64>,
+    /// The bound on a `workspace` call, which may clone a repository; 600000
+    /// when absent.
+    pub workspace_timeout_ms: Option<u64>,
     /// The first part of every key Fleet gives the runtime; give a second
     /// Fleet on the same runtime its own.
     pub key_prefix: Option<String>,
@@ -146,34 +143,6 @@ pub struct ProgramConfig {
 pub struct HostConfig {
     /// The `[runtimes.<name>]` that serves the host.
     pub runtime: String,
-}
-
-/// The `[workspaces]` section.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkspacesConfig {
-    /// `worktree` (the default), or `fake` for tests and trials.
-    #[serde(default = "worktree_kind")]
-    pub kind: String,
-    /// fake: the fake host's directory, relative to this file.
-    pub dir: Option<PathBuf>,
-    /// worktree: the directory that holds every workspace on the local
-    /// host, relative to this file.
-    pub root: Option<PathBuf>,
-    /// worktree: each repository URL a Task may name, and its source
-    /// checkout on this machine, whatever the runtime.
-    #[serde(default)]
-    pub repositories: BTreeMap<String, String>,
-    /// worktree: the `git` executable, a path or a name on PATH.
-    pub git: Option<String>,
-    /// worktree: the bound on every `git` command.
-    pub call_timeout_ms: Option<u64>,
-    /// worktree: the first part of every workspace branch.
-    pub branch_prefix: Option<String>,
-}
-
-fn worktree_kind() -> String {
-    "worktree".into()
 }
 
 impl Config {
@@ -208,11 +177,6 @@ impl Config {
         config
             .check_runtimes()
             .map_err(|e| format!("config {}: {e}", path.display()))?;
-        if let Some(ws) = config.workspaces.as_mut() {
-            for d in [&mut ws.dir, &mut ws.root].into_iter().flatten() {
-                *d = base.join(&*d);
-            }
-        }
         if let Some(starter) = config.starter.as_mut() {
             starter.workspace = base.join(&starter.workspace);
         }
@@ -330,7 +294,6 @@ impl Config {
             runtime: None,
             runtimes: BTreeMap::new(),
             hosts: BTreeMap::new(),
-            workspaces: None,
             starter: None,
             forge: None,
             plugins: BTreeMap::new(),

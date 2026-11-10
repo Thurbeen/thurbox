@@ -99,6 +99,44 @@ pub trait Runtime {
     /// cannot remove it; Unknown when it cannot tell whether it did.
     /// Repeating it is harmless.
     fn remove_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>>;
+    /// Make the workspace of `urls` under `key` on `host`, whole or nothing:
+    /// `Materialized`, with `adopted` when a whole one already holds the key.
+    /// `Unsupported { url }` names a URL the runtime does not handle,
+    /// answered before anything is made. `Failed` is a refusal that left
+    /// nothing behind. Unknown when the runtime cannot tell: the call is
+    /// idempotent by key, so the next pass asks again. A runtime that makes
+    /// no workspace answers `Unsupported` for the first URL.
+    fn workspace(&self, _host: &str, _key: &str, urls: &[String]) -> Observation<EffectOutcome> {
+        Observation::Known(match urls.first() {
+            Some(url) => EffectOutcome::Unsupported { url: url.clone() },
+            None => EffectOutcome::Failed {
+                why: "an empty workspace list makes nothing".into(),
+            },
+        })
+    }
+    /// The whole workspace of `urls` under `key` on `host`, after a
+    /// `workspace` call whose answer was lost: `Known(None)` when the runtime
+    /// proves it made none. Unknown when it cannot tell.
+    fn find_workspace(
+        &self,
+        host: &str,
+        key: &str,
+        urls: &[String],
+    ) -> Observation<Option<crate::workspace::WorkspaceRef>> {
+        self.workspace(host, key, urls).map(|made| match made {
+            EffectOutcome::Materialized { workspace, .. } => Some(*workspace),
+            _ => None,
+        })
+    }
+    /// Remove the workspace and everything the runtime made in it, keeping
+    /// the work it holds as the runtime's rules say. One already gone is
+    /// `Deleted`. Repeating it is harmless.
+    fn release_workspace(
+        &self,
+        _workspace: &crate::workspace::WorkspaceRef,
+    ) -> Observation<EffectOutcome> {
+        Observation::Known(EffectOutcome::Deleted)
+    }
     /// `Spawned`, or `Spawned { adopted: true }` when a live session already
     /// holds the key. Unknown on timeout: the next pass looks the key up with
     /// `find` and never retries blindly.
@@ -109,8 +147,8 @@ pub trait Runtime {
     /// Ready when the agent can take a message now: a working turn can, a
     /// dialog that holds the agent cannot.
     fn ready(&self, session: &SessionRef) -> Observation<bool>;
-    /// Whether the agent in `session` trusts `workspace`, or `ready` when
-    /// Fleet made the workspace, so a brief cannot land in a trust prompt.
+    /// Whether the agent in `session` trusts the workspace the runtime made
+    /// (`ready`), so a brief cannot land in a trust prompt.
     /// Unknown when the session cannot prove it.
     fn workspace_trust(
         &self,

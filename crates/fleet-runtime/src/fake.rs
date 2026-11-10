@@ -18,8 +18,8 @@ use fleet_api::Observation;
 use fleet_api::harness::profile;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
-use fleet_api::task::{RepositoriesWorkspace, SessionRef};
-use fleet_api::workspace::{WorkspaceRef, Workspaces};
+use fleet_api::task::SessionRef;
+use fleet_api::workspace::WorkspaceRef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,12 +126,12 @@ pub struct FakeSession {
     pub env: BTreeMap<String, String>,
 }
 
-/// A workspace the fake workspace adapter made: a record, no files.
+/// A workspace the fake runtime made: a record, no files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FakeWorkspace {
     pub workspace: WorkspaceRef,
-    pub repositories: Vec<fleet_api::task::Repository>,
+    pub urls: Vec<String>,
     /// Set once Fleet cleaned it; a cleaned workspace is not found.
     #[serde(default)]
     pub cleaned: bool,
@@ -142,8 +142,8 @@ pub struct FakeWorkspace {
 pub struct FakeState {
     /// Workspaces by key.
     pub workspaces: BTreeMap<String, FakeWorkspace>,
-    /// Repository URLs the fake workspace adapter has no source for.
-    pub unmapped: Vec<String>,
+    /// URLs the fake runtime does not handle.
+    pub unsupported: Vec<String>,
     /// `up`, `down` or `unknown`; a host not listed is up.
     pub hosts: BTreeMap<String, String>,
     pub sessions: BTreeMap<String, FakeSession>,
@@ -417,6 +417,83 @@ fn session_ref(x: &FakeSession) -> SessionRef {
 }
 
 impl Runtime for FakeRuntime {
+    /// Workspaces are records on the fake host, in the same state file as
+    /// its sessions, with the same injectable faults. A `file://` URL is its
+    /// directory, as it is; any other gets one under the key, named after
+    /// the URL's last segment, as `workspace-git` lays them out.
+    fn workspace(&self, host: &str, key: &str, urls: &[String]) -> Observation<EffectOutcome> {
+        let (host, key, urls) = (host.to_string(), key.to_string(), urls.to_vec());
+        let root = self.host.dir.join("workspaces").join(&key);
+        let dirs: Vec<String> = urls
+            .iter()
+            .map(|url| match fleet_api::task::file_path(url) {
+                Some(path) => path.to_string(),
+                None => root.join(url_name(url)).to_string_lossy().into_owned(),
+            })
+            .collect();
+        self.effect("materialize", move |s| {
+            if let Some(url) = urls.iter().find(|u| s.unsupported.contains(u)) {
+                return EffectOutcome::Unsupported { url: url.clone() };
+            }
+            if let Some(w) = s.workspaces.get(&key).filter(|w| !w.cleaned) {
+                return EffectOutcome::Materialized {
+                    workspace: Box::new(w.workspace.clone()),
+                    adopted: true,
+                };
+            }
+            let workspace = WorkspaceRef {
+                key: key.clone(),
+                host: host.clone(),
+                dirs: dirs.clone(),
+            };
+            s.log.push(format!("materialize {host} {key}"));
+            s.workspaces.insert(
+                key.clone(),
+                FakeWorkspace {
+                    workspace: workspace.clone(),
+                    urls: urls.clone(),
+                    cleaned: false,
+                },
+            );
+            EffectOutcome::Materialized {
+                workspace: Box::new(workspace),
+                adopted: false,
+            }
+        })
+    }
+
+    fn find_workspace(
+        &self,
+        host: &str,
+        key: &str,
+        _urls: &[String],
+    ) -> Observation<Option<WorkspaceRef>> {
+        self.probe("findWorkspace", |s| {
+            match s.hosts.get(host).map(String::as_str) {
+                Some("down") | Some("unknown") => {
+                    Observation::unknown(format!("host {host}: workspaces unreadable"))
+                }
+                _ => Observation::Known(
+                    s.workspaces
+                        .get(key)
+                        .filter(|w| !w.cleaned && w.workspace.host == host)
+                        .map(|w| w.workspace.clone()),
+                ),
+            }
+        })
+    }
+
+    fn release_workspace(&self, workspace: &WorkspaceRef) -> Observation<EffectOutcome> {
+        let key = workspace.key.clone();
+        self.effect("cleanWorkspace", move |s| {
+            if let Some(w) = s.workspaces.get_mut(&key).filter(|w| !w.cleaned) {
+                w.cleaned = true;
+                s.log.push(format!("cleanWorkspace {key}"));
+            }
+            EffectOutcome::Deleted
+        })
+    }
+
     fn env_source(
         &self,
         source: &fleet_api::config::EnvSource,
@@ -739,88 +816,18 @@ impl Runtime for FakeRuntime {
     }
 }
 
-/// The fake workspace adapter: workspaces are records on the fake host, in
-/// the same state file as its sessions, with the same injectable faults.
-impl Workspaces for FakeRuntime {
-    fn materialize(
-        &self,
-        host: &str,
-        key: &str,
-        repositories: &RepositoriesWorkspace,
-    ) -> Observation<EffectOutcome> {
-        let (host, key, repositories) = (host.to_string(), key.to_string(), repositories.clone());
-        // One directory per repository, under the key, as a worktree
-        // adapter lays them out.
-        let root = self.host.dir.join("workspaces").join(&key);
-        let mut dirs = repositories
-            .repositories
-            .iter()
-            .map(|r| root.join(&r.name).to_string_lossy().into_owned());
-        let dir = dirs
-            .next()
-            .unwrap_or_else(|| root.to_string_lossy().into_owned());
-        let extra_dirs: Vec<String> = dirs.collect();
-        self.effect("materialize", move |s| {
-            if let Some(r) = repositories
-                .repositories
-                .iter()
-                .find(|r| s.unmapped.contains(&r.url))
-            {
-                return EffectOutcome::Unmapped { url: r.url.clone() };
-            }
-            if let Some(w) = s.workspaces.get(&key).filter(|w| !w.cleaned) {
-                return EffectOutcome::Materialized {
-                    workspace: Box::new(w.workspace.clone()),
-                    adopted: true,
-                };
-            }
-            let workspace = WorkspaceRef {
-                key: key.clone(),
-                host: host.clone(),
-                dir: dir.clone(),
-                extra_dirs: extra_dirs.clone(),
-                trust_root: None,
-            };
-            s.log.push(format!("materialize {host} {key}"));
-            s.workspaces.insert(
-                key.clone(),
-                FakeWorkspace {
-                    workspace: workspace.clone(),
-                    repositories: repositories.repositories.clone(),
-                    cleaned: false,
-                },
-            );
-            EffectOutcome::Materialized {
-                workspace: Box::new(workspace),
-                adopted: false,
-            }
-        })
-    }
-
-    fn find(&self, host: &str, key: &str) -> Observation<Option<WorkspaceRef>> {
-        self.probe("findWorkspace", |s| {
-            match s.hosts.get(host).map(String::as_str) {
-                Some("down") | Some("unknown") => {
-                    Observation::unknown(format!("host {host}: workspaces unreadable"))
-                }
-                _ => Observation::Known(
-                    s.workspaces
-                        .get(key)
-                        .filter(|w| !w.cleaned && w.workspace.host == host)
-                        .map(|w| w.workspace.clone()),
-                ),
-            }
-        })
-    }
-
-    fn clean(&self, workspace: &WorkspaceRef) -> Observation<EffectOutcome> {
-        let key = workspace.key.clone();
-        self.effect("cleanWorkspace", move |s| {
-            if let Some(w) = s.workspaces.get_mut(&key).filter(|w| !w.cleaned) {
-                w.cleaned = true;
-                s.log.push(format!("cleanWorkspace {key}"));
-            }
-            EffectOutcome::Deleted
-        })
+/// A URL's last path segment without `.git`: the name its directory gets.
+fn url_name(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let last = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("workspace");
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    if name.is_empty() {
+        "workspace".into()
+    } else {
+        name.into()
     }
 }

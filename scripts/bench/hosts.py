@@ -412,7 +412,7 @@ class Thurbox(Host):
             "spec": {
                 "harness": "sh",
                 "host": "local",
-                "workspace": {"dir": sandbox.work},
+                "workspace": ["file://" + sandbox.work],
                 "dispatch": False,
             },
         }
@@ -455,7 +455,7 @@ class Thurbox(Host):
             "spec": {
                 "harness": wrapper,
                 "host": "local",
-                "workspace": {"dir": self.sb.work},
+                "workspace": ["file://" + self.sb.work],
                 "dispatch": True,
             },
         }

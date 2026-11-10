@@ -34,7 +34,7 @@ fn wildcard_route(env: &Env, name: &str, channels: &str) -> String {
     let root = root(env);
     format!(
         "\n[gateway.routes.{name}]\naccount = \"{GATEWAY_ACCOUNT}\"\nchannels = {channels}\nallow = [\"alex\"]\n\
-taskConfig = \"conversation\"\nbrief = \"{root}/briefs/anywhere.md\"\nworkspace = {{ dir = \"{root}/work/{name}\" }}\n"
+taskConfig = \"conversation\"\nbrief = \"{root}/briefs/anywhere.md\"\nworkspace = {{ base = \"{root}/work/{name}\" }}\n"
     )
 }
 
@@ -110,8 +110,8 @@ fn a_wildcard_route_starts_a_task_in_a_channel_no_route_lists() {
     );
     assert_eq!(task["spec"]["brief"], "Help anyone who asks.\n");
     assert_eq!(
-        task["spec"]["workspace"]["dir"],
-        format!("{}/work/{WILDCARD_ROUTE}/{conv}", root(&env))
+        task["spec"]["workspace"][0],
+        format!("file://{}/work/{WILDCARD_ROUTE}/{conv}", root(&env))
     );
 }
 

@@ -21,7 +21,7 @@
 mod bus;
 mod execute;
 mod fleet;
-pub(crate) use fleet::task_name;
+pub(crate) use fleet::{dir_url, task_name};
 
 pub use bus::{CommandBus, InFlight, Phase};
 

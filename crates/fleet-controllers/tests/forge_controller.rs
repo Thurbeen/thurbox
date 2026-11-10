@@ -55,7 +55,7 @@ fn task_with(
 ) -> Object {
     let mut spec = json!({
         "harness": "claude-code", "host": "local", "brief": "b",
-        "workspace": {"dir": "w"}, "dispatch": true
+        "workspace": [], "dispatch": true
     });
     if !spec_forge.is_null() {
         spec["forge"] = spec_forge;

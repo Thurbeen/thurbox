@@ -343,46 +343,16 @@ pub fn validate_execution(
     Ok(())
 }
 
-/// A workspace names a directory or repositories, never both and never
-/// nothing. The error starts with the path inside the workspace, such as
-/// `.dir must not be empty`, so a caller prefixes its own field.
+/// A workspace is a list of absolute URLs, `<scheme>://…`: Fleet checks
+/// that, and nothing else. Each reaches the runtime as an argument, so none
+/// holds whitespace or a NUL byte. The error starts with the path inside the
+/// workspace, such as `[0] …`, so a caller prefixes its own field.
 pub fn validate_workspace(workspace: &task::Workspace) -> Result<(), String> {
-    match workspace {
-        task::Workspace::Dir(w) => {
-            if w.dir.trim().is_empty() {
-                return Err(".dir must not be empty".into());
-            }
-        }
-        task::Workspace::Repositories(w) => {
-            if w.repositories.is_empty() {
-                return Err(".repositories must name at least one repository".into());
-            }
-            let mut names = BTreeSet::new();
-            let mut urls = BTreeSet::new();
-            for (i, r) in w.repositories.iter().enumerate() {
-                let at = format!(".repositories[{i}]");
-                if let Err(StoreError::Invalid(e)) = validate_name(&r.name) {
-                    return Err(format!("{at}.name: {e}"));
-                }
-                if !names.insert(r.name.as_str()) {
-                    return Err(format!("{at}.name {:?} is repeated", r.name));
-                }
-                if !urls.insert(r.url.as_str()) {
-                    return Err(format!("{at}.url {:?} is repeated", r.url));
-                }
-                // Both reach the runtime as arguments: never as a flag.
-                for (field, value) in [("url", Some(&r.url)), ("ref", r.reference.as_ref())] {
-                    let Some(value) = value else { continue };
-                    if value.trim().is_empty()
-                        || value.starts_with('-')
-                        || value.chars().any(char::is_whitespace)
-                    {
-                        return Err(format!(
-                            "{at}.{field} must be non-empty, without whitespace, and not start with '-'"
-                        ));
-                    }
-                }
-            }
+    for (i, url) in workspace.urls().iter().enumerate() {
+        if task::url_scheme(url).is_none() || url.chars().any(|c| c.is_whitespace() || c == '\0') {
+            return Err(format!(
+                "[{i}] {url:?} is not an absolute URL: a workspace is a list of absolute URLs, `<scheme>://…`"
+            ));
         }
     }
     Ok(())
@@ -438,68 +408,28 @@ pub fn is_absolute_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{RepositoriesWorkspace, Repository, Workspace};
-
-    fn repos(list: &[(&str, &str, Option<&str>)]) -> Workspace {
-        Workspace::Repositories(RepositoriesWorkspace {
-            repositories: list
-                .iter()
-                .map(|(name, url, reference)| Repository {
-                    name: name.to_string(),
-                    url: url.to_string(),
-                    reference: reference.map(str::to_string),
-                })
-                .collect(),
-        })
-    }
+    use crate::task::Workspace;
 
     #[test]
     fn a_workspace_names_something_usable() {
-        let url = "https://example.invalid/app";
-        let docs = "https://example.invalid/docs";
         assert!(validate_workspace(&Workspace::at("/w")).is_ok());
+        assert!(validate_workspace(&Workspace::default()).is_ok());
         assert!(
-            validate_workspace(&repos(&[("app", url, Some("main")), ("docs", docs, None)])).is_ok()
+            validate_workspace(&Workspace::of([
+                "git+https://example.invalid/app.git#main",
+                "git+ssh://git@example.invalid/lib.git?branch=x",
+            ]))
+            .is_ok()
         );
-        for (workspace, want) in [
-            (Workspace::at(" "), ".dir must not be empty"),
-            (
-                repos(&[]),
-                ".repositories must name at least one repository",
-            ),
-            (
-                repos(&[("App", url, None)]),
-                ".repositories[0].name: name \"App\"",
-            ),
-            (
-                repos(&[("a", url, None), ("a", url, None)]),
-                ".repositories[1].name \"a\" is repeated",
-            ),
-            (
-                repos(&[("a", url, None), ("b", url, None)]),
-                ".repositories[1].url \"https://example.invalid/app\" is repeated",
-            ),
-            (
-                repos(&[("a", "--upload-pack=x", None)]),
-                ".repositories[0].url must be",
-            ),
-            (
-                repos(&[("a", url, Some("-x"))]),
-                ".repositories[0].ref must be",
-            ),
-            (
-                repos(&[("a", url, Some("my branch"))]),
-                ".repositories[0].ref must be",
-            ),
-        ] {
-            let err = validate_workspace(&workspace).unwrap_err();
-            assert!(err.starts_with(want), "{workspace:?}: {err}");
+        for refused in ["/w", "w", "C:/w", "file://", "git+https://a b/c", "x://\0"] {
+            let err = validate_workspace(&Workspace::of([refused])).unwrap_err();
+            assert!(err.contains("a list of absolute URLs"), "{refused}: {err}");
         }
     }
 
     fn amended(amendments: serde_json::Value) -> Value {
         serde_json::json!({
-            "harness": "claude-code", "brief": "b", "workspace": {"dir": "w"},
+            "harness": "claude-code", "brief": "b", "workspace": ["file:///w"],
             "outputs": {"prUrl": {"type": "string"}},
             "amendments": amendments
         })

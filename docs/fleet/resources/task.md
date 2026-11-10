@@ -20,7 +20,7 @@ session when the Task is deleted. The guarantees behind each step are in
     "harness": "claude-code",
     "host": "local",
     "brief": "Write the controller design.",
-    "workspace": {"dir": "/work/design-305"},
+    "workspace": ["git+https://github.com/example/app.git#main"],
     "dispatch": true,
     "outputs": {"prUrl": {"type": "string", "required": true}}
   }
@@ -43,7 +43,7 @@ except `dispatch` and `forge`. `amendments` grows only through
 | `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 | `brief` | no | The brief, sent once to the ready session. It never changes. Empty or absent makes an interactive Task: its session spawns and waits for its user, messages still reach it, and `fleet amend` is refused. A blank brief is refused. |
 | `amendments` | no | Additions to the brief, oldest first, each `{text, reason?, outputs?, from, at, generation}`. Only `fleet amend` appends one. See [Amendments](#amendments). |
-| `workspace` | yes | What the session works in: `{"dir": PATH}` or `{"repositories": [{"name", "url", "ref"?}]}`. See [Workspaces](#workspaces). |
+| `workspace` | yes | What the session works in: a list of absolute URLs, `[]` for the runtime's default directory. See [Workspaces](#workspaces). |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. An amendment can add outputs. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
@@ -56,53 +56,42 @@ precedence, validation and private launch snapshots.
 
 ### Workspaces
 
-A workspace has exactly one of two forms. Unknown fields are refused.
-
-`{"repositories": [...]}` names repositories by identity:
+A workspace is a list of absolute URLs, `<scheme>://…`. Fleet checks that,
+and nothing else: the scheme, the reference and any query are the
+runtime's to read. Any other shape is refused when it is applied.
 
 ```json
-{"workspace": {"repositories": [
-  {"name": "app", "url": "https://github.com/example/app", "ref": "main"},
-  {"name": "docs", "url": "https://github.com/example/docs"}
-]}}
+{"workspace": [
+  "git+https://github.com/example/app.git#main",
+  "git+file:///home/me/lib?branch=fix-1",
+  "file:///home/me/notes"
+]}
 ```
 
-- Each `name` is a lowercase DNS-like name, unique in the Task. Each `url`
-  is unique in the Task. Each `url` and `ref` is non-empty, has no
-  whitespace and does not start with `-`.
-- The first repository is the primary. Its source checkout is the trust
-  root, as [workspace trust](../contracts.md#workspace-trust)
-  states.
-- Fleet does not interpret `ref`. The maker of the workspace decides what it
-  means.
-- Fleet has no branch, base, worktree or cleanup field. The maker makes the
-  checkout for this Task alone and names its branch. The worker reports the
-  change it opened through `fleet declare`.
-- `workspaces.repositories` in
-  [`fleet.toml`](../configuration.md#fields) maps each `url` to its source
-  checkout. A Task with an unmapped `url`
-  waits with `RepositoryUnmapped`.
-
-Fleet makes every `repositories` workspace through its workspace port,
-with no setting to ask for it: before the spawn, recorded in
-`status.workspace`, and cleaned after the release. The runtime only runs the
-session in it. The [workspace contract](../contracts.md#workspace-contract)
-states how the `worktree` adapter, the default, does this:
-
-- A `file://` URL names a directory used as it is: it is spanned, never
-  made, and survives every clean.
-- A clean never loses work: what a worktree holds that its branch does not,
-  untracked files included, is committed onto
-  `refs/fleet/preserved/<key>/<name>` in its source first.
-
-`{"dir": PATH}` names a directory that exists before the Task. The session
-works in it as it is.
-
-- Fleet does not create, isolate or clean the directory. Two Tasks can name
-  the same directory.
+- The first URL is where the agent starts; the others are the extra
+  directories it spans. The first directory is the trust root, as
+  [workspace trust](../contracts.md#workspace-trust) states.
+- An empty list means the agent starts in the runtime's default directory.
+- The host's runtime makes one directory per URL before the first start,
+  and releases them after the session. It handles the schemes its manifest
+  lists. A Task with any other URL waits with `WorkspaceUnsupported`.
+- Fleet has no branch, base, worktree or cleanup field: the URL is the
+  whole request. With `workspace-git`, a `git+` URL is a worktree on a new
+  branch named after the session key, `?branch=` names the branch, and `#`
+  names the base. The worker reports the change it opened through
+  `fleet declare`.
+- A `file://` URL names a directory used as it is: the runtime makes and
+  removes nothing there. Two Tasks can name the same directory.
+- A release never loses work: with `workspace-git`, what a worktree holds
+  that its branch does not, untracked files included, is committed onto
+  `refs/fleet/preserved/<key>/<name>` first. A new Task restores it by
+  naming that ref in a `git+file` URL.
 - A [Gateway route](../configuration.md#the-gateway-section) with a
-  `dir` workspace is the one exception: the manager creates each thread's
-  directory and removes it when the thread retires.
+  `{base}` workspace gives each thread `file://<base>/<conversation>`: the
+  manager creates that directory and removes it when the thread retires.
+
+[Runtimes](../../runtime/README.md#workspaces) states how each runtime
+makes a workspace.
 
 ## Status
 
@@ -121,11 +110,11 @@ mutations described under [Inbox](#inbox).
 | `conditions` | One entry per [condition type](../controllers/task.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
-| `workspace` | The workspace Fleet made for the session: its `key`, the `host` the adapter reported, the `dir` of the primary repository, the `extraDirs` of the other repositories it also spans, and an optional `trustRoot`. Absent for a `dir` workspace, until Fleet made it, and after Fleet cleaned it. |
-| `materializeAttempts`, `cleanAttempts` | Materialize attempts, bounded at 3 like spawn attempts, and workspace cleans after the release. A materialize refused for an unmapped repository does not count. Three failed cleans raise `NeedsAttention/CleanFailed`; cleans continue after each wait. |
+| `workspace` | The workspace the runtime made for the session: its `key`, the `host` whose runtime made it, and its `dirs`, one per URL in the Task's order; the session starts in the first. Absent for an empty list, until the runtime made it, and after it was released. |
+| `materializeAttempts`, `cleanAttempts` | `workspace` calls, bounded at 3 like spawn attempts, and workspace releases after the session. A call answered `Unsupported` does not count. Three failed cleans raise `NeedsAttention/CleanFailed`; cleans continue after each wait. |
 | `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. [Session](session.md#states) defines each state and how it is proved. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
-| `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped repository does not count. |
+| `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped harness trust does not count. |
 | `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |
 | `revivals`, `reviveAttempts` | Revives over the Task's life, which number their keys, and revives since the session was last seen not lost. Three revives raise `NeedsAttention/ReviveFailed`; revives continue after each wait. |
 | `pauses`, `resumes`, `resumeAttempts` | Pause and resume effects over the Task's life, which number their keys, and resumes since the session was last seen running. Three resumes raise `NeedsAttention/ResumeFailed`; resumes continue after each wait. A record from before catch-up notes counts its old resume notes in `resumes`, so a resume key never repeats a note's key. |

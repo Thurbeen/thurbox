@@ -1664,10 +1664,10 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     // A Task's name is a DNS-like name: the typed one, made one.
     assert_eq!(task["metadata"]["name"], "read-the-code");
     // `/src/thurbox` is no repository on this machine, so it runs as it is;
-    // `tui_e2e` covers a mapped repository's worktree.
+    // `tui_e2e` covers a repository's worktree.
     assert_eq!(
         task["spec"]["workspace"],
-        serde_json::json!({"dir": "/src/thurbox"})
+        serde_json::json!(["file:///src/thurbox"])
     );
     assert_eq!(task["spec"]["harness"], "claude");
     assert_eq!(task["spec"]["host"], "local");
@@ -1839,9 +1839,8 @@ fn a_session_on_a_host_names_the_fleet_host() {
     assert!(!unknown.asked(), "nothing was applied");
 }
 
-/// Fleet makes worktrees on its own machine only, so a session on another
-/// Fleet host runs in the repository directory there: its Task names a `dir`
-/// workspace, and a path Fleet's repository map does not hold is not refused.
+/// A session on another Fleet host runs in the repository directory there,
+/// as it is: its Task names a `file://` URL of the path given.
 #[cfg(unix)]
 #[test]
 fn a_session_on_another_fleet_host_runs_in_its_directory() {
@@ -1858,13 +1857,13 @@ fn a_session_on_another_fleet_host_runs_in_its_directory() {
     assert_eq!(task["spec"]["host"], "devbox");
     assert_eq!(
         task["spec"]["workspace"],
-        serde_json::json!({"dir": "/home/me/far-repo"})
+        serde_json::json!(["file:///home/me/far-repo"])
     );
 }
 
 /// A directory that is no git repository, such as the installed interface
 /// the picker offers to edit, has no worktree to make: its session runs in it
-/// as it is, while an unmapped repository is still refused.
+/// as it is.
 #[cfg(unix)]
 #[test]
 fn a_directory_that_is_no_repository_runs_as_it_is() {
@@ -1881,13 +1880,13 @@ fn a_directory_that_is_no_repository_runs_as_it_is() {
         .expect("a plain directory is not refused");
     assert_eq!(
         fleet.applied()["spec"]["workspace"],
-        serde_json::json!({ "dir": path })
+        serde_json::json!([format!("file://{path}")])
     );
 }
 
 /// A bare repository is a repository: it has no `.git` beside its files, but
-/// its session still needs a worktree, so an unmapped one is refused rather
-/// than run inside the bare repository.
+/// its session still gets a worktree, never a run inside the bare
+/// repository.
 #[cfg(unix)]
 #[test]
 fn a_bare_repository_is_not_run_as_a_plain_directory() {
@@ -1896,15 +1895,19 @@ fn a_bare_repository_is_not_run_as_a_plain_directory() {
     std::fs::write(bare.path().join("HEAD"), "ref: refs/heads/main\n").expect("HEAD");
     std::fs::create_dir_all(bare.path().join("objects")).expect("objects");
     std::fs::create_dir_all(bare.path().join("refs")).expect("refs");
-    let refused = fleet.run(vec![Command::Create {
-        name: "bare".into(),
-        repo: bare.path().to_string_lossy().into_owned(),
-        agent: Some("claude".into()),
-        host: None,
-    }]);
-    let error = refused.expect_err("an unmapped bare repository is refused");
-    assert!(error.contains("Fleet maps no repository"), "{error}");
-    assert!(!fleet.asked(), "nothing was applied");
+    let path = bare.path().to_string_lossy().into_owned();
+    fleet
+        .run(vec![Command::Create {
+            name: "bare".into(),
+            repo: path.clone(),
+            agent: Some("claude".into()),
+            host: None,
+        }])
+        .expect("a bare repository is not refused");
+    assert_eq!(
+        fleet.applied()["spec"]["workspace"],
+        serde_json::json!([format!("git+file://{path}")])
+    );
 }
 
 /// Only an agent Fleet has a harness profile for becomes a Task: `shell`

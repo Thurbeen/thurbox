@@ -34,7 +34,7 @@ fn route(env: &Env, name: &str, channels: &str) -> String {
     let root = root(env);
     format!(
         "\n[gateway.routes.{name}]\naccount = \"{GATEWAY_ACCOUNT}\"\nchannels = {channels}\nallow = [\"alex\"]\n\
-taskConfig = \"conversation\"\nbrief = \"{root}/briefs/randy.md\"\nworkspace = {{ dir = \"{root}/work/{name}\" }}\n"
+taskConfig = \"conversation\"\nbrief = \"{root}/briefs/randy.md\"\nworkspace = {{ base = \"{root}/work/{name}\" }}\n"
     )
 }
 
@@ -131,8 +131,8 @@ fn a_top_level_dm_starts_a_task_without_a_mention_and_a_reply_is_its_turn() {
     );
     assert_eq!(task["spec"]["brief"], "Help whoever DMs.\n");
     assert_eq!(
-        task["spec"]["workspace"]["dir"],
-        format!("{}/work/{ROUTE}/{conv}", root(&env))
+        task["spec"]["workspace"][0],
+        format!("file://{}/work/{ROUTE}/{conv}", root(&env))
     );
     let st = env.conversation_status(&conv);
     assert_eq!(st["phase"], "Tied", "{st:#}");

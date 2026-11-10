@@ -158,7 +158,7 @@ spec.pauseAfterMs   optional; pause the session once its agent was idle
                     this long, over the TaskConfig's
 spec.brief          the brief, sent once, never changed
 spec.amendments     append-only additions to the brief, through fleet amend
-spec.workspace      {dir} or {repositories: [{name, url, ref?}]}
+spec.workspace      a list of absolute URLs; the runtime makes them
 spec.dispatch       nothing spawns while false
 spec.outputs        optional: the structured outputs a result must carry
 spec.forge          optional: relay and draft overrides for declared changes
@@ -199,20 +199,22 @@ finalizer. The manager performs it in this order:
 
 Guarantees, each with its test:
 
-- **Workspace once.** With a workspace port, a `{repositories}` Task plans
-  `Materialize` under `materialize/<n>` before its spawn, with the session
-  key as the workspace key. `Spawned` waits until `status.workspace` holds
-  the whole workspace, and the spawn gets it as `ready`. After an unknown
-  materialize outcome the controller looks the workspace key up: found is
-  adopted, absent is retried after `RETRY_DELAY_MS`, unreadable waits.
-  `MAX_ATTEMPTS` refusals stall the Task with
-  `WorkspaceReady=False/MaterializeFailed`. An unmapped repository spends
-  no attempt, as at spawn. After the release, and also when nothing was
-  spawned, `CleanWorkspace` runs under `cleanWorkspace/<n>`. The finalizer
-  goes only after a `Deleted` receipt. A failed or unknown clean is
-  repeated after each wait, and three raise `NeedsAttention/CleanFailed`. A
-  Task deleted while its materialize is unanswered looks the key up first.
-  `task_workspace` and `e2e_workspace` cover each case.
+- **Workspace once.** A Task with a non-empty URL list plans `Materialize`,
+  the runtime's `workspace` call, under `materialize/<n>` before its spawn,
+  with the session key as the workspace key. `Spawned` waits until
+  `status.workspace` holds the whole workspace, and the spawn gets it as
+  `ready`. After an unknown outcome the controller asks the runtime again
+  under the same key, which is idempotent: made is adopted, nothing made is
+  retried after `RETRY_DELAY_MS`, unreadable waits. `MAX_ATTEMPTS` refusals
+  stall the Task with `WorkspaceReady=False/MaterializeFailed`. A URL the
+  runtime does not handle spends no attempt and waits with
+  `WorkspaceUnsupported`. After the release, and also when nothing was
+  spawned, `CleanWorkspace`, the runtime's `stop` with `release`, runs under
+  `cleanWorkspace/<n>`. The finalizer goes only after a `Deleted` receipt.
+  A failed or unknown release is repeated after each wait, and three raise
+  `NeedsAttention/CleanFailed`. A Task deleted while its `workspace` call is
+  unanswered releases the key without making anything. `task_workspace` and
+  `e2e_workspace` cover each case.
 - **Spawn once.** The session key is `<name>.<uid>`. After an unknown spawn
   outcome the controller looks the key up: found is adopted, absent is retried,
   unreadable waits.
@@ -236,14 +238,17 @@ Guarantees, each with its test:
   runs. Unreadable delivery probes and failed releases raise `NeedsAttention`
   after three attempts but continue after each wait: recovery can confirm
   delivery or remove the finalizer.
-- **Unmapped repository.** A spawn answered `Known(Unmapped { url })` spends
-  no attempt. The Task returns to Pending with `Spawned=False` and
-  `NeedsAttention`, both with reason `RepositoryUnmapped`. The spawn is tried
-  again after `RETRY_DELAY_MS`, without limit, under the same effect key.
-  A later spawn that does not answer `Unmapped` clears that `NeedsAttention`.
+- **Unsupported URL.** A `workspace` call answered `Known(Unsupported { url
+  })` spends no attempt. The Task stays Pending with `WorkspaceReady=False`
+  and `NeedsAttention`, both with reason `WorkspaceUnsupported`. The call is
+  tried again after `RETRY_DELAY_MS`, without limit, under the same effect
+  key. A later answer that is not `Unsupported` clears that
+  `NeedsAttention`.
 - **Unmapped trust.** A spawn answered `Known(TrustUnmapped { harness })`
-  follows the same rules with reason `TrustUnmapped`. A later spawn that
-  does not answer `TrustUnmapped` clears that `NeedsAttention`.
+  spends no attempt. The Task returns to Pending with `Spawned=False` and
+  `NeedsAttention`, both with reason `TrustUnmapped`, and the spawn is tried
+  again after `RETRY_DELAY_MS`, without limit, under the same key. A later
+  spawn that does not answer `TrustUnmapped` clears that `NeedsAttention`.
 - **Result.** `fleet result` writes `status.result` as field manager
   `worker`, only once the brief has a receipt, only for
   `status.brief.generation`, never while an amendment waits to be delivered
@@ -600,13 +605,14 @@ the effect blindly. Guarantees, each with its test in
   to it (`n` 0) and starts nothing; one whose Task is readably gone, or
   whose starter was removed, may; one whose Task is Unknown, or whose
   starter is Fleet's without a readable marker, ignores mentions.
-- **Workspace.** On a route whose workspace is a `dir`, that directory is a
-  base: every Task of one thread gets `<base>/<conversation name>`
-  (`conversation::thread_dir`, computed purely), and the create's
-  `exclusive` names that directory. A `repositories` workspace is the
-  route's, with no precondition. The manager lists the store's Tasks under
-  the lease immediately before the fenced create and answers `WorkspaceBusy`
-  naming the Task whose `spec.workspace.dir` normalises to the thread's,
+- **Workspace.** On a route whose workspace is `{base}`, that directory is
+  a base: every Task of one thread gets `["file://<base>/<conversation
+  name>"]` (`conversation::thread_dir`, computed purely), and the create's
+  `exclusive` names that directory. A URL list is the route's, given to
+  each Task as it is, with no precondition. The manager lists the store's
+  Tasks under the lease immediately before the fenced create and answers
+  `WorkspaceBusy` naming the Task whose first URL is `file://` and names a
+  directory that normalises to the thread's,
   creating nothing. Otherwise it makes the directory, with its missing
   parents, through the runtime's `create_dir` on the Task's host (its
   `host`, else its TaskConfig's, else `local`; an absent TaskConfig is a
@@ -881,35 +887,32 @@ outlast it.
   the harness profile's launch and resume argv, and plays each agent's
   prompt hook by appending to its signal file, unless silenced.
 
-Fleet makes every `repositories` workspace (see
-[Workspace contract](#workspace-contract)): the spawn's `ready` names the
-directory, and the runtime runs the session there and makes nothing. A `dir`
-workspace is passed in `spec.workspace` as it is. Every adapter keeps these
-rules:
+The runtime makes every workspace (see
+[Workspace contract](#workspace-contract)) before the first start: the
+spawn's `ready` names its directories, and the runtime runs the session in
+the first and makes nothing at the start. Every adapter keeps these rules:
 
-- **Materialization.** The adapter decides how a workspace becomes files:
-  a worktree, a clone, a copy or a restored snapshot. Branches, bases,
-  source checkouts and credentials are the adapter's. Fleet sends none.
-- **Whole or nothing.** If a spawn stops partway, the adapter rolls back or
-  completes its own partial state. Fleet acts on `find` alone.
-- **Cleanup.** `release` deletes the session. The runtime then cleans the
-  workspace as it is configured to. Fleet never inspects or deletes a
-  workspace, with one exception: a Gateway thread's directory that the
-  manager made, which it removes when the thread retires (see
-  [the Conversation mirror](#the-conversation-mirror)). Fleet
-  never removes a directory it did not make, a route's base directory or
-  a `repositories` workspace.
-- **Refusal.** A workspace the adapter cannot make, or may not make, is
-  `Known(Failed)` at spawn, never Unknown. A repository the adapter has no
-  source for is `Known(Unmapped { url })`. A runtime can answer
-  `Known(TrustUnmapped { harness })` for a harness it knows no
-  workspace-trust interface for. An adapter answers both before any
-  external call. No shipped runtime answers `TrustUnmapped`.
+- **Making.** The runtime decides how a URL becomes a directory: a
+  worktree, a clone, a copy or a restored snapshot. Branches, bases, source
+  checkouts and credentials are the runtime's. Fleet sends none.
+- **Whole or nothing.** If a `workspace` call stops partway, the runtime
+  rolls its partial state back on the next call under the key.
+- **Cleanup.** `release` deletes the session, and `CleanWorkspace` releases
+  its workspace through `stop` with `release`. Fleet never inspects or
+  deletes a workspace itself, with one exception: a Gateway thread's
+  directory that the manager made, which it removes when the thread retires
+  (see [the Conversation mirror](#the-conversation-mirror)). Fleet never
+  removes a directory it did not make or a route's base directory.
+- **Refusal.** A workspace the runtime cannot make is `Known(Failed)`,
+  never Unknown. A URL it does not handle is `Known(Unsupported { url })`.
+  A runtime can answer `Known(TrustUnmapped { harness })` at spawn for a
+  harness it knows no workspace-trust interface for. No shipped runtime
+  answers `TrustUnmapped`.
 
-The exec adapter starts a `{dir}` session in that directory. It starts a
-`{repositories}` session in the `dir` of the workspace Fleet made, and the
-harness profile adds one `--add-dir` per `extraDirs` entry. A
-`{repositories}` spawn that reaches the adapter unmade fails.
+The exec adapter starts a session in the first of the workspace's `dirs`,
+and the harness profile adds one `--add-dir` per other directory. A session
+with an empty list starts in the runtime's default directory. A spawn of a
+non-empty list whose workspace is not made fails.
 
 ### Workspace trust
 
@@ -920,11 +923,10 @@ tool, and Fleet changes no permission mode or sandbox to obtain it.
 
 The trust root is the directory the agent keys the session's trust on:
 
-- For `{dir}`, the trust root is the directory.
-- For `{repositories}`, the trust root is the primary repository's source
-  checkout. Codex and Claude Code key a worktree's trust on its main
-  checkout. With one repository, that worktree is the session's cwd.
-- Additional repositories get no trust. Neither agent loads their project
+- The trust root is the first directory of the workspace the runtime made:
+  the directory a `file://` URL names, or the worktree of a `git+` URL.
+- A session with an empty list has no trust root.
+- The other directories get no trust. Neither agent loads their project
   settings.
 
 The [harness profile](controllers/task.md#harness-profiles) gives each
@@ -994,63 +996,40 @@ prompt proof, and `e2e_harness` the profiles' argv and resume.
 
 A Workspace is the set of files one Session works in (`fleet_api::workspace`).
 A Task owns at most one. TaskController records it in `status.workspace`
-as `WorkspaceRef`: Fleet's `key`, the `host` the adapter reported, the
-primary `dir`, the `extraDirs` the session also spans and an optional
-`trustRoot`. The workspace key is the session key.
+as `WorkspaceRef`: Fleet's `key`, the `host` whose runtime made it, and the
+`dirs` the runtime answered, one per URL in the Task's order. The workspace
+key is the session key.
 
-`fleet_api::workspace::Workspaces`: `materialize`, `find` and `clean`, each
-answering Known or Unknown, and `operation_bound`. The `[workspaces]`
-section of the config selects the adapter. Without it, Fleet still makes
-every workspace: with the `worktree` adapter under `<data dir>/workspaces`,
-or on the fake host when the runtime is the fake. Every adapter keeps these
-rules:
+The runtime port carries the workspace calls:
+`workspace(host, key, urls)`, `find_workspace(host, key, urls)` and
+`release_workspace(workspace)`, each answering Known or Unknown. The exec
+runtime maps them onto the protocol (docs/runtime/README.md, "Workspaces"):
 
-- **Whole or nothing.** A materialize leaves a whole workspace or nothing.
-  `find` reports a partial workspace as none, and the next `materialize`
-  rolls it back first.
-- **Once per key.** A `materialize` for a key that holds a whole workspace
-  answers `Materialized { adopted: true }` and makes nothing.
-- **Refusal.** A repository the adapter has no source for is
-  `Known(Unmapped { url })`, answered before any command runs. A workspace
-  the adapter cannot make is `Known(Failed)` and leaves nothing.
-- **Observed host.** The adapter reports the host it made the workspace on.
-  Fleet sends no credential: the host and the adapter hold them.
-- **Bounded commands.** Each step is a bounded command on the host, through
-  `fleet-exec`.
-- **Cleanup.** `clean` removes the workspace. A workspace already gone is
-  `Deleted`. Repeating it is harmless.
-- **Work is kept.** `clean` never removes what it did not make, and never
-  loses work: what exists nowhere else is preserved first, or the clean
-  fails and removes nothing.
+- **Schemes first.** Before any call, Fleet reads the runtime's manifest.
+  A runtime that lists no `workspace` verb, or not a URL's scheme in
+  `workspace.schemes`, answers `Known(Unsupported { url })` for it.
+- **`workspace`.** `Made { dirs, adopted }` is `Materialized`;
+  `Unsupported { url }` and `Failed { why }` are answered as they are. The
+  call is bounded by the runtime's `workspaceTimeoutMs`.
+- **Once per key.** The verb is idempotent by key, so `find_workspace` is the
+  same call again: a lost answer adopts the whole workspace and starts no
+  new attempt.
+- **Release.** `release_workspace` is `stop { key, release: true }`. A
+  workspace already gone is `Deleted`. Repeating it is harmless.
+- **Observed host.** The host whose runtime answered is the workspace's.
+  Fleet sends no credential: the host and its runtime hold them.
 
-The `worktree` adapter serves the local host and refuses any other:
+The runtime keeps the rest: whole or nothing, work kept on release, never
+removing what it did not make. `fleet runtime check` tests a runtime that
+declares the verb, and `workspace-git` is the shipped maker for git URLs.
 
-- Workspace `key` is the directory `<root>/<key>`. Each repository is a
-  worktree at `<root>/<key>/<name>` on the branch `<branchPrefix>/<key>`
-  of its source checkout, from its `ref` or the source's `HEAD`.
-- `workspaces.repositories` maps each URL to its source checkout.
-- A `file://` URL names an absolute directory used as it is: no worktree,
-  no source mapping, never removed.
-- `dir` is the first repository's directory. A worktree's trust root is its
-  source checkout.
-- Each other repository's directory is in `extraDirs`, in the Task's order.
-  The harness profile spans them as they are, with `--add-dir`.
-- The marker `<root>/<key>/.fleet-workspace.json` is written last. A
-  directory without it is partial.
-- A branch left by an earlier attempt is checked out again, so no commit
-  is lost. `clean` keeps the branches, and first commits what a worktree
-  holds that its branch does not, untracked files included, onto
-  `refs/fleet/preserved/<key>/<name>` in the source (`git add -A`, then
-  `git stash create`). Files the repository ignores are not work: it
-  declares them disposable (build output, caches), and they go with the
-  worktree. A preservation that fails fails the clean. A marker written
-  before worktrees carried their name takes `<name>` from the worktree's
-  directory.
-- Every `git` command runs blind to `GIT_DIR` and the other variables that
-  would point it at another repository than its source.
-- A workspace names at most 4 repositories, so one call has a bound.
+The fake runtime makes workspaces as records on the fake host: a `file://`
+URL is its directory, and any other URL a directory named after its last
+segment under `<fake dir>/workspaces/<key>`.
 
-`worktree_adapter` covers the adapter against real repositories.
+`e2e_runtime_exec` covers a `git+file` Task on `runtime-mux`, run in its
+worktree and released with its uncommitted work preserved, and a scheme the
+runtime does not list.
 
 ## Forge contract
 
@@ -1181,11 +1160,6 @@ store's create is
 exclusive, so two clients applying one name at once get one object and one
 refusal. A view creates its Tasks this way.
 
-`fleet repositories --json` prints `{"repositories": {URL: source}}`: the
-repository map, each URL a Task's `repositories` workspace may name and its
-checkout on this machine. A view that makes a worktree per session looks the
-chosen checkout up there before it applies a Task.
-
 `fleet runtime hosts --json` prints `{"hosts": [...]}`: the names under
 `[hosts]`, the hosts a Task may name, or `null` when the fake `[runtime]`
 serves any host. `fleet version --json` lists the `harnesses` with a profile of
@@ -1251,7 +1225,7 @@ A Task manifest:
       "harness": "claude-code",
       "host": "local",
       "brief": "Write the controller design.",
-      "workspace": {"dir": "work/design-305"},
+      "workspace": [],
       "dispatch": true,
       "outputs": {"prUrl": {"type": "string", "required": true}}
     }
@@ -1276,13 +1250,10 @@ must fit inside the lease as well as runtime operations. Ctrl-C/SIGTERM stops
 after bounded work and releases the lease; Tasks and sessions survive. Crash
 recovery waits for lease expiry. Uncertain runtime observations remain Unknown.
 
-`fleet up` reads its config file again before each sweep and applies
-the repository map only.
-[Reloading](configuration.md#reloading-the-repository-map)
-states the rules.
+`fleet up` reads its config file once, when it starts.
 `e2e_bootstrap` covers installed first-run, repeat/concurrent initialization,
-customized updates, resident progress, exclusive startup, crash/reconnect and
-the repository map's reload.
+customized updates, resident progress, exclusive startup and
+crash/reconnect.
 
 ## Tests
 
@@ -1317,9 +1288,10 @@ already there.
 `e2e_watch` covers `fleet watch`: the first read, a resume with `--since`,
 a deletion while the watch runs, and `synced` again after an unreadable
 store.
-`e2e_workspace` covers the workspace port against the fake adapter: one
-materialize, the ready spawn, the clean after the release, a crash between
-the materialize and its receipt, a lost request and an unreadable key.
+`e2e_workspace` covers the workspace calls against the fake runtime: one
+`workspace` call, the ready spawn, the release after the session, a crash
+between the call and its receipt, a lost request, an unreadable key, a URL
+the runtime does not handle, and the refused shapes before the URL list.
 `task_controller`, `task_workspace`, `change_request_controller`, `forge_controller`,
 `conversation_controller`, `listener_controller` and `gateway_controller`
 test each controller as a pure function, one transition or Unknown per

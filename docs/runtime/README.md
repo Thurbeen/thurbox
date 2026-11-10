@@ -47,8 +47,11 @@ each host in `[hosts.<name>]`, the runtime serving it, so a Task's
 
 Built: `runtime-mux` and the reference script answer it, Fleet's `exec`
 runtime kind speaks it, and `fleet runtime check` holds both to it in CI.
-`workspace` is built in `runtime-mux`, which declares it, and
-`fleet runtime check` tests it; Fleet makes no call to it yet.
+`workspace` is built: `runtime-mux` declares it, `fleet runtime check` tests
+it, and Fleet calls it before a Task's first start, bounded by the
+runtime's `workspaceTimeoutMs`. Fleet reads the manifest's
+`workspace.schemes` first and refuses a URL whose scheme is not listed,
+without a call.
 `attach` is built: Fleet asks it in `fleet attach`, once the
 runtime's `manifest` declares it, and `runtime-mux` and the reference script
 answer it.

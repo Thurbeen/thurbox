@@ -502,6 +502,34 @@ fn open_log(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::File, PathBu
 
 /// One Task as a session row.
 ///
+/// The directory a `file` or `git+file` URL names, without a query or a
+/// fragment, `%XX` decoded; `None` for any other URL.
+fn local_dir(url: &str) -> Option<String> {
+    let path = url
+        .strip_prefix("file://")
+        .or_else(|| url.strip_prefix("git+file://"))?;
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut bytes = Vec::with_capacity(path.len());
+    let mut rest = path.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        let hex = tail
+            .get(..2)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b, hex) {
+            (b'%', Some(decoded)) => {
+                bytes.push(decoded);
+                rest = &tail[2..];
+            }
+            _ => {
+                bytes.push(b);
+                rest = tail;
+            }
+        }
+    }
+    String::from_utf8(bytes).ok().filter(|p| !p.is_empty())
+}
+
 /// The Task's name is the row's id: every command addresses a Task by name.
 /// The row's name is the one the session was given ([`NAME_LABEL`]), or the
 /// Task's for a Task made elsewhere. What a row says of git, panes and hook
@@ -512,8 +540,10 @@ pub fn row_of(task: &Value) -> SessionRow {
     let (spec, status) = (&task["spec"], &task["status"]);
     let id = text(&task["metadata"]["name"]).unwrap_or_default();
     let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| id.clone());
-    let cwd = text(&status["workspace"]["dir"])
-        .or_else(|| text(&spec["workspace"]["dir"]))
+    // Where the session runs once the runtime made its workspace; before,
+    // the directory its first URL names on this machine.
+    let cwd = text(&status["workspace"]["dirs"][0])
+        .or_else(|| spec["workspace"][0].as_str().and_then(local_dir))
         .map(PathBuf::from);
     let session_state = status["sessionState"].as_str();
     let repo = repo_name(&cwd, None);

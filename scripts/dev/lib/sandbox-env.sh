@@ -143,12 +143,13 @@ tbx_sandbox_init_full() {
 #
 # Call it after an init flavor.
 tbx_sandbox_fleet() {
+    tbx_sandbox_runtime
     fleet_dir="$TBX_SANDBOX_ROOT/fleet"
     FLEET_CONFIG="$fleet_dir/config.toml"
     export FLEET_CONFIG
     [ -f "$FLEET_CONFIG" ] && return 0
     mkdir -p "$fleet_dir/starter"
-    printf '[{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"vega"},"spec":{"harness":"sh","host":"local","workspace":{"dir":"%s"},"dispatch":false}}]\n' \
+    printf '[{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"vega"},"spec":{"harness":"sh","host":"local","workspace":["file://%s"],"dispatch":false}}]\n' \
         "$TBX_SANDBOX_ROOT" > "$fleet_dir/starter/task.json"
     cat > "$FLEET_CONFIG" <<'EOF'
 version = 1
@@ -167,11 +168,17 @@ runtime = "mux"
 [starter]
 workspace = "starter"
 EOF
-    # The demo repositories (`demo-repo.sh`), so a session the interface
-    # creates on one gets a worktree of its own: Fleet makes worktrees of
-    # mapped repositories only.
-    printf '\n[workspaces.repositories]\n"https://sandbox.invalid/demo" = "%s"\n"https://sandbox.invalid/big" = "%s"\n' \
-        "$TBX_SANDBOX_ROOT/repos/demo" "$TBX_SANDBOX_ROOT/repos/big" >> "$FLEET_CONFIG"
+}
+
+# tbx_sandbox_runtime — keep runtime-mux's workspaces (the worktrees it makes
+# from a session's `git+file` URL) inside the sandbox, not under the real
+# `~/.local/share/runtime-mux`.
+tbx_sandbox_runtime() {
+    RUNTIME_MUX_CONFIG="$TBX_SANDBOX_ROOT/fleet/runtime-mux.toml"
+    export RUNTIME_MUX_CONFIG
+    [ -f "$RUNTIME_MUX_CONFIG" ] && return 0
+    mkdir -p "$TBX_SANDBOX_ROOT/fleet"
+    printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" > "$RUNTIME_MUX_CONFIG"
 }
 
 # tbx_fleet_task_name <name> — the Task name thurbox gives a session called
@@ -191,7 +198,7 @@ tbx_fleet_task_name() {
 tbx_fleet_session() {
     task="$(tbx_fleet_task_name "$1")"
     fleet get task "$task" >/dev/null 2>&1 && return 0
-    printf '{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},"spec":{"harness":"%s","host":"local","workspace":{"dir":"%s"},"dispatch":true}}\n' \
+    printf '{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},"spec":{"harness":"%s","host":"local","workspace":["file://%s"],"dispatch":true}}\n' \
         "$task" "$1" "${3:-claude-code}" "$2" | fleet apply --create-only -f - >/dev/null
 }
 

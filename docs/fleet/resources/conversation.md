@@ -96,7 +96,7 @@ changes nothing else.
 | `refusals` | Every author id refused, at most 200; past that no further refusal is sent. The refusal post's intent and receipt live under `effects`. |
 | `effects` | Intents and receipts of this controller's effects, the Task creation, the refusals and busy notices, the reactions, and the retirement's steps, each with its `attempts` and its `recovery` reads: every unsettled, newest 100 settled. |
 | `observedAt` | When `history` last answered Known. |
-| `dir` | `{path, host}`: the thread's directory, recorded when the manager made it for the thread's Task, in the same write as the create's receipt. Absent when the directory was there before, or on a route without a `dir` workspace. Only a recorded directory is ever removed. |
+| `dir` | `{path, host}`: the thread's directory, recorded when the manager made it for the thread's Task, in the same write as the create's receipt. Absent when the directory was there before, or on a route without a `{base}` workspace. Only a recorded directory is ever removed. |
 | `retiring` | `{at, revision}`: the thread's retirement, from when it started and the `revision` it started from. Its effects are keyed `conversation/<uid>/retire/<at>/task` and `…/dir`. A message numbered since, which moves `revision`, ends it. |
 | `reactions` | `{marks}`: per message id, `queued` while an admitted request waits for its Task, or `working` once admission created the Task for it, as the [state machine](../controllers/gateway.md#reactions) defines. Only messages the mirror holds. A `working` mark lasts while the tie lasts; GatewayController takes it at the join. The reactions are keyed `conversation/<uid>/react/<message id>/<queued\|working>/<on\|off>` under `effects`. Absent while no message is marked. |
 | `lastMessageAt` | The newest message's time; retention counts from it. |
@@ -129,8 +129,9 @@ naming it, which only that create sets; deleting that Task leaves the
 Conversation Orphaned, kept for the next message. A person may delete a
 Conversation at any time; nothing on the platform changes.
 
-On a route with a `dir` workspace, the Conversation's name also names its
-thread's directory: every Task the thread starts gets `<dir>/<name>`, which
+On a route with a `{base}` workspace, the Conversation's name also names
+its thread's directory: every Task the thread starts gets
+`["file://<base>/<name>"]`, a directory which
 the manager creates with the Task. When the manager created it, the
 Conversation records it in `status.dir`.
 

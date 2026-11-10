@@ -174,7 +174,7 @@ port; the runtime runs the session in it.
 This split is the first step toward the
 [target architecture](architecture-target.svg), where Thurbox
 is one view among others and Fleet runs Sessions behind the runtime port.
-Fleet owns workspace materialization, the agent's lifecycle hooks
+Fleet owns when workspaces are made and released, the agent's lifecycle hooks
 (`fleet signal`), proven delivery and the harness profiles. Every real
 runtime is the `exec` runtime kind:
 `[runtimes.<name>]` names a program that speaks the
@@ -184,59 +184,59 @@ configures `runtime-mux` alone. The port's calls map onto the protocol's
 verbs: `spawn` is `start` with the harness profile's launch argv and the
 session's `FLEET_SIGNAL_FILE`, `revive` is `start` with its resume argv,
 `find`, `lost` and `at_rest` read `inspect`, `release` is `stop`, a brief
-is `input`, and `create_dir` and `remove_dir` are `exec`. What only the
+is `input`, `create_dir` and `remove_dir` are `exec`, and the workspace
+calls are `workspace` and `stop` with `release`. What only the
 agent can prove (readiness, workspace trust, delivery, an idle agent)
 comes from the agent's signals. `fleet attach` asks the runtime's
 `attach` for the command that opens the session's terminal stream.
 
-## Workspaces and the workspace port
+## Workspaces
 
 A Workspace is the set of files one Session works in. Fleet defines it in
 [fleet-api's workspace module](../../crates/fleet-api/src/workspace.rs). A
 Workspace is not a stored kind.
 
 ```text
-Task ──owns──▶ Workspace {key, host, dir} ◀──runs in── Session
-  spec.workspace     status.workspace                status.session
+Task ──owns──▶ Workspace {key, host, dirs} ◀──runs in── Session
+  spec.workspace      status.workspace               status.session
 ```
 
-- A Task names what its Session works in, in `spec.workspace`.
+- A Task names what its Session works in, in `spec.workspace`: a list of
+  absolute URLs.
 - A Task owns at most one Workspace, and its one Session runs in it.
 - The Workspace key is the Session key, `<name>.<uid>`.
 - TaskController is the only writer of `status.workspace`.
 
-Fleet makes every `repositories` workspace through the workspace port. The
-`[workspaces]` section of `fleet.toml` only picks the adapter; without it,
-the `worktree` adapter makes it under `<data dir>/workspaces`.
-
-A `dir` workspace exists before the Task. Nothing makes or cleans it.
-
-When Fleet makes the Workspace, its lifecycle follows the Task:
+The host's runtime makes every Workspace, through its `workspace` verb.
+Fleet keeps no workspace adapter and no repository map: the URL is the
+whole request. The lifecycle follows the Task:
 
 1. TaskController plans `Materialize` under the workspace key, before the
-   spawn.
-2. The spawn gets the ready `{host, dir}`, and the other directories the
-   Session spans. The runtime runs the Session there and makes nothing.
-3. After the release, TaskController plans `CleanWorkspace`. The release
-   finalizer goes only after the clean has a receipt.
+   first start. The manager performs it as the runtime's `workspace` call.
+2. The spawn gets the ready `{host, dirs}`. The Session starts in the first
+   directory and spans the others. The runtime makes nothing at the start.
+3. After the release, TaskController plans `CleanWorkspace`, the runtime's
+   `stop` with `release`. The release finalizer goes only after it has a
+   receipt.
 
-The workspace port keeps the rules of the runtime port:
+An empty list makes no Workspace: the Session starts in the runtime's
+default directory.
+
+The workspace calls keep the rules of the runtime port:
 
 - Every call answers Known or Unknown. Unknown never concludes.
-- A lost materialize is settled by `find` under the key, never by a second
-  blind materialize.
-- A materialize is whole or nothing. A partial Workspace is not found, and
-  the next materialize rolls it back.
+- The `workspace` verb is idempotent by key. A lost answer is settled by
+  the same call under the same key, which adopts a whole Workspace and
+  never starts a new attempt.
+- A `workspace` call is whole or nothing. The runtime rolls a partial
+  Workspace back on the next call.
+- A runtime handles the URL schemes its manifest lists. Fleet refuses any
+  other URL before anything is made, and the Task waits with
+  `WorkspaceUnsupported`.
 
-The host of a Workspace is observed. `status.workspace.host` is the host
-the adapter reports. Credentials stay with the host and the adapter, and
-Fleet sends none. Each adapter runs bounded commands on its host, so one
-adapter shape can serve a local, SSH, container or VM host.
-
-`fleet-runtime` has two adapters:
-
-- `worktree`: git worktrees on the local host, through `fleet-exec`.
-- `fake`: records on the fake host, for tests and trials.
+The host of a Workspace is observed: `status.workspace.host` is the host
+whose runtime made it. Credentials stay with the host and its runtime, and
+Fleet sends none.
 
 ## Forge integration
 
@@ -412,12 +412,19 @@ stop, a pause, a resume or a revive leaves the workspace alone.
 
 The answers map to conditions and nothing more:
 
-- `Unsupported{url}`: the runtime does not handle that scheme. The Task waits
-  with `WorkspaceUnsupported`; a new URL list or another host lets it go on.
+- `Unsupported{url}`: the runtime does not handle that URL. Fleet answers
+  this itself, before any call, for a scheme the manifest does not list.
+  The Task waits with `WorkspaceUnsupported`, spends no attempt, and asks
+  again after each wait.
 - `Failed{why}`: the runtime made nothing. The Task waits with
-  `WorkspaceFailed` and retries on its backoff.
+  `MaterializeRetry` and asks again after the wait, at most three times;
+  then it stalls with `MaterializeFailed`.
 - Unknown: Fleet asks again with the same key, which adopts a workspace that
   was made.
+
+A `workspace` call has its own bound, `workspaceTimeoutMs` (600000 when
+absent), because a first clone can take minutes. Every other call keeps
+`callTimeoutMs`.
 
 #### The collector
 
