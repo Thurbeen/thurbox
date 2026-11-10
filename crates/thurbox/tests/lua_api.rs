@@ -240,7 +240,7 @@ fn full() -> Snapshot {
         agents: Some(vec![thurbox::kernel::snapshot::AgentRow {
             name: "claude".into(),
         }]),
-        hosts: vec![HostRow {
+        hosts: Some(vec![HostRow {
             name: "box".into(),
             detail: "ssh".into(),
             backend: "ssh:box".into(),
@@ -248,7 +248,7 @@ fn full() -> Snapshot {
             multiplexer: Some("tmux".into()),
             available_multiplexers: vec!["tmux".into()],
             probing: false,
-        }],
+        }]),
         taken_at_ms: 1_700_000_000_000,
         error: Some("a failed refresh".into()),
     }

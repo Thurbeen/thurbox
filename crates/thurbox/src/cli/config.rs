@@ -247,10 +247,6 @@ fn render_show(report: &Value) -> String {
 }
 
 fn show(settings: &crate::session::settings::Settings) -> Value {
-    // The *effective* host set: configured SSH/WSL hosts plus auto-discovered
-    // WSL distros — matching what `--host` and the TUI picker actually offer
-    // (`config validate` stays file-only).
-    let hosts = crate::config::hosts::load_all();
     let (custom_themes, _) = crate::config::themes::load_or_seed_with_warnings();
     let state = crate::config::interface_state::load();
     let (editor, editor_source) = resolve_editor(state.editor_command);
@@ -280,7 +276,6 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
         // relocated data dir gets a socket of its own, so the name is resolved
         // rather than constant and worth reporting where the dirs are.
         "tmux_socket": crate::backend::instance::local_socket_name(),
-        "hosts": { "names": hosts.names() },
         "settings": settings,
         // Fleet runs every session (ADR-41): which one, and what it reads.
         "fleet": super::doctor::FleetFacts::read(&settings.fleet.program).document(),

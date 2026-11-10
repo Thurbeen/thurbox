@@ -664,7 +664,8 @@ fn host_kind_uses_transport_and_platform_independently() {
         available_multiplexers: vec![],
         probing: false,
     })
-    .collect();
+    .collect::<Vec<_>>()
+    .into();
     let mut registry = registry_for(&host);
     for folded in ["", "build-box;win-desk;dev-distro"] {
         registry

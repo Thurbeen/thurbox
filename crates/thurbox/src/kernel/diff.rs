@@ -247,20 +247,12 @@ impl DiffStore {
             }
         }
 
-        // The worktree is a path on the session's OWN machine. Running the local
-        // `git` against a remote path either fails or, on an unlucky collision,
-        // diffs something else entirely — the same reasoning that made `sync`
-        // host-aware. Resolved here rather than on the worker so an unreachable
-        // backend is reported as a failed diff instead of a silent local read.
-        let host = crate::session::Route::is_remote_key(backend)
-            .then(|| {
-                crate::config::hosts::cached_registry()
-                    .0
-                    .resolve(backend)
-                    .cloned()
-            })
-            .flatten();
-        let unreachable = host.is_none() && crate::session::Route::is_remote_key(backend);
+        // The worktree is a path on the session's own machine, and thurbox
+        // reads diffs on this one only: running the local `git` against a
+        // remote path either fails or diffs something else entirely, so a
+        // remote route is a failed diff rather than a silent local read.
+        let host: Option<crate::session::HostDef> = None;
+        let unreachable = crate::session::Route::is_remote_key(backend);
         let fingerprinted = over_ssh(backend);
 
         let tx = self.tx.clone();
@@ -274,7 +266,8 @@ impl DiffStore {
                 .flatten();
             let diff = if unreachable {
                 Some(Diff::Failed(
-                    "this session's host is not in hosts.toml".to_string(),
+                    "this session runs on another machine; thurbox reads diffs on this one only"
+                        .to_string(),
                 ))
             } else if fingerprint.is_some() && fingerprint == previous {
                 None
@@ -1023,7 +1016,7 @@ mod tests {
         while std::time::Instant::now() < deadline {
             store.poll();
             if let Some(Diff::Failed(message)) = store.get("s1") {
-                assert!(message.contains("hosts.toml"), "{message}");
+                assert!(message.contains("another machine"), "{message}");
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));

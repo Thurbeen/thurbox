@@ -39,8 +39,19 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
         .unwrap_or_else(|| panic!("no {name} plugin"))
 }
 
+/// Fleet's `local` host as the snapshot publishes it: this machine, with an
+/// empty backend.
+fn local_host() -> HostRow {
+    HostRow {
+        name: "local".into(),
+        detail: "this machine".into(),
+        ..HostRow::default()
+    }
+}
+
 fn snapshot() -> Snapshot {
     Snapshot {
+        hosts: Some(vec![local_host()]),
         agents: Some(vec![
             AgentRow {
                 name: "claude".into(),
@@ -418,19 +429,54 @@ fn opening_with_no_hosts_starts_at_the_repositories() {
     assert!(screen.contains("Select Repo"), "{screen}");
 }
 
+/// Opened before Fleet has said which hosts it defines, the flow waits on the
+/// host step instead of skipping it, and offers the hosts once they arrive.
+#[test]
+fn opening_before_fleet_names_its_hosts_waits_for_them() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = None;
+    open(&host, &world);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Asking Fleet for its hosts"), "{screen}");
+    world.snapshot.hosts = Some(vec![local_host(), devbox("posix", &["tmux"])]);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("devbox"), "{screen}");
+}
+
+/// A Fleet that defines no `local` host offers none.
+#[test]
+fn local_is_offered_only_when_fleet_defines_it() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.hosts = Some(vec![devbox("posix", &["tmux"]), {
+        let mut other = devbox("posix", &["tmux"]);
+        other.name = "build".into();
+        other.backend = "build".into();
+        other
+    }]);
+    open(&host, &world);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("devbox"), "{screen}");
+    assert!(!screen.contains("local"), "{screen}");
+}
+
 #[test]
 fn opening_with_hosts_asks_where_to_run_first() {
     let host = host();
     let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "devbox".into(),
-        detail: "me@devbox".into(),
-        backend: "ssh:devbox".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into()],
-        probing: false,
-    }];
+    world.snapshot.hosts = Some(vec![
+        local_host(),
+        HostRow {
+            name: "devbox".into(),
+            detail: "me@devbox".into(),
+            backend: "ssh:devbox".into(),
+            platform: "posix".into(),
+            multiplexer: None,
+            available_multiplexers: vec!["tmux".into()],
+            probing: false,
+        },
+    ]);
     open(&host, &world);
     let screen = drawn(&host, &world);
     assert!(screen.contains("Run On"), "{screen}");
@@ -1774,7 +1820,7 @@ fn a_session_on_a_host_names_the_fleet_host() {
     let flow = || {
         let host = host();
         let mut world = World::default();
-        world.snapshot.hosts = vec![devbox("posix", &["tmux"])];
+        world.snapshot.hosts = Some(vec![local_host(), devbox("posix", &["tmux"])]);
         press(&host, &world, "ctrl+n");
         press(&host, &world, "down");
         press(&host, &world, "enter");
@@ -1946,15 +1992,18 @@ fn a_name_is_still_refused_when_there_is_nothing_to_name_it_after() {
 fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
     let host = host();
     let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "devbox".into(),
-        detail: "me@devbox".into(),
-        backend: "ssh:devbox".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into()],
-        probing: false,
-    }];
+    world.snapshot.hosts = Some(vec![
+        local_host(),
+        HostRow {
+            name: "devbox".into(),
+            detail: "me@devbox".into(),
+            backend: "ssh:devbox".into(),
+            platform: "posix".into(),
+            multiplexer: None,
+            available_multiplexers: vec!["tmux".into()],
+            probing: false,
+        },
+    ]);
     // The memory that matters here is the HOST's, not the local machine's.
     world
         .repos
@@ -2116,15 +2165,18 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
     // a pane that silently never gets its rows.
     let host = host();
     let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "devbox".into(),
-        detail: "me@devbox".into(),
-        backend: "ssh:devbox".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into()],
-        probing: false,
-    }];
+    world.snapshot.hosts = Some(vec![
+        local_host(),
+        HostRow {
+            name: "devbox".into(),
+            detail: "me@devbox".into(),
+            backend: "ssh:devbox".into(),
+            platform: "posix".into(),
+            multiplexer: None,
+            available_multiplexers: vec!["tmux".into()],
+            probing: false,
+        },
+    ]);
     world
         .repos
         .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
@@ -2189,7 +2241,8 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
     // broken.
     let host = host();
     let mut world = World::default();
-    world.snapshot.hosts = vec![
+    world.snapshot.hosts = Some(vec![
+        local_host(),
         HostRow {
             name: "devbox".into(),
             detail: "me@devbox".into(),
@@ -2208,7 +2261,7 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
             available_multiplexers: vec!["tmux".into()],
             probing: false,
         },
-    ];
+    ]);
     open(&host, &world);
 
     // The cursor starts on the local machine; one step down reaches the first
@@ -2464,15 +2517,18 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
     // host is that state permanently, until a path is added.
     let h = host();
     let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "devbox".into(),
-        detail: "me@devbox".into(),
-        backend: "ssh:devbox".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into()],
-        probing: false,
-    }];
+    world.snapshot.hosts = Some(vec![
+        local_host(),
+        HostRow {
+            name: "devbox".into(),
+            detail: "me@devbox".into(),
+            backend: "ssh:devbox".into(),
+            platform: "posix".into(),
+            multiplexer: None,
+            available_multiplexers: vec!["tmux".into()],
+            probing: false,
+        },
+    ]);
     world.repos.set_bookmarks_for_test("ssh:devbox", Vec::new());
     open(&h, &world);
     press(&h, &world, "j"); // local → devbox
@@ -2742,15 +2798,18 @@ fn a_hovered_repository_row_is_banded_and_keeps_its_colours() {
 #[test]
 fn a_hovered_host_row_is_banded() {
     let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "devbox".into(),
-        detail: "me@devbox".into(),
-        backend: "ssh:devbox".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into()],
-        probing: false,
-    }];
+    world.snapshot.hosts = Some(vec![
+        local_host(),
+        HostRow {
+            name: "devbox".into(),
+            detail: "me@devbox".into(),
+            backend: "ssh:devbox".into(),
+            platform: "posix".into(),
+            multiplexer: None,
+            available_multiplexers: vec!["tmux".into()],
+            probing: false,
+        },
+    ]);
     let host = host();
     press(&host, &world, "ctrl+n");
     let hovered = identity_of(&host, &world, "devbox", 0);

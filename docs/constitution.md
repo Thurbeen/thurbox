@@ -190,7 +190,7 @@ shell                (no crate-internal references — runtime-mux's
                       launchers and quoting, re-exported)
 theme                (no crate-internal references — the presets)
 coordinator          → agent::input, backend, clipboard,
-                       config::{hosts, interface_state}, kernel,
+                       config::interface_state, kernel,
                        notifications, paths, session, shell, telemetry,
                        ui_control
 ```

@@ -192,7 +192,9 @@ impl Fleet {
     fn worktree_of(&self, dir: &std::path::Path) -> Result<serde_json::Value, String> {
         // A directory that is no git repository (the installed interface the
         // picker offers to edit) has no worktree to make: it runs as it is.
-        if crate::git::repository_identity_on(None, dir).is_none() {
+        // Decided from the filesystem, not from asking `git`, so a `git` that
+        // cannot run never passes for a directory with no repository.
+        if !dir.ancestors().any(|at| at.join(".git").exists()) {
             return Ok(json!({"dir": dir}));
         }
         let answer = self.json(&["repositories", "--json"])?;

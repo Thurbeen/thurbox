@@ -700,9 +700,14 @@ fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(agents))
 }
 
+/// `nil` until Fleet has said which hosts it defines: a flow must tell a
+/// pending list from one with no remote host.
 fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
+    let Some(known) = &snapshot.hosts else {
+        return Ok(Value::Nil);
+    };
     let hosts = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, host) in snapshot.hosts.iter().enumerate() {
+    for (index, host) in known.iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
         set(&item, "name", host.name.clone())?;
         set(&item, "detail", host.detail.clone())?;

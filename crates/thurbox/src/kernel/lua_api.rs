@@ -840,7 +840,9 @@ pub static API_ROOT: Class = Class {
         field("settings", Ty::Record(&SETTINGS)),
         field("bookmarks", Ty::Record(&BOOKMARKS)),
         field("browse", Ty::Record(&BROWSE)),
-        field("hosts", Ty::List(&HOST)),
+        field("hosts", Ty::List(&HOST)).opt().doc(
+            "Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.",
+        ),
         field("automations", Ty::List(&AUTOMATION)),
         field("commands", Ty::List(&IN_FLIGHT)),
         field("diffs", Ty::Map(&DIFF)),

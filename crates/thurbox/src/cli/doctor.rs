@@ -54,7 +54,6 @@ pub fn run(fleet_program: &str) -> Result<CommandOutput, CommandError> {
     let fleet = FleetFacts::read(fleet_program);
     let mut findings = fleet.findings();
     findings.push(multiplexer_finding());
-    findings.extend(host_findings());
 
     let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
     let human = render(&findings, verdict);
@@ -91,32 +90,6 @@ fn multiplexer_finding() -> Finding {
             detail: crate::backend::preflight::Dependency::LocalMultiplexer.missing_summary(),
         },
     }
-}
-
-/// One row per configured host about the launcher. The multiplexer and agents
-/// on a host are not probed from here.
-fn host_findings() -> Vec<Finding> {
-    let (hosts, _warnings) = crate::config::hosts::cached_registry();
-    let mut findings = Vec::new();
-    for host in &hosts.hosts {
-        let launcher = if host.is_wsl() { "wsl.exe" } else { "ssh" };
-        let present = crate::backend::preflight::look_up(launcher)
-            == crate::backend::preflight::Presence::Present;
-        findings.push(Finding {
-            key: format!("host:{}", host.name),
-            level: if present { Level::Ok } else { Level::Fail },
-            detail: if present {
-                format!(
-                    "{} is reached with {launcher}, which is installed (the multiplexer and \
-                     agents on {} are not probed from here)",
-                    host.name, host.name
-                )
-            } else {
-                crate::backend::preflight::Dependency::Launcher(launcher).missing_summary()
-            },
-        });
-    }
-    findings
 }
 
 fn render(findings: &[Finding], verdict: Level) -> String {
@@ -187,6 +160,9 @@ pub(super) struct FleetFacts {
     pub(super) version: Result<serde_json::Value, String>,
     /// The config file Fleet reads, and what named it.
     pub(super) config: Option<(std::path::PathBuf, &'static str)>,
+    /// `fleet runtime hosts --json`: the hosts a session can run on, or why
+    /// they could not be read.
+    pub(super) hosts: Result<serde_json::Value, String>,
 }
 
 impl FleetFacts {
@@ -203,10 +179,24 @@ impl FleetFacts {
                     ))
                 }
             });
+        let hosts = bounded_output(program, &["runtime", "hosts", "--json"], PROBE_TIMEOUT)
+            .and_then(|out| {
+                if out.status.success() {
+                    serde_json::from_slice(&out.stdout).map_err(|e| {
+                        format!("{program} runtime hosts --json answered no JSON: {e}")
+                    })
+                } else {
+                    Err(format!(
+                        "{program} runtime hosts --json: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ))
+                }
+            });
         Self {
             program: program.to_string(),
             version,
             config: fleet_config_path(),
+            hosts,
         }
     }
 
@@ -288,6 +278,26 @@ impl FleetFacts {
                 key: "fleet-config".into(),
                 level: Level::Warn,
                 detail: "no Fleet config path: set FLEET_CONFIG".into(),
+            },
+        });
+        findings.push(match &self.hosts {
+            Ok(answer) => Finding {
+                key: "fleet-hosts".into(),
+                level: Level::Ok,
+                detail: match answer["hosts"].as_array() {
+                    Some(hosts) => hosts
+                        .iter()
+                        .filter_map(|h| h.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    // `null`: one runtime serves any host.
+                    None => "any host (one runtime serves them all)".into(),
+                },
+            },
+            Err(why) => Finding {
+                key: "fleet-hosts".into(),
+                level: Level::Warn,
+                detail: why.clone(),
             },
         });
         let mux = "runtime-mux";
@@ -387,6 +397,29 @@ fn fleet_config_path() -> Option<(std::path::PathBuf, &'static str)> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// `doctor` lists the hosts Fleet defines, which are where a session can
+    /// run, instead of thurbox's own `hosts.toml`.
+    #[cfg(unix)]
+    #[test]
+    fn doctor_reports_fleets_hosts() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fleet = dir.path().join("fleet");
+        std::fs::write(
+            &fleet,
+            "#!/bin/sh\ncase \"$1\" in\n  runtime) echo '{\"hosts\":[\"local\",\"devbox\"]}' ;;\n  *) echo '{\"version\":\"9.9.9\",\"harnesses\":[]}' ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let findings = FleetFacts::read(&fleet.to_string_lossy()).findings();
+        let hosts = findings
+            .iter()
+            .find(|f| f.key == "fleet-hosts")
+            .expect("a fleet-hosts row");
+        assert_eq!(hosts.level, Level::Ok, "{}", hosts.detail);
+        assert!(hosts.detail.contains("local, devbox"), "{}", hosts.detail);
+    }
 
     /// `doctor` names the Fleet that runs every session, its harnesses and
     /// the config it reads.

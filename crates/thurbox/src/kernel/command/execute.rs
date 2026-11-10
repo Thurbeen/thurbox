@@ -39,27 +39,26 @@ pub(super) fn local(command: &Command) -> Option<Result<Outcome, String>> {
 fn bookmark(host: &str, path: &str, edit: &BookmarkEdit) -> Result<(), String> {
     // Removal names a path that is already remembered — an absolute one, since
     // the rows the flow offers come from the file — so it needs neither the
-    // filesystem nor the host. Done BEFORE the host is resolved, which is what
-    // lets a bookmark be forgotten after its host has been taken out of
-    // `hosts.toml`.
+    // filesystem nor the host, so a bookmark a 2.x thurbox remembered on another
+    // host can still be forgotten.
     if *edit == BookmarkEdit::Remove {
         return bookmark_remove(host, path);
     }
 
-    // `""` is local; the flow's key is the same string the bookmarks file
-    // stores, so nothing is translated here.
-    let remote = match host.is_empty() {
-        true => None,
-        false => {
-            let (registry, _warnings) = crate::config::hosts::cached_registry();
-            Some(
-                registry
-                    .resolve(host)
-                    .cloned()
-                    .ok_or_else(|| format!("no such host: {host}"))?,
-            )
-        }
-    };
+    // `""` is this machine. A path on another Fleet host is remembered as
+    // typed: thurbox reaches no other machine to check it, and the session
+    // runs in that directory there.
+    if !host.is_empty() {
+        return match edit {
+            BookmarkEdit::Add => {
+                crate::kernel::bookmarks::remember(host, std::path::Path::new(path), None)
+            }
+            _ => Err(format!(
+                "{host} is another machine; thurbox creates and imports folders on this one only"
+            )),
+        };
+    }
+    let remote: Option<crate::session::HostDef> = None;
 
     let expanded = match remote.as_ref() {
         Some(host) => std::path::PathBuf::from(

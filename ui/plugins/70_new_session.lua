@@ -50,8 +50,10 @@ local function browse()
   return (thurbox and thurbox.browse) or {}
 end
 
+--- Every host Fleet defines, `local` first when it does; `nil` until Fleet
+--- has answered, which is pending, not empty.
 local function hosts()
-  return (thurbox and thurbox.hosts) or {}
+  return thurbox and thurbox.hosts
 end
 
 local function agents()
@@ -381,11 +383,11 @@ end
 
 -- ── The steps ──────────────────────────────────────────────────────────────
 
---- v1's host picker: the local machine first, then each host with the detail
---- that tells two apart.
+--- The host picker: each host Fleet defines, with the detail that tells two
+--- apart. Fleet's `local` is offered only when Fleet defines it.
 local function host_labels()
-  local labels = { "local" }
-  for _, host in ipairs(hosts()) do
+  local labels = {}
+  for _, host in ipairs(hosts() or {}) do
     labels[#labels + 1] = host.name .. "  (" .. (host.detail or "") .. ")"
   end
   return labels
@@ -393,6 +395,9 @@ end
 
 local function render_host(flow)
   local labels = host_labels()
+  if hosts() == nil then
+    labels = { "Asking Fleet for its hosts…" }
+  end
   local height = #labels
   return frame("Run On", height + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
@@ -1152,7 +1157,10 @@ return {
         return true
       end
       local flow = fresh()
-      if #hosts() == 0 then
+      -- Skipped only once Fleet has said its one host is this machine: a
+      -- pending list keeps the step, which shows the wait.
+      local known = hosts()
+      if known and #known == 1 and (known[1].backend or "") == "" then
         flow.step = "repo"
       end
       save(flow)
@@ -1291,8 +1299,12 @@ return {
 
     if flow.step == "host" then
       if name == "enter" then
-        local index = flow.host_index
-        flow.host = index > 1 and (hosts()[index - 1].backend or "") or ""
+        local chosen = (hosts() or {})[flow.host_index]
+        if not chosen then
+          -- Fleet has not answered yet, or defines no host: nothing to run on.
+          return true
+        end
+        flow.host = chosen.backend or ""
         flow.step = "repo"
         flow.cursor = 1
         -- Bookmarks are host-scoped, so the choices change with the host: an

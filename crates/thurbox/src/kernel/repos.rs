@@ -229,12 +229,11 @@ pub struct RepoStore {
 }
 
 impl RepoStore {
-    /// Read `hosts.toml` once (the process-lifetime cache). Warnings are the
-    /// loop's business at startup, not this store's — it only needs to resolve
-    /// a key to a host.
+    /// A store that reads this machine only: the creation flow browses and
+    /// remembers local folders, whichever Fleet host the session will run on,
+    /// so no host key resolves to a connection.
     pub fn new() -> Self {
-        let (registry, _warnings) = crate::config::hosts::cached_registry();
-        Self::with_hosts(registry.clone())
+        Self::with_hosts(HostRegistry::default())
     }
 
     pub fn with_hosts(hosts: HostRegistry) -> Self {

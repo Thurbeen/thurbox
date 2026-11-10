@@ -753,7 +753,7 @@
 ---@field settings thurbox.Settings
 ---@field bookmarks thurbox.Bookmarks
 ---@field browse thurbox.Browse
----@field hosts thurbox.Host[]
+---@field hosts? thurbox.Host[] Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.
 ---@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
 ---@field diffs table<string, thurbox.Diff>

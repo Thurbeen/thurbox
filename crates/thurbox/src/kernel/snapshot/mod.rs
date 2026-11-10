@@ -279,8 +279,10 @@ pub struct Snapshot {
     /// agents a session can run. `None` until Fleet has answered, which is
     /// not the same as no agents.
     pub agents: Option<Vec<AgentRow>>,
-    /// Configured and discovered hosts; empty means local only.
-    pub hosts: Vec<HostRow>,
+    /// Every host Fleet defines (`fleet runtime hosts --json`), `local`
+    /// included when Fleet defines it, with an empty `backend`. `None` until
+    /// Fleet has answered, which is not the same as no hosts.
+    pub hosts: Option<Vec<HostRow>>,
     pub automations: Vec<AutomationRow>,
     /// Epoch milliseconds this snapshot represents. Readable by plugins so
     /// they can render staleness.
@@ -380,7 +382,7 @@ impl SnapshotStore {
             );
         }
         if let Some(hosts) = read.hosts {
-            self.current.hosts = hosts_from(&hosts);
+            self.current.hosts = Some(hosts_from(&hosts));
         }
         self.current.taken_at_ms = taken_at_stamp();
         self.mark_changed();
@@ -395,6 +397,10 @@ impl SnapshotStore {
             awaited: Vec::new(),
             git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             current: Snapshot {
+                // This machine until Fleet lists its hosts, so a Fleet that is
+                // slow or absent never holds the creation flow on a host step
+                // with nothing to choose; Fleet's answer replaces it.
+                hosts: Some(hosts_from(&[])),
                 taken_at_ms: taken_at_stamp(),
                 ..Snapshot::default()
             },
@@ -515,22 +521,12 @@ impl SnapshotStore {
                 continue;
             }
             if let Some(cwd) = row.cwd.clone() {
-                // A remote session's `cwd` is a path on its host, so its stats
-                // are read there. A host this machine cannot name is skipped —
-                // running `git` locally against that path would only fail.
-                let host = if crate::session::Route::is_remote_key(&row.backend) {
-                    match crate::config::hosts::cached_registry()
-                        .0
-                        .resolve(&row.backend)
-                        .cloned()
-                    {
-                        Some(host) => Some(host),
-                        None => continue,
-                    }
-                } else {
-                    None
-                };
-                wanted.push((row.id.clone(), cwd, host));
+                // A remote session's `cwd` is a path on its host, and thurbox
+                // reads git on this machine only.
+                if crate::session::Route::is_remote_key(&row.backend) {
+                    continue;
+                }
+                wanted.push((row.id.clone(), cwd, None));
             }
         }
         for (id, cwd, host) in wanted {
@@ -550,12 +546,22 @@ impl SnapshotStore {
     }
 }
 
-/// The host rows the creation flow offers: each host Fleet defines but
-/// `local`, which the flow offers itself. A row's `backend` is the Fleet host
-/// name, which is what a created Task's `spec.host` and a session row's
-/// `remote_host` carry, so a creation in flight and its row group as one.
+/// The host rows the creation flow offers: each host Fleet defines, `local`
+/// first. A row's `backend` is what a created Task names: empty for `local`
+/// (this machine), else the Fleet host name, which is what a session row's
+/// `remote_host` carries, so a creation in flight and its row group as one.
+/// An empty list (Fleet's `null`: one runtime serves any host) offers this
+/// machine alone.
 fn hosts_from(hosts: &[String]) -> Vec<HostRow> {
-    hosts
+    let local = HostRow {
+        name: "local".to_string(),
+        detail: "this machine".to_string(),
+        ..HostRow::default()
+    };
+    if hosts.is_empty() {
+        return vec![local];
+    }
+    let mut rows: Vec<HostRow> = hosts
         .iter()
         .filter(|host| host.as_str() != "local")
         .map(|host| HostRow {
@@ -564,7 +570,11 @@ fn hosts_from(hosts: &[String]) -> Vec<HostRow> {
             backend: host.clone(),
             ..HostRow::default()
         })
-        .collect()
+        .collect();
+    if hosts.iter().any(|host| host == "local") {
+        rows.insert(0, local);
+    }
+    rows
 }
 
 /// A remote session's host name — `ssh:devbox:rmux` → `devbox` — whether or
@@ -634,13 +644,16 @@ mod tests {
     }
 
     #[test]
-    fn the_host_rows_are_fleets_hosts_but_local() {
-        let rows = hosts_from(&["local".to_string(), "devbox".to_string()]);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].name.as_str(), rows[0].backend.as_str()),
-            ("devbox", "devbox")
-        );
+    fn the_host_rows_are_fleets_hosts_local_first() {
+        let rows = hosts_from(&["devbox".to_string(), "local".to_string()]);
+        let names: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.backend.as_str()))
+            .collect();
+        assert_eq!(names, [("local", ""), ("devbox", "devbox")]);
+        // A Fleet with no `local` host offers none.
+        let rows = hosts_from(&["devbox".to_string()]);
+        assert!(rows.iter().all(|r| r.name != "local"), "{rows:?}");
     }
 
     #[test]

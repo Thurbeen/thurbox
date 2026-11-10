@@ -724,17 +724,9 @@ impl App {
             let session = match &ask.target {
                 thurbox::kernel::runs::Target::Session(session) => session,
                 thurbox::kernel::runs::Target::Host(name) => {
-                    let Some(host) = thurbox::config::hosts::cached_registry()
-                        .0
-                        .get(name)
-                        .cloned()
-                    else {
-                        return thurbox::kernel::runs::Run::Failed(format!(
-                            "no configured host {name} to run it on"
-                        ));
-                    };
-                    let command = thurbox::kernel::runs::command_for_host(&ask.program, &host);
-                    return thurbox::kernel::runs::capture(command, ask.timeout);
+                    return thurbox::kernel::runs::Run::Failed(format!(
+                        "{name} is another machine; a plugin's program runs on this one only"
+                    ));
                 }
                 thurbox::kernel::runs::Target::Local => {
                     let Some(home) = thurbox::paths::home_dir() else {
@@ -751,18 +743,12 @@ impl App {
                     "no session {session} to run it in"
                 ));
             };
-            let host = match remote {
-                None => None,
-                Some(name) => match thurbox::config::hosts::cached_registry().0.get(name) {
-                    Some(host) => Some(host.clone()),
-                    None => {
-                        return thurbox::kernel::runs::Run::Failed(format!(
-                            "'{name}' is not in hosts.toml — cannot reach the machine it runs on"
-                        ))
-                    }
-                },
-            };
-            let command = thurbox::kernel::runs::command_for(&ask.program, cwd, host.as_ref());
+            if let Some(name) = remote {
+                return thurbox::kernel::runs::Run::Failed(format!(
+                    "session {session} runs on {name}; a plugin's program runs on this machine only"
+                ));
+            }
+            let command = thurbox::kernel::runs::command_for(&ask.program, cwd, None);
             thurbox::kernel::runs::capture(command, ask.timeout)
         })
     }

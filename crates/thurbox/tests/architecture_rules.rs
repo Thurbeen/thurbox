@@ -269,7 +269,6 @@ const MODULE_RULES: &[ModuleRules] = &[
             "ui_control",
             "agent::input",
             "backend",
-            "config::hosts",
             "config::interface_state",
         ],
         allowed_path_only: &[],
