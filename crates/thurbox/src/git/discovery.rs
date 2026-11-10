@@ -112,6 +112,53 @@ pub fn list_dir_entries(dir: &str) -> DirListing {
     DirListing::Entries(names)
 }
 
+/// A repository's local branches and the one a new worktree starts from by
+/// default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Branches {
+    /// The default base: the branch `origin/HEAD` names when the repository
+    /// has that branch locally, else the branch checked out, else the first.
+    /// `None` for a repository with no branch yet.
+    pub default: Option<String>,
+    /// Every local branch, sorted by name.
+    pub names: Vec<String>,
+}
+
+/// The local branches of the repository at `repo` on this machine, or `None`
+/// when `repo` is no git repository.
+///
+/// Local branches only: a `git+file` workspace is made from a clone of this
+/// checkout, and that clone holds exactly these branches.
+pub fn branches(repo: &str) -> Option<Branches> {
+    let repo = paths::expand_tilde(repo);
+    super::run_git_capture(&["rev-parse", "--git-dir"], &repo)?;
+    let mut names: Vec<String> = super::run_git_capture(
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        &repo,
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::trim)
+    .filter(|name| !name.is_empty())
+    .map(str::to_string)
+    .collect();
+    names.sort();
+    let local = |name: &str| names.iter().any(|known| known == name);
+    let advertised = super::run_git_capture(
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        &repo,
+    )
+    .and_then(|out| out.trim().strip_prefix("origin/").map(str::to_string))
+    .filter(|name| local(name));
+    let checked_out = super::run_git_capture(&["symbolic-ref", "--short", "HEAD"], &repo)
+        .map(|out| out.trim().to_string())
+        .filter(|name| local(name));
+    let default = advertised
+        .or(checked_out)
+        .or_else(|| names.first().cloned());
+    Some(Branches { default, names })
+}
+
 /// Parse repo name from the origin remote URL.
 pub(super) fn repo_name_from_remote(path: &Path) -> Option<String> {
     let output = git_program()

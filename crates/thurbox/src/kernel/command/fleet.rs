@@ -61,19 +61,24 @@ impl super::Executor for Fleet {
                 repo,
                 agent,
                 host,
+                worktree,
+                branch,
+                base,
             } => {
                 let host = self.host(host.as_deref())?;
                 if let Some(agent) = agent {
                     self.harness(agent)?;
                 }
-                // A session on this machine gets a worktree of a git
-                // repository; a session elsewhere runs in the directory
-                // there, as it is.
-                let workspace = if host == "local" {
-                    workspace_of(&crate::paths::expand_tilde(repo))
-                } else {
-                    json!([dir_url("file", std::path::Path::new(repo))])
-                };
+                let workspace = json!([workspace_url(
+                    &host,
+                    repo,
+                    Choice {
+                        worktree: *worktree,
+                        branch: branch.as_deref(),
+                        base: base.as_deref(),
+                    },
+                    &task_name(name),
+                )?]);
                 let mut spec = json!({
                     "host": host,
                     "workspace": workspace,
@@ -276,17 +281,77 @@ impl Fleet {
     }
 }
 
-/// The workspace of the directory at `dir` on this machine: a `git+file`
-/// URL for a git repository, so the runtime makes the session a worktree of
-/// its own, and a `file` URL for any other directory, used as it is.
-fn workspace_of(dir: &std::path::Path) -> serde_json::Value {
-    // Decided from the filesystem, not from asking `git`, so a `git` that
-    // cannot run never passes for a directory with no repository. A bare
-    // repository keeps its files where a checkout keeps `.git`.
+/// What the creation flow chose for a session's workspace.
+#[derive(Debug, Clone, Copy, Default)]
+struct Choice<'a> {
+    /// A worktree (`git+file`) or the directory as it is (`file`). `None`:
+    /// a worktree for a git repository on this machine, the directory
+    /// otherwise.
+    worktree: Option<bool>,
+    /// The worktree's branch. `None`: a new branch named after the session.
+    branch: Option<&'a str>,
+    /// What a new branch starts from. `None`: the repository's default.
+    base: Option<&'a str>,
+}
+
+/// The workspace URL of a session over `repo` on the Fleet host `host`.
+///
+/// A worktree is `git+file://<repo>?branch=<branch>#<base>`: the runtime
+/// makes the worktree on the branch, from the base when the branch is new.
+/// The directory as it is is `file://<repo>`. A path on another host must be
+/// absolute, because only that host could expand a `~`, and Fleet takes no
+/// relative URL. Whether a host's runtime makes worktrees at all is its own:
+/// Fleet refuses a scheme the runtime does not list.
+fn workspace_url(
+    host: &str,
+    repo: &str,
+    choice: Choice<'_>,
+    session: &str,
+) -> Result<String, String> {
+    let local = host == "local";
+    let dir = if local {
+        crate::paths::expand_tilde(repo)
+    } else {
+        std::path::PathBuf::from(repo)
+    };
+    if !dir.is_absolute() {
+        return Err(if local {
+            format!("not an absolute path: {repo}")
+        } else {
+            format!("a path on {host} must be absolute, not {repo}")
+        });
+    }
+    let worktree = match choice.worktree {
+        Some(true) if local && !is_git(&dir) => {
+            return Err(format!(
+                "{} is no git repository, so it has no worktree",
+                dir.display()
+            ))
+        }
+        Some(chosen) => chosen,
+        None => local && is_git(&dir),
+    };
+    if !worktree {
+        return Ok(dir_url("file", &dir));
+    }
+    let mut url = dir_url("git+file", &dir);
+    url.push_str("?branch=");
+    url.push_str(&encode(choice.branch.unwrap_or(session)));
+    if let Some(base) = choice.base {
+        url.push('#');
+        url.push_str(&encode(base));
+    }
+    Ok(url)
+}
+
+/// Whether `dir` on this machine is a git repository or inside one. Decided
+/// from the filesystem, not from asking `git`, so a `git` that cannot run
+/// never passes for a directory with no repository. A bare repository keeps
+/// its files where a checkout keeps `.git`.
+fn is_git(dir: &std::path::Path) -> bool {
     let bare =
         dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
-    let git = bare || dir.ancestors().any(|at| at.join(".git").exists());
-    json!([dir_url(if git { "git+file" } else { "file" }, dir)])
+    bare || dir.ancestors().any(|at| at.join(".git").exists())
 }
 
 /// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
@@ -294,21 +359,99 @@ fn workspace_of(dir: &std::path::Path) -> serde_json::Value {
 pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
     let mut url = format!("{scheme}://");
     for c in dir.to_string_lossy().chars() {
-        if c == '%' || c == '?' || c == '#' || c.is_whitespace() {
-            let mut buf = [0; 4];
-            for b in c.encode_utf8(&mut buf).bytes() {
-                url.push_str(&format!("%{b:02X}"));
-            }
-        } else {
-            url.push(c);
-        }
+        push_char(&mut url, c, |c| {
+            c == '%' || c == '?' || c == '#' || c.is_whitespace()
+        });
     }
     url
 }
 
+/// A branch or base as a query value or fragment: also `&` and `=`, which
+/// would end or split the value, are percent-encoded.
+fn encode(value: &str) -> String {
+    let mut out = String::new();
+    for c in value.chars() {
+        push_char(&mut out, c, |c| {
+            matches!(c, '%' | '?' | '#' | '&' | '=') || c.is_whitespace()
+        });
+    }
+    out
+}
+
+fn push_char(out: &mut String, c: char, reserved: impl Fn(char) -> bool) {
+    if reserved(c) {
+        let mut buf = [0; 4];
+        for b in c.encode_utf8(&mut buf).bytes() {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    } else {
+        out.push(c);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::task_name;
+    use super::{task_name, workspace_url, Choice};
+
+    /// A worktree names its branch, the session's by default, and its base
+    /// when one was chosen; the directory as it is takes neither.
+    #[test]
+    fn a_workspace_url_carries_the_branch_and_base_chosen() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(repo.path().join(".git")).expect(".git");
+        let dir = repo.path().display().to_string();
+        let new = |branch, base| Choice {
+            worktree: Some(true),
+            branch,
+            base,
+        };
+        assert_eq!(
+            workspace_url("local", &dir, new(None, Some("main")), "wt").unwrap(),
+            format!("git+file://{dir}?branch=wt#main")
+        );
+        assert_eq!(
+            workspace_url("local", &dir, new(Some("feat/a&b"), None), "wt").unwrap(),
+            format!("git+file://{dir}?branch=feat/a%26b")
+        );
+        assert_eq!(
+            workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
+            format!("git+file://{dir}?branch=wt")
+        );
+        let off = Choice {
+            worktree: Some(false),
+            ..Choice::default()
+        };
+        assert_eq!(
+            workspace_url("local", &dir, off, "wt").unwrap(),
+            format!("file://{dir}")
+        );
+    }
+
+    /// A directory with no repository has no worktree to make, and a path on
+    /// another host must be absolute: only that host knows its `~`.
+    #[test]
+    fn a_workspace_url_refuses_what_no_runtime_could_make() {
+        let plain = tempfile::tempdir().expect("tempdir");
+        let dir = plain.path().display().to_string();
+        let on = Choice {
+            worktree: Some(true),
+            ..Choice::default()
+        };
+        assert!(workspace_url("local", &dir, on, "wt")
+            .unwrap_err()
+            .contains("no git repository"));
+        assert_eq!(
+            workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
+            format!("file://{dir}")
+        );
+        assert!(workspace_url("devbox", "~/app", Choice::default(), "wt")
+            .unwrap_err()
+            .contains("must be absolute"));
+        assert_eq!(
+            workspace_url("devbox", "/srv/app", Choice::default(), "wt").unwrap(),
+            "file:///srv/app"
+        );
+    }
 
     /// Fleet's names forbid `..`, so a folder such as `app..backup` must not
     /// make one.

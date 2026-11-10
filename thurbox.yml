@@ -358,6 +358,16 @@ globals:
     property: read-only
   thurbox.browse.entries:
     property: read-only
+  thurbox.repo_branches.repo:
+    property: read-only
+  thurbox.repo_branches.loading:
+    property: read-only
+  thurbox.repo_branches.is_git:
+    property: read-only
+  thurbox.repo_branches.default:
+    property: read-only
+  thurbox.repo_branches.names:
+    property: read-only
   thurbox.hosts:
     property: read-only
   thurbox.automations:

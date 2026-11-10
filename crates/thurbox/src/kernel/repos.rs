@@ -88,6 +88,9 @@ pub type HostKey = String;
 /// The keys a plugin asks through, in `store`.
 pub const WANT_BOOKMARKS: &str = "want_bookmarks";
 pub const WANT_BROWSE: &str = "want_browse";
+/// A repository on this machine whose branches the flow offers for a
+/// worktree: its path, as the flow chose it.
+pub const WANT_BRANCHES: &str = "want_branches";
 
 /// What the flow is asking about right now.
 ///
@@ -103,6 +106,9 @@ pub const WANT_BROWSE: &str = "want_browse";
 pub struct Wants {
     pub bookmarks: Option<HostKey>,
     pub browse: Option<(HostKey, String)>,
+    /// A repository on this machine whose branches are asked for. Local
+    /// only: thurbox reads no other machine.
+    pub branches: Option<String>,
 }
 
 impl Wants {
@@ -112,8 +118,26 @@ impl Wants {
         Self {
             bookmarks,
             browse: browse.as_deref().and_then(split_want),
+            branches: None,
         }
     }
+
+    /// These wants, also asking for the branches of `repo`. An empty path is
+    /// no request.
+    pub fn with_branches(mut self, repo: Option<String>) -> Self {
+        self.branches = repo.filter(|repo| !repo.is_empty());
+        self
+    }
+}
+
+/// What is known about a repository's branches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchListing {
+    /// Asked for, not answered.
+    Pending,
+    /// The directory is no git repository.
+    NotGit,
+    Ready(crate::git::Branches),
 }
 
 /// Split `"<host>\0<path>"`. An empty path is no request at all — that is what a
@@ -180,6 +204,25 @@ enum Done {
         key: PathKey,
         listing: Listing,
     },
+    Branches {
+        repo: String,
+        listing: BranchListing,
+    },
+}
+
+/// A repository's branches and when they arrived.
+struct BranchesHeld {
+    at: std::time::Instant,
+    listing: BranchListing,
+}
+
+impl BranchesHeld {
+    /// Re-read after [`LISTING_TTL`], as a directory listing is: a branch
+    /// made after the first look must not stay invisible. A pending answer
+    /// is never asked twice.
+    fn stale(&self) -> bool {
+        !matches!(self.listing, BranchListing::Pending) && self.at.elapsed() >= LISTING_TTL
+    }
 }
 
 /// Serves the creation flow's four reads, caching each under its request.
@@ -189,6 +232,7 @@ pub struct RepoStore {
     /// not queue a thread per frame.
     bookmarks_inflight: std::collections::HashSet<HostKey>,
     listings: HashMap<PathKey, Listed>,
+    branches: HashMap<String, BranchesHeld>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
@@ -203,6 +247,7 @@ impl RepoStore {
             bookmarks: HashMap::new(),
             bookmarks_inflight: std::collections::HashSet::new(),
             listings: HashMap::new(),
+            branches: HashMap::new(),
             tx,
             rx,
         }
@@ -221,6 +266,39 @@ impl RepoStore {
                 .listings
                 .values()
                 .any(|held| matches!(held.listing, Listing::Pending))
+            || self
+                .branches
+                .values()
+                .any(|held| matches!(held.listing, BranchListing::Pending))
+    }
+
+    /// What is known about the branches of `repo` on this machine.
+    pub fn branches(&self, repo: &str) -> Option<&BranchListing> {
+        self.branches.get(repo).map(|held| &held.listing)
+    }
+
+    /// Ask for the branches of `repo` on this machine, unless a fresh answer
+    /// is held or one is on its way. Read on a worker: it runs `git`.
+    pub fn request_branches(&mut self, repo: &str) {
+        if self.branches.get(repo).is_some_and(|held| !held.stale()) {
+            return;
+        }
+        self.branches.insert(
+            repo.to_string(),
+            BranchesHeld {
+                at: std::time::Instant::now(),
+                listing: BranchListing::Pending,
+            },
+        );
+        let repo = repo.to_string();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let listing = match crate::git::branches(&repo) {
+                Some(found) => BranchListing::Ready(found),
+                None => BranchListing::NotGit,
+            };
+            let _ = tx.send(Done::Branches { repo, listing });
+        });
     }
 
     /// The rows for `host`, once they have been asked for.
@@ -323,6 +401,15 @@ impl RepoStore {
                 Done::Listing { key, listing } => {
                     self.remember_listing(key, listing);
                 }
+                Done::Branches { repo, listing } => {
+                    self.branches.insert(
+                        repo,
+                        BranchesHeld {
+                            at: std::time::Instant::now(),
+                            listing,
+                        },
+                    );
+                }
             }
             changed = true;
         }
@@ -343,6 +430,22 @@ impl RepoStore {
         if let Some((host, dir)) = wants.browse {
             self.request_listing(&host, &dir);
         }
+        if let Some(repo) = wants.branches {
+            self.request_branches(&repo);
+        }
+    }
+
+    /// Seed a repository's branches directly, so a test can render the flow
+    /// without git.
+    #[doc(hidden)]
+    pub fn set_branches_for_test(&mut self, repo: &str, listing: BranchListing) {
+        self.branches.insert(
+            repo.to_string(),
+            BranchesHeld {
+                at: std::time::Instant::now(),
+                listing,
+            },
+        );
     }
 
     /// Seed rows directly, so a test can render a flow without the file.

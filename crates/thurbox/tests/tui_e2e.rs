@@ -6981,9 +6981,69 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     assert!(tui.quit().success());
 }
 
-/// Create a session through `Ctrl+N` on a git repository, named `name`,
-/// taking the first agent offered.
-fn create_through_the_flow(name: &str) -> Option<(Profile, Tui, PathBuf)> {
+/// The output of `git <args>` in `dir`, trimmed.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let mut cmd = Command::new("git");
+    for var in GIT_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+    let out = cmd.args(args).current_dir(dir).output().expect("run git");
+    assert!(out.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Create a session through `Ctrl+N` on `dir`, named `name`, taking the
+/// first agent offered. `workspace` is what is typed on the workspace step,
+/// one batch per screen, or `None` when the flow is expected to skip it.
+fn create_through_the_flow(
+    profile: &Profile,
+    dir: &Path,
+    name: &str,
+    workspace: Option<&[&[u8]]>,
+) -> Tui {
+    let mut tui = Tui::spawn(profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Run On");
+    tui.send(b"\r");
+    tui.wait_for("Select Repo");
+    tui.send(format!("\t{}", dir.display()).as_bytes());
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    let leaf = dir
+        .file_name()
+        .expect("a leaf")
+        .to_string_lossy()
+        .into_owned();
+    tui.wait_until("the repository to be selected", |frame| {
+        repo_picker_selected(frame, &leaf)
+    });
+    // Alt+Enter goes on from the path field, which still has the caret.
+    tui.send(b"\x1b\r");
+    tui.wait_gone("Select Repo");
+    match workspace {
+        Some(batches) => {
+            tui.wait_for("Workspace");
+            for keys in batches {
+                tui.wait_until_quiet();
+                tui.send(keys);
+            }
+        }
+        None => assert!(
+            !tui.frame().contains("Workspace"),
+            "a directory with no repository was offered a worktree:\n{}",
+            tui.frame()
+        ),
+    }
+    tui.wait_for("Session Name");
+    tui.send(format!("{name}\r").as_bytes());
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui
+}
+
+/// A profile on a real Fleet, with a repository holding `main` and `dev`.
+fn profile_with_two_branches() -> Option<(Profile, PathBuf)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -6991,60 +7051,110 @@ fn create_through_the_flow(name: &str) -> Option<(Profile, Tui, PathBuf)> {
     let profile = Profile::new();
     profile.real_fleet()?;
     let repo = repo(profile.root.path());
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
-    tui.send(b"\x0e");
-    tui.wait_for("Run On");
-    tui.send(b"\r");
-    tui.wait_for("Select Repo");
-    tui.send(format!("\t{}", repo.display()).as_bytes());
-    tui.wait_until_quiet();
-    tui.send(b"\r");
-    tui.wait_until("the repository to be selected", |frame| {
-        repo_picker_selected(frame, "repo")
-    });
-    // Alt+Enter goes on from the path field, which still has the caret.
-    tui.send(b"\x1b\r");
-    tui.wait_gone("Select Repo");
-    tui.send(format!("{name}\r").as_bytes());
-    tui.wait_until_quiet();
-    tui.send(b"\r");
-    Some((profile, tui, repo))
+    git(&repo, &["branch", "dev"]);
+    Some((profile, repo))
 }
 
-/// A session the interface creates on a git repository gets a worktree of
-/// its own, which the runtime makes from the repository's `git+file` URL,
-/// not the checkout. Nothing has to map the repository first.
-#[test]
-fn a_session_created_on_a_repo_runs_in_its_own_worktree() {
-    let Some((profile, mut tui, repo)) = create_through_the_flow("wt") else {
-        return;
-    };
-    tui.wait_for("wt");
-    let task = profile.fleet_task("wt");
-    assert_eq!(
-        task["spec"]["workspace"],
-        serde_json::json!([format!("git+file://{}", repo.display())]),
-        "the Task names the repository: {task:#}"
-    );
+/// The directory the runtime made for the Task `name`, once it has.
+fn workspace_dir(profile: &Profile, name: &str) -> PathBuf {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let dir = loop {
+    loop {
         profile.fleet(&["reconcile"], "");
-        let task = profile.fleet_task("wt");
+        let task = profile.fleet_task(name);
         if let Some(dir) = task["status"]["workspace"]["dirs"][0].as_str() {
-            break PathBuf::from(dir);
+            return PathBuf::from(dir);
         }
         assert!(
             std::time::Instant::now() < deadline,
             "no workspace: {task:#}"
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// The default on a git repository: a worktree of its own on a new branch
+/// named after the session, made from the repository's default branch. The
+/// Task names both in its `git+file` URL, and nothing has to map the
+/// repository first.
+#[test]
+fn a_session_created_on_a_repo_runs_in_its_own_worktree() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
+        return;
     };
+    let mut tui = create_through_the_flow(&profile, &repo, "wt", Some(&[b"\r"]));
+    tui.wait_for("wt");
+    let task = profile.fleet_task("wt");
+    assert_eq!(
+        task["spec"]["workspace"],
+        serde_json::json!([format!("git+file://{}?branch=wt#main", repo.display())]),
+        "the Task names the branch and its base: {task:#}"
+    );
+    let dir = workspace_dir(&profile, "wt");
     assert_ne!(dir, repo, "the session runs in the checkout");
     assert!(
         dir.join(".git").is_file(),
         "{} is no worktree",
         dir.display()
+    );
+    assert_eq!(git_out(&dir, &["symbolic-ref", "--short", "HEAD"]), "wt");
+    assert!(tui.quit().success());
+}
+
+/// "Worktree on an existing branch" checks that branch out: the URL names
+/// it and no base.
+#[test]
+fn a_worktree_on_an_existing_branch_checks_it_out() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
+        return;
+    };
+    // Third choice, then `dev`, the first branch by name.
+    let mut tui =
+        create_through_the_flow(&profile, &repo, "ondev", Some(&[b"\x1b[B\x1b[B\r", b"\r"]));
+    tui.wait_for("ondev");
+    assert_eq!(
+        profile.fleet_task("ondev")["spec"]["workspace"],
+        serde_json::json!([format!("git+file://{}?branch=dev", repo.display())])
+    );
+    let dir = workspace_dir(&profile, "ondev");
+    assert_eq!(git_out(&dir, &["symbolic-ref", "--short", "HEAD"]), "dev");
+    assert!(tui.quit().success());
+}
+
+/// "No worktree" runs the session in the repository as it is.
+#[test]
+fn no_worktree_runs_the_session_in_the_repository() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
+        return;
+    };
+    let mut tui =
+        create_through_the_flow(&profile, &repo, "plain", Some(&[b"\x1b[B\x1b[B\x1b[B\r"]));
+    tui.wait_for("plain");
+    assert_eq!(
+        profile.fleet_task("plain")["spec"]["workspace"],
+        serde_json::json!([format!("file://{}", repo.display())])
+    );
+    assert!(tui.quit().success());
+}
+
+/// A directory with no repository has no worktree to offer: the flow goes
+/// from the directory straight to the name, and the session runs in it.
+#[test]
+fn a_directory_with_no_repository_skips_the_worktree_step() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let dir = profile.path("notes");
+    std::fs::create_dir_all(&dir).expect("a plain directory");
+    let mut tui = create_through_the_flow(&profile, &dir, "notes", None);
+    tui.wait_for("notes");
+    assert_eq!(
+        profile.fleet_task("notes")["spec"]["workspace"],
+        serde_json::json!([format!("file://{}", dir.display())])
     );
     assert!(tui.quit().success());
 }

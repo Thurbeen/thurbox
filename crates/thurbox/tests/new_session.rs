@@ -676,7 +676,7 @@ fn enter_in_the_search_carries_the_ticked_repositories_on() {
     press(&host, &world, "space");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Session Name"), "{screen}");
+    assert!(screen.contains("Workspace"), "{screen}");
 }
 
 #[test]
@@ -1609,12 +1609,12 @@ fn a_plain_selection_names_the_session_then_the_agent() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "space"); // /src/thurbox, no worktree
+    press(&host, &world, "down"); // /src/notes, no repository
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
     assert!(
         screen.contains("Session Name"),
-        "no worktree means no branch question: {screen}"
+        "no repository means no workspace question: {screen}"
     );
 
     type_text(&host, &world, "read the code");
@@ -1629,12 +1629,160 @@ fn a_plain_selection_names_the_session_then_the_agent() {
         host.drain_commands(),
         vec![Command::Create {
             name: "read the code".into(),
-            repo: "/src/thurbox".into(),
+            repo: "/src/notes".into(),
             agent: Some("claude".into()),
             host: None,
+            worktree: Some(false),
+            branch: None,
+            base: None,
         }]
     );
     assert_eq!(drawn(&host, &world), "", "the flow closes when it commits");
+}
+
+/// A world whose repository `/src/thurbox` has the branches `listing`, and
+/// whose flow is asking for them, as the loop serves `store.want_branches`.
+fn world_with_branches(listing: thurbox::kernel::repos::BranchListing) -> World {
+    let mut world = World::default();
+    world.repos.set_branches_for_test("/src/thurbox", listing);
+    world.wants.branches = Some("/src/thurbox".into());
+    world
+}
+
+fn main_and_dev() -> thurbox::kernel::repos::BranchListing {
+    thurbox::kernel::repos::BranchListing::Ready(thurbox::git::Branches {
+        default: Some("main".into()),
+        names: vec!["dev".into(), "main".into()],
+    })
+}
+
+/// A git repository asks what the session works in. The default is a
+/// worktree on a new branch named after the session, from the default
+/// branch the read reports.
+#[test]
+fn a_repository_offers_a_worktree_from_its_default_branch() {
+    let host = host();
+    let world = world_with_branches(main_and_dev());
+    open(&host, &world);
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Workspace"), "{screen}");
+    assert!(screen.contains("new branch from main"), "{screen}");
+    assert!(screen.contains("existing branch"), "{screen}");
+    assert!(screen.contains("No worktree"), "{screen}");
+    press(&host, &world, "enter");
+    type_text(&host, &world, "wt");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Create {
+            name: "wt".into(),
+            repo: "/src/thurbox".into(),
+            agent: Some("claude".into()),
+            host: None,
+            worktree: Some(true),
+            branch: None,
+            base: Some("main".into()),
+        }]
+    );
+}
+
+/// "From another base" lists the branches with the default under the
+/// cursor; "an existing branch" lists them to check one out.
+#[test]
+fn a_base_or_an_existing_branch_is_picked_from_the_repositorys_branches() {
+    let pick = |choice: usize, down: usize| {
+        let host = host();
+        let world = world_with_branches(main_and_dev());
+        open(&host, &world);
+        press(&host, &world, "enter");
+        for _ in 0..choice {
+            press(&host, &world, "down");
+        }
+        press(&host, &world, "enter");
+        let screen = drawn(&host, &world);
+        for _ in 0..down {
+            press(&host, &world, "up");
+        }
+        press(&host, &world, "enter");
+        type_text(&host, &world, "s");
+        press(&host, &world, "enter");
+        press(&host, &world, "enter");
+        (screen, host.drain_commands())
+    };
+
+    let (screen, base) = pick(1, 1);
+    assert!(
+        screen.contains("Start From") && screen.contains("▸ main"),
+        "{screen}"
+    );
+    assert!(
+        matches!(&base[..], [Command::Create { worktree: Some(true), branch: None, base: Some(b), .. }] if b == "dev"),
+        "{base:?}"
+    );
+
+    let (screen, existing) = pick(2, 0);
+    assert!(
+        screen.contains("Branch") && screen.contains("▸ dev"),
+        "{screen}"
+    );
+    assert!(
+        matches!(&existing[..], [Command::Create { worktree: Some(true), branch: Some(b), base: None, .. }] if b == "dev"),
+        "{existing:?}"
+    );
+}
+
+/// "No worktree" runs the session in the repository as it is, and a
+/// directory git says is no repository offers only that.
+#[test]
+fn no_worktree_is_offered_and_is_all_a_directory_without_git_gets() {
+    let host = host();
+    let world = world_with_branches(main_and_dev());
+    open(&host, &world);
+    press(&host, &world, "enter");
+    for _ in 0..3 {
+        press(&host, &world, "down");
+    }
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Session Name"));
+    type_text(&host, &world, "p");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    assert!(matches!(
+        &host.drain_commands()[..],
+        [Command::Create {
+            worktree: Some(false),
+            branch: None,
+            base: None,
+            ..
+        }]
+    ),);
+
+    let host = self::host();
+    let world = world_with_branches(thurbox::kernel::repos::BranchListing::NotGit);
+    open(&host, &world);
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("No worktree"), "{screen}");
+    assert!(!screen.contains("existing branch"), "{screen}");
+}
+
+/// Esc on the workspace step goes back to the repositories, and on the
+/// branch step back to the workspace choices: a slip costs one step.
+#[test]
+fn esc_steps_back_through_the_workspace_questions() {
+    let host = host();
+    let world = world_with_branches(main_and_dev());
+    open(&host, &world);
+    press(&host, &world, "enter");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    assert!(drawn(&host, &world).contains("Start From"));
+    press(&host, &world, "esc");
+    assert!(drawn(&host, &world).contains("Workspace"));
+    press(&host, &world, "esc");
+    assert!(drawn(&host, &world).contains("Select Repo"));
 }
 
 /// The same plain selection on the Fleet engine (ADR-41) becomes a Task:
@@ -1647,7 +1795,7 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     let host = host();
     let world = World::default();
     open(&host, &world);
-    press(&host, &world, "space");
+    press(&host, &world, "down");
     press(&host, &world, "enter");
     type_text(&host, &world, "read the code");
     press(&host, &world, "enter");
@@ -1663,11 +1811,11 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     let task = fleet.applied();
     // A Task's name is a DNS-like name: the typed one, made one.
     assert_eq!(task["metadata"]["name"], "read-the-code");
-    // `/src/thurbox` is no repository on this machine, so it runs as it is;
-    // `tui_e2e` covers a repository's worktree.
+    // `/src/notes` is no repository, so it runs as it is; `tui_e2e`
+    // covers a repository's worktree.
     assert_eq!(
         task["spec"]["workspace"],
-        serde_json::json!(["file:///src/thurbox"])
+        serde_json::json!(["file:///src/notes"])
     );
     assert_eq!(task["spec"]["harness"], "claude");
     assert_eq!(task["spec"]["host"], "local");
@@ -1851,6 +1999,9 @@ fn a_session_on_another_fleet_host_runs_in_its_directory() {
             repo: "/home/me/far-repo".into(),
             agent: Some("claude".into()),
             host: Some("ssh:devbox".into()),
+            worktree: None,
+            branch: None,
+            base: None,
         }])
         .expect("a session on devbox is not refused");
     let task = fleet.applied();
@@ -1876,6 +2027,9 @@ fn a_directory_that_is_no_repository_runs_as_it_is() {
             repo: path.clone(),
             agent: Some("claude".into()),
             host: None,
+            worktree: None,
+            branch: None,
+            base: None,
         }])
         .expect("a plain directory is not refused");
     assert_eq!(
@@ -1902,11 +2056,14 @@ fn a_bare_repository_is_not_run_as_a_plain_directory() {
             repo: path.clone(),
             agent: Some("claude".into()),
             host: None,
+            worktree: None,
+            branch: None,
+            base: None,
         }])
         .expect("a bare repository is not refused");
     assert_eq!(
         fleet.applied()["spec"]["workspace"],
-        serde_json::json!([format!("git+file://{path}")])
+        serde_json::json!([format!("git+file://{path}?branch=bare")])
     );
 }
 
@@ -1922,7 +2079,8 @@ fn an_agent_with_no_fleet_harness_is_refused_by_name() {
             name: "shell".into(),
         });
         open(&host, &world);
-        press(&host, &world, "space");
+        // `/src/notes`: no repository, so no worktree to make here.
+        press(&host, &world, "down");
         press(&host, &world, "enter");
         press(&host, &world, "enter");
         for _ in 0..down {
@@ -1961,6 +2119,7 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
     open(&host, &world);
     press(&host, &world, "space");
     press(&host, &world, "enter");
+    press(&host, &world, "enter");
     let screen = drawn(&host, &world);
     assert!(
         screen.contains("thurbox"),
@@ -1981,6 +2140,9 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
             repo: "/src/thurbox".into(),
             agent: Some("claude".into()),
             host: None,
+            worktree: Some(true),
+            branch: None,
+            base: None,
         }]
     );
 }
@@ -2080,6 +2242,7 @@ fn a_name_confirmed_before_fleets_agents_arrive_waits_for_them() {
     world.snapshot.agents = None;
     open(&host, &world);
     press(&host, &world, "enter");
+    press(&host, &world, "enter");
     type_text(&host, &world, "early");
     press(&host, &world, "enter");
     assert!(host.drain_commands().is_empty(), "nothing is created yet");
@@ -2106,6 +2269,7 @@ fn one_agent_is_not_a_question() {
     }]);
     open(&host, &world);
     press(&host, &world, "space");
+    press(&host, &world, "enter");
     press(&host, &world, "enter");
     type_text(&host, &world, "solo");
     press(&host, &world, "enter");
@@ -2481,6 +2645,8 @@ fn the_last_question_says_that_answering_it_creates_the_session() {
     open(&h, &world);
     press(&h, &world, "space");
     press(&h, &world, "enter");
+    // The workspace step: its default, a worktree of its own.
+    press(&h, &world, "enter");
     let named = drawn(&h, &world);
     assert!(
         named.contains("Session Name") && named.contains("[ Next ]"),
@@ -2503,6 +2669,7 @@ fn a_name_that_is_the_last_question_says_so_too() {
     world.snapshot.agents.as_mut().unwrap().truncate(1);
     open(&h, &world);
     press(&h, &world, "space");
+    press(&h, &world, "enter");
     press(&h, &world, "enter");
     let screen = drawn(&h, &world);
     assert!(
@@ -2559,7 +2726,7 @@ fn ctrl_enter_confirms_from_the_path_field() {
     type_text(&host, &world, "/half/typed");
     press(&host, &world, "ctrl+enter");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Session Name"), "{screen}");
+    assert!(screen.contains("Workspace"), "{screen}");
 }
 
 #[test]
@@ -2570,7 +2737,7 @@ fn alt_enter_is_the_same_confirm_for_terminals_that_cannot_send_ctrl_enter() {
     press(&host, &world, "space");
     press(&host, &world, "tab");
     press(&host, &world, "alt+enter");
-    assert!(drawn(&host, &world).contains("Session Name"));
+    assert!(drawn(&host, &world).contains("Workspace"));
 }
 
 #[test]
@@ -2633,6 +2800,7 @@ fn a_name_the_repository_can_answer_for_keeps_its_pill() {
     let world = World::default();
     open(&h, &world);
     press(&h, &world, "space");
+    press(&h, &world, "enter");
     press(&h, &world, "enter");
     let screen = drawn(&h, &world);
     assert!(screen.contains("thurbox"), "the suggestion shows: {screen}");

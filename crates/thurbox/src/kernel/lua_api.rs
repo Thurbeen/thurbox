@@ -599,6 +599,23 @@ pub static BROWSE: Class = Class {
     ],
 };
 
+pub static REPO_BRANCHES: Class = Class {
+    name: "thurbox.RepoBranches",
+    doc: &[
+        "A repository's local branches on this machine, served only while `store.want_branches` names it.",
+    ],
+    exact: true,
+    fields: &[
+        leaf("repo", "string"),
+        leaf("loading", "boolean"),
+        leaf("is_git", "boolean").doc("False when the directory is no git repository."),
+        leaf("default", "string")
+            .opt()
+            .doc("The branch a new worktree starts from by default."),
+        leaf("names", "string[]"),
+    ],
+};
+
 pub static SYSTEM_METRICS: Class = Class {
     name: "thurbox.SystemMetrics",
     doc: &[],
@@ -834,6 +851,7 @@ pub static API_ROOT: Class = Class {
         field("settings", Ty::Record(&SETTINGS)),
         field("bookmarks", Ty::Record(&BOOKMARKS)),
         field("browse", Ty::Record(&BROWSE)),
+        field("repo_branches", Ty::Record(&REPO_BRANCHES)),
         field("hosts", Ty::List(&HOST)).opt().doc(
             "Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.",
         ),
@@ -896,6 +914,7 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&BOOKMARKS),
     Item::Class(&BROWSE_ENTRY),
     Item::Class(&BROWSE),
+    Item::Class(&REPO_BRANCHES),
     Item::Class(&SYSTEM_METRICS),
     Item::Class(&AGENT_METRICS),
     Item::Class(&SESSION_METRICS),

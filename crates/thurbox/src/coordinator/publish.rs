@@ -335,11 +335,12 @@ impl App {
     /// host rather than an absent one: a closed flow must cost nothing, and
     /// asking about local has to be expressible (`kernel::repos::Wants`).
     pub(crate) fn repo_wants(&self) -> thurbox::kernel::repos::Wants {
-        use thurbox::kernel::repos::{Wants, WANT_BOOKMARKS, WANT_BROWSE};
+        use thurbox::kernel::repos::{Wants, WANT_BOOKMARKS, WANT_BRANCHES, WANT_BROWSE};
         Wants::new(
             self.host.shared_string(WANT_BOOKMARKS),
             self.host.shared_string(WANT_BROWSE),
         )
+        .with_branches(self.host.shared_string(WANT_BRANCHES))
     }
 
     pub(crate) fn metric_subjects(&self) -> Vec<Subject> {

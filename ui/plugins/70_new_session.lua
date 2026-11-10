@@ -6,7 +6,7 @@
 --
 -- A session is a Fleet Task (ADR-41), and the steps ask for what a Task takes:
 --
---   host  → repo → name → [agent] → create
+--   host  → repo → [workspace → [branch]] → name → [agent] → create
 --
 -- plus a detour off the repo step for a typed path that does not exist yet:
 --
@@ -15,10 +15,15 @@
 --
 -- `host` is always asked: this machine is a choice at once, and the hosts
 -- Fleet names join the open step when they arrive. `agent` is skipped when
--- there is one harness or none. Fleet makes the session's
--- workspace, so there is no branch to name. Nothing here waits: every listing
--- and path check is a READ the kernel serves from a worker (`kernel::repos`),
--- asked for by leaving a key in `store`.
+-- there is one harness or none. `workspace` is asked for a git repository on
+-- this machine: a worktree of its own on a new branch (from the default
+-- branch or another base) or on an existing branch, or the directory as it
+-- is. `branch` lists the repository's branches for the last two. A directory
+-- with no repository, and a path on another host, run as they are, so the
+-- step is skipped. The runtime makes the worktree from the `git+file` URL
+-- the kernel builds (ADR-41). Nothing here waits: every listing, path check
+-- and branch list is a READ the kernel serves from a worker
+-- (`kernel::repos`), asked for by leaving a key in `store`.
 --
 -- WHY ONE PLUGIN AND NOT SIX. The kernel renders every floating plugin each
 -- frame purely to discover it is not floating, so six closed modals would cost
@@ -59,6 +64,16 @@ end
 
 local function agents()
   return (thurbox and thurbox.agents) or {}
+end
+
+--- The branches of the repository `store.want_branches` names, or `nil`
+--- while they are not known for `repo`: pending, not empty.
+local function repo_branches(repo)
+  local read = thurbox and thurbox.repo_branches
+  if not read or read.repo ~= repo or read.loading then
+    return nil
+  end
+  return read
 end
 
 --- Whether Fleet has said which agents it has. Until it has, the list is
@@ -131,6 +146,17 @@ local function fresh()
     select_newest = false,
     name = textinput.new(""),
     agent_index = 1,
+    -- The workspace step's cursor, and the branch step's: `branch_mode` is
+    -- `"base"` (what a new branch starts from) or `"existing"` (the branch).
+    workspace_index = 1,
+    branch_index = 1,
+    branch_mode = nil,
+    -- What the workspace step chose, carried to `create`: `worktree` is nil
+    -- when nothing was asked (the kernel decides), `branch` an existing
+    -- branch, `base` a new branch's start.
+    worktree = nil,
+    branch = nil,
+    base = nil,
     -- The detour for a typed path that does not exist: where, and which of
     -- `FOLDER_CHOICES` the cursor is on.
     new_path = nil,
@@ -152,9 +178,17 @@ local function ask(flow)
   if not flow then
     store.want_bookmarks = nil
     store.want_browse = nil
+    store.want_branches = nil
     return
   end
   store.want_bookmarks = flow.host or ""
+  -- The branches of the chosen repository, while a step offers them. Local
+  -- only: the workspace step is never asked for a path on another host.
+  if flow.step == "workspace" or flow.step == "branch" then
+    store.want_branches = flow.primary
+  else
+    store.want_branches = nil
+  end
 
   -- The listing of the typed path's directory. Requested whether or not the
   -- dropdown is open, because the ghost completion is derived from it — which is
@@ -770,6 +804,87 @@ local function render_new_folder(flow)
   }, flow)
 end
 
+--- What the session works in, for a git repository on this machine: the
+--- choices in the order offered. `kind` is what `enter` does with one.
+local WORKSPACE_CHOICES = {
+  { kind = "new" },
+  { kind = "base", label = "New worktree, new branch from…" },
+  { kind = "existing", label = "Worktree on an existing branch…" },
+  { kind = "off", label = "No worktree: run in the directory itself" },
+}
+
+--- The choices the workspace step offers for the chosen directory: all
+--- four for a git repository, only "no worktree" once git says it is none.
+local function workspace_choices(flow)
+  local read = repo_branches(flow.primary)
+  if read and not read.is_git then
+    return { WORKSPACE_CHOICES[4] }
+  end
+  return WORKSPACE_CHOICES
+end
+
+local function workspace_label(flow, choice)
+  if choice.kind ~= "new" then
+    return choice.label
+  end
+  local read = repo_branches(flow.primary)
+  local from = read and read.default or "the default branch"
+  -- The new branch is named after the session, which is asked next.
+  return "New worktree, new branch from " .. from
+end
+
+local function render_workspace(flow)
+  local choices = workspace_choices(flow)
+  local labels = {}
+  for index, choice in ipairs(choices) do
+    labels[index] = workspace_label(flow, choice)
+  end
+  local height = #labels
+  return frame("Workspace", height + 4, {
+    {
+      type = "box",
+      len = height,
+      children = selector_rows(labels, widgets.clamp(flow.workspace_index, height), height),
+    },
+    message_row(flow),
+    modal.footer({ { "↑/↓", "choose" } }, "Select", { cancel = "Back" }),
+  }, flow)
+end
+
+local function render_branch(flow)
+  local read = repo_branches(flow.primary)
+  local title = flow.branch_mode == "base" and "Start From" or "Branch"
+  if not read then
+    return frame(title, 5, {
+      {
+        type = "text",
+        len = 1,
+        text = {
+          {
+            {
+              text = " " .. spinner(flow) .. " Reading the branches…",
+              style = { fg = theme.muted },
+            },
+          },
+        },
+      },
+      message_row(flow),
+      modal.footer({ { "esc", "back" } }, nil),
+    }, flow)
+  end
+  local labels = read.names or {}
+  local height = math.max(1, math.min(#labels, REPO_LIST_MAX))
+  return frame(title, height + 4, {
+    {
+      type = "box",
+      len = height,
+      children = selector_rows(labels, widgets.clamp(flow.branch_index, #labels), height),
+    },
+    message_row(flow),
+    modal.footer({ { "j/k", "navigate" } }, "Select", { cancel = "Back" }),
+  }, flow)
+end
+
 local function render_clone(flow)
   local url = (flow.url.value or ""):match("^%s*(.-)%s*$")
   return frame("Clone Repository", 8, {
@@ -893,6 +1008,18 @@ local function after_repos(flow)
   local row = cursor_repo(flow)
   if row then
     flow.primary = row.path
+    flow.worktree, flow.branch, flow.base = nil, nil, nil
+    -- A worktree is offered for a repository on this machine. A directory
+    -- with no repository runs as it is, and so does a path on another host:
+    -- thurbox reads no other machine's branches.
+    if (flow.host or "") == "" and row.is_git ~= false then
+      flow.step = "workspace"
+      flow.workspace_index = 1
+      return flow
+    end
+    if row.is_git == false then
+      flow.worktree = false
+    end
     flow.step = "name"
     return flow
   end
@@ -916,6 +1043,9 @@ local function commit(flow)
     repo = flow.primary,
     agent = picked and picked.name or nil,
     host = (flow.host ~= "" and flow.host) or nil,
+    worktree = flow.worktree,
+    branch = flow.branch,
+    base = flow.base,
   })
   save(nil)
   ask(nil)
@@ -966,6 +1096,11 @@ local function move_selection(flow, step)
     flow.agent_index = widgets.clamp(flow.agent_index + step, #agents())
   elseif flow.step == "new_folder" then
     flow.folder_index = widgets.clamp(flow.folder_index + step, #FOLDER_CHOICES)
+  elseif flow.step == "workspace" then
+    flow.workspace_index = widgets.clamp(flow.workspace_index + step, #workspace_choices(flow))
+  elseif flow.step == "branch" then
+    local read = repo_branches(flow.primary)
+    flow.branch_index = widgets.clamp(flow.branch_index + step, #((read and read.names) or {}))
   end
 end
 
@@ -986,6 +1121,10 @@ return {
       selection = flow.agent_index
     elseif flow.step == "new_folder" then
       selection = flow.folder_index
+    elseif flow.step == "workspace" then
+      selection = flow.workspace_index
+    elseif flow.step == "branch" then
+      selection = flow.branch_index
     end
     return { open = true, step = flow.step, selection = selection }
   end,
@@ -1148,6 +1287,10 @@ return {
       return render_new_folder(flow)
     elseif flow.step == "clone" then
       return render_clone(flow)
+    elseif flow.step == "workspace" then
+      return render_workspace(flow)
+    elseif flow.step == "branch" then
+      return render_branch(flow)
     end
     return render_agent(flow)
   end,
@@ -1286,12 +1429,19 @@ return {
         flow.focus = "input"
       elseif flow.step == "clone" then
         flow.step = "new_folder"
+      elseif flow.step == "workspace" then
+        -- Back to the repositories, the chosen one still under the cursor.
+        flow.step = "repo"
+        flow.focus = "search"
+      elseif flow.step == "branch" then
+        flow.step = "workspace"
       else
         save(nil)
         ask(nil)
         return true
       end
       save(flow)
+      ask(flow)
       return true
     end
 
@@ -1315,6 +1465,62 @@ return {
         return true
       end
       return false
+    end
+
+    if flow.step == "workspace" then
+      if name ~= "enter" then
+        return false
+      end
+      local choices = workspace_choices(flow)
+      local choice = choices[widgets.clamp(flow.workspace_index, #choices)]
+      if choice.kind == "off" then
+        flow.worktree, flow.branch, flow.base = false, nil, nil
+        flow.step = "name"
+      elseif choice.kind == "new" then
+        -- The default branch, once git has said which it is; until then the
+        -- runtime starts the branch from the repository's own default.
+        local read = repo_branches(flow.primary)
+        flow.worktree, flow.branch, flow.base = true, nil, read and read.default or nil
+        flow.step = "name"
+      else
+        flow.branch_mode = choice.kind
+        flow.branch_index = 1
+        local read = repo_branches(flow.primary)
+        if choice.kind == "base" and read and read.default then
+          for index, branch in ipairs(read.names or {}) do
+            if branch == read.default then
+              flow.branch_index = index
+            end
+          end
+        end
+        flow.step = "branch"
+      end
+      save(flow)
+      ask(flow)
+      return true
+    end
+
+    if flow.step == "branch" then
+      if name ~= "enter" then
+        return false
+      end
+      local read = repo_branches(flow.primary)
+      local names = (read and read.names) or {}
+      local picked = names[widgets.clamp(flow.branch_index, #names)]
+      if not picked then
+        -- Not read yet, or a repository with no branch: nothing to pick.
+        return true
+      end
+      flow.worktree = true
+      if flow.branch_mode == "base" then
+        flow.branch, flow.base = nil, picked
+      else
+        flow.branch, flow.base = picked, nil
+      end
+      flow.step = "name"
+      save(flow)
+      ask(flow)
+      return true
     end
 
     if flow.step == "name" then
@@ -1590,6 +1796,10 @@ return {
       flow.agent_index = index
     elseif flow.step == "new_folder" then
       flow.folder_index = index
+    elseif flow.step == "workspace" then
+      flow.workspace_index = index
+    elseif flow.step == "branch" then
+      flow.branch_index = index
     end
     save(flow)
     return true

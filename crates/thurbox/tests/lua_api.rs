@@ -306,9 +306,17 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
             is_git: true,
         }]),
     );
+    repos.set_branches_for_test(
+        "/src/a",
+        thurbox::kernel::repos::BranchListing::Ready(thurbox::git::Branches {
+            default: Some("main".into()),
+            names: vec!["dev".into(), "main".into()],
+        }),
+    );
     let wants = thurbox::kernel::repos::Wants {
         bookmarks: Some(String::new()),
         browse: Some((String::new(), "/src".into())),
+        branches: Some("/src/a".into()),
     };
     let search = thurbox::kernel::search::Answer {
         request: thurbox::kernel::search::Request {

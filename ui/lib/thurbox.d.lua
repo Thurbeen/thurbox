@@ -618,6 +618,14 @@
 ---@field error? string
 ---@field entries thurbox.BrowseEntry[]
 
+--- A repository's local branches on this machine, served only while `store.want_branches` names it.
+---@class (exact) thurbox.RepoBranches
+---@field repo string
+---@field loading boolean
+---@field is_git boolean False when the directory is no git repository.
+---@field default? string The branch a new worktree starts from by default.
+---@field names string[]
+
 ---@class (exact) thurbox.SystemMetrics
 ---@field cpu_percent number
 ---@field memory_used integer
@@ -749,6 +757,7 @@
 ---@field settings thurbox.Settings
 ---@field bookmarks thurbox.Bookmarks
 ---@field browse thurbox.Browse
+---@field repo_branches thurbox.RepoBranches
 ---@field hosts? thurbox.Host[] Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.
 ---@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
@@ -933,20 +942,16 @@ function require(name) end
 ---@field agent? string
 ---@field command? string Create, or edit an exec one: run this command line. Sending it at all, even unchanged, needs the issuing file to hold `run`; refused as `command.failed` otherwise, so an edit that keeps the command leaves it out.
 
----@class (exact) thurbox.cmd.ExtraMember
----@field path string
----@field worktree? boolean
-
+--- A Fleet Task whose workspace is `repo`: `git+file://<repo>?branch=…#…`
+--- for a worktree, `file://<repo>` for the directory as it is.
 ---@class (exact) thurbox.cmd.Create
----@field repo string
+---@field repo string An absolute path on the session's host (`~` only on this machine).
 ---@field text? string The session's name.
----@field branch? string
----@field base? string
----@field worktree_path? string An existing worktree to open rather than make.
+---@field worktree? boolean A worktree of its own, or the directory as it is. Nil: a worktree for a git repository on this machine, the directory otherwise.
+---@field branch? string The worktree's branch, existing or new. Nil: a new branch named after the session.
+---@field base? string What a new branch starts from. Nil: the repository's default branch.
 ---@field agent? string
 ---@field host? string
----@field multiplexer? string
----@field extras? thurbox.cmd.ExtraMember[] Further repositories to span.
 
 ---@class (exact) thurbox.cmd.Bookmark
 ---@field repo string The path to remember or forget.

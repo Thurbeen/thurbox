@@ -394,6 +394,9 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
             repo: repo.to_string_lossy().into_owned(),
             agent: Some("claude-code".into()),
             host: None,
+            worktree: None,
+            branch: None,
+            base: None,
         },
     )
     .expect("create");
@@ -402,10 +405,10 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert_eq!(gamma["spec"]["host"], "local");
     assert_eq!(gamma["spec"]["dispatch"], true);
     // A repository on this machine: the runtime makes the session a
-    // worktree of its own.
+    // worktree of its own, on a branch named after the session.
     assert_eq!(
         gamma["spec"]["workspace"],
-        json!([format!("git+file://{}", repo.display())])
+        json!([format!("git+file://{}?branch=gamma", repo.display())])
     );
     assert!(gamma["spec"]["brief"].is_null(), "{gamma:#}");
 
@@ -462,6 +465,9 @@ fn a_created_session_keeps_the_name_it_was_given() {
             repo: fleet.root.path().to_string_lossy().into_owned(),
             agent: Some("claude-code".into()),
             host: None,
+            worktree: None,
+            branch: None,
+            base: None,
         },
     )
     .expect("create");
@@ -490,6 +496,9 @@ fn a_name_already_taken_is_refused_and_the_task_left_alone() {
         repo: fleet.root.path().to_string_lossy().into_owned(),
         agent: Some("claude-code".into()),
         host: None,
+        worktree: None,
+        branch: None,
+        base: None,
     };
     run_command(&mut bus, create("Review")).expect("the first");
     let refused = run_command(&mut bus, create("review")).expect_err("the same Task");
