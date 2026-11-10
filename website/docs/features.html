@@ -254,13 +254,14 @@ breadcrumb: 'Features'
             <a href="#git-worktrees" class="heading-anchor">#</a>
           </h2>
           <p>
-            Every session created from the interface gets a git worktree of its own: its Task names
-            the repository you pick as a <code>repositories</code> workspace, and Fleet's
+            Every session created from the interface on this machine gets a git worktree of its own:
+            its Task names the repository you pick as a <code>repositories</code> workspace, and Fleet's
             <code>[workspaces]</code> makes the worktree, under
             <code>&lt;Fleet data dir&gt;/workspaces</code> unless <code>root</code> says otherwise.
             Fleet makes worktrees of mapped repositories only, so the repository must be listed in
             <code>[workspaces.repositories]</code>; an unmapped one is refused with the line to
-            add.
+            add. Fleet makes worktrees on its own machine only, so a session on another Fleet host
+            runs in the repository directory there, as it is.
           </p>
           <ul>
             <li>

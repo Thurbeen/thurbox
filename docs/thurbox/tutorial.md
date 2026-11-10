@@ -120,8 +120,10 @@ search, so the list's own keys are ones you cannot type:
 
 ## 3. Fleet gives it a worktree
 
-There is no worktree step. Fleet makes each session a **git worktree of its
-own**, so the agent never works in your checkout. Fleet makes worktrees of the
+There is no worktree step. Fleet makes each session on this machine a **git
+worktree of its own**, so the agent never works in your checkout. A session on
+another Fleet host runs in the repository directory there, as it is: Fleet
+makes worktrees on its own machine only. Fleet makes worktrees of the
 repositories in its map only, so map the repository once in Fleet's config:
 
 ```toml

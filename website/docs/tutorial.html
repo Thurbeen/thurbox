@@ -164,8 +164,9 @@ extraCss: ['tutorial.css']
   <a href="#worktree" class="heading-anchor">#</a>
 </h2>
 <p>
-  There is no worktree step: Fleet makes each session a git worktree of the repository you
-  picked. Fleet makes worktrees of mapped repositories only, so map the repository once in
+  There is no worktree step: Fleet makes each session on this machine a git worktree of the
+  repository you picked. A session on another Fleet host runs in the repository directory there,
+  as it is. Fleet makes worktrees of mapped repositories only, so map the repository once in
   Fleet's config:
 </p>
 <pre><code>[workspaces.repositories]

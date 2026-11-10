@@ -1798,6 +1798,29 @@ fn a_session_on_a_host_names_the_fleet_host() {
     assert!(!unknown.asked(), "nothing was applied");
 }
 
+/// Fleet makes worktrees on its own machine only, so a session on another
+/// Fleet host runs in the repository directory there: its Task names a `dir`
+/// workspace, and a path Fleet's repository map does not hold is not refused.
+#[cfg(unix)]
+#[test]
+fn a_session_on_another_fleet_host_runs_in_its_directory() {
+    let fleet = StubFleet::new("[\"devbox\",\"local\"]");
+    fleet
+        .run(vec![Command::Create {
+            name: "far".into(),
+            repo: "/home/me/far-repo".into(),
+            agent: Some("claude".into()),
+            host: Some("ssh:devbox".into()),
+        }])
+        .expect("a session on devbox is not refused");
+    let task = fleet.applied();
+    assert_eq!(task["spec"]["host"], "devbox");
+    assert_eq!(
+        task["spec"]["workspace"],
+        serde_json::json!({"dir": "/home/me/far-repo"})
+    );
+}
+
 /// Only an agent Fleet has a harness profile for becomes a Task: `shell`
 /// is a command of thurbox's registry, not a harness.
 #[cfg(unix)]

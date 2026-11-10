@@ -66,7 +66,14 @@ impl super::Executor for Fleet {
                 if let Some(agent) = agent {
                     self.harness(agent)?;
                 }
-                let workspace = self.worktree_of(&crate::paths::expand_tilde(repo))?;
+                // Fleet makes worktrees on its own machine only (its worktree
+                // adapter refuses any other host), so a session elsewhere
+                // runs in the repository directory there, as it is.
+                let workspace = if host == "local" {
+                    self.worktree_of(&crate::paths::expand_tilde(repo))?
+                } else {
+                    json!({"dir": repo})
+                };
                 let mut spec = json!({
                     "host": host,
                     "workspace": workspace,
