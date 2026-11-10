@@ -608,9 +608,8 @@ impl App {
         let Some(bytes) = key_to_bytes(key.code, key.modifiers) else {
             return false;
         };
-        if !self.held_input.is_empty() {
-            self.held_input
-                .push_back(HeldInput::Bytes { surface, bytes });
+        if self.held_input.holds(&surface) {
+            self.held_input.hold_bytes(surface, bytes);
             return true;
         }
         let delivered = self.send_to_surface(&surface, bytes);
@@ -811,12 +810,9 @@ impl App {
         if self.holds_a_remote_image_paste(&surface, &text) {
             return;
         }
-        if !self.held_input.is_empty() {
-            self.held_input.push_back(HeldInput::Paste {
-                surface,
-                text,
-                answer: None,
-            });
+        if self.held_input.holds(&surface) {
+            self.held_input
+                .hold_paste(surface, text, None, std::time::Instant::now());
             return;
         }
         self.paste_text_into(&surface, &text);
@@ -846,36 +842,28 @@ impl App {
         std::thread::spawn(move || {
             let _ = tx.send(paths.iter().all(|path| path.is_file()));
         });
-        self.held_input.push_back(HeldInput::Paste {
-            surface: surface.to_string(),
-            text: text.to_string(),
-            answer: Some(rx),
-        });
+        self.held_input.hold_paste(
+            surface.to_string(),
+            text.to_string(),
+            Some(rx),
+            std::time::Instant::now(),
+        );
         true
     }
 
-    /// Release held input in the order it came, up to the first paste whose
-    /// answer is still out: this machine's files are refused on the error
-    /// line and never typed; anything else is typed as the text it is.
+    /// Release held input in the order it came, each surface up to its first
+    /// paste whose answer is still out ([`HeldInput::release`]): this
+    /// machine's files are refused on the error line and never typed;
+    /// anything else is typed as the text it is.
     pub(crate) fn poll_remote_drop(&mut self) {
-        while let Some(front) = self.held_input.front() {
-            let local = match front {
-                HeldInput::Paste {
-                    answer: Some(rx), ..
-                } => match rx.try_recv() {
-                    Ok(local) => local,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => return,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
-                },
-                _ => false,
-            };
-            match self.held_input.pop_front().expect("a front") {
-                HeldInput::Paste { .. } if local => self.report(
+        for release in self.held_input.release(std::time::Instant::now()) {
+            match release {
+                Release::Refuse => self.report(
                     "image drop isn't supported for remote sessions yet",
                     Level::Error,
                 ),
-                HeldInput::Paste { surface, text, .. } => self.paste_text_into(&surface, &text),
-                HeldInput::Bytes { surface, bytes } => {
+                Release::Paste { surface, text } => self.paste_text_into(&surface, &text),
+                Release::Bytes { surface, bytes } => {
                     self.send_to_surface(&surface, bytes);
                 }
             }
@@ -1376,18 +1364,196 @@ impl Holds {
     }
 }
 
-/// Terminal input waiting behind a held remote paste
-/// (`poll_remote_drop`).
-pub(crate) enum HeldInput {
+/// How long a remote paste waits for the answer about its paths before it
+/// is typed as the text it is: a mount that never answers must not hold a
+/// terminal's input for good.
+pub(crate) const HELD_PASTE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Terminal input waiting behind a paste of image paths into a remote
+/// session, oldest first ([`App::poll_remote_drop`]).
+#[derive(Default)]
+pub(crate) struct HeldInput {
+    queue: std::collections::VecDeque<Held>,
+}
+
+enum Held {
     /// A paste; `answer` is out while a worker asks whether its paths are
     /// this machine's files, and absent for a paste that only waits its turn.
     Paste {
         surface: String,
         text: String,
         answer: Option<std::sync::mpsc::Receiver<bool>>,
+        deadline: std::time::Instant,
     },
     /// A keystroke's bytes.
     Bytes { surface: String, bytes: Vec<u8> },
+}
+
+/// What [`HeldInput::release`] hands back, in the order it was held.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Release {
+    /// The paste named this machine's files: refused, never typed.
+    Refuse,
+    Paste {
+        surface: String,
+        text: String,
+    },
+    Bytes {
+        surface: String,
+        bytes: Vec<u8>,
+    },
+}
+
+impl HeldInput {
+    /// Whether input for `surface` must wait its turn.
+    pub(crate) fn holds(&self, surface: &str) -> bool {
+        self.queue.iter().any(|held| held.surface() == surface)
+    }
+
+    pub(crate) fn hold_paste(
+        &mut self,
+        surface: String,
+        text: String,
+        answer: Option<std::sync::mpsc::Receiver<bool>>,
+        now: std::time::Instant,
+    ) {
+        self.queue.push_back(Held::Paste {
+            surface,
+            text,
+            answer,
+            deadline: now + HELD_PASTE_WAIT,
+        });
+    }
+
+    pub(crate) fn hold_bytes(&mut self, surface: String, bytes: Vec<u8>) {
+        self.queue.push_back(Held::Bytes { surface, bytes });
+    }
+
+    /// Everything that may go now, oldest first. A surface's input stops at
+    /// its first paste whose answer is still out and not yet past its bound;
+    /// another surface's input goes on. A paste whose check never answered
+    /// is typed as the text it is.
+    pub(crate) fn release(&mut self, now: std::time::Instant) -> Vec<Release> {
+        let mut out = Vec::new();
+        let mut waiting: Vec<String> = Vec::new();
+        let mut kept = std::collections::VecDeque::new();
+        for held in std::mem::take(&mut self.queue) {
+            if waiting.iter().any(|surface| surface == held.surface()) {
+                kept.push_back(held);
+                continue;
+            }
+            let local = match &held {
+                Held::Paste {
+                    answer: Some(rx),
+                    deadline,
+                    surface,
+                    ..
+                } => match rx.try_recv() {
+                    Ok(local) => local,
+                    Err(std::sync::mpsc::TryRecvError::Empty) if now < *deadline => {
+                        waiting.push(surface.clone());
+                        kept.push_back(held);
+                        continue;
+                    }
+                    Err(_) => false,
+                },
+                _ => false,
+            };
+            out.push(match held {
+                Held::Paste { .. } if local => Release::Refuse,
+                Held::Paste { surface, text, .. } => Release::Paste { surface, text },
+                Held::Bytes { surface, bytes } => Release::Bytes { surface, bytes },
+            });
+        }
+        self.queue = kept;
+        out
+    }
+}
+
+impl Held {
+    fn surface(&self) -> &str {
+        match self {
+            Held::Paste { surface, .. } | Held::Bytes { surface, .. } => surface,
+        }
+    }
+}
+
+#[cfg(test)]
+mod held_input_tests {
+    use super::{HeldInput, Release, HELD_PASTE_WAIT};
+    use std::time::Instant;
+
+    #[test]
+    fn a_held_paste_holds_only_its_own_surface() {
+        let mut held = HeldInput::default();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), Instant::now());
+        assert!(held.holds("far"));
+        assert!(
+            !held.holds("near"),
+            "another session's input waits on nothing"
+        );
+    }
+
+    #[test]
+    fn a_paste_whose_check_never_answers_is_typed_after_the_bound() {
+        let mut held = HeldInput::default();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), start);
+        held.hold_bytes("far".into(), b"\r".to_vec());
+        assert!(held.release(start).is_empty());
+        assert_eq!(
+            held.release(start + HELD_PASTE_WAIT),
+            vec![
+                Release::Paste {
+                    surface: "far".into(),
+                    text: "/x.png".into()
+                },
+                Release::Bytes {
+                    surface: "far".into(),
+                    bytes: b"\r".to_vec()
+                },
+            ]
+        );
+        assert!(!held.holds("far"));
+    }
+
+    #[test]
+    fn a_pending_paste_does_not_stop_another_surfaces_input() {
+        let mut held = HeldInput::default();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), start);
+        held.hold_bytes("near".into(), b"a".to_vec());
+        assert_eq!(
+            held.release(start),
+            vec![Release::Bytes {
+                surface: "near".into(),
+                bytes: b"a".to_vec()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_refused_paste_lets_what_followed_it_through() {
+        let mut held = HeldInput::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let start = Instant::now();
+        held.hold_paste("far".into(), "/x.png".into(), Some(rx), start);
+        held.hold_bytes("far".into(), b"\r".to_vec());
+        tx.send(true).unwrap();
+        assert_eq!(
+            held.release(start),
+            vec![
+                Release::Refuse,
+                Release::Bytes {
+                    surface: "far".into(),
+                    bytes: b"\r".to_vec()
+                }
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
