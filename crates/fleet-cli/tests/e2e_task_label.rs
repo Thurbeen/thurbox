@@ -5,7 +5,9 @@
 mod support;
 
 use fleet_api::conversation::{CONVERSATION_LABEL, CONVERSATION_UID_LABEL};
+use fleet_api::plugin::CREATOR;
 use fleet_api::store::{FieldManager, Store};
+use fleet_api::talk::{PARENT_LABEL, PARENT_UID_LABEL};
 use fleet_store::FileStore;
 use serde_json::json;
 use support::{Env, base_config, task};
@@ -48,7 +50,8 @@ fn a_label_only_fleet_writes_is_refused() {
     for key in [
         CONVERSATION_LABEL,
         CONVERSATION_UID_LABEL,
-        "gateway.fleet.dev/parent",
+        PARENT_LABEL,
+        CREATOR,
     ] {
         env.fleet(&["label", "task", "t1", &format!("{key}=x")])
             .code(1)
@@ -80,10 +83,32 @@ fn a_task_a_conversation_made_keeps_its_labels() {
         )
         .unwrap();
     store.release_lease(&lease).unwrap();
+    // And as a plugin's child of another Task: the labels only a plugin's
+    // host and a parent's creation write, put where the store keeps them.
+    let file = env.data.join("objects/Task/t2.json");
+    let mut stored: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let held = stored["metadata"]["labels"].as_object_mut().unwrap();
+    held.insert(CREATOR.into(), json!("planner"));
+    held.insert(PARENT_LABEL.into(), json!("t1"));
+    held.insert(
+        PARENT_UID_LABEL.into(),
+        json!(env.get("t1")["metadata"]["uid"]),
+    );
+    std::fs::write(&file, stored.to_string()).unwrap();
+    let before = env.get("t2")["metadata"]["labels"].clone();
+
     env.fleet(&["label", "task", "t2", "thurbox.dev/name=thread"])
         .ok();
     let labels = &env.get("t2")["metadata"]["labels"];
     assert_eq!(labels["thurbox.dev/name"], "thread");
-    assert_eq!(labels[CONVERSATION_LABEL], "conv-0123456789ab");
-    assert_eq!(labels[CONVERSATION_UID_LABEL], "u-1");
+    for key in [
+        CONVERSATION_LABEL,
+        CONVERSATION_UID_LABEL,
+        CREATOR,
+        PARENT_LABEL,
+        PARENT_UID_LABEL,
+    ] {
+        assert_eq!(labels[key], before[key], "{key} kept");
+    }
 }

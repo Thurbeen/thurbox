@@ -257,7 +257,8 @@ Guarantees, each with its test:
   generation and the other labels stay. A label only Fleet writes (the
   Conversation and parent labels, a plugin's creator label) is refused with
   exit 1. `apply` cannot relabel a Task a Conversation made, since it refuses
-  a manifest that carries those labels; `label` keeps them as they are.
+  a manifest that carries those labels; `label` keeps them as they are, and
+  leaves the creator label to the store, which keeps it on every update.
 - **Amend.** `fleet amend TASK` appends `{text, reason?, outputs?, from, at,
   generation}` to `spec.amendments`, increments `metadata.generation` and
   queues an inbox entry with `amends` under

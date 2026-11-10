@@ -404,6 +404,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let result = app.run(terminal);
     restore_terminal();
+    // The last frame is drawn: the shells still queued for saving are
+    // written now, so a clean exit loses none of them.
+    app.shells.finish();
     // Each backend's connection comes down at once rather than one after
     // another as the registry's last owner drops it.
     drop(app);

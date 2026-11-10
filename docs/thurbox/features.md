@@ -4100,8 +4100,12 @@ to that multiplexer, and every agent operation goes to the stream.
 The shell outlives the interface in its window. The interface keeps one record
 per shell, in `interface.json` under the session's id: the route of its
 multiplexer, its pane and the id its window is stamped with. The loop holds the
-records in memory and one worker saves them, so the loop never waits on the
-file's lock, and a worker's answer is matched against the record in memory.
+records in memory, and a worker's answer is matched against the record in
+memory. One worker writes each change, a session at a time, into the file as
+it is then, under the lock every writer of the file takes, so the loop never
+waits on that lock and two interfaces on one config directory keep each
+other's shells. A clean exit writes what is still queued after the last
+frame.
 
 - **A restart adopts it again**, once the agent's pane is attached, so what ran
   in the shell is still there. Only a window that still carries the recorded

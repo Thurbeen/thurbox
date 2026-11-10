@@ -929,45 +929,72 @@ impl App {
 type ShellRecords =
     std::collections::BTreeMap<String, thurbox::config::interface_state::ShellRecord>;
 
+/// One change to the book: a session's shell, or `None` for none.
+type ShellChange = (
+    String,
+    Option<thurbox::config::interface_state::ShellRecord>,
+);
+
 /// The companion shells this interface knows: the records, the panes found
 /// gone, and the sessions seen in the snapshot. Changes are made here, on the
-/// loop, and each is saved to `interface.json` by one worker, in order, so
-/// the loop never waits on the file's lock.
+/// loop, and one worker writes each to `interface.json`, in order, through the
+/// read-change-write every writer of the file takes
+/// (`interface_state::update`): it changes that one session's entry in the
+/// file as it is then, so two interfaces on one config directory keep each
+/// other's shells, and the loop never waits on the file's lock.
 pub(crate) struct ShellBook {
     pub(crate) records: ShellRecords,
     /// `(session, pane)` found gone, until that session's record changes.
     pub(crate) lost: std::collections::HashSet<(String, String)>,
     /// Sessions the snapshot has shown: one that leaves it was deleted.
     pub(crate) seen: std::collections::HashSet<String>,
-    saves: std::sync::mpsc::Sender<ShellRecords>,
+    saves: Option<std::sync::mpsc::Sender<ShellChange>>,
+    saver: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ShellBook {
     /// The book as `interface.json` holds it, with its saver started.
     pub(crate) fn load() -> Self {
-        let (saves, queue) = std::sync::mpsc::channel::<ShellRecords>();
-        std::thread::spawn(move || {
-            while let Ok(mut shells) = queue.recv() {
-                // Only the newest of a burst needs writing.
-                while let Ok(newer) = queue.try_recv() {
-                    shells = newer;
+        Self::start(
+            thurbox::config::interface_state::load().shells,
+            |session, record| {
+                let saved = thurbox::config::interface_state::update(|state| match record {
+                    Some(record) => {
+                        state.shells.insert(session.to_string(), record.clone());
+                    }
+                    None => {
+                        state.shells.remove(session);
+                    }
+                });
+                if let Err(e) = saved {
+                    tracing::warn!("could not record the shell of {session}: {e}");
                 }
-                if let Err(e) =
-                    thurbox::config::interface_state::update(|state| state.shells = shells)
-                {
-                    tracing::warn!("could not record the companion shells: {e}");
-                }
+            },
+        )
+    }
+
+    /// A book over `records` whose changes `save` writes, one at a time, on
+    /// a worker of its own.
+    fn start(
+        records: ShellRecords,
+        save: impl Fn(&str, Option<&thurbox::config::interface_state::ShellRecord>) + Send + 'static,
+    ) -> Self {
+        let (saves, queue) = std::sync::mpsc::channel::<ShellChange>();
+        let saver = std::thread::spawn(move || {
+            while let Ok((session, record)) = queue.recv() {
+                save(&session, record.as_ref());
             }
         });
         Self {
-            records: thurbox::config::interface_state::load().shells,
+            records,
             lost: std::collections::HashSet::new(),
             seen: std::collections::HashSet::new(),
-            saves,
+            saves: Some(saves),
+            saver: Some(saver),
         }
     }
 
-    /// Record `session`'s shell, or that it has none, and save the book.
+    /// Record `session`'s shell, or that it has none, and queue the change.
     /// The panes found gone for the session are forgotten: they were judged
     /// against the record this replaces.
     pub(crate) fn set(
@@ -975,15 +1002,26 @@ impl ShellBook {
         session: &str,
         record: Option<thurbox::config::interface_state::ShellRecord>,
     ) {
-        let changed = match record {
+        let changed = match &record {
             Some(record) => {
-                self.records.insert(session.to_string(), record.clone()) != Some(record)
+                self.records.insert(session.to_string(), record.clone()) != Some(record.clone())
             }
             None => self.records.remove(session).is_some(),
         };
         if changed {
             self.lost.retain(|(lost, _)| lost != session);
-            let _ = self.saves.send(self.records.clone());
+            if let Some(saves) = &self.saves {
+                let _ = saves.send((session.to_string(), record));
+            }
+        }
+    }
+
+    /// Write what is still queued, and stop the saver. Called once the
+    /// interface has drawn its last frame, so a clean exit loses no change.
+    pub(crate) fn finish(&mut self) {
+        drop(self.saves.take());
+        if let Some(saver) = self.saver.take() {
+            let _ = saver.join();
         }
     }
 }
@@ -1001,18 +1039,30 @@ mod tests {
         }
     }
 
+    /// A book whose saver writes `interface.json` under `dir`.
+    fn book_over(dir: &std::path::Path) -> ShellBook {
+        let dir = dir.to_path_buf();
+        ShellBook::start(Default::default(), move |session, record| {
+            let _isolated = thurbox::paths::TestPathGuard::new(&dir);
+            thurbox::config::interface_state::update(|state| match record {
+                Some(record) => {
+                    state.shells.insert(session.to_string(), record.clone());
+                }
+                None => {
+                    state.shells.remove(session);
+                }
+            })
+            .expect("save");
+        })
+    }
+
     /// A pane found gone is remembered per session, and forgotten once that
     /// session's record changes: the same id on another session, or a new
     /// shell of this one that the server gave the old id, is judged afresh.
     #[test]
     fn a_lost_pane_belongs_to_its_session_and_clears_with_its_record() {
-        let (saves, saved) = std::sync::mpsc::channel();
-        let mut book = ShellBook {
-            records: Default::default(),
-            lost: Default::default(),
-            seen: Default::default(),
-            saves,
-        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut book = book_over(dir.path());
         book.set("a", Some(record("%1")));
         book.lost.insert(("a".into(), "%1".into()));
         book.lost.insert(("b".into(), "%1".into()));
@@ -1028,6 +1078,24 @@ mod tests {
             book.lost.contains(&("b".into(), "%1".into())),
             "another session's pane stays lost"
         );
-        assert_eq!(saved.try_iter().count(), 2, "each change is saved once");
+        book.finish();
+    }
+
+    /// Two interfaces on one config directory each save their own session's
+    /// shell into the file as it is then, so neither erases the other's, and
+    /// what is queued at a clean exit is written.
+    #[test]
+    fn two_books_on_one_file_keep_each_others_shells() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = book_over(dir.path());
+        let mut second = book_over(dir.path());
+        first.set("a", Some(record("%1")));
+        second.set("b", Some(record("%2")));
+        first.finish();
+        second.finish();
+        let _isolated = thurbox::paths::TestPathGuard::new(dir.path());
+        let shells = thurbox::config::interface_state::load().shells;
+        assert_eq!(shells.get("a"), Some(&record("%1")), "{shells:?}");
+        assert_eq!(shells.get("b"), Some(&record("%2")), "{shells:?}");
     }
 }

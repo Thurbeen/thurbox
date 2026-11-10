@@ -218,7 +218,11 @@ pub fn label(
             }
             Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
         };
+        // The update replaces the labels. The ones only Fleet writes go back
+        // as they are, except the creator label, which the store refuses
+        // from a writer and keeps itself.
         let mut merged = current.metadata.labels.clone();
+        merged.remove(fleet_api::plugin::CREATOR);
         merged.extend(labels.iter().map(|(k, v)| (k.clone(), v.clone())));
         match store.update_spec(
             task::KIND,
