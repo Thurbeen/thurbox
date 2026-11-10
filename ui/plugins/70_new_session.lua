@@ -58,6 +58,12 @@ local function agents()
   return (thurbox and thurbox.agents) or {}
 end
 
+--- Whether Fleet has said which agents it has. Until it has, the list is
+--- pending, not empty, and nothing is created without one.
+local function agents_known()
+  return thurbox ~= nil and thurbox.agents ~= nil
+end
+
 --- The spinner frame for this paint, from the flow's own clock.
 local function spinner(flow)
   return theme.spinner_frame(flow.elapsed)
@@ -462,7 +468,7 @@ end
 --- decides it). Shared by the name field's pill and `after_name` so they cannot
 --- drift apart.
 local function spawns_directly()
-  return #agents() <= 1
+  return agents_known() and #agents() <= 1
 end
 
 local function render_repo(flow)
@@ -813,6 +819,25 @@ local function render_field(title, label, field, flow, placeholder)
 end
 
 local function render_agent(flow)
+  if not agents_known() then
+    return frame("Coding Agent", 5, {
+      {
+        type = "text",
+        len = 1,
+        text = {
+          {
+            {
+              text = " " .. spinner(flow) .. " Asking Fleet for its agents…",
+              style = { fg = theme.muted },
+            },
+          },
+        },
+      },
+      message_row(flow),
+      -- No pill: there is nothing to choose yet.
+      modal.footer({ { "esc", "cancel" } }, nil),
+    }, flow)
+  end
   -- The harnesses Fleet has profiles for, by name.
   local labels = {}
   for _, agent in ipairs(agents()) do
@@ -889,7 +914,7 @@ end
 --- nothing to choose. v1's `finish_prepare_spawn`.
 local function after_name(flow)
   local list = agents()
-  if #list <= 1 then
+  if agents_known() and #list <= 1 then
     flow.agent_index = 1
     commit(flow)
     return nil
@@ -1310,7 +1335,9 @@ return {
 
     if flow.step == "agent" then
       if name == "enter" then
-        commit(flow)
+        if agents_known() then
+          commit(flow)
+        end
         return true
       end
       return false

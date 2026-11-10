@@ -7,8 +7,7 @@
 //! Nothing here is reimplemented. The top-level `theme` module is data and
 //! already reachable from the kernel: it carries all 36 presets and a 31-role
 //! palette, `config::themes` reads the user's `themes.toml`, and the
-//! choice lives in `metadata.active_theme` exactly where v1 put it. So a v1
-//! user's themes and current selection carry over untouched.
+//! choice lives in `interface.json` (`store_chosen_theme`).
 
 use std::collections::BTreeMap;
 
@@ -123,9 +122,8 @@ impl Themes {
     ///
     /// An unknown name is refused rather than silently ignored: the
     /// alternative is a stored choice that never applies and cannot be
-    /// diagnosed. Storing it is the loop's, through the snapshot's database
-    /// worker: written here, it waited out the busy timeout whenever another
-    /// process held the write lock (issue #1474).
+    /// diagnosed. Storing it is the loop's: it writes `interface.json`
+    /// through `store_chosen_theme`.
     pub fn select(&mut self, name: &str) -> Result<(), String> {
         if !self.choices.iter().any(|choice| choice.name == name) {
             return Err(format!("unknown theme {name:?}"));

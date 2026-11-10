@@ -129,8 +129,6 @@ impl LuaHost {
             build_agents(&self.lua, snapshot)
         })?;
         set(&table, "agents", agents)?;
-        // What a bare launch would use, so a flow preselects it rather than
-        // whichever agent happens to be first.
 
         // `name` identifies, `detail` distinguishes on screen, `backend` is what
         // a command and a bookmark scope are keyed by — a flow needs all three,
@@ -687,9 +685,14 @@ fn build_repos(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(repos))
 }
 
+/// `nil` until Fleet has said which harnesses it has: a flow must tell a
+/// pending list from an empty one.
 fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
+    let Some(known) = &snapshot.agents else {
+        return Ok(Value::Nil);
+    };
     let agents = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, agent) in snapshot.agents.iter().enumerate() {
+    for (index, agent) in known.iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
         set(&item, "name", agent.name.clone())?;
         agents.raw_set(index + 1, item).map_err(|e| e.to_string())?;

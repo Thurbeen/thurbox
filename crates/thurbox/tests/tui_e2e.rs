@@ -7141,3 +7141,85 @@ fn an_image_dropped_on_a_remote_session_is_refused_not_typed() {
     );
     assert!(tui.quit().success());
 }
+
+/// A remote machine's own image path, pasted into its session, names a file
+/// there and nothing here: it is typed, not refused as a local drop.
+#[test]
+fn a_remote_machines_own_image_path_is_typed_not_refused() {
+    // A drop is a paste of a local path, which names nothing on the Task's
+    // host, and nothing carries the file there yet. The interface says so on
+    // its error line and the agent never sees the path.
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let fleet_toml = profile.path("fleet.toml");
+    let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+    std::fs::write(
+        &fleet_toml,
+        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
+    )
+    .expect("a second host");
+    let repo = repo(profile.root.path());
+    let task = format!(
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        repo.display()
+    );
+    profile.fleet(&["apply", "-f", "-"], &task);
+    profile.fleet(&["reconcile"], "");
+    // A path on the Task's host, which names nothing here: a paste, not a
+    // drop of this machine's files.
+    let shot = std::path::PathBuf::from("/tb-remote-only/far-shot.png");
+    assert!(!shot.exists());
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("far");
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    tui.send(format!("\x1b[200~{}\x1b[201~", shot.display()).as_bytes());
+    tui.wait_for("far-shot.png");
+    assert!(
+        !tui.frame().contains("image drop isn't supported"),
+        "a path this machine does not have was refused:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
+/// A Fleet session's id is its Task's name, not a UUID: `session.focus`
+/// (what a notification click runs) still finds it.
+#[test]
+fn session_focus_finds_a_fleet_session_by_its_task_name() {
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args([
+            "--json",
+            "ui",
+            "action",
+            "session.focus",
+            "--session",
+            "probe",
+        ])
+        .output()
+        .expect("ui cli");
+    assert!(
+        output.status.success(),
+        "session.focus refused the Task name: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(tui.quit().success());
+}

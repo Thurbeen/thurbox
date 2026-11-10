@@ -194,9 +194,9 @@ alias and re-export laundering, and test-only edges.
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
-- **`agent/`** — `agent_config` loads `agents.toml`, `fetch` downloads what
-  the plugin installer and the updater need, and `input` encodes keys for an
-  agent's terminal.
+- **`agent/`** — `fetch` downloads what the plugin installer and the updater
+  need, and `input` encodes keys for an agent's terminal. The agents
+  themselves are Fleet's harness profiles.
 - **`config/`** — thurbox's own config files beside `config.toml`
   (`automations`, `hosts`, `interface_state`, `settings`, `themes`).
   `config::file` is the one loader every config
@@ -450,22 +450,10 @@ symptom is not "reloads too often" but "stops reloading while git is busy".
 `thurbox.platform` is published so a plugin shipping several binaries picks one
 itself; platform selection is deliberately not a manifest field.
 
-**`thurbox.preflight` is a read, not a probe.** Whether the multiplexer is
-installed, and whether each agent's `command` resolves, is answered by
-`backend::preflight` from `SnapshotStore::poll_preflight` — on the kernel's
-schedule (`refresh_if_due`), behind a 10-second window (`PREFLIGHT_TTL`), and
-published in the snapshot as `thurbox.preflight.mux` and each agent row's
-`presence`. A plugin that ran the
-lookup itself would be running a `PATH` walk per frame, per keystroke or per
-row — the regression the window exists to prevent; `kernel::snapshot::tests::
-the_preflight_answer_is_cached_rather_than_probed_on_every_tick` pins it.
-The local RMUX picker choice uses this same lookup window: `read_mux` omits
-RMUX when its binary is absent. Remote choices stay registered because the
-remote binary cannot be checked from this machine.
-`presence` is three-valued (`present`/`missing`/`unknown`) because a remote
-host's binaries, and a relative `command`'s (resolved from the session's own
-directory), were never looked at, and `unknown` is not `missing` (see
-`docs/thurbox/config.md`).
+**Agents are Fleet's.** `thurbox.agents` is the harnesses Fleet has profiles
+for, read once from `fleet version --json` on the Fleet watch's worker, and
+`nil` until Fleet has answered: a flow tells a pending list from an empty one.
+thurbox probes no agent binary and publishes no multiplexer preflight.
 
 **Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
 in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`

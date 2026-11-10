@@ -749,7 +749,7 @@
 ---@field api integer The plugin API contract number. It moves only when a field is removed or changes meaning; declare `requires_api` to need a newer one.
 ---@field sessions thurbox.Session[]
 ---@field repos thurbox.Repo[]
----@field agents thurbox.Agent[]
+---@field agents? thurbox.Agent[] Nil until Fleet has said which harnesses it has.
 ---@field settings thurbox.Settings
 ---@field bookmarks thurbox.Bookmarks
 ---@field browse thurbox.Browse

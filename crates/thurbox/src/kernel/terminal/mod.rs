@@ -326,6 +326,8 @@ pub struct Terminals {
     recorded_shells: HashMap<String, String>,
     shelled: (Sender<shells::Shelled>, Receiver<shells::Shelled>),
     shell_results: Vec<ShellResult>,
+    /// When a saved shell whose re-adopt proved nothing may be tried again.
+    readopt_retry: HashMap<String, std::time::Instant>,
     /// The runtime the interface runs on, so a worker can enter it.
     ///
     /// Adopting a pane wires its reader and writer as tokio tasks, which need a
@@ -432,6 +434,7 @@ impl Terminals {
             recorded_shells: HashMap::new(),
             shelled: std::sync::mpsc::channel(),
             shell_results: Vec::new(),
+            readopt_retry: HashMap::new(),
             attach: attach::Attach::new(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),

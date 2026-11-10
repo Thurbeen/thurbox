@@ -41,14 +41,14 @@ fn index_of(host: &LuaHost, name: &str) -> usize {
 
 fn snapshot() -> Snapshot {
     Snapshot {
-        agents: vec![
+        agents: Some(vec![
             AgentRow {
                 name: "claude".into(),
             },
             AgentRow {
                 name: "codex".into(),
             },
-        ],
+        ]),
         ..Snapshot::default()
     }
 }
@@ -1803,7 +1803,7 @@ fn an_agent_with_no_fleet_harness_is_refused_by_name() {
     let flow = |down: usize| {
         let host = host();
         let mut world = World::default();
-        world.snapshot.agents.push(AgentRow {
+        world.snapshot.agents.as_mut().unwrap().push(AgentRow {
             name: "shell".into(),
         });
         open(&host, &world);
@@ -1956,13 +1956,40 @@ fn nothing_to_pick_locally_still_creates_a_session() {
     assert_eq!(repo, "~", "the home directory, as v1 does");
 }
 
+/// Fleet's agents arrive from a worker. A name confirmed before they have
+/// is not a choice of no agent: the flow waits on the agent step, issues
+/// nothing, and goes on once Fleet answers.
+#[test]
+fn a_name_confirmed_before_fleets_agents_arrive_waits_for_them() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.agents = None;
+    open(&host, &world);
+    press(&host, &world, "enter");
+    type_text(&host, &world, "early");
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty(), "nothing is created yet");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Asking Fleet"), "{screen}");
+
+    world.snapshot.agents = Some(vec![AgentRow {
+        name: "claude".into(),
+    }]);
+    press(&host, &world, "enter");
+    let issued = host.drain_commands();
+    assert!(
+        matches!(issued.first(), Some(Command::Create { agent, .. }) if agent.as_deref() == Some("claude")),
+        "{issued:?}"
+    );
+}
+
 #[test]
 fn one_agent_is_not_a_question() {
     let host = host();
     let mut world = World::default();
-    world.snapshot.agents = vec![AgentRow {
+    world.snapshot.agents = Some(vec![AgentRow {
         name: "claude".into(),
-    }];
+    }]);
     open(&host, &world);
     press(&host, &world, "space");
     press(&host, &world, "enter");
@@ -2367,7 +2394,7 @@ fn a_name_that_is_the_last_question_says_so_too() {
     // One agent is not a question, so `enter` on the name field spawns.
     let h = host();
     let mut world = World::default();
-    world.snapshot.agents.truncate(1);
+    world.snapshot.agents.as_mut().unwrap().truncate(1);
     open(&h, &world);
     press(&h, &world, "space");
     press(&h, &world, "enter");

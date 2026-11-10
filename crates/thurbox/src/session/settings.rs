@@ -106,6 +106,14 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
         "telemetry.per_session",
         "thurbox exports no session metrics",
     ),
+    (
+        "audit_retention_days",
+        "thurbox keeps no session database to prune",
+    ),
+    (
+        "deleted_retention_days",
+        "thurbox keeps no session database to prune",
+    ),
 ];
 
 /// Keys an older `settings.toml` may hold that are accepted and ignored with

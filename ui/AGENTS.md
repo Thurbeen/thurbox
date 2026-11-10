@@ -211,8 +211,10 @@ promise, and it is everything such a file may rely on:
 - **A call that worked keeps working.** A new parameter is optional and
   trailing, or a new field of an options table. Arguments an old caller passes
   keep their meaning. A result may gain fields but never loses or retypes one.
-- **A retired name stays as a shim.** It forwards to its replacement and is
-  never removed.
+- **A retired name stays as a shim** for the rest of its major version. It
+  forwards to its replacement. A major release may drop one, and says so:
+  thurbox 3.0 drops the `panels.placed` shim, and keeps
+  `repo_picker.with_worktrees` and `repo_picker.chosen`.
 
 Nothing else is promised: a module's `local` functions, its private state, the
 exact styles and text it draws, or writes into a module's tables.

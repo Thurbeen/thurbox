@@ -834,7 +834,9 @@ pub static API_ROOT: Class = Class {
         ),
         field("sessions", Ty::List(&SESSION)),
         field("repos", Ty::List(&REPO)),
-        field("agents", Ty::List(&AGENT)),
+        field("agents", Ty::List(&AGENT))
+            .opt()
+            .doc("Nil until Fleet has said which harnesses it has."),
         field("settings", Ty::Record(&SETTINGS)),
         field("bookmarks", Ty::Record(&BOOKMARKS)),
         field("browse", Ty::Record(&BROWSE)),

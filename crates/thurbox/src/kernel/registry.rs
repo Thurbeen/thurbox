@@ -861,7 +861,7 @@ impl Registry {
         {
             focus.arguments.push(ActionArgument {
                 name: "session_id".into(),
-                kind: "uuid".into(),
+                kind: "string".into(),
                 required: true,
             });
         } else {
@@ -872,7 +872,7 @@ impl Registry {
                 scope: "global".into(),
                 arguments: vec![ActionArgument {
                     name: "session_id".into(),
-                    kind: "uuid".into(),
+                    kind: "string".into(),
                     required: true,
                 }],
                 effect: "ui-write".into(),
@@ -913,32 +913,22 @@ impl Registry {
             if action.owner == "sessions"
                 && matches!(
                     action.name.as_str(),
-                    "sessions.open"
-                        | "sessions.rename"
-                        | "sessions.fork"
-                        | "sessions.editor"
-                        | "sessions.delete"
-                        | "sessions.force_delete"
-                        | "sessions.restart"
-                        | "sessions.sync"
+                    "sessions.open" | "sessions.rename" | "sessions.editor" | "sessions.delete"
                 )
                 && action.argument("session_id").is_none()
             {
                 action.arguments.push(ActionArgument {
                     name: "session_id".into(),
-                    kind: "uuid".into(),
+                    kind: "string".into(),
                     required: false,
                 });
             }
-            if matches!(
-                action.name.as_str(),
-                "sessions.delete" | "sessions.force_delete" | "sessions.restart" | "sessions.sync"
-            ) {
+            if matches!(action.name.as_str(), "sessions.delete") {
                 action.destructive = true;
                 action.effect = "kernel-write".into();
                 action.arguments = vec![ActionArgument {
                     name: "session_id".into(),
-                    kind: "uuid".into(),
+                    kind: "string".into(),
                     required: true,
                 }];
                 if action.owner != "sessions" {

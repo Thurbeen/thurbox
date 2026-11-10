@@ -1031,6 +1031,19 @@ impl std::ops::Deref for Session {
     }
 }
 
+/// A saved shell pane the server's listing proves is gone: the one re-adopt
+/// failure that may erase the pane's record.
+#[derive(Debug)]
+pub struct ShellGone(pub String);
+
+impl std::fmt::Display for ShellGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "shell pane {} is gone", self.0)
+    }
+}
+
+impl std::error::Error for ShellGone {}
+
 impl Session {
     /// Whether the backend reports this session's pane as exited.
     ///
@@ -1893,6 +1906,9 @@ impl Session {
     /// Prepare re-adoption without contacting the backend. The task checks
     /// that the window holding `backend_id` is still the shell stamped
     /// `stamp`, then wires it on a worker with the runtime entered.
+    /// Re-adopt a saved shell pane. Fails with [`ShellGone`] only when the
+    /// server's listing proves the pane is not there; any other failure (a
+    /// host that does not answer, an ambiguous listing) proves nothing.
     pub fn shell_adopt_task(
         &self,
         backend_id: &str,
@@ -1919,8 +1935,13 @@ impl Session {
                 agent_pane: "",
                 shell_pane: &backend_id,
             })?;
-            if placed.shell != crate::contract::Located::At(backend_id.clone()) {
-                anyhow::bail!("shell pane {backend_id} is gone");
+            match &placed.shell {
+                crate::contract::Located::At(pane) if *pane == backend_id => {}
+                // The listing could not say: nothing is proved gone.
+                crate::contract::Located::Unknown => {
+                    anyhow::bail!("shell pane {backend_id} could not be located")
+                }
+                _ => return Err(ShellGone(backend_id).into()),
             }
             let adopted = backend.adopt(&backend_id, rows, cols, None)?;
             let (wired, _) = Self::wire_up(

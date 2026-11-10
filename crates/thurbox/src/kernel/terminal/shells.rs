@@ -5,6 +5,7 @@ use std::sync::Arc;
 use super::{shell_surface, Painted, Snapshot, Terminals};
 
 /// A shell worker's accepted answer for the coordinator to persist or report.
+#[derive(Debug)]
 pub enum ShellResult {
     Ready {
         session: String,
@@ -22,7 +23,17 @@ pub enum ShellResult {
         session: String,
         error: String,
     },
+    /// A saved shell could not be re-adopted, and nothing proved its pane
+    /// gone (a host that does not answer): its record stays, and the
+    /// re-adopt is tried again after `READOPT_RETRY`.
+    Unreachable {
+        session: String,
+        error: String,
+    },
 }
+
+/// How long a re-adopt that proved nothing waits before it is tried again.
+pub const READOPT_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(super) struct Shelled {
     session: String,
@@ -33,7 +44,8 @@ pub(super) struct Shelled {
     stamp: String,
     readopting: bool,
     backend: Arc<dyn crate::backend::SessionBackend>,
-    shell: Result<crate::backend::pane::ShellPane, String>,
+    /// The pane, or why not and whether that proves the pane gone.
+    shell: Result<crate::backend::pane::ShellPane, (String, bool)>,
 }
 
 pub(super) struct Shelling {
@@ -161,6 +173,13 @@ impl Terminals {
     /// `stamp`. Its identity is checked on the worker, and a missing pane is
     /// forgotten only after that worker answers.
     pub fn readopt_shell(&mut self, session: &str, pane: &str, stamp: &str, rows: u16, cols: u16) {
+        if self
+            .readopt_retry
+            .get(session)
+            .is_some_and(|after| std::time::Instant::now() < *after)
+        {
+            return;
+        }
         let Some(live) = self.live.get(session) else {
             return;
         };
@@ -213,7 +232,10 @@ impl Terminals {
         let runtime = self.runtime.clone();
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());
-            let shell = work().map_err(|error| error.to_string());
+            let shell = work().map_err(|error| {
+                let gone = error.is::<crate::backend::pane::ShellGone>();
+                (error.to_string(), gone)
+            });
             let done = Shelled {
                 session,
                 request,
@@ -269,7 +291,7 @@ impl Terminals {
                         stamp: done.stamp,
                     }
                 }
-                Err(error) if done.readopting => {
+                Err((error, true)) if done.readopting => {
                     tracing::debug!("could not re-adopt shell: {error}");
                     ShellResult::Gone {
                         session: done.session,
@@ -277,7 +299,18 @@ impl Terminals {
                         pane: done.seen,
                     }
                 }
-                Err(error) => ShellResult::Failed {
+                Err((error, false)) if done.readopting => {
+                    tracing::debug!("could not re-adopt shell, will retry: {error}");
+                    self.readopt_retry.insert(
+                        done.session.clone(),
+                        std::time::Instant::now() + READOPT_RETRY,
+                    );
+                    ShellResult::Unreachable {
+                        session: done.session,
+                        error,
+                    }
+                }
+                Err((error, _)) => ShellResult::Failed {
                     session: done.session,
                     error,
                 },
@@ -378,7 +411,7 @@ mod tests {
                 stamp: String::new(),
                 readopting: true,
                 backend: Arc::clone(&backend),
-                shell: Err("old shell went away".into()),
+                shell: Err(("old shell went away".into(), true)),
             };
             terminals.shelling.insert(
                 "probe".into(),
@@ -446,7 +479,7 @@ mod tests {
             stamp: String::new(),
             readopting: false,
             backend: Arc::clone(&backend),
-            shell: Err("old request".into()),
+            shell: Err(("old request".into(), false)),
         };
         terminals.live.insert(
             "probe".into(),
@@ -475,6 +508,52 @@ mod tests {
         drop(release);
     }
 
+    /// Re-adopting a saved shell erases its record only when the pane is
+    /// proved gone. An error that proves nothing (a host that does not
+    /// answer) keeps the record, to be tried again: unknown never means
+    /// absent.
+    #[test]
+    fn only_a_shell_proved_gone_is_reported_gone() {
+        for (error_is_gone, expect_gone) in [(false, false), (true, true)] {
+            let mut terminals = Terminals::with_registry(
+                Arc::new(crate::backend::registry::inert()),
+                &crate::session::settings::Settings::default(),
+            );
+            let backend = Arc::clone(terminals.backends.default_backend());
+            terminals.live.insert(
+                "probe".into(),
+                Live {
+                    session: crate::backend::Session::stub("probe", &backend),
+                    agent: Painted::default(),
+                    shell: Painted::default(),
+                },
+            );
+            terminals.record_shell("probe", Some("%2".into()));
+            terminals.start_shell("probe", Some("%2".into()), String::new(), true, move || {
+                if error_is_gone {
+                    Err(crate::backend::pane::ShellGone("%2".into()).into())
+                } else {
+                    anyhow::bail!("ssh: connect to host devbox: Connection refused")
+                }
+            });
+            let snapshot = Snapshot {
+                sessions: vec![super::super::tests::row("probe", backend.name(), None)],
+                ..Default::default()
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                terminals.collect_shells(&snapshot);
+                let result = terminals.drain_shell_results();
+                if !result.is_empty() || std::time::Instant::now() >= deadline {
+                    break result;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            let gone = matches!(result.as_slice(), [ShellResult::Gone { .. }]);
+            assert_eq!(gone, expect_gone, "{result:?}");
+        }
+    }
+
     #[test]
     fn a_changed_attachment_or_shell_slot_can_start_its_own_request() {
         for (readopting, reattached) in [(false, true), (true, true), (true, false)] {
@@ -499,7 +578,7 @@ mod tests {
                 readopting,
                 move || {
                     let _ = held.recv();
-                    anyhow::bail!("old request released")
+                    Err(crate::backend::pane::ShellGone("%2".into()).into())
                 },
             );
             if reattached {
@@ -593,7 +672,7 @@ mod tests {
             stamp: String::new(),
             readopting: true,
             backend: Arc::clone(&backend),
-            shell: Err("obsolete adoption".into()),
+            shell: Err(("obsolete adoption".into(), true)),
         };
         terminals.live.insert(
             "probe".into(),
@@ -637,7 +716,7 @@ mod tests {
             stamp: String::new(),
             readopting: true,
             backend: Arc::clone(&backend),
-            shell: Err("obsolete adoption".into()),
+            shell: Err(("obsolete adoption".into(), true)),
         };
         terminals.live.insert(
             "probe".into(),

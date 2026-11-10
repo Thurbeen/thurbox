@@ -803,31 +803,61 @@ impl App {
             self.report(NOTHING_TO_PASTE_INTO, Level::Error);
             return;
         };
-        if self.refuses_a_remote_image_drop(&surface, &text) {
+        if self.holds_a_remote_image_paste(&surface, &text) {
             return;
         }
         self.paste_text_into(&surface, &text);
     }
 
-    /// Refuse a drop of local image files on a session on another machine:
-    /// the paste is their local paths, which name nothing there, and nothing
-    /// yet carries a file to a Fleet Task's host. Said on the error line; the
-    /// paths are never typed.
-    fn refuses_a_remote_image_drop(&mut self, surface: &str, text: &str) -> bool {
+    /// Hold a paste of image paths into a session on another machine until a
+    /// worker has asked whether the files are this machine's
+    /// ([`Self::poll_remote_drop`]). A drop of local files is their local
+    /// paths, which name nothing there, and nothing yet carries a file to a
+    /// Fleet Task's host. A path the remote machine has, typed into its own
+    /// session, is ordinary text. Asked off the loop: a mount that does not
+    /// answer must not stall it.
+    fn holds_a_remote_image_paste(&mut self, surface: &str, text: &str) -> bool {
         let session = surface.strip_suffix("#shell").unwrap_or(surface);
         let remote = self
             .snapshots
             .current()
             .session(session)
             .is_some_and(|row| row.remote_host.is_some());
-        if !remote || super::image_drop::dropped_images(text).is_none() {
+        let Some(paths) = remote
+            .then(|| super::image_drop::dropped_images(text))
+            .flatten()
+        else {
             return false;
-        }
-        self.report(
-            "image drop isn't supported for remote sessions yet",
-            Level::Error,
-        );
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(paths.iter().all(|path| path.is_file()));
+        });
+        self.remote_drop = Some((surface.to_string(), text.to_string(), rx));
         true
+    }
+
+    /// The answer about a held remote paste: this machine's files are refused
+    /// on the error line and never typed; anything else is typed as the text
+    /// it is.
+    pub(crate) fn poll_remote_drop(&mut self) {
+        let Some((_, _, rx)) = &self.remote_drop else {
+            return;
+        };
+        let local = match rx.try_recv() {
+            Ok(local) => local,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        };
+        let (surface, text, _) = self.remote_drop.take().expect("held");
+        if local {
+            self.report(
+                "image drop isn't supported for remote sessions yet",
+                Level::Error,
+            );
+        } else {
+            self.paste_text_into(&surface, &text);
+        }
     }
 
     /// Send `text` to one surface as a paste, made safe by [`paste_safe`].

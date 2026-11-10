@@ -35,8 +35,8 @@
 //! channel, so the UI tick is never stalled by a slow/missing notification
 //! daemon.
 //!
-//! Architecture: leaf module. Depends only on `session` (the `SessionId` /
-//! `NotificationBackend` types) and `paths`. Never reaches into `app` /
+//! Architecture: leaf module. Depends only on `session` (the
+//! `NotificationBackend` type) and `paths`. Never reaches into `app` /
 //! `agent` / `ui`.
 
 use std::process::{Command, Output, Stdio};
@@ -48,7 +48,6 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use crate::session::settings::NotificationBackend;
-use crate::session::SessionId;
 
 /// The resolved delivery mechanism, decided once at startup from the
 /// configured [`NotificationBackend`] plus host probing. This is the concrete
@@ -102,9 +101,10 @@ impl DeliveryBackend {
 /// One notification to fire. Cheap to clone/move across the channel.
 #[derive(Debug, Clone)]
 pub struct Notification {
-    /// Stable session identifier — also what a click asks the loop to
-    /// focus.
-    pub session_id: SessionId,
+    /// The session's id as the snapshot carries it (a Fleet Task's name) —
+    /// also what a click asks the loop to focus. Empty for a notification no
+    /// session raised (`thurbox-cli notify`), which a click focuses nothing for.
+    pub session_id: String,
     /// Title shown by the OS (e.g. `"my-feature · claude"`).
     pub title: String,
     /// Body text (e.g. the agent's last OSC notification message, or a
@@ -122,6 +122,13 @@ pub struct NotificationSender {
 }
 
 impl NotificationSender {
+    /// A sender whose notifications land on `tx` instead of a desktop, for a
+    /// test that reads what would have been delivered.
+    #[cfg(test)]
+    pub(crate) fn to(tx: Sender<Notification>) -> Self {
+        Self { tx }
+    }
+
     /// Best-effort send. A full channel or a dead receiver drops the
     /// notification silently (notifications are advisory; we never block
     /// the UI tick on them).
@@ -240,7 +247,7 @@ fn dispatch_dbus(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let handle = notif.show()?;
-    let session_id = n.session_id;
+    let session_id = n.session_id.clone();
     // wait_for_action blocks until the user clicks, dismisses, or the
     // notification times out — run it on its own short-lived thread so the
     // dispatcher can move on to the next queued notification.
@@ -323,7 +330,7 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
     // very sparse PATH, so a bare `thurbox-cli` would often not resolve.
     // If we can't locate the CLI binary the click is simply non-interactive
     // (the banner still shows).
-    if let Some(focus_cmd) = thurbox_cli_focus_command(n.session_id) {
+    if let Some(focus_cmd) = thurbox_cli_focus_command(&n.session_id) {
         cmd.arg("-execute").arg(focus_cmd);
     }
     let status = run_notifier(&mut cmd)?.status;
@@ -339,18 +346,20 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
 /// `thurbox-cli` binary next to the running executable — the path probe
 /// is cached, the resolution is not, because `current_exe()` is cheap.
 #[cfg(target_os = "macos")]
-fn thurbox_cli_focus_command(session_id: SessionId) -> Option<String> {
+fn thurbox_cli_focus_command(session_id: &str) -> Option<String> {
+    if session_id.is_empty() {
+        return None;
+    }
     let exe = std::env::current_exe().ok()?;
     let parent = exe.parent()?;
     let cli = parent.join("thurbox-cli");
     if !cli.exists() {
         return None;
     }
-    // SessionId is a UUID (hex + dashes), shell-safe without quoting.
     Some(format!(
         "{} ui action session.focus --session {}",
         sh_single_quote(&cli.to_string_lossy()),
-        session_id
+        sh_single_quote(session_id)
     ))
 }
 
@@ -665,9 +674,12 @@ static FOCUS_REQUEST: Mutex<Option<String>> = Mutex::new(None);
 
 /// Click handler: record the focus request from the wait-for-action thread.
 #[cfg(target_os = "linux")]
-fn write_focus_request(session_id: SessionId) {
+fn write_focus_request(session_id: String) {
+    if session_id.is_empty() {
+        return;
+    }
     if let Ok(mut slot) = FOCUS_REQUEST.lock() {
-        *slot = Some(session_id.to_string());
+        *slot = Some(session_id);
     }
 }
 
@@ -725,7 +737,7 @@ mod tests {
         drop(rx);
         let sender = NotificationSender { tx };
         sender.send(Notification {
-            session_id: SessionId::default(),
+            session_id: String::new(),
             title: "t".into(),
             body: "b".into(),
             sound: false,

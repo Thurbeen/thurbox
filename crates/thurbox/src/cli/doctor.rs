@@ -384,7 +384,7 @@ fn fleet_config_path() -> Option<(std::path::PathBuf, &'static str)> {
     Some((base.join("fleet/config.toml"), "the per-user file"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

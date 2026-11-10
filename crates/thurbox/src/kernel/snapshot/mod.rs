@@ -276,8 +276,9 @@ pub struct Snapshot {
     /// Repositories a new session can be created against.
     pub repos: Vec<RepoRow>,
     /// The harnesses Fleet has profiles for (`fleet version --json`): the
-    /// agents a session can run. Empty until Fleet has answered.
-    pub agents: Vec<AgentRow>,
+    /// agents a session can run. `None` until Fleet has answered, which is
+    /// not the same as no agents.
+    pub agents: Option<Vec<AgentRow>>,
     /// Configured and discovered hosts; empty means local only.
     pub hosts: Vec<HostRow>,
     pub automations: Vec<AutomationRow>,
@@ -384,10 +385,12 @@ impl SnapshotStore {
         self.current.sessions = read.sessions;
         self.current.error = read.error;
         if let Some(harnesses) = read.harnesses {
-            self.current.agents = harnesses
-                .into_iter()
-                .map(|name| AgentRow { name })
-                .collect();
+            self.current.agents = Some(
+                harnesses
+                    .into_iter()
+                    .map(|name| AgentRow { name })
+                    .collect(),
+            );
         }
         self.current.taken_at_ms = taken_at_stamp();
         self.mark_changed();

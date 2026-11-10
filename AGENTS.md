@@ -11,13 +11,11 @@ define) inside persistent tmux sessions, rendered as terminal
 panels via ratatui + tui-term. Sessions survive crashes/restarts
 because tmux keeps the processes alive.
 
-Each session picks **which agent** to run from a declarative
-registry (`~/.config/thurbox/agents.toml`). Thurbox is
-agent-neutral: it knows nothing about any agent's model,
-permissions, prompts, or tools — only how to launch the CLI with
-the right `command + args`. Each agent uses its own default
-config (bake a model or other flags into the agent's `args` if
-you want them).
+Each session is a Fleet Task (ADR-41), and the agent it runs is the Task's
+harness: one of the harness profiles Fleet has, which launch, resume and watch
+the agent's CLI. Thurbox is agent-neutral: it keeps no agent registry and
+knows nothing about any agent's model, permissions, prompts or tools; it offers
+the harnesses `fleet version --json` lists.
 
 ## Repository layout
 
@@ -419,7 +417,7 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
   state is plain files: `interface.json` (theme, editor, the session
   order, each companion shell's pane) beside
   `settings.toml`, `bookmarks.json` and `perf.json` in the data directory;
-  agent definitions in `~/.config/thurbox/agents.toml`;
+  the agents are Fleet's harness profiles;
   remote SSH hosts in `~/.config/thurbox/hosts.toml`
 - Requires tmux >= 3.2, psmux >= 3.3.8, or opt-in RMUX >= 0.10.0;
   version evidence and RMUX host limits are in `docs/thurbox/config.md`

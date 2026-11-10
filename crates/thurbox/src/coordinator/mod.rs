@@ -595,6 +595,7 @@ impl App {
         // What Windows said about its clipboard, for a paste press that could
         // not be answered when it happened (WSL only — `clipboard::ImageProbe`).
         self.poll_image_probe();
+        self.poll_remote_drop();
 
         // An update that replaced binaries is worth saying once; a check that
         // merely found a release shows up in the header instead.
@@ -827,6 +828,11 @@ impl App {
                     if open_requested {
                         self.open_shell(&session, None);
                     }
+                }
+                // Nothing proved the pane gone: its record stays, and the
+                // re-adopt is tried again.
+                ShellResult::Unreachable { session, error } => {
+                    tracing::debug!("shell of {session} not re-adopted yet: {error}");
                 }
                 ShellResult::Failed { session, error } => {
                     self.report(

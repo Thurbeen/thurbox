@@ -127,7 +127,7 @@ fn send(args: SendArgs, s: &Settings) -> Result<CommandOutput, CommandError> {
         _ => None,
     };
     let n = Notification {
-        session_id: crate::session::SessionId::default(),
+        session_id: String::new(),
         title: args.title,
         body: args.body,
         sound: s.notifications.sound,
@@ -277,7 +277,7 @@ fn run_test(feature_on: bool, backend: DeliveryBackend, sound: bool) -> CommandO
     }
 
     let n = Notification {
-        session_id: crate::session::SessionId::default(),
+        session_id: String::new(),
         title: "thurbox · test".into(),
         body: "Notifications are working. This is a test from `thurbox-cli notify --test`.".into(),
         sound,

@@ -237,9 +237,9 @@ fn full() -> Snapshot {
             path: "/repo".into(),
             name: "thurbox".into(),
         }],
-        agents: vec![thurbox::kernel::snapshot::AgentRow {
+        agents: Some(vec![thurbox::kernel::snapshot::AgentRow {
             name: "claude".into(),
-        }],
+        }]),
         hosts: vec![HostRow {
             name: "box".into(),
             detail: "ssh".into(),

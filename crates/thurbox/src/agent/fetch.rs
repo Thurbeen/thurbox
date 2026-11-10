@@ -58,7 +58,7 @@ pub fn official_set_base_at(folder: &str, git_ref: &str) -> String {
 pub enum Source {
     /// A base URL (no trailing slash); files fetched via `<base>/<rel>`.
     Remote(String),
-    /// A local directory containing `extension.toml` + payload files.
+    /// A local directory holding the files, read by their relative path.
     Local(PathBuf),
     /// A version-control repository, obtained as a working copy rather than
     /// fetched file by file.

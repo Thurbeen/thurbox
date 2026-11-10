@@ -337,7 +337,7 @@ and takes no input, and the message band says why, once per failure.
 | `session.meta` | On each `thurbox.sessions` row: the session's `ui.*` meta keys by full key (`meta["ui.note"]`). Absent when there are none, which is every row the Fleet engine publishes. Treat them as untrusted text: one line, control and invisible characters (bidi overrides, zero-width spaces, tag characters, Hangul fillers) stripped, at most 256 characters, 32 keys per session. Other keys are never published, nor is a `ui.*` key carrying such a character. The bundled list draws `ui.note` muted on the row and groups by `ui.group` |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.search` | The content search's answer: lines found in every session's terminals, scrollback included, ranked, each with how far back it is (`back`) and the scroll offset that shows it (`scroll`). Served only while `store.want_content` holds a query (optionally narrowed by `store["want_content.sessions"]`), off the render thread; an empty query reads every history into the cache and matches nothing, so an open search strip is ready before the first keystroke; nil until the first answer lands |
-| `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
+| `thurbox.bookmarks/browse` | The creation flow's reads: remembered repositories and a directory listing — each served only while `store.want_bookmarks`/`want_browse` asks for it |
 | `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |
 
 **Your globals are your own.** Each plugin runs in an environment of its own: a
@@ -1874,7 +1874,7 @@ below.
 
 | Example | What it is |
 |---|---|
-| `tasks` | v1's tasks pane, rebuilt as a plugin. Reads `thurbox.tasks`, writes `task` commands, needs no capability |
+| `tasks` | A scratch to-do list kept in the pane's own `state` until thurbox quits. Draws the `input` node kind, needs no capability |
 | `top` | CPU, memory and load as gauges, parsed from `top`. Asks for `run`, so it needs your trust |
 
 | Example file | What it is |

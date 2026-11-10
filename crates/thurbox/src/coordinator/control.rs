@@ -252,8 +252,8 @@ impl App {
                     let target = args
                         .get("session_id")
                         .and_then(Value::as_str)
-                        .and_then(|id| uuid::Uuid::parse_str(id).ok())
-                        .map(|id| id.to_string());
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string);
                     let instance = self
                         .control
                         .as_ref()
@@ -413,10 +413,14 @@ impl App {
                 "destructive action needs only session_id".into(),
             ));
         }
+        // A session's id as the snapshot carries it: a Fleet Task's name.
         let target = object["session_id"]
             .as_str()
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .ok_or(("invalid_arguments", "session_id must be a UUID".into()))?
+            .filter(|id| !id.is_empty())
+            .ok_or((
+                "invalid_arguments",
+                "session_id must be a session's id".into(),
+            ))?
             .to_string();
         let row = self.snapshots.current().session(&target).ok_or((
             "stale_target",
@@ -601,10 +605,11 @@ impl App {
                 let id = object
                     .get("session_id")
                     .and_then(Value::as_str)
-                    .ok_or(("invalid_arguments", "session_id must be a string".into()))?;
-                if uuid::Uuid::parse_str(id).is_err() {
-                    return Err(("invalid_arguments", "session_id must be a UUID".into()));
-                }
+                    .filter(|id| !id.is_empty())
+                    .ok_or((
+                        "invalid_arguments",
+                        "session_id must be a session's id".into(),
+                    ))?;
                 if self.snapshots.current().session(id).is_none() {
                     return Err((
                         "session_not_found",
