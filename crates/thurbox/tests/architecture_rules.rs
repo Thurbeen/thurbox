@@ -114,6 +114,13 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
+    // automations.json beside settings.toml: the schedule thurbox keeps
+    // while Fleet has no schedule kind. The schedule math is `session`'s.
+    ModuleRules {
+        name: "config::automations",
+        allowed: &["session", "config::file"],
+        allowed_path_only: &[],
+    },
     ModuleRules {
         name: "config::file",
         allowed: &["paths"],
@@ -218,6 +225,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "backend",
             "config::file",
             "config::hosts",
+            "config::automations",
             "config::interface_state",
             "config::settings",
             "config::themes",
@@ -250,6 +258,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent::extension_config",
             "backend",
             "config::hosts",
+            "config::automations",
             "config::interface_state",
             "config::settings",
             "config::themes",

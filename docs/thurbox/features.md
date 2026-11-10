@@ -1688,241 +1688,67 @@ each part. `AGENTS.md` keeps a summary and points here.
 
 ## Automations
 
-> **CLI only, but they still fire.** There is no automations pane, and the
-> interface has no in-TUI scheduler — the heartbeat keeper runs due
-> automations whether or not thurbox is open, which is what keeps every extension
-> working. Author and inspect them with `thurbox-cli automation`. The keeper's 60 s
-> cadence is the resolution; `automation run --wait` fires one at once.
+An automation is a named, scheduled run. When it fires it does one of three
+things:
 
-In 1.x, `Ctrl+P` opened the automations list (the chord is the command
-palette now). An **automation** is a named,
-enable/disable-able task that fires on a schedule (one-shot or
-recurring) and, when it fires, either pastes a prompt into an
-existing session (**send**) or spawns a new session — optionally on
-a fresh git worktree — and prompts it (**spawn**). This is the
-Thurbox analogue of "scheduled agent runs": queue follow-up
-prompts, run nightly maintenance, or kick off a fresh triage
-session every weekday morning.
+- **send**: queue its prompt for a session, `fleet send <task> <prompt>`;
+- **spawn**: create a session in a repository, an interactive Task applied
+  with `fleet apply --create-only` and named after the automation and the
+  second it fired, then queue its prompt for it;
+- **exec**: run a command headlessly on this machine (`sh -c`, `cmd /C` on
+  Windows), in its `--cwd` or the home directory, with its `--env` variables
+  and `THURBOX_AUTOMATION_NAME`, killed at its deadline. Its exit code and the
+  end of its output are the run's detail.
 
-Automations replace the older one-shot "scheduled commands"
-feature; a one-shot is simply an automation with a `once` schedule.
+The trigger is a preset (`hourly`, `daily`, `weekdays`, `weekly`, with
+`--time HH:MM` and `--weekday`), `cron:"<expr>"` or `at:<unix millis>`,
+evaluated in `--timezone` or the system's own. A preset is stored as the cron
+expression it spells.
 
-### Schedules
+```bash
+thurbox-cli automation create --name nightly --trigger daily --time 03:00 \
+  --session review-main --prompt "review what landed today"
+thurbox-cli automation create --name sync --trigger hourly --command "make sync"
+thurbox-cli automation list
+thurbox-cli automation show nightly          # its schedule and its last 20 runs
+thurbox-cli automation edit nightly --disable
+thurbox-cli automation run sync              # fire now, answer with the run
+thurbox-cli automation tick                  # fire whatever is due
+thurbox-cli automation remove sync
+```
 
-A schedule is either:
+### Where they live, and who fires them
 
-- **once** — fire a single time at an absolute timestamp
-  (`at:<unix_millis>`), then disable itself.
-- **cron** — a standard 5-field Unix cron expression (day-of-week
-  `0`–`6`, `0` = Sunday). Friendly presets compile to cron:
-  `hourly`, `daily`, `weekdays`, `weekly`, combined with an
-  `HH:MM` time and optional IANA timezone (DST-correct via
-  `chrono-tz`; defaults to system local time).
+Fleet has no schedule kind (ADR-41), so automations are thurbox's: one plain
+file, `automations.json` beside `settings.toml`, holding each automation's
+definition and its schedule state (last and next run, recent runs). Only what a
+fire does to a session goes through Fleet.
 
-`next_run_at` (unix millis) is computed from the schedule and is
-the dispatcher's scan key. After each fire it is recomputed; a
-spent one-shot clears it and disables the automation.
+Two firers share the file:
 
-### Actions
+- the interface ticks every 15 seconds while it runs, with
+  `[features] automations` on (the default);
+- `thurbox-cli automation tick` is the same tick for an OS timer (a cron line,
+  a systemd timer), so a schedule keeps firing with no interface open.
 
-- **send** — bracketed-paste the prompt into the target session,
-  followed by a deferred Enter. Skipped (and logged as such) if the
-  target session is not currently running.
-- **spawn** — create a session named `auto-<id>` (reusing it on
-  later fires, including after a TUI restart where it is restored
-  by name), optionally on a worktree off a base branch, with the
-  chosen agent. The prompt is delivered after a short boot delay so
-  the agent CLI has time to start. Worktree provisioning is
-  **idempotent** (`git::create_or_attach_worktree`): if the session
-  was closed but its worktree/branch still exist, a later fire
-  reuses them rather than failing with "branch already exists".
-- **exec** — run a shell command (`sh -c`, `cmd /C` on Windows) with no
-  session and no agent: a deterministic scheduled job such as a sync. It
-  runs through the same bounded runner as the `hooks.toml` lifecycle hooks
-  (`session_ops::bounded`), with a deadline (`--timeout`, default 600 s) at
-  which it and everything it started are killed, a directory (`--cwd`,
-  default your home directory) and variables (`--env K=V`). It inherits the
-  firer's environment, then gets its own variables, then thurbox's location
-  (`THURBOX_CONFIG_DIR`, `THURBOX_DATA_DIR`, `THURBOX_SOCKET`) and its own
-  identity (`THURBOX_AUTOMATION_ID`, `THURBOX_AUTOMATION_NAME`), which win —
-  so a `thurbox-cli` inside reaches the instance that fired it, whether the
-  heartbeat, an OS timer or a hand-run tick did. A session identity the firer
-  carried (`THURBOX_SESSION` and its kin, when `run --wait` is typed in a
-  pane) is dropped. There is no login shell: write `bash -lc '…'` in the
-  command for one. The command runs in a process group of its own, which is
-  what lets a timeout kill everything it started — and also why a firer that
-  is itself killed mid-run (a Ctrl+C on `run --wait`) leaves it running; the
-  next tick past its deadline marks that run `timed_out`.
+A fire is **claimed in the file before it runs**: under the lock every process
+takes for the file, the tick records the run as running and moves the next run
+on, then releases the lock, runs, and records the outcome under the lock again.
+Two firers therefore never fire one occurrence twice, and the lock is never
+held while a run takes its time. A run still marked running past its deadline
+(its firer hung or died) is recorded as timed out by the next tick. Fires in
+one tick run one after another.
 
-### Optional lifetime owner
+A file that does not parse is an error rather than an empty list: a tick that
+read it as empty and wrote it back would lose every automation.
 
-`automation create --owner-session <ref>` explicitly ties Send, Spawn or Exec
-to an existing active session. `automation edit <ref> --owner-session none`
-clears the owner. Ownership is never inferred from the caller's session, and
-existing automations remain unowned. List and show JSON include
-`owner_session_id`.
+### What is gone
 
-Soft deletion disables owned automations and Sends targeting the session in
-the same transaction as deletion. Undo preserves their ids, history and prior
-enabled state. A Send owned by one deleted session and targeting another
-stays disabled until both suspensions end. Previously disabled automations stay off.
-An explicit disable while suspended also survives undo; a name or schedule
-edit preserves the saved enabled state. Changing or clearing the owner restores
-the saved state and schedule when the last suspension ends, with an explicit
-enabled-state choice taking precedence.
-The window reap leaves automations intact; force delete and purge remove
-owned automations and their history. Delete JSON lists the affected ids.
-
-### Execution model
-
-Every fire goes through one implementation, `session_ops::automations`
-(issue #1468) — the interface's pane, `thurbox-cli automation` and the
-heartbeat call the same save, fire and tick. Automations fire from:
-
-1. **The heartbeat keeper** — a detached `automation-heartbeat` window
-   (armed on TUI startup and on `thurbox-cli automation create`) that loops
-   `thurbox-cli automation tick` every 60 s. Because it is a live window it
-   also keeps the multiplexer server alive, so automations — **including
-   spawn** — fire with the TUI closed and with no other sessions open. The
-   interface itself runs no scheduler.
-2. **An optional OS timer** — `packaging/systemd` / `packaging/launchd`
-   units run the same `tick` for reboot-proof, tmux-independent firing.
-   Opt-in.
-3. **`automation run <ref> --wait`** — one automation, now, on the calling
-   process (below).
-
-**Claim-based firing (no double-fire).** Before acting, every firer
-performs an atomic compare-and-swap
-(`Database::claim_due_automation`): it advances `next_run_at` *only
-if* the row still holds the value it observed as due. Exactly one
-firer wins; the rest skip. So the keeper, an OS timer and a hand-run tick
-can all run at once without an automation firing twice. Ordering is
-claim-then-act (at-most-once): a crash between claim and side effect
-loses a run rather than duplicating one. Every fire also holds the
-automation's run lock (`lock:run:<id>` in `event_cursors`) for its length,
-so a tick skips an automation whose `run --wait` is still going
-(`run-in-flight`) and `run --wait` refuses one a tick is firing.
-
-**The run row.** The claim and the run's row are one transaction: the row
-is opened `running`, stamped `started_at`, with a deadline (the timeout plus
-5 s), before the action fires, and the outcome is written over it — `status`
-(`success`, `error`, `skipped`, `timed_out`), `finished_at`, an exec's
-`exit_code` and the last 4 KB of its stdout and its stderr apart, plus the
-one-line `detail`. A row still `running` past its deadline is marked
-`timed_out` by the next tick, so a firer that hung and one that died both
-leave a record. `automation runs --json` shows all of it, with
-`duration_ms`. A history write that fails is reported as the fire's
-`history_error` in the tick's output, so a row it left `running` is not
-read as a hung action.
-
-**The tick's wall time.** Due execs run on worker threads, four at most,
-each with its own deadline, while the tick fires the sends and spawns and
-then does its housekeeping — the remote hook-status poll, the mirror sync,
-the soft-delete reap, remote teardown retries, the telemetry export. A tick
-takes as long as its longest exec rather than the sum, and a hung exec
-holds up neither another due automation nor the housekeeping.
-
-**A tick that fails** (the database would not open, the due scan could not
-read a row, a panic) is recorded in `automation-tick.json` beside the
-database, and appended with a timestamp to `automation-tick.log` there
-(capped at 64 KB). So is each automation a tick that ran could not fire
-because its lock or claim could not be written; it is due again next tick.
-The keeper discards the tick's own output, so this is the trace;
-`thurbox-cli runtime status` reports the last tick's time, outcome, error
-and those automations.
-
-**Headless send vs spawn.** `send` types into the target session's
-window on the backend its route names. `spawn` creates the session
-headlessly (`spawn_session_headless`) and schedules the prompt on its
-backend (`send_text_after`, a short `run-shell` timer on tmux) once the
-agent boots; a later fire reuses the `auto-<id>` session it finds by its
-row, and never types into a window no row owns (ADR-30).
-
-### Automations pane (1.x)
-
-1.x had an Automations pane beneath the session list, with an editor and a
-run-history panel. Neither exists in the current interface; a plugin can
-build one from `thurbox.automations` and the `automation` command.
-
-### List + editor (1.x)
-
-`Ctrl+P` opened the same set over the full list (a modal, available
-at any width). Keys: `n` new, `e`/`Enter` edit, `Space` toggle
-enabled, `r` run-now, `d` delete, `Esc` close.
-
-The editor avoids typing schedules by hand. **Trigger** is a
-selector cycled with `←/→` — `once`, `hourly`, `daily`,
-`weekdays`, `weekly`, or `cron` — and the form adapts to it:
-
-- `once` → an **In** delay field (`30m`, `2h`, `1h30m`, `1d`).
-- `hourly` → a **Minute** stepper.
-- `daily`/`weekdays` → **Hour** + **Minute** steppers.
-- `weekly` → a **Weekday** selector + Hour/Minute.
-- `cron` → a raw expression field for power users.
-
-**Action** is a `‹ send ›`/`‹ spawn ›` selector. For **send**, a
-**Target** selector (also cycled with `←/→`) lets you pick which
-running session receives the prompt — it defaults to the active
-session and lists every session; saving is rejected if none exist.
-For **spawn**, the **Repo**/**Worktree**/**Agent** text fields
-appear instead (a leading `~` in the repo path is expanded).
-
-`Hour`/`Minute`/`Weekday`/`Action`/`Target` are steppers/selectors
-(`←/→` adjust, wrapping); `Tab`/`↑↓` move between fields; `Space`
-also adjusts the focused selector/stepper; `^E` toggles enabled;
-`Enter` saves. A live **next:** line previews when the automation
-will fire (or shows the validation error for the current input).
-Editing an existing automation reverse-maps its cron back into the
-structured fields where it matches a known preset shape; otherwise
-it opens as raw `cron`.
-
-### Persistence
-
-Automations live in the `automations` SQLite table (`name`,
-`enabled`, `schedule_kind`/`schedule_spec`, `timezone`,
-`action_kind` plus action columns, `prompt`, timestamps,
-`last_run_at`, `next_run_at`, and since schema v56 `key`, `timeout_secs`,
-`cwd`, `env`), with a partial index on `next_run_at` (where enabled and
-non-null) for the due-scan and a unique one on `key` where set. Each fire
-appends to `automation_runs` (since v56 also `finished_at`, `exit_code`,
-`stdout_tail`, `stderr_tail`, `deadline_at`), as the run row above
-describes.
-
-### Headless access (`thurbox-cli`)
-
-`thurbox-cli automation` (alias `auto`) provides
-`create`/`list`/`show`/`edit`/`remove`/`run`/`runs`/`tick` without
-the TUI, sharing the same tables and the same rules as the interface's pane:
-a cron expression must parse, a timezone must exist, and a schedule must fire
-at least once more.
-
-- **References.** Every verb takes `<ref>`: an id, then a key, then a name
-  only one automation has. A name two automations share is refused with exit
-  3 and both ids. `list --key` and `list --name` filter.
-- **Keyed create.** `create --key K --on-existing update|keep|fail` (default
-  `fail`) makes a setup script safe to run twice: `update` rewrites the one
-  automation in place, keeping its id and run history, and leaves a pending
-  fire alone unless the schedule, timezone or enabled flag changed; `keep`
-  leaves it; `fail` exits 5. `create --json` says which happened in
-  `outcome` (`created`, `updated` or `kept`). A key is unique among
-  automations.
-- **Edit.** `edit` writes through the same compare-and-set as the
-  interface's edit, so it moves the next fire only when the schedule,
-  timezone or enabled flag changed and never undoes a fire the heartbeat
-  claimed meanwhile. `--command` replaces an exec's command in place;
-  `--timeout`, `--cwd` and `--env` (which replaces the set; `--clear-env`
-  empties it) change how it runs.
-- **Run.** `run` marks an enabled automation due for the next tick (a
-  disabled one is refused, not switched on). `run --wait` fires it now and
-  answers with the run — the same row `runs` shows — exiting 0 on success, 1
-  on a failed run, 4 when it timed out and 5 when a run of it is already in
-  flight. It runs nothing else: no other due automation, no self-heal, sync,
-  reap or export. A due automation is claimed as the tick claims it, so its
-  next run moves on; one that was not due keeps its schedule. `--timeout`
-  bounds this run; `--force` runs a disabled automation once and leaves it
-  disabled.
-- **Tick.** `tick` fires all currently-due automations headlessly (this is
-  what the heartbeat keeper and the optional OS timers invoke).
+v2's automation engine ran in the database: an owner session whose deletion
+removed its automations, idempotent `--key` creation, the heartbeat keeper
+window, the per-run lock rows and the failing-run alert. None of these came
+back. A missed occurrence while nothing ticked is not caught up: the next tick
+fires once and schedules the occurrence after it.
 
 ## Tasks (todo list)
 
@@ -2264,10 +2090,10 @@ status toast (the chord never reaches the PTY), and contributes no
 global-search results — but its data and the `thurbox-cli` surface
 stay fully functional, so flipping a flag back on is lossless. The one
 deliberate exception is `automations = false`, which also stops the
-TUI firing due schedules and arming the heartbeat at startup —
+interface ticking due schedules —
 "disable automations" should actually stop scheduled work, not just
-hide a list. Explicit CLI automation commands (and an already-armed
-keeper window) keep working, because typing a command is unambiguous
+hide a list. Explicit `thurbox-cli automation` commands, `automation tick`
+from an OS timer included, keep working, because typing a command is unambiguous
 intent. `mouse = false` is similarly a hard gate at the boundary:
 terminal mouse capture is never enabled (so the terminal keeps its
 native selection/URL handling) and any stray mouse event is dropped

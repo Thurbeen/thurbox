@@ -32,6 +32,7 @@ use crate::session::settings::Settings;
 #[cfg(test)]
 mod tests;
 
+pub mod automation;
 pub mod config;
 pub mod doctor;
 pub mod editor;
@@ -183,6 +184,11 @@ pub enum Command {
         #[command(subcommand)]
         action: editor::Action,
     },
+    /// Scheduled runs: create, list, change, remove and fire them.
+    Automation {
+        #[command(subcommand)]
+        action: automation::Action,
+    },
     /// Validate or inspect the config files.
     Config {
         #[command(subcommand)]
@@ -306,6 +312,7 @@ fn parse_fields(spec: &str) -> Vec<String> {
 fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action)?,
+        Command::Automation { action } => automation::run(action, &settings.fleet.program)?,
         Command::Config { action } => config::run(action, settings)?,
         Command::Version(args) => version::run(args, settings.features.version_check),
         Command::Update(args) => update::run(args, settings.features.auto_update),

@@ -22,7 +22,6 @@ fn the_output_flags_are_global_and_parse_after_a_subcommand() {
 fn the_engine_commands_are_gone() {
     for noun in [
         "session",
-        "automation",
         "task",
         "message",
         "extension",

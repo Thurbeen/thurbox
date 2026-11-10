@@ -144,7 +144,7 @@ impl super::Executor for Fleet {
 /// A session's name as a Task's: lowercase letters, digits, `-` and `.`,
 /// starting and ending with a letter or digit, which is what Fleet takes.
 /// Anything else becomes a `-`, and runs of them one.
-fn task_name(name: &str) -> String {
+pub(crate) fn task_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars().flat_map(char::to_lowercase) {
         if c.is_ascii_alphanumeric() || c == '.' {

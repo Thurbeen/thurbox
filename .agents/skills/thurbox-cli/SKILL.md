@@ -1,6 +1,6 @@
 ---
 name: thurbox-cli
-description: The thurbox-cli binary after ADR-41: its subcommands (editor, config, version, update, notify and notify send, perf, plugin, ui, schema, doctor), its output formats and exit codes, and where the session verbs went (Fleet's `fleet` command line). Use when changing or driving thurbox-cli, or when looking for a session, automation, task or message verb.
+description: The thurbox-cli binary after ADR-41: its subcommands (automation, editor, config, version, update, notify and notify send, perf, plugin, ui, schema, doctor), its output formats and exit codes, and where the session verbs went (Fleet's `fleet` command line). Use when changing or driving thurbox-cli, or when looking for a session, automation, task or message verb.
 ---
 
 # thurbox-cli
@@ -24,12 +24,13 @@ the session verbs are Fleet's command line, not thurbox-cli's:
 | `thurbox-cli task` | a Task with `dispatch: false` |
 | `thurbox-cli message` | `fleet send`, and the Task's `status.inbox` |
 | `thurbox-cli session signal` | `fleet signal` |
-| `thurbox-cli automation` | none yet: a Fleet schedule kind is still to design |
+| `thurbox-cli automation` (v2) | `thurbox-cli automation create/list/show/edit/remove/run/tick`, over `automations.json`; a send or spawn goes through `fleet send` / `fleet apply` |
 
 thurbox-cli covers the interface's own files and a running interface:
 
 | Subcommand | What it does |
 | --- | --- |
+| `automation …` | scheduled send, spawn and exec runs in `automations.json`; the interface ticks while it runs, `automation tick` from an OS timer |
 | `editor get/set/mode` | the editor `Ctrl+O` opens, in `interface.json` |
 | `config validate/show` | strict parse of every config file; the effective configuration and where each value comes from |
 | `version [--check]`, `update [--force]` | the running version; the newest release of this major line |

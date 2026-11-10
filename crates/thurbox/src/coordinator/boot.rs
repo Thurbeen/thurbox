@@ -198,6 +198,11 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // The engine (ADR-41): Fleet's Tasks through its command line, with a
     // `fleet up` kept running.
     let fleet = std::path::PathBuf::from(&startup_settings.fleet.program);
+    // Automations fire while the interface runs; `thurbox-cli automation
+    // tick` fires them from an OS timer otherwise.
+    if startup_settings.features.automations {
+        thurbox::kernel::automations::keep_ticking(fleet.clone());
+    }
     let snapshots = SnapshotStore::with_source(
         Box::new(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager(
             fleet.clone(),

@@ -107,7 +107,7 @@ to a repository of its own with nothing to untangle.
 | `session_meta`, `session_events`, `session_relaunches`, `session_intents`, `session_loss_suspects`, `session_lifecycle_clock` | dropped: Fleet's receipts and Known/Unknown observation |
 | `session_messages` | `status.inbox`, `fleet send` |
 | `tasks` | Tasks with `dispatch: false` |
-| `automations`, `automation_runs`, `automation_suspensions` | a Fleet schedule kind, to design |
+| `automations`, `automation_runs`, `automation_suspensions` | `automations.json` beside thurbox's `settings.toml`, fired by thurbox; a Fleet schedule kind, to design, would replace it |
 | `event_cursors`, `snapshot_versions` | `fleet watch --since` |
 | `audit_log`, `telemetry_export` | Fleet's store history and `fleet-telemetry` |
 | `repo_bookmarks`, `review_comments`, `review_marks`, settings, keybindings | thurbox interface files |
@@ -116,7 +116,7 @@ to a repository of its own with nothing to untangle.
 
 ## Open
 
-- A schedule kind in Fleet to replace automations.
+- A schedule kind in Fleet to replace thurbox's `automations.json`.
 - Fork and `restart --fresh`: a conversation field on the Task, or dropped.
 - `hooks.toml` beyond `pre_launch`: harness settings or a Fleet plugin.
 - Shared hosts (ADR-24): one Fleet store per operator is assumed.

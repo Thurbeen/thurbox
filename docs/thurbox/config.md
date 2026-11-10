@@ -37,9 +37,8 @@ development checkout never touches your real setup.
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
-| `~/.local/share/thurbox/automation-tick.json` | JSON | `automation tick` | each tick | the last tick's time, outcome, error, fire counts and the automations it could not fire, which `thurbox-cli runtime status` reports — the heartbeat keeper throws the tick's own output away |
+| `~/.config/thurbox/automations.json` | JSON | `thurbox-cli automation` (or you) | each tick and each command | every automation: its trigger, action and prompt, its last and next run, and its 20 most recent runs. Rewritten whole under a lock every process takes (`automations.json.lock`); a file that does not parse is an error, never an empty list |
 | `~/.local/share/thurbox/host-verdicts.json` | JSON | thurbox | on each host-CLI question past the in-memory cache | why each shared host is not usable right now, when that was found and how many times in a row — the probe's backoff, so the interface and every heartbeat tick share one instead of each starting over (#1576). Not user-set; an entry goes the first time its host is usable, and `session sync --host <name>` drops it. A file rather than a `metadata` row because nothing needs it live and a write there would rebuild the session snapshot |
-| `~/.local/share/thurbox/automation-tick.log` | text | `automation tick` | each failed tick | one timestamped line per tick that failed (the database would not open, the due scan failed, a panic), and per automation a tick could not fire (its lock or claim could not be written). Capped at 64 KB, its older half dropped past that |
 
 `agents.toml` and `settings.toml` reload **live**: the TUI checks them about
 once per second and applies edits without a restart. The agent registry is
@@ -1020,7 +1019,7 @@ also_on_waiting     = false    # also fire when a session finishes (Working → 
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
-on_automation_failure = false  # notify when an automation run fails (once per failing streak)
+on_automation_failure = false  # ignored in v3
 
 [clipboard]
 provider       = "auto"        # auto | native | osc52 | none
@@ -1120,19 +1119,17 @@ effect in either direction. Same for `three_panel_min_cols` above.
 |-----|---------|----------|
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
 | `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters, frame/tick timing and the per-pane cost table (see `docs/thurbox/performance.md`) |
-| `automations` | `true` | heartbeat arming, by the TUI on startup and by `automation create`/`edit` (the CLI stays fully functional) |
+| `automations` | `true` | the interface firing due automations while it runs (the CLI, `automation tick` included, stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `false` | TUI and CLI delete immediately; on = soft delete with an undo window (CLI `--soft` / `--force` override) |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 | `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
 
-`automations = false` stops thurbox arming the heartbeat keeper: the TUI
-does not on startup, and `automation create`/`edit` do not either. The
-interface runs no scheduler of its own, so nothing fires unless a keeper
-window armed earlier, an OS timer from `packaging/`, a hand-run `automation
-tick` or `automation run --wait` fires it. Every other `thurbox-cli
-automation` command still works. Disabling
+`automations = false` stops the interface firing due automations; nothing
+fires unless an OS timer runs `thurbox-cli automation tick` or someone runs
+`automation run`. Every other `thurbox-cli automation` command still works.
+Disabling
 `shell_pane` hides existing shell panes but never kills their
 processes. `mouse = false` skips terminal mouse capture entirely, so
 the terminal keeps its native mouse behavior (its own text selection,
@@ -1349,8 +1346,9 @@ database:
   by name: Fleet would run a program named as the agent.
 - A rename sets the Task's `thurbox.dev/name` label (`fleet label`). The
   manual order and each session's companion shell pane are `interface.json`.
-- Restore, restart, fork, sync, the task list, dispatching a task and
-  automations have no engine and are refused by name. A todo is a Fleet Task
+- Restore, restart, fork, sync, the task list and dispatching a task have no
+  engine and are refused by name, as are the interface's automation verbs: an
+  automation is `thurbox-cli automation`'s, in `automations.json`. A todo is a Fleet Task
   that is not dispatched (`fleet apply`). Settings are `settings.toml`; the
   repositories and folders the creation flow remembers are `bookmarks.json`.
 - A Task's terminal is the stream `fleet attach` names, opened as a stream
@@ -1616,7 +1614,7 @@ thurbox-cli notify --test   # fire a sample notification to confirm it works
 | `sound` | `true` | play the OS default notification sound |
 | `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
 | `backend` | `auto` | delivery backend: `auto` \| `dbus` \| `windows` \| `off` |
-| `on_automation_failure` | `false` | notify when an automation run fails or times out, from the headless `automation tick` too; once per failing streak |
+| `on_automation_failure` | `false` | ignored in v3: the failing-run alert is gone |
 
 Notifications fire on the hooks-driven status transitions (see
 [Session status](#session-status)): always on `→ Blocked` (the agent needs
@@ -1653,18 +1651,10 @@ thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
   notification to reach the desktop. `thurbox-cli notify` shows the backend the
   current environment resolves to.
 
-**The failing-run alert.** With `on_automation_failure = true`, an automation
-run that ends `error` or `timed_out` raises a notification titled
-`Automation <name> failed` whose body is the first line of the run's detail
-(`exit 3`, `timed out after 60s`). It is sent the way `notify send` sends one,
-from the headless `automation tick` as well, and deduplicated per automation:
-the failures after the first are dropped until a tick sees the automation
-succeed again, or for at most a day while it keeps failing. Only a run that is
-still the automation's latest counts, so a slow tick reporting an older run
-cannot reopen a streak a newer success closed. It covers the runs
-a tick fires; `automation run --wait` reports its own outcome to its caller and
-raises no alert. `automation tick --json` lists each
-alert under `alerts`. Off by default.
+**The failing-run alert is gone.** v2 could notify when an automation run
+failed (`on_automation_failure`). v3 keeps the key so an old `settings.toml`
+still loads, and reads nothing from it; an Exec automation that wants an alert
+runs `thurbox-cli notify send` itself.
 
 ## Session status
 

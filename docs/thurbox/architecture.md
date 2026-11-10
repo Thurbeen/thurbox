@@ -351,6 +351,16 @@ growth would bloat the database over months of use.
 
 ## ADR-8b: Automations fire with or without the TUI
 
+> **Superseded in v3 (ADR-41).** The database, the heartbeat keeper and the
+> run lock rows are gone. Automations are `automations.json` beside
+> `settings.toml`, and two firers share it: the interface ticks every 15
+> seconds while it runs, and `thurbox-cli automation tick` is the same tick
+> for an OS timer. A fire is claimed in the file, under the file lock, before
+> it runs, and its outcome is written after; a run still marked running past
+> its deadline is recorded as timed out by the next tick. What a fire does to
+> a session goes through Fleet's command line. The rest of this record is the
+> v2 design. See features.md → Automations.
+
 > **Amended (issue #1468).** There is no TUI tick loop: the interface runs no
 > scheduler, and automations fire from the heartbeat, an OS timer, or
 > `automation run --wait`. Every verb — save, fire, tick — has one owner,

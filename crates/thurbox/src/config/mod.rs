@@ -2,6 +2,7 @@
 //! themes, lifecycle hooks and remote hosts. [`file`](mod@file) is the one loader every
 //! one of them (and `agents.toml` and the extension manifests) goes through.
 
+pub mod automations;
 pub mod file;
 pub mod hooks;
 pub mod hosts;

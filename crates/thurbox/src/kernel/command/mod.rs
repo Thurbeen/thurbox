@@ -21,6 +21,7 @@
 mod bus;
 mod execute;
 mod fleet;
+pub(crate) use fleet::task_name;
 
 pub use bus::{CommandBus, InFlight, Phase};
 
@@ -358,8 +359,9 @@ pub enum Command {
 }
 
 /// The fields an `automation` create or edit carries, each as the plugin
-/// passed it. No engine runs automations (a Fleet schedule kind is still to
-/// design), so the command is parsed and then refused by name.
+/// passed it. The interface does not edit automations: they are
+/// `thurbox-cli automation`'s (`config::automations`), so the command is
+/// parsed and then refused by name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutomationDraft {
     pub owner_session: Option<String>,
