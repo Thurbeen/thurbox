@@ -25,8 +25,8 @@ Three files here are not rationale: [tutorial.md](tutorial.md), the onboarding
 walkthrough (its screenshots are generated — see
 `scripts/demo/record-tutorial.sh`), [development.md](development.md), the
 dev-environment guide, and
-[benchmark-multiplexers.md](benchmark-multiplexers.md), the results and method
-of `just bench-multiplexers`.
+[benchmark-multiplexers.md](benchmark-multiplexers.md), the method of
+`just bench-multiplexers`.
 
 ## On Fleet
 

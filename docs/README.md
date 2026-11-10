@@ -140,7 +140,7 @@ docs/
 │   ├── features.md · performance.md · kernel.md · plugins.md
 │   ├── agents.md · config.md · orchestration.md · releasing.md · review.md
 │   ├── development.md · tutorial.md
-│   └── benchmark-multiplexers.md + benchmark-multiplexers/
+│   └── benchmark-multiplexers.md
 ├── fleet/                     the engine
 │   ├── README.md              its index
 │   ├── architecture.md        components, ports, flow, and the target (+ .svg)
@@ -154,10 +154,10 @@ docs/
 
 Naming: one directory per component, each with a `README.md` index. Pages are
 lower-case and hyphenated, one per subject; a subject gets a directory only
-when it has several pages of one kind (`controllers/`, `resources/`) or data
-(`benchmark-multiplexers/`). A diagram is an SVG with light and dark palettes,
-named after the page or section that embeds it and kept beside it. A new
-component joins as a directory beside these three.
+when it has several pages of one kind (`controllers/`, `resources/`). A
+diagram is an SVG with light and dark palettes, named after the page or
+section that embeds it and kept beside it. A new component joins as a
+directory beside these three.
 
 ## Keeping docs current
 

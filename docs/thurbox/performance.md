@@ -2206,7 +2206,8 @@ and session count, so both pin theirs.
 A third instrument answers a different question — how thurbox compares with
 the alternatives, not with itself: `just bench-multiplexers` runs raw tmux,
 Herdr and thurbox through the same scenarios with the same stand-in agent.
-Its results and method are in [benchmark-multiplexers.md](benchmark-multiplexers.md).
+Its method is in [benchmark-multiplexers.md](benchmark-multiplexers.md); it keeps no
+results, so run it to measure a build.
 
 **And on a busy machine, trust the counters over the CPU.** A percentage from
 `/proc` is a real measurement of a shared machine: taken while something else was

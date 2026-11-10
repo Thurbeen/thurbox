@@ -441,7 +441,7 @@ For rationale behind decisions, see `docs/`:
 - `docs/thurbox/performance.md` — Render/tick performance: demand-driven redraw,
   perf counters, the session-order cache, and how to measure
 - `docs/thurbox/benchmark-multiplexers.md` — thurbox against raw tmux and Herdr as a
-  host for agent sessions: results, method, and `just bench-multiplexers`
+  host for agent sessions: the method, and `just bench-multiplexers`
 - `docs/thurbox/review.md` — The per-path house rules a change is reviewed
   against, the trees excluded from review, and which document owns
   which class of fact. `.publish.yaml` names it in `review.rules`;
