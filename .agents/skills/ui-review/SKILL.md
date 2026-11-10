@@ -22,15 +22,16 @@ real thurbox sessions, tmux server, or agent accounts — everything runs agains
 
 ## Requirements
 
-`vhs` (+ `ffmpeg` + `ttyd`), `sqlite3`, `cargo`, `git`, `tmux`. The capture script
+`vhs` (+ `ffmpeg` + `ttyd`), `cargo`, `git`, `tmux`. The capture script
 preflights these and fails fast with a clear message if any are missing. Real agent
 CLIs (`claude`/`codex`/`antigravity`/`opencode`) are **optional** — if none are installed
-the script registers a stub agent so every panel still renders.
+the script runs a stub agent so every panel still renders. The sessions are Fleet
+Tasks in the sandbox's own store, so the build includes `fleet` and `runtime-mux`.
 
 ## Phase 1 — Capture
 
 Resolve the skill directory and run the capture script. It builds the dev binaries,
-sets up the sandbox, seeds sessions/tasks/an automation, and runs VHS to emit one PNG
+sets up the sandbox, seeds sessions and an automation, and runs VHS to emit one PNG
 per UI state plus a `manifest.json` describing them.
 
 ```bash

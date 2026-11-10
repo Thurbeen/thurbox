@@ -130,7 +130,7 @@ pub struct SessionRow {
     /// very thing the operator asked for. Nothing distinguishes the two but
     /// this flag, which is why it is published rather than derived.
     pub stopped: bool,
-    /// The raw persisted hook state, before [`crate::session::derive_state`] interprets it.
+    /// The raw hook state Fleet reported, before it is read into `status`.
     ///
     /// Kept beside the derived `status` because the two answer different
     /// questions: `status` is what to draw, this is what the agent last
@@ -165,7 +165,7 @@ pub struct SessionRow {
     /// is not determined — several registered profiles sharing one executable,
     /// which the shipped `agents.toml` teaches the user to create. The status
     /// still reads [`SessionState::Running`], because presence is observed;
-    /// only the name is withheld. See [`crate::session::Corroboration`].
+    /// only the name is withheld.
     pub detected_agent: Option<String>,
     /// The session's `ui.*` meta keys (issue #1523), cleaned for publishing
     /// ([`crate::kernel::lua_api::clean_meta_value`]) and capped at

@@ -527,13 +527,7 @@ fn a_right_press_off_the_rows_opens_the_panes_menu() {
         .expect("the menu floats");
     assert_eq!(float.at, Some((9, 20)));
     let text = menu_text(&host).expect("drawn");
-    for label in [
-        "New session",
-        "Restore deleted",
-        "Sort by name",
-        "Collapse all",
-        "Hide panel",
-    ] {
+    for label in ["New session", "Sort by name", "Collapse all", "Hide panel"] {
         assert!(text.contains(label), "{label} missing:\n{text}");
     }
     for row_only in ["Rename", "Delete"] {

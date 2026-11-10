@@ -1,10 +1,8 @@
 //! Live agent terminals behind session-backed surfaces.
 //!
-//! This is the one place the kernel touches the session engine's *runtime*
-//! rather than its stored state. A plugin places a `surface` naming a session;
-//! this attaches to that session's real tmux pane, keeps a vt100 parser fed
-//! from it, and paints the result with `tui_term` — the same path v1 uses in
-//! `ui::terminal_view`.
+//! A plugin places a `surface` naming a session; this attaches to that
+//! session's pane — the terminal stream `fleet attach` names for a Fleet Task
+//! — keeps a vt100 parser fed from it, and paints the result with `tui_term`.
 //!
 //! It reaches `crate::agent` through fully-qualified paths only, never `use`,
 //! so every crossing into the side-effect layer is visible at its call site —
@@ -12,14 +10,12 @@
 //!
 //! The shared [`Terminals`] state and its per-frame [`Terminals::sync`] live
 //! here. Each job it runs has a file of its own: attaching a pane on a worker
-//! in `attach`, surveying each backend's windows and mirroring a host's rows
-//! in `discovery`, drawing a surface in `paint`, companion shells in `shells`,
+//! in `attach`, a Fleet session's stream in `fleet`, drawing a surface in `paint`, companion shells in `shells`,
 //! plugin programs in `programs`, and link detection / selection reads / OSC 8
 //! re-printing in [`links`].
 //!
-//! Two things are deliberately *not* here: spawning sessions and sending them
-//! anything beyond keystrokes. Those are commands, and the command bus is a
-//! later change. Attaching to what already exists needs none of it.
+//! Spawning sessions and sending them anything beyond keystrokes are not
+//! here: those are commands (`kernel::command`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -33,7 +29,6 @@ use super::snapshot::Snapshot;
 use crate::session::WORKING_QUIET_MS;
 
 mod attach;
-mod discovery;
 mod fleet;
 pub mod links;
 mod paint;
@@ -387,8 +382,6 @@ pub struct Terminals {
     size_focus: Option<(String, String)>,
     /// Attaches in flight and attaches that failed — see [`attach::Attach`].
     attach: attach::Attach,
-    /// What each backend's window list said — see [`discovery::Discovery`].
-    discovery: discovery::Discovery,
 }
 
 impl Terminals {
@@ -446,7 +439,6 @@ impl Terminals {
             shelled: std::sync::mpsc::channel(),
             shell_results: Vec::new(),
             attach: attach::Attach::new(),
-            discovery: discovery::Discovery::new(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
             program_transitions: Vec::new(),
@@ -470,73 +462,13 @@ impl Terminals {
     /// Called once per frame from the event loop. An attach is attempted once per
     /// (session, pane) — so a pane that cannot be adopted does not retry 20×/s,
     /// and a session whose pane only *becomes* known later is still picked up.
-    ///
-    /// A row with no pane id of its own is resolved by **window name** — the
-    /// legacy path for rows persisted before local spawns recorded their pane id
-    /// (and psmux spawns from before they learned theirs). A successful name-resolved
-    /// adoption is queued for the loop to persist, so it happens once per row.
     pub fn sync(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
-        self.collect_discovered();
         self.collect_attached(rows, cols);
         self.drop_lost_panes(snapshot);
         // A surface that lost its parser takes its cached rows with it.
         self.rows_cache
             .borrow_mut()
             .retain(|surface, _| self.surface_parser(surface).is_some());
-
-        // Only pay for discovery while something needs it. Remote rows are
-        // surveyed too, since sessions were shared: a row mirrored from a host's
-        // database names the pane the host reported, or none at all, and its
-        // window is found on the host's server the same way a local one is.
-        //
-        // A row that already names a pane is surveyed too — a persisted pane id is
-        // a hint rather than a fact, see [`Self::pane_is_stale`] — which costs
-        // nothing extra: one listing per backend, throttled by that backend's
-        // own interval (`DISCOVERY_INTERVAL` locally, `REMOTE_DISCOVERY_INTERVAL`
-        // over ssh).
-        let unresolved: Vec<(&str, String)> = snapshot
-            .sessions
-            .iter()
-            .filter(|row| {
-                !self.live.contains_key(&row.id) && !self.attach.attaching.contains_key(&row.id)
-            })
-            // A Fleet session has no window to list: its pane is the stream
-            // `fleet attach` names.
-            .filter(|row| row.backend != fleet::BACKEND)
-            .map(|row| (row.id.as_str(), self.key(&row.backend)))
-            .collect();
-
-        // Stamp each row with where its backend's survey count stood when it first
-        // showed up unresolved. A row that has stopped waiting forgets its stamp,
-        // so a session that is deleted and restored is judged afresh.
-        let still_waiting: std::collections::HashSet<&str> =
-            unresolved.iter().map(|(id, _)| *id).collect();
-        self.discovery
-            .waiting_since
-            .retain(|id, _| still_waiting.contains(id.as_str()));
-        for (id, backend) in &unresolved {
-            let seen_at = self.discovery.surveys.get(backend).copied().unwrap_or(0);
-            self.discovery
-                .waiting_since
-                .entry((*id).to_string())
-                .or_insert(seen_at);
-        }
-
-        let mut waiting: Vec<String> = unresolved
-            .iter()
-            .map(|(_, backend)| backend.clone())
-            .collect();
-        waiting.extend(snapshot.sessions.iter().filter_map(|row| {
-            self.live.get(&row.id)?;
-            self.backend_for(&row.backend)
-                .filter(|backend| backend.capabilities().needs_liveness_poll)
-                .map(|_| self.key(&row.backend))
-        }));
-        waiting.sort_unstable();
-        waiting.dedup();
-        if !waiting.is_empty() {
-            self.refresh_discovery(&waiting);
-        }
 
         self.attach_unresolved(snapshot, rows, cols);
         self.evict_hidden();
@@ -552,9 +484,6 @@ impl Terminals {
             .collect();
         self.live.retain(|id, _| present.contains(id.as_str()));
         self.collect_shells(snapshot);
-        self.attach
-            .live_since
-            .retain(|id, _| present.contains(id.as_str()));
         let failures = self.attach.failed.len();
         self.attach
             .failed
@@ -618,15 +547,9 @@ impl Terminals {
     ///
     /// The recorded failure is cleared too, or the next attach would be held off
     /// by the retry interval and the session would sit frozen for another 20s
-    /// after the pane it needs is already there. The discovery backoff goes for
-    /// the same reason: a local restart records no pane id, so the session is
-    /// found by *name*, and a survey held off after an earlier failure would
-    /// freeze it just as long. One extra listing per backend, on an operation a
-    /// person asked for.
+    /// after the pane it needs is already there.
     pub fn forget(&mut self, session: &str) {
         self.live.remove(session);
-        self.attach.live_since.remove(session);
-        self.discovery.discovery_due.clear();
         if self.attach.failed.remove(session).is_some() {
             self.mark_failures_changed();
         }
@@ -1140,25 +1063,6 @@ impl Terminals {
         }
     }
 
-    /// Drain every backend's queued remote hook reports.
-    ///
-    /// The events are `(backend, pane id, state)` — pane ids collide across
-    /// hosts, so the backend is part of the identity, not decoration. The
-    /// backend is named by the qualified route it serves. A backend with no
-    /// status channel returns nothing.
-    pub fn drain_hook_events(&self) -> Vec<(String, String, String)> {
-        self.backends
-            .all_backends()
-            .flat_map(|(route, backend)| {
-                let name = route.format();
-                backend
-                    .take_hook_state_events()
-                    .into_iter()
-                    .map(move |(pane, state)| (name.clone(), pane, state))
-            })
-            .collect()
-    }
-
     /// Whether a session currently has a live pane.
     pub fn is_attached(&self, session: &str) -> bool {
         self.live.contains_key(session)
@@ -1393,9 +1297,6 @@ mod decoupling;
 #[cfg(test)]
 mod tests {
     use super::attach::{Attached, ATTACH_RETRY_INTERVAL};
-    use super::discovery::{
-        discovery_interval, due_now, Discovered, DISCOVERY_INTERVAL, REMOTE_DISCOVERY_INTERVAL,
-    };
     use super::paint::{grid_top, paint_sized_elsewhere, screen_widget, FromRow};
     use super::*;
     use crate::kernel::snapshot::SessionRow;
@@ -2031,100 +1932,6 @@ mod tests {
         );
     }
 
-    /// Seed a completed survey of `backend`: one listing, having found `windows`
-    /// — each an unstamped window, the shape every window had before ADR-25 and
-    /// the one these tests are about (a stamped window is unambiguous by
-    /// construction).
-    fn surveyed(terminals: &mut Terminals, backend: &str, windows: &[(&str, &[&str])]) {
-        let backend = &terminals.key(backend);
-        terminals.discovery.surveys.insert(backend.to_string(), 1);
-        let listing = windows.iter().flat_map(|(window, panes)| {
-            panes.iter().map(|pane| crate::backend::DiscoveredSession {
-                backend_id: (*pane).to_string(),
-                name: (*window).to_string(),
-                is_alive: true,
-                session: String::new(),
-                role: crate::backend::WindowRole::Agent,
-            })
-        });
-        terminals.discovery.discovered.insert(
-            backend.to_string(),
-            crate::backend::identity::WindowIndex::from_listing(listing),
-        );
-    }
-
-    /// A rebooted machine leaves every persisted pane id naming a pane that no
-    /// longer exists. Retrying one fails on `resize-window` — `can't find pane` —
-    /// once per retry interval for the life of the process, which is what this
-    /// stops: the contradicted id is dropped, and the session is reported as
-    /// missing its agent so it can be relaunched.
-    #[test]
-    fn a_pane_id_a_restarted_server_invalidated_is_dropped_rather_than_retried() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        let snapshot = snapshot(vec![row("a", "local:tmux", Some("%822"))]);
-        // The row was already waiting when the survey ran, so the survey speaks
-        // for it — and it found no window of this session's.
-        terminals.discovery.waiting_since.insert("a".to_string(), 0);
-        surveyed(&mut terminals, "local:tmux", &[("tb-other", &["%1"])]);
-
-        terminals.sync(&snapshot, 24, 80);
-
-        assert_eq!(
-            terminals.attach.failed["a"].pane, None,
-            "the stale id must not be what was tried"
-        );
-        assert_eq!(terminals.failure("a"), Some("session has no pane yet"));
-    }
-
-    /// The pane exists, but under another session's window — which is exactly what
-    /// a restarted server produces, since it reissues ids from `%0`. Attaching
-    /// would aim this session's keystrokes at somebody else's agent.
-    #[test]
-    fn a_pane_id_reissued_to_another_window_is_stale() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        let row = row("a", "local:tmux", Some("%1"));
-        terminals.discovery.waiting_since.insert("a".to_string(), 0);
-        surveyed(&mut terminals, "local:tmux", &[("tb-other", &["%1"])]);
-
-        assert!(terminals.pane_is_stale(&row, "%1"));
-    }
-
-    #[test]
-    fn a_pane_id_the_survey_confirms_is_kept() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        let row = row("a", "local:tmux", Some("%1"));
-        terminals.discovery.waiting_since.insert("a".to_string(), 0);
-        surveyed(&mut terminals, "local:tmux", &[("tb-demo", &["%1"])]);
-
-        assert!(!terminals.pane_is_stale(&row, "%1"));
-    }
-
-    /// A listing that predates the row cannot speak for it, and a backend
-    /// nobody has surveyed answers nothing at all.
-    #[test]
-    fn an_unsurveyed_backend_contradicts_nothing() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        let row = row("a", "ssh:devbox", Some("%1"));
-        assert!(!terminals.pane_is_stale(&row, "%1"));
-
-        // A survey the row is not old enough to be judged by is no better.
-        surveyed(&mut terminals, "ssh:devbox", &[("tb-other", &["%9"])]);
-        terminals.discovery.waiting_since.insert("a".to_string(), 1);
-        assert!(!terminals.pane_is_stale(&row, "%1"));
-    }
-
     #[test]
     fn a_vanished_session_is_dropped() {
         let mut terminals = Terminals::with_registry(
@@ -2186,110 +1993,6 @@ mod tests {
         assert_eq!(
             terminals.launch_cwd(&row),
             Some(PathBuf::from("/src/alpha"))
-        );
-    }
-
-    /// Sharing made remote rows discoverable, and one shared clock would have
-    /// paced an ssh `list-windows` at the local cadence: two ssh commands a
-    /// second for as long as one remote row was unattached.
-    #[test]
-    fn a_remote_backend_is_surveyed_on_its_own_cadence() {
-        assert_eq!(discovery_interval("local:tmux"), DISCOVERY_INTERVAL);
-        assert_eq!(
-            discovery_interval("ssh:devbox:tmux"),
-            REMOTE_DISCOVERY_INTERVAL
-        );
-        assert_eq!(
-            discovery_interval("wsl:ubuntu:tmux"),
-            REMOTE_DISCOVERY_INTERVAL
-        );
-        assert!(
-            REMOTE_DISCOVERY_INTERVAL > DISCOVERY_INTERVAL,
-            "a listing that travels over ssh costs more than a local one"
-        );
-    }
-
-    /// A down host answers a survey no faster than it answers an attach, and
-    /// the next survey would learn the same nothing. Without this the 20 s
-    /// attach retry is bypassed by a discovery loop that re-issues the connect
-    /// the moment the last one gives up.
-    #[test]
-    fn a_survey_that_learned_nothing_backs_off_to_the_attach_retry() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        terminals
-            .discovery
-            .discovered_rx
-            .0
-            .send(Discovered {
-                backend: "ssh:devbox".to_string(),
-                readied: false,
-                panes: Err(crate::backend::BackendError::Unreachable("offline".into())),
-            })
-            .unwrap();
-        terminals.collect_discovered();
-
-        let due = terminals.discovery.discovery_due["ssh:devbox"];
-        assert!(
-            due > std::time::Instant::now() + REMOTE_DISCOVERY_INTERVAL,
-            "a fruitless survey must wait longer than an ordinary one"
-        );
-    }
-
-    #[test]
-    fn a_survey_that_found_windows_keeps_the_ordinary_cadence() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        terminals
-            .discovery
-            .discovered_rx
-            .0
-            .send(Discovered {
-                backend: "ssh:devbox".to_string(),
-                readied: true,
-                panes: Ok(crate::backend::identity::WindowIndex::default()),
-            })
-            .unwrap();
-        terminals.collect_discovered();
-
-        let due = terminals.discovery.discovery_due["ssh:devbox"];
-        assert!(
-            due <= std::time::Instant::now() + REMOTE_DISCOVERY_INTERVAL,
-            "a survey that worked is not penalised"
-        );
-    }
-
-    /// `host_cli::usable` caches a `Yes` for the process lifetime, so a host
-    /// that goes down after its first probe keeps one — and every pass then
-    /// runs its ssh out to the connect timeout. The pass backs off even though
-    /// the verdict does not.
-    /// A local restart records no pane id, so the session is resolved by name —
-    /// and a survey sitting in a failure backoff would freeze it exactly as long
-    /// as the attach retry `forget` already clears.
-    #[test]
-    fn a_restart_surveys_afresh_rather_than_waiting_out_a_backoff() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        terminals.discovery.discovery_due.insert(
-            "local:tmux".to_string(),
-            std::time::Instant::now() + ATTACH_RETRY_INTERVAL,
-        );
-
-        terminals.forget("a");
-
-        assert!(
-            due_now(
-                &terminals.discovery.discovery_due,
-                "local:tmux",
-                std::time::Instant::now()
-            ),
-            "a restart must not wait out a backoff for the listing that finds its new pane"
         );
     }
 }

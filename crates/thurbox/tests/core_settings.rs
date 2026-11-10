@@ -70,10 +70,10 @@ fn a_restart_only_value_is_in_force_as_loaded() {
     // What every consumer of a restart-only value is built with: there is no
     // process-wide copy to fall back on, so the loaded document is the answer.
     let _home = isolate();
-    write_settings("audit_retention_days = 7\n");
+    write_settings("git_poll_secs = 7\n");
 
     let (config, _) = Config::load();
-    assert_eq!(config.in_force().audit_retention_days, 7);
+    assert_eq!(config.in_force().git_poll_secs, 7);
 }
 
 // ── Reload ─────────────────────────────────────────────────────────────────
@@ -227,7 +227,7 @@ fn saving_preserves_the_files_comments() {
     let _home = isolate();
     write_settings(
         "# my notes about this profile\n\
-         audit_retention_days = 30\n",
+         git_poll_secs = 30\n",
     );
     let mut edited = Settings::default();
     edited.features.soft_delete = false;

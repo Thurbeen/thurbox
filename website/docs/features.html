@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Features — Thurbox Docs'
-description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, remote SSH sessions, session lifecycle hooks, automations, and a headless CLI.'
+description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, remote SSH sessions, automations, and a headless CLI.'
 currentPage: 'features'
 breadcrumb: 'Features'
 ---
@@ -53,11 +53,6 @@ breadcrumb: 'Features'
                 <td>Session creation</td>
                 <td>bundled</td>
                 <td><code>70_new_session.lua</code> (a float)</td>
-              </tr>
-              <tr>
-                <td>Restore list</td>
-                <td>bundled</td>
-                <td><code>80_restore.lua</code> (a float)</td>
               </tr>
               <tr>
                 <td><a href="#responsive-ui">The arrangement</a></td>
@@ -167,13 +162,6 @@ breadcrumb: 'Features'
               <code>Ctrl+N</code>
               : repo picker &rarr; session name &rarr; agent picker. The agent picker is skipped
               when only one agent is defined.
-            </li>
-            <li>
-              Restart a session with
-              <code>Ctrl+R</code>
-              to preserve conversation history when the agent supports resume (e.g. Claude's
-              <code>--resume</code>
-              ).
             </li>
             <li>
               Rename a session with
@@ -396,15 +384,6 @@ breadcrumb: 'Features'
               runs, so it works even for a branch already checked out
             </li>
             <li>
-              Press
-              <code>Ctrl+S</code>
-              to sync all worktree sessions with
-              <code>origin/main</code>
-            </li>
-            <li>
-              On rebase conflicts, Thurbox automatically sends a resolution prompt to the agent
-            </li>
-            <li>
               Closing a session removes the worktrees Thurbox created. One it merely opened is
               left exactly where it was, since removing it would take any uncommitted work in it
               along too
@@ -492,74 +471,6 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             .
           </p>
 
-          <h2 id="worktree-sync">
-            Worktree Sync
-            <a href="#worktree-sync" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            <code>Ctrl+S</code>
-            synchronizes all worktree sessions with their upstream default branch.
-          </p>
-          <ul>
-            <li>
-              Sessions are grouped by repository to avoid git lock contention. Different repos sync
-              in parallel.
-            </li>
-            <li>
-              Per-worktree: stash uncommitted changes, fetch, rebase
-              <code>origin/main</code>
-              , stash pop.
-            </li>
-            <li>
-              Stale
-              <code>.git/index.lock</code>
-              files from crashed git processes are automatically cleaned up before syncing.
-            </li>
-            <li>Runs on background threads &mdash; the TUI remains fully responsive.</li>
-            <li>
-              Results shown per-session: synced, conflict (sent to Claude for resolution), or error.
-            </li>
-          </ul>
-
-          <h2 id="session-forking">
-            Session Forking
-            <a href="#session-forking" class="heading-anchor">#</a>
-          </h2>
-          <figure class="video-card">
-            <div class="terminal-frame">
-              <div class="terminal-body">
-                <video
-                  src="../assets/thurbox-fork.mp4"
-                  autoplay
-                  loop
-                  muted
-                  playsinline
-                  preload="none"
-                >
-                  Forking a session twice with Ctrl+F: the copies nest under their parent in the
-                  session list
-                </video>
-              </div>
-            </div>
-            <figcaption>
-              Forking with
-              <code>Ctrl+F</code>
-              : children nest under their parent session.
-            </figcaption>
-          </figure>
-          <p>
-            Press
-            <code>Ctrl+F</code>
-            to fork the active session. This creates a new session that resumes from the same
-            conversation history, allowing you to explore alternative approaches without losing the
-            original session's context. The fork records the source session as its
-            <strong>parent</strong>
-            : the session list nests children under their parent with a tree prefix, and the info
-            panel shows a
-            <code>Parent:</code>
-            row.
-          </p>
-
           <h2 id="parent-sessions">
             Parent Sessions (Lead / Worker)
             <a href="#parent-sessions" class="heading-anchor">#</a>
@@ -571,9 +482,7 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <em>lead</em>
             session that spawns
             <em>workers</em>
-            . A
-            <code>Ctrl+F</code>
-            fork records its source as the parent automatically; headless,
+            . Headless,
             <code>thurbox-cli session create --parent &lt;uuid&gt;</code>
             sets it explicitly, and
             <code>session list --parent &lt;uuid&gt;</code>
@@ -600,114 +509,6 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
               the lead). A dangling parent just renders the child as a top-level session again.
             </li>
           </ul>
-
-          <h2 id="session-hooks">
-            Session Lifecycle Hooks
-            <a href="#session-hooks" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Run your own command at the moments thurbox creates, deletes, restarts or restores a
-            session &mdash; copy an
-            <code>.env</code>
-            into a fresh worktree, warm the dependencies before the agent boots, post to a
-            channel when a session lands, refuse a session on a branch nobody should touch, clean
-            a scratch directory when one is deleted. Hooks are declared as data in
-            <a href="configuration.html#hooks-toml"><code>~/.config/thurbox/hooks.toml</code></a>
-            , one
-            <code>[[hooks]]</code>
-            entry per event and command, seeded commented-out.
-          </p>
-          <pre data-title="hooks.toml"><code class="language-toml">[[hooks]]
-event = "session.post_create"
-command = 'npm ci --prefer-offline'   # runs in the new worktree's repository; $THURBOX_CWD is the worktree
-timeout_secs = 300</code></pre>
-          <ul>
-            <li>
-              <strong>Eight events</strong>
-              , pre and post for each operation:
-              <code>session.pre_create</code>
-              /
-              <code>post_create</code>
-              ,
-              <code>pre_delete</code>
-              /
-              <code>post_delete</code>
-              ,
-              <code>pre_restart</code>
-              /
-              <code>post_restart</code>
-              ,
-              <code>pre_restore</code>
-              /
-              <code>post_restore</code>
-              . A fork is a create; an undo is a restore.
-            </li>
-            <li>
-              <strong>Pre hooks veto, post hooks inform</strong>
-              &mdash; git's
-              <code>pre-commit</code>
-              model. A
-              <code>pre_*</code>
-              hook that exits non-zero (or hangs past its timeout, default 30&nbsp;s) aborts the
-              operation before its first side effect, with its stderr as the reason shown in the
-              TUI or returned by the CLI. A
-              <code>post_*</code>
-              hook fires only after full success; every one runs, and a failure is logged and
-              reported but cannot undo what happened.
-            </li>
-            <li>
-              <strong>Once per operation, whichever interface asked.</strong>
-              The creation flow,
-              <code>Ctrl+F</code>
-              ,
-              <code>Ctrl+D</code>
-              ,
-              <code>Ctrl+R</code>
-              , undo,
-              <code>thurbox-cli</code>
-              and a
-              <code>spawn</code>
-              automation all end in the same four pipelines, so a
-              hook fires exactly once for each of them and never on the render thread.
-            </li>
-            <li>
-              <strong>The session's facts, two ways.</strong>
-              <code>THURBOX_*</code>
-              environment variables for a one-liner (
-              <code>THURBOX_HOOK_EVENT</code>
-              ,
-              <code>THURBOX_SESSION</code>
-              ,
-              <code>THURBOX_SESSION_NAME</code>
-              ,
-              <code>THURBOX_AGENT</code>
-              ,
-              <code>THURBOX_REPO</code>
-              ,
-              <code>THURBOX_CWD</code>
-              ,
-              <code>THURBOX_BRANCH</code>
-              ,
-              <code>THURBOX_HOST</code>
-              , &hellip;) and one JSON object on stdin for anything structured. A
-              <code>thurbox-cli</code>
-              call inside a hook hits the same database as the thurbox that fired it.
-            </li>
-            <li>
-              Runs in the session's primary repository with
-              <strong>no terminal</strong>
-              (output is captured, only its tail reported), and
-              <strong>locally</strong>
-              even for a remote session &mdash;
-              <code>THURBOX_HOST</code>
-              says where the session actually is.
-            </li>
-          </ul>
-          <p>
-            Full reference:
-            <a href="configuration.html#hooks-toml">configuration &rarr; hooks.toml</a>
-            .
-          </p>
 
           <h2 id="inter-session-messages">
             Inter-Session Messages
@@ -1632,9 +1433,7 @@ thurbox-cli message inbox --for lead --claim</code></pre>
             <code>session reap &lt;session&gt;</code>
             does it on demand. The worktrees stay, which is what makes
             <code>session restore &lt;uuid&gt;</code>
-            &mdash; or
-            <code>Ctrl+Z</code>
-            in the interface, which undoes the delete you just made &mdash; lossless.
+            lossless.
           </p>
           <p>
             Pass

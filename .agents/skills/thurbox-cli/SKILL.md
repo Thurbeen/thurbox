@@ -24,7 +24,7 @@ the session verbs are Fleet's command line, not thurbox-cli's:
 | `thurbox-cli task` | a Task with `dispatch: false` |
 | `thurbox-cli message` | `fleet send`, and the Task's `status.inbox` |
 | `thurbox-cli session signal` | `fleet signal` |
-| `thurbox-cli automation` (v2) | `thurbox-cli automation create/list/show/edit/remove/run/tick`, over `automations.json`; a send or spawn goes through `fleet send` / `fleet apply` |
+| `thurbox-cli automation` | `thurbox-cli automation create/list/show/edit/remove/run/tick`, over `automations.json`; a send or spawn goes through `fleet send` / `fleet apply` |
 
 thurbox-cli covers the interface's own files and a running interface:
 

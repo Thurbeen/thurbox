@@ -140,10 +140,6 @@ pub const BUNDLED: &[(&str, &str)] = &[
         "plugins/70_new_session.lua",
         include_str!("../../../../ui/plugins/70_new_session.lua"),
     ),
-    (
-        "plugins/80_restore.lua",
-        include_str!("../../../../ui/plugins/80_restore.lua"),
-    ),
 ];
 
 /// Records which version of each bundled file was last written, so a user's
@@ -153,9 +149,7 @@ const MANIFEST: &str = ".bundled.json";
 
 /// What the manifest remembers about one shipped file.
 ///
-/// The written form is a bare string because that is what earlier releases
-/// wrote: an upgrade that could not read the old manifest would forget every
-/// edit the manifest exists to protect.
+/// The written form is a bare digest string.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 enum Record {
@@ -366,11 +360,10 @@ fn deliver(
 /// Shipped files whose edited copy is moved aside, not kept loading, once this
 /// binary stops shipping them.
 ///
-/// `plugins/25_shell.lua` came with v2.32.0's layout presets (#1227), which
-/// were rolled back. Kept loading, it fills a `shell` slot that classic never
-/// places (so `plugin check` fails), or one an edited split-shell layout still
-/// places, which draws the shell twice beside the agent pane's Shell tab.
-const WITHDRAWN: &[&str] = &["plugins/25_shell.lua"];
+/// `plugins/80_restore.lua` listed deleted sessions to restore, which Fleet's
+/// engine refuses: kept loading, an edited copy offers a list that is always
+/// empty and a verb that always fails.
+const WITHDRAWN: &[&str] = &["plugins/80_restore.lua"];
 
 /// Take back what we shipped and no longer ship.
 ///
@@ -1379,11 +1372,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         materialize(dir.path());
 
-        let pane = dir.path().join("plugins/25_shell.lua");
+        let pane = dir.path().join("plugins/80_restore.lua");
         std::fs::write(&pane, "-- mine\nreturn {}").expect("write");
         let mut manifest = read_manifest(dir.path());
         manifest.insert(
-            "plugins/25_shell.lua".into(),
+            "plugins/80_restore.lua".into(),
             Record::Written(digest("return {}")),
         );
         write_manifest(dir.path(), &manifest).expect("manifest");
@@ -1391,31 +1384,31 @@ mod tests {
         let report = materialize(dir.path());
         assert_eq!(
             report.retired,
-            vec!["plugins/25_shell.lua (your edit is in plugins/25_shell.lua.bak)"]
+            vec!["plugins/80_restore.lua (your edit is in plugins/80_restore.lua.bak)"]
         );
         assert!(report.preserved.is_empty(), "{:?}", report.preserved);
         assert!(!pane.exists());
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("plugins/25_shell.lua.bak")).expect("read"),
+            std::fs::read_to_string(dir.path().join("plugins/80_restore.lua.bak")).expect("read"),
             "-- mine\nreturn {}"
         );
-        assert!(!read_manifest(dir.path()).contains_key("plugins/25_shell.lua"));
+        assert!(!read_manifest(dir.path()).contains_key("plugins/80_restore.lua"));
 
         // Once more, over the backup that is now there: it is not replaced.
         std::fs::write(&pane, "-- again\nreturn {}").expect("write");
         let mut manifest = read_manifest(dir.path());
         manifest.insert(
-            "plugins/25_shell.lua".into(),
+            "plugins/80_restore.lua".into(),
             Record::Written(digest("return {}")),
         );
         write_manifest(dir.path(), &manifest).expect("manifest");
         materialize(dir.path());
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("plugins/25_shell.lua.bak")).expect("read"),
+            std::fs::read_to_string(dir.path().join("plugins/80_restore.lua.bak")).expect("read"),
             "-- mine\nreturn {}"
         );
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("plugins/25_shell.lua.bak.2")).expect("read"),
+            std::fs::read_to_string(dir.path().join("plugins/80_restore.lua.bak.2")).expect("read"),
             "-- again\nreturn {}"
         );
     }

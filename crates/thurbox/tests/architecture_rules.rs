@@ -56,17 +56,16 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
-    // Coding-agent definitions: the agents.toml registry and extensions.
-    // Never a session backend: the multiplexer runtime (`backend`) is reached
-    // through its own node, and preflight and the host-path translation every
-    // launch goes through are the runtime's.
+    // Coding-agent definitions: the agents.toml registry, the downloads plugins
+    // and the updater make, and keyboard input. Never a session backend: the
+    // multiplexer runtime (`backend`) is reached through its own node.
     //
     // Every file is a node of its own (`SUBMODULE_GOVERNED`), so a grant names
     // what it reads and a file added here is reachable by nobody until that is
-    // decided. The root only re-exports the provider types.
+    // decided. The root only declares them.
     ModuleRules {
         name: "agent",
-        allowed: &["agent::generic", "agent::provider"],
+        allowed: &[],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -80,18 +79,8 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::generic",
-        allowed: &["session", "agent::provider"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
         name: "agent::input",
         allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::provider",
-        allowed: &["session"],
         allowed_path_only: &[],
     },
     // thurbox's own config files beside config.toml. `config::file` is the one
@@ -114,11 +103,6 @@ const MODULE_RULES: &[ModuleRules] = &[
     ModuleRules {
         name: "config::file",
         allowed: &["paths"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "config::hooks",
-        allowed: &["session", "config::file"],
         allowed_path_only: &[],
     },
     // hosts.toml in thurbox's config directory: the runtime's loader bound to
@@ -294,7 +278,6 @@ const MODULE_RULES: &[ModuleRules] = &[
             "backend",
             "config::hosts",
             "config::interface_state",
-            "config::settings",
         ],
         allowed_path_only: &[],
     },
@@ -1526,7 +1509,6 @@ const KERNEL_THREADS: &[(&str, &[&str])] = &[
         "kernel/terminal",
         &[
             "kernel/terminal/attach.rs",
-            "kernel/terminal/discovery.rs",
             "kernel/terminal/shells.rs",
             // A stream pane's reader: one per pane, as the backend's own.
             "kernel/terminal/stream_pane.rs",
@@ -1591,7 +1573,7 @@ fn misplaced_kernel_work(tree: &Tree) -> Vec<String> {
 }
 
 /// The snapshot store is split by worker — git stats, pane probes, the
-/// database — and `Terminals` by attach, discovery and paint, so each worker's
+/// Fleet watch — and `Terminals` by attach, shells and paint, so each worker's
 /// reach into the world is in a file of its own and the read model and the
 /// paint path start none.
 #[test]

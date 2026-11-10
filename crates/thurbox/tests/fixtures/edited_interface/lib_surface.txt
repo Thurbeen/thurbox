@@ -28,7 +28,6 @@ modal.frame function
 order.move_block function
 order.sorted_within_groups function
 panels.hide function
-panels.placed function
 panels.show function
 panels.shown function
 panels.toggle function

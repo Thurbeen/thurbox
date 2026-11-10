@@ -124,8 +124,6 @@ impl super::Executor for Fleet {
                 if_missing: true,
                 ..
             } => return Ok(Outcome::Nothing),
-            // No undo window to sweep.
-            Command::Reap => return Ok(Outcome::Nothing),
             // Everything else is a file of thurbox's, or something no
             // engine runs any more: refused by name, never dropped.
             _ => {

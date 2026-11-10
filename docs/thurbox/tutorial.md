@@ -38,6 +38,9 @@ Windows is `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/
 Homebrew, AUR, Nix, winget and Chocolatey are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
+Fleet runs every session, so `fleet` and `runtime-mux` must be on your `PATH`
+as well; see [Fleet's documentation](../fleet/README.md).
+
 You also need:
 
 - **tmux ≥ 3.2** (or [psmux ≥ 3.3.8](https://github.com/psmux/psmux) on native Windows, or
@@ -225,41 +228,35 @@ the panes rather than being reprinted:
 
 ## The same thing from the command line
 
-`thurbox-cli` drives the same sessions with no TUI, against the same database —
-so anything you do here shows up in a running thurbox within a tick, and vice
-versa. It is on your `PATH` inside every session, which is what lets an agent
-orchestrate other agents.
-
-It answers in whichever form suits the reader: an aligned table in your
-terminal, and TOON — a compact, agent-friendly encoding — when its output is
-piped somewhere. Add `--json` for the complete record when a script needs to
-parse it, or `--text` to keep the table down a pipe.
+Every session is a Fleet Task, so `fleet` drives the same sessions with no
+TUI, against the same store. Anything you do here shows up in a running
+thurbox within a tick, and the other way round. Each command prints JSON.
 
 ```bash
 # What is running
-thurbox-cli                                # live state: sessions, mail, counts
-thurbox-cli session list
-thurbox-cli session list --json | jq       # the full record, for a script
+fleet list task
+fleet get task docs                        # one Task, its spec and status
 
-# Start one headlessly, on its own worktree branch
-thurbox-cli session create --name docs --repo-path ~/code/web-app
-thurbox-cli session create --name rate-limit --repo-path ~/code/api-server \
-    --agent claude --worktree-branch rate-limit
+# Start one headlessly: an interactive Task over a directory
+echo '{"apiVersion":"fleet/v1alpha1","kind":"Task",
+  "metadata":{"name":"docs","labels":{"thurbox.dev/name":"docs"}},
+  "spec":{"harness":"claude-code","host":"local",
+          "workspace":{"dir":"/home/me/code/web-app"},"dispatch":true}}' \
+  | fleet apply --create-only -f -
 
-# Talk to one, and read what it printed
-thurbox-cli session send <uuid> "run the tests and fix what fails"
-thurbox-cli session capture <uuid>
+# Talk to one
+fleet send docs "run the tests and fix what fails"
 
-# Clean up (soft by default — `session restore` brings it back)
-thurbox-cli session delete <uuid>
+# Clean up
+fleet delete task docs
 ```
 
-![thurbox-cli session list, a headless session create, and the list again](../../media/tutorial/15-cli.png)
+![fleet list task, after the tutorial's two sessions](../../media/tutorial/15-cli.png)
 
-Everything else lives under the same tree: `thurbox-cli config show` prints
-every resolved path, `thurbox-cli plugin dir` prints the interface directory,
-and `thurbox-cli --help` lists the rest (`automation`, `task`, `message`,
-`editor`, `notify`).
+`thurbox-cli` keeps what is the interface's own: `thurbox-cli config show`
+prints every resolved path, `thurbox-cli plugin dir` prints the interface
+directory, and `thurbox-cli --help` lists the rest (`automation`, `editor`,
+`notify`).
 
 ## Where to go next
 

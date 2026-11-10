@@ -49,15 +49,6 @@ pub struct Settings {
     /// tasks / file viewer) becomes available.
     #[serde(default = "default_three_panel_min_cols")]
     pub three_panel_min_cols: u16,
-    /// Days of audit-log and session-event history kept (both pruned on
-    /// startup).
-    #[serde(default = "default_audit_retention_days")]
-    pub audit_retention_days: u64,
-    /// Days a deleted session stays restorable before its row is purged —
-    /// `0`, the default, keeps every one. A purge is final, so it is the
-    /// operator's to turn on (`thurbox-cli session purge` is the one-off).
-    #[serde(default)]
-    pub deleted_retention_days: u64,
     /// How often each session's git working tree is re-examined, in seconds.
     /// `0` turns the polling off: no diffstat, no ahead/behind, no `git`.
     ///
@@ -499,9 +490,6 @@ fn default_two_panel_min_cols() -> u16 {
 fn default_three_panel_min_cols() -> u16 {
     120
 }
-fn default_audit_retention_days() -> u64 {
-    90
-}
 fn default_git_poll_secs() -> u64 {
     5
 }
@@ -559,8 +547,6 @@ pub const FIELDS: &[Field] = &[
     field!(NextLaunch, two_panel_min_cols),
     field!(NextLaunch, three_panel_min_cols),
     // Pruned once, at startup.
-    field!(NextLaunch, audit_retention_days),
-    field!(NextLaunch, deleted_retention_days),
     // The git-stat cache is built with it, and a cache that re-read it would
     // also have to re-age every entry.
     field!(NextLaunch, git_poll_secs),
@@ -633,8 +619,6 @@ impl Default for Settings {
             stream_panes: false,
             two_panel_min_cols: default_two_panel_min_cols(),
             three_panel_min_cols: default_three_panel_min_cols(),
-            audit_retention_days: default_audit_retention_days(),
-            deleted_retention_days: 0,
             git_poll_secs: default_git_poll_secs(),
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
@@ -657,7 +641,6 @@ mod tests {
         assert_eq!(s.scrollback_lines, 1000);
         assert_eq!(s.two_panel_min_cols, 80);
         assert_eq!(s.three_panel_min_cols, 120);
-        assert_eq!(s.audit_retention_days, 90);
     }
 
     #[test]
@@ -675,7 +658,7 @@ mod tests {
     fn partial_override_keeps_other_defaults() {
         let s: Settings = toml::from_str("scrollback_lines = 5000").unwrap();
         assert_eq!(s.scrollback_lines, 5000);
-        assert_eq!(s.audit_retention_days, 90);
+        assert_eq!(s.git_poll_secs, 5);
     }
 
     #[test]
@@ -989,7 +972,7 @@ mod tests {
         let other: Settings = toml::from_str(
             "multiplexer = \"rmux\"\nconfig_version = 2\nscrollback_lines = 1\n\
              hidden_terminal_secs = 1\nstream_panes = true\ntwo_panel_min_cols = 1\nthree_panel_min_cols = 1\n\
-             audit_retention_days = 1\ndeleted_retention_days = 1\ngit_poll_secs = 1\n\
+             git_poll_secs = 1\n\
              [features]\ntasks = false\nautomations = false\nfile_viewer = false\n\
              global_search = false\ninfo_panel = false\nshell_pane = false\n\
              code_review = false\nperf_hud = false\nmouse = false\nnotifications = false\n\

@@ -1,10 +1,9 @@
 # Configuration Reference
 
 Every knob thurbox reads, where it lives, and how it behaves. One file
-per audience/lifecycle: hand-edited registries are TOML, the
-machine-written keybindings are JSON, and concurrently-written runtime
-state lives in SQLite (see ADR-8/ADR-19 in [architecture.md](architecture.md) for the
-rationale).
+per audience/lifecycle: hand-edited registries are TOML, and what the
+interface writes for itself is JSON. thurbox keeps no database: every
+session is a Fleet Task ([`[fleet]`](#fleet--the-session-engine)).
 
 `ui/plugins.toml` and `ui/plugins.lock` are the one pair that share a
 format and split on lifecycle instead: the spec is composition you
@@ -24,28 +23,26 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
-| `~/.config/thurbox/hooks.toml` | TOML | you | on each session operation | **session lifecycle hooks** — your commands, run before/after a session is created, deleted, restarted or restored |
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
 | `~/.config/thurbox/ui/plugins.toml` | TOML | you (or `thurbox-cli plugin`) | on each `plugin` command | **what the interface is composed of**: a source, a destination file and an optional pin, per installed pane |
 | `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli plugin` | on each `plugin` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
 | `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugin settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring plugin chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
-| `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. A release before it kept both tables in `ui.json`; the first start that finds them there writes this file, then removes them from `ui.json` — in that order, so an interruption leaves both copies and this file wins: a later start only removes the leftover tables from `ui.json` and never rewrites this file. If this file cannot be written, `ui.json` keeps both tables until a later start moves them; one that exists but cannot be read or parsed is never replaced by them, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
-| `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
+| `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. One that exists but cannot be read or parsed is never replaced, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
+| `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. Not read: rebindings live in `ui.json` |
 | `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order, the companion shell) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens, the manual session order and one record per companion shell (its multiplexer's route, its pane, its window's stamp). Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 | `~/.config/thurbox/automations.json` | JSON | `thurbox-cli automation` (or you) | each tick and each command | every automation: its trigger, action and prompt, its last and next run, and its 20 most recent runs. Rewritten whole under a lock every process takes (`automations.json.lock`); a file that does not parse is an error, never an empty list |
-| `~/.local/share/thurbox/host-verdicts.json` | JSON | thurbox | on each host-CLI question past the in-memory cache | why each shared host is not usable right now, when that was found and how many times in a row — the probe's backoff, so the interface and every heartbeat tick share one instead of each starting over (#1576). Not user-set; an entry goes the first time its host is usable, and `session sync --host <name>` drops it. A file rather than a `metadata` row because nothing needs it live and a write there would rebuild the session snapshot |
 
 `agents.toml` and `settings.toml` reload **live**: the TUI checks them about
 once per second and applies edits without a restart. The agent registry is
 compared by content; settings use mtime. A successful edit shows a toast.
-An `agents.toml` reload updates the picker, default, and session-status
-coverage together. A missing file, an invalid file, or one with no usable agents
-leaves the last good registry in force and reports the error; correcting it is picked
-up by the next poll. Existing session records are not changed.
+An `agents.toml` reload updates the picker and default together. A missing
+file, an invalid file, or one with no usable agents leaves the last good
+registry in force and reports the error; correcting it is picked up by the
+next poll.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
 `settings.toml` the values that apply live are the `shell_pane`, `perf_hud`
@@ -70,7 +67,7 @@ via the live mtime poll.
 Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
 `ui.json`, `plugin-state.json`, `agents.toml` (and the other seeded config files),
 the keybindings JSON, the interface's plugin
-lock, spec and bundled files, and the heartbeat's state — is written through
+lock, spec and bundled files — is written through
 one writer, `paths::write_atomically`. It stages a complete file beside the
 destination and replaces it with one native same-directory rename, so a reader
 never observes a truncated intermediate file and a failed staged write (a
@@ -87,13 +84,13 @@ production write, apart from an allow-list of logs, a cache, the control
 socket's privately staged files and the self-update's staged binary.
 
 The config files beside `config.toml` — `agents.toml`, `settings.toml`,
-`themes.toml`, `hooks.toml` and `hosts.toml` — are
+`themes.toml` and `hosts.toml` — are
 read and written by one loader, `config::file`. It seeds an absent file with
 its documented defaults, parses it reporting every unknown key as a warning,
 writes through `paths::write_atomically`, and on any failure (no path, a seed
 it could not write, an unreadable or malformed file) keeps thurbox starting:
 the file's fallback is used and a warning names the file and what it fell
-back to (`hooks.toml: …; no lifecycle hooks`).
+back to.
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 
@@ -106,14 +103,13 @@ the right knob:
 |------------|------|---------|
 | Add a coding agent, pin a model, change resume/fork flags | `agents.toml` | [agents.toml](#agentstoml) |
 | Run sessions on a remote machine over SSH, or in a local WSL distro | `hosts.toml` | [hosts.toml](#hoststoml) |
-| Turn a whole TUI feature on/off (tasks, mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
-| Tune scrollback, panel breakpoints, audit retention | `settings.toml` | [settings.toml](#settingstoml) |
+| Turn a whole TUI feature on/off (mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
+| Tune scrollback, panel breakpoints, git polling | `settings.toml` | [settings.toml](#settingstoml) |
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
 | Add or recolour a TUI theme | `themes.toml` | [themes.toml](#themestoml) |
-| Run my own command when a session is created/deleted/restarted/restored, or refuse one | `hooks.toml` | [hooks.toml](#hookstoml) |
 | Rebind a key | `ui.json` `bindings` (the `F1` editor writes it) | [Files at a glance](#files-at-a-glance) |
 | Reorder the action band's buttons | `ui.json` `pills` | [Files at a glance](#files-at-a-glance) |
-| Set the `Ctrl+O` editor, pick a theme | (runtime — SQLite) | [SQLite-backed settings](#sqlite-backed-settings) |
+| Set the `Ctrl+O` editor, pick a theme | `interface.json` (`thurbox-cli editor`, the `Ctrl+Y` picker) | [Files at a glance](#files-at-a-glance) |
 
 None of these files need to exist on a fresh install — every one is
 seeded (commented-out where applicable) on first run, and absent files
@@ -171,8 +167,6 @@ fork_args = ["--resume", "{id}", "--fork-session"]
 new_session_args = ["--session-id", "{id}"]   # emitted on a fresh spawn
 additional_dir_args = ["--add-dir", "{dir}"] # repeated per multi-repo member
 resume_latest = false       # true = id-less "resume last session in cwd"
-# hook_schema = "claude"    # optional: name the hook FAMILY this CLI speaks so
-                            #   its status is read as that built-in's
 env = { CLAUDE_CONFIG_DIR = "{home}/.claude-work" } # frozen at creation
 telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1" }  # only while [telemetry] is on
 # telemetry_args = []       # appended only while [telemetry] is on
@@ -193,116 +187,29 @@ append_args = ["--model", "opus"]
 `extends` resolves when the registry loads. Every field except the variant's
 own `name` is inherited; a field present on the variant replaces it, including
 `args = []`, empty maps and `resume_latest = false`. `append_args` follows the
-resolved `args`. The base's hook family is inherited unless overridden. A stock `shell` variant
+resolved `args`. A stock `shell` variant
 also retains the host's native shell selection until its command/args are edited.
 `config validate` rejects unknown bases, cycles and chains over 32 definitions.
 A bad entry and its dependents are skipped during a normal load; valid entries
-remain available. Existing entries without `extends` keep their behavior.
-Compatibility upgrades for old seeded definitions run on standalone bases,
-before inheritance, so a variant retains the base's explicit opt-outs.
-
-Direct terminal input in the TUI recognizes an agent's family through the
-caller's registry. For a remote Codex variant, define the alias on the caller
-as well as the host so Enter retires the previous turn's status. A definition
-that exists only on the host can be created there, but the caller cannot infer
-its family from the session name.
+remain available.
 
 Editing TOML is the interface for adding variants.
 
-For a single session, use repeatable `session create --agent NAME --agent-arg
-ARG` (for example `--agent-arg=--model --agent-arg opus`). These opaque values
-are stored in the session's `agent_args` column and appended after registry,
-directory and telemetry arguments on create, resume, restart, restore and fork.
-They receive no placeholder or shell expansion. `session get --json` (alias
-`show`) and `list --json` report `agent_args`. The flag requires an explicit
-`--agent` and conflicts with `--command`. A delegated creation requires the
-host CLI to advertise `agent_args` support; an older peer is refused before
-creation. Environment transport retains its separate stdin-only rules.
+**thurbox launches no agent.** Fleet's harness profile for the chosen agent
+does (see [`[fleet]`](#fleet--the-session-engine)). thurbox reads
+`agents.toml` for:
 
-`env` supplies string-valued defaults for every new session using this agent,
-including sessions created from the TUI. `{home}` resolves to the launch host's
-home directory (local, SSH or WSL); `~` and shell variables are not expanded.
-Session `--env` overrides agent `env`, which overrides `telemetry_env`.
-Thurbox's own identity and instance variables take precedence over these layers.
-The merged agent and session values are persisted together: restart, resume and
-fork keep that snapshot, so changing `agents.toml` cannot move an existing
-session to another account. When that snapshot moves an agent's config
-directory (`CODEX_HOME`), each launch merges Thurbox's status hooks into the
-selected directory too; see
-[Several Claude accounts](agents.md#several-claude-accounts). Existing sessions created before this feature keep
-their saved environment; create a new session to select an agent's new defaults.
+- the create flow's agent list and its default;
+- `thurbox-cli doctor`, which checks each agent's `command`;
+- `thurbox-cli config validate`;
+- attaching a session: a row whose agent has no definition here, with no
+  default to fall back on, is not attached.
 
-With shared-host delegation, the host's own registry supplies its agent defaults;
-with direct remote launches, the caller's registry supplies them and `{home}`
-resolves remotely. Environment values sent to a host CLI still travel on stdin,
-and existing unsupported-host refusals apply. `session show --json` reports the
-saved `env` on the instance that owns the session. A caller's mirror reports
-`env: null`, since it does not hold that snapshot; ask the owning instance for
-its map. Shared-host forks also run
-on that instance; a mirror cannot supply a saved environment when its owning
-CLI is unavailable, so that fork is refused. Caller-owned direct-remote sessions
-fork through their backend even if the host later gains a usable CLI.
-`agent launch-args` reports the
-current defaults without `--session`, or the saved environment with it.
-For a shared-host mirror, `agent launch-args` can read telemetry attributes
-through the owner, but does not hold its saved account environment. Request the
-plan on the owning instance for that complete environment. `session exec` on
-the caller refuses an unavailable saved environment.
-These values are visible in JSON and stored in the database: select account
-configuration directories here, rather than storing tokens. See
-[Several Claude accounts](agents.md#several-claude-accounts).
-
-`telemetry_env` and `telemetry_args` apply only while `settings.toml`'s
-[`[telemetry]`](#telemetry--opentelemetry-for-sessions) is on, with
-`{otlp_endpoint}` and `{otlp_protocol}` substituted. The built-ins `claude`,
-`codex` and `vibe` carry them; an entry that omits both keys and matches a
-built-in's `name` and `command` gets the built-in's in memory, and an explicit
-empty value opts out.
-
-`additional_dir_args` is optional and normally empty. It scopes each resolved
-member checkout of a multi-repo session, with `{dir}` substituted as one
-argument; single-repo launches emit none. The built-in `claude` group above is
-also supplied in memory to existing `name = "claude"`, `command = "claude"`
-entries that omit it. Explicit `[]` opts out, and custom definitions can declare
-their own group. Restart affected sessions after upgrading. This changes
-directory scope, preserving the permission mode and deny/ask rules; see
-[Multi-repo directory scope](agents.md#multi-repo-directory-scope).
-
-`{id}` is substituted with the thurbox-generated session UUID, and `{name}`
-with the display name captured for that launch. Substitution happens inside
-each argument token: a name containing spaces, quotes, Unicode or shell
-metacharacters remains one literal argument — on a Windows (psmux) host too,
-where an argument holding `"` is quoted for both a C runtime and an npm `.cmd`
-shim. There a newline in an argument becomes a space, and so does every `"` of
-an argument holding whitespace and a `"` right after a `\`, which Windows
-PowerShell 5.1 would otherwise re-quote; `THURBOX_SESSION_NAME` keeps the name
-exactly everywhere. Definitions without `{name}` keep the same argv. Renaming
-a running session does not change its process environment or arguments; its
-next restart uses the current persisted name.
-`thurbox-cli agent launch-args --session` reports the same expansion. `{home}`
-is substituted with the resolved home dir at spawn time (the remote home
-for an SSH/WSL host) — for an agent that wants a session *file path*
-rather than a bare id. The built-in `omp` (Oh My Pi) uses it: it generates
-its own internal id and won't take thurbox's, but its `--session-dir <dir>`
-keeps a session in a directory of thurbox's choosing, so thurbox maps its
-UUID to a deterministic `--session-dir {home}/.omp/agent/sessions/thurbox-{id}`
-(creation) / the same plus `--continue` (restart). An `agents.toml` seeded
-by an older thurbox still carries `--session`/`--resume` on a `.jsonl` file,
-which OMP refuses for a file that does not exist yet; the loader replaces
-that exact pair in memory, and any hand-edited omp entry is left as is. `{home}` is expanded by
-thurbox, not the shell — args are POSIX-quoted, so a literal `~` would
-never expand. `omp` ships no `fork_args`, so `Ctrl+F` starts a fresh
-session (OMP has no way to pin a fork's target file to a thurbox UUID).
-Groups
-are emitted only when their driving value exists; precedence is
-fork > resume > new-session. See the seeded file's comments and
-the `thurbox-agents` skill for the `resume_latest` semantics.
+The launch fields — `args`, the `*_args` groups, `env`, `telemetry_env`,
+`telemetry_args`, `vars` and `setup` — are parsed and checked as below, and
+nothing in thurbox launches with them.
 
 ### Templates, argument order and setup
-
-Three fields let one entry say what used to need a wrapper script in front of
-the CLI (the worked example replacing one is
-[Replacing a launch wrapper](agents.md#replacing-a-launch-wrapper)):
 
 ```toml
 [[agents]]
@@ -329,104 +236,14 @@ key** over its base's: a template entry can give each var a default and each
 
 **Every placeholder must resolve.** A placeholder is `{` + identifier + `}`;
 TOML-shaped text such as codex's `-c 'projects={"/w"={trust_level="trusted"}}'`
-is not one. What each field may name is what its own substitution handles —
+is not one. What each field may name is fixed —
 `{id}` and `{name}` only in the session groups, `{dir}` only in
 `additional_dir_args`,
 `{otlp_endpoint}`/`{otlp_protocol}` only in the telemetry fields, `{home}` in
 `command`, `args`, the groups, `env` and `setup`, and `{session_args}` only as
-one whole `args` token. Anything else — a misspelt `{rol}`, `{id}` in `args` —
-fails `thurbox-cli config validate` and skips that entry on load (with a
-warning naming the field and the placeholder); it is never passed to the agent
-as literal text.
-
-**`{session_args}` places the session-selection group.** Without it, the
-fork/resume/new-session group comes first and `args` follow — the order every
-existing entry launches with, unchanged. As a whole `args` token it is replaced
-by that group (or by nothing, when no group applies), so a flag can precede
-`--session-id`, and a CLI whose subcommand must lead can put its flags after
-it: with `resume_args = ["resume", "--last"]` and `args = ["{session_args}",
-"--approve-for-me"]`, codex launches as `codex resume --last --approve-for-me`
-on a restart and `codex --approve-for-me` fresh. It may appear once. Directory,
-telemetry and `--agent-arg` arguments still follow everything.
-
-**`setup`** is a list of shell commands run before the agent starts:
-
-- **Shell.** The steps run as one POSIX `sh -c` script, in order, under
-  `set -e`, then `exec` the agent — so a guard such as
-  `[ -f scripts/setup.mjs ] && node scripts/setup.mjs` does not fail the launch
-  when the script is absent, while the script failing does. Because the steps
-  share that one shell, a `cd` or `export` in a step carries into the agent.
-- **Where and with what.** In the session's launch directory (its worktree, or
-  the multi-repo workspace) and with the session's launch environment — the
-  same env the agent gets, `THURBOX_*` included. `vars` and `{home}` are
-  substituted first.
-- **Remote hosts.** The script runs in the agent's own pane, so on an SSH or
-  WSL host it runs on that host, where the agent runs.
-- **Windows.** A native-Windows machine has no `sh`, so there the steps are
-  PowerShell: one script, launched as `powershell.exe -EncodedCommand`, that
-  runs each step in order and stops at the first that throws, leaves a
-  non-zero `$LASTEXITCODE` or calls `exit`, then starts the agent with its
-  arguments passed exactly (empty ones and embedded `"` included), in the
-  location the steps left — a `Set-Location` carries into the agent, as a `cd`
-  does on POSIX. A command that resolves to a `.ps1` script runs through
-  `powershell.exe -File`. The same
-  `thurbox: setup step <n> failed (exit <status>)` line marks a failure. The
-  whole launch is one command line, so a setup that makes it longer than
-  Windows' 8191 characters is refused before anything starts.
-- **Output.** It stays on the pane, above the agent.
-- **Failure.** A step exiting non-zero aborts the launch; the agent never
-  starts. The pane prints `thurbox: setup step <n> failed (exit <status>)` and
-  stays on screen, and the session reads
-  [`failed`](orchestration.md#launch-failures) with that status and the pane's
-  last lines. That state is recorded for local sessions; on an SSH or WSL host
-  only one that shares its sessions records it (on the host). Elsewhere a
-  failed setup still stops the launch and stays on the pane, but the session
-  reads `unreported`.
-- **Every launch.** Create, restart, `session start`, restore and fork all run
-  it, as a wrapper script in `command` would have. `agent launch-args` reports
-  the wrapped `sh -c …` invocation.
-
-### How `command` is resolved
-
-For a **local** session, thurbox resolves a bare `command` against **its own
-`PATH`** and hands the multiplexer the absolute path it found. It does that
-because the multiplexer would otherwise resolve the name itself, in an
-environment thurbox neither chose nor can see:
-
-- tmux copies the *client's* `PATH` into a new pane only for an **unattached**
-  client, so a window created over thurbox's (attached) control-mode connection
-  — a restart, a plugin program, the companion shell pane — got the `PATH` of
-  whatever first started the tmux **server**.
-- a window command that reaches tmux as a **single** argument is run by tmux's
-  `default-shell`, not `execvp` — so an agent with no args was launched by a
-  shell thurbox never chose, under that shell's `PATH` and quoting.
-
-Under zsh/bash those `PATH`s agree, because the interactive additions live in
-`~/.zshenv` / `~/.profile`, which any shell that starts a tmux server sources.
-Under **fish** they do not: `fish_add_path` writes `fish_user_paths`, which only
-fish applies — so a server started from anything else never sees the agent, for
-the life of that server, and the spawn fails with a shell's `command not found`
-(exit **127**; an `execvp` failure is exit 1).
-
-That is not the only thing a 127 there can mean, and thurbox does not read the
-exit status as the verdict at all — see
-[features.md](features.md#session-creation) for the hook that also produces
-one.
-
-Resolution is **best-effort and never a new way to fail**: a `command` that is
-already a path, that nothing on `PATH` matches (a shell function or alias, or a
-binary installed after thurbox started), or that runs on Windows is passed
-through verbatim, exactly as before. A **remote** (SSH/WSL) session is not
-resolved either — its `PATH` is the host's: the host's login-shell `PATH`
-(read once per host, see [hosts.toml](#hoststoml) → `path_prepend`) ahead of
-what ssh / `wsl.exe` give a command, and its window command is wrapped in a
-login shell.
-
-Only **absolute** `PATH` entries are considered. That excludes the empty entry
-POSIX reads as "the current directory" (`:/usr/bin`, or a stray trailing colon),
-because the resolved path is handed to a process with a working directory of its
-own — honouring it would let a `claude` sitting in the repo you are working on
-shadow the real one, which is the dependence this removes rather than moves.
+one whole `args` token, at most once. Anything else — a misspelt `{rol}`,
+`{id}` in `args` — fails `thurbox-cli config validate` and skips that entry on
+load (with a warning naming the field and the placeholder).
 
 ### What happens when it is *not* installed
 
@@ -435,25 +252,16 @@ deliberate — browsing, reading and configuring must work on a fresh box. So th
 same lookup runs a second time, as a **preflight**, in the places where knowing
 early is worth something:
 
-- the **create-session flow** marks an agent whose `command` resolves nowhere
-  (`⚠ not installed`) and says so on the step that offers it, and states a
+- the **create-session flow** marks a local agent whose `command` resolves
+  nowhere (`⚠ not installed`) and says so on the step that offers it, and states a
   missing multiplexer from the flow's first step. It never blocks: the answer is
   a warning on the choice, because a `command` may still be launchable (a shell
   function, or something installed a second later).
 - the **empty session list** — the one screen a first run always reaches — says
   the multiplexer is missing, with the fix.
-- a **spawn failure** caused by a missing binary names the binary, the
-  directories thurbox searched and the one thing to do about it, instead of the
-  launcher's errno or the multiplexer's exit code.
 - `thurbox-cli doctor` answers the whole question directly: the multiplexer and
   its version, every registered agent's `command`, the launcher for each
-  configured host, and the full search path. For a host that shares sessions it
-  also asks the host's `thurbox-cli` for its version (one round trip, never an
-  install) and warns when sharing cannot work — a CLI behind this one's schema,
-  none at all, or no answer — naming `thurbox-cli session sync --host <name>`,
-  which installs a matching one or reports why it cannot. It is the companion to
-  `thurbox-cli session doctor`, which asks whether an *existing* session's status
-  hooks are wired.
+  configured host, and the full search path.
 
 The probe is a `stat` per absolute `PATH` entry per binary — no process spawn —
 and it runs on the kernel's own schedule behind a 10-second window, never on a
@@ -462,8 +270,8 @@ than missing, because in both cases nothing was looked at: a **remote host**,
 whose binaries live on the host, and a **relative** `command` such as
 `./bin/agent`, which is resolved by whoever launches it from the *session's*
 own directory. Answering the latter from thurbox's working directory would call
-a binary that launches fine missing, and one that does not present — the same
-"absolute only" rule the resolver above is written under, for the same reason.
+a binary that launches fine missing, and one that does not present. Only
+absolute `PATH` entries are searched, for the same reason.
 
 The advice is platform-specific and never invented. A Windows user is pointed at
 [psmux](https://github.com/psmux/psmux), never at `tmux`; where the install
@@ -472,12 +280,6 @@ tmux's own [install page](https://github.com/tmux/tmux/wiki/Installing) rather
 than a guessed invocation. A missing **agent** is answered with the `agents.toml`
 entry that decides what gets run, because thurbox bakes in no knowledge of any
 agent's installer.
-
-`hook_schema` is optional. Set `hook_schema = "claude"` on a **rebranded** agent
-(one whose `command` runs `claude` under a different `name`) and its status is
-read as claude's. It names the *family* to imitate, not a boolean; see
-[agents.md](agents.md#hook_schema-custom-rebrands-only) for which family is
-actually useful today and why.
 
 The seeded file also ships two commented, copy-pasteable templates
 below the built-ins — **Add your own agent** (every field annotated)
@@ -500,7 +302,7 @@ configured hosts, error shown.
 
 | Field | Required | Default | Purpose |
 |-------|----------|---------|---------|
-| `name` | yes | — | backend id `ssh:<name>` / `wsl:<name>`; what `--host` expects |
+| `name` | yes | — | backend id `ssh:<name>` / `wsl:<name>`; what the host picker offers |
 | `kind` | no | `ssh` | transport: `ssh` (remote machine) or `wsl` (local distro) |
 | `destination` | for ssh | — | ssh target (`user@host` or `~/.ssh/config` alias) |
 | `distro` | no | `name` | WSL distro name (`kind = "wsl"` only) |
@@ -510,25 +312,9 @@ configured hosts, error shown.
 | `worktrees_dir` | no | host `$HOME/.local/share/thurbox/worktrees` | absolute worktrees dir on the host/distro |
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
-| `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
-| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands, the delegated `thurbox-cli` and the agent's pane on a POSIX host (not git or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
-| `otel_endpoint` | no | — | the OTLP endpoint, as the host reaches it, that a session on this host exports to while [`[telemetry]`](#telemetry--opentelemetry-for-sessions) configures agents; unset = resource attributes only. On a shared host the agent's pane is launched by the host's own CLI from the host's `[telemetry]`; this endpoint still applies to `session exec` and `agent launch-args` run from here |
+| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands and the panes they open on a POSIX host (not git or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
 
-**A Windows host whose endpoint policy will not start `thurbox-cli.exe`.**
-Defender's attack surface reduction rules (notably *Use advanced protection
-against ransomware*), AppLocker and WDAC can refuse to start a binary that is
-new and unsigned, which a just-provisioned `thurbox-cli.exe` is. The probe
-tells that refusal apart from a broken binary: no process started, so it has
-no exit status. Such a host is **not** re-provisioned, since a fresh copy is
-refused the same way, and is backed off like an unreachable one, across
-processes. Its sessions show `Sharing: off (… could not be started …)` and
-`thurbox-cli doctor` names the policy. The repair is on the host: allow the
-binary in the policy that refused it (for an ASR rule, a per-file exclusion for
-`%LOCALAPPDATA%\thurbox\bin\thurbox-cli.exe` after checking its hash
-against the release), or set `share_sessions = false` for that host. Then
-run `thurbox-cli session sync --host <name>` to ask it again at once.
-
-**The agent's `PATH` on a host.** ssh and `wsl.exe` hand a command a
+**The `PATH` on a host.** ssh and `wsl.exe` hand a command a
 non-login environment — `wsl.exe -e` skips the user's shell entirely, so
 not even `~/.zshenv` is read — which has none of `~/.local/bin`,
 `~/.cargo/bin`, nvm/fnm and the like. So thurbox reads the host's login
@@ -536,39 +322,29 @@ not even `~/.zshenv` is read — which has none of `~/.local/bin`,
 `$SHELL` is unset, and `/bin/sh -lc`; stdin closed, never `-i`, 5 s each
 under `timeout`, 15 s overall). The multiplexer commands (so a Homebrew
 tmux in `/opt/homebrew/bin`, which only a macOS login shell puts on the
-`PATH`, is found), the delegated `thurbox-cli`, and so the agent's pane,
+`PATH`, is found) and the panes they open
 run there on `path_prepend`, then the login shells' `PATH`, then the
 launcher's own (on WSL that includes the Windows `PATH` WSL appends unless
 `appendWindowsPath = false`), each directory once. git
 and an image drop keep the launcher's `PATH`. A host whose shells cannot be read keeps
-the launcher's `PATH` with a warning in the log; session creation never
-waits longer than the timeout on it, and never fails for it.
+the launcher's `PATH` with a warning in the log.
 
 **SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
 handles credentials. **WSL** distros are reached with
 `wsl.exe -d <distro>` and need no config entry at all — they are
 **auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
-and `--host` automatically; add a `kind = "wsl"` entry only to override
+automatically; add a `kind = "wsl"` entry only to override
 a default (e.g. `worktrees_dir`). Discovery also works from *inside* a
 distro (interop puts `wsl.exe` on `PATH` there), and excludes the distro
-thurbox is itself running in: that one is this machine, sessions on it
-are ordinary **local** sessions created with no `--host`. An entry whose
-`distro` is that one is ignored with a startup warning. An entry merely
-*named* after it — reaching a sibling — works as written and keeps its
-sessions, but it records them under the very name an older thurbox
-mislabelled *local* sessions with; the two are indistinguishable, so
-thurbox warns and leaves every row under that name alone (any local
-session still recorded there stays recorded there). Name a **new** entry
-after the distro it reaches and there is nothing to warn about; renaming
-an **existing** one moves no row, and leaves its recorded sessions
-behind under a name no host registers.
-For both kinds, the multiplexer, git, the agent,
-and worktrees all run **on the host / inside the distro** at native
-paths (a WSL distro's worktrees live in its own Linux filesystem, not on
-`/mnt/c`); the distro needs its selected multiplexer (`tmux` >= 3.2 by default,
-or opt-in RMUX >= 0.10.0) and `git`. Host changes require a restart
-(the registry is read once and each host's `$HOME` is
+thurbox is itself running in: that one is this machine. An entry whose
+`distro` is that one is ignored with a startup warning, and an entry merely
+*named* after it is warned about. A distro needs its selected multiplexer
+(`tmux` >= 3.2 by default, or opt-in RMUX >= 0.10.0) and `git`. Host changes
+require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
+
+The host picker's choice names the Fleet host a session runs on; see
+[`[fleet]`](#fleet--the-session-engine).
 
 ### Host platform
 
@@ -588,41 +364,23 @@ multiplexer reports a closed window (tmux does; psmux and RMUX need polling).
 
 ### Multiplexer choice and existing sessions
 
-Host and multiplexer are separate choices. `hosts.toml` names the host's
+Host and multiplexer are separate choices. `hosts.toml` names a host's
 preference; top-level `multiplexer` in `settings.toml` names the local
-preference. `thurbox-cli session create --multiplexer <name>` overrides either
-for one creation. The TUI asks for a host and then shows the registered
-multiplexers for it. The order is explicit choice, configured host or local
-preference, then platform default (`tmux` on POSIX, `psmux` on native Windows).
+preference; otherwise the platform default applies (`tmux` on POSIX, `psmux`
+on native Windows). A Fleet session's terminal is its runtime's, so the
+multiplexer the create flow settles on is dropped. The preference decides the
+multiplexer a companion shell (`Ctrl+T`) opens on.
 
 The TUI offers only the multiplexers **available** on the chosen host:
 registered, native to its platform (tmux on POSIX and WSL, psmux on native
 Windows, RMUX on either), and installed there. Locally that is a `PATH`
 lookup. For an SSH or WSL host it is the probe that already reads the host's
 login `PATH` (see `path_prepend` above), which also names each multiplexer it
-finds there — on the same `PATH`, `path_prepend` first, that thurbox then runs
-it on; it runs in the background only while the new-session flow is open,
-and is asked again once its answer is a minute old, so the picker never waits
-on a host and a host that was down, or has since had a multiplexer installed,
-is read again. Until it answers, and on a native-Windows host, which
-is not probed, a host offers its platform default and its configured
-`multiplexer`.
-
-The picker appears only when that leaves a real choice. With exactly one
-available it is skipped and that one is used, so a machine with only RMUX
-runs RMUX. With none, it says so with an install hint. A configured choice
-that is available skips it too; one that is not requires an explicit
-selection of another offered multiplexer. With two or more, the platform
-default stays selected and `rmux` sits immediately after `tmux`. A local
-`thurbox-cli session create` with no `--multiplexer` and no configured one
-applies the same rule: the platform default when it is installed, otherwise
-the one that is.
-Names are `tmux`, `psmux`, `rmux`, and `herdr`. A configured choice without a
-registered implementation is shown as unavailable and creation refuses it
-before making a worktree or pane.
-When creation is delegated to a host's own Thurbox CLI, that CLI advertises
-whether it accepts a multiplexer choice. Older compatible CLIs can still use
-their platform default; a non-default choice requires updating the host CLI.
+finds there; it runs in the background only while the new-session flow is
+open, and is asked again once its answer is a minute old. Until it answers,
+and on a native-Windows host, which is not probed, a host offers its platform
+default and its configured `multiplexer`.
+Names are `tmux`, `psmux`, `rmux`, and `herdr`.
 
 The resolved choice is a session's **route**. One parser (`session::Route`)
 reads it, and every route names its multiplexer:
@@ -645,22 +403,14 @@ route. `hosts.toml` ignores such an entry with a warning, and
 Which multiplexers work is what is **registered**, never the OS: every
 multiplexer an adapter implements (`tmux`, `psmux`, and `rmux`) is registered for
 this machine and for every host, whatever either's platform or preference — a
-binary that is not installed is reported by name when a session first needs
-it (the TUI's picker narrows this further to what is installed; see above).
+binary that is not installed is reported by name when it is first needed.
 A route naming a multiplexer no adapter implements (`herdr` today)
-is refused by name, and is neither created nor driven with another binary. A
-force-delete or reap of a local row on a multiplexer this machine does not run
-refuses rather than removing a
-checkout or killing a local window of the same name; a delete without
-`--force` still works and leaves it restorable. An adapter for another multiplexer
-registers its own routes; it must read them on restart, restore, delete,
-input, capture, and fork.
+is refused by name, and is never driven with another binary.
 
 ### Multiplexer requirements and RMUX setup
 
 Use the latest stable release of the selected multiplexer. These are the
-minimums enforced by the adapters, checked against upstream on 2026-10-22,
-when psmux's floor rose to 3.3.8 (#1557).
+minimums enforced by the adapters, checked against upstream on 2026-10-22.
 
 | Multiplexer | Minimum | Code enforcing it | Upstream evidence |
 | --- | --- | --- | --- |
@@ -700,9 +450,8 @@ psmux 3.3.8 on Windows 11 (ADR-13), and RMUX 0.10.0 on Linux
 ([#1322](https://github.com/Thurbeen/thurbox/pull/1322)). This is historical
 evidence, not a claim that every platform was retested for this doc change.
 The latest upstream stable releases checked on 2026-10-03 were tmux 3.7c,
-psmux 3.3.8, and RMUX 0.10.0; psmux 3.4.0 followed on 2026-10-13, and
-[`psmux-pane-routing.ps1`](../../scripts/dev/e2e/psmux-pane-routing.ps1) passes
-against 3.3.8 and 3.4.0 on Windows 11.
+psmux 3.3.8, and RMUX 0.10.0; psmux 3.4.0 followed on 2026-10-13, and v2's
+pane-routing probe passed against 3.3.8 and 3.4.0 on Windows 11.
 
 RMUX is a Rust terminal multiplexer with a tmux-compatible command interface.
 It is opt-in and never changes the platform defaults. Install it separately
@@ -713,12 +462,9 @@ crate; check `rmux -V` afterwards. Release archives need their complete
 package layout: on Unix run the archive's `./install.sh --prefix ~/.local`,
 and keep its `bin/` and `libexec/`; do not copy just the executable.
 
-Press **Ctrl+N**, choose the host if prompted, then choose **RMUX** immediately
-after tmux in the multiplexer picker. RMUX appears only where an `rmux` binary
-is found — on `PATH` locally, by the host probe on a host — and when it is the
-only multiplexer installed, the picker is skipped and RMUX is used.
-To make it the default for new local sessions, set this top-level value in
-`settings.toml`:
+RMUX appears in the TUI's multiplexer picker only where an `rmux` binary
+is found — on `PATH` locally, by the host probe on a host. To make it the
+local preference, set this top-level value in `settings.toml`:
 
 ```toml
 multiplexer = "rmux"
@@ -726,14 +472,11 @@ multiplexer = "rmux"
 
 For an SSH host, add `multiplexer = "rmux"` to its `[[hosts]]` entry. For WSL,
 add a configured `kind = "wsl"` entry matching the discovered distro and set
-that same preference; install RMUX inside the distro. An explicit
-`thurbox-cli session create --multiplexer rmux` overrides the preference
-(add the usual session name, repository and agent arguments).
-Existing tmux and psmux rows retain their recorded routes.
+that same preference; install RMUX inside the distro.
 
 | RMUX placement | Thurbox integration evidence |
 | --- | --- |
-| Local Linux | Live creation, TUI attachment, input and pane-deletion/relaunch in #1322 |
+| Local Linux | Live creation, TUI attachment, input and pane-deletion/relaunch ([#1322](https://github.com/Thurbeen/thurbox/pull/1322)) |
 | Local macOS | Upstream ships macOS binaries; thurbox integration unverified |
 | SSH host | Adapter and route construction covered; real-host execution unverified |
 | WSL distro | Picker and route construction covered; distro execution unverified |
@@ -751,170 +494,12 @@ that launches thurbox. For a host, check it on that host or inside the WSL
 distro. A version rejection needs an upgrade on the session machine.
 RMUX 0.9.x daemons cannot talk to a 0.10.0 client: stop the old server before
 upgrading, using `rmux -L <socket> kill-server` for each affected socket.
-This stops its sessions; finish or save the agents' work first. A change of
-preference does not convert existing sessions, so use the recorded route's
-multiplexer when attaching manually or stopping a server.
+This stops its sessions; finish or save the agents' work first.
 
 A socket learned from a host's own CLI (`version --json`'s `tmux_socket`) is
 kept per **host**, not per route: it is the address of the thurbox instance
 there (ADR-12), which every multiplexer on that host runs under. Why routes
 are read this way, and what it costs, is ADR-28 in `docs/thurbox/architecture.md`.
-
-Manual deletion of an agent pane or window means the agent should run again.
-Once the backend **confirms absence**, Thurbox relaunches the same session ID,
-agent, and worktree once. An exited pane still held by the server remains
-visible for inspection. A backend that is unreachable or has not verified the
-window cannot authorize a relaunch. A session intentionally parked with
-`session stop` stays stopped. A deleted companion shell is forgotten without
-relaunching the agent. RMUX's local headless and TUI-open pane-deletion paths
-have live tests; Herdr remains unverified.
-
-## hooks.toml
-
-Declares **session lifecycle hooks**: your own shell commands, run by
-thurbox before and after it creates, deletes, restarts or restores a
-session. Seeded fully commented-out (a fresh install runs nothing); read
-**each time an event fires**, so an edit is in force at the next
-operation with no restart. Malformed file → no hooks run, warning in the
-log, and `config validate` fails.
-
-```toml
-[[hooks]]
-event = "session.pre_create"
-command = 'case "$THURBOX_BRANCH" in main|master) echo "refusing: protected branch" >&2; exit 1;; esac'
-
-[[hooks]]
-event = "session.post_create"
-command = '[ -n "$THURBOX_CWD" ] && cp -n .env.local "$THURBOX_CWD/.env"; true'
-timeout_secs = 120
-```
-
-| Field | Required | Default | Purpose |
-|-------|----------|---------|---------|
-| `event` | yes | — | one of the events below |
-| `command` | yes | — | run through `sh -c` (`cmd /C` on Windows) |
-| `timeout_secs` | no | `30` | the hook is killed after this long — with everything it started (its process group; the process tree on Windows) |
-| `agents` | no | `[]` | exact agent names; empty matches all |
-| `to` | no | `[]` | destination states for `session.state_changed`: `working`, `blocked`, `done`, `idle`, `background`, `stopped`, `lost`, `exited`; empty matches all; any other word fails validation |
-
-**Events** — a `pre_*` fires before the operation has any side effect, a
-`post_*` after it has fully succeeded (never after a failure):
-
-| Operation | Events | Fired by |
-|-----------|--------|----------|
-| create (incl. fork) | `session.pre_create` / `session.post_create` | the creation flow, `Ctrl+F`, `thurbox-cli session create`, a `spawn` automation |
-| delete (soft or force) | `session.pre_delete` / `session.post_delete` | `Ctrl+D`, `thurbox-cli session delete [--force]` |
-| restart | `session.pre_restart` / `session.post_restart` | `Ctrl+R`, `thurbox-cli session restart` |
-| restore (incl. undo) | `session.pre_restore` / `session.post_restore` | `Ctrl+Z`/`Ctrl+U`, `thurbox-cli session restore` |
-
-Hooks fire **once per operation whichever interface asked**, because
-every interface ends in the same pipeline (`session_ops`). Hooks for one
-event run one at a time, in file order.
-
-**The operation-level `pre_*` hooks can refuse.** Exit non-zero (or exceed the timeout) and
-the operation is aborted before it has done anything — no worktree, no
-process, no row changed — with the hook's command, exit status and the
-tail of its stderr as the reported reason (the in-flight error in the
-TUI, the error and exit status of `thurbox-cli`). Later hooks for that
-event do not run. **A `post_*` hook is informational**: every one runs,
-a failure is logged to `thurbox.log` and carried in the CLI's JSON
-(`hook_failures`), and never fails the operation. Each `post_*` is also
-delivered to interface plugins as an event of the same name (`events = {
-"session.post_create" }` + `on_event`; `docs/thurbox/plugins.md` → Events) — the
-Lua side of the same vocabulary, informational for the same reason.
-
-**Preparation before launch.** `session.pre_launch` runs on create
-(including fork), after worktrees and any multi-repo workspace exist, before
-opening the agent's pane, on the machine the agent will run on. Its process cwd
-is the final launch directory and its stdin includes all worktrees and
-additional directories. For a remote session that is the host: the command runs
-over the host's launcher (ssh or `wsl.exe`) in the host's shell — `sh`, or
-PowerShell on a native-Windows host — in the launch directory there, with the
-`THURBOX_*` variables set inside the script, since ssh carries no environment,
-and on a POSIX host with the host's `path_prepend` and login `PATH` first, as
-the agent gets them.
-This machine's `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` are not passed: they name
-paths here. A session on a host that shares its sessions is created by the
-host's own `thurbox-cli`, so the host's `hooks.toml` applies there. `agents = ["claude"]`
-limits a preparation command to that agent definition. Non-zero exit, spawn
-failure or timeout refuses the launch. Prepared worktrees and any changes the
-user script made remain available for inspection; no pane or session row is
-created. Use an existing prepared checkout as `--repo-path` when retrying.
-It does not run on restart, start or
-restore. It is a user hook, rather than an agent-definition field.
-
-**State edges without an interface.** `session.state_changed` is a post-only
-notification from the session event log, consumed by `automation tick` after
-the status poll. It includes state edges and stopped/lost/exited notifications;
-`to = ["done", "blocked"]` filters the destinations. The stdin object uses the
-same `seq`, `event`, `reason`, `from_state`, `to_state`, session identity and
-coverage fields as `watch --json`, plus `gap`. The environment adds
-`THURBOX_FROM_STATE`, `THURBOX_TO_STATE` and `THURBOX_EVENT_SEQ` to the usual
-identity variables. Terminal lifecycle reasons can have null state fields;
-filter these by `to = ["stopped", "lost", "exited"]`.
-
-Delivery is **at-least-once**, not exactly-once: scripts deduplicate side
-effects on `seq`. A crash after a script runs and before the cursor commits
-replays that batch. Ordinary hook failure is logged and returned in the tick's
-`hooks.failures`; later hooks still run. One lease and compare-and-swap protect
-the `hooks` row in `event_cursors` from overlapping ticks. Each tick reads at
-most 512 events and spends at most 30 seconds on hooks, including their own
-timeouts; each remaining hook gets a share of the remaining phase budget so
-one slow hook cannot starve the rest of its event. No hook starts on less
-than 100 ms of budget; an event cut short that way is not committed and is
-delivered again, whole, on the next tick. Reaping and telemetry run
-before this phase, so a slow hook delays only hooks. First use starts at the
-head, skipping history. Pruned history produces `gap: true` once, on the first
-payload a hook receives in that tick; when no hook's filter matches anything
-in that batch, only the tick's own report carries it. The cursor outlives the
-file: removing every state hook pauses delivery, and adding one back resumes
-from where it stopped (at most 512 edges a tick, within retention) rather
-than from the head. An edge whose session row was force-deleted before the
-tick reached it is skipped, since its agent and context are gone with it.
-
-Keeper latency is normally 60 seconds. The existing `features.automations`
-off switch disables automatic keeper startup; manual `automation tick` still
-consumes state hooks. After editing the file, `config validate` arms the keeper
-when state hooks exist and the feature is enabled; startup and session creation
-also arm it. A driver needing lower latency uses `watch` or `session wait`.
-
-**What a hook receives.** Environment variables — **unset** (never
-empty) when the fact is not known at that moment:
-
-| Variable | Meaning |
-|----------|---------|
-| `THURBOX_HOOK_EVENT` | the event name, e.g. `session.post_create` |
-| `THURBOX_SESSION` | the thurbox session id (at `pre_create`: the id it will have if creation succeeds) |
-| `THURBOX_SESSION_ID` | the agent's own conversation id |
-| `THURBOX_SESSION_NAME` | the session name |
-| `THURBOX_SESSION_KEY` | the session's key (`session create --key`); unset when it has none |
-| `THURBOX_AGENT` | the agent name |
-| `THURBOX_REPO` | the primary repository path |
-| `THURBOX_CWD` | the directory the agent runs in (the worktree, or the symlink workspace of a multi-repo session); unset at `pre_create` |
-| `THURBOX_BRANCH` / `THURBOX_BASE_BRANCH` | the worktree branch and what it was created from (base: create events only) |
-| `THURBOX_HOST` | the remote host name; unset for a local session |
-| `THURBOX_PARENT_SESSION` | the parent session id (a fork, or `--parent`) |
-| `THURBOX_TASK` | the originating task id, for a task-spawned session |
-| `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | so a `thurbox-cli` run inside the hook hits the database of the thurbox that fired it |
-
-The same facts — plus `worktrees` (`repo_path`, `worktree_path`,
-`branch`), `additional_dirs`, `force` (delete) and `force_deleted`
-(restore) — arrive as **one JSON object on stdin** (`jq -r .cwd`).
-
-**Where and how it runs.** In the primary repository when that is a
-directory on this machine, otherwise in thurbox's own working directory
-— the repository is the one path that exists at every event (at
-`pre_create` the worktree is not made; at `post_delete` it is gone).
-With **no terminal**: stdin is the JSON, stdout/stderr are captured and
-only their tail (500 chars) is reported, so a hook can neither draw on
-nor read from the TUI's screen. A hook for a **remote** (SSH/WSL)
-session still runs **locally**; `THURBOX_HOST` names the host and the
-paths are the host's — `ssh "$THURBOX_HOST" …` from the hook is your
-call. The one exception is `session.pre_launch`, above: its cwd is the
-launch directory, and for a remote session it runs on that host.
-
-`thurbox-cli config validate` strict-parses the file; `config show`
-lists the hooks in force.
 
 ## settings.toml
 
@@ -923,17 +508,11 @@ lists the hooks in force.
 > launch, and `Ctrl+S` saves — written back through `toml_edit`, so the
 > comments below survive.
 >
-> Four flags gate surfaces the interface **no longer draws**: `code_review`,
-> `file_viewer`, `info_panel` and `tasks`. They
-> are accepted and preserved untouched so an existing file does not fail
-> `thurbox-cli config validate`, and simply not listed in the panel, since a
-> row that gates nothing reads as broken. `automations` is honoured, but it
-> arms the headless heartbeat rather than an in-TUI scheduler.
->
-> A top-level `layout` key is the one v2.32.0 wrote for its layout presets,
-> which the next release rolled back (#1227). The interface removes that key at
-> start (the key and its value, however spelt; the comments around it stay) and, unless it named
-> `classic`, says once in the message band that the classic layout is back.
+> Four flags gate nothing: `code_review`, `file_viewer`, `info_panel` and
+> `tasks`. They are accepted and preserved untouched so an existing file does
+> not fail `thurbox-cli config validate`, and not listed in the panel, since a
+> row that gates nothing reads as broken. `automations` switches the
+> interface's own automation ticks.
 
 Scalar tuning knobs plus the `[features]` switches, seeded fully
 commented-out (defaults apply when absent). Only knobs a user plausibly
@@ -944,14 +523,12 @@ all commented so defaults still apply out of the box.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `multiplexer` | platform default | multiplexer preference for new local sessions; explicit per-create choice wins |
+| `multiplexer` | platform default | local multiplexer preference; see [Multiplexer choice](#multiplexer-choice-and-existing-sessions) |
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
 | `stream_panes` | `false` | open each local tmux session's pane through `runtime-mux view`, a [terminal stream](../runtime/README.md#the-terminal-stream), instead of thurbox's own control-mode connection; restart to apply. A stream pane keeps its grid while hidden, so `hidden_terminal_secs` does not apply. Off until it measures as fast as control mode ([performance](performance.md)) |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
-| `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
-| `deleted_retention_days` | `0` | days before the sweep removes a deleted session’s created worktrees and retains a purge tombstone; `0` keeps all |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
 | `[fleet] program` | `fleet` | the Fleet that runs every session; see [`[fleet]`](#fleet--the-session-engine) |
 
@@ -968,8 +545,6 @@ hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 
 stream_panes          = false  # local tmux panes through runtime-mux view, a terminal stream
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
-audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
-deleted_retention_days = 0     # days a deleted session stays restorable; 0 = keep all
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
@@ -987,14 +562,14 @@ also_on_waiting     = false    # also fire when a session finishes (Working → 
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
-on_automation_failure = false  # ignored in v3
+on_automation_failure = false  # accepted and ignored
 
 [clipboard]
 provider       = "auto"        # auto | native | osc52 | none
 copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies a selection
 
 [remote]
-transitive_sessions = false    # true = also list sessions a host mirrors from hosts of its own
+transitive_sessions = false    # accepted and ignored
 
 [fleet]
 program = "fleet"              # the fleet binary: a name on PATH or a path (restart-only)
@@ -1016,7 +591,7 @@ That is a round trip and a parse, about 10 ms for a 200x50 pane with 1,000
 lines of history, so switching to a session hidden longer than this takes that
 long to draw. A search whose strip was just opened reads each such session the
 same way before the first keystroke. `0` keeps every grid for as long as the
-session runs, which is how thurbox behaved before (ADR-P27 in
+session runs (ADR-P27 in
 [performance.md](performance.md)). psmux (Windows) cannot hand a pane back in
 step with its output, so its sessions always keep their grids. Read at startup.
 
@@ -1073,15 +648,14 @@ in `plugin-state.json`. That does strictly more than a flag could: it works for 
 plugin *you* wrote, which no compiled-in flag could know about.
 
 Five keys are **accepted and ignored**: `tasks`, `file_viewer`,
-`info_panel`, `code_review` and `global_search`. They gated v1 panes the
-binary no longer draws, and nothing reads them now — not even the plugins
-that give `code_review` and `info_panel` back
+`info_panel`, `code_review` and `global_search`. Nothing reads them. The
+plugins that give `code_review` and `info_panel`
 ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review),
-[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)),
-which are switched on and off from the Interface tab like any other pane.
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel))
+are switched on and off from the Interface tab like any other pane.
 They are still parsed rather than rejected, so an existing `settings.toml`
-keeps loading instead of failing on an unknown key — but setting one has no
-effect in either direction. Same for `three_panel_min_cols` above.
+keeps loading instead of failing on an unknown key. Same for
+`three_panel_min_cols` above.
 
 | Key | Default | Controls |
 |-----|---------|----------|
@@ -1090,7 +664,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 | `automations` | `true` | the interface firing due automations while it runs (the CLI, `automation tick` included, stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
-| `soft_delete` | `false` | TUI and CLI delete immediately; on = soft delete with an undo window (CLI `--soft` / `--force` override) |
+| `soft_delete` | `false` | published to plugins; a delete is final either way (see below) |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 | `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update` |
 
@@ -1106,57 +680,8 @@ URL handling, etc.) and no click/wheel/hover handling runs in the TUI.
 ever starting (zero overhead) and silently no-ops every transition;
 the session status display itself is unaffected.
 
-`soft_delete = false` (the default in release, debug and sandbox builds) makes
-TUI `Ctrl+D` and `thurbox-cli session delete` a destructive
-**hard delete**: instead of marking the row deleted with a `Ctrl+Z`
-undo window, it kills the session's tmux window, removes its worktrees
-and symlink workspace, and disables any pending `Send` automations (a soft
-delete disables those too, and a restore does not re-enable them). The TUI
-asks first (`Enter`/`y` to delete, `Esc`/`n` to cancel), since the teardown
-is irreversible; the CLI performs the requested delete without a prompt. The row is marked
-**first**, before anything comes down: a crash partway through the
-teardown would otherwise leave an active session whose worktrees are
-already gone. It is marked force-deleted with it, so `Ctrl+U` lists it
-and refuses — unless every worktree was one thurbox merely opened
-rather than created, in which case nothing was lost and the restore
-stands (which re-spawns it fresh). Tombstones remain for multi-instance sync
-and remote cleanup retries; this is not a lossless undo. The CLI reads the
-same setting on each call: `--soft` explicitly opts into the undo window,
-while `--force` always tears down immediately. These flags are mutually exclusive.
-For mixed-version session sharing, new peers always send the selected mode:
-`--force` for hard deletion, `--soft` for peers advertising `soft_delete_choice`.
-Older hosts do not understand `--soft`, so the new peer uses their existing
-flagless soft-delete request instead. An old peer's flagless `--json` delete
-remains soft on an upgraded host, preserving both the peer's undo and the host's
-windows/worktrees. That request carries no caller marker and is identical to a
-local JSON command: **local flagless `--json` deletes also remain soft**.
-JSON scripts must pass `--force` for immediate cleanup or `--soft` for undo.
-A flagless `--json` delete writes a one-line warning to stderr saying it was
-soft; stdout is unchanged, and neither `--soft` nor `--force` gets the warning.
-Plain local CLI and TUI deletes still follow `soft_delete`, defaulting to hard.
-
-A soft delete keeps the worktrees, not the windows: those become reapable once
-the undo window (10 s) closes, and come down at the next sweep by the interface
-or the heartbeat, whichever is running, or with `session reap`. The row stays
-restorable with `session restore` until it is purged; a restore after the
-window starts the agent again. The delete's JSON says which happened: `soft`;
-`reapable_at` (epoch ms), when the undo window closes and the windows may be
-reaped; `undo_until` (epoch ms), when `deleted_retention_days` lets the row be
-purged, or `null` when retention is off and only `session purge` removes it;
-and `session`, the resulting row in the shape `session list --deleted --json`
-prints, with its `deleted_at` and `force_deleted`. Both instants are `null` for
-a forced delete. For a session on a shared host that took the delete, they are
-the host's own (its retention, its clock), and `null` where an older host does
-not report them.
-The capability bit selects flags understood by the receiver; major/schema
-compatibility alone does not identify the caller or its intended deletion mode.
-Users who never set the flag now get immediate teardown for plain CLI/TUI
-deletes; an explicit
-`[features] soft_delete = true` keeps the previous undoable behavior.
-Task and automation deletion have no undo window; their storage bookkeeping
-is independent of this session preference.
-With `soft_delete = true`, the TUI also asks before the reversible delete and
-records the `Ctrl+Z` undo target only after the answer is yes.
+`soft_delete` changes nothing about a delete. A session is a Fleet Task, and
+`fleet delete task` has no undo window, so every delete is final.
 
 `version_check` (on by default for 1.0) enables the update check — it
 makes a network call. On launch the TUI reads a cached result
@@ -1182,8 +707,7 @@ fetches the release list; if a newer release exists on the same major line it
 downloads that
 release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
 dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
-depend on the local `PATH` — shelling out to `sha256sum`/`shasum` made it
-impossible on native Windows, issue #1182), extracts it
+depend on the local `PATH`), extracts it
 (`tar`, or PowerShell's `Expand-Archive` for Windows' zip), and atomically
 replaces the installed `thurbox`/`thurbox-cli`
 binaries in place — mirroring `scripts/install.sh`. The download is verified
@@ -1199,20 +723,19 @@ location (`~/.local/bin`) is user-writable; a system-wide install in a
 root-owned directory will fail the replace (logged, non-fatal). `version_check`
 and `auto_update` are independent — enable either or both.
 
-**Windows takes the same path, with two differences.** It used to be refused
-outright, which made a default-on `auto_update` silently mean nothing there
-(issue #1172). The release artifact is the `.zip` `install.ps1` extracts, so the
+**Windows takes the same path, with two differences.** The release artifact
+is the `.zip` `install.ps1` extracts, so the
 unpacker is chosen by the archive's extension. And a rename cannot replace an
 executable a process is running from — Windows keeps its image mapped — so the
 swap there moves each installed binary aside to `.thurbox.exe.old` first (which
 Windows allows for a running image) and then moves the new one in. The running
 process keeps its old image until the next launch, as on Unix. A thurbox still
-running from the last update's backup — a hook or heartbeat `thurbox-cli.exe`
-that has not exited — keeps that file, so the next update moves the binary to
+running from the last update's backup — a `thurbox-cli.exe` that has not
+exited — keeps that file, so the next update moves the binary to
 `.thurbox.exe.1.old` (and so on) instead, and deletes every backup nothing runs
 from any more. The two binaries are committed together: if either cannot be
 swapped, the one already swapped is put back from its backup, so a failed update
-normally leaves the TUI and CLI on the version they had (issue #1432). The
+normally leaves the TUI and CLI on the version they had. The
 put-back is best effort: if it is refused too — say a process has just started
 from the new binary — that binary stays on the new version, and the update
 fails with an error saying it may be partial. Re-running `install.ps1` over a
@@ -1233,26 +756,10 @@ crossing would hand someone a different program under the same binary name.
 `update::version_check::RELEASE_LINE`, and the release workflow refuses to cut a
 version off it — `docs/thurbox/releasing.md`, "v2 and v3".
 
-> Only a binary that *carries* the guard is protected by it. Releases up to
-> v1.8.7 and v2.0.0–v2.2.2 predate any major guard, and v2.2.3 up to this
-> change follow `releases/latest`; what keeps each of them off 3.x is what a
-> 3.x release publishes, set out in `docs/thurbox/releasing.md`, "v2 and v3". For a
-> 1.x install, `auto_update = false` in `settings.toml` is the reliable hold —
-> which is exactly what the v1→v2 consent gate writes when you decline.
-
 ### `[remote]` — sessions on hosts of hosts
 
-A shareable host (see [hosts.toml](#hoststoml)) lists its own sessions and,
-when it mirrors hosts of its own, theirs. `transitive_sessions` (default
-`false`) lists only each host's own sessions — a remote's remotes are not
-shown — and drops the rows an earlier pass took on, without deleting anything
-anywhere. `true` keeps them: each session is listed once, on the most direct
-path this instance has to it — a host reached directly wins over the same
-session seen through another — and every action on it reaches the host that
-owns it. A row seen through another host has no terminal attached here. Read
-by every mirror pass, so a change applies on the next one (within 10 s in the
-TUI). [features.md](features.md) → *Shared sessions*
-has the rule.
+`transitive_sessions` is accepted and ignored. The session list is Fleet's
+Tasks, whatever host each runs on.
 
 ### `[fleet]` — the session engine
 
@@ -1343,10 +850,8 @@ Read at startup only.
 
 ### `[telemetry]` — OpenTelemetry for sessions
 
-Turns on each agent's **own** OpenTelemetry exporter for the sessions thurbox
-spawns, pointed at one OTLP collector (ADR-36), and thurbox's own session
-metrics and session event logs, exported by `automation tick` (ADR-37), and,
-opt-in, the interface's own diagnostic logs (ADR-38).
+Configures the interface's own diagnostic logs over OTLP (ADR-38). Session
+metrics and session event logs are Fleet's (`fleet-telemetry`).
 
 ```toml
 [telemetry]
@@ -1361,155 +866,18 @@ export_diagnostic_logs = false
 per_session = false
 ```
 
-With `enabled` and `configure_agents` both on, every local session gets:
-
-- the OTel spec's `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`
-  and, when `headers` is set, `OTEL_EXPORTER_OTLP_HEADERS` — enough on their own
-  for `copilot`, `omp` and `opencode`;
-- `OTEL_RESOURCE_ATTRIBUTES` with `thurbox.session.id`, `thurbox.session.name`
-  and `thurbox.agent` appended to any value already in the environment, so a
-  backend can group an agent's telemetry by session;
-- the agent's own `telemetry_env` / `telemetry_args` from
-  [agents.toml](#agentstoml): `CLAUDE_CODE_ENABLE_TELEMETRY` and the metrics
-  and logs exporters for `claude`, per-session `-c otel.*` overrides for `codex`
-  (it ignores the spec's endpoint variable and is always sent `binary`, which
-  is protobuf), and `VIBE_ENABLE_OTEL` / `VIBE_OTEL_ENDPOINT` for `vibe`.
-
-A variable the session's own `--env` sets wins, except
-`OTEL_RESOURCE_ATTRIBUTES`: the session's value is merged into the inherited
-one. Merge precedence is inherited environment, agent `telemetry_env`, session
-`--env`, repeatable `session create --telemetry-attr KEY=VALUE`, then Thurbox's
-three identity keys. Attribute values are percent-encoded in the launch
-environment. Repeated keys take the last value, including an empty value.
-Telemetry attributes persist in reserved session metadata across restart,
-Ctrl+R and fork. A delegated create forwards them to the host's CLI; a host
-without the `telemetry_attrs` capability explicitly refuses them. `sync --adopt`
-also preserves these labels when a caller-managed remote session becomes
-host-owned, and reports incompatible hosts instead of dropping the labels.
-When agent telemetry is configured, caller-side launch plans read a mirrored
-session's labels from its owner, following intermediate mirror hosts.
-All participating peers must support `telemetry_attrs`. Unavailable owners,
-unsupported peers and exhausted forwarding limits produce explicit errors.
-Forwarding is bounded to 16 hops to stop stale mirror cycles. Telemetry
-labels remain until row purge, so force-delete does not strip them from pending events or lifetime metrics.
-
-These attributes also label `thurbox.session.*` event logs and, with
-`per_session = true`, Thurbox's session metrics. Aggregate metrics keep their
-existing labels. Thurbox's own field names (`agent`, `state`, `backend`,
-`from`, `to`, `reason`, `outcome`, `exit_code` and `thurbox.*`) are reserved on
-these exports. Attributes label telemetry; use `--env` for other process
-configuration.
-A remote session exports to its host's `otel_endpoint` from
-[hosts.toml](#hoststoml) instead of `endpoint` (`localhost` there is the host),
-with this table's `protocol` and `headers`; a host that sets none gets only the
-resource attributes. On a shared host the agent's pane is created and restarted
-by the host's own CLI, which applies the host's own `[telemetry]`; `session
-exec` and `agent launch-args` run from here still use this machine's
-`[telemetry]` with the host's `otel_endpoint`. `antigravity`, `pi` and
-`aider` have no native OTel.
-
-The table is read at every spawn and restart, so a change applies to the next
-one; a running agent keeps the environment it launched with. The variables are
-in the pane's environment, so everything run in the session inherits them,
-including any OTel-instrumented tool the agent starts, and the agent process can
-read `headers`.
-
-#### thurbox's own session metrics and session event logs
-
-What only thurbox knows, the same for every agent: the only telemetry at all
-for `antigravity`, `pi` and `aider`. `automation tick` sends it, so it flows
-whenever the heartbeat runs, with or without the interface open. The tick
-re-reads the table on every run, so a change applies within a minute.
-
-| Metric | Kind | Unit | Attributes |
-|---|---|---|---|
-| `thurbox.sessions` | gauge | `{session}` | `state`, `agent`, `backend` |
-| `thurbox.session.transitions` | counter | `{transition}` | `from`, `to`, `agent` |
-| `thurbox.session.lifecycle` | counter | `{event}` | `reason`, `agent` |
-| `thurbox.session.exits` | counter | `{exit}` | `exit_code`, `agent` |
-| `thurbox.turn.duration` | histogram | `s` | `outcome`, `agent` |
-| `thurbox.blocked.duration` | histogram | `s` | `agent` |
-| `thurbox.session.lifetime` | histogram | `s` | `reason`, `agent` |
-
-- `thurbox.sessions` counts live sessions by the state word `session list`
-  shows, or `lost`. Each state word is reported for every agent and backend
-  that has a session, at zero when no session is in it. Once an agent's last
-  session goes, its series are no longer reported and expire in the backend.
-- A turn runs from entering `working` to leaving it, and `outcome` is the state
-  it left to. `thurbox.blocked.duration` is time spent waiting on a human. A
-  stop, a loss or a delete in between ends either one unmeasured.
-- `reason` is the [`watch`](orchestration.md#watch-for-everything-that-is-not-a-report)
-  vocabulary: `spawned`, `restored`,
-  `stopped`, `lost`, `soft_deleted`, …
-- `per_session = true` adds `thurbox.session.id` to every metric. Each session
-  then becomes a series of its own in the backend.
-
-Each `session_events` row becomes one log record, stamped with when the event
-happened rather than when it was exported: `thurbox.session.created`,
-`thurbox.session.state_changed` (`from`, `to`), `thurbox.session.changed` and
-`thurbox.session.gone` (`reason`, and `exit_code` for an exit). Every record
-carries `thurbox.session.id`, `thurbox.session.name` and `agent`, so a backend
-interleaves them with the agent's own events into one timeline per session. The
-resource is `service.name=thurbox`, `service.version`, `host.name` and
-`thurbox.instance` (the multiplexer socket, which tells a sandbox apart from the
-real instance).
-
-How the export behaves:
-
-- **Plain HTTP and `http/protobuf` only.** Reach an `https` backend through a
-  local Collector. With another `protocol`, thurbox exports nothing of its own
-  and the tick's report says why.
-- **Delta temporality.** Each tick is a fresh process. OTLP backends take
-  deltas as they come; Prometheus needs the Collector's `deltatocumulative`
-  processor (below).
-- **At least once.** The first export starts at the head of the event log, so
-  history from before telemetry was on is not replayed. After that a cursor in
-  the database records how far the export has got, and only one tick exports at
-  a time. A failed export moves nothing, so the same rows go out on the next
-  tick. If metrics are accepted and logs refused, that batch's metrics are
-  counted twice. A tick sends at most 1,000 events; a backlog drains over the
-  following ticks.
-- **Shared hosts** (ADR-24): their sessions are left out. The host's own tick
-  exports them under its own `host.name`.
-- **Never in the way.** A failure is a `WARN` line on the tick's stderr and a
-  `telemetry.error` in `automation tick --json`. Each request has a 5-second
-  timeout, and the first one that fails ends the export for that tick.
-
-A Collector that takes thurbox's metrics to Prometheus and prints its session
-event logs (`otelcol-contrib`, which ships `deltatocumulative`):
-
-```yaml
-receivers:
-  otlp:
-    protocols:
-      http:
-        endpoint: localhost:4318
-processors:
-  deltatocumulative: {}
-exporters:
-  prometheus:
-    endpoint: localhost:9464
-  debug: {}
-service:
-  pipelines:
-    metrics:
-      receivers: [otlp]
-      processors: [deltatocumulative]
-      exporters: [prometheus]
-    logs:
-      receivers: [otlp]
-      exporters: [debug]
-```
+`configure_agents`, `export_thurbox_metrics`, `export_session_events` and
+`per_session` are accepted, and thurbox reads none of them.
 
 #### thurbox's own diagnostic logs
 
-`export_diagnostic_logs = true` sends the interface's own log lines at `WARN`
-and above to the collector's `/v1/logs`, under the same resource as the tick's
-export. They serve debugging thurbox itself, not observing sessions, so the
-switch is off by default.
+`export_diagnostic_logs = true` (with `enabled`) sends the interface's own
+log lines at `WARN` and above to the collector's `/v1/logs`. The resource is
+`service.name=thurbox`, `service.version`, `host.name` and `thurbox.instance`
+(the multiplexer socket, which tells a sandbox apart from the real instance).
+They serve debugging thurbox itself, so the switch is off by default.
 
-- **Interface only.** `thurbox-cli` never sends its log lines: a command an
-  agent hook runs must not wait on a collector.
+- **Interface only.** `thurbox-cli` never sends its log lines.
 - **The log file is unchanged.** `thurbox.log.<date>` keeps every level it had
   and is the only log while telemetry is off or the collector is unreachable.
 - **Restart-only.** The interface builds its logging once, at start; changing
@@ -1517,29 +885,26 @@ switch is off by default.
   the next start.
 - **What they contain**: the same text as the log file, which can name paths,
   sessions and hosts.
-- Plain HTTP and `http/protobuf` only, as above. Records still queued when the
-  interface is killed by a signal are lost; the log file has them.
+- **Plain HTTP and `http/protobuf` only.** Reach an `https` backend through a
+  local Collector. Each request has a 5-second timeout. Records still queued
+  when the interface is killed by a signal are lost; the log file has them.
 
 ### `[notifications]` — OS notification settings
 
 Surfaces an OS notification when a session **transitions into a state
-that needs your attention**. The trigger is the hooks-driven
-[session status](#session-status) (reported by the agent's hooks, *not*
-the terminal bell / output): the notification fires when a session crosses
-into `Blocked` (the agent needs input or approval) and, with
-`also_on_waiting = true`, also when it finishes a turn (`Working → Done`).
-The edge is detected once per tick in `kernel::notify`, reading the same
-`SessionState` the session-list status icon draws, so the banner can
-never drift from the list (see `docs/thurbox/features.md` → *Why the transition is
-observed in one place*) — then deduped per session (`min_interval_secs`)
-and skipped for the session you're currently viewing (`suppress_for_active`).
-The notification body is the agent's last OSC 9 / OSC 777 message when
-present (truncated to 200 chars), otherwise `Waiting for input` — the OSC
-message is kept only for the body text, no longer for the trigger.
-These session-state notifications **only fire while the TUI is open** — the
-dispatcher thread runs only inside the TUI. Two things do notify headlessly,
-both explicitly: `thurbox-cli notify send` and the opt-in failing-run alert
-(see [Scripted notifications](#scripted-notifications)).
+that needs your attention**: into `blocked` (`<name> needs you`), and, with
+`also_on_waiting = true`, into `done` (`<name> finished`). The edge is
+detected once per tick in `kernel::notify`, reading the same state the
+session-list status icon draws, so the banner can never drift from the list
+— then deduped per session (`min_interval_secs`) and skipped for the session
+you're currently viewing (`suppress_for_active`).
+
+A Fleet session's state is running, idle, stopped, failed or unreported (see
+[Session status](#session-status)), so a Fleet session raises neither edge.
+
+These session notifications **only fire while the TUI is open** — the
+dispatcher thread runs only inside the TUI. `thurbox-cli notify send` notifies
+headlessly (see [Scripted notifications](#scripted-notifications)).
 
 **Delivery backend** (`backend`, default `auto`) is detected at startup:
 
@@ -1547,7 +912,7 @@ both explicitly: `thurbox-cli notify send` and the opt-in failing-run alert
 |---------|------|----------------|
 | `dbus` | normal Linux desktop with a running notification daemon (`org.freedesktop.Notifications`) | **yes** — clicking the banner writes a focus request the running TUI reads next tick and switches to that session |
 | `windows` (toast) | **native Windows**, or **WSL** / any Linux with no dbus daemon — delivers a Windows toast via `powershell.exe` (WSL needs interop, on by default) | no (a Windows toast can't call back into the thurbox process) |
-| macOS banner (what `auto` selects on macOS; not a `backend` value) | macOS native banner. Uses **`terminal-notifier`** when it's in `PATH` (own bundle + icon, looks like a real app notification — `brew install terminal-notifier`), otherwise the built-in **`osascript`** `display notification` (attributed to Apple's Script Editor). The `UNUserNotificationCenter` click API needs a signed `.app` bundle, which thurbox is not, so the `osascript` path is informational | **with `terminal-notifier`** — clicking the banner runs `thurbox-cli session focus <id>`, which writes the same metadata row the dbus path does and the TUI picks it up next tick. Without `terminal-notifier` (osascript fallback): no |
+| macOS banner (what `auto` selects on macOS; not a `backend` value) | macOS native banner. Uses **`terminal-notifier`** when it's in `PATH` (own bundle + icon, looks like a real app notification — `brew install terminal-notifier`), otherwise the built-in **`osascript`** `display notification` (attributed to Apple's Script Editor). The `UNUserNotificationCenter` click API needs a signed `.app` bundle, which thurbox is not, so the `osascript` path is informational | **with `terminal-notifier`** — clicking the banner runs `thurbox-cli ui action session.focus --session <id>`, which asks the running interface to focus it. Without `terminal-notifier` (osascript fallback): no |
 
 `auto` prefers `dbus` whenever a daemon answers, and only falls back to
 the Windows toast when no dbus service is reachable. Force a specific
@@ -1555,10 +920,7 @@ path or disable delivery with `backend = "dbus" | "windows" | "off"`
 (`off` is a soft switch distinct from `[features] notifications`, which
 stops the dispatcher thread entirely).
 
-This auto-detection fixes a previously **silent failure** on WSL: the
-dbus path errored on connect, but the only signal was a line in the
-logfile, so the user saw nothing. Delivery errors are now recorded and
-surfaced by the diagnostic:
+Delivery errors are recorded and surfaced by the diagnostic:
 
 ```bash
 thurbox-cli notify          # show the detected backend + last delivery error
@@ -1572,11 +934,7 @@ thurbox-cli notify --test   # fire a sample notification to confirm it works
 | `sound` | `true` | play the OS default notification sound |
 | `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
 | `backend` | `auto` | delivery backend: `auto` \| `dbus` \| `windows` \| `off` |
-| `on_automation_failure` | `false` | ignored in v3: the failing-run alert is gone |
-
-Notifications fire on the hooks-driven status transitions (see
-[Session status](#session-status)): always on `→ Blocked` (the agent needs
-you), and with `also_on_waiting = true` also on `Working → Done`.
+| `on_automation_failure` | `false` | accepted and ignored |
 
 ### Scripted notifications
 
@@ -1600,8 +958,7 @@ thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
   not finished after 10 seconds counts as failed (`delivery timed out after
   10s`), so a hung notifier never holds up the script that sent it. `--json`
   always reports `delivered`, `suppressed` and `error`.
-- It names no session: a session is a Fleet Task, and a click on the banner
-  focuses nothing. v2's `--session` is gone.
+- It names no session: a click on the banner focuses nothing.
 - **The session bus.** On Linux the dbus backend reads
   `DBUS_SESSION_BUS_ADDRESS`, and without it the per-user bus at
   `$XDG_RUNTIME_DIR/bus`. One run from a bare cron or a systemd system unit has
@@ -1609,50 +966,36 @@ thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
   notification to reach the desktop. `thurbox-cli notify` shows the backend the
   current environment resolves to.
 
-**The failing-run alert is gone.** v2 could notify when an automation run
-failed (`on_automation_failure`). v3 keeps the key so an old `settings.toml`
-still loads, and reads nothing from it; an Exec automation that wants an alert
-runs `thurbox-cli notify send` itself.
+An Exec automation that wants an alert on failure runs `thurbox-cli notify
+send` itself.
 
 ## Session status
 
-Each session's state (Blocked / Working / Background / Done / Idle) is driven
-by **agent hooks** that call `thurbox-cli session signal --state
-<working|blocked|done|idle|background>`. Sub-work a turn may outlive is
-reported by its edges, `--work-start <id>` / `--work-end <id>`; a `done` while
-any is in flight is stored as `background` (see
-[agents.md](agents.md#background-sub-work)). A turn end can hand over the
-agent's `Stop` payload (`--state done --stop-payload -`): claude's lists of
-background tasks and session crons decide `background` and are kept as the
-session's `pending` work, and an empty pair — or a final message ending with
-the line `[thurbox-idle]` — proves the session idle until its next report.
-`session signal --idle` makes that claim once the turn has ended. `session get`
-reads the result as `activity` (see
-[Activity](orchestration.md#activity)); the work and the proof live in the row's
-`background_work` column (schema v57), which needs no migration of its own.
-The state is persisted on the `sessions` row (`hook_state`, `hook_state_at`,
-`seen_at` — schema v34) and survives the TUI being closed; a hook fired
-headlessly is picked up via `PRAGMA data_version`.
-Identity comes from the injected `THURBOX_SESSION` env var, so a hook passes
-no id. A finished turn shows `Done` (blue) — for the session you're watching too
-— and becomes `Idle` once you switch focus off it.
+A session's state is its Task's `status.sessionState`. Fleet derives it from
+the agent's own hooks: each Fleet harness profile passes its harness status
+hooks at launch, and they report through `fleet signal`. The interface reads
+it as follows:
 
-Thurbox installs no hooks into an agent's own config: Fleet's harness profiles
-pass each harness its status hooks at launch (see
-[agents.md → Status hooks](agents.md#status-hooks)). The status colours are
-tunable theme keys (`status_working` /
+| `sessionState` | Shown as |
+| --- | --- |
+| `Running` | running |
+| `Idle` | idle |
+| `Paused` | stopped |
+| `Lost`, `Gone` | failed |
+| anything else, or absent | unreported |
+
+thurbox installs no hooks into an agent's own config (see
+[agents.md → Status hooks](agents.md#status-hooks)). To delete the hook
+entries an earlier thurbox wrote there, see
+[Removing old hook entries](https://thurbox.thurbeen.eu/docs/extensions.html).
+
+The status colours are tunable theme keys (`status_working` /
 `status_blocked` / `status_done` / `status_idle` / `status_unreachable` /
 `status_running` / `status_unknown` / `status_background` — see
-`themes.toml`). `status_running` is
-an agent seen holding a pane that has reported nothing, and `status_unknown`
-the two silences behind it (`uncovered`, `unreported`); both are spelled apart
-from `status_idle`, which is the agent's own report that it is at rest.
+`themes.toml`). `status_unknown` is `unreported`, spelled apart from
+`status_idle`, which is the agent's own report that it is at rest.
 `status_error` is the role of a failed *command* in the list and of the one
-session state that is a failure: `failed`, a launch that died before its agent
-reported anything (see [Launch failures](orchestration.md#launch-failures)).
-
-Hook entries an earlier thurbox wrote into an agent's config are removed by
-hand: see [removing thurbox's old hook entries](https://thurbox.thurbeen.eu/docs/extensions.html).
+session state that is a failure: `failed`.
 
 ## themes.toml
 
@@ -1680,13 +1023,9 @@ effect).
 
 ## keybindings.json
 
-v1's file: `Action` names mapped to one or more chord strings
-(`{ "QuitApp": ["ctrl+a"] }`). **Nothing reads it for bindings any more**:
-the first v2 launch carries the six actions with an obvious v2 equivalent
-into `ui.json`'s `bindings` (action id → one chord,
-`kernel::registry::migrate_v1_bindings`, which names the rest rather than
-guessing), and the file is then left alone so going back to 1.x still finds
-it. `thurbox-cli config validate` checks `ui.json`, not this file.
+v1's chord overrides (`{ "QuitApp": ["ctrl+a"] }`). thurbox does not read
+it: rebindings live in `ui.json`'s `bindings` (action id → one chord), which
+`thurbox-cli config validate` checks.
 
 - Preferred editing path is the **F1 panel** (live capture, conflict
   stealing, immediate persistence), which writes `ui.json`.
@@ -1698,9 +1037,8 @@ it. `thurbox-cli config validate` checks `ui.json`, not this file.
   kitty-keyboard-protocol terminals (iTerm2 3.5+, kitty, WezTerm,
   Ghostty; not Terminal.app), and only for chords the emulator
   doesn't claim itself.
-- Unknown action names, invalid chords, and the same chord bound to two
-  actions in overlapping contexts are reported at startup (the file
-  still loads; bad entries fall back to defaults).
+- Invalid chords and the same chord bound to two actions in overlapping
+  contexts are reported at startup (bad entries fall back to defaults).
 - **Terminal passthrough.** When a session **terminal is focused**, the
   readline / shell line-editing chords (`Ctrl+A` start-of-line, `Ctrl+E`
   end-of-line, `Ctrl+W` delete-word, `Ctrl+U` kill-line, `Ctrl+R`
@@ -1717,43 +1055,6 @@ it. `thurbox-cli config validate` checks `ui.json`, not this file.
   [Keybindings page](https://thurbox.thurbeen.eu/docs/keybindings.html), the
   live `F1` registry, or `src/kernel/registry.rs`.
 
-## SQLite-backed settings
-
-Live in the `metadata` table and apply immediately (no restart), except
-`active_theme`: the process that picks it applies it at once, and every other
-thurbox process reads it when it next starts.
-
-| Key | Set via | Purpose |
-|-----|---------|---------|
-| `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (thirty-six built-ins) |
-| `editor_command` | `thurbox-cli editor set "<cmd>"` | what `Ctrl+O` runs |
-| `editor_mode` | `thurbox-cli editor mode <auto\|terminal\|gui>` | how `Ctrl+O` runs the editor: `auto` (default) detects terminal vs GUI and gives terminal editors a real TTY (tmux popup / TUI suspend); `terminal` forces the TTY path; `gui` forces detached |
-| `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/thurbox/performance.md`) |
-| `host_probe_backoff:<backend>` | the teardown sweep, when a host's windows could not be listed | `<attempted_at_millis>:<failures>` — how long that host is left alone before the sweep asks again (ADR-26). Not user-set; the row is deleted the first time the host answers |
-| `session_reap_backoff:<session id>` | the teardown sweep, when a soft-deleted row's reap did not reach its host | `<attempted_at_millis>:<failures>` — the same curve, per row rather than per host, for a host that answers `list-windows` while its own `thurbox-cli` does not run (ADR-26). Not user-set; the row is deleted the moment the reap comes off, and by a restore, which ends the delete it belonged to |
-
-These are in the DB rather than a file because they are written
-concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked
-up live via `PRAGMA data_version` polling — `active_theme` aside, which
-another process reads when it next starts. The two backoff keys rebuild no
-snapshot when they change (schema v55): only the teardown sweep reads them.
-
-`event_cursors` (schema v55) holds what processes take turns at, one row per
-`consumer`, none of it user-set:
-
-| `consumer` | Written by | `cursor` / `lease_until` |
-|---|---|---|
-| `telemetry` | the export in `automation tick` (ADR-37) | the last `session_events.seq` exported / the epoch ms the exporting tick's lease ends |
-| `lock:name:<server>:<name>` | `session_ops::lock`, while a session name is decided: `session restore`, `session create --on-existing fail\|adopt\|replace` for a session created here (a delegated create leaves the name to the host) | `0` / the epoch ms the lock lapses. Deleted when the operation ends, taken over once it lapses |
-| `lock:name:key@<host>:<key>` | the same lock, on a session key, for every writer that gives one out | as above |
-| `lock:session:<id>` | a restart, while it replaces the session's window | as above |
-| `lock:run:<automation id>` | a fire of one automation — the tick's or `automation run --wait`'s — held for the automation's timeout plus 5 s at least, so a second fire of it is skipped (tick) or refused with exit 5 (`run --wait`) | as above |
-
-Until v55 the name and restart locks were `session_name_claim:*` and
-`session_restart_claim:*` keys in `metadata`, and v55 moves any still there. A
-thurbox from before v55 still takes those keys, so it and a newer one running
-side by side do not see each other's locks.
-
 ## Environment variables
 
 User-set (read by thurbox):
@@ -1761,7 +1062,7 @@ User-set (read by thurbox):
 | Variable | Used for |
 |----------|----------|
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | config/data roots |
-| `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `editor_command` is unset |
+| `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `interface.json` names none |
 | `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`). For a remote/WSL session the pane uses the **host's** `$SHELL` as an interactive login shell (the SSH-login environment), not the local one. |
 | `RUST_LOG` | log filter for `thurbox.log` |
 | `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/thurbox/performance.md`. |
@@ -1770,99 +1071,15 @@ User-set (read by thurbox):
 | `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
 | `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside. That distro is *this machine*, so it is never offered as a host and a `hosts.toml` entry pointing at it is ignored — see [hosts.toml](#hoststoml) |
 
-Set **by** thurbox into every spawned agent process (not user-set;
-`session_ops::inject_thurbox_env` / `App::build_spawn_inputs`). An
-agent — or a `thurbox-cli` call running inside the session — reads
-these to prove its own identity without scraping panes or names:
-
-| Variable | Set into agent process |
-|----------|------------------------|
-| `THURBOX_SESSION` | the stable thurbox `SessionId` (the registry key); read back by `thurbox-cli message`/`inbox` for self-identity, and by `session signal` — see below |
-| `THURBOX_SESSION_NAME` | the display name captured at launch; a rename appears after the next restart, not in the already-running pane |
-| `THURBOX_SESSION_ID` | the agent's own conversation id (`agent_session_id`); consumed by the metrics statusline. Distinct from `THURBOX_SESSION` |
-| `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
-| `THURBOX_SESSION_KEY` | the session's key (`session create --key`, issue #1408), so a process in the pane knows which role it plays without a lookup; unset when it has none, and never taken from `--env` |
-| `THURBOX_METRICS_DIR` | metrics output dir |
-| `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR` | the resolved config/data dirs, so the agent's `thurbox-cli` (its status hook) targets the same DB the TUI reads — independent of XDG, which `thurbox-cli` is on PATH, or a stale tmux-server env. Also honored if you set them yourself to relocate thurbox's state. |
-| `THURBOX_SOCKET` | the multiplexer socket that instance's sessions live on, so an in-session `thurbox-cli` reaches the same server instead of re-deriving one from the session's own environment |
-| `THURBOX_SOCKET_FOR` | the data dir that injected `THURBOX_SOCKET` belongs to. Read only to tell an inherited socket from one you exported: a child that points `THURBOX_DATA_DIR` somewhere else no longer matches, and derives its own socket instead of creating windows on the spawning instance's server |
-
-A pane's **`PATH`** is the `PATH` of the thurbox that spawned it, which tmux
-copies in by itself. thurbox adds one thing to it: the directory holding its own
-`thurbox-cli`, in front, prepended and never replacing what was there. Without
-it a session spawned by a `thurbox-cli` running over ssh — which on a
-shared-sessions host is every session, since the local TUI delegates
-`session create` to the host's CLI — inherits sshd's `PATH` for a
-non-interactive command (`/usr/local/bin:/usr/bin:/bin:/usr/games`), which has
-no `~/.local/bin` on it. The bare `thurbox-cli` the status hooks call then
-resolves to nothing and the `|| true` after it hides that. It arrives as an
-`env PATH=…` prefix on the window command rather than as one more injected
-variable, because `PATH` is the one tmux will not take that way: both
-`new-window -e PATH=…` and `set-environment -g PATH …` are ignored (verified
-against tmux 3.5a).
-
-`THURBOX_SESSION` is a **stable integration contract**. It is set on the pane, so every process
-started inside it inherits it — including an agent a driver of your own
-launches there, and that agent's own hooks. Anything in the pane can
-therefore report state with
-
-```bash
-thurbox-cli session signal --state <working|blocked|done|idle|background>
-```
-
-and no arguments at all; from outside the pane, pass `--session <uuid>`.
-Sub-work the turn may outlive is reported the same way, by its edges
-(`--work-start <id>`, `--work-end <id>`), and a `--state` report that comes
-from that work names it with `--work <id>` or `THURBOX_SIGNAL_WORK=<id>` in
-the command's environment, and the `working` that starts a turn says so with
-`--turn-start` or `THURBOX_SIGNAL_TURN=start` (it forgets work earlier turns
-left counted). The variables are what the shipped claude hooks use, because a
-remote pane's rewrite keeps a hook to one bare state word. A turn's end may
-carry the agent's `Stop` payload (`--state done --stop-payload <file|->`), and
-`thurbox-cli session signal --idle` claims, once the turn has ended, that it
-left nothing running or scheduled — what `session get` reads as `activity:
-"idle"` ([Activity](orchestration.md#activity)).
-That is the supported way to give thurbox agent state for a session it
-did not wire — for instance one created with a bare interactive shell as
-its "agent" because a harness owns the real launch.
-
-Two caveats. A **remote** session's `thurbox-cli` writes the *host's*
-database: on a shared host (`share_sessions = true`, the default) that is
-correct and the observer mirrors it, but on a non-shared host the signal
-never reaches the local database — thurbox rewrites its own hooks to a
-tmux pane option there for exactly this reason. And every shipped hook
-command ends in `|| true`, so a failed signal is silent; `thurbox-cli
-session doctor` is how to check the wiring.
-
-Set **by** thurbox into every [lifecycle hook](#hookstoml) it runs
-(`session_ops::lifecycle_hooks`), beside `THURBOX_SESSION`,
-`THURBOX_SESSION_ID`, `THURBOX_TASK` and the location overrides above:
-
-| Variable | Set into hook process |
-|----------|-----------------------|
-| `THURBOX_HOOK_EVENT` | the event, e.g. `session.pre_delete` |
-| `THURBOX_SESSION_NAME`, `THURBOX_AGENT` | the session's name and agent |
-| `THURBOX_SESSION_KEY` | the session's key, when it has one |
-| `THURBOX_REPO`, `THURBOX_CWD` | the primary repository, and the directory the agent runs in |
-| `THURBOX_BRANCH`, `THURBOX_BASE_BRANCH` | the worktree branch and its base |
-| `THURBOX_HOST` | the remote host name (local: unset) |
-| `THURBOX_PARENT_SESSION` | the parent session id |
-
-Set **by** thurbox into every `exec` automation's command
-(`session_ops::automations::fire`), on top of the firer's environment and the
-automation's own `--env`. These win over both, so a `thurbox-cli` inside
-reaches the instance that fired it, whoever fired it (the heartbeat, an OS
-timer, a hand-run tick, `run --wait`):
+Set **by** thurbox into every `exec` automation's command, on top of the
+firer's environment and the automation's own variables:
 
 | Variable | Set into the command |
 |----------|----------------------|
-| `THURBOX_AUTOMATION_ID`, `THURBOX_AUTOMATION_NAME` | the automation's id and name |
-| `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`, `THURBOX_SOCKET`, `THURBOX_SOCKET_FOR` | the location overrides above |
+| `THURBOX_AUTOMATION_NAME` | the automation's name |
 
-It runs in its `--cwd`, or your home directory — never in whatever directory
-the firer was started in. `THURBOX_SESSION`, `THURBOX_SESSION_NAME`,
-`THURBOX_SESSION_ID`, `THURBOX_SESSION_KEY` and `THURBOX_TASK` are removed: an
-exec fired from a pane does not act as that pane's session.
+It runs in its own directory, or your home directory — never in whatever
+directory the firer was started in.
 
 Set **at build time** (not runtime):
 
@@ -1870,62 +1087,40 @@ Set **at build time** (not runtime):
 |----------|----------|
 | `THURBOX_RELEASE_VERSION` | read by `build.rs` to inject the binary version at build (CI release workflow sets it, e.g. `v1.0.0`); absent → falls back to `CARGO_PKG_VERSION` |
 
-Editor resolution order: DB `editor_command` → `$VISUAL` → `$EDITOR` →
-error toast.
+Editor resolution order: `interface.json`'s `editor_command` → `$VISUAL` →
+`$EDITOR` → error toast.
 
 ### Relocating an instance (`THURBOX_DATA_DIR`)
 
-`THURBOX_CONFIG_DIR` and `THURBOX_DATA_DIR` move thurbox's config and its
-database. Because the database *is* the record of which sessions exist, an
-instance whose data dir has moved also gets a **multiplexer socket of its own**
-— `thurbox-<digest of the data dir>` (`thurbox-dev-…` on a dev build) — instead
-of creating its windows on the server holding your everyday sessions. That is
-what makes a scratch instance safe to run a real `session create` in, and it is
-also why its `automation-heartbeat` window is reclaimable: killing that
-instance's server (`tmux -L "$(thurbox-cli version --json | jq -r .tmux_socket)"
-kill-server`) takes the whole instance with it and touches nothing else.
+`THURBOX_CONFIG_DIR` and `THURBOX_DATA_DIR` move thurbox's config and data.
+An instance whose data dir has moved also gets a **multiplexer socket of its
+own** — `thurbox-<digest of the data dir>` (`thurbox-dev-…` on a dev build) —
+instead of opening its windows on the server holding your everyday ones.
+Killing that instance's server (`tmux -L "$(thurbox-cli version --json | jq -r
+.tmux_socket)" kill-server`) touches nothing else.
 
 Three rules keep the ordinary case ordinary:
 
 - **The default instance never moves.** It stays on `thurbox`
   (`thurbox-dev` for a dev build), including when `THURBOX_DATA_DIR` merely
-  restates the default — which is exactly what thurbox injects into every
-  session it spawns.
-- **A relocated *config* dir alone changes nothing.** It shares the default
-  instance's database, and therefore its sessions and their server.
+  restates the default.
+- **A relocated *config* dir alone changes nothing.** The socket follows the
+  data dir.
 - **`THURBOX_SOCKET` wins over both**, so anything that needs the socket *by
   name* (the dev sandbox, whose teardown kills it) keeps naming it — **unless it
   was inherited from another instance.** thurbox injects the socket into every
   pane it spawns, paired with `THURBOX_SOCKET_FOR`, the data dir it belongs to.
   A `thurbox-cli` inside that pane which relocates *itself* — a sandbox, a test
-  harness, an agent exporting its own `THURBOX_DATA_DIR` — no longer matches
+  harness, an agent exporting its own `THURBOX_DATA_DIR` — does not match
   that pairing, so the inherited name is dropped and the derivation runs. An
   override you export yourself carries no pairing and still wins outright.
-  Without this, isolating the database silently left the tmux server shared,
-  which looks contained and is not.
 
 Ask a build which server it is on rather than assuming: `thurbox-cli version
 --json` reports the socket in force as `tmux_socket`, and `thurbox-cli config
 show` prints it under `Sessions`.
 
-`session create --json` reports `tmux_socket` too, as the socket of the server
-the new session's pane is on: the host's for a `--host` session (its `socket`
-in `hosts.toml`, else what its own CLI reported), this instance's for a local
-one, and `null` for a row on a host `hosts.toml` no longer describes. Hand it
-to `tmux -L` together with `backend_id`, which is the pane id.
-
-The key keeps the name `tmux_socket` on every platform, including native
-Windows where psmux serves it. It is public JSON that scripts already read, and
-it is the `-L` name every tmux-protocol multiplexer takes. A rename would break
-those scripts for no new information, so there is no alias. A multiplexer that
-is not addressed by `-L` would have to add its own key rather than reuse this
-one.
-
-**An instance relocated before this existed is a new instance.** Its old
-sessions are still on the default server, and its database still lists them —
-on the new socket they read as sessions whose window is gone. There is no
-migration: point that instance back at the old server with
-`THURBOX_SOCKET=thurbox` if you want them, or let it create fresh ones.
+The key is `tmux_socket` on every platform, including native Windows where
+psmux serves it: it is the `-L` name every tmux-protocol multiplexer takes.
 
 ### Several instances on one server
 
@@ -1951,7 +1146,7 @@ loses its socket file after a few days (measured: 3 days 18 hours). The server
 keeps running with every agent in it, but nothing can reach it any more.
 
 So thurbox keeps the socket out of `/tmp`. Every tmux command it runs carries
-`TMUX_TMPDIR=<data dir>/tmux` (created `0700`), beside `thurbox.db`:
+`TMUX_TMPDIR=<data dir>/tmux` (created `0700`):
 
 | Where | Socket |
 |-------|--------|
@@ -1986,21 +1181,12 @@ rather than reading as empty, and no `new-session` runs. A second server beside
 it would be the leak again, and the first one's pending `SIGUSR1` would take
 the path from the second once it resumed. The error names the pids; see below.
 
-**Upgrading.** A server started by an earlier build is in `/tmp`. The first
-thurbox with the new directory finds it there and keeps using it for as long as
-it runs; the next server, after it exits (or a reboot), starts in the new
-directory. Nothing has to be restarted, and no second server is started beside
-the old one.
-
 ### An orphaned tmux server
 
-A thurbox older than the above, whose socket was swept, started a **second**
-server under the same name and resumed every session into it. The first one
-kept running and nobody could see it: not thurbox, not `tmux -L thurbox ls`.
-One machine found 93 processes and 3.1 GB of resident memory in one four days
-later, among them 22 agent processes — 13 duplicates of sessions also running
-in the new server, and 9 of sessions since deleted, since a deletion only
-reaches the server thurbox can talk to.
+A tmux server whose socket file was swept keeps running with every agent in
+it, and nothing can reach it: not thurbox, not `tmux -L thurbox ls`. A second
+server started under the same name then takes every new window, and the first
+keeps its processes running unseen.
 
 Find one by looking for a tmux server whose socket file is not there:
 
@@ -2042,8 +1228,8 @@ then JSON lines for changes to focus, layout, overlays, selection, search, and
 action outcomes. `--since <revision>` resumes after a known revision. The
 per-instance buffer holds 256 deltas; an expired or future cursor yields a
 `resync_required` response containing a fresh snapshot. `--once` returns one batch as
-a JSON document for polling callers. This stream is UI state only;
-`thurbox-cli watch` continues to stream durable session events.
+a JSON document for polling callers. This stream is UI state only; session
+events are Fleet's (`fleet watch --json`).
 
 List the target's live actions and their argument types, ownership, effect,
 destructive classification, availability and current chords with
@@ -2063,8 +1249,7 @@ thurbox-cli ui --instance <id> action search.open --query 'error handling' --jso
 agent pane. `search.open`
 opens the strip and sets its query; calling it again replaces the query without
 closing the strip. The reply comes from the target's event loop after it applies
-or refuses the action. The older `session focus` command still uses its shared
-notification request and does not select a TUI instance.
+or refuses the action.
 
 Any non-destructive declared action can be called by its catalog name. Use
 `--arg name=value` for an argument; `--session` and `--query` remain shortcuts

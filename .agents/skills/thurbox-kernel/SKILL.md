@@ -11,8 +11,7 @@ description: The thurbox plugin kernel: the five rules, module dependency rules 
 
 The interface is **Lua running on a Rust kernel**. `thurbox` boots the kernel,
 which reads `ui/` and renders whatever plugins it finds; there is no built-in
-pane. v1's `src/app` (TEA model/update/view) and `src/ui` (35 render modules) were
-deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
+pane.
 
 ### The five rules
 
@@ -48,7 +47,7 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    the `fleet watch` that feeds the snapshot (`kernel::snapshot::fleet`), diffs,
    metrics, git stats, repository reads, update checks, and programs a plugin
    asked for. In `kernel::snapshot` (`fleet`, `git`) and `kernel::terminal`
-   (`attach`, `discovery`, `shells`, `stream_pane`) each worker is a file of
+   (`attach`, `shells`, `stream_pane`) each worker is a file of
    its own, and `each_kernel_worker_lives_in_a_file_of_its_own` in
    `tests/architecture_rules.rs` fails when the store, the read model or the
    paint path (`terminal::paint`) starts a thread or runs `git`.
@@ -79,15 +78,18 @@ node                 may reference                     [fully-qualified path onl
 session              nothing — pure data, the dependency sink (no
                      process state, no env reads, no rendering crate;
                      re-exports runtime-mux's host model and SessionId)
-agent                agent::{generic,provider} (re-exports only)
-agent::*             every file a node: session, paths, shell, config::file
-                     and the other agent::* files each declares (NEVER git,
-                     NEVER backend)
+agent                agent::* (declarations only)
+agent::*             every file a node: agent_config → session, shell,
+                     config::file; fetch → paths; input → nothing
+                     (NEVER git, NEVER backend)
 config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
-                     paths) plus session (themes: theme instead)
+                     paths); automations, hosts, interface_state, settings →
+                     session, config::file; themes → theme, config::file
 update               update::* (declarations only)
-update::*            paths, shell, agent::fetch, update::version_check
+update::*            self_update → paths, shell, agent::fetch,
+                     update::version_check; version_check → paths,
+                     agent::fetch
 backend              session, paths, config::hosts     (the gateway to
                                                         runtime-mux, and what
                                                         thurbox injects)
@@ -105,7 +107,7 @@ ui_control           paths
 shell                nothing — runtime-mux's launchers and quoting, re-exported
 theme                nothing — the presets, in ratatui colours
 coordinator          agent::input, config::{hosts,     (main's body: the loop,
-                     interface_state,settings},         the workers, the chrome)
+                     interface_state},                  the workers, the chrome)
                      backend, clipboard, kernel,
                      notifications, paths, session,
                      shell, telemetry, ui_control
@@ -134,8 +136,7 @@ declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
 every crossing into the side-effect layer is visible at its call site, the rule
 `cli` already follows. A function-local `use crate::agent::…` (or
 `as` alias) breaks it too. One test, `every_module_rule_holds`, loops over every
-entry — a rule used to be able to exist with no test calling it, which is how
-`kernel` drifted.
+entry, so no rule can exist with no test calling it.
 
 A rule names a **node**: a top-level module, or a submodule governed on its own —
 every file module of `agent`, `config` and `update`, at any depth, is one
@@ -149,8 +150,7 @@ must both be acyclic (`the_production_graph_is_acyclic`,
 (`every_allowance_is_used`), and the crossings still to be
 removed are the `TRANSITIONAL` table — each item saying why it is there and
 what removes it, checked both ways so a new crossing fails and so does a stale
-entry. It is **empty**: lifecycle, pane I/O, platform and finally status and
-the heartbeat (ADR-29, ADR-30, ADR-32) go through the contract, and
+entry. It is **empty**, and
 `consumers_reach_no_concrete_backend` holds every module but `coordinator` to
 reaching no adapter, protocol helper or factory through the `backend` gateway
 — by reference, through aliases and re-exports — and `coordinator` to the
@@ -170,7 +170,7 @@ another and `tmux_compat` reaches none, test code included
 `Multiplexer` variant
 (`each_multiplexer_is_chosen_only_by_its_adapter_and_the_factory`, ADR-31),
 and the route and contract know no launcher, adapter or build OS. Fixture trees under `tests/fixtures/architecture/` pin that the
-resolver sees the old three-node backend cycle, PR #1272's mux/registry cycles,
+resolver sees a three-node backend cycle, the mux/registry cycles,
 alias and re-export laundering, and test-only edges.
 
 ### Module Responsibilities
@@ -194,13 +194,13 @@ alias and re-export laundering, and test-only edges.
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
-- **`agent/`** — the coding agents. `AgentProvider` + `GenericProvider`
-  build the CLI invocation from a declarative `AgentDef`; `agent_config` loads
-  `agents.toml`, `fetch` what the plugin installer and the updater download,
-  and `preflight` and `host_path` check and translate what a launch needs.
-- **`config/`** — thurbox's own config files beside `config.toml` (`hooks`,
-  `hosts`, `settings`, `themes`). `config::file` is the one loader every config
-  file goes through, `agents.toml` and the manifests included: its path,
+- **`agent/`** — `agent_config` loads `agents.toml`, `fetch` downloads what
+  the plugin installer and the updater need, and `input` encodes keys for an
+  agent's terminal.
+- **`config/`** — thurbox's own config files beside `config.toml`
+  (`automations`, `hosts`, `interface_state`, `settings`, `themes`).
+  `config::file` is the one loader every config
+  file goes through, `agents.toml` included: its path,
   seeding it on first run, parsing it with unknown keys reported, degrading to
   a fallback with a warning, and writing it back with `paths::write_atomically`.
 - **`update/`** — self-update: `version_check` (is a newer release out) and
@@ -218,15 +218,13 @@ alias and re-export laundering, and test-only edges.
   through a `TmuxTransport` (an optional `HostLauncher` — ssh or WSL — plus the
   multiplexer binary). `pane::Session` wraps a backend's pane: output is read
   into `Arc<Mutex<vt100::Parser>>`, input written over an mpsc channel.
-- **`session/`** — plain data: `SessionId`, `SessionInfo`, `SessionState` and
-  the read-time status folds (`hook_status`, the one module the kernel *and*
-  the CLI derive a session's state through),
-  `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry` (the
-  last two re-exported from runtime-mux),
-  `PluginSpec`/`PluginLock`/`PackageManifest` (`plugin_spec`, so the kernel and the
-  CLI share one definition), plus the logic the kernel needs and cannot import
-  `agent` for (`hyperlink`, `review`). Holds no process state, reads no
-  environment and names no rendering crate (`session_is_pure_data`).
+- **`session/`** — plain data: `SessionState` (`hook_status`, the one
+  vocabulary every surface prints), `AgentDef`/`AgentRegistry`, the automation
+  schedule, settings, `PluginSpec`/`PluginLock`/`PackageManifest`
+  (`plugin_spec`, so the kernel and the CLI share one definition) and `review`;
+  plus runtime-mux's `SessionId`, host model, routes and `hyperlink` table,
+  re-exported. Holds no process state, reads no environment and names no
+  rendering crate (`session_is_pure_data`).
 - **`theme/`** — the 36 presets and the custom-theme overrides, as `ratatui`
   colours: `session` cannot name a rendering crate, so the palettes live here.
 - **`git/`** — every `git` invocation, split by concern: `command` (the one
@@ -273,14 +271,15 @@ tokio::main → load config + settings
 } → restore terminal
 ```
 
-- Logging goes to `~/.local/share/thurbox/thurbox.log` (stdout is the TUI's)
+- Logging goes to a daily `thurbox.log.<date>` in the data directory (stdout
+  is the TUI's)
 - A panic hook restores the terminal, pops the kitty flags and disables mouse
   reporting before printing — otherwise the shell inherits a raw-mode terminal
   streaming mouse reports. A **signal** gets the same treatment
   (`coordinator::boot::install_signal_restore`): `SIGHUP`/`SIGTERM`/`SIGINT`
   run `restore_terminal` and exit `128 + n`, since the default action runs no
-  hook and a terminal emulator closing, a session manager, or a machine waking
-  from a long sleep used to leave the next shell printing `\x1b[<64;…M` on
+  hook, and a terminal emulator closing, a session manager, or a machine waking
+  from a long sleep would leave the next shell printing `\x1b[<64;…M` on
   every scroll. `restore_terminal` shows the cursor itself for the same
   reason — a signal exits from the runtime's thread and drops no `Terminal`.
   The one case no handler reaches is a **dropped ssh connection** to a remote
@@ -291,10 +290,9 @@ tokio::main → load config + settings
 ## Writing an interface plugin
 
 The bundled set is deliberately small: `10_sessions`, `20_agent`, `65_search`, plus
-five floats that occupy no slot — the creation flow (`70_new_session`), the
-confirmation (`60_confirm`), the rename field (`62_rename`, `Ctrl+E`), the
-context menu (`64_menu`, opened at the pointer by a right press on a session) and
-the restore list (`80_restore`, v1's `Ctrl+U`).
+four floats that occupy no slot — the creation flow (`70_new_session`), the
+confirmation (`60_confirm`), the rename field (`62_rename`, `Ctrl+E`) and the
+context menu (`64_menu`, opened at the pointer by a right press on a session).
 
 ```bash
 thurbox-cli plugin dir            # which directory is live, and which rule chose it
@@ -305,11 +303,11 @@ thurbox-cli plugin install top    # a distributed pane, recorded in plugins.toml
 thurbox-cli plugin sync           # make the directory match the spec
 ```
 
-Two of v1's surfaces are maintained as **out-of-tree panes**, each its own
-repository, installed by clone:
+Two panes are maintained **out of tree**, each its own repository, installed
+by clone:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) (the diff
 reviewer, asks for `run` only for the targets the kernel does not compute) and
-[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) (v1's info
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) (the info
 panel, no capabilities — everything from the snapshot). Neither is bundled or
 vendored; both are downstream consumers of the published `thurbox.*` shape.
 
@@ -332,9 +330,8 @@ the list and the list's own echo is not mistaken for one), `ui.row` (a span buil
 knows the row's width, so a trailing note is budgeted rather than re-measured),
 `ui.empty`, `ui.modal`, `ui.footer` (hints resolved from the key **registry**,
 so a rebind moves them), `ui.status`/`ui.dots`, `ui.rule`. `lib/widgets.lua` is
-the primitive kit underneath it. `10_sessions` and `80_restore` are the two
-worked consumers; `65_search`, `70_new_session` and `20_agent` still spell their
-own and are the follow-up.
+the primitive kit underneath it. `10_sessions` is the worked consumer;
+`65_search`, `70_new_session` and `20_agent` still spell their own.
 
 **Two commands reach outside a pane's own rect.** `command("message", { text,
 level })` puts a sentence in the message band — kernel chrome stays kernel-drawn
@@ -400,20 +397,14 @@ keep true.
 
 Two rules pick the directory: `THURBOX_UI_DIR` if set, otherwise the user's copy
 (`~/.config/thurbox/ui/`, materialised from the embedded interface on first run,
-preserving edits). A third rule — a `./ui` beside the working directory, winning
-automatically — was removed: it made the interface the one config that ignored the
-dev/release split, so `cargo run` in the repository read `~/.config/thurbox-dev` for
-agents, settings, themes and the database and the *checkout* for its panes, silently.
-Editing a checkout's interface is now an explicit `THURBOX_UI_DIR` (`just tui-ui`),
-and startup reports the directory whenever there is a question about it — an override
+preserving edits). A `./ui` beside the working directory is never picked on its
+own: editing a checkout's interface is an explicit `THURBOX_UI_DIR` (`just tui-ui`).
+Startup reports the directory whenever there is a question about it — an override
 is in force, the fallback was used, or this is a dev build. The user-copy path is
-derived
-from `paths::config_file()` like every other config path — `agents.toml`,
-`hosts.toml`, `hooks.toml`, `settings.toml`, `themes.toml`, `ui.json` — so a **dev
-build reads `~/.config/thurbox-dev/ui`** and cannot touch the release copy.
-`THURBOX_CONFIG_DIR` overrides that anchor and thurbox injects it into every
-session it spawns, which is why a `thurbox-cli` run *inside* a session resolves
-against that session's config dir rather than the dev default. `config show` prints
+derived from `paths::config_file()` like every other config path — `agents.toml`,
+`hosts.toml`, `settings.toml`, `themes.toml`, `ui.json` — so a **dev build reads
+`~/.config/thurbox-dev/ui`** and cannot touch the release copy.
+`THURBOX_CONFIG_DIR` overrides that anchor. `config show` prints
 the resolved `ui_dir`/`ui_json` beside the rest. The resolved directory is
 made **absolute** — trust, the disabled set and rebindings are keyed by
 `ui_dir.join(file)` and compared verbatim, so a relative `ui` would be shared by
@@ -429,10 +420,8 @@ what a plugin may do (trust, the disabled set); `plugins.toml` records what the 
 `ui.json` and `plugin-state.json` share the atomic config writer with
 `settings.toml`: each stages the whole file beside the destination before a native
 same-directory replacement, so a failed save cannot expose a truncated mix of those
-decisions. A grant or a disabled toggle writes only `plugin-state.json`. A legacy
-`ui.json` still holding `trusted`/`disabled` is migrated by `Registry::load`: the
-store is written first, then the tables leave `ui.json`, and an existing store wins
-(#1467). It does not promise durability
+decisions. A grant or a disabled toggle writes only `plugin-state.json`. The
+writer does not promise durability
 across storage or operating-system failure because neither file nor directory is
 explicitly synced. An existing config-file symlink remains a link and its target is
 replaced.
@@ -463,12 +452,10 @@ itself; platform selection is deliberately not a manifest field.
 
 **`thurbox.preflight` is a read, not a probe.** Whether the multiplexer is
 installed, and whether each agent's `command` resolves, is answered by
-`agent::preflight` from `SnapshotStore::poll_preflight` — on the kernel's
-schedule, behind a 10-second window, and published in the snapshot as
-`thurbox.preflight.mux` and each agent row's `presence`. It is polled from
-`refresh_if_due` rather than from `refresh`, because `refresh` stops running
-altogether on a database nobody writes to, which is exactly the state thurbox is
-in while the user is off installing what was missing. A plugin that ran the
+`backend::preflight` from `SnapshotStore::poll_preflight` — on the kernel's
+schedule (`refresh_if_due`), behind a 10-second window (`PREFLIGHT_TTL`), and
+published in the snapshot as `thurbox.preflight.mux` and each agent row's
+`presence`. A plugin that ran the
 lookup itself would be running a `PATH` walk per frame, per keystroke or per
 row — the regression the window exists to prevent; `kernel::snapshot::tests::
 the_preflight_answer_is_cached_rather_than_probed_on_every_tick` pins it.
@@ -499,8 +486,7 @@ replace `lib/theme.lua`.
 (`registry::Granted::Managed`, `inventory::Trust::resolve_installed`). Contents alone
 would report every ordinary release as tampering; `(src, pin)` alone would let an
 upstream re-tag of the same version inherit a grant made to what that version used to
-be. Both are checked, and the bare-string grant form earlier releases wrote is still
-read so an upgrade forgets nothing.
+be. Both are checked.
 
 **A plugin can run a program you interact with** (`Capability::Program`,
 `kernel::terminal`'s `programs` map). `run` captures output once with no stdin and
@@ -548,7 +534,7 @@ and the position is that thurbox can only refuse to run things unasked.
 `examples/lua/composite.lua` is the worked example.
 
 `machine = "host:<exact-name>"` targets a configured/discovered host without a
-session, including `share_sessions = false`, in its home and platform shell.
+session, in its home and platform shell.
 Hosts config is process-cached; restart to refresh it. The existing `run` grant
 covers this selector. `run_forget(key)` has the same owner/grant and removes an
 answer and queued request in call order, discarding old active completions even
@@ -560,8 +546,8 @@ result and lifetime semantics are owned by `docs/thurbox/plugins.md`.
 
 **Every plugin runs in its own `_ENV`** (`host::api::plugin_env`): one Lua state
 is shared, so identity is bound where a function is made, never read from who is
-running — a pane that wrapped `type` used to run inside a trusted pane's call with
-its `run` and its path. `command`, `run`, `run_forget`, `files`, `state` and `require` (with a
+running, so a pane that wraps `type` never runs inside a trusted pane's call
+with its `run` and its path. `command`, `run`, `run_forget`, `files`, `state` and `require` (with a
 per-plugin module cache, modules run in the requirer's env) are created per plugin;
 reads fall through to the sealed shared globals, writes stay in the plugin's table.
 `string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-plugin empty
@@ -583,7 +569,7 @@ holds (`Command::refusal_by`). Refused in
 plugin's own `command` (`LuaHost::drain_issued`). A bundled file byte for byte as
 shipped is `Trust::Shipped` and holds what it declares untrusted — `60_confirm`
 and `70_new_session` need it — and
-`60_confirm` forwards only `delete`/`restart`/`restore`/`sync`, since any pane can
+`60_confirm` forwards only the verbs its `FORWARDS` table names, since any pane can
 write `store.confirm`; it words the change itself from the command, names the
 asker via `store_writer` (the writer's chain, recorded by its own `store` view), and on `y`
 issues the request it last drew, not `store.confirm` re-read.
@@ -594,7 +580,7 @@ the loop calls it once per change, off the render path, under the render's
 budget. The kernel's events are **derived by diffing the snapshot** — a row
 appearing, leaving, changing status/name/branch/repos/parent — plus the focus
 ring, the command bus (`command.done`/`failed`, and `session.post_*` for the
-four operations *this* interface performed, named as `hooks.toml` names them) and
+operations *this* interface performed) and
 `interface.reloaded`; never raised by whatever changed the session, so a
 session another process made fires the same event. The set is closed (`KERNEL_EVENTS`): a
 subscription to an unknown name refuses to load, and the same table renders in
@@ -626,9 +612,9 @@ Floats and decorators are never strips. Under an arrangement without the loop,
 beside every declared key and the kernel's own actions, filtered by subsequence
 as you type; `Enter` runs the row through the same `on_action` a key takes,
 focused or not, after the modal has closed. A command a user rebinds from `F1`
-becomes a binding (`Registry::apply_overrides` synthesises it). `Ctrl+P` was
-taken deliberately from the chords held for v1's panes (`tests/keymap.rs`),
-and the creation flow's folder import moved to `Alt+P` for it.
+becomes a binding (`Registry::apply_overrides` synthesises it). `Ctrl+P` is
+the palette's (`tests/keymap.rs`); the creation flow's folder import is
+`Alt+P`.
 
 `on_action(action, args)` accepts a read-only table of typed arguments for
 instance-scoped UI control. Existing one-argument handlers still work. The

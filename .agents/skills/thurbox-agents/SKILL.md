@@ -1,35 +1,64 @@
 ---
 name: thurbox-agents
-description: The declarative coding-agent registry (agents.toml / AgentDef): the *_args groups, {id} and {home} substitution, session-id pinning vs resume_latest, the omp session-directory kind, custom-agent status hooks via hook_schema, and multi-repo sessions with the symlink workspace. Use when adding or debugging a built-in or custom agent, changing spawn/resume/fork args, or working on multi-repo sessions.
+description: The declarative coding-agent registry (agents.toml / AgentDef): the seeded built-ins and the shell entry, the entry format (the *_args groups, extends/append_args, vars, placeholders), what thurbox reads the registry for (the new-session agent list, the attach gate, doctor, config validate), and how a picked agent reaches Fleet as a harness. Use when adding or debugging an agent entry or the agent picker, or when an agent is refused at session creation.
 ---
 
 # Thurbox agent definitions
 
 *Working reference indexed by `AGENTS.md`. The rationale behind these decisions is owned by the docs under `docs/`; a change that invalidates what this says updates it in the same PR.*
 
-## Agent Definitions
+> Per-agent reference and the "adding a new built-in" checklist:
+> `docs/thurbox/agents.md`. The full file contract: `docs/thurbox/config.md`.
 
-> Per-agent reference + the "adding a new built-in" checklist:
-> `docs/thurbox/agents.md` (each built-in's exact config, ID model, and status-hook
-> mechanism, plus every file to update when promoting a CLI to a built-in).
+## The registry
 
-The set of launchable coding agents is declared **as data** in
-`~/.config/thurbox/agents.toml`, seeded with built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`, `omp`)
-plus `shell` on first run.
+The set of agents is declared as data in `~/.config/thurbox/agents.toml`.
+The file is seeded on first run with the built-ins `claude`, `codex`,
+`antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi` and `omp`, plus
+`shell`. `default` names the entry a session gets when it names none.
 
-`shell` is the one seeded entry that is not a coding agent: the platform's own
-interactive shell (`bash -i`, or `powershell -NoLogo` on native Windows, where
-the multiplexer is psmux). The platform is the session's host: while the entry (or its inherited variant)
-is still a stock command/args pair, `session_ops::resolve_agent_def` swaps in
-the host's own
-(`shell::HostShell::interactive_agent`); an edited `shell` is launched as written. It exists so a session can be *anything*, and it is
-the ready-made form of `session create --command`. Because it declares no
-`resume_args`/`fork_args`, it also documents the rule by example: those groups
-are the **conversation address**, and an entry without them can be restarted but
-never resumed. A raw `--command` session behaves identically — thurbox builds it
-a synthetic `AgentDef` with empty arg groups and persists the recipe on the
-session row, since there is no `agents.toml` entry to re-resolve at restart.
+`shell` is the one seeded entry that is not a coding agent: the platform's
+interactive shell (`bash -i`, or `powershell -NoLogo` on native Windows;
+`agent_config::interactive_shell_agent`).
+
+- **Data type.** `session::AgentDef` and `session::AgentRegistry`
+  (`src/session/agent_def.rs`, pure data and substitution).
+- **Loading.** `agent::agent_config::load_or_seed()` reads the file and seeds a
+  missing one. A syntax error, or a file with no usable entry, falls back to
+  `builtin_registry()`. Unknown keys and skipped entries are warnings, never a
+  failed load.
+- **Live reload.** The snapshot re-reads the file
+  (`agent_config::read_for_reload` / `parse_for_reload`) and publishes the new
+  registry (`publish_registry`).
+
+## What thurbox reads it for
+
+Fleet launches every session (ADR-41). thurbox reads the registry for four
+things:
+
+- **The new-session agent list.** `read_agents` (`src/kernel/snapshot/mod.rs`)
+  offers each entry's name and `command`, with whether that command resolves on
+  `PATH` (`preflight::look_up`).
+- **The attach gate.** A row whose agent has no definition, and no default
+  either, is not attached (`start_attach`,
+  `src/kernel/terminal/attach.rs`).
+- **`thurbox-cli doctor`.** One `agent:<name>` finding per entry. A missing
+  command is a warning; every command missing at once is a failure.
+- **`thurbox-cli config validate`.** Parses the file and fails on any warning
+  the load would only report.
+
+## How a picked agent reaches Fleet
+
+A create sends the picked agent's **name** as the Task's `spec.harness`
+(`src/kernel/command/fleet.rs`). The name is refused unless `fleet version
+--json` lists a harness profile of that name (`Fleet::harness`). Fleet's
+profile (`crates/fleet-api/src/harness.rs`) owns the launch and resume argv,
+the hooks that report state through `fleet signal`, and trust. So a custom
+entry is launchable only under a name Fleet has a profile for, and the
+launch-shaping fields below do not change what Fleet runs.
+
+## The entry format
+
 Each `[[agents]]` entry is an `AgentDef`:
 
 ```toml
@@ -38,208 +67,33 @@ default = "claude"
 [[agents]]
 name = "claude"
 command = "claude"
-args = []                               # always passed; bake a model here if you want one
-resume_args = ["--resume", "{id}"]      # emitted when resuming
+args = []                                     # always passed
+resume_args = ["--resume", "{id}"]
 fork_args = ["--resume", "{id}", "--fork-session"]
-new_session_args = ["--session-id", "{id}"]  # emitted on a fresh spawn
-additional_dir_args = ["--add-dir", "{dir}"] # repeated per multi-repo member
-
-[[agents]]
-name = "codex"
-command = "codex"
-resume_args = ["resume", "{id}"]
-fork_args = ["fork", "{id}"]
+new_session_args = ["--session-id", "{id}"]
+additional_dir_args = ["--add-dir", "{dir}"]  # repeated per extra directory
 ```
 
-Each conversation argument group is appended only when its driving id is
-present, with `{id}` and `{name}` substituted; `args` is always passed. `{name}`
-is the session display name captured for that launch and remains one literal
-argument even when it contains spaces, quotes, Unicode or shell metacharacters.
-Definitions without it keep the same argv. A rename does not mutate the running
-process; the next restart uses the current persisted name. No
-model is ever passed — each agent uses its own default config
-(put `["--model", "opus"]` in `args` if you want to pin one).
-A second token, `{home}`, expands (at spawn, on the spawn worker —
-`session_ops::expand_home_in_def`, called from
-`spawn::adapt_def_for_launch`, which both a fresh launch and
-`session_ops::restart` go through) to the resolved home dir — the **remote** home for an
-SSH/WSL host — so an agent that wants a session *file path* rather than a
-bare id (the built-in `omp`, below) launches against a concrete,
-quote-safe absolute path (a literal `~` would never expand — args are
-POSIX-quoted).
-Agents that omit `resume_args` simply start fresh on restart (the
-live tmux process is what carries state across TUI restarts). Add
-your own `[[agents]]` entry to support any CLI — no recompile.
+Other fields: `resume_latest`, `hook_schema` (the hook family the CLI speaks,
+e.g. `"claude"` on a rebranded claude), `env`, `telemetry_env`,
+`telemetry_args`, `vars` and `setup`. The seeded file documents each inline
+(`BUILTIN_AGENTS_HEAD` / `BUILTIN_AGENTS_TAIL` in `src/agent/agent_config.rs`).
 
-**Templates, ordering and setup (`vars`, `{session_args}`, `setup`).** What used
-to need a wrapper script as `command` is data now (full contract:
-`docs/thurbox/config.md` → Templates, argument order and setup; worked example:
-`docs/thurbox/agents.md` → Replacing a launch wrapper):
+- **Variants.** `extends = "base"` inherits every field except `name`; an
+  explicit value (including an empty array or map, or `false`) replaces the
+  base's. `append_args` appends after the resolved `args`. Chains resolve in
+  either file order. A cycle, an unknown base, or a chain deeper than 32
+  (`MAX_EXTENDS_DEPTH`) skips the entry with a warning.
+- **`vars`** fill `{key}` once, on the fully resolved entry
+  (`AgentDef::apply_vars`). They merge per key across `extends`.
+- **Placeholders** must resolve (`AgentDef::placeholder_errors`): `{id}` and
+  `{name}` only in the session groups, `{dir}` only in `additional_dir_args`,
+  `{otlp_endpoint}`/`{otlp_protocol}` only in the telemetry fields, and `{home}`
+  in command, args, groups, env and setup. An unknown placeholder skips the
+  entry with a warning; it is never passed on literally.
+- **`{session_args}`**, as a whole `args` token, is where `build_args` places
+  the session group (`AgentDef::place_session_group`); without it the group
+  leads.
 
-- `vars = { role = "coder" }` fills `{role}` in `command`, `args`, every
-  `*_args` group, `env`, `setup` and the telemetry fields — once, on the fully
-  resolved entry (`AgentDef::apply_vars`, called at the end of
-  `agent_config::resolve_agent_entry`), so a template base's `{role}` is filled
-  by whichever variant names it. `vars` merge **per key** across `extends`; every
-  other field replaces. One pass, values inserted verbatim (a value may carry
-  `{home}`/`{id}`/`{name}`, never another var).
-- Every placeholder must resolve (`AgentDef::placeholder_errors`): `{id}` and
-  `{name}` only in the session groups, `{dir}` only in `additional_dir_args`, the OTLP pair only in
-  telemetry fields, `{home}` in command/args/groups/env/setup. A placeholder is
-  `{identifier}`, so codex's TOML `-c` values are never one. An unknown one skips
-  the entry with a warning and fails `config validate` — never launched literally.
-- `{session_args}` as a whole `args` token is where `build_args` splices the
-  fork/resume/new-session group (`AgentDef::place_session_group`); without it the
-  group leads, as before. Codex's legacy-picker paths (`spawn.rs` fork with no id,
-  `restart.rs` resume picker) go through the same method.
-- `setup` steps become `sh -c '<steps under set -e>; exec "$@"' thurbox-setup CMD
-  ARGS…` (`agent_def::wrap_with_setup`), applied last by `session_ops::with_setup`
-  in spawn, the restart plan (restart/start/restore) and `agent launch-args`, so
-  appended args still reach the agent. On a native-Windows host the steps are
-  PowerShell, wrapped by `shell::HostShell::wrap_setup` into one encoded launch
-  (bounded by `WINDOWS_CMD_LINE_MAX`) that prints the same marker.
-  A failing step prints `agent_def::SETUP_FAILURE_MARKER`, which is how
-  `session::launch_failure` tells a `setup` failure from an `exited` one.
-
-**Session id pinning vs. `resume_latest`.** thurbox generates the
-`agent_session_id` (a UUID) and `claude`/`pi` accept it at creation
-(`--session-id {id}`), so those two resume/fork by that exact id. Codex instead
-reports its own id through `SessionStart`; thurbox stores it in session metadata
-and resumes/forks that exact id. Binding requires a `SessionStart` UUID and a
-proven pane-local Codex ancestor with `--no-daemon`; shared-daemon identity
-is insufficient. An ambiguous binding reports `bound: false`. Live repair is
-unsupported: wait for an operator-chosen stopping point and relaunch through
-the resume picker, preserving approval, sandbox and hook settings. A legacy row without a captured id opens the
-interactive Codex `resume` picker; its selection is then bound by the hook.
-An unbound fork uses Codex's `fork` picker. An ambiguous in-pane conversation
-switch requires the picker on restart; only that launch can bind a new ID.
-Older seeded `codex` definitions are upgraded in memory. The remaining built-ins
-(`opencode`, `antigravity`, `aider`, `copilot`) set `resume_latest = true` with
-**id-less** resume/fork flags: the agent resolves "the last session in *this*
-directory" itself (`opencode --continue`, `agy --continue`, `aider
---restore-chat-history`, `copilot --continue`) — which works because restart
-reuses the session's cwd and a single-repo fork reuses the parent's.
-`resume_latest` only changes *when* the resume group fires
-(`session_ops::resume_trigger_for`): for these agents restart always resumes; for
-claude it defers to an on-disk transcript check — unless a turn-start hook
-already recorded the id in `thurbox.conversation_started` session meta, which
-resumes it even when a wrapper's own `CLAUDE_CONFIG_DIR` hides the transcript. **`omp`** (Oh My Pi) is a third
-kind: it generates its own internal id and won't take thurbox's, but
-`--session-dir <dir>` keeps its session in a directory thurbox chooses, so
-thurbox maps its UUID to a deterministic directory (`--session-dir
-{home}/.omp/agent/sessions/thurbox-{id}` on create, the same plus `--continue` on
-restart; `--session <file>` is not an option — OMP refuses a file that does not
-exist yet, and `upgrade_seeded_omp_args` rewrites that legacy seeded pair on
-load). Neither id-pinned nor `resume_latest`: `resume_trigger_for` resumes it
-iff that directory exists (`session_file_template` — agent-neutral, keyed on a
-`new_session_args` token that is a path *and* carries `{id}`, not on the agent
-name); a remote-omp restart can't stat the host directory from the UI thread, so it
-starts fresh (documented fallback). Caveats: agents without `fork_args`
-(`antigravity`, `aider`, `copilot`, `omp`) start fresh on `Ctrl+F`; and a
-**multi-repo** fork of a cwd-scoped agent lands in a fresh symlink workspace, so
-`--continue` finds no parent session (multi-repo *restart* still resumes,
-keeping the same workspace dir).
-
-- **Data type**: `session::AgentDef` / `session::AgentRegistry`
-  (`session/agent_def.rs`, pure data + substitution logic).
-- **Loading**: `agent::agent_config::load_or_seed()` reads/seeds
-  the TOML; `builtin_registry()` is the fallback.
-- **Launching**: `agent::GenericProvider` wraps an `AgentDef` and
-  implements the `AgentProvider` trait (`command()` +
-  `build_args(&SessionConfig)`). It is constructed from the session's
-  `AgentDef` in one place, `session_ops::build_agent_invocation`, which spawn,
-  restart and `agent launch-args` all go through.
-
-A session stores its **agent name** plus opaque per-session `agent_args` from
-`session create --agent NAME --agent-arg ARG`. These are appended literally on
-create/resume/restart/restore/fork, after registry, directory and telemetry
-arguments; `get`/`show` and `list` JSON expose them. They require an explicit
-registry agent and are capability-gated on delegated creation. The launch environment is frozen at creation. No model,
-permission, prompt or tool field is added.
-
-In `agents.toml`, `extends = "base"` inherits every field except `name`, with
-explicit values (including empty arrays/maps and `false`) replacing the base's.
-`append_args` appends after the resolved `args`; chains resolve in either file
-order, with cycles, unknown bases and a chain deeper than 32 entries diagnosed
-by `config validate`. The resolved hook family is inherited, including Codex's
-conversation binding. Seed compatibility upgrades apply to standalone bases before merging.
-Direct remote TUI input needs the alias in the caller's registry to recognize
-its family; host-only aliases can be created but their family is not mirrored.
-See `docs/thurbox/config.md` for the complete contract.
-
-**Custom-agent status family (`hook_schema`).** An optional
-`AgentDef.hook_schema: Option<String>` names the hook **family** the CLI speaks
-(e.g. `"claude"` on a rebranded claude), so its status is read as that
-built-in's. thurbox installs nothing into an agent's config: Fleet's harness
-profiles pass each harness its hooks at launch
-(`crates/fleet-api/src/harness.rs`). thurbox bakes in no agent knowledge — the
-*user* asserts the family.
-
-**Per-agent environment (`env`).** String-valued defaults on `AgentDef`, with
-`{home}` resolved on the launch host. Creation freezes them together with
-session `--env` (which wins) into the saved launch environment; restart, resume
-and fork replay that snapshot, including absent keys. Defaults outrank
-`telemetry_env`; thurbox identity/instance variables still win. A delegated
-creation reads the host's registry; a direct remote launch reads the caller's
-and expands the remote home. `session show --json` on the owning instance shows
-saved `env` (a caller's mirror reports `null`); `agent launch-args` without a
-session shows current defaults.
-
-**Agent-native telemetry (`telemetry_env` / `telemetry_args`).** Applied only
-while `settings.toml` `[telemetry]` is on (`session_ops::telemetry::apply`, at
-spawn, restart, `agent_launch_plan` and `session_process_env`), with `{otlp_endpoint}` /
-`{otlp_protocol}` substituted. Every local session also gets the spec's
-`OTEL_EXPORTER_OTLP_*`, and so does a remote one whose host sets
-`otel_endpoint` in `hosts.toml` (substituted for `{otlp_endpoint}` there);
-every session, remote too, gets
-`OTEL_RESOURCE_ATTRIBUTES` with `thurbox.session.id`. Built-ins: claude (env),
-codex (`-c otel.*` args), vibe (env); an entry omitting both keys gains the
-built-in's in memory, explicit empty opts out. ADR-36.
-Repeatable `session create --telemetry-attr KEY=VALUE` adds persistent session
-labels after inherited, agent and session environment attributes, before
-Thurbox's identity keys. Restart and fork retain the raw labels in reserved
-session metadata. Delegation requires the host's `telemetry_attrs` capability;
-unsupported hosts refuse them. Labels also reach session event logs and,
-with `per_session`, Thurbox's own session metrics.
-
-### Multi-repo sessions (symlink workspace)
-
-A session can span several repositories (the repo picker allows multiple;
-headless callers pass `--add-repo`/`--add-dir`, below). Because agent CLIs differ
-wildly in how — or whether — they accept extra directories, a session with more
-than one member directory launches in a per-session **symlink workspace**:
-`~/.local/share/thurbox/workspaces/<agent_session_id>/` holds one symlink per repo
-(worktree checkout or plain dir) and the agent starts there (`cwd` = the
-workspace), so every agent sees each repo as a subdirectory. An optional
-`AgentDef.additional_dir_args` group is repeated per member with `{dir}`
-substituted. The built-in Claude group is `["--add-dir", "{dir}"]`, because
-Claude checks resolved symlink targets against working-directory scope. It
-grants only member checkout paths and preserves the permission mode; other
-agents emit no group unless configured. Existing built-in Claude definitions
-gain the group in memory when absent; explicit `[]` opts out. See
-`docs/thurbox/agents.md` → Multi-repo directory scope for restart and platform limits.
-
-`SessionInfo.cwd` keeps the **primary** repo (display / editor / git context); the
-workspace is a spawn-time process-cwd detail, derived idempotently on every launch
-from the persisted members and never stored. `workspace::ensure_workspace` /
-`remove_workspace` (`src/workspace.rs`) build and tear it down; the interface's
-member list is `kernel::snapshot::session_members` (it feeds both the rendered
-repo names and `SessionRow.member_dirs`), and
-`session_ops::spawn::resolve_launch_cwd` picks workspace-vs-primary for every
-launch, the TUI's included (its create command builds a `SpawnRequest`).
-Single-repo sessions are unchanged (`cwd` = the repo directly).
-
-**Headless multi-repo.** The same multi-repo shape is reachable without the
-TUI: `SpawnRequest.extra_repos: Vec<ExtraRepo>` (`session/automation.rs`) carries
-each additional repo, where `ExtraRepo { repo_path, worktree: bool, base_branch }`
-either gets its **own isolated worktree** on the spawn's shared `worktree_branch`
-(off its own base — the per-repo-PR model flow uses) or is attached **as-is** as
-an additional dir. `session_ops::spawn::resolve_dirs` builds the worktrees +
-additional dirs and `resolve_launch_cwd` picks the cwd (symlink workspace when
-≥2 members). The CLI exposes it on `session create` and
-`task create` via repeatable `--add-repo PATH[@BASE]` (worktree) and `--add-dir
-PATH` (as-is); `AutomationAction::Spawn` persists the list as JSON in the
-`action_extra_repos` column (schema v33, on both `tasks` and `automations`;
-`NULL`/empty = single-repo, so old rows are byte-identical). A dispatcher that
-splits one brief across several repos forwards these flags per task — the
-[fleet](https://github.com/Thurbeen/fleet) control plane is the worked example.
+No model is ever added. Put `["--model", "opus"]` in `args` (or in
+`append_args` on a variant) to pin one.

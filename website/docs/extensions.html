@@ -47,8 +47,8 @@ breadcrumb: 'Removing old hook entries'
             <li>
               The text
               <code>managed by thurbox `extension install`</code>
-              , at the end of a merged command, in a comment above a merged entry, or at the top
-              of a file Thurbox wrote.
+              (any capitalisation), at the end of a hook command, in a comment above a merged
+              entry, or in the comment at the top of a script or TOML file Thurbox wrote.
             </li>
             <li>
               On an SSH or WSL host, the same entries call
@@ -191,41 +191,83 @@ breadcrumb: 'Removing old hook entries'
             <a href="#files" class="heading-anchor">#</a>
           </h2>
           <p>
-            Delete each of these files. Open it first: if it does not start with the
-            <code>managed by thurbox</code>
-            marker, it is your own file, so keep it.
+            Delete each of these files. Open it first and do the check in the last column: if the
+            marker is not there, it is your own file, so keep it.
           </p>
           <table>
             <thead>
               <tr>
                 <th>Agent</th>
                 <th>File</th>
+                <th>Thurbox's file if</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>opencode</td>
                 <td><code>~/.config/opencode/plugin/thurbox-status.js</code></td>
+                <td>
+                  The first line is
+                  <code>// Managed by thurbox `extension install`</code>
+                  .
+                </td>
               </tr>
               <tr>
                 <td>vibe</td>
                 <td><code>~/.vibe/hooks.toml</code></td>
+                <td>
+                  The first line is
+                  <code># Managed by thurbox `extension install`</code>
+                  .
+                </td>
               </tr>
               <tr>
                 <td>pi</td>
                 <td><code>~/.pi/agent/extensions/thurbox-status.ts</code></td>
+                <td>
+                  The first line is
+                  <code>// Managed by thurbox `extension install`</code>
+                  .
+                </td>
               </tr>
               <tr>
                 <td>omp</td>
                 <td><code>~/.omp/agent/extensions/thurbox-status.ts</code></td>
+                <td>
+                  The first line is
+                  <code>// Managed by thurbox `extension install`</code>
+                  .
+                </td>
               </tr>
               <tr>
                 <td>copilot</td>
                 <td><code>~/.copilot/hooks/thurbox-status.json</code></td>
+                <td>
+                  The file is JSON and starts with
+                  <code>{</code>
+                  . Search the whole file for
+                  <code>managed by thurbox</code>
+                  : it is at the end of the first hook's
+                  <code>bash</code>
+                  and
+                  <code>powershell</code>
+                  commands.
+                </td>
               </tr>
               <tr>
                 <td>grok</td>
                 <td><code>~/.grok/hooks/thurbox-status.json</code></td>
+                <td>
+                  The file is JSON and starts with
+                  <code>{</code>
+                  . Search the whole file for
+                  <code>managed by thurbox</code>
+                  : it is at the end of the
+                  <code>SessionStart</code>
+                  hook's
+                  <code>command</code>
+                  .
+                </td>
               </tr>
             </tbody>
           </table>
@@ -265,7 +307,7 @@ breadcrumb: 'Removing old hook entries'
             <a href="#thurbox-dirs" class="heading-anchor">#</a>
           </h2>
           <p>
-            Delete these two directories. Thurbox v3 reads neither of them.
+            Thurbox v3 reads none of these. Delete them:
           </p>
           <ul>
             <li>
@@ -277,16 +319,34 @@ breadcrumb: 'Removing old hook entries'
               argument above pointed at.
             </li>
             <li>
+              In
               <code>~/.config/thurbox/extensions/</code>
-              &mdash; the extension manifests and their files.
+              , only the three built-in extensions' entries: the manifests
+              <code>hooks.toml</code>
+              ,
+              <code>ui-skill.toml</code>
+              and
+              <code>sessions-skill.toml</code>
+              , and the
+              <code>ui-skill/</code>
+              and
+              <code>sessions-skill/</code>
+              directories if they are there.
+            </li>
+            <li>
+              <code>~/.config/thurbox/hooks.toml</code>
+              &mdash; nothing runs session lifecycle hooks.
             </li>
           </ul>
           <p>
-            Keep
-            <code>~/.config/thurbox/hooks.toml</code>
-            : it holds your own
-            <a href="configuration.html">session lifecycle hooks</a>
-            , which Thurbox v3 still runs. A development build uses
+            Do not delete the whole
+            <code>~/.config/thurbox/extensions/</code>
+            directory. Any other manifest or directory in it belongs to an extension you installed
+            yourself, and can hold your own files or data. Look at it, and back it up, before you
+            delete it.
+          </p>
+          <p>
+            A development build uses
             <code>~/.config/thurbox-dev/</code>
             in place of
             <code>~/.config/thurbox/</code>

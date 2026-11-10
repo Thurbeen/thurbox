@@ -268,26 +268,6 @@ const CORE_FIELDS: &[CoreField] = &[
     // is still parsed — an existing `settings.toml` must keep loading rather than
     // fail on an unknown key — it simply has no reader and no UI.
     CoreField {
-        id: "audit_retention_days",
-        description: "days of audit + event history kept",
-        get: |s| Value::Number(s.audit_retention_days as f64),
-        set: |s, v| {
-            if let Value::Number(n) = v {
-                s.audit_retention_days = n.max(1.0) as u64;
-            }
-        },
-    },
-    CoreField {
-        id: "deleted_retention_days",
-        description: "days a deleted session stays restorable; 0 keeps all",
-        get: |s| Value::Number(s.deleted_retention_days as f64),
-        set: |s, v| {
-            if let Value::Number(n) = v {
-                s.deleted_retention_days = n.max(0.0) as u64;
-            }
-        },
-    },
-    CoreField {
         id: "git_poll_secs",
         description: "seconds between git stats of a session; 0 is off",
         get: |s| Value::Number(s.git_poll_secs as f64),
@@ -1500,12 +1480,12 @@ mod tests {
     fn resetting_a_core_row_stays_a_draft() {
         let on_disk = Settings::default();
         let mut registry = registry_with(Vec::new());
-        let mut modal = on_core_row("audit_retention_days");
+        let mut modal = on_core_row("git_poll_secs");
         message(modal.on_key(&press(KeyCode::Right), &mut registry, &on_disk, &[]));
         message(modal.on_key(&press(KeyCode::Char('d')), &mut registry, &on_disk, &[]));
         assert_eq!(
-            modal.draft.as_ref().map(|d| d.audit_retention_days),
-            Some(Settings::default().audit_retention_days)
+            modal.draft.as_ref().map(|d| d.git_poll_secs),
+            Some(Settings::default().git_poll_secs)
         );
         assert!(
             !modal.dirty(&on_disk),

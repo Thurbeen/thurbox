@@ -296,9 +296,9 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
     let host = host();
     let names: Vec<&str> = host.plugins.iter().map(|p| p.name.as_str()).collect();
     // The interface is three panes — the list, the centre and the search strip —
-    // plus five floats that occupy no slot at all: the creation flow, the
-    // confirmation, the rename field, the context menu and the restore list. The
-    // view of the interface's own files is
+    // plus four floats that occupy no slot at all: the creation flow, the
+    // confirmation, the rename field and the context menu. The view of the
+    // interface's own files is
     // NOT among them: it is a tab of the settings modal, because a recovery tool
     // that is itself a plugin can be the thing that is broken. Every other v1
     // surface was removed with its plugin, and its slot with it — see
@@ -312,8 +312,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
             "rename",
             "menu",
             "search",
-            "new_session",
-            "restore"
+            "new_session"
         ],
         "the bundled set changed"
     );
@@ -350,7 +349,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
         .collect();
     assert!(focusable.contains(&"sessions"), "{focusable:?}");
     assert!(focusable.contains(&"agent"), "{focusable:?}");
-    for float in ["new_session", "confirm", "rename", "menu", "restore"] {
+    for float in ["new_session", "confirm", "rename", "menu"] {
         assert!(!focusable.contains(&float), "{focusable:?}");
     }
     let floating: Vec<&str> = host
@@ -360,7 +359,7 @@ fn the_bundled_plugins_load_and_claim_their_slots() {
         .collect();
     assert_eq!(
         floating,
-        ["confirm", "rename", "menu", "new_session", "restore"],
+        ["confirm", "rename", "menu", "new_session"],
         "a float must also be excluded from the focus ring, or Tab would land on \
          a pane that draws nothing"
     );

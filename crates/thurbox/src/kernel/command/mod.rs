@@ -270,17 +270,6 @@ pub enum Command {
     /// command applied on the UI thread rather than a worker, because it
     /// mutates in-process state a worker cannot reach.
     Theme { name: String },
-    /// Let the agents of every session soft-deleted past its undo window go,
-    /// and finish the teardowns owed on hosts that were unreachable when a
-    /// force delete was taken.
-    ///
-    /// Names no session: the question is asked of the database
-    /// (`deleted_at + UNDO_WINDOW`, and the owed-teardown mark), not of a list
-    /// the loop kept. Issued by the loop on a slow cadence rather than by a
-    /// plugin — it is a consequence of time passing, not of anything anyone
-    /// pressed. A soft delete's worktrees are left alone — they are what makes
-    /// the undo lossless.
-    Reap,
     /// Write the user's settings back to `settings.toml`.
     ///
     /// Not parseable from a plugin, and deliberately: a pane may *read* what the
@@ -385,10 +374,8 @@ pub struct AutomationDraft {
 
 /// A further repository a new session spans.
 ///
-/// The kernel's spelling of [`crate::session::automation::ExtraRepo`], which is
-/// what it becomes: a plugin names a path and whether it takes a worktree, and
-/// the base branch is the session's own — a per-member base is reachable
-/// headlessly but nothing in the flow asks for one.
+/// A plugin names a path and whether it takes a worktree. The Fleet engine
+/// refuses a create that asks for one: Fleet makes a Task's workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtraMember {
     pub path: String,
@@ -453,7 +440,6 @@ impl Command {
             Command::Theme { .. } => "theme",
             Command::Plugin { .. } => "plugin",
             Command::Bookmark { .. } => "bookmark",
-            Command::Reap => "reap",
             Command::Configure { .. } => "configure",
             Command::Order { .. } => "order",
             Command::Setting { .. } => "set",
@@ -494,8 +480,6 @@ impl Command {
             | Command::Setting { .. }
             | Command::OpenLink { .. }
             | Command::Order { .. }
-            // Asked of the database, not of one row.
-            | Command::Reap
             // A plugin's pane belongs to the plugin, not to a session — which is
             // the whole point of it, and why it must never appear in anything
             // that enumerates sessions.
@@ -537,18 +521,6 @@ impl Command {
                 | Command::ActionTarget { .. }
                 | Command::Message { .. }
         )
-    }
-
-    /// Whether this is background housekeeping rather than work someone is
-    /// waiting on.
-    ///
-    /// The bus keeps no in-flight record of one, so it appears nowhere the
-    /// interface reads: no published `thurbox.commands` row, no message-band
-    /// caption, and nothing for the redraw loop to call activity. The reap
-    /// sweep recurs even while nobody acts. A failure is reported through
-    /// `tracing`.
-    pub fn is_housekeeping(&self) -> bool {
-        matches!(self, Command::Reap)
     }
 
     /// The capability the issuing plugin must hold for this to be applied.
@@ -615,7 +587,7 @@ impl Command {
             }
             Command::Action { .. } | Command::ActionTarget { .. } => None,
             // Issued by the kernel, never parsed from a plugin.
-            Command::Reap | Command::Configure { .. } => None,
+            Command::Configure { .. } => None,
         }
     }
 
@@ -1231,8 +1203,6 @@ mod tests {
             .host(),
             None
         );
-        // And no other command answers with one.
-        assert_eq!(Command::Reap.host(), None);
     }
 
     #[test]
@@ -2492,23 +2462,6 @@ mod tests {
         let found = bus.first_running().expect("the dispatched command");
         assert_eq!(found.id, id);
         assert_eq!(found.kind, "restore");
-    }
-
-    #[test]
-    fn housekeeping_is_never_reported_in_flight() {
-        // The reap sweep is dispatched every few seconds for as long as thurbox
-        // runs. Recorded like a command someone pressed, it reserves the message
-        // band and gives it back on that cadence — the whole frame reflowing
-        // twice every five seconds, captioned "reap".
-        let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
-        bus.dispatch(Command::Reap);
-        assert!(
-            bus.inflight().is_empty(),
-            "the sweep must not be published: {:?}",
-            bus.inflight()
-        );
-        assert!(!bus.has_inflight(), "nor counted as work the loop is doing");
-        assert!(bus.first_running().is_none(), "nor drawn as progress");
     }
 
     #[test]

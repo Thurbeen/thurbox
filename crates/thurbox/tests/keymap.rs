@@ -184,13 +184,12 @@ fn fire(host: &LuaHost, chord: &str) {
 /// below, in `CHORDS_AWAITING_THEIR_PANE`. They are listed rather than dropped so
 /// re-adding a pane has an obvious place to reconnect, and so the shortfall is
 /// counted rather than forgotten.
-const GLOBAL_CHORDS: [(&str, &str); 24] = [
+const GLOBAL_CHORDS: [(&str, &str); 23] = [
     ("ctrl+n", "new_session.open"),
     // Reassigned deliberately, not reused quietly: v1 spent it on the
     // automations pane, and the palette is the way *into* that pane — and every
     // other — once it returns. See `CHORDS_AWAITING_THEIR_PANE`, which it left.
     ("ctrl+p", "palette.open"),
-    ("ctrl+u", "restore.open"),
     // One declaration, three spellings: the kernel folds the encodings a
     // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.
     ("ctrl+/", "search.open"),

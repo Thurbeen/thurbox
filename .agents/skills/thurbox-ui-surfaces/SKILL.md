@@ -1,6 +1,6 @@
 ---
 name: thurbox-ui-surfaces
-description: Thurbox's interface surfaces and their contracts: the keybinding registry (reserved vs kernel-owned chords, terminal passthrough, macOS kitty/Cmd and Windows AltGr handling), the 36 themes and theme roles, the settings panel with its live-vs-restart-only rule and Interface recovery tab, global search, and where the code-review view went. Use when changing keybindings, themes, the settings modal or search.
+description: Thurbox's interface surfaces and their contracts: the keybinding registry (reserved vs kernel-owned chords, terminal passthrough, macOS kitty/Cmd and Windows AltGr handling), the 36 themes and theme roles, the settings panel with its live-vs-restart-only rule and Interface recovery tab, global search, and the diff data a code-review pane builds on. Use when changing keybindings, themes, the settings modal or search.
 ---
 
 # Thurbox keybindings, themes, settings and search
@@ -20,7 +20,7 @@ chords the bundled panes declare — `Ctrl+N` is `70_new_session`'s and
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+Q` | Quit (detach sessions) |
+| `Ctrl+Q` | Quit (sessions keep running) |
 | `Ctrl+N` | New session (the creation flow; declared by `70_new_session`) |
 | `Ctrl+H` / `Ctrl+L` | Focus previous / next pane |
 | `Ctrl+J` / `Ctrl+K` | Select next / previous session (declared by `10_sessions`) |
@@ -41,10 +41,9 @@ registry is consulted and cannot be rebound at all (`registry::RESERVED`: quit,
 `F10`, `Ctrl+H`/`Ctrl+L`, `F12`) — they are the escape route out of a pane that
 consumes every key. Everything else the kernel owns is an ordinary *binding* with
 no Lua plugin behind it: the modal chords (`kernel::modals::bindings`) and copy
-and paste (`kernel::clipboard`). Copy and paste used to be literal `KeyCode`
-arms in the loop, which is why help listed them as fixed and a Mac user could
-not put copy on `Cmd+C` (issue #1024). They resolve through the registry now,
-ahead of a float's exclusive grab so they still work from any pane, and copy
+and paste (`kernel::clipboard`). Copy and paste resolve through the registry,
+so a Mac user can put copy on `Cmd+C`. They resolve ahead of a float's
+exclusive grab so they still work from any pane, and copy
 *declines* the chord when there is no selection so `Ctrl+C` still interrupts the
 agent.
 
@@ -114,8 +113,8 @@ it on a pty that answers the kitty query (`KittyTerminal`).
 **Windows.** The console reports AltGr as `Ctrl`+`Alt`, so the pair is dropped at
 the input boundary (`coordinator::input::resolve_altgr`) for any character no key
 produces unmodified — punctuation, or a non-ASCII letter. Without it every AltGr
-character (`\` on AZERTY, `@`/`[`/`]` on QWERTZ) was swallowed by every text
-field and reached the agent ESC-wrapped. A `Ctrl+Alt`+letter/digit chord is
+character (`\` on AZERTY, `@`/`[`/`]` on QWERTZ) would be swallowed by every
+text field and reach the agent ESC-wrapped. A `Ctrl+Alt`+letter/digit chord is
 untouched, and the rule is Windows-only: elsewhere the terminal composes AltGr
 itself before thurbox sees the key.
 
@@ -130,8 +129,8 @@ appear in the picker after the built-ins and persist by name exactly like a pres
 (`ui/lib/theme.lua`), so a plugin asks for `theme.accent` or `theme.muted` rather
 than a colour — which is what lets one plugin look right under all thirty-six. Pick
 one with `Ctrl+Y` (or `F4`, avoiding terminals that take Ctrl+Y as DSUSP); the choice
-persists in SQLite under `metadata.active_theme`, and other thurbox processes pick it
-up when they next start.
+persists as `theme` in `interface.json` (`config::interface_state`), and other
+thurbox processes pick it up when they next start.
 
 The picker (`kernel::modals::theme`) filters behind `/`, mirroring the file-viewer
 and review find so its keys stay consistent: `j`/`k` (+ arrows, `PageUp`/`PageDown`,
@@ -142,10 +141,6 @@ selection, hitboxes and the scrollbar stay in entry space and a header disappear
 with its filtered-out section. The index addresses the **match** list, so refining a
 query keeps the cursor on the same theme when it survives — narrowing cannot apply a
 palette other than the previewed one.
-
-The v1→v2 consent gate paints itself from the user's active palette for the same
-reason (`kernel::consent::Skin`): a gate in somebody else's colours reads like a
-different program.
 
 ## Settings panel
 
@@ -171,17 +166,13 @@ Two halves on one screen:
 Whether a core row applies live or waits for a restart is **asked of
 `Settings::restart_only_differs`**, which with what `Config::adopt` takes into
 force is derived from the one per-field table `session::settings::FIELDS` —
-never a second list beside the field. A hand-written copy had already drifted from
-it, promising both panel-width scalars applied live while `adopt` froze them and
-reported `NeedsRestart`. Restart-only rows are marked `⟳`.
+never a second list beside the field, which could drift from it.
+Restart-only rows are marked `⟳`.
 
 The panel is handed **`Config::on_disk`**, not `Config::in_force`. They are
 different documents on purpose: a restart-only change is written to the file and
 deliberately *not* taken into force, so a panel drafting from what is in force
-proposes reverting every such change already saved — one visit saved
-`features.mouse = false`, and the next save of anything at all put it back. Two
-thirds of the core rows are restart-only, which made it read as "my settings do
-not survive a restart".
+would propose reverting every such change already saved on the next save.
 
 `]` switches to the **Interface tab** (`kernel::modals::interface`). Panes are
 grouped by where they came from — `YOURS` / `PACKAGE · <name>` / `SHIPPED` — and the
@@ -190,7 +181,7 @@ rest (modules, docs, `layout.lua`, `plugins.toml`) under `SUPPORT FILES`, listed
 state word (`failed`, `not loaded`, `deleted`, `not placed`, `off`, `on screen`,
 `on demand`, `hidden`; no word shared with a source or a key), what it asks for and
 whether it holds it (`run not granted`; read from `Trust::grants`, the rule the
-enforced grant uses — #1467), then `edited`. `not loaded` is a pane held back by
+enforced grant uses), then `edited`. `not loaded` is a pane held back by
 another file's failure (a reload is all or nothing): only the file the error names
 is `failed`, and while the bundled floor runs the coordinator hands the inventory
 the user's error from `floor_cause`, since the bundled host reports none. The
@@ -205,9 +196,8 @@ dropping hints from the end to fit before the Close pill. `d` always asks twice;
 `r` asks twice on an **edited** file (nothing keeps a pane's edits; `layout.lua`
 goes to `.bak`); `t` asks twice when **granting** (the footer names the file and
 its capabilities; any other key cancels) and revokes on one press. The cursor
-follows its file by path, since an action re-sorts the list. It was a pane
-once — an honest test of whether the plugin API could build a pane that lists panes
-— and is chrome now because a recovery tool must not be the thing that is broken.
+follows its file by path, since an action re-sorts the list. It is chrome rather
+than a pane because a recovery tool must not be the thing that is broken.
 
 It is therefore **the recovery path for a broken interface**, and the shape of that
 is not symmetric: a `failed` row sorts to the top with its load error under the list,
@@ -217,26 +207,23 @@ wrote ("thurbox ships no version of it") and points an installed pane at
 present on disk, not loaded, so nothing tried to load it and its error is silent
 until it is switched on. Each of the four keys reloads the interface, so the result
 is on the next frame. The `reload failed` panel is not painted over an open system
-modal — it used to cover this tab, the tool for fixing it; it returns on close.
+modal, so it never covers this tab, the tool for fixing it; it returns on close.
 Documented for users in `docs/thurbox/plugins.md` → **When something goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir` /
 `plugin check`.
 
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
 live half and toasts, noting a restart when `restart_only_differs` says so.
 
-> `[features] code_review`, `file_viewer`, `tasks`, `info_panel` and
-> `global_search` gated surfaces the interface no longer draws, and
-> `three_panel_min_cols` sized a column that no longer exists. None of the six is
-> read by the kernel: they are parsed so an existing `settings.toml` keeps loading
-> rather than failing on an unknown key, and published in `thurbox.settings` for a
-> pane to honour, but setting one changes nothing the kernel draws. The settings
-> panel does not offer them.
-
+> `[features] code_review`, `file_viewer`, `tasks`, `info_panel`,
+> `global_search` and `three_panel_min_cols` are read by no kernel code. They
+> are parsed so an existing `settings.toml` keeps loading rather than failing on
+> an unknown key, and published in `thurbox.settings` for a pane to honour. The
+> settings panel does not offer them.
 
 ## Global search
 
-`ui/plugins/65_search.lua` — a full-width strip above the chrome bands (v1 floated
-it). Two result sections: **sessions** (name, agent, branch, repo — matched in Lua
+`ui/plugins/65_search.lua` — a full-width strip above the chrome bands. Two
+result sections: **sessions** (name, agent, branch, repo — matched in Lua
 every frame) and **text** (every line each session's agent pane and shell still
 hold, **scrollback included**, matched by the kernel on a worker).
 
@@ -270,7 +257,7 @@ hold, **scrollback included**, matched by the kernel on a worker).
   offset sits on the wrong row. The strip asks the agent pane to do this — it writes
   `"<surface> <offset> <row>"` (`;`-separated, `-<surface>` resets) to
   `store["terminal.reveal"]` and runs `command("action", {text = "terminal.reveal"})`,
-  which reaches `20_agent.lua` because a chord-less palette command now routes to
+  which reaches `20_agent.lua` because a chord-less palette command routes to
   its owner like a bound one (`coordinator/mouse.rs::run_clicked_action`).
 - **In-place highlighting**: the strip publishes the ids it found as
   `store["search.matches"]`; the session list dims every other row and lights its
@@ -290,35 +277,30 @@ hold, **scrollback included**, matched by the kernel on a worker).
 
 ## Code review
 
-**The view is gone from the binary.** v1's native diff reviewer
-(`ui/code_review.rs` + `app/code_review.rs`) went with `src/ui`; v1 keeps it on
-the `v1.x` branch. It came back **as a pane**, in its own repository:
+The binary draws no diff view. The reviewer is a **pane** in its own
+repository:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) —
 installed by clone (`thurbox-cli plugin install
-git+https://github.com/Thurbeen/thurbox-code-review`), takes the `center` switch
-slot beside the agent, reclaims `Ctrl+X`/`F7`, and is the first consumer of
-`thurbox.diffs` anywhere. It is not vendored here and not bundled: a change to the
-snapshot's diff shape or to `command("focus", { toggle })` breaks it, so treat it as
-a downstream consumer of that contract.
+git+https://github.com/Thurbeen/thurbox-code-review`). It takes the `center`
+switch slot beside the agent, binds `Ctrl+X`/`F7`, and reads `thurbox.diffs`. It
+is not vendored here and not bundled: a change to the snapshot's diff shape or to
+`command("focus", { toggle })` breaks it, so treat it as a downstream consumer of
+that contract.
 
-What survived, because it is not view code:
+The data layer a review pane builds on:
 
 - **`session::review`** — the pure diff types and `parse_unified_diff`, which is
   why they live in `session` rather than beside a renderer.
-- **`storage::review`** — `review_comments` + `review_marks` (schema v38), keyed on
-  the write-once `sessions.base_branch`. Comments already written are still there.
 - **`git::diff_against{,_on}`** (a base branch) / **`git::working_diff_on`** (the
   uncommitted changes) and **`kernel::diff`** — diffs are produced on a worker and
-  published into the snapshot, bounded at `MAX_DIFF_BYTES`. The working-tree one
-  folds in **untracked files** (`git diff --no-index -- /dev/null <path>`, capped at
+  published into the snapshot, bounded at `MAX_DIFF_BYTES`. A Fleet Task on
+  another host is not diffed. The working-tree diff folds in **untracked files**
+  (`git diff --no-index -- /dev/null <path>`, capped at
   `git::UNTRACKED_FILE_CAP`, overflow reported as `untracked_omitted`): `git diff
-  HEAD` cannot show a file git has never been told about, which made the default
-  target report "no changes" after an agent wrote new ones. There is deliberately no
-  body-only `git diff HEAD` helper — having one is how that omission happened.
-  Rationale + the rejected temporary-index approach: ADR-P6's diff bullets in
-  `docs/thurbox/performance.md`.
+  HEAD` cannot show a file git has never been told about. There is deliberately
+  no body-only `git diff HEAD` helper. Rationale and the rejected temporary-index
+  approach: ADR-P6's diff bullets in `docs/thurbox/performance.md`.
 
-So a review plugin has its data layer waiting for it. Two rules from the v1 design
-still apply if you build one: **1 logical diff row = 1 selectable unit** (wrapping
-expands only *visual* rows; selection and comment anchoring stay logical), and the
-diff types stay in `session` (architecture rule).
+Two rules apply to a review pane: **1 logical diff row = 1 selectable unit**
+(wrapping expands only *visual* rows; selection and comment anchoring stay
+logical), and the diff types stay in `session` (architecture rule).

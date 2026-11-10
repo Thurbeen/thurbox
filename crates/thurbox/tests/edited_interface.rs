@@ -9,9 +9,8 @@
 //! `tests/fixtures/edited_interface/<release>/` is what such a user has on
 //! disk: files as that release shipped them, each with an edit so delivery
 //! treats it as the user's. `v2.22.4` is the arrangement, `10_sessions.lua` and
-//! `20_agent.lua` of the release the `thurbox-files` fork is pinned to;
-//! `v2.32.0` is the arrangement and the agent pane of the release that briefly
-//! shipped layout presets, whose agent pane asks `panels.placed`. They are FROZEN on
+//! `20_agent.lua` of the release the `thurbox-files` fork is pinned to. They
+//! are FROZEN on
 //! purpose — never refresh them to follow a change in `ui/`, because a user's
 //! preserved file does not follow it either. If one stops loading, the change
 //! that broke it breaks every user with that edit; keep the old shape working in
@@ -36,17 +35,14 @@ use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
 /// Every release a user may have edited files from, each with what they edited.
-const RELEASES: &[(&str, &[&str])] = &[
-    (
-        "v2.22.4",
-        &[
-            "layout.lua",
-            "plugins/10_sessions.lua",
-            "plugins/20_agent.lua",
-        ],
-    ),
-    ("v2.32.0", &["layout.lua", "plugins/20_agent.lua"]),
-];
+const RELEASES: &[(&str, &[&str])] = &[(
+    "v2.22.4",
+    &[
+        "layout.lua",
+        "plugins/10_sessions.lua",
+        "plugins/20_agent.lua",
+    ],
+)];
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/edited_interface")

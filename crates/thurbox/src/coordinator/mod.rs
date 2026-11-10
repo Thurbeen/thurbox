@@ -40,7 +40,7 @@ use thurbox::kernel::perf::Counters;
 
 use crate::{
     App, DEBOUNCE, ECHO_HOLD, ECHO_POLL, ECHO_WINDOW, IDLE_TICK, PERF_PUBLISH_INTERVAL,
-    PERF_WINDOW_TICKS, QUIESCENT_AFTER, REAP_INTERVAL, TICK,
+    PERF_WINDOW_TICKS, QUIESCENT_AFTER, TICK,
 };
 
 // The chrome helpers keep their bare names at every call site in this
@@ -607,19 +607,6 @@ impl App {
         self.snapshots.probe_hosts(wants.bookmarks.is_some());
         if self.repos.poll() {
             self.note_data_change();
-        }
-
-        // A session that has stayed deleted past its undo window keeps its
-        // worktrees and loses its agent — the reap v1 does when the undo
-        // expires. The question is asked of the database, on a slow cadence:
-        // the row's own `deleted_at` states it durably, so the answer survives
-        // a restart of this process and is the same one the headless heartbeat
-        // gets (ADR-8b). A pass with nothing overdue is one SELECT and
-        // consults no multiplexer at all.
-        if self.last_reap.elapsed() >= REAP_INTERVAL {
-            self.last_reap = Instant::now();
-            self.commands
-                .dispatch(thurbox::kernel::command::Command::Reap);
         }
 
         // What Windows said about its clipboard, for a paste press that could

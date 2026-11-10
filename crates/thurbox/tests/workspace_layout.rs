@@ -94,6 +94,36 @@ fn thurbox_ships_no_extensions() {
     );
 }
 
+/// Fleet runs every session (ADR-41), so what served thurbox's own engine
+/// is gone: its session records, hook-driven status, lifecycle hooks, the
+/// restore list and the pane discovery that resolved rows from before routes.
+#[test]
+fn the_engine_leaves_no_code_behind() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for gone in [
+        &["session", "background_work.rs"][..],
+        &["session", "hook_def.rs"],
+        &["session", "launch_failure.rs"],
+        &["session", "message.rs"],
+        &["session", "op_error.rs"],
+        &["session", "shared.rs"],
+        &["session", "task.rs"],
+        &["config", "hooks.rs"],
+        &["agent", "generic.rs"],
+        &["agent", "provider.rs"],
+        &["kernel", "terminal", "discovery.rs"],
+    ] {
+        let path = gone.iter().fold(src.clone(), |path, part| path.join(part));
+        assert!(!path.exists(), "{} is still there", path.display());
+    }
+    let restore = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("ui")
+        .join("plugins")
+        .join("80_restore.lua");
+    assert!(!restore.exists(), "the restore list is still shipped");
+}
+
 /// thurbox keeps no database of its own (ADR-41): SQLite is out of the tree
 /// of every target it builds.
 #[test]

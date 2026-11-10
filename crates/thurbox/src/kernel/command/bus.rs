@@ -154,9 +154,6 @@ impl CommandBus {
     /// same non-empty session execute in dispatch order; other work is independent.
     pub fn dispatch(&self, command: Command) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if command.is_housekeeping() {
-            return self.dispatch_housekeeping(command, id);
-        }
         let entry = InFlight {
             id,
             kind: command.kind(),
@@ -213,23 +210,6 @@ impl CommandBus {
                 if next.is_none() {
                     queues.remove(&session);
                 }
-            }
-        });
-        id
-    }
-
-    /// Run background housekeeping on a worker, unrecorded.
-    ///
-    /// Deliberately touches neither the in-flight list nor the completion
-    /// channel: a row there is drawn, captioned and counted as activity, while
-    /// this work needs no separate interface activity — see
-    /// [`Command::is_housekeeping`]. Its failures go to the log.
-    fn dispatch_housekeeping(&self, command: Command, id: u64) -> u64 {
-        let progress = self.progress_tx.clone();
-        let executor = Arc::clone(&self.executor);
-        std::thread::spawn(move || {
-            if let Err(e) = executor.execute(&command, id, &progress) {
-                tracing::warn!(command = command.kind(), "housekeeping failed: {e}");
             }
         });
         id

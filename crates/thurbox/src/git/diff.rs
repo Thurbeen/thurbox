@@ -50,7 +50,7 @@ pub fn list_branches_on(host: Option<&HostDef>, repo_path: &Path) -> Result<Vec<
 /// back to a narrower range or surfaces a status.
 ///
 /// `--no-color` keeps the output parseable; the result is fed to
-/// [`crate::session::parse_unified_diff`].
+/// [`crate::session::review::parse_unified_diff`].
 pub fn diff_against_on(host: Option<&HostDef>, worktree: &Path, base: &str) -> Option<String> {
     let range = format!("{base}..HEAD");
     run_diff(host, worktree, &["diff", "--no-color", &range])

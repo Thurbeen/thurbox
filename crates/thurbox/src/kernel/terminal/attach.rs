@@ -16,9 +16,6 @@ pub(super) struct Attach {
     /// Why a session could not be attached, so the pane can say so instead of
     /// looking empty. Kept per session and cleared on a successful attach.
     pub(super) failed: HashMap<String, Failure>,
-    /// The survey count each live session was attached at, so a lost pane is
-    /// judged only by a listing taken after the attach.
-    pub(super) live_since: HashMap<String, u64>,
     /// Moves whenever the set of attach failures does. Published on each
     /// session row, so it gates that group alongside `meta_version`.
     pub(super) failed_version: u64,
@@ -37,7 +34,6 @@ impl Attach {
     pub(super) fn new() -> Self {
         Self {
             failed: HashMap::new(),
-            live_since: HashMap::new(),
             failed_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
@@ -83,9 +79,6 @@ pub(super) struct Attached {
 /// process, because the candidate pane never changes.
 pub(super) const ATTACH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
-/// What a remote session shows while the connection it lost is re-opened.
-pub(super) const LOST_CONNECTION: &str = "lost the connection to its host; reconnecting";
-
 impl Terminals {
     /// Start an attach for every row that is neither live nor attaching, unless
     /// the same attempt just failed or its backend is still being opened.
@@ -98,7 +91,7 @@ impl Terminals {
                 self.attach_fleet(row, rows, cols);
                 continue;
             }
-            let candidate = self.candidate_pane(row);
+            let candidate = row.backend_id.clone();
             // The same attempt would fail the same way; a different one is worth
             // making.
             if self.attach.failed.get(&row.id).is_some_and(|failure| {
@@ -121,17 +114,6 @@ impl Terminals {
         }
     }
 
-    /// The pane to attach `row` to: the row's own pane id, unless a listing
-    /// contradicts it.
-    pub(super) fn candidate_pane(
-        &self,
-        row: &crate::kernel::snapshot::SessionRow,
-    ) -> Option<String> {
-        row.backend_id
-            .clone()
-            .filter(|id| !self.pane_is_stale(row, id))
-    }
-
     /// Let go of a session whose pane died, so it is re-attached rather than
     /// painting a frozen last screen forever.
     ///
@@ -148,69 +130,24 @@ impl Terminals {
     /// transport — both record the pane they spawned — and a row whose window
     /// was re-adopted somewhere else.
     pub(super) fn drop_lost_panes(&mut self, snapshot: &Snapshot) {
-        let lost: Vec<(String, Option<String>, bool)> = snapshot
+        let lost: Vec<(String, Option<String>)> = snapshot
             .sessions
             .iter()
             .filter_map(|row| {
                 let live = self.live.get(&row.id)?;
-                let remote = crate::session::Route::is_remote_key(&row.backend);
-                let moved = row.backend_id.as_deref().is_some_and(|id| {
-                    !id.is_empty()
-                        && id != live.session.backend_id()
-                        // A local id may evict a live pane only when a listing
-                        // actually places it in this session's own window —
-                        // otherwise an id left over from a previous tmux server
-                        // drops the pane just resolved by name, on every frame,
-                        // forever. Remote rows are never surveyed, so there is no
-                        // listing to ask and the row's own id has to stand.
-                        && (remote || self.pane_placed(row, id))
-                });
-                let surveyed_after_attach =
-                    self.attach.live_since.get(&row.id).is_some_and(|seen| {
-                        self.discovery
-                            .surveys
-                            .get(&self.key(&row.backend))
-                            .is_some_and(|now| now > seen)
-                    });
-                let confirmed_missing = surveyed_after_attach
-                    && self.liveness(row) == crate::backend::BackendLiveness::Missing;
-                (live.session.has_exited() || moved || confirmed_missing).then(|| {
-                    (
-                        row.id.clone(),
-                        row.backend_id.clone(),
-                        remote && !confirmed_missing,
-                    )
-                })
+                let moved = row
+                    .backend_id
+                    .as_deref()
+                    .is_some_and(|id| !id.is_empty() && id != live.session.backend_id());
+                (live.session.has_exited() || moved)
+                    .then(|| (row.id.clone(), row.backend_id.clone()))
             })
             .collect();
-        for (id, pane, remote) in lost {
+        for (id, pane) in lost {
             self.live.remove(&id);
-            self.attach.live_since.remove(&id);
-            if remote {
-                // The backend has to be readied again before the next attach can
-                // adopt anything: the connection this session died with is the
-                // one every other session on that host shares.
-                self.ready.borrow_mut().clear();
-                self.fail(&id, pane, LOST_CONNECTION.to_string());
-                // And tried again on the next frame rather than after
-                // `ATTACH_RETRY_INTERVAL`. The connection ending says nothing
-                // about the host: it is re-opened on demand, usually at once
-                // (a command that timed out has often replaced it already), and
-                // holding every session on the host as unreachable for the
-                // interval is what made a working host read as down. An attempt
-                // that does fail records its own error and waits as usual.
-                if let Some(failure) = self.attach.failed.get_mut(&id) {
-                    failure.at = failure
-                        .at
-                        .checked_sub(ATTACH_RETRY_INTERVAL)
-                        .unwrap_or(failure.at);
-                }
-            } else {
-                // Locally the pane is simply gone. Recorded against the pane that
-                // died, so the retry rule treats a *different* candidate — the
-                // one a restart just created — as worth trying at once.
-                self.fail(&id, pane, "session has no pane yet".to_string());
-            }
+            // Recorded against the pane that died, so the retry rule treats a
+            // *different* candidate as worth trying at once.
+            self.fail(&id, pane, "session has no pane yet".to_string());
         }
     }
 
@@ -221,8 +158,7 @@ impl Terminals {
 
     /// Whether some worker is already opening this backend's connection.
     pub(super) fn opening(&self, backend: &str) -> bool {
-        self.discovery.discovering.contains(backend)
-            || self.attach.attaching.values().any(|name| name == backend)
+        self.attach.attaching.values().any(|name| name == backend)
     }
 
     /// Attach a Fleet session's pane on a worker, through the stream `fleet
@@ -405,18 +341,11 @@ impl Terminals {
     pub(super) fn collect_attached(&mut self, rows: u16, cols: u16) {
         while let Ok(done) = self.attach.attached.1.try_recv() {
             self.attach.attaching.remove(&done.session);
-            let seen_at = self
-                .discovery
-                .surveys
-                .get(&done.backend)
-                .copied()
-                .unwrap_or(0);
             if done.readied {
                 self.ready.borrow_mut().insert(done.backend);
             }
             match done.session_handle {
                 Ok(session) => {
-                    self.attach.live_since.insert(done.session.clone(), seen_at);
                     self.live.insert(
                         done.session.clone(),
                         Live {

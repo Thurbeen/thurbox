@@ -1025,7 +1025,6 @@ local function pane_menu(items)
   ---@type (table|string)[]
   local menu = {
     { label = "New session", action = "new_session.open" },
-    { label = "Restore deleted…", action = "restore.open" },
   }
   -- A creation in flight draws a placeholder row with no session behind it,
   -- so it is not something to sort: count the rows that are sessions.

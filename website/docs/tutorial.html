@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Tutorial — Thurbox Docs'
-description: 'Onboarding walkthrough with screenshots: add a repository, create your first worktree session, and the keys and thurbox-cli commands you use every day.'
+description: 'Onboarding walkthrough with screenshots: add a repository, create your first worktree session, and the keys and fleet commands you use every day.'
 currentPage: 'tutorial'
 breadcrumb: 'Tutorial'
 extraCss: ['tutorial.css']
@@ -29,7 +29,8 @@ extraCss: ['tutorial.css']
 <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 <p>
   Windows, Homebrew, AUR, Nix, winget and Chocolatey are on the
-  <a href="installation.html">Installation</a> page. You also need:
+  <a href="installation.html">Installation</a> page. Fleet runs every session, so
+  <code>fleet</code> and <code>runtime-mux</code> must be on your <code>PATH</code> as well. You also need:
 </p>
 <ul>
   <li>
@@ -383,44 +384,37 @@ extraCss: ['tutorial.css']
   <a href="#command-line" class="heading-anchor">#</a>
 </h2>
 <p>
-  <code>thurbox-cli</code> drives the same sessions with no TUI, against the same database &mdash; so
-  anything you do here shows up in a running Thurbox within a tick, and vice versa. It is on your
-  <code>PATH</code> inside every session, which is what lets an agent orchestrate other agents (see
-  <a href="orchestration.html">Orchestration</a>).
-</p>
-<p>
-  It answers in whichever form suits the reader: an aligned table in your terminal, and TOON &mdash; a
-  compact, agent-friendly encoding &mdash; when its output is piped somewhere. Add <code>--json</code>
-  for the complete record when a script needs to parse it, or <code>--text</code> to keep the table
-  down a pipe.
+  Every session is a Fleet Task, so <code>fleet</code> drives the same sessions with no TUI, against the
+  same store &mdash; anything you do here shows up in a running Thurbox within a tick, and the other way
+  round. Each command prints JSON.
 </p>
 <pre data-wrap><code class="language-bash"># What is running
-thurbox-cli                                # live state: sessions, mail, counts
-thurbox-cli session list
-thurbox-cli session list --json | jq       # the full record, for a script
+fleet list task
+fleet get task docs                        # one Task, its spec and status
 
-# Start one headlessly, on its own worktree branch
-thurbox-cli session create --name docs --repo-path ~/code/web-app
-thurbox-cli session create --name rate-limit --repo-path ~/code/api-server \
-    --agent claude --worktree-branch rate-limit
+# Start one headlessly: an interactive Task over a directory
+echo '{"apiVersion":"fleet/v1alpha1","kind":"Task",
+  "metadata":{"name":"docs","labels":{"thurbox.dev/name":"docs"}},
+  "spec":{"harness":"claude-code","host":"local",
+          "workspace":{"dir":"/home/me/code/web-app"},"dispatch":true}}' \
+  | fleet apply --create-only -f -
 
-# Talk to one, and read what it printed
-thurbox-cli session send &lt;uuid&gt; "run the tests and fix what fails"
-thurbox-cli session capture &lt;uuid&gt;
+# Talk to one
+fleet send docs "run the tests and fix what fails"
 
-# Clean up (soft by default — `session restore` brings it back)
-thurbox-cli session delete &lt;uuid&gt;</code></pre>
+# Clean up
+fleet delete task docs</code></pre>
 <figure class="shot">
   <img
     loading="lazy"
     src="../assets/tutorial/15-cli.png"
-    alt="thurbox-cli session list, a headless session create, and the list again"
+    alt="fleet list task, after the tutorial's two sessions"
   />
-  <figcaption>A session created with no TUI running at all &mdash; the same database either way.</figcaption>
+  <figcaption>The sessions the walkthrough made, as Fleet Tasks &mdash; the store the TUI reads.</figcaption>
 </figure>
 <p>
-  <code>thurbox-cli config show</code> prints every resolved path,
-  <code>thurbox-cli plugin dir</code> prints the interface directory, and
+  <code>thurbox-cli</code> keeps what is the interface's own: <code>thurbox-cli config show</code> prints
+  every resolved path, <code>thurbox-cli plugin dir</code> prints the interface directory, and
   <code>thurbox-cli --help</code> lists the rest (<code>automation</code>, <code>editor</code>,
   <code>notify</code>, <code>update</code>, <code>doctor</code>).
 </p>

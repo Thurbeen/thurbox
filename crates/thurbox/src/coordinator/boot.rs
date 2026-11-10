@@ -139,14 +139,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // what it says: `[telemetry]` decides whether diagnostic logs are bridged to
     // a collector too (ADR-38), and a global subscriber cannot be replaced.
     let phase = Instant::now();
-    let (layout_note, (config, config_warnings)) = tracing::subscriber::with_default(
+    let (config, config_warnings) = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(file_layer()),
-        || {
-            // Before the load, so a key v2.32.0 wrote is noted once here rather
-            // than reported as unknown on every start.
-            let layout_note = thurbox::config::settings::retire_layout_preset();
-            (layout_note, thurbox::kernel::config::Config::load())
-        },
+        thurbox::kernel::config::Config::load,
     );
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
     let startup_settings = config.in_force().clone();
@@ -176,8 +171,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         thurbox::backend::wiring::configured(&startup_settings);
     let backends = std::sync::Arc::new(backends);
 
-    let mut startup_notices: Vec<String> = layout_note.into_iter().collect();
-    startup_notices.extend(config_warnings);
+    let mut startup_notices: Vec<String> = config_warnings;
 
     let (ui_dir, ui_notices) = resolve_ui_dir()?;
     startup_notices.extend(ui_notices);
@@ -349,12 +343,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         pty_pointer: None,
         runs: thurbox::kernel::runs::RunStore::new(),
         inventory: Vec::new(),
-        // Dated so the first iteration sweeps: a session soft-deleted while
-        // no interface was running is already overdue, and used to wait for
-        // one to watch it leave a snapshot it was never in.
-        last_reap: Instant::now()
-            .checked_sub(crate::REAP_INTERVAL)
-            .unwrap_or_else(Instant::now),
         bookmark_in_flight: false,
         report_after: None,
         hud: false,

@@ -2880,7 +2880,7 @@ fn trust(profile: &Profile, interface: &Path, file: &str, contents: &str) {
     let raw = interface.join(file);
     let canonical = raw.canonicalize().expect("canonicalize");
     std::fs::write(
-        profile.path("config/ui.json"),
+        profile.path("config/plugin-state.json"),
         format!(r#"{{"trusted": {{ {raw:?}: "{digest}", {canonical:?}: "{digest}" }}}}"#),
     )
     .expect("seed trust");
@@ -2919,88 +2919,6 @@ fn a_sessionless_run_is_refused_before_queueing_and_local_runs_complete() {
     tui.wait_for("LOCAL-RUN-OK");
     assert!(!tui.frame().contains("MISSING-ACCEPTED"));
     assert!(tui.quit().success());
-}
-
-/// #1467: trust and the disabled set leave `ui.json` for a store of their own.
-/// A profile written before the move must keep every decision — the first
-/// start migrates it, and the second start, reading only the new store, must
-/// still grant `run` to the trusted pane and keep the disabled one off.
-#[test]
-fn legacy_trust_and_disabled_choices_move_to_their_own_store_and_still_apply() {
-    let body = r#"return {
-  name = "migrated", slot = "sessions", capabilities = { "run" },
-  render = function()
-    if not run then return { type = "text", text = "MIGRATED-UNTRUSTED" } end
-    if not state.asked then
-      run("m", "printf MIGRATED-RUN-OK", { machine = "local", ttl = 60 })
-      state.asked = true
-    end
-    local got = (thurbox.runs or {}).m
-    return { type = "text", text = got and (got.stdout or got.state) or "pending" }
-  end,
-}"#;
-    let off = r#"return {
-  name = "off", slot = "off",
-  render = function() return { type = "text", text = "OFF-PANE-DREW" } end,
-}"#;
-    let interface = interface_with("plugins/10_sessions.lua", body);
-    let off_path = interface.path().join("plugins/91_off.lua");
-    std::fs::write(&off_path, off).expect("off pane");
-    std::fs::write(
-        interface.path().join("layout.lua"),
-        "return function() return { children = { { slot = 'sessions' }, { slot = 'off' } } } end",
-    )
-    .expect("layout");
-    let profile = Profile::new();
-    let digest = thurbox::kernel::bundled::digest(body);
-    let raw = interface.path().join("plugins/10_sessions.lua");
-    let canonical = raw.canonicalize().expect("canonicalize");
-    let ui_json = profile.path("config/ui.json");
-    std::fs::write(
-        &ui_json,
-        format!(
-            r#"{{"pills": {{"sessions.create": 7}},
-"trusted": {{ {raw:?}: "{digest}", {canonical:?}: "{digest}" }},
-"disabled": [{off_path:?}]}}"#
-        ),
-    )
-    .expect("seed a legacy ui.json");
-
-    for start in ["migrating", "reading the store"] {
-        let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
-            cmd.env("THURBOX_UI_DIR", interface.path());
-        });
-        tui.wait_for("MIGRATED-RUN-OK");
-        assert!(
-            !tui.frame().contains("OFF-PANE-DREW"),
-            "{start}: the disabled pane drew\n{}",
-            tui.frame()
-        );
-        assert!(tui.quit().success());
-
-        let store: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(profile.path("config/plugin-state.json"))
-                .unwrap_or_else(|e| panic!("{start}: no plugin-state.json: {e}")),
-        )
-        .expect("store json");
-        assert!(
-            !store["trusted"][raw.to_string_lossy().as_ref()].is_null(),
-            "{start}: the grant did not move: {store}"
-        );
-        assert_eq!(
-            store["disabled"],
-            serde_json::json!([off_path]),
-            "{start}: the disabled set did not move"
-        );
-        let ui: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&ui_json).expect("ui.json"))
-                .expect("ui json");
-        assert!(
-            ui.get("trusted").is_none() && ui.get("disabled").is_none(),
-            "{start}: ui.json still carries trust or the disabled set: {ui}"
-        );
-        assert_eq!(ui["pills"]["sessions.create"], 7, "{start}: {ui}");
-    }
 }
 
 /// Keep the real server and its output alive while closing only the control
@@ -3461,7 +3379,7 @@ fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
         "plugins/10_sessions.lua",
         forgetting,
     );
-    let grants = profile.path("config/ui.json");
+    let grants = profile.path("config/plugin-state.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&grants).expect("trust")).expect("json");
     let path = interface.path().join(second);
@@ -5836,7 +5754,7 @@ fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
     let off = interface.path().join("plugins").join("93_off.lua");
     std::fs::write(&off, "return {").expect("a plugin that does not load");
     std::fs::write(
-        profile.path("config/ui.json"),
+        profile.path("config/plugin-state.json"),
         format!(r#"{{"disabled": [{:?}]}}"#, off.display().to_string()),
     )
     .expect("turn the plugin off");
@@ -6034,7 +5952,7 @@ fn memory_fallback_keeps_disabled_bundled_plugins_disabled() {
     let interface = interface_plus("91_hog.lua", HOG_PANE);
     let profile = Profile::new();
     std::fs::write(
-        profile.path("config/ui.json"),
+        profile.path("config/plugin-state.json"),
         serde_json::json!({
             "disabled": [interface.path().join("plugins/20_agent.lua")]
         })

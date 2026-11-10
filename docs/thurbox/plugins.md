@@ -294,9 +294,6 @@ What an upgrade does to each file follows from the same record:
 - **removed** → left removed;
 - **yours** → not touched, ever. Delivery writes only files it ships;
 - **no longer shipped** → taken back if you never changed it, kept if you did.
-  The one exception is `plugins/25_shell.lua`, from v2.32.0's rolled-back layout
-  presets: an edited copy is moved to `plugins/25_shell.lua.bak`, because loaded
-  it fills a slot the classic layout never places.
 
 Removing every pane is allowed and does what it says: nothing draws, the chrome
 still works, and the Interface tab still lists what you removed. It is not treated as a broken
@@ -337,7 +334,7 @@ and takes no input, and the message band says why, once per failure.
 | `files.list/read` | Directory entries and file text, rooted at a session's directory. Needs the `files` capability and your trust |
 | `text.width/truncate/pad` | Display width in terminal COLUMNS, and the two cuts that spend a budget in it |
 | `thurbox.api` | The plugin API contract number. It moves only when a published field is removed or changes meaning; `requires_api` in your declaration table names the one you need |
-| `session.meta` | On each `thurbox.sessions` row: the session's `ui.*` meta keys by full key (`meta["ui.note"]`), as `thurbox-cli session meta set <ref> ui.note "…"` wrote them. Absent when there are none. Anyone with the CLI writes these, agents included, so treat them as untrusted text: one line, control and invisible characters (bidi overrides, zero-width spaces, tag characters, Hangul fillers) stripped, at most 256 characters, 32 keys per session. Other keys are never published, nor is a `ui.*` key carrying such a character, and `thurbox.*` keys cannot be set or unset. The bundled list draws `ui.note` muted on the row and groups by `ui.group` |
+| `session.meta` | On each `thurbox.sessions` row: the session's `ui.*` meta keys by full key (`meta["ui.note"]`). Absent when there are none, which is every row the Fleet engine publishes. Treat them as untrusted text: one line, control and invisible characters (bidi overrides, zero-width spaces, tag characters, Hangul fillers) stripped, at most 256 characters, 32 keys per session. Other keys are never published, nor is a `ui.*` key carrying such a character. The bundled list draws `ui.note` muted on the row and groups by `ui.group` |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.search` | The content search's answer: lines found in every session's terminals, scrollback included, ranked, each with how far back it is (`back`) and the scroll offset that shows it (`scroll`). Served only while `store.want_content` holds a query (optionally narrowed by `store["want_content.sessions"]`), off the render thread; an empty query reads every history into the cache and matches nothing, so an open search strip is ready before the first keystroke; nil until the first answer lands |
 | `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
@@ -833,11 +830,10 @@ whole list, with each payload, is `thurbox-cli plugin events` and the last
 section of `F1`.
 
 The kernel **derives** these by diffing the snapshot, so a session made by
-`thurbox-cli`, a cron tick or a second thurbox fires the same `session.created`
-as one the creation flow made. The four `session.post_*` names are the exception
-and the reason there are two spellings: they fire only for an operation *this*
-interface performed, with that operation's facts, and share their names with
-`hooks.toml` so shell and Lua learn one vocabulary. Subscribe to
+`fleet apply`, an automation or a second thurbox fires the same `session.created`
+as one the creation flow made. The `session.post_*` names are the exception and
+the reason there are two spellings: they fire only for an operation *this*
+interface performed, with that operation's facts. Subscribe to
 `session.created` to hear about every session; to `session.post_create` to hear
 about the one you asked for.
 
@@ -1218,28 +1214,18 @@ never sent, so the terminal keeps its own selection and scrolling.
 ```lua
 command("delete",  { session = id })
 command("rename",  { session = id, text = "fix-osc52" })       -- refusal: command.failed
-command("create",  { repo = "/src/thing", branch = "feat/x", agent = "claude" })
-command("task",    { number = 3, status = "done" })
+command("create",  { repo = "/src/thing", agent = "claude" })
 command("theme",   { text = "tokyo-night" })
-command("automation", { number = 4, flag = true })           -- enable; force = run, reset = delete
-command("automation", { action = "create", name = "nightly", trigger = "weekdays",
-                        time = "09:00", prompt = "triage the queue", repo = "/src/thing" })
-command("automation", { action = "edit", number = 4, trigger = "cron:0 18 * * *" })
 ```
 
-An automation's fields travel typed — a name or prompt is never read by a shell —
-and are written by the very code `thurbox-cli automation create` and `edit` use
-(`session_ops::automations`), so a cron expression must parse, a timezone must
-exist and a schedule must fire at least once more, whichever of the two wrote
-it. An exec
-automation's `command` is a command line the heartbeat runs, so sending
-`command` at all — on a create, or on an edit even when it is unchanged — needs
-the issuing file to hold `run`; without it the write is refused like any other.
-An edit that leaves the command out needs nothing. A mistake is
-`command.failed`, whose `subject` is `#<id>` (or a create's name), so a pane can
-show it where it was made. `thurbox.automations` carries what an editor needs: the
-`trigger` to hand back, `timezone`, `prompt`, the target (`session`, or `repo` with
-`branch`/`base`/`agent`, or `command`), and `next_run_at`/`last_run_at`.
+Sessions are Fleet Tasks, so a session verb is one call of Fleet's command line:
+`create` applies a Task, `send` queues a message in its inbox, `rename` labels
+it and `delete` deletes it. Fleet makes a Task's workspace, so a `create` that
+names a branch, a base branch, an existing worktree or further repositories is
+refused. `fork`, `restart`, `restore`, `sync`, `dispatch`, `task` and
+`automation` are refused by name. A refusal is
+`command.failed`, whose `subject` names what was asked, so a pane can show it
+where it was made.
 
 **Commands never block and never return a result.** They are accepted instantly
 and their effect appears in a later snapshot. Work in flight is readable at
@@ -1509,11 +1495,9 @@ user authority, rather than a per-host sandbox.
 `command` is every plugin's, but some of its verbs drive an agent or lose something
 for good, and those need the `sessions` capability:
 
-- `send` types into an agent, and `dispatch` types a task into one.
-- `create`, `fork` and `restart` launch an agent.
-- `automation` runs, toggles, deletes or writes an automation, whose prompt the
-  heartbeat types.
-- `delete` with `force = true` removes a worktree that nothing restores.
+- `send` types into an agent.
+- `create` launches an agent.
+- `delete` with `force = true`.
 - `plugin` restores or removes a file of the interface.
 - `action` naming `kernel.paste` types the clipboard into the focused agent.
 
@@ -1525,13 +1509,12 @@ many actions it forwards through, and a trusted pane does not lend its grant to 
 handler it asks. A key or a click the user makes runs the handler under its own
 name.
 
-Two verbs need `run` instead: `open` (a URL carries whatever is in it to the network
-without a click) and writing an exec automation's `command`. `program` needs
-`program`. Every other verb needs no grant, and the kernel lists each one's answer
-explicitly, so a new verb cannot slip through by default. Without the grant the
-command is refused with a message naming the capability, and `command.failed`
-carries it. A soft `delete` and a `restore` need nothing: each is undone by the
-other.
+`open` needs `run` instead: a URL carries whatever is in it to the network
+without a click. `program` needs `program`. Every other verb needs no grant, and
+the kernel lists each one's answer explicitly, so a new verb cannot slip through
+by default. Without the grant the command is refused with a message naming the
+capability, and `command.failed` carries it. A `delete` without `force` needs no
+grant; Fleet has no undo window, so it deletes the Task like a forced one.
 
 `files.list` and `files.read` need the `files` capability, and are absent until it
 is granted, as `run` is. A session's directory holds its `.env` files and keys, and
@@ -1575,8 +1558,8 @@ host never waits for a blocked read. `files.list` retains its
 synchronous listing contract.
 
 **The panes thurbox ships hold `sessions` without asking** while they are exactly
-what it ships: the confirmation (a force delete, a restart) and the creation flow
-(a create, a fork). Edit one and it is your file, decided like any other — the
+what it ships: the confirmation (a force delete) and the creation flow (a
+create). Edit one and it is your file, decided like any other — the
 Interface tab marks it untrusted until you press `t`.
 
 The confirmation is the one place a pane without the grant reaches these, by
@@ -1873,9 +1856,9 @@ agent, a CI check, or a terminal you cannot currently trust.
   forgetting which ones you had removed. Your own files are untouched.
 - **Delete the whole directory** for the shipped interface exactly as it ships.
 
-Neither touches `ui.json`, which lives beside the directory rather than in it: a
-pane you turned off is still off after both, and a trust you granted is still
-recorded. If a decision is what you want to undo, undo it in the Interface tab.
+Neither touches `plugin-state.json`, which lives beside the directory rather than
+in it: a pane you turned off is still off after both, and a trust you granted is
+still recorded. If a decision is what you want to undo, undo it in the Interface tab.
 
 ## Examples you can install
 

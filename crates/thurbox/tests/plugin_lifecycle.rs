@@ -120,7 +120,10 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
         screen.contains("thurbox/ui"),
         "the directory in use is named: {screen}"
     );
-    assert!(screen.contains("restore"), "the keys are offered: {screen}");
+    assert!(
+        screen.contains("turn off"),
+        "the keys are offered: {screen}"
+    );
 }
 
 /// Every cell of a rendered frame as one string.
@@ -515,7 +518,6 @@ fn a_float_drawing_nothing_is_reported_on_demand_rather_than_on_screen() {
         "plugins/62_rename.lua",
         "plugins/64_menu.lua",
         "plugins/70_new_session.lua",
-        "plugins/80_restore.lua",
     ] {
         assert_eq!(
             state_of(float),

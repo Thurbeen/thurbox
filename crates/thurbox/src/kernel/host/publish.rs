@@ -732,15 +732,8 @@ fn build_sessions(
             "detected_agent",
             opt_lua_string(lua, row.detected_agent.as_deref())?,
         )?;
+        set(&entry, "status", to_lua_string(lua, row.status.as_str())?)?;
         let attach_error = attach_errors.get(&row.id).map(String::as_str);
-        set(
-            &entry,
-            "status",
-            to_lua_string(
-                lua,
-                crate::session::with_reachability(row.status, &row.backend, attach_error).as_str(),
-            )?,
-        )?;
         set(&entry, "backend", to_lua_string(lua, &row.backend)?)?;
         set(&entry, "repo", opt_lua_string(lua, row.repo.as_deref())?)?;
         set(

@@ -89,8 +89,6 @@ when `tick()` polls `try_recv()`. (The names in this list are v1's; the
 kernel keeps the shape as its worker stores and the coordinator's workers,
 ADR-22 and ADR-23.)
 
-- **Worktree sync** (`Ctrl+S`) — `git rebase` per worktree
-  (`worktree_sync_rx`, the original instance of the pattern).
 - **Per-tick metrics** — `refresh_system_metrics` (sysinfo + statusline
   file reads + the active pane's PID lookup) and `refresh_active_git_stats`
   (`git` diff/status shell-outs). The `sysinfo::System` is *moved into*
@@ -101,13 +99,9 @@ ADR-22 and ADR-23.)
   on, served by `RepoStore::request_worktrees` on its own thread and
   published as `thurbox.worktrees`. No `git fetch`, unlike the branch
   list: a worktree is local state and the read happens on a keypress.
-- **Interactive spawn** — `git worktree add` (`spawn_worktree_session`)
-  and the multiplexer window creation (500 ms+) for the
-  new-session wizard run on blocking tasks, with the follow-up
-  (session adoption, task-prompt delivery) carried in a `Pending*`
-  continuation applied on completion. Programmatic spawns
-  (automations/tasks, restore) stay **synchronous** — they read the new
-  session's id straight back, so they cannot defer it to a later tick.
+- **Session commands** — creating, sending to, renaming and deleting a
+  session are calls of Fleet's command line (`kernel::command::fleet`),
+  each run on a command worker, so a slow Fleet never stalls a frame.
 
 **Rejected**:
 
@@ -294,7 +288,7 @@ terminal while developing.
 | `release` | 3 | full | yes | no | Distribution binary |
 | `release-with-debug` | 3 | full | no | yes | Profiling / flamegraph |
 
-**Why**: `dev` is at opt-level 1, with dependencies at 3, because v2
+**Why**: `dev` is at opt-level 1, with dependencies at 3, because the interface
 renders through an embedded Lua VM on every frame and `cargo run` is the
 documented way to run it (`Cargo.toml` says why). `test` at opt-level 1
 catches optimization-dependent bugs
@@ -305,6 +299,10 @@ specifically for `perf` / `flamegraph` workflows.
 ---
 
 ## ADR-8: State storage — SQLite
+
+> **Superseded in v3 (ADR-41).** thurbox keeps no database. Sessions are
+> Fleet's Tasks, and the interface's own state is plain files beside
+> `settings.toml` (`interface.json`, `bookmarks.json`, `automations.json`).
 
 **Choice**: All persistent state (sessions, worktrees,
 automations) is stored in a single SQLite
@@ -360,18 +358,6 @@ growth would bloat the database over months of use.
 > its deadline is recorded as timed out by the next tick. What a fire does to
 > a session goes through Fleet's command line. The rest of this record is the
 > v2 design. See features.md → Automations.
->
-> **Amended (issue #1468).** There is no TUI tick loop: the interface runs no
-> scheduler, and automations fire from the heartbeat, an OS timer, or
-> `automation run --wait`. Every verb — save, fire, tick — has one owner,
-> `session_ops::automations`, which the interface's pane and `thurbox-cli`
-> both call. A fire opens its run row in the same transaction as its claim and
-> holds the automation's run lock (`lock:run:<id>` in `event_cursors`, ADR-37) for
-> its length; a row still `running` past its deadline is marked `timed_out` by
-> the next tick. An exec runs through the lifecycle hooks' bounded runner,
-> killed with everything it started at its timeout, and due execs run
-> concurrently (four at most) while the tick does its housekeeping, so one
-> hung exec holds nothing else up. Claim-first at-most-once is unchanged.
 
 **Choice**: Automations fire from three places that all funnel
 through one headless entry point, `thurbox-cli automation tick`:
@@ -411,10 +397,10 @@ scheduler.
 ## ADR-9: Flat session list (no project grouping)
 
 > **Amended.** The decision below is about the *data model* and still
-> holds: there is no project entity, and storage migration v16 dropped
-> its tables. The list now renders selectable host and repo fold rows, with
-> forked sessions nested within each repo group. These are view rows derived
-> from host config and each session's `cwd`/`parent_session_id`; they add no
+> holds: there is no project entity. The list renders selectable host and
+> repo fold rows, with child sessions nested under their parent within each
+> repo group. These are view rows derived from host config and each session's
+> `cwd` and parent (the Task's `gateway.fleet.dev/parent` label); they add no
 > project entity or creation step to the data model.
 > The list itself is now `ui/plugins/10_sessions.lua`, not Rust (ADR-23).
 
@@ -426,10 +412,7 @@ agent and repo selection at creation time.
 project → many sessions, with shared repos). In practice users
 created one session per task, so the project layer was pure
 overhead — an extra navigation level, an extra creation step, and
-an extra deletion guard. Storage migration v16 dropped the
-`projects`, `project_repos`, `project_vm_config`, and
-`project_container_config` tables and removed `project_id` columns
-from `sessions`, `vms`, and `containers`.
+an extra deletion guard.
 
 **Rejected**:
 
@@ -450,8 +433,9 @@ from `sessions`, `vms`, and `containers`.
 struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
-**Why**: Every consumer — `session_ops`, `cli` and `kernel` — reaches a
-session through the trait and the registry that holds one backend per route
+**Why**: Every consumer — the runtime protocol (`runtime_mux::protocol`) and
+thurbox's `kernel` — reaches a session through the trait and the registry that
+holds one backend per route
 (ADR-29), never through an adapter, which `tests/architecture_rules.rs`
 enforces (`consumers_reach_no_concrete_backend`). The adapters today are
 `TmuxBackend`, `PsmuxBackend`, and `RmuxBackend`, peers over the shared tmux-protocol server
@@ -492,9 +476,8 @@ built when asked. A consumer holds `dyn SessionBackend`; one that needs a
 single role can take just that trait.
 
 A `backend_id` crossing the trait is the multiplexer's **pane id** (for example,
-tmux's `%N`), not a backend's name: the column predates the contract and keeps
-its name as public JSON. The backend a row belongs to is its route,
-`backend_type` (ADR-28).
+tmux's `%N`), not a backend's name. The backend a session belongs to is its
+route (ADR-28).
 
 **Vocabulary.** Each word names one thing, and a name built from it says which:
 
@@ -511,11 +494,10 @@ its name as public JSON. The backend a row belongs to is its route,
 | pane id | the multiplexer's handle for one pane (tmux: `%N`) | `backend_id` |
 
 "tmux" in a name means the tmux protocol (`tmux_compat`, `TmuxTransport`,
-`TmuxCompatible`) or the tmux adapter, never "any multiplexer". The persisted
-and published spellings — `backend_type`, `backend_id`, `tmux_socket` — predate
-the vocabulary and keep their names, because changing them would break every
-reader of the database and the JSON (`docs/thurbox/config.md` → Relocating an
-instance).
+`TmuxCompatible`) or the tmux adapter, never "any multiplexer". The published
+`tmux_socket` of `version --json` predates the vocabulary and keeps its name,
+because changing it would break every reader of the JSON
+(`docs/thurbox/config.md` → Relocating an instance).
 
 **Key design decisions**:
 
@@ -523,7 +505,7 @@ instance).
   The `Session` struct owns the reader/writer loops.
 - `adopt()` reconnects to an existing session and returns initial
   screen content for parser seeding.
-- `discover()` lists existing sessions for restore-on-startup.
+- `discover()` lists the sessions already on a server.
 - `detach()` stops streaming without killing the session.
 - `kill()` permanently destroys the session.
 
@@ -614,28 +596,23 @@ adopt path stays free of it, since that path also carries every agent pane on
 every ssh host.
 
 **Window naming**: `tb-<session-name>` prefix for discovery. The prefix is not
-identity — names are not unique, and a soft-deleted row keeps its name and its
-remembered pane id until the reaper lets it go. Every caller that acts on a
-session's window, live lookup or teardown alike, resolves it through the stamp
-`WindowIndex` reads off the window itself rather than the name or the
-remembered pane id; see ADR-25.
+identity, because names are not unique. A caller that shares a server with
+other windows resolves a session's window through the stamp `WindowIndex`
+reads off the window itself rather than the name or a remembered pane id; see
+ADR-25. The `runtime-mux` program is the one exception: nothing else makes
+windows on its socket, so a key's escaped name is its identity
+(`protocol::name_of`).
 
 **Which socket**: `thurbox` (`thurbox-dev` for a dev build) for an instance
 running out of the default data dir, and `thurbox-<digest of that dir>` for one
-`THURBOX_DATA_DIR` has relocated (`backend::instance::socket_for`). The data dir is
-the anchor because it holds the database, and the database is the record of
-which sessions exist: an instance keeping its own record of them has no
-business creating their windows on the operator's server — which is what made
-a real-binary `session create` unsafe for an integrator to test, and left the
-`automation-heartbeat` window (not a session, so no `session delete` reclaims
-it) behind on it. A relocated *config* dir alone changes nothing: it shares the
-default instance's database, and so its sessions. `THURBOX_SOCKET` overrides
-both, and is what thurbox injects into each session it spawns so an in-session
-`thurbox-cli` is *told* the socket rather than re-deriving it from a tmux
-server's inherited environment. `version --json` reports the name in force —
-never assume it. Relocation is not a migration: an instance moved before this
-existed keeps its old sessions on the old server (docs/thurbox/config.md → Relocating
-an instance).
+`THURBOX_DATA_DIR` has relocated (`runtime_mux::instance::socket_for`). The data
+dir is the anchor because it is what makes an instance its own: a relocated
+instance — a sandbox, a test — has no business creating windows on the
+operator's server. A relocated *config* dir alone changes nothing.
+`THURBOX_SOCKET` overrides both. `version --json` reports the name in force —
+never assume it (docs/thurbox/config.md → Relocating an instance). The
+`runtime-mux` program runs Fleet's sessions on a socket of its own,
+`runtime-mux` (`RUNTIME_MUX_SOCKET` names another), never the interface's.
 
 **Output streaming**: `%output` notifications from control mode,
 demultiplexed by pane ID into per-pane broadcast channels. Multiple
@@ -645,7 +622,7 @@ reader). Each channel feeds a `ControlModeReader`, the pane's `PaneOutput`
 consumed by `Session::reader_loop`. This allows multiple instances
 to independently parse and render terminal state in real-time.
 
-**A pane's stream is chunks, not bytes** (#1472): `PaneOutput` is an iterator
+**A pane's stream is chunks, not bytes**: `PaneOutput` is an iterator
 of `PaneChunk`s in stream order — output, a snapshot, a resync, a size, a hidden
 pane's state — so whatever is not bytes reaches the reader loop as a value at
 exactly the point of the stream it belongs to. It replaced a `Read` that
@@ -654,7 +631,7 @@ carried those as `Interrupted` errors recovered by downcasting, a channel any
 adopted pane's history seed is `Output` chunks of at most 4096 bytes ahead of the
 live stream, so replaying a long scrollback never holds the parser for all of it.
 
-**A full channel is caught up, not left corrupt** (#1472): the reader thread
+**A full channel is caught up, not left corrupt**: the reader thread
 never blocks, so output that finds a pane's channel full is dropped, and the
 bytes after a gap cannot be parsed onto that grid — the gap may have cut an
 escape sequence. A reader that lost a chunk is therefore *behind*: it is handed
@@ -699,7 +676,7 @@ is how typing into a remote pane used to answer the pid lookup or window
 listing asked a round trip later with an empty block — a host read as holding
 no windows while its link was fine.
 
-**One writer per connection** (#1472): only the connection's writer thread
+**One writer per connection**: only the connection's writer thread
 writes to its stdin. A sender takes its place in the waiter queue and hands the
 line to that thread under one short lock (the outbox), so lines go out in queue
 order and nothing that sends — the paint path's resize and snapshot requests,
@@ -721,17 +698,17 @@ number, so nothing on the wire marks the blocks as belonging together (measured,
 tmux 3.2 and 3.7c) — and an error drops the rest of the list. The waiter that
 sent the list therefore records how many blocks it holds and keeps its queue
 slot until that many have arrived or the first `%error` does, concatenating
-their lines into one answer (issue #1120). The tmux adapter's headless
+their lines into one answer. The tmux adapter's headless
 `create_window` relies on
 this to fold `new-window` and its window options into one list without a later
 command being answered by one of the list's own blocks.
 
-**Session restore**: On reconnect (`tmux_compat::Server::adopt`),
+**History on adopt**: On reconnect (`tmux_compat::Server::adopt`),
 `capture-pane -e -p -J -S -<scrollback_lines>` seeds the fresh
 vt100 parser with the pane's scrollback history **and** visible
 screen (text + colors; `-J` rejoins wrapped lines so they re-wrap
 at the new width). Without this seed the parser starts empty and
-a session's pre-restart history cannot be scrolled in the UI —
+a session's history from before the connect cannot be scrolled in the UI —
 the `%output` stream only carries bytes emitted after connect. A
 forced resize then triggers SIGWINCH, causing the TUI application
 to repaint its visible screen through the normal `%output` stream
@@ -817,7 +794,7 @@ so there's no Windows↔Linux path translation (`wslpath`) and the
 worktree layout matches the SSH path exactly. Modeling WSL as a host
 kind (rather than a per-session "run in WSL" flag wrapping a native
 psmux pane) reuses the entire remote-host subsystem — picker,
-persistence/restore, `git::*_on`, headless `--host` — for free.
+routes, `git::*_on` — for free.
 
 **Why** (general): The local-vs-off-local difference is exactly one
 line (how the tmux process is launched). The per-session control
@@ -831,9 +808,8 @@ WSL needs no credentials at all.
 - **Lazy registration**: off-local backends are registered but *not*
   connected at startup (`check_available`/`ensure_ready` deferred to
   first use), so a down host (or slow WSL discovery) never blocks the
-  TUI. Choosing a row's backend is only a registry lookup
-  (`session_ops::windows::backend_for`, ADR-29); the blocking
-  `ensure_ready` runs on the spawn worker, never on the UI thread (ADR-P12).
+  TUI. Choosing a session's backend is only a registry lookup (ADR-29); the
+  blocking `ensure_ready` runs on a worker, never on the UI thread (ADR-P12).
 - **`wsl.exe` never shares the interface's terminal** (`shell::wsl_exe`):
   `CREATE_NO_WINDOW` on Windows, a session of its own (`setsid`) on Unix.
   A `wsl.exe` child takes its parent console's keyboard input even with
@@ -852,80 +828,14 @@ WSL needs no credentials at all.
   (interop exports `wsl.exe`), so a thurbox in one distro reaches its
   siblings — but **never itself**: the distro named by `$WSL_DISTRO_NAME`
   is a *loopback* (`HostDef::is_wsl_loopback`) and is dropped from both
-  halves of the registry. Registering one made every local session
-  remote, because a shareable host's own database is the record of its
-  sessions (ADR-24) and that database was this one: the mirror pass read
-  our own rows back and rewrote each `backend_type` to `wsl:<us>`, after
-  which every attach, diff and delete went out through `wsl.exe` at the
-  machine it started on.
-- **A spelling another host claims is unreadable, and is left alone.**
-  The clearest case is a configured host that merely *registers* under
-  `wsl:<us>` while pointing elsewhere
-  (`HostDef::shadows_current_wsl_distro`): it is left **exactly as
-  written** — it works, and renaming or dropping it would strand or
-  misroute its sessions. What it costs is the one-time repair, for that
-  one name: the rows under it are two populations at once, local rows
-  the bug relabelled before the entry existed and the host's own sibling
-  rows written after, and nothing in the database tells them apart.
-  Relabelling them all local sends the sibling's sessions at this
-  machine; moving them all onto the sibling sends this machine's at the
-  sibling. So the repair skips the name entirely, and says so when it
-  actually left rows behind — `rows_recorded_on` counts them, because a
-  host that claims the spelling but never wrote a row has nothing to be
-  told about, and this notice is the only one its owner would ever see.
-  The same rule covers a *dropped loopback's own* backend name, which is
-  a free label and can be a live sibling's: dropping the entry hands the
-  name back to auto-discovery, so the real distro re-registers under
-  exactly that spelling. The residue is the pre-existing corruption left
-  unhealed, not damage the change does, and it is the only outcome that
-  never operates on the wrong machine.
-- **The one-time repair**: rows a released build already relabelled are
-  put back by `session_ops::repair_wsl_loopback_rows`, not by the
-  migration — schema v47 only marks it **owed**, and every startup that
-  opens the database runs it (the TUI boot and the `thurbox-cli`
-  entrypoint, since the mark is written by whichever binary opens the
-  database first and a headless install need never launch the
-  interface). `storage` may reference `session` but not `agent`, so the
-  migration cannot decide what to rewrite: that is
-  `config::hosts::wsl_repair_plan`, which settles the registry and
-  augments it with discovery in the same order the loader does, so what
-  it rewrites and what a session resolves against cannot disagree about
-  who owns a spelling. Candidates = `wsl:<us>` plus every dropped
-  loopback's own backend name (a hand-written `name = "self"` wrote
-  `wsl:self`); each one a served host registers under goes to
-  `withheld` instead of `to_local`, matched on the whole backend name
-  since that is what a row resolves through.
-- **A withheld name is an answer, and the repair retires on it.** Those
-  rows never become classifiable — the claiming host's own remote rows and
-  the ones the bug mislabelled are the same spelling — so waiting for the
-  claim to disappear would not settle them, it would rewrite them once
-  the *evidence* was gone and relabel a live sibling's sessions local.
-  The mark is therefore cleared, and dropping the entry afterwards leaves
-  those rows exactly where they are, under a name no host registers.
-  Only a question that could not be **asked** keeps the mark, and only
-  when the answer depended on it: a `hosts.toml` that would not parse,
-  distros that could not be enumerated, a failed write. Each is asked
-  solely where it can matter — `$WSL_DISTRO_NAME` is read first, so off
-  WSL nothing is owed whatever `hosts.toml` says (only a loopback wrote
-  these rows, and only a thurbox inside a distro can have one), and
-  enumeration is consulted only for a candidate discovery could
-  decide, never for `wsl:<us>`, the one spelling it filters out. So the
-  ordinary repair parses one file, spawns no subprocess, and retires.
-  Silence must never read as "nothing claims it", while a machine with
-  no `wsl.exe` at all is a definite "no distros" (interop puts `wsl.exe`
-  on `PATH` inside a distro, so the two cases do not overlap). The bookmark half resolves colliding
-  readings of one path on recency (`(host, repo_path)` is the key, so
-  only one can survive) and the survivor inherits the group's
-  `is_parent`/`parent_path`, so a healed parent keeps the mark its
-  children hang off.
-- **Selection**: host and multiplexer are independent. The TUI asks for a
-  host and then a registered multiplexer; `session create --host` and
-  `--multiplexer` are the headless equivalents. `BackendChoice` resolves
-  explicit choice before configured host/local preference before the platform
-  default, and its routing key is persisted.
-- **Persistence/restore**: `backend_type` round-trips in SQLite;
-  restore discovers windows **per backend** so off-local sessions
-  re-adopt against their own host's tmux.
+  halves of the registry, the one chokepoint every caller shares. A sibling
+  distro stays an ordinary host. A configured host that registers under
+  `wsl:<us>` while pointing `wsl.exe` at another distro
+  (`HostDef::shadows_current_wsl_distro`) is left exactly as written: it
+  works.
+- **Selection**: host and multiplexer are independent. The interface asks
+  for a host and then a registered multiplexer, and the session's route
+  names both (ADR-28).
 - **Off-local worktrees**: `git::*_on(host, …)` run git via
   `git::host_launcher` (`ssh …` or `wsl.exe …`). Worktree paths resolve
   under the host's `worktrees_dir` (or `$HOME/.local/share/thurbox/…`
@@ -952,19 +862,6 @@ stalls. Worth the most manual testing.
 - *Embedded SSH library (russh, etc.)* — reimplements `~/.ssh/config`,
   agent forwarding, and multiplexing that the system `ssh` already
   provides.
-- *Re-registering a `wsl:<us>` shadow under the distro it reaches, and
-  moving its rows onto that name* — built and withdrawn, not merely
-  considered. It cannot be made correct: the shadow's backend name *is*
-  `wsl:$WSL_DISTRO_NAME`, so the rows under it are two populations at
-  once — local rows an older release mislabelled before the entry
-  existed, and the host's own remote rows written through it after — and
-  nothing in the database separates them. Renaming them all onto the
-  sibling misassigns the local ones; relabelling them all local
-  misassigns the sibling's. Narrowing *which* host the rename targets
-  does not help, because the ambiguity is in the rows, not the target.
-  Leaving every such row alone is the only outcome that never operates
-  on the wrong machine, so the entry stays exactly as written and the
-  repair withholds that one spelling. Do not reintroduce the rename.
 
 ### psmux divergences from tmux
 
@@ -987,7 +884,7 @@ reference to read before touching that path.
   the nonexistent `__default` session; server options therefore include
   `-t <session>`.
   tmux retains its size arguments and one attempt. The failure also occurs
-  without Thurbox and is not a v2.42.0 control-mode regression.
+  without Thurbox.
 - **`send-keys -H`** was absent in psmux 3.3.6 (it injected the hex digits as literal
   text). `psmux_send_keys_commands` encodes input from the
   primitives psmux does support (`send-keys -l` literal runs +
@@ -1012,7 +909,7 @@ reference to read before touching that path.
   reads double-quote framing correctly (`flush_psmux_literal`/`psmux_quote`).
   Quoting alone isn't enough: psmux classifies arguments *after* tokenizing, so
   it drops any starting with `-` as an unknown flag (a typed hyphen never
-  arrived, issue #920) and rewrites a `0xNN`-shaped argument into the character
+  arrived) and rewrites a `0xNN`-shaped argument into the character
   it names. `psmux_literal_args` re-emits such a leading character *as* a
   `0xNN` argument — psmux decodes it back and, in literal mode, joins arguments
   with no separator, reassembling the run exactly. Probed by
@@ -1035,8 +932,8 @@ reference to read before touching that path.
   every window died at once. `default-shell` cannot help — it only applies to a
   window created with no command. Encoded, the program is four plain tokens
   whose script argument is restricted to `[A-Za-z0-9+/=]`, so psmux spawns it
-  directly and no shell on the way reads any of it as syntax; the heartbeat
-  keeper's loop goes the same way. Encoding costs length — the line is
+  directly and no shell on the way reads any of it as syntax. Encoding costs
+  length — the line is
   `39 + 4 * ceil(2n / 3)` chars for an `n`-unit script, about 2.7 times it —
   and agent `args`/`env` are unbounded config, so `shell::powershell_launcher`
   measures the line it builds against `WINDOWS_CMD_LINE_MAX` (8191, `cmd.exe`'s
@@ -1048,11 +945,10 @@ reference to read before touching that path.
   half of it; a script past 3,057 UTF-16 units is refused. The one-shot
   `send-paste` chunk is derived from the same limit (`PASTE_CHUNK_BYTES`),
   sized for the encoded line below at 32/9 chars per payload byte, since a
-  host's socket name alone can send a paste that way (#1503); `session send`
-  goes out in those chunks as an interactive paste does. The
+  host's socket name alone can send a paste that way. The
   deferred first prompt's `run-shell` script carries the whole prompt in one
   line that cannot be split, so a script past the limit is refused with
-  `CommandLineTooLong` (#1489). Control-mode spawns
+  `CommandLineTooLong`. Control-mode spawns
   (`psmux_window_command`) frame it in double quotes; the
   headless local `create_window` passes it as a single argv arg. The local socket
   honors the `THURBOX_SOCKET` env override (`local_socket()`, ahead of the
@@ -1062,8 +958,8 @@ reference to read before touching that path.
   not POSIX** — `cmd.exe` by Windows OpenSSH's default, PowerShell when
   `DefaultShell` says so. `cmd.exe` ignores single quotes, so the
   `posix_quote`d `'#{pane_id}|#{window_name}|…'` of a listing was a pipe into a
-  command named `'#{window_name}'`: remote teardown could not list the host's
-  windows and was left owed (#1460). A transport built for a Windows host
+  command named `'#{window_name}'`, and no listing of the host's windows
+  answered. A transport built for a Windows host
   (`TmuxTransport::with_shell`, set by `Server::on_host`) builds its lines with
   `shell::HostShell::launch`: a line of words every such shell passes through
   unquoted (`[A-Za-z0-9-_./:=+%]`, at most one `%`) goes as it is — a
@@ -1076,14 +972,12 @@ reference to read before touching that path.
   one at an embedded `"`; the child inherits the three std handles, so its
   bytes and exit status are unchanged, and `$ProgressPreference` is silenced
   because PowerShell writes progress to stderr as CLIXML, which psmux's
-  stderr-is-failure rule would read as an error. `scripts/dev/e2e/real-host.sh
-  <host> cmd-login-test` runs a create and a `share_sessions = false` force
-  delete with every ssh command thurbox-cli sends handed to `cmd.exe /c`.
+  stderr-is-failure rule would read as an error.
 - **A paste cannot be key-encoded at all** (the encoding above types each
   embedded CR as Enter, and the `ESC[200~` markers as writes of their own
   rather than around the text — a pasted stack trace
   submitted line by line). It goes **out of band** through psmux's own paste
-  command (`psmux::PsmuxPaste`, issue #916): psmux's control-mode
+  command (`psmux::PsmuxPaste`): psmux's control-mode
   dispatcher implements no paste command (`paste-buffer`/`set-buffer`/
   `send-paste` are CLI/server-only), so a bracketed-paste payload
   (`bracketed_paste_text` unwraps one) goes to the one-shot CLI
@@ -1116,8 +1010,8 @@ reference to read before touching that path.
   came back as every window's identity, so the session it named saw several
   windows claiming it (`Located::Unknown`) and every other session saw its own
   window stamped for somebody else (`Located::Absent`). Both read as
-  "session has no pane yet", and since `Absent` is the one answer a relaunch
-  acts on, each start gave those sessions a *second* agent window (issue #1168).
+  "session has no pane yet", and since `Absent` is the one answer a start
+  acts on, each start gave those sessions a *second* agent window.
   Dropping the stamp on the read side is also what heals a server already
   carrying a global one, which no migration could reach: the option outlives
   every session it was written for and only `kill-server` clears it.
@@ -1148,11 +1042,10 @@ reference to read before touching that path.
   So the drain is asked only of a multiplexer that answers
   (`ControlPolicy::implicit_attach_reply`, psmux's `false`). Asking psmux parks `ControlMode::start`
   on a `read_until` that returns only when psmux closes the pipe: `ensure_ready`
-  never returns, `kernel::terminal`'s discovery worker never reports, and every
-  session renders "session has no pane yet" with **nothing logged**, because
-  nothing failed — it never came back. That was the headline symptom of issue
-  #1168, and the stamp fix above does not reach it: the two are independent and
-  either one alone leaves the interface attaching no pane at all.
+  never returns, and every session renders "session has no pane yet" with
+  **nothing logged**, because nothing failed — it never came back. The stamp
+  rule above does not reach it: the two are independent and either one alone
+  leaves no pane attached at all.
 - **Pane and window ids are per session, and a bare id is routed.** psmux
   numbers `%N` and `@N` per *session* (psmux #569), and a thurbox socket hosts
   a `__warm__` session beside `thurbox` with the same numbers. Measured on
@@ -1161,12 +1054,12 @@ reference to read before touching that path.
   `kill-window -t @7` killed the other session's `@7`. So every pane or window
   id a command targets goes out qualified (`TmuxCompatible::SESSION_SCOPED_IDS`,
   `qualify_target`): a pane in the pane slot (`thurbox:.%2`), a window in the
-  window slot (`thurbox:@7`). 3.3.8 refuses an ambiguous bare `%N` (#569) and
+  window slot (`thurbox:@7`). 3.3.8 refuses an ambiguous bare `%N` and
   documents the pane-slot form. tmux ids are server-wide and its targets are
   unchanged.
 - **3.3.7 reads the pane slot as no pane at all.** Its target parser takes
   `thurbox:.%3` for a session with no pane in it, so the command runs on the
-  session's *active* pane (#1557). Measured on Windows 11 against 3.3.7, 3.3.8
+  session's *active* pane. Measured on Windows 11 against 3.3.7, 3.3.8
   and 3.4.0, over control mode and the one-shot CLI: on 3.3.7
   `display-message` answered for the active pane, `send-keys` typed into it
   and `kill-pane` killed it; 3.3.8 and 3.4.0 reached `%3` every time.
@@ -1215,7 +1108,7 @@ typed into is the precondition, not anything about the session.
 
 The window command cannot work around it — the handles are corrupt from the
 pane's birth, before any PowerShell of ours runs. And 3.3.7 runs every command
-aimed at a pane on the session's active pane instead (above, #1557): typing
+aimed at a pane on the session's active pane instead (above): typing
 into one session wrote into another, and stopping one killed another's agent,
 with no error anywhere.
 
@@ -1246,7 +1139,8 @@ a target.
 The answer is kept for the control connection it was asked on (a generation
 bumped as each connection is installed), since a replacement may be to a
 server started since; a one-shot answer is not kept, since nothing would say
-the server it came from had gone, so a one-shot caller (`thurbox-cli`) asks
+the server it came from had gone, so a one-shot caller (the `runtime-mux`
+program) asks
 for each target it spells — one `-V` and one `display-message` more, about 30 ms
 each locally and an ssh exec each on a remote host. Callers arriving together
 wait for one question: they take a connection's answer, or a failure on the
@@ -1268,54 +1162,14 @@ command admitted or written just before a reconnect is sent on the replacement
 unasked (`ctrl_command_list` resends a broken write). Where no session exists
 yet, so no server to ask, the binary's `-V` answers before it starts one.
 
-### A psmux agent reports its own exit, and its relaunches are bounded
+### A psmux agent's exit takes its window
 
 psmux has no `remain-on-exit` (the adapter's `WINDOW_SETTINGS` is `false`), so
 an agent that exits takes its window with it. Liveness then reads `Missing`,
-not `Exited`. That is the one answer a repairer relaunches on
-(`BackendLiveness::permits_relaunch`): the interface's `respawn_missing_agents`
-and every `restart --if-missing`. Before this, every exit came back as a
-silent `--resume` with no status, no last screen and no lost mark. An agent
-that kept dying was relaunched once per interface and once per CLI call, for
-as long as anything kept asking.
-
-Two pieces close that, both gated on the backend's `keeps_exited_windows`
-(the `WINDOW_SETTINGS` answer). tmux and RMUX keep a dead pane, so for them
-neither piece exists and nothing changes:
-
-- **The window reports its exit.** An agent window's PowerShell ends with
-  `Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli
-  session exited` (`EXIT_REPORT` in `backend::psmux`). That runs while the
-  window is still open, so `session exited` can still capture the pane's last
-  20 lines. It writes a `changed`/`exited` event carrying `exit_code` and the
-  tail in `detail` (schema v51). The status is piped rather than passed:
-  `LASTEXITCODE` is unset when the program never ran, and Windows PowerShell
-  5.1 drops an empty argument. An empty pipe means "no status" on every
-  version.
-- **Relaunches are counted, in the database.** Each repairer relaunch on such
-  a backend is stored in `session_relaunches` and reported as a
-  `changed`/`relaunched` event. `restart::crash_looping` refuses the next one
-  once `CRASH_LOOP_RELAUNCHES` (3) have happened within `CRASH_LOOP_WINDOW_MS`
-  (10 minutes). It sets the sticky `sessions.relaunch_held_at` mark and marks
-  the session lost. Every process writes these, so the limit holds across
-  interfaces and CLI calls; the interface's `respawned` set only ever covered
-  its own process.
-  - **Not counted from the event log.** That log is pruned on the audit
-    retention every time a database opens, and a retention of zero is
-    valid. A guard read from it forgot the loop it was holding back.
-  - **What lifts the hold.** Only a pane claimed for the session again
-    (`claim_backend_id`): an operator's `session restart` or `session start`,
-    which are never held back, or an adoption.
-  - **Plain losses.** A loss with no relaunches behind it, such as a reboot,
-    is relaunched as before.
-  - **In the interface.** A held-back relaunch fails as a command with its
-    reason. The interface reports that, not "restarted".
-
-The back-off counts relaunches rather than `exited` events. A window that
-vanished without reporting is the same loop: it was killed outside thurbox,
-or the machine has no `thurbox-cli` on PATH. psmux ≥ 3.3.8 does implement
+not `Exited`. tmux and RMUX keep a dead pane, which the backend's
+`keeps_exited_windows` answers. psmux ≥ 3.3.8 does implement
 `remain-on-exit`, but the adapter still declares none: turning it on is a
-change of its own, and the reporting above does not depend on it.
+change of its own.
 
 ### A psmux create names its pane, and only that pane proves it started
 
@@ -1323,7 +1177,7 @@ With no `remain-on-exit`, a program that cannot start leaves no window, so
 `create_window` looks again after `SPAWN_SETTLE` (`confirm_spawned`) and
 refuses a create whose pane is gone. That check matches the created pane's
 id only. A live window under the same `tb-<name>` is a namesake (allowed,
-and unstamped on psmux), and counting it let a dead create pass (#1456).
+and unstamped on psmux), and counting it let a dead create pass.
 
 psmux answers no `new-window -P`, so the local spawn learns the id by
 listing the panes under `tb-<name>` before and after `new-window`: psmux
@@ -1349,9 +1203,8 @@ must be able to run the other one.
   host is Windows before a platform could be written down, so it still is, and
   anything else is POSIX. A WSL distro is POSIX whatever its entry says.
   An adapter is built with the host's platform beside the host as configured
-  (`BackendSpec`, ADR-31), so a legacy Windows entry driven for a `:tmux` row
-  stays Windows. The headless status poll asks that same backend (ADR-32), so
-  it is told nothing of its own.
+  (`BackendSpec`, ADR-31), so a legacy Windows entry driven for a `:tmux` route
+  stays Windows.
 - **Each decision reads the dimension it is about.** The shell a pane gets
   (`default_shell`), whether the server's `default-command` is pinned to a
   POSIX shell (`config_shell`), and the `/bin/sh -lc` login wrap all follow
@@ -1390,13 +1243,13 @@ fails with PowerShell's `CommandNotFoundException` — so the repo picker could
 not list a directory, classify a committed path, or import a folder of repos on
 a Windows host.
 
-- **`shell::HostShell` is the host's dialect, decided once (#1473).** Built
+- **`shell::HostShell` is the host's dialect, decided once.** Built
   from the host's platform, it is what every caller asks instead of branching
   on `is_windows()`: how a word is quoted, how a script runs (`sh -c` or an
   encoded PowerShell), how a program is launched through a `cmd.exe` or
-  PowerShell login shell, the heartbeat loop, the bare-pane and built-in
-  `shell` agent, an agent `setup` wrapper, and a `session.pre_launch` hook's
-  script on the host. It lives in `shell`, beside `HostLauncher`, not in the
+  PowerShell login shell, the bare-pane and built-in `shell` agent, and an
+  agent `setup` wrapper on the host. It lives in `shell`, beside
+  `HostLauncher`, not in the
   shared server: a Windows host served by psmux or tmux gets the same one, so
   it is a host property rather than the multiplexer dialect ADR-31 rejects.
   Filesystem-layout questions (`%USERPROFILE%`, `AppData`) stay on
@@ -1452,9 +1305,11 @@ ssh via `GIT_SSH_COMMAND` and carries the same advisory:
 
 ---
 
----
-
 ## ADR-7b: Multi-Instance Sync — SQLite with PRAGMA data_version
+
+> **Superseded in v3 (ADR-41).** thurbox keeps no shared state to sync.
+> Every instance reads the same sessions from Fleet through `fleet watch`,
+> and Fleet owns every write.
 
 **Choice**: Multiple thurbox instances synchronize all state
 (sessions, worktrees, automations)
@@ -1547,29 +1402,23 @@ I/O coordination.
 ## ADR-15: Headless CLI as Separate Binary
 
 **Choice**: Headless automation lives in a separate binary
-(`thurbox-cli`) that shares the same SQLite database as the TUI.
-It exposes `session`, `automation`, `task`, `message`, `editor`,
-`agent`, `config`, `version`, `update`, `notify`, `perf`,
-`watch`, `runtime`, `plugin`, `ui`, `schema` and `doctor` as subcommands
-(`thurbox-cli --help`), printing JSON results.
+(`thurbox-cli`). It exposes `automation`, `editor`, `config`, `version`,
+`update`, `notify`, `perf`, `plugin`, `ui`, `schema` and `doctor` as
+subcommands (`thurbox-cli --help`), printing JSON results. Sessions are not
+among them: they are Fleet's, driven through Fleet's own command line
+(ADR-41).
 
 **Why**: A separate binary keeps scripting/automation out of the
-TUI's event loop. The TUI already polls `PRAGMA data_version`
-on every tick (~10 ms event-loop cadence) (ADR-7b), so changes
-made by `thurbox-cli` appear
-automatically — no new synchronization mechanism is needed. The
-`cli` module imports `storage`, `session` and `session_ops`,
-reaches the backend contract and registry by fully-qualified path only
-and never an adapter (`tests/architecture_rules.rs`), so it can operate
-without a terminal UI.
+TUI's event loop. The `cli` module never reaches a backend adapter
+(`tests/architecture_rules.rs`), so it can operate without a terminal UI.
 
 **Rejected**:
 
 - *Embedded in the TUI binary* — would force the TUI to multiplex
   a non-interactive command path alongside its crossterm event
   loop.
-- *A long-running daemon* — adds operational complexity; the
-  shared SQLite DB plus tmux already provide the coordination a
+- *A long-running daemon* — adds operational complexity; the files the
+  CLI shares with the interface already provide the coordination a
   one-shot CLI needs.
 
 ---
@@ -1611,6 +1460,12 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
 ---
 
 ## ADR-19: Declarative agent definitions
+
+> **Superseded in v3 (ADR-41).** A session's agent is the Fleet Task's
+> harness (`spec.harness`), and Fleet's harness profiles
+> (`crates/fleet-api/src/harness.rs`) say how to launch and resume it.
+> thurbox still reads `agents.toml` and publishes its agents to plugins as
+> `thurbox.agents`.
 
 **Choice**: Each session runs exactly one coding-agent CLI chosen
 at creation time; each agent runs with its own default config.
@@ -1991,8 +1846,7 @@ readability gain.
 **Choice**: `thurbox` boots a Rust kernel that renders whatever Lua plugins it
 finds under `ui/`. There is no built-in pane — the session list, the agent
 terminal and the search strip are files a user can edit, move, turn off, delete or
-replace. v1's `src/app` (TEA) and `src/ui` (35 render modules) were deleted;
-`session`, `agent`, `storage`, `git`, `session_ops` and `cli` are unchanged.
+replace. v1's `src/app` (TEA) and `src/ui` (35 render modules) were deleted.
 
 **Why**: every surface v1 grew had to be built, styled, keybound and tested in
 Rust, so the interface was the bottleneck on its own evolution and a user who
@@ -2009,7 +1863,7 @@ Five rules carry it, each load-bearing:
    truncate and window. Sizes are declared *statically*, which breaks the
    circularity.
 3. **Snapshot-read, command-write** — Lua never blocks, so no plugin, including
-   one nobody has written, can stall the loop on SQLite, git or a dead host.
+   one nobody has written, can stall the loop on Fleet, git or a dead host.
 4. **Capabilities by absence** — an ungranted capability is not in the
    environment. Enforced statically by `thurbox.yml` as well as at runtime.
 5. **Anything touching the world runs on a worker.**
@@ -2025,15 +1879,13 @@ quit, reload and recovery keys remain reserved. See `docs/thurbox/plugins.md`.
 binary hard-fails on a known binary missing from a release archive and swallows the
 error, so an archive that dropped the name `thurbox` would silently end auto-update
 for every install already out there, unfixably. The kernel therefore inherited the
-name rather than shipping beside it, and a profile with v1 history meets a one-time
-gate (`kernel::consent`) before anything changes. See `docs/thurbox/releasing.md`.
+name rather than shipping beside it. See `docs/thurbox/releasing.md`.
 
 **Cost, accepted**: a frame is more expensive — every pane is a Lua call returning a
 table that is converted and painted — so the loop settles aggressively and every
 cached answer carries an age. And v1 surfaces are owed rather than ported: the
-file viewer has no equivalent, and tasks, automations and the restore list are
-`thurbox-cli` only. Code review and the info panel came back the way the design
-intended — as panes, outside the binary:
+file viewer has no equivalent. Code review and the info panel came back the way
+the design intended — as panes, outside the binary:
 [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) and
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel), each its
 own repository, installed by clone.
@@ -2043,12 +1895,16 @@ own repository, installed by clone.
 - *A config file describing panes* — expressive enough for arrangement, never for
   behaviour; every new interaction would have become a new key.
 - *Shipping v2 beside v1 as a second binary* — auto-update never introduces a new
-  binary, so it would have reached almost nobody, and two interfaces on one
-  database doubles the surface every engine change has to satisfy.
+  binary, so it would have reached almost nobody, and two interfaces over one
+  engine double the surface every engine change has to satisfy.
 - *An embedded scripting language with the host's capabilities* — the point of
   rule 4 is that a plugin someone else wrote is safe to load.
 
 ## ADR-24: A host's database owns its sessions; a remote thurbox is a client
+
+> **Superseded in v3 (ADR-41).** No thurbox owns sessions, so none mirrors
+> another and none delegates to a host's CLI. Every session is a Fleet Task,
+> wherever it runs.
 
 **Choice**: A session that runs on a shareable host is a row in **that host's**
 thurbox database, whoever created it. A thurbox reaching the host from
@@ -2363,11 +2219,11 @@ follow from the host owning the record, none of which the first cut had:
 ## ADR-25: A window's identity is a stamp on the window, not its name
 
 **Choice**: every thurbox tmux window carries two window options written at
-spawn — `@thurbox_session`, the id of the session row that owns it, and
+spawn — `@thurbox_session`, the id of the session that owns it, and
 `@thurbox_role` (`agent` / `shell` / `program`). `discover`'s format string
 reads both, `WindowIndex` (`backend::identity`) indexes a listing by
-`(session id, role)`, and every reconciler that used to resolve `tb-<name>`
-asks it instead. The answer is three-valued: **at** a pane, **absent**, or
+`(session id, role)`, and every lookup asks it rather than resolving
+`tb-<name>`. The answer is three-valued: **at** a pane, **absent**, or
 **unknown** — several windows answer to the name and at least one carries no
 stamp. Nothing may read `unknown` as absence.
 
@@ -2375,44 +2231,28 @@ stamp. Nothing may read `unknown` as absence.
 adapter's. The role vocabulary (`WindowRole`) and the listing a backend
 answers with (`DiscoveredSession`) are contract values
 (`backend::contract`); thurbox's window-naming convention (`tb-` / `tbs-` /
-`tbp-` and `sanitize_window_name`, which is also the name-uniqueness rule in
-`session_ops::names`) and the resolution rule (`WindowIndex`, `Located`) are
+`tbp-` and `sanitize_window_name`) and the resolution rule (`WindowIndex`,
+`Located`) are
 `backend::identity`, which depends on the contract and nothing else. How a
 stamp is *stored* is an adapter's business: tmux keeps it in the two window
 options above, and a backend with no window options leaves every window
-unstamped and resolvable by name as before. Moving the code changed no value
-on a live server — the prefixes and both option names are what running
-windows already carry, and changing either would orphan them. It used to live
-inside `agent::tmux`, which made the contract and the tmux adapter import each
-other; `tests/architecture_rules.rs` now fails on that cycle.
+unstamped and resolvable by name. The prefixes and both option names are what
+running windows carry, and changing either would orphan them. The rule cannot
+live inside the tmux adapter: that would make the contract and the adapter
+import each other, a cycle `tests/architecture_rules.rs` fails on.
 
-**Why**: a window's only identity was its name, and a name is neither unique
-nor injective. Two sessions may legitimately be given one (`--on-existing
-allow`, and ADR-24 mirrors a host's names verbatim), and
-`sanitize_window_name` maps everything outside `[A-Za-z0-9_-]` to `_`, so
-`fleet 1` and `fleet_1` share `tb-fleet_1`. `sessions.backend_id` was the
-precise half, but tmux reissues pane ids from `%0` whenever its server
-starts, so a row's remembered `%N` can be a live namesake's pane afterwards —
-and the check that was supposed to catch that (does the pane sit in a window
-of the right *name*) confirms nothing when the two sessions share the name.
-Six reconcilers keyed on the name, and every teardown path — reap, force
-delete, `stop`, `restart`, spawn rollback — could therefore kill a live
-session's window. That is the "deleting a frozen session kills its
-replacement 30-60s later, and each delete-and-recreate makes the next one die
-sooner" report. A window option is the same fact stored once, on the thing it
-describes, and it is the channel a tmux-protocol backend's hook status uses
-too (ADR-32).
+**Why**: a window's name is neither unique nor injective. Two sessions may be
+given one, and `sanitize_window_name` maps everything outside `[A-Za-z0-9_-]`
+to `_`, so `fleet 1` and `fleet_1` share `tb-fleet_1`. A remembered pane id is
+no better: tmux reissues pane ids from `%0` whenever its server starts, so a
+remembered `%N` can be a live namesake's pane afterwards, and checking that
+the pane sits in a window of the right *name* confirms nothing when two
+sessions share the name. A teardown keyed on either could kill a live
+session's window. A window option is the same fact stored once, on the thing
+it describes.
 
 **Rejected**:
 
-- *A `session_window_claims` table* (the first fix, replaced by this one).
-  It answered "does any other row still answer to this pane id or this name"
-  from the database, which is a second store to keep in step with tmux: a
-  claim is written by a spawn and never released, so after one soft delete of
-  `review` every later `review` whose pane id is unusable — every row on
-  psmux, every row after a tmux restart — was refused a reap forever. It also
-  only ever gated the *reap*; the other four teardown paths kept killing by
-  name.
 - *A pane-id tie-break inside an ambiguous name* — "the row remembers `%1`,
   and `%1` is one of the two `tb-fleet` panes, so take it". This is exactly
   the unsound step the reissued-id bug walks through, and keeping it would
@@ -2421,89 +2261,51 @@ too (ADR-32).
   reads in `tmux ls` and what a hand-run `tmux attach` reaches for; a uuid
   there is a worse tool for a fix that does not need it.
 
-**Consequences**: `sessions.backend_id` is demoted to a hint — it is what the
-interface attaches to, not what a teardown targets, and no code resolves
-ownership through it. `discover` now lists `tbs-` and `tbp-` windows too:
-leaving them out is what let a name look unambiguous when it was not, and the
-*role*, not the listing, is what keeps a plugin's program from ever resolving
-as somebody's agent. Ambiguity that used to relaunch now refuses: a session
-whose name cannot be resolved is left alone rather than given a second agent.
-Migration is the sole-namesake rule — an unstamped window is adoptable only
-while it is the only one with that name, and it is stamped on adoption
-(`restore`'s adopt, `session register`), so a pre-ADR-25 window converts on
-first use. psmux (ADR-13) has no usable window options, so a lone namesake
-resolves to its listed pane — to every row of that name, a soft-deleted one
-included. The reap therefore takes an unstamped window only while no live
-session answers to the row's name: without that guard a deleted row's reap
-killed its live replacement on every sweep, so a session recreated under
-its old name never stayed up on Windows. Local recovery can
-also select the sole live pane
+**Consequences**: a remembered pane id is a hint — it is what the interface
+attaches to, not what a teardown targets, and no code resolves ownership
+through it. `discover` lists `tbs-` and `tbp-` windows too: leaving them out
+lets a name look unambiguous when it is not, and the *role*, not the listing,
+is what keeps a plugin's program from ever resolving as somebody's agent.
+Ambiguity refuses: a session whose window cannot be resolved is left alone
+rather than given a second one. An unstamped window is adoptable only while it
+is the only one with that name, and it is stamped on adoption. psmux (ADR-13)
+keeps `@` options in one server-global map and answers `#{@...}` with it for
+every window, so the stamp is withheld at both ends there and a lone namesake
+resolves to its listed pane. Local recovery can also select the sole live pane
 among exited namesakes from a fresh listing. Multiple live namesakes stay
 unknown locally; remote duplicates stay unknown even when a remembered pane
-currently has the expected name. A restarted server can reissue that id to
-another namesake, so neither a remembered pane id nor an exact-name target
-proves ownership among ambiguous unstamped windows. psmux can print an `ERROR:` diagnostic
-on stdout while exiting zero, so its listing replies reject those lines rather
-than treating an error as an empty server. Captured terminal text is not parsed
-for diagnostics; a program may legitimately print the same prefix.
-"No usable window options" had been read as "a stamp written there is simply lost";
-it is not, and that cost every Windows pane
-(issue #1168). psmux keeps a *global* option under the name and answers
-`#{@...}` with it for every window, so the stamp has to be withheld at both
-ends rather than merely expected to fail. And because the stamp
-answers for a *role*, the companion shell became reachable: a session owns a
-`tb-` and a `tbs-` window, `sessions.shell_backend_id` is written only once
-the interface has opened one, and every teardown — force delete, reap, `stop`,
-`restart`, `--on-existing replace` — now takes both down through the stamp
-rather than through a column that is usually NULL.
-
-Restart also verifies that the old agent is absent after teardown, before
-creating its replacement. A successful kill reply can leave the window live
-(for example, a multiplexer reports an unresolved target with status zero).
-A live or ambiguous ownership listing refuses the restart, and a failed listing
-propagates the error. The session row and conversation ID remain available for
-an explicit retry; no replacement is launched on a failed verification.
+currently has the expected name, since a restarted server can reissue that id
+to another namesake. psmux can print an `ERROR:` diagnostic on stdout while
+exiting zero, so its listing replies reject those lines rather than treating
+an error as an empty server. Captured terminal text is not parsed for
+diagnostics; a program may legitimately print the same prefix. Because the
+stamp answers for a *role*, a session owns a `tb-` and a `tbs-` window, and a
+teardown takes both down through the stamp.
 
 **One session, one window per role is enforced, not merely assumed.** The
-three-valued answer above only works while that holds, and as first written
-nothing kept it: a restart's respawn is kill-then-spawn, and between those two steps
-the session is indistinguishable from one whose agent died — which is what every
-repairer relaunches. Both then spawned and stamped, one id landed on two
-windows, and `unknown` is permanent because the windows stay (issue #1207). Two
-mechanisms now, and they answer different halves:
-
-- **The row is held for the length of a restart.** `restart::hold_restart` is
-  `session_ops::lock` on the session id — the lease a name's creator takes
-  (docs/thurbox/features.md → "Two creators never reach an `--on-existing`") on a row
-  rather than a name — and a
-  `restart --if-missing` declines a row somebody else is replacing the window
-  of. It is the only thing the two processes share, and it is what stops a
-  second agent from ever being launched onto one conversation. Only a
-  *relaunch* declines on it: a hold outlives its holder by minutes by design, so
-  refusing an operator's own `session restart` would leave the verb answering
-  "already restarting" long after the holder died.
-- **A second window carrying a stamp is retired where the stamp is written.**
-  `Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after every stamp
-  (the headless `create_window`, whose stamp rides in `new-window`'s own
-  command list, and `stamp_window` for the interface's own spawn,
-  an adopt, a restore, a `session register` and every window created on a
-  host) and **the highest window id keeps the identity**. On a host it lists
-  and kills over the control connection where one is open, so the repair costs
-  no ssh handshake of its own, and one-shot otherwise (issue #1635).
-  Not "the window I just made": both racers run the sweep, so "mine wins" has
-  each retire the other's and can leave the session no window at all, while a
-  key tmux issues in order and never reissues makes every sweep reach the same
-  verdict. It also closes the gap between a window being created and being
-  stamped — the last stamp to land is followed by a listing that sees every
-  earlier one. Liveness is deliberately not the key: it changes between two
-  listings taken a moment apart, and a newest window whose pane already exited
-  is kept and stays on screen under `remain-on-exit`, which is how the operator
-  sees why it exited.
+three-valued answer above only works while that holds: two racing spawns can
+each stamp a window with one id, and `unknown` is permanent because the
+windows stay. A second window carrying a stamp is retired where the stamp is written.
+`Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after
+every stamp (the headless `create_window`, whose stamp rides in
+`new-window`'s own command list, `stamp_window`, an adopt, and every window
+created on a host) and **the highest window id keeps the identity**. On a host
+it lists and kills over the control connection where one is open, so the
+repair costs no ssh handshake of its own, and one-shot otherwise. Not "the
+window I just made": both racers run the sweep, so "mine wins" has
+each retire the other's and can leave the session no window at all, while a
+key tmux issues in order and never reissues makes every sweep reach the same
+verdict. It also closes the gap between a window being created and being
+stamped — the last stamp to land is followed by a listing that sees every
+earlier one. Liveness is deliberately not the key: it changes between two
+listings taken a moment apart, and a newest window whose pane already exited
+is kept and stays on screen under `remain-on-exit`, which is how the operator
+sees why it exited.
 
 The same sweep runs from the tmux adapter's `locate` before it gives up on an
 `unknown`, and
-that is what reaches a server **already** carrying a pair — no migration does,
-because those windows exist. `WindowIndex` itself is untouched: `stamped_match`
+that is what reaches a server **already** carrying a pair. `WindowIndex`
+itself is untouched: `stamped_match`
 still refuses two, because the repair is a *write* and reading one of two as the
 answer is the unsound step the pane-id tie-break was rejected for above. Both
 run wherever the server keeps window options, a host's as well as this
@@ -2514,6 +2316,10 @@ listing would retire every window on the server.
 ---
 
 ## ADR-26: One reaper, and a row is written by the column that changed
+
+> **Superseded in v3 (ADR-41).** thurbox writes no session rows and runs no
+> reaper. Fleet's controllers own a session's creation, recovery and
+> deletion.
 
 **Choice**: write a durable intent before resources, and publish a session only after its
 pane is confirmed. `session_intents` (schema v59) holds the UUID, planned worktrees, prior
@@ -2729,8 +2535,8 @@ top-level one does, so the sizes are clamped to what `resize-window` accepts.
 Who is sizing is read over a format subscription on
 `#{?#{==:#{session_attached},1},,#{@thurbox_sizer}}` — the name while more
 than one client is attached, nothing once one is alone. That is what clears the
-hint and triggers the take-back when an instance quits or crashes: v2 has no
-per-pane teardown at quit to release a name from, and a crashed instance could
+hint and triggers the take-back when an instance quits or crashes: the
+interface has no per-pane teardown at quit to release a name from, and a crashed instance could
 not run one anyway, so the release is computed rather than sent.
 
 **Why**: with two instances on one server — a lead over ssh and one locally, in
@@ -2806,9 +2612,8 @@ A route's suffix also rewrote the host's platform, so one route naming
 **Consequences**: per-backend state in the kernel is keyed by the route, and a
 backend is named by the route it serves. Which multiplexer is available is
 decided by registration, never by the OS. A route naming a multiplexer no
-adapter implements is refused by name. A socket learned from a host's CLI is
-keyed per host, because it names that host's thurbox instance, not one
-multiplexer. Only what drives the multiplexer is told the route's
+adapter implements is refused by name. Only what drives the multiplexer is
+told the route's
 multiplexer: the backend `wiring` registers for the route, built with the
 host's own platform (ADR-13, "The host's platform is its own dimension").
 
@@ -2816,29 +2621,20 @@ host's own platform (ADR-13, "The host's platform is its own dimension").
 
 ## ADR-29: One backend registry per process; lifecycle goes through the row's backend
 
-**Choice**: each composition root builds the `BackendRegistry` once through
-`backend::wiring::configured` — `coordinator::boot` for the interface,
-`bin/thurbox-cli`'s `main` for the CLI — and hands it down: to
-`Terminals::with_registry`, to the command bus's workers, to the snapshot
-store's create-flow reads, and as a parameter to `cli::run` and every
-`session_ops` lifecycle entry point. Create, restart, stop, start, restore,
-force delete, the reap sweep, the owed-teardown retry, rename and `session
-register` ask it for the backend the row's route names
-(`session_ops::windows::backend_for`) and act through the trait: `create_window`
-opens a stamped, detached window; `locate` places a row's agent and shell
+**Choice**: each composition root builds the `BackendRegistry` once and hands
+it down: `coordinator::boot` for the interface (`backend::wiring::configured`,
+to `Terminals::with_registry`), and the `runtime-mux` program's `main` for the
+runtime protocol (`wiring::local_only`, to `protocol::serve`). Every verb asks
+it for the backend its route names and acts through the trait: `create_window`
+opens a stamped, detached window; `locate` places an owner's agent and shell
 windows from one listing; `kill`, `pane_pid` and `stamp_window` work with or
 without an attached connection; `rename_windows` follows a rename. A route no
-backend is registered for is refused by every verb before anything is marked,
-held, fired or written. Quit calls `shutdown_all`.
+backend is registered for is refused. Quit calls `shutdown_all`.
 
-**Why**: the lifecycle verbs used to build a fresh `TmuxBackend` inside free
-functions of the tmux adapter, so `session_ops` named the adapter and a second
-backend could not own a session without editing it. Four other places rebuilt
-the registry per call, so a consumer could see a different set of backends
-from the one the process was wired with. And a route the registry did not
-serve could still reach the local server: a restore of such a row marked it
-restored and spawned on local tmux, and a `session start` cleared its stop mark
-before refusing.
+**Why**: a verb that builds a fresh adapter for itself names that adapter, and
+a second backend could not own a session without editing it. A registry
+rebuilt per call can differ from the one the process was wired with. And a
+route the registry does not serve must not fall through to the local server.
 
 **Rejected alternatives**:
 
@@ -2847,73 +2643,54 @@ before refusing.
   headless verbs take an `Owner` or a pane, like the attached ones.
 - **A cached global registry**: invisible to tests, and hidden state.
 - **A test-only switch in the binary that loads a probe backend**: a
-  production escape hatch. The routing tests run `cli::run` in-process with an
-  in-memory backend registered for `local:rmux` and `ssh:<host>:rmux`, which
-  also passes the contract suite `TmuxBackend` passes
-  (`crates/runtime-mux/tests/support/backend_contract.rs`).
-- **Silent defaults for the lifecycle methods**: `stamp_window`,
-  `window_panes`, `set_pane_retention` and `shutdown` used to default to doing
-  nothing, which let a stub compile and misbehave. Each backend now says what
-  it does.
+  production escape hatch. An in-memory backend passes the contract suite
+  `TmuxBackend` passes (`crates/runtime-mux/tests/support/backend_contract.rs`)
+  instead.
+- **Silent defaults for the lifecycle methods**: a default that does nothing
+  lets a stub compile and misbehave. Each backend says what `stamp_window`,
+  `window_panes`, `set_pane_retention` and `shutdown` do.
 
 **Consequences**: RMUX and any future Herdr adapter own a session's lifecycle by
-registering for its route in `wiring`; `session_ops` does not change. The
-interface's registry is built from the `hosts.toml` of its start, so a host
-added later is served once the interface restarts — the headless heartbeat
-builds its own each tick. A host is served for every multiplexer an adapter
-implements (ADR-28). Where
+registering for its route in `wiring`; no consumer changes. The interface's
+registry is built from the `hosts.toml` of its start, so a host added later is
+served once the interface restarts. A host is served for every multiplexer an
+adapter implements (ADR-28). Where
 the interface holds a connection to a backend, a lifecycle kill goes through
 it (reconnecting once on a dead link) rather than one-shot; either way it
 kills the pane's whole window, so a window somebody split leaves nothing
-running.
-Pane I/O followed in ADR-30, and hook status and the heartbeat in ADR-32.
+running. Pane I/O is ADR-30.
 
 ## ADR-30: Pane I/O is located by the row, then addressed by pane
 
-**Choice**: every verb that types into, presses a key in, or reads a session's
-pane — the kernel's `Send` and `dispatch_task`, `session send`/`key`/`capture`,
-the `send` and `spawn` automations, `task run`, `session list --verify`/`get`,
-`watch --verify`, `session doctor`'s `PATH` read and the interface's pane
-probe — asks the injected registry for the backend the row's route names,
-locates the row's agent window there (`session_ops::windows::agent_pane`:
+**Choice**: every verb that types into or reads a session's pane — the
+runtime protocol's `input` and `capture`, and `inspect`, `stop` and `attach`
+beside them — locates the key's agent window first (`protocol::locate`:
 `locate(Owner)`, stamp first, a lone unstamped namesake second), and then
-calls a pane-keyed verb on the contract: `send_text`, `send_text_after`,
-`send_key`, `capture`, `pane_state`, `pane_path`. A key crosses the contract as
-`backend::Key`, thurbox's own closed set of spellings; the adapter says it in
-its grammar (`session key` still reports that spelling as `tmux_key`).
-Remote pane verbs keep delegating to the host's own CLI first (ADR-24), decided
-inside `session_ops` (`send::send`, `press_key`, `capture::capture`);
-`session send`/`key`/`capture` on a host with no usable CLI — `share_sessions =
-false`, or none found or provisioned — fall through to the registry, as the
-kernel does, and only a backend with no `hosts.toml` entry is refused.
+calls a pane-keyed verb on the contract: `send_text`, `capture`, `pane_state`,
+`kill`. A key crosses the contract as `backend::Key`, thurbox's own closed set
+of spellings; the adapter says it in its grammar.
 
-**Why**: the pane helpers were free functions of the tmux adapter that
-resolved `(id, name)` on *this machine's* server whatever the row's route. A
-row on a host was therefore typed into a local window of the same name that
-no one had stamped — its prompt read as another session's input — and a row
-on any other route was driven on local tmux or failed with "no window of its
-own here" while the interface had its pane wired. A spawn automation that
-found a lone `tb-auto-<id>` window typed into it by name even when no row
-owned it.
+**Why**: a pane verb that resolves a name on whichever server it happens to
+reach types into a window of the same name that nobody stamped, and a
+session's prompt reads as another session's input. Locating once, through the
+backend the route names, then addressing the pane, leaves one addressing
+vocabulary.
 
 **Rejected alternatives**:
 
 - **`(id, name)`-keyed copies of the pane verbs on the trait**: a second
   addressing vocabulary beside the pane one every attached caller already
-  holds. Locating is one step, done once, by the row.
+  holds. Locating is one step, done once.
 - **Falling back to a name when the listing is ambiguous**: an `Unknown`
-  placement is an error for every verb that writes to a pane, and a spawn
-  that cannot tell whether its earlier session runs refuses rather than
-  launching a second one; a reader (`--verify`, the doctor, the interface's
-  probe) reports the state as unknown. The tmux adapter's own settling
+  placement is an error for every verb that writes to a pane, and a `start`
+  that cannot tell whether its earlier process runs answers unknown rather
+  than launching a second one. The tmux adapter's own settling
   (retiring a duplicated stamp, psmux's unstamped windows resolved from a listing,
   ADR-25) happens inside `locate`, where it is that backend's to decide.
 - **Default methods**: the six verbs are required; a stub refuses them.
 
 **Consequences**: a pane verb on a route nothing serves is refused by name
-(`no backend here serves …`). A deferred prompt is scheduled on the pane's own
-server, in the shell that server runs its commands with, so a spawn on a
-host gets its prompt there. `pane_state` reads the foreground process's argv
+(`no backend here serves …`). `pane_state` reads the foreground process's argv
 with a local `ps` only for a local pane, and an answer that names another pane
 than the one asked about — `display-message` answers for the current pane
 against a target it cannot resolve — is no answer.
@@ -2959,10 +2736,8 @@ a comparison of the binary's *name* — plus `cfg(windows)` sites in the local
 spawn path that read the build OS as "the local multiplexer is psmux". So a
 local tmux on Windows, or a local psmux anywhere else, could not exist, the
 registry refused both by OS, and no rule could tell a psmux decision from a
-tmux one because neither was visible as a reference. Status delivery (the
-next step of the backend sequence) has to be owned by real, independent
-adapters, and a third tmux-compatible multiplexer must be one module and one
-table row.
+tmux one because neither was visible as a reference. A third tmux-compatible
+multiplexer must be one module and one table row.
 
 **Rejected alternatives**:
 
@@ -2991,11 +2766,9 @@ and launcher, with a launcher that adds nothing to the probe's command line.
 Registration is not what the new-session picker offers: it lists only the
 registered multiplexers that are native to the host's platform and installed
 there (`Multiplexer::available_on`), and skips itself when one remains, so
-psmux never appears on a POSIX machine nor tmux on native Windows. The
-heartbeat, the own-pane status write
-and the hook-state listing went behind the contract in ADR-32. The heartbeat
-only ensures its session exists: every backend applies its config before it
-spawns or attaches. psmux has not been driven live by this change.
+psmux never appears on a POSIX machine nor tmux on native Windows. Every
+backend applies its config before it spawns or attaches. psmux has not been
+driven live by this change.
 
 RMUX extends this arrangement as a third adapter. Its control-mode policy
 skips `pause-after`, pane monitoring, and format subscriptions, and treats a
@@ -3013,6 +2786,11 @@ See [config.md](config.md#multiplexer-requirements-and-rmux-setup) for
 installation, selection, and the verified version table.
 
 ## ADR-32: Hook status and the heartbeat are the route's backend's
+
+> **Superseded in v3 (ADR-41).** thurbox reads no hook status and keeps no
+> heartbeat. A session's state is Fleet's `status.sessionState`, which Fleet
+> derives from the agent's own hooks through `fleet signal`. The contract's
+> `StatusChannel` role has no caller in thurbox or the runtime protocol.
 
 **Choice**: how a hook in a session's pane reports its state, how that state is
 read back with no interface attached, and what keeps the automation heartbeat
@@ -3102,9 +2880,8 @@ startup notice appears.
 Discovery prunes records confirmed dead, keeping repeated scans bounded
 by currently reachable interfaces and the records left since the last scan.
 
-**Why**: several interfaces can display the same database while each owns its
-own focus and search state. The older `session focus` metadata slot is claimed
-by one unspecified interface and cannot acknowledge which screen changed.
+**Why**: several interfaces can display the same sessions while each owns its
+own focus and search state, and a request has to say which screen it changes.
 Routing through a backend would confuse a session's persistent terminal with
 the ephemeral interface drawing it.
 
@@ -3170,6 +2947,10 @@ orphaned tmux server); killing it is the only remedy.
 
 ## ADR-35: A session's key is its address; its name is a label
 
+> **Superseded in v3 (ADR-41).** thurbox keeps no session rows and no keys.
+> A session is addressed by its Fleet Task's name, and its display name is the
+> Task's name label, which a rename changes through `fleet label`.
+
 **Choice**: a session may carry one opaque **key** (`sessions.key`, schema v53),
 given by whoever creates it and never minted, parsed or interpreted by thurbox.
 It is unique among the live sessions of one **host** — the place
@@ -3198,6 +2979,11 @@ keyless callers. A delegated create against a host CLI older than `--key` fails
 on the unknown flag rather than creating a keyless session.
 
 ## ADR-36: Telemetry configures the agents' own exporters
+
+> **Superseded in v3 (ADR-41).** thurbox launches no agent, so it sets no
+> agent's exporter. `settings.toml`'s `[telemetry]` configures only the
+> interface's own diagnostic bridge (ADR-38); session metrics and event logs
+> are Fleet's (`fleet-telemetry`).
 
 **Choice**: `settings.toml`'s `[telemetry]` configures each spawned agent's
 **native** OpenTelemetry exporter rather than thurbox exporting on its behalf.
@@ -3248,6 +3034,9 @@ ADR-38. The variables are inherited by everything run in the pane, not
 only the agent.
 
 ## ADR-37: thurbox's own session telemetry is exported from the tick
+
+> **Superseded in v3 (ADR-41).** thurbox keeps no session event log and
+> exports no session metrics. Both are Fleet's (`fleet-telemetry`).
 
 **Choice**: `automation tick` exports thurbox's own `thurbox.*` session metrics
 and one OTLP log record per `session_events` row (`telemetry::export`), over
@@ -3312,17 +3101,16 @@ restart-only. `thurbox-cli` never builds the layer.
 
 **Why**: the interface is the one long-running process, so a batch processor
 has time to export, from a thread of its own, without holding up the loop.
-A short-lived command — above all `session signal`, which every agent hook
-runs — would pay a network round-trip per hook, and a timeout per hook while
-the collector is down, stalling the agent; the tick's export (ADR-37) is the one
-CLI path that talks to a collector, and it runs off the heartbeat, not a hook.
-WARN and above, because the file's level is far too much to ship. Thurbox's own
+A short-lived `thurbox-cli` command would pay a network round-trip per call,
+and a timeout per call while the collector is down. WARN and above, because
+the file's level is far too much to ship. Thurbox's own
 targets only, because the exporter's HTTP stack logs through `tracing` too and
 would otherwise feed every export into the next. The settings are loaded under
 the file log alone before the global subscriber is installed: whether the
 bridge exists depends on them, and a global subscriber cannot be replaced.
 
-**Limits**: plain HTTP and `http/protobuf` only, as in ADR-37; another protocol
+**Limits**: plain HTTP and `http/protobuf` only: no TLS stack is in the tree,
+so an `https` collector is reached through a local Collector. Another protocol
 builds no bridge and logs why to the file. The batch is flushed on a clean
 exit; an exit by signal or panic loses what the processor still held, at most
 about a second of records, which the file log has. A clean exit with the
@@ -3335,28 +3123,17 @@ headers while it is on, reads as restart-only.
 
 **Decision:** `SessionBackend` returns `BackendResult<T>` with `BackendError`
 (`Absent`, `Unreachable`, `Refused`, `Busy`, `Io`). The transport and adapter
-classify raw process status and protocol replies once. Session lifecycle and
-pane operations return `OpError` (pure `session` data, re-exported by
-`session_ops`); adding context preserves its variant.
-Reports may render an error as text, but decisions match the type.
+classify raw process status and protocol replies once. Reports may render an
+error as text, but decisions match the type. A message containing "not found"
+is never evidence of absence.
 
-`CommandError` maps operation variants onto the shared CLI registry: 1 general
-failure (including not found and refusal), 2 usage, 3 ambiguity, 4 timeout,
-5 conflict, 6 gone. Its JSON adds `error_kind`, retaining `error` and the
-existing exit codes. Delegated host calls read this tag; old or unknown tags
-remain `Other`. A message containing “not found” is never evidence of absence.
+`thurbox-cli`'s `CommandError` carries its exit code: 1 general failure, 2
+usage, 3 ambiguity. Its JSON adds `error_kind` beside `error`.
 
-Transport reach is independent of the host's operation error. `RunFailure`
-keeps `Unreached`, `Answered`, and `Undetermined`; `host_cli::run` preserves
-unreached and undetermined outcomes in `OpError`. An answered `NotFound` can
-permit a local teardown fallback; a refusal or an opaque legacy error cannot.
-These rules apply to every backend route and agent family.
-
-**Why:** deletion previously read a remote refusal's wording to decide whether
-to kill windows. A missing policy file could therefore authorize a teardown.
-A typed absence is evidence; a sentence is only a diagnosis. Discovery also
-keeps confirmed absence, transport failure, and other inconclusive probes
-separate so only absence can authorize relaunch.
+**Why:** a decision read off an error's wording breaks the day the wording
+changes, and a sentence that happens to contain "not found" can authorize a
+teardown it should not. A typed absence is evidence; a sentence is only a
+diagnosis.
 
 ## ADR-40: The plugin API is declared once in Rust, and versioned
 
@@ -3370,25 +3147,15 @@ plugin walking a fully populated publish meets a key the schema does not
 declare. `thurbox.api` publishes `lua_api::API`, an integer that moves only
 when a field is removed or changes meaning; a plugin's `requires_api` above it
 is a load error naming the file. The first field added under it is
-`session.meta`: a session's `ui.*` meta keys, cleaned on the snapshot worker
-(control and invisible characters stripped, 256 characters, 32 keys,
-active sessions only, bounded in the query). Keys containing control or
-invisible characters are excluded before the per-session quota, so they cannot
-crowd out visible labels. `thurbox.*` keys are refused by
-`session meta set` and `unset`. A meta read that fails keeps each row's labels
-as last read and records the error; the rows still move, and the next poll
-reads again rather than waiting for an unrelated write.
+`session.meta`, a session's `ui.*` labels, which a Fleet session leaves empty.
 
 **Why:** the same shape was written by hand in four places, nothing compared
-them, and a table published without its fields passed CI (#1133). Plugins saw
+them, and a table published without its fields passed CI. Plugins saw
 only the application version, while a field could be renamed in a minor
 release and an edited bundled pane is kept forever, so the rename broke it with
 no message. Generating the declarations from the publish side's own list makes
 an undeclared field a test failure, and the contract number gives a plugin
-something to state rather than a release to guess (#1476). Meta under a fixed
-prefix lets a driver label a row without the CLI round trip a pane would
-otherwise make per session, while every other key stays the driver's or
-thurbox's own (#1523).
+something to state rather than a release to guess.
 
 **Limits:** the schema covers what is published, not node props, `ctx`, the
 event payloads or command verbs, which `thurbox.d.lua` still keeps by hand. A
@@ -3403,8 +3170,9 @@ is untrusted text, which a pane renders as text.
 > **Accepted, partly implemented.** The design is
 > [the documentation overview](../README.md).
 > thurbox's own session engine is deleted, so this supersedes ADR-8, ADR-7b,
-> ADR-8b, ADR-24 and ADR-26. Extensions are retired with it, which supersedes
-> ADR-20 and ADR-21. The snapshot reads the rows from a
+> ADR-8b, ADR-19, ADR-24, ADR-26, ADR-32, ADR-35, ADR-36 and ADR-37.
+> Extensions are retired with it, which supersedes ADR-20 and ADR-21. The
+> snapshot reads the rows from a
 > `SnapshotSource` (Fleet's Tasks through `fleet watch`), and the command bus
 > runs commands through an `Executor` (Fleet's command line,
 > [`[fleet]`](config.md#fleet--the-session-engine)).

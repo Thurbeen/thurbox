@@ -44,13 +44,6 @@ config_version = 1
 # Kept so an existing settings.toml still loads.
 # three_panel_min_cols = 120
 
-# Days of audit-log and session-event history kept (pruned on startup).
-# audit_retention_days = 90
-
-# Days a deleted session stays restorable before its row is purged for good.
-# `0` keeps every one. Worktrees a soft delete left on disk stay there.
-# deleted_retention_days = 0
-
 # How often each session's git working tree is re-examined (seconds), for the
 # diffstat and ahead/behind beside it in the session list. `0` turns it off.
 #
@@ -222,45 +215,6 @@ pub fn load_quiet() -> Settings {
         .unwrap_or_default()
 }
 
-/// Take the top-level `layout` key out of settings.toml, returning a note for
-/// the message band when the arrangement it named is gone.
-///
-/// Only v2.32.0 wrote that key: it named a layout preset, and presets were
-/// rolled back in the next release (#1227). Left in place it would be an
-/// "unknown field" warning on every start; removing it is what makes the note
-/// a one-time one. Called by the interface at start and nowhere else, because
-/// `thurbox-cli` (run by every agent hook) would take the key before the note
-/// could ever be shown. Silent for `classic`: that arrangement is the one still
-/// shipped, so nothing on screen changed.
-pub fn retire_layout_preset() -> Option<String> {
-    let path = settings_config_path()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
-    // Cut by the parsed spans, not through `DocumentMut::remove`: that also
-    // drops the comments above the key, which in a seeded file document the keys
-    // before it. The spans cover any spelling, a multi-line string included.
-    let doc = toml_edit::Document::parse(contents.as_str()).ok()?;
-    let (key, item) = doc.as_table().get_key_value("layout")?;
-    let (start, end) = (key.span()?.start, item.span()?.end);
-    let line_start = contents[..start].rfind('\n').map_or(0, |at| at + 1);
-    let line_end = contents[end..]
-        .find('\n')
-        .map_or(contents.len(), |at| end + at + 1);
-    let kept = format!("{}{}", &contents[..line_start], &contents[line_end..]);
-    if let Err(e) = super::file::save(&path, &kept) {
-        return Some(format!(
-            "settings.toml: could not remove the withdrawn `layout` key: {e}"
-        ));
-    }
-    match item.as_str() {
-        Some("classic") => None,
-        chosen => Some(format!(
-            "layout presets were rolled back: {} is now the classic layout, the shell is \
-             its Shell tab · `layout` removed from settings.toml",
-            chosen.unwrap_or("your layout")
-        )),
-    }
-}
-
 /// Set a boolean key on a `toml_edit` table.
 fn set_table_bool(table: &mut toml_edit::Table, key: &str, v: bool) {
     table[key] = toml_edit::value(v);
@@ -311,8 +265,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     doc["hidden_terminal_secs"] = value(settings.hidden_terminal_secs as i64);
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));
     doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
-    doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
-    doc["deleted_retention_days"] = value(settings.deleted_retention_days as i64);
     doc["git_poll_secs"] = value(settings.git_poll_secs as i64);
 
     if !doc.contains_key("features") {
@@ -383,8 +335,6 @@ mod tests {
             "hidden_terminal_secs",
             "two_panel_min_cols",
             "three_panel_min_cols",
-            "audit_retention_days",
-            "deleted_retention_days",
             "git_poll_secs",
             "[features]",
             "tasks",
@@ -448,71 +398,6 @@ mod tests {
     }
 
     #[test]
-    fn a_withdrawn_layout_preset_is_noted_once_and_removed() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::config::file::isolate(temp.path());
-
-        let path = settings_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "# mine\nlayout = \"split-shell\"\ngit_poll_secs = 9\n\n[features]\nmouse = false\n",
-        )
-        .unwrap();
-
-        let note = retire_layout_preset().expect("a note for a withdrawn preset");
-        assert!(note.contains("split-shell"), "{note}");
-        let left = std::fs::read_to_string(&path).unwrap();
-        assert!(!left.contains("layout"), "{left}");
-        assert!(
-            left.contains("# mine") && left.contains("mouse = false"),
-            "{left}"
-        );
-
-        let (settings, warnings) = load_or_seed_with_warnings();
-        assert!(warnings.is_empty(), "got: {warnings:?}");
-        assert_eq!(settings.git_poll_secs, 9);
-        assert_eq!(retire_layout_preset(), None, "said once");
-    }
-
-    #[test]
-    fn a_classic_layout_key_is_removed_without_a_note() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::config::file::isolate(temp.path());
-
-        let path = settings_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "layout = \"classic\"\n").unwrap();
-
-        assert_eq!(retire_layout_preset(), None);
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("layout"));
-    }
-
-    #[test]
-    fn a_layout_key_in_any_toml_spelling_is_removed_whole() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::config::file::isolate(temp.path());
-
-        let path = settings_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        for spelling in [
-            "layout = \"\"\"\nsplit-shell\"\"\"\n",
-            "\"layout\" = 'split-shell' # mine\n",
-        ] {
-            std::fs::write(&path, format!("# kept\n{spelling}git_poll_secs = 9\n")).unwrap();
-
-            assert!(retire_layout_preset().is_some(), "{spelling}");
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap(),
-                "# kept\ngit_poll_secs = 9\n"
-            );
-            let (settings, warnings) = load_or_seed_with_warnings();
-            assert!(warnings.is_empty(), "{spelling}: {warnings:?}");
-            assert_eq!(settings.git_poll_secs, 9);
-        }
-    }
-
-    #[test]
     fn load_or_seed_falls_back_on_malformed_file_with_warning() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::config::file::isolate(temp.path());
@@ -534,12 +419,12 @@ mod tests {
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "scrollback_lines = 4000\naudit_retention_days = 7\n").unwrap();
+        std::fs::write(&path, "scrollback_lines = 4000\ngit_poll_secs = 7\n").unwrap();
 
         let (s, warnings) = load_or_seed_with_warnings();
         assert!(warnings.is_empty());
         assert_eq!(s.scrollback_lines, 4000);
-        assert_eq!(s.audit_retention_days, 7);
+        assert_eq!(s.git_poll_secs, 7);
         assert_eq!(s.two_panel_min_cols, 80);
     }
 
@@ -550,7 +435,7 @@ mod tests {
         // Seed the documented file first, then save mutated settings.
         let (mut s, _) = load_or_seed_with_warnings();
         s.scrollback_lines = 4000;
-        s.audit_retention_days = 7;
+        s.git_poll_secs = 7;
         s.features.tasks = false;
         s.features.version_check = true;
         s.features.auto_update = true;

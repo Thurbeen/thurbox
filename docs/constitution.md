@@ -152,15 +152,13 @@ asserts for it (`[path-only: …]` marks the crossings described below):
 session              (no crate-internal references — the dependency sink;
                      no process state, env read or rendering crate either;
                      re-exports runtime-mux's host model and SessionId)
-agent                → agent::{generic, provider}       (re-exports only)
+agent                (declares the modules below — no references)
 agent::agent_config  → session, shell, config::file
 agent::fetch         → paths
-agent::generic       → session, agent::provider
 agent::input         (no crate-internal references)
-agent::provider      → session
 config               (declares the modules below — no references)
+config::automations  → session, config::file  (thurbox's own schedule)
 config::file         → paths                (the one loader: seed, parse, save)
-config::hooks        → session, config::file
 config::hosts        → session, config::file  (runtime-mux's loader, bound
                                                 to thurbox's config directory)
 config::interface_state → session, config::file
@@ -175,12 +173,14 @@ git                  → session, paths, shell
 telemetry            → session                    (ADR-38 diagnostic logs)
 kernel               → session, paths, git, notifications, shell, theme
                        [path-only: agent::{agent_config, fetch},
-                        backend, config::{hosts, settings, themes},
+                        backend, config::{automations, hosts,
+                        interface_state, settings, themes},
                         update::{self_update, version_check}]
 cli                  → session, paths, notifications, ui_control, theme
                        [path-only: agent::agent_config, backend,
-                        config::{file, hosts, interface_state, settings,
-                        themes}, update::{self_update, version_check}, kernel]
+                        config::{automations, file, hosts, interface_state,
+                        settings, themes}, update::{self_update,
+                        version_check}, kernel]
 notifications        → session, paths, shell
 clipboard            → session, paths
 workspace            → paths
@@ -190,7 +190,7 @@ shell                (no crate-internal references — runtime-mux's
                       launchers and quoting, re-exported)
 theme                (no crate-internal references — the presets)
 coordinator          → agent::input, backend, clipboard,
-                       config::{hosts, interface_state, settings}, kernel,
+                       config::{hosts, interface_state}, kernel,
                        notifications, paths, session, shell, telemetry,
                        ui_control
 ```

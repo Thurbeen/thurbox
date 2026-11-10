@@ -412,11 +412,10 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
         .to_string();
 
     let mut agents = Vec::new();
-    let builtins = builtin_registry();
     match table.get("agents") {
         Some(toml::Value::Array(entries)) => {
             for (index, entry) in entries.iter().enumerate() {
-                match resolve_agent_entry(entries, index, &builtins, &mut warnings) {
+                match resolve_agent_entry(entries, index, &mut warnings) {
                     Ok(agent) => agents.push(agent),
                     Err(e) => {
                         let label = entry
@@ -454,7 +453,6 @@ const MAX_EXTENDS_DEPTH: usize = 32;
 fn resolve_agent_entry(
     entries: &[toml::Value],
     index: usize,
-    builtins: &AgentRegistry,
     warnings: &mut Vec<String>,
 ) -> Result<AgentDef, String> {
     let mut chain = Vec::new();
@@ -518,9 +516,6 @@ fn resolve_agent_entry(
         if member == index {
             warnings.extend(ignored);
         }
-        if entry.get("extends").is_none() {
-            upgrade_seeded_agent(&mut agent, entry, builtins);
-        }
         agent.args.extend(append);
         resolved = Some(agent);
     }
@@ -529,48 +524,6 @@ fn resolve_agent_entry(
     let mut agent = resolved.ok_or("empty extends chain")?;
     agent.apply_vars().map_err(|errors| errors.join("; "))?;
     Ok(agent)
-}
-
-fn upgrade_seeded_agent(agent: &mut AgentDef, entry: &toml::Value, builtins: &AgentRegistry) {
-    // Existing registries predate explicit symlink-target scope.
-    // An explicit empty group opts out; custom CLIs opt in as data.
-    if entry.get("additional_dir_args").is_none()
-        && agent.name == "claude"
-        && agent.command == "claude"
-    {
-        agent.additional_dir_args = vec!["--add-dir".into(), "{dir}".into()];
-    }
-    // Upgrade the former seeded Codex address without changing
-    // other definitions or user-supplied launch arguments.
-    if agent.name == "codex"
-        && agent.command == "codex"
-        && agent.resume_args == ["resume", "--last"]
-        && agent.fork_args == ["fork", "--last"]
-        && agent.resume_latest
-    {
-        agent.resume_args = vec!["resume".into(), "{id}".into()];
-        agent.fork_args = vec!["fork".into(), "{id}".into()];
-        agent.resume_latest = false;
-    }
-    upgrade_seeded_omp_args(agent);
-    upgrade_seeded_telemetry(agent, entry, builtins);
-}
-
-/// Give an entry seeded before telemetry existed its built-in's
-/// `telemetry_env` / `telemetry_args`. Either key present, even empty, is the
-/// user's own answer, and only an entry whose `name` and `command` both match
-/// a built-in is one.
-fn upgrade_seeded_telemetry(agent: &mut AgentDef, entry: &toml::Value, builtins: &AgentRegistry) {
-    if entry.get("telemetry_env").is_some() || entry.get("telemetry_args").is_some() {
-        return;
-    }
-    if let Some(builtin) = builtins
-        .get(&agent.name)
-        .filter(|b| b.command == agent.command)
-    {
-        agent.telemetry_env = builtin.telemetry_env.clone();
-        agent.telemetry_args = builtin.telemetry_args.clone();
-    }
 }
 
 /// Deserialize one resolved entry. Unknown fields are reported but kept;
@@ -602,44 +555,6 @@ fn deserialize_agent(
         }
         Err(e) => Err(crate::config::file::compact_toml_error(&e.to_string())),
     }
-}
-
-/// The omp arg groups an older thurbox seeded into `agents.toml`: a session
-/// *file* under `--session`. OMP 18.10 refuses a file that does not exist yet
-/// (`Session "…" not found`, exit 1), so every new omp session died at launch.
-const LEGACY_OMP_NEW_SESSION_ARGS: [&str; 2] =
-    ["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"];
-const LEGACY_OMP_RESUME_ARGS: [&str; 2] =
-    ["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"];
-
-/// Swap the legacy seeded omp arg groups for the current built-in ones.
-///
-/// `agents.toml` is seeded once and then owned by the user, so a fixed built-in
-/// never reaches an existing install on its own. Only an entry still carrying
-/// *both* legacy groups verbatim is rewritten — that pair is what the seed
-/// wrote, so it is the seed and not a user's choice; any edit to either group
-/// leaves the entry alone. Matched on the args rather than the agent name, so a
-/// renamed copy of the seeded entry is upgraded too. In memory only: the file is
-/// never rewritten behind the user's back.
-fn upgrade_seeded_omp_args(agent: &mut AgentDef) {
-    if agent.new_session_args != LEGACY_OMP_NEW_SESSION_ARGS
-        || agent.resume_args != LEGACY_OMP_RESUME_ARGS
-    {
-        return;
-    }
-    let Some(omp) = builtin_registry()
-        .agents
-        .into_iter()
-        .find(|a| a.name == "omp")
-    else {
-        return;
-    };
-    tracing::info!(
-        agent = %agent.name,
-        "agents.toml: upgraded the legacy omp --session/--resume file args to --session-dir"
-    );
-    agent.new_session_args = omp.new_session_args;
-    agent.resume_args = omp.resume_args;
 }
 
 #[cfg(test)]
@@ -965,147 +880,12 @@ vars = { role = "coder" }
         "--continue",
     ];
 
-    fn omp_entry(new_session: &str, resume: &str) -> String {
-        format!(
-            "default = \"omp\"\n[[agents]]\nname = \"omp\"\ncommand = \"omp\"\n\
-             resume_args = {resume}\nnew_session_args = {new_session}\n"
-        )
-    }
-
-    #[test]
-    fn legacy_seeded_omp_args_are_upgraded_on_load() {
-        // The exact pair an older thurbox seeded: an existing install keeps it
-        // in agents.toml forever, so the loader has to replace it.
-        let toml = omp_entry(
-            r#"["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]"#,
-            r#"["--resume", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]"#,
-        );
-        let (reg, warnings) = parse_agents_toml(&toml);
-        assert!(warnings.is_empty(), "{warnings:?}");
-        let omp = reg.get("omp").unwrap();
-        assert_eq!(omp.new_session_args, OMP_NEW_SESSION_ARGS);
-        assert_eq!(omp.resume_args, OMP_RESUME_ARGS);
-    }
-
-    #[test]
-    fn edited_omp_args_are_left_alone() {
-        // Either group changed by hand → the user's choice, not the seed.
-        let toml = omp_entry(
-            r#"["--session", "{home}/.omp/agent/sessions/thurbox-{id}.jsonl"]"#,
-            r#"["--resume", "/elsewhere/thurbox-{id}.jsonl"]"#,
-        );
-        let (reg, _) = parse_agents_toml(&toml);
-        let omp = reg.get("omp").unwrap();
-        assert_eq!(omp.new_session_args, LEGACY_OMP_NEW_SESSION_ARGS);
-        assert_eq!(
-            omp.resume_args,
-            ["--resume", "/elsewhere/thurbox-{id}.jsonl"]
-        );
-    }
-
     #[test]
     fn the_seed_round_trips_through_the_loader_unchanged() {
-        // What the seed writes is what the loader yields — the upgrade must not
-        // fire on (or mangle) the current built-in.
+        // What the seed writes is what the loader yields.
         let (reg, warnings) = parse_agents_toml(&builtin_agents_toml());
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(reg, builtin_registry());
-    }
-
-    #[test]
-    fn telemetry_switches_upgrade_seeded_builtins_and_preserve_explicit_choices() {
-        let (registry, warnings) = parse_agents_toml(
-            r#"
-[[agents]]
-name = "claude"
-command = "claude"
-[[agents]]
-name = "codex"
-command = "codex"
-telemetry_args = []
-[[agents]]
-name = "vibe"
-command = "my-vibe-wrapper"
-"#,
-        );
-        assert!(warnings.is_empty(), "{warnings:?}");
-        let builtins = builtin_registry();
-        assert_eq!(
-            registry.get("claude").unwrap().telemetry_env,
-            builtins.get("claude").unwrap().telemetry_env
-        );
-        assert_eq!(
-            registry.get("claude").unwrap().telemetry_env["CLAUDE_CODE_ENABLE_TELEMETRY"],
-            "1"
-        );
-        assert!(registry.get("codex").unwrap().telemetry_args.is_empty());
-        assert!(registry.get("vibe").unwrap().telemetry_env.is_empty());
-        assert_eq!(builtins.get("codex").unwrap().telemetry_args.len(), 6);
-    }
-
-    #[test]
-    fn claude_directory_scope_upgrades_missing_groups_and_preserves_explicit_choices() {
-        let (registry, warnings) = parse_agents_toml(
-            r#"
-[[agents]]
-name = "claude"
-command = "claude"
-args = ["--permission-mode", "plan"]
-[[agents]]
-name = "family"
-command = "wrapper"
-hook_schema = "claude"
-[[agents]]
-name = "opt-out"
-command = "claude"
-hook_schema = "claude"
-additional_dir_args = []
-[[agents]]
-name = "custom"
-command = "claude"
-[[agents]]
-name = "other"
-command = "other"
-additional_dir_args = ["--directory={dir}"]
-"#,
-        );
-        assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(
-            registry.get("claude").unwrap().additional_dir_args,
-            ["--add-dir", "{dir}"]
-        );
-        assert_eq!(
-            registry.get("claude").unwrap().args,
-            ["--permission-mode", "plan"]
-        );
-        assert!(registry
-            .get("family")
-            .unwrap()
-            .additional_dir_args
-            .is_empty());
-        assert!(registry
-            .get("opt-out")
-            .unwrap()
-            .additional_dir_args
-            .is_empty());
-        assert!(registry
-            .get("custom")
-            .unwrap()
-            .additional_dir_args
-            .is_empty());
-        assert_eq!(
-            registry.get("other").unwrap().additional_dir_args,
-            ["--directory={dir}"]
-        );
-        let (opt_out, warnings) = parse_agents_toml(
-            "[[agents]]\nname = 'claude'\ncommand = 'claude'\nadditional_dir_args = []\n",
-        );
-        assert!(warnings.is_empty());
-        assert!(opt_out
-            .get("claude")
-            .unwrap()
-            .additional_dir_args
-            .is_empty());
     }
 
     #[test]
@@ -1390,50 +1170,5 @@ command = "missing-name"
         let reg = load_or_seed();
         assert_eq!(reg.default, "mine");
         assert_eq!(reg.get("mine").unwrap().command, "my-agent");
-    }
-
-    #[test]
-    fn old_seeded_codex_address_is_upgraded_without_rewriting_custom_agents() {
-        let (registry, warnings) = parse_agents_toml(
-            "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = 'codex'\n\
-             args = ['--model', 'example']\nresume_args = ['resume', '--last']\n\
-             fork_args = ['fork', '--last']\nresume_latest = true\n\
-             [[agents]]\nname = 'custom'\ncommand = 'codex'\n\
-             resume_args = ['resume', '--last']\nresume_latest = true\n",
-        );
-        assert!(warnings.is_empty(), "{warnings:?}");
-        let codex = registry.get("codex").unwrap();
-        assert_eq!(codex.resume_args, ["resume", "{id}"]);
-        assert_eq!(codex.fork_args, ["fork", "{id}"]);
-        assert_eq!(codex.args, ["--model", "example"]);
-        assert!(!codex.resume_latest);
-        let custom = registry.get("custom").unwrap();
-        assert_eq!(custom.resume_args, ["resume", "--last"]);
-        assert!(custom.resume_latest);
-    }
-
-    #[test]
-    fn legacy_codex_and_omp_seeds_in_one_file_are_both_upgraded() {
-        // An install seeded before either fix carries both legacy entries side
-        // by side; each upgrade must fire on its own entry and only on it.
-        let (registry, warnings) = parse_agents_toml(
-            "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = 'codex'\n\
-             resume_args = ['resume', '--last']\nfork_args = ['fork', '--last']\n\
-             resume_latest = true\n\
-             [[agents]]\nname = 'omp'\ncommand = 'omp'\n\
-             resume_args = ['--resume', '{home}/.omp/agent/sessions/thurbox-{id}.jsonl']\n\
-             new_session_args = ['--session', '{home}/.omp/agent/sessions/thurbox-{id}.jsonl']\n",
-        );
-        assert!(warnings.is_empty(), "{warnings:?}");
-        let codex = registry.get("codex").unwrap();
-        assert_eq!(codex.resume_args, ["resume", "{id}"]);
-        assert_eq!(codex.fork_args, ["fork", "{id}"]);
-        assert!(!codex.resume_latest);
-        assert!(codex.new_session_args.is_empty());
-        let omp = registry.get("omp").unwrap();
-        assert_eq!(omp.new_session_args, OMP_NEW_SESSION_ARGS);
-        assert_eq!(omp.resume_args, OMP_RESUME_ARGS);
-        assert!(omp.fork_args.is_empty());
-        assert!(!omp.resume_latest);
     }
 }

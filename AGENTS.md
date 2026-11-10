@@ -96,7 +96,9 @@ To **run thurbox in an isolated sandbox** use `scripts/dev/sandbox.sh` (a.k.a.
 thurbox's config/data into the sandbox (via the `THURBOX_CONFIG_DIR`/
 `THURBOX_DATA_DIR` overrides `src/paths/` honors) while keeping your real `HOME` —
 so your authenticated agent CLIs (claude/codex/…) work — and puts dev
-`target/debug` first on PATH so an agent hook's `thurbox-cli` hits the sandbox DB.
+`target/debug` first on PATH, so `fleet` and `runtime-mux` are this checkout's.
+It gives the sandbox a Fleet of its own (`<sandbox>/fleet/config.toml`, exported as
+`FLEET_CONFIG`), so its sessions are Tasks in the sandbox's store, never yours.
 It also names the sandbox's tmux socket outright (`THURBOX_SOCKET`, `=
 $TBX_DEV_SOCKET`): a relocated `THURBOX_DATA_DIR` otherwise derives one of its
 own, and teardown kills the socket *by name*.
@@ -106,7 +108,7 @@ scripts/dev/sandbox.sh               # persistent "default" profile, launch the 
 scripts/dev/sandbox.sh --fresh       # throwaway env, wiped on exit
 scripts/dev/sandbox.sh --isolate-home    # full hermetic isolation (fresh HOME; agents have no creds)
 scripts/dev/sandbox.sh --shell       # shell with the sandbox env (run thurbox-cli by hand)
-scripts/dev/sandbox.sh -- session list   # run a thurbox-cli command in the sandbox
+scripts/dev/sandbox.sh -- config show   # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean       # wipe the persistent profile
 ```
 
@@ -114,7 +116,7 @@ The TUI is launched **from the sandbox root rather than the repo**:
 the sandbox sets `THURBOX_CONFIG_DIR`, so the interface materialises at
 `<sandbox>/thurbox-config/ui/` along with everything else and `--fresh` gives you a
 clean one per run. (This used to matter more: `resolve_ui_dir` preferred a `./ui` in
-the working directory, so a sandbox started from the repo isolated the database but
+the working directory, so a sandbox started from the repo isolated the data but
 not the interface. That rule is gone, and the `cd` is now belt-and-braces.)
 
 The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
@@ -310,10 +312,9 @@ node                 may reference                     [fully-qualified path onl
 session              nothing — pure data, the dependency sink (no
                      process state, no env reads, no rendering crate;
                      re-exports runtime-mux's host model and SessionId)
-agent                agent::{generic,provider} (re-exports only)
+agent                agent::* (declarations only)
 agent::*             every file a node: session, paths, shell, config::file
-                     and the other agent::* files each declares (NEVER git,
-                     NEVER backend)
+                     each declares (NEVER git, NEVER backend)
 config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
                      paths) plus session (themes: theme instead)
@@ -336,7 +337,7 @@ ui_control           paths
 shell                nothing — runtime-mux's launchers and quoting, re-exported
 theme                nothing — the presets, in ratatui colours
 coordinator          agent::input, config::{hosts,     (main's body: the loop,
-                     interface_state,settings},         the workers, the chrome)
+                     interface_state},                  the workers, the chrome)
                      backend, clipboard, kernel,
                      notifications, paths, session,
                      shell, telemetry, ui_control
@@ -400,12 +401,11 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 
 - MSRV: 1.95, Edition 2021 (`rust-version` in `Cargo.toml`)
 - Async runtime: tokio (multi-threaded)
-- Session backend: a tmux-protocol server per adapter — `TmuxBackend`
-  (`backend::tmux`), `PsmuxBackend` (`backend::psmux`), and opt-in
-  `RmuxBackend` (`backend::rmux`), peers over the
-  shared `tmux_compat::server` (ADR-31) — over a `TmuxTransport`
-  (local `tmux -L thurbox`, or `ssh <dest> tmux …` for
-  `ssh:<host>` backends from `hosts.toml`). The local socket is
+- Session backend: Fleet runs every session on `runtime-mux`
+  (`crates/runtime-mux`), a tmux-protocol server per adapter — `tmux`,
+  `psmux` and opt-in `rmux`, peers over the shared `tmux_compat::server`
+  (ADR-31). thurbox reaches its own panes (companion shells, stream panes)
+  through the `backend` gateway to the same crate. Its local socket is
   `thurbox`/`thurbox-dev` only for an instance on the **default** data dir; one
   relocated by `THURBOX_DATA_DIR` derives its own (`thurbox-<digest>`) so it
   never creates windows on the operator's server, and `THURBOX_SOCKET`
@@ -435,7 +435,7 @@ For rationale behind decisions, see `docs/`:
   each component's own
 - `docs/thurbox/architecture.md` — Architectural decisions with rationale
 - `docs/thurbox/features.md` — Feature-level design choices
-- `docs/thurbox/config.md` — Thurbox's own config files/env vars/DB settings in one place
+- `docs/thurbox/config.md` — Thurbox's own config files and env vars in one place
 - `docs/thurbox/agents.md` — Each built-in agent's exact config + behavior, and
   the checklist for adding a new built-in
 - `docs/thurbox/performance.md` — Render/tick performance: demand-driven redraw,
