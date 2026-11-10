@@ -80,9 +80,9 @@ breadcrumb: 'Architecture'
             </div>
             <div class="terminal-body">
               <pre>tokio::main &rarr; load config + settings
-  &rarr; arm the tmux heartbeat
+  &rarr; start Fleet (fleet up) &rarr; follow fleet watch
   &rarr; resolve ui/ &rarr; build the Lua host
-  &rarr; open SQLite &rarr; init terminal
+  &rarr; init terminal
   &rarr; loop {
     resolve layout &rarr; call each plugin with its rect &rarr; paint
     &rarr; poll workers (terminals, commands, diffs, metrics, repos, runs)
@@ -90,7 +90,7 @@ breadcrumb: 'Architecture'
     &rarr; drain Lua's command queue
     &rarr; dispatch keys through the registry
   }
-  &rarr; restore terminal (sessions keep running in tmux)</pre>
+  &rarr; restore terminal (sessions keep running: they are Fleet's)</pre>
             </div>
           </div>
 
@@ -146,49 +146,16 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
               <tr>
                 <td><code>agent/</code></td>
                 <td>
-                  Side-effect layer.
-                  <code>AgentProvider</code>
-                  trait abstracts CLI command construction;
-                  <code>GenericProvider</code>
-                  launches any agent from its
-                  <code>AgentDef</code>
-                  .
-                  <code>agent_config::load_or_seed</code>
-                  reads
-                  <code>agents.toml</code>
-                  .
-                  <code>Session</code>
-                  wraps
-                  <code>SessionBackend</code>
-                  , backed by
-                  <code>TmuxBackend</code>
-                  over a
-                  <code>TmuxTransport</code>
-                  (local
-                  <code>tmux -L thurbox</code>
-                  , or
-                  <code>ssh &lt;dest&gt; tmux</code>
-                  for
-                  <code>ssh:&lt;host&gt;</code>
-                  backends).
+                  <code>fetch</code> downloads what a plugin install or the updater needs, and
+                  <code>input</code> encodes keys for an agent's terminal. The agents themselves are
+                  Fleet's harness profiles.
                 </td>
               </tr>
               <tr>
                 <td><code>session/</code></td>
                 <td>
-                  Plain data types:
-                  <code>SessionId</code>
-                  ,
-                  <code>SessionStatus</code>
-                  ,
-                  <code>SessionInfo</code>
-                  ,
-                  <code>SessionConfig</code>
-                  ,
-                  <code>AgentDef</code>
-                  /
-                  <code>AgentRegistry</code>
-                  (declarative agent definitions). No logic beyond pure helpers.
+                  Plain data types: <code>SessionState</code>, the settings, automation schedules,
+                  diffs, plugin specs and the host model. No logic beyond pure helpers.
                 </td>
               </tr>
               <tr>
@@ -208,8 +175,8 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
                 <td>
                   Headless automation (
                   <code>thurbox-cli</code>
-                  binary). Session, automation, and editor subcommands sharing the TUI's SQLite
-                  database.
+                  binary). The interface's own files: config, plugins, automations, the editor,
+                  notifications. Sessions are driven by Fleet's <code>fleet</code>.
                 </td>
               </tr>
             </tbody>
@@ -256,7 +223,7 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
             </li>
             <li>
               <code>discover()</code>
-              &mdash; list existing sessions for restore-on-startup
+              &mdash; list the panes already on a server
             </li>
             <li>
               <code>resize()</code>
@@ -355,29 +322,23 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
             <a href="#persistence" class="heading-anchor">#</a>
           </h2>
           <p>
-            All state is stored in SQLite at
-            <code>~/.local/share/thurbox/thurbox.db</code>
-            . Multiple instances synchronize via
-            <code>PRAGMA data_version</code>
-            polling (250ms). SQLite WAL mode handles concurrent access.
+            Every session is a Fleet Task, so Fleet's store holds the sessions, and every Thurbox
+            instance follows it through <code>fleet watch</code>. Thurbox keeps no database. Its own
+            state is plain files: <code>interface.json</code> (theme, editor, the session order, each
+            companion shell's pane), <code>automations.json</code>, <code>bookmarks.json</code> and
+            <code>settings.toml</code>. A write that two instances can race takes a file lock.
           </p>
 
           <h3>Multi-instance sync</h3>
           <ul>
             <li>
-              <strong>Database</strong>
-              : Atomic transactions, no race conditions
+              <strong>Sessions</strong>
+              : Fleet's store is the one copy; each instance follows the same watch stream.
             </li>
             <li>
               <strong>Session I/O</strong>
-              : Each instance independently connects to tmux control mode. Tmux broadcasts output to
-              all clients.
-            </li>
-            <li>
-              <strong>Input</strong>
-              : Commands serialized by tmux (same as
-              <code>tmux attach</code>
-              with multiple clients)
+              : Each instance opens the session's terminal stream on its own. The multiplexer
+              serves every client.
             </li>
           </ul>
 

@@ -143,8 +143,8 @@ impl Themes {
     /// shows while you move through the list.
     ///
     /// Separate from [`Self::select`] because persistence is the difference
-    /// between trying a palette and choosing one: a preview that wrote to the
-    /// database would leak every theme the cursor passed over into every other
+    /// between trying a palette and choosing one: a preview that wrote to
+    /// `interface.json` would leak every theme the cursor passed over into every other
     /// thurbox process, and leave the last one you glanced at active after you
     /// pressed `Esc`.
     pub fn preview(&mut self, name: &str) -> Result<(), String> {

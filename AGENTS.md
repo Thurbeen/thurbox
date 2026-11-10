@@ -6,8 +6,8 @@ This file provides guidance to coding agents working in this repository.
 
 Thurbox is a multi-session coding-agent TUI orchestrator built
 with Rust. It runs multiple coding-agent CLI instances (Claude
-Code, Codex, Antigravity, opencode, aider, … — any CLI you
-define) inside persistent tmux sessions, rendered as terminal
+Code and Codex, through Fleet's harness profiles) inside
+persistent tmux sessions, rendered as terminal
 panels via ratatui + tui-term. Sessions survive crashes/restarts
 because tmux keeps the processes alive.
 
@@ -140,7 +140,7 @@ that names it. Read the one your change touches:
 | `thurbox-release` | Release Process · Distribution Packages · Installation Script |
 | `thurbox-remote-hosts` | Remote SSH & WSL Sessions |
 | `thurbox-cli` | thurbox-cli · its subcommands · where the session verbs went |
-| `thurbox-session-status` | Session status (hooks-driven) · OS notifications |
+| `thurbox-session-status` | Session status (from Fleet) · OS notifications |
 | `thurbox-kernel` | Architecture (plugin kernel) · Writing an interface plugin |
 | `thurbox-ui-surfaces` | Keybindings · Themes · Settings panel · Global search · Code review |
 | `thurbox-demo-media` | Demo Video |

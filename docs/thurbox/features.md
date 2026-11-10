@@ -379,13 +379,12 @@ not applicable.
    Task's name is derived from it (lowercase letters, digits, `-` and
    `.`), and the name as typed is the Task's `thurbox.dev/name` label.
 4. **Agent picker** — choose which coding agent runs in this
-   session. Skipped when only one agent is defined in
-   `agents.toml`. An agent whose `command` resolves nowhere on `PATH`
-   is marked `⚠ not installed` on its own row, so the cost of the
-   choice is visible while the cursor is still moving over the
-   alternatives. Fleet launches the agent from its own harness profile,
-   so an agent Fleet has no profile for is refused at create, naming the
-   harnesses Fleet runs.
+   session, from the harnesses Fleet offers (`fleet version --json`).
+   Skipped when Fleet offers one. Until Fleet answers, the list is
+   unknown and the step waits for it, so no Task is ever created
+   without a harness. Fleet launches the agent from its own harness
+   profile, so a harness Fleet does not have is refused at create,
+   naming the harnesses Fleet runs.
 
 Creating applies an interactive Task with `fleet apply --create-only`, so two
 names that make one Task name (`Review`, `review`) are refused rather than
@@ -469,27 +468,12 @@ from accumulating stale entries.
 
 ### Agent definitions
 
-The set of available agents is **data**, not code. On first run
-Thurbox seeds `~/.config/thurbox/agents.toml` with built-in
-definitions for claude, codex, antigravity, opencode, aider, copilot,
-vibe, pi and omp, plus `shell` — a plain interactive shell, not a
-coding agent (`agent::agent_config::load_or_seed`). Editing the file —
-adding an `[[agents]]` entry or tweaking an existing one — extends the
-agent picker with no recompile; the snapshot re-reads it on change and
-publishes the registry to the interface. Each built-in's exact config and
-behavior (and the checklist for adding a new built-in) is in
-[agents.md](agents.md), and the format and validation are in
-[config.md](config.md#agents).
-
-Each definition (`session::AgentDef`) carries a `name` (the display and
-lookup key, unique in the registry), the `command` to launch, and its
-argument groups. Registry variants use `extends` to inherit a definition,
-with explicit fields replacing inherited values and `append_args` adding
-flags.
-
-What runs in a session's pane is Fleet's: Fleet launches the agent from its
-own harness profile for that name, so the picker offers what `agents.toml`
-defines and a create is refused when Fleet has no profile for the choice.
+The agents are Fleet's harness profiles (ADR-41). thurbox keeps no agent
+registry: the picker offers the harnesses `fleet version --json` lists, read on
+the Fleet watch's worker thread, and a session's Task names its harness. Fleet
+launches, resumes and watches the agent from that profile. An `agents.toml`
+left from 2.x is not read. Adding an agent is adding a harness profile to
+Fleet ([agents.md](agents.md)).
 
 ### Remote SSH & WSL sessions
 
@@ -603,7 +587,6 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
 | `Ctrl+P` | Global | Command palette — every action, filtered as you type | **P**alette |
-| `Ctrl+W` / `F5` | Global | Toggle tasks panel (todo list) | Work items |
 | `Ctrl+/` | Global | Global search across every scope | **/** = search |
 | `Ctrl+T` / `F8` | Global | Toggle shell pane alongside the agent session | **T**erminal |
 | `Ctrl+X` / `F7` | Global | Toggle the native code-review view | Review |
@@ -786,8 +769,8 @@ interface changes a Task through Fleet's command line
 | Delete (`Ctrl+D`) | `fleet delete task <task>` |
 
 Fleet has no undo window, so a delete takes effect at once. Fleet revives a
-lost session itself. Any other session command, such as restore, restart,
-fork or sync, is refused by name: "… is not available on the Fleet engine".
+lost session itself. Restore, restart, fork and sync no longer exist: a plugin
+that issues one gets `unknown command`.
 
 ### Session Rename (`Ctrl+E`)
 
@@ -1056,12 +1039,13 @@ take `Ctrl+N` from new-session everywhere. Recorded in `tests/keymap.rs`.
 > an existing file does not fail `thurbox-cli config validate`, and are not listed
 > in the settings panel, since a row that gates nothing reads as broken.
 
-Whole features can be switched off declaratively: `tasks`,
+Whole features can be switched off declaratively:
 `automations`, `file_viewer`, `global_search`, `info_panel`,
 `shell_pane`, `code_review`, `perf_hud`, `mouse`, `notifications` — all
 default `true`.
-`soft_delete` (default `false`) is accepted too; Fleet has no undo window, so
-every delete is `fleet delete task`. Two flags reach the network and
+A 2.x file's `tasks` and `soft_delete` still load, and neither does
+anything: there is no tasks panel, and Fleet has no undo window, so every
+delete is `fleet delete task`. Two flags reach the network and
 both default on:
 `version_check` (the "update available" badge +
 `thurbox-cli version --check`) and `auto_update` (silent self-update on
@@ -1118,8 +1102,8 @@ one toasts "some changes apply after restart". Which is which is one table,
 `Settings::restart_only_differs` are derived from it, so the two never
 disagree.
 
-**Why live-reload the file too.** `settings.toml` is watched by mtime
-(like `agents.toml`): an external edit — a
+**Why live-reload the file too.** `settings.toml` is watched by mtime:
+an external edit — a
 hand-edit, or the panel in another instance — re-applies the live feature
 flags and toasts (noting a restart when only restart-only fields
 differ). The panel's own write marks the file saved so the poll doesn't

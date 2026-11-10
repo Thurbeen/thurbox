@@ -12,14 +12,14 @@
 
 ![Thurbox Demo](media/thurbox-demo.gif)
 
-- **Several coding agents at once**, side by side in one terminal — Claude Code, Codex,
-  Antigravity, opencode, aider, or any CLI you describe yourself.
+- **Several coding agents at once**, side by side in one terminal — Claude Code and Codex
+  today, and any agent Fleet gains a harness profile for.
 - **A persistent multiplexer session behind every agent** — they survive crashes, restarts
   and reboots, so quit thurbox and every agent keeps working.
 - **Agents on other machines too** — sessions on a remote host over SSH, or in a WSL
   distro, sit in the same list under their own host, beside the ones running here.
-- **One session, several repos** — put any of them on its own git worktree of a shared branch,
-  so agents never fight over your checkout.
+- **Sessions in your repositories** — a session runs in the repository you pick, as it is; a
+  Task started with `fleet` can ask Fleet for a git worktree of its own instead.
 - **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
   model, prompts or tools, so new agent features arrive the day that CLI ships them.
 - **An interface that is not compiled in** — every pane, the session list included, is a Lua
@@ -68,8 +68,7 @@ and changing the install directory are all on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
 **Uninstall:** removing the binaries is not enough — sessions keep running in
-the selected multiplexer, and thurbox wires hooks and a skill into your coding agents' own
-directories. Follow the
+the selected multiplexer. Follow the
 [uninstall steps](https://thurbox.thurbeen.eu/docs/installation.html#uninstall).
 
 ## Your first session
@@ -78,18 +77,18 @@ directories. Follow the
 thurbox
 ```
 
-First launch seeds `~/.config/thurbox/` — the agents thurbox knows, the themes,
-and the interface itself — then draws a session list on the left and an agent
+First launch seeds `~/.config/thurbox/` — the themes and the interface itself —
+and starts Fleet, which runs every session. It then draws a session list on the left and an agent
 terminal on the right.
 
-1. **`Ctrl+N`** opens the repo picker. `Space` toggles a repo, `w` puts it in
-   worktree mode (you are asked for a base branch and a new branch name),
-   `Enter` confirms. Name the session, then pick an agent.
+1. **`Ctrl+N`** opens the new-session flow. Pick a repository, name the
+   session, then pick an agent from the harnesses Fleet offers. The agent runs
+   in that repository.
 2. **Talk to it.** The right pane is a live agent CLI; every key goes to it.
-3. **`Ctrl+N` again** for a second agent on a second branch. `Ctrl+J` / `Ctrl+K`
+3. **`Ctrl+N` again** for a second agent, on the same repository or another. `Ctrl+J` / `Ctrl+K`
    move between sessions — the one you are not looking at keeps working.
 4. **`Ctrl+Q`** leaves the TUI without killing anything. Run `thurbox` again and
-   both agents are still mid-task, or attach raw with `tmux -L thurbox attach`.
+   both agents are still mid-task, or attach to one with `fleet attach <task>`.
 
 That is the whole product in four steps: parallel work that keeps going when you
 stop watching it.
@@ -106,38 +105,31 @@ For the same walkthrough with screenshots, see the
 - **[Global search](https://thurbox.thurbeen.eu/docs/features.html#global-search)**
   (`Ctrl+/`) — find a session by name, agent, branch or repo, *and* by the text
   on its screen, which is the half that finds it by the error in it.
-- **[Fork and lead/worker trees](https://thurbox.thurbeen.eu/docs/features.html#session-forking)**
-  (`Ctrl+F`) — branch a conversation; children nest under their lead.
-- **[Worktrees and multi-repo sessions](https://thurbox.thurbeen.eu/docs/features.html#git-worktrees)**
-  — one session can span several repos, each on its own worktree of a shared
-  branch. `Ctrl+S` syncs them with their base.
 - **[Remote SSH and WSL sessions](https://thurbox.thurbeen.eu/docs/features.html#remote-ssh-sessions)**
   — declare hosts in `hosts.toml` and sessions run there while the TUI stays
   local.
 - **[A headless CLI](https://thurbox.thurbeen.eu/docs/features.html#headless-cli)**
-  — `thurbox-cli` creates, drives, captures and tears down sessions from a
-  script, over the same database the TUI is reading.
-- **[Automations and tasks](https://thurbox.thurbeen.eu/docs/features.html#automations)**
-  — scheduled agent runs and a todo list whose items can be handed to an agent.
-  A tmux heartbeat fires them whether or not thurbox is open.
-- **[Inter-session messages](https://thurbox.thurbeen.eu/docs/features.html#inter-session-messages)**
-  — an agent-neutral mailbox so one agent hands another a payload instead of
-  scraping its terminal. A built-in `thurbox-sessions` skill teaches whichever
-  CLI you run to find the other sessions, read them, and message them safely.
-- **[Session lifecycle hooks](https://thurbox.thurbeen.eu/docs/configuration.html#hooks-toml)**,
-  **[OS notifications](https://thurbox.thurbeen.eu/docs/configuration.html#notifications)**,
+  — every session is a Fleet Task, so `fleet` creates, drives and deletes
+  sessions from a script while the TUI shows them. `thurbox-cli` covers the
+  interface's own files.
+- **[Automations](https://thurbox.thurbeen.eu/docs/features.html#automations)**
+  — scheduled sends, spawns and commands in `automations.json`, fired by the
+  interface or by `thurbox-cli automation tick` from an OS timer.
+- **[Messages between sessions](https://thurbox.thurbeen.eu/docs/features.html#inter-session-messages)**
+  — `fleet send` queues a message for a session's agent, and Fleet delivers it,
+  so one agent hands another a payload instead of scraping its terminal.
+- **[OS notifications](https://thurbox.thurbeen.eu/docs/configuration.html#notifications)**,
   **[36 themes](https://thurbox.thurbeen.eu/docs/features.html#themes)**
   (`Ctrl+Y`) and full mouse support.
 
-Wiring a fleet of agents at once — operators, developers, reviewers, from one
-script — is the
+Starting a session per package of a monorepo from one script is the
 [monorepo recipe](https://thurbox.thurbeen.eu/docs/recipes.html#monorepo).
 
 ## Make it yours
 
 The binary boots a kernel, reads a directory, and draws whatever Lua it finds
 there. Panes live in `ui/plugins/*.lua`, the arrangement in `ui/layout.lua`, and
-`F10` reloads both from disk. Agents, hosts, hooks, themes, chords and settings
+`F10` reloads both from disk. Hosts, themes, chords and settings
 are each a file under `~/.config/thurbox/`.
 
 You do not have to learn Lua for any of it. The interface directory ships an

@@ -41,7 +41,7 @@ because "my edit did nothing" is almost always the other one.
 
 That third path follows the same rule every other config path does: a **dev
 build** (version `0.0.0-dev`) reads `~/.config/thurbox-dev/ui` instead, beside its
-own `settings.toml` and `agents.toml`, so hacking on the interface from a checkout
+own `settings.toml`, so hacking on the interface from a checkout
 cannot touch the copy your installed thurbox uses. Two things make this easy to
 misread, and both are worth knowing before you conclude a path is wrong:
 
@@ -1067,11 +1067,6 @@ the session UUID as `args.session_id`. The bundled menu also leaves the older
 `store["menu.chosen"]` handoff until edited copies of either bundled pane have
 been migrated; new handlers should use the typed argument.
 
-For a soft delete passed through a confirmation pane, `command("delete")` can
-take `remember = { key = "sessions.deleted", value = id }` inside its options.
-The store write happens when the command is issued, so a preserved older
-confirmation pane retains undo without creating an undo target on cancel.
-
 An entry's `action` has to be one some plugin **declares**, in `keys` or in
 `commands`: that declaration is how `command("action")` finds the pane whose
 `on_action` answers it. An undeclared one falls back to the menu float itself,
@@ -1222,8 +1217,8 @@ Sessions are Fleet Tasks, so a session verb is one call of Fleet's command line:
 `create` applies a Task, `send` queues a message in its inbox, `rename` labels
 it and `delete` deletes it. Fleet makes a Task's workspace, so a `create` that
 names a branch, a base branch, an existing worktree or further repositories is
-refused. `fork`, `restart`, `restore`, `sync`, `dispatch`, `task` and
-`automation` are refused by name. A refusal is
+refused. `fork`, `restart`, `restore`, `sync`, `reorder`, `dispatch`, `task` and
+`automation` no longer exist: each is an `unknown command`. A refusal is
 `command.failed`, whose `subject` names what was asked, so a pane can show it
 where it was made.
 
@@ -1563,10 +1558,10 @@ create). Edit one and it is your file, decided like any other — the
 Interface tab marks it untrusted until you press `t`.
 
 The confirmation is the one place a pane without the grant reaches these, by
-leaving a question in `store.confirm`, so it forwards only `delete`, `restart`,
-`restore` and `sync`. Every pane writes `store`, so the question is only its
-author's words. The confirmation therefore words what `y` does itself, from the
-command and the session's name, and names the pane that asked. It learns which
+leaving a question in `store.confirm`, so it forwards only `delete`. Every pane
+writes `store`, so the question is only its author's words. The confirmation
+therefore words what `y` does itself, from the command and the session's name,
+and names the pane that asked. It learns which
 pane that was from `store_writer("confirm")`, which returns the path of the
 plugin that last wrote a `store` key — or, written for another plugin's request,
 that request's chain (`plugins/a.lua via plugins/b.lua`). That record is made by the writer's own
@@ -1990,7 +1985,7 @@ are free in the interface thurbox ships, which says nothing about yours. So
 
 ```console
 $ thurbox-cli plugin check
-  ✓ loads — sessions, agent, confirm, search, new_session, restore, notes, scratch
+  ✓ loads — sessions, agent, confirm, search, new_session, notes, scratch
   ! plugins/91_scratch.lua — f7 is claimed by both notes.toggle and scratch.toggle; notes.toggle wins (declared in plugins/90_notes.lua)
 ```
 

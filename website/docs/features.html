@@ -89,11 +89,6 @@ breadcrumb: 'Features'
                 <td>installable</td>
                 <td><code>ui/plugins.toml</code></td>
               </tr>
-              <tr>
-                <td><a href="#tasks">Tasks</a></td>
-                <td>CLI only</td>
-                <td><code>thurbox-cli task</code></td>
-              </tr>
             </tbody>
           </table>
           <p>
@@ -147,8 +142,9 @@ breadcrumb: 'Features'
           </figure>
           <p>
             Run multiple coding-agent CLIs side-by-side, each in its own multiplexer pane. A session runs
-            one agent (Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi,
-            Oh My Pi, or your own), each with its own default config. Sessions persist across crashes,
+            one agent (Claude Code or Codex, through Fleet's harness profiles), each with its own default
+            config. Every session is a Fleet Task: Fleet starts it, keeps it running and reports its
+            status. Sessions persist across crashes,
             restarts,
             and even
             multiple concurrent Thurbox instances &mdash; the multiplexer keeps them alive in the background.
@@ -161,12 +157,13 @@ breadcrumb: 'Features'
               Create a session with
               <code>Ctrl+N</code>
               : repo picker &rarr; session name &rarr; agent picker. The agent picker is skipped
-              when only one agent is defined.
+              when Fleet offers one harness, and a host picker comes first when Fleet defines more
+              than one host.
             </li>
             <li>
               Rename a session with
               <code>Ctrl+E</code>
-              from the session list; its tmux windows are renamed with it.
+              from the session list. The name is the Task's <code>thurbox.dev/name</code> label.
             </li>
             <li>
               Each session row shows the agent's live activity when the CLI reports one (via its
@@ -201,222 +198,79 @@ breadcrumb: 'Features'
               survives restarts.
             </li>
             <li>
-              Recover sessions externally at any time with
-              <code>tmux -L thurbox attach</code>
+              Attach to a session's terminal outside Thurbox with
+              <code>fleet attach &lt;task&gt;</code>
             </li>
           </ul>
 
-          <h2 id="agent-definitions">
+                    <h2 id="agent-definitions">
             Agent Definitions
             <a href="#agent-definitions" class="heading-anchor">#</a>
           </h2>
           <p>
-            The set of available agents is data, not code. On first run Thurbox seeds
-            <code>~/.config/thurbox/agents.toml</code>
-            with built-ins (claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp).
-            Edit the file to tweak an agent or add a new one &mdash; no recompile required. See
-            <a href="agents.html">Built-in agents</a>
-            for each one's recommended config and behavior.
+            The agents are Fleet's harness profiles. Thurbox keeps no agent registry: the agent picker
+            offers the harnesses <code>fleet version --json</code> lists, and a session's Task names
+            its harness. An <code>agents.toml</code> left from 2.x is not read. See
+            <a href="agents.html">Agents</a>.
           </p>
-          <ul>
-            <li>
-              Each
-              <code>[[agents]]</code>
-              entry has a
-              <code>command</code>
-              ,
-              <code>args</code>
-              (always passed &mdash; bake in flags like a model here if you want), and
-              argument-template groups (
-              <code>resume_args</code>
-              ,
-              <code>fork_args</code>
-              ,
-              <code>new_session_args</code>
-              ).
-            </li>
-            <li>
-              A group is appended only when its driving value is present, with
-              <code>{id}</code>
-              substituted. Selection precedence is fork &gt; resume &gt; new-session id.
-            </li>
-            <li>
-              A session is fully described by its repos and agent. There is no per-session model
-              selection, permissions, prompt, tool, or skill configuration &mdash; those belong to
-              the agent CLI itself, which runs with its own default config.
-            </li>
-          </ul>
 
-          <div class="info-box">
-            <p>
-              <strong>They fire with or without a pane.</strong>
-              Scheduling does not live in the interface: a detached tmux heartbeat keeper runs due
-              automations whether or not thurbox is open. Author and inspect them with
-              <code>thurbox-cli automation</code>, or in the
-              <a href="https://github.com/Thurbeen/thurbox-automations" target="_blank" rel="noopener">thurbox-automations</a>
-              pane.
-            </p>
-          </div>
-          <h2 id="automations">
+                    <h2 id="automations">
             Automations
             <a href="#automations" class="heading-anchor">#</a>
           </h2>
           <p>
-            Named, scheduled agent runs. An automation fires on a schedule and either
-            <strong>sends</strong>
-            a prompt to a running session,
-            <strong>spawns</strong>
-            a fresh session (optionally on a new git worktree) and prompts it, or
-            <strong>runs a shell command</strong>
-            headlessly with no agent at all &mdash; a deterministic scheduled job.
+            Named, scheduled runs. An automation fires on a schedule and either
+            <strong>sends</strong> a prompt to a session (<code>fleet send</code>),
+            <strong>spawns</strong> a new session and prompts it, or
+            <strong>runs a shell command</strong> headlessly with no agent at all.
           </p>
           <ul>
             <li>
-              Schedules are one-shot (a relative delay) or recurring cron, with friendly
-              <code>hourly</code>
-              /
-              <code>daily</code>
-              /
-              <code>weekdays</code>
-              /
-              <code>weekly</code>
+              Schedules are one-shot (<code>at:</code>) or recurring cron, with friendly
+              <code>hourly</code> / <code>daily</code> / <code>weekdays</code> / <code>weekly</code>
               presets and an optional timezone.
             </li>
             <li>
-              Automations fire even when the TUI is closed &mdash; a detached tmux heartbeat keeper
-              runs them every minute (and keeps the tmux server alive), with opt-in systemd/launchd
-              units for reboot-proof firing. Concurrent firers are de-duplicated by an atomic claim,
-              so nothing double-fires.
+              Automations are Thurbox's own: one file, <code>automations.json</code> beside
+              <code>settings.toml</code>, holds each definition and its recent runs. Fleet has no
+              schedule kind.
             </li>
             <li>
-              Everything is persisted in SQLite (
-              <code>automations</code>
-              +
-              <code>automation_runs</code>
-              history) and scriptable headlessly via
-              <code>thurbox-cli automation create/list/edit/run/runs/tick</code>
-              .
+              The interface fires due runs every 15 seconds while it runs. For firing with no
+              interface open, run <code>thurbox-cli automation tick</code> from an OS timer (a cron
+              line or a systemd timer). A run is claimed in the file under a lock before it starts,
+              so two firers never fire one occurrence twice.
+            </li>
+            <li>
+              Scriptable headlessly with
+              <code>thurbox-cli automation create/list/show/edit/remove/run/tick</code>.
             </li>
           </ul>
 
-          <div class="info-box">
-            <p>
-              <strong>No pane.</strong>
-              Tasks work through <code>thurbox-cli task</code>. A pane over the same records is one
-              anybody can write &mdash; <code>examples/panes/tasks</code> is an example.
-            </p>
-          </div>
-          <h2 id="tasks">
-            Tasks
-            <a href="#tasks" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            A built-in todo list whose items can be
-            <strong>connected to a coding agent</strong>
-            with the same Send/Spawn model as automations:
-            <strong>Send</strong>
-            pastes the task title into an existing session,
-            <strong>Spawn</strong>
-            creates a fresh session (optionally on a new worktree) seeded with the title, and an
-            unconnected task is a plain local todo. Triggering a task runs its action and advances
-            it to
-            <em>in progress</em>
-            .
-          </p>
-          <ul>
-            <li>
-              A task carries a title, a markdown description, and a status (&#9744; todo &middot;
-              &#9680; in progress &middot; &#9745; done). Triggering one runs its action and advances
-              it to
-              <em>in progress</em>
-              .
-            </li>
-            <li>
-              Persisted in SQLite and driven from
-              <code>thurbox-cli task</code>
-              (alias
-              <code>todo</code>
-              ):
-              <code>create/list/show/edit/remove/run</code>
-              .
-            </li>
-            <li>
-              <strong>Importable from a tracker, without thurbox knowing which one.</strong>
-              A task carries a
-              <code>source</code>
-              tag and an external id and url, and
-              <code>task create --source … --external-id …</code>
-              upserts on
-              <code>(source, external_id)</code>
-              &mdash; so a scheduled
-              <code>Exec</code>
-              automation running your own script keeps a tracker and this list in step. Only
-              open-vs-done is authoritative on the way in, so a local
-              <em>in progress</em>
-              is never clobbered. thurbox ships no provider integration: keeping the binary free of
-              provider names is the point (ADR-20).
-            </li>
-          </ul>
+          
 
-          <h2 id="git-worktrees">
+                    <h2 id="git-worktrees">
             Git Worktrees
             <a href="#git-worktrees" class="heading-anchor">#</a>
           </h2>
-          <p>Optionally spawn sessions inside git worktrees for branch isolation.</p>
+          <p>
+            A session created from the interface runs in the repository you pick, as it is: its Task
+            has a <code>dir</code> workspace, which Fleet attaches without copying, and two sessions
+            on one repository share its checkout. A Task that names <code>repositories</code> instead
+            gets a git worktree of its own from Fleet's <code>[workspaces]</code>, under
+            <code>&lt;Fleet data dir&gt;/workspaces</code> unless <code>root</code> says otherwise.
+          </p>
           <ul>
             <li>
-              When creating a session (
-              <code>Ctrl+N</code>
-              ), choose "Worktree" mode to select a base branch and name a new branch
-            </li>
-            <li>Thurbox creates the worktree and launches the agent inside it</li>
-            <li>
-              Worktrees the repo
-              <em>already</em>
-              has appear as
-              <code>&#8629;</code>
-              child rows under it, each showing its branch.
-              <code>Enter</code>
-              on one
-              <strong>opens</strong>
-              it &mdash; no
-              <code>git worktree add</code>
-              runs, so it works even for a branch already checked out
+              Deleting such a Task (<code>fleet delete task</code>) removes its worktree. Committed
+              work that exists nowhere else is kept under <code>refs/fleet/preserved/</code> in the
+              source repository.
             </li>
             <li>
-              Closing a session removes the worktrees Thurbox created. One it merely opened is
-              left exactly where it was, since removing it would take any uncommitted work in it
-              along too
+              Ignored files (build output, caches) are not kept: the repository declares them
+              disposable.
             </li>
-            <li>Worktree sessions show the branch name in the terminal title and session list</li>
           </ul>
-
-          <h3>Worktree storage</h3>
-          <p>
-            Worktrees are created at
-            <code>&lt;repo&gt;/.git/thurbox-worktrees/&lt;sanitized-branch&gt;</code>
-            , where
-            <code>/</code>
-            in branch names is replaced by
-            <code>-</code>
-            .
-          </p>
-
-          <h3>Multi-repo sessions</h3>
-          <p>
-            A session can span several repositories. The repo picker lets you select more than one,
-            and headless callers pass
-            <code>--add-repo PATH[@BASE]</code>
-            (each gets its own isolated worktree on the session's branch) or
-            <code>--add-dir PATH</code>
-            (attached as-is, no branch). Because agent CLIs differ wildly in how they accept extra
-            directories, Thurbox launches a multi-repo session in a per-session
-            <strong>symlink workspace</strong>
-            (
-            <code>~/.local/share/thurbox/workspaces/&lt;id&gt;/</code>
-            , one symlink per repo) and starts the agent there, so every agent sees each repo as a
-            subdirectory &mdash; fully agent-neutral. Single-repo sessions are unchanged.
-          </p>
 
           <h2 id="remote-ssh-sessions">
             Remote SSH Sessions
@@ -471,96 +325,38 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             .
           </p>
 
-          <h2 id="parent-sessions">
+                    <h2 id="parent-sessions">
             Parent Sessions (Lead / Worker)
             <a href="#parent-sessions" class="heading-anchor">#</a>
           </h2>
           <p>
-            Every session carries an optional
-            <strong>parent</strong>
-            , so orchestration scripts can model a
-            <em>lead</em>
-            session that spawns
-            <em>workers</em>
-            . Headless,
-            <code>thurbox-cli session create --parent &lt;uuid&gt;</code>
-            sets it explicitly, and
-            <code>session list --parent &lt;uuid&gt;</code>
-            lists a lead's direct children.
+            A Task can name a <strong>parent</strong> with its
+            <code>gateway.fleet.dev/parent</code> label, so a <em>lead</em> session that spawns
+            <em>workers</em> shows them under it.
           </p>
           <ul>
             <li>
               In the session list, children nest under their parent
-              <strong>within the same repo group</strong>
-              (muted
-              <code>&boxur;</code>
-              tree prefix; a child whose parent lives in another group keeps its place with a
-              <code>&rdsh;</code>
-              mark instead).
-              <code>Ctrl+J</code>
-              /
-              <code>Ctrl+K</code>
-              navigation walks the tree exactly as rendered.
+              <strong>within the same repo group</strong>.
+              <code>Ctrl+J</code> / <code>Ctrl+K</code> navigation walks the tree exactly as rendered.
             </li>
             <li>
-              The link is
-              <strong>informational only</strong>
-              &mdash; deleting a lead never deletes or orphans its workers (they routinely outlive
-              the lead). A dangling parent just renders the child as a top-level session again.
+              The link is <strong>informational only</strong> &mdash; deleting a lead never deletes
+              its workers. A dangling parent renders the child as a top-level session again.
             </li>
           </ul>
 
-          <h2 id="inter-session-messages">
+                    <h2 id="inter-session-messages">
             Inter-Session Messages
             <a href="#inter-session-messages" class="heading-anchor">#</a>
           </h2>
           <p>
-            A general, agent-neutral
-            <strong>message queue</strong>
-            lets one session hand another a structured payload &mdash; addressed to a session, with
-            a free-form
-            <code>--kind</code>
-            tag, a
-            <code>--body</code>
-            , and optional sender/task provenance &mdash; instead of scraping its rendered
-            terminal. It is a channel for agent&harr;agent coordination &mdash;
-            an orchestration lead collecting its workers' questions, plans and results is the shape
-            it was built for.
+            <code>fleet send &lt;task&gt; &lt;text&gt;</code> queues a message for a session's agent,
+            and Fleet's Task controller delivers it on its next pass. One agent hands another a
+            payload this way instead of scraping its terminal. The Task's <code>status.inbox</code>
+            records what was queued and delivered, and <code>--answers &lt;id&gt;</code> marks a
+            message as the answer to a question the Task declared.
           </p>
-          <ul>
-            <li>
-              <strong>Push, not poll.</strong>
-              A worker pushes a clean payload with
-              <code>thurbox-cli message send</code>
-              , and the body is handed straight to the recipient agent's own inbox &mdash; Claude
-              Code's inbox socket, or
-              <code>codex queue</code>
-              for Codex &mdash; between tool calls or as a new turn. Other agents read it from the
-              durable mailbox. Nothing is ever typed into the recipient's pane.
-            </li>
-            <li>
-              <strong>Exactly-once drain.</strong>
-              <code>message inbox --claim</code>
-              is a single atomic
-              <code>UPDATE &hellip; RETURNING</code>
-              , so the TUI, a cron tick, and a native delivery can race on the same inbox
-              without ever double-processing or dropping a message.
-            </li>
-            <li>
-              <strong>Self-knowable identity.</strong>
-              Thurbox injects a stable
-              <code>THURBOX_SESSION</code>
-              (and, for task-spawned sessions,
-              <code>THURBOX_TASK</code>
-              ) into each agent, so a CLI call
-              <em>inside</em>
-              a session proves its own identity: an agent sends and reads its own mail passing no
-              ids, and
-              <code>message reply &lt;id&gt;</code>
-              routes back to a message's original sender without ever mapping a peer to a session
-              id.
-            </li>
-          </ul>
 
           <h2 id="global-search">
             Global Search
@@ -821,8 +617,7 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
           </div>
           <pre data-title="settings.toml"><code class="language-toml">[features]
 shell_pane = true     # Ctrl+T per-session shell
-soft_delete = false   # TUI + CLI delete immediately; true = undo window
-automations = true    # schedule firing + arming the tmux heartbeat
+automations = true    # the interface fires due automations
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
 perf_hud = true       # F12 live counters
@@ -830,8 +625,8 @@ version_check = true  # GitHub update check (makes a network call)
 auto_update = true    # download+verify+replace the binaries on startup (never across a major)</code></pre>
           <p>
             <code>automations = false</code>
-            is the flag with teeth beyond the interface: it also stops due schedules from firing and
-            stops the tmux heartbeat being armed at startup (explicit
+            is the flag with teeth beyond the interface: it also stops the interface firing due
+            schedules (explicit
             <code>thurbox-cli automation</code>
             commands still work).
           </p>
@@ -867,39 +662,15 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
             effect immediately.
           </p>
 
-          <h2 id="session-persistence">
+                    <h2 id="session-persistence">
             Session Persistence
             <a href="#session-persistence" class="heading-anchor">#</a>
           </h2>
           <p>
-            Sessions run inside a dedicated tmux server (
-            <code>tmux -L thurbox</code>
-            ) and survive crashes, restarts, and multiple concurrent instances.
+            Sessions are Fleet Tasks, and Fleet's runtime keeps each one's terminal in a multiplexer
+            window, so a session survives Thurbox quitting, crashing or restarting, and several
+            Thurbox instances show the same sessions.
           </p>
-
-          <h3>How it works</h3>
-          <ul>
-            <li>
-              Sessions spawn as tmux windows. The tmux pane keeps running regardless of Thurbox's
-              lifecycle.
-            </li>
-            <li>
-              On shutdown (
-              <code>Ctrl+Q</code>
-              ), session metadata is saved to SQLite. Thurbox detaches without killing sessions.
-            </li>
-            <li>
-              On restart, Thurbox discovers existing sessions from tmux, matches them to persisted
-              metadata, and adopts them with terminal content intact.
-            </li>
-            <li>
-              External recovery is always possible via
-              <code>tmux -L thurbox attach</code>
-              .
-            </li>
-          </ul>
-
-          <h3>Close vs Quit</h3>
           <table>
             <thead>
               <tr>
@@ -909,562 +680,55 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
             </thead>
             <tbody>
               <tr>
-                <td>
-                  <code>Ctrl+Q</code>
-                  (Quit)
-                </td>
-                <td>Detaches all sessions, saves metadata. Sessions resume on next launch.</td>
+                <td><code>Ctrl+Q</code> (Quit)</td>
+                <td>Leaves every session running. The next launch shows them again.</td>
               </tr>
               <tr>
+                <td><code>Ctrl+D</code> (Delete)</td>
                 <td>
-                  <code>Ctrl+D</code>
-                  (Close)
+                  Deletes the Task (<code>fleet delete task</code>). Fleet stops the agent; a
+                  repository the session ran in is left as it is. There is no undo.
                 </td>
-                <td>Permanently kills the tmux pane. Worktree (if any) is removed immediately.</td>
               </tr>
             </tbody>
           </table>
 
-          <h2 id="headless-cli">
+                    <h2 id="headless-cli">
             Headless CLI
             <a href="#headless-cli" class="heading-anchor">#</a>
           </h2>
           <p>
-            The
-            <code>thurbox-cli</code>
-            binary drives the same sessions, automations, and editor settings without the TUI
-            &mdash; ideal for scripting. It shares the TUI's SQLite database and
-            <code>tmux -L thurbox</code>
-            server, so changes made by either show up live in the other. Output is
-            <strong>human-readable in a terminal</strong>
-            and <strong>TOON</strong> &mdash; a compact, agent-oriented encoding &mdash; when stdout
-            is piped; force a format with
-            <code>--json</code>
-            (compact, every field, the shape scripts parse),
-            <code>--pretty</code>
-            (indented JSON),
-            <code>--toon</code>
-            or
-            <code>--text</code>
-            (human even when piped). Run it with no subcommand and it prints live state &mdash; every
-            session with the state its hooks last reported &mdash; rather than a usage dump.
+            Every session is a Fleet Task, so <code>fleet</code> drives the same sessions as the TUI,
+            from a script. A change made either way shows up in the other within a tick.
           </p>
-          <pre data-wrap><code class="language-bash">thurbox-cli session list
-thurbox-cli session create --name reviewer --repo-path /path/to/repo --agent codex
-thurbox-cli session send &lt;uuid&gt; "run the test suite"           # only into an empty composer; reports "submitted"
-thurbox-cli session send &lt;uuid&gt; "steer it here" --no-enter   # typed, not submitted
-thurbox-cli session key &lt;uuid&gt; enter                         # ...and now submit it
-thurbox-cli session key &lt;uuid&gt; escape                        # interrupt the turn
-thurbox-cli session capture &lt;uuid&gt; --lines 500
-thurbox-cli session capture &lt;uuid&gt; --ansi --json
-thurbox-cli session get reviewer                             # a name works anywhere an id does
-thurbox-cli session create --name build --repo-path . \
-    --command npm --arg run --arg watch --env NODE_ENV=dev   # any command is a session
-thurbox-cli session stop reviewer                            # park it: pane gone, work kept
-thurbox-cli session start reviewer                           # and put it back
-thurbox-cli session exec reviewer -- git status --porcelain  # run in its dir, not in its pane
-thurbox-cli session meta set reviewer fm.task_id T-1043      # your own key/value space
-thurbox-cli agent launch-args claude                         # what to run so its hooks report
-thurbox-cli watch --json --initial                           # one event per line, no polling
-thurbox-cli message send --to lead --kind questions --task 5 --body "scope?"
-thurbox-cli message inbox --for lead --claim</code></pre>
+          <table>
+            <thead>
+              <tr>
+                <th>To</th>
+                <th>Run</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>List sessions</td><td><code>fleet list task</code></td></tr>
+              <tr><td>Read one</td><td><code>fleet get task &lt;name&gt;</code> (JSON)</td></tr>
+              <tr>
+                <td>Create one</td>
+                <td><code>fleet apply --create-only -f &lt;task.json&gt;</code></td>
+              </tr>
+              <tr><td>Type into its agent</td><td><code>fleet send &lt;task&gt; &lt;text&gt;</code></td></tr>
+              <tr>
+                <td>Rename it</td>
+                <td><code>fleet label task &lt;task&gt; thurbox.dev/name=&lt;name&gt;</code></td>
+              </tr>
+              <tr><td>Attach to its terminal</td><td><code>fleet attach &lt;task&gt;</code></td></tr>
+              <tr><td>Follow changes</td><td><code>fleet watch --json</code></td></tr>
+              <tr><td>Delete it</td><td><code>fleet delete task &lt;name&gt;</code></td></tr>
+            </tbody>
+          </table>
           <p>
-            <strong>Every session verb takes a name, a UUID, or a unique id prefix.</strong>
-            They resolve in that order, and a reference matching
-            <em>several</em>
-            sessions is refused with every candidate named rather than resolved by
-            whichever sorted first &mdash; so a driver never has to keep its own
-            name-to-id map.
-          </p>
-          <ul>
-            <li>
-              <strong>session</strong>
-              &mdash;
-              <code>list</code>
-              ,
-              <code>get</code>
-              ,
-              <code>create</code>
-              (synchronous &mdash; the tmux window is live on return; supports
-              <code>--worktree-branch</code>
-              /
-              <code>--base-branch</code>
-              ),
-              <code>send</code>
-              (append
-              <code>--no-enter</code>
-              to type the text and leave it unsubmitted &mdash; the text goes out as one
-              bracketed paste, so it arrives literally),
-              <code>key</code>
-              (one named special key:
-              <code>enter</code>
-              ,
-              <code>escape</code>
-              ,
-              <code>tab</code>
-              ,
-              <code>backspace</code>
-              ,
-              <code>space</code>
-              , the arrows,
-              <code>home</code>
-              /
-              <code>end</code>
-              ,
-              <code>page-up</code>
-              /
-              <code>page-down</code>
-              ,
-              <code>delete</code>
-              , or
-              <code>ctrl-&lt;letter&gt;</code>
-              &mdash;
-              <code>ctrl-c</code>
-              ,
-              <code>ctrl+c</code>
-              and
-              <code>C-c</code>
-              are the same key, and a name thurbox does not know is refused rather than
-              typed into the pane),
-              <code>capture</code>
-              ,
-              <code>doctor</code>
-              ,
-              <code>restart</code>
-              ,
-              <code>delete</code>
-              ,
-              <code>restore</code>
-              ,
-              <code>stop</code>
-              /
-              <code>start</code>
-              (park a session: the pane goes, the row, checkout and conversation
-              stay &mdash; the verb between "leave it running" and "delete it"),
-              <code>fork</code>
-              ,
-              <code>exec</code>
-              ,
-              <code>meta</code>
-              .
-              <code>send</code>
-              ,
-              <code>key</code>
-              ,
-              <code>capture</code>
-              and
-              <code>exec</code>
-              work on a
-              <code>--host</code>
-              session too: they delegate to that host's own
-              <code>thurbox-cli</code>
-              . A refusal is left only where delegation is genuinely impossible
-              &mdash; no
-              <code>hosts.toml</code>
-              entry, or no reachable CLI there &mdash; and it says which.
-            </li>
-            <li>
-              <strong>session create</strong>
-              &mdash; beyond
-              <code>--worktree-branch</code>
-              /
-              <code>--base-branch</code>
-              :
-              <code>--command</code>
-              /
-              <code>--arg</code>
-              /
-              <code>--env</code>
-              make
-              <em>any executable</em>
-              a session (its launch recipe is stored on the row, so a restart
-              replays it &mdash; there is no
-              <code>agents.toml</code>
-              entry to re-resolve);
-              <code>--resume &lt;id&gt;</code>
-              adopts a conversation that began elsewhere; and
-              <code>--on-existing &lt;allow|adopt|replace|fail&gt;</code>
-              answers "a session of this name already exists" &mdash;
-              <code>allow</code>
-              is the default because a database mirroring a shareable host
-              carries that host's rows beside its own, so Thurbox cannot make
-              names unique; uniqueness is something a caller asks for. The
-              question is asked of the backend the creation lands on, so a
-              namesake on another host is never adopted or torn down, and
-              <code>replace</code>
-              puts the old session back if the replacement cannot be spawned.
-              <code>--reports-as &lt;agent&gt;</code>
-              records which agent a
-              <code>--command</code>
-              pane actually runs, so hook coverage is read against it.
-            </li>
-            <li>
-              <strong>session exec</strong>
-              &mdash; runs a command in the session's directory, on the machine
-              it lives on, and under the session's own environment (whatever
-              <code>session create --env</code>
-              recorded, plus the
-              <code>THURBOX_*</code>
-              identity its pane carries &mdash; the
-              <em>caller's</em>
-              <code>THURBOX_*</code>
-              is scrubbed, so a driver inside one session cannot lend the child
-              that session's identity). Deliberately
-              <em>not</em>
-              typed into the pane: the pane belongs to the agent, and borrowing
-              it would interleave with whatever it is doing and leave the answer
-              in its scrollback. The command's exit code is always in the output;
-              <code>--exit-passthrough</code>
-              additionally makes it this invocation's own.
-            </li>
-            <li>
-              <strong>session stop / start</strong>
-              &mdash; park a session and put it back: the pane goes, the row,
-              the checkout and the conversation stay. A parked session stays in
-              <code>session list</code>
-              and is told apart there &mdash;
-              <code>stopped: true</code>
-              and
-              <code>state: "stopped"</code>
-              on both read verbs, the same key
-              <code>watch</code>
-              publishes &mdash; so a liveness check needs no pane probe.
-              <code>send</code>
-              ,
-              <code>key</code>
-              and
-              <code>capture</code>
-              refuse a parked session by name.
-            </li>
-            <li>
-              <strong>watch</strong>
-              &mdash; streams the session event log, one event per line (
-              <code>created</code>
-              ,
-              <code>changed</code>
-              ,
-              <code>gone</code>
-              , plus
-              <code>present</code>
-              with
-              <code>--initial</code>
-              ), so nothing driving Thurbox has to poll. It works with no TUI
-              running, because everything worth waking on is already in the
-              database. Each writer appends its own event in the same
-              transaction as the change, so two transitions in the same instant
-              are two events rather than one &mdash; which is what
-              <code>working &rarr; blocked &rarr; working</code>
-              around an auto-answered permission looks like. Every line carries
-              a monotonic
-              <code>seq</code>
-              (
-              <code>--since &lt;seq&gt;</code>
-              resumes exactly where a driver left off), a
-              <code>reason</code>
-              (
-              <code>spawned</code>
-              /
-              <code>registered</code>
-              /
-              <code>restored</code>
-              ,
-              <code>state</code>
-              /
-              <code>stopped</code>
-              /
-              <code>started</code>
-              /
-              <code>updated</code>
-              ,
-              <code>soft_deleted</code>
-              /
-              <code>force_deleted</code>
-              &mdash; a soft delete can be restored, a force delete cannot), the
-              <code>from_state</code>
-              &rarr;
-              <code>to_state</code>
-              of the transition, and the same
-              <code>state</code>
-              /
-              <code>hook_coverage</code>
-              gating fields
-              <code>session get</code>
-              publishes.
-            </li>
-            <li>
-              <strong>runtime</strong>
-              &mdash;
-              <code>status</code>
-              /
-              <code>stop</code>
-              for what Thurbox runs that is
-              <em>not</em>
-              a session: the automation heartbeat keeper, a detached window
-              created implicitly by anything that arms an automation, which no
-              session listing showed and no delete reclaimed.
-            </li>
-            <li>
-              <strong>session capture</strong>
-              &mdash; dumps the rendered pane as text (
-              <code>--lines</code>
-              defaults to 200, max 10000);
-              <code>--ansi</code>
-              keeps tmux's styling instead of flattening it. Under
-              <code>--json</code>
-              it also reports the pane's live state &mdash;
-              <code>cursor_row</code>
-              /
-              <code>cursor_col</code>
-              (0-based, relative to the visible pane),
-              <code>foreground_process</code>
-              and
-              <code>foreground_command</code>
-              (what is running in the pane's tty, as argv0 and as its full
-              command line), and
-              <code>foreground_cwd</code>
-              (where that process is now, unlike
-              <code>session get</code>
-              's
-              <code>cwd</code>
-              , which is where the session was launched). Each is
-              <code>null</code>
-              when it cannot be determined, never guessed. A session created with
-              <code>--host</code>
-              is captured through that host's own
-              <code>thurbox-cli</code>
-              rather than refused.
-            </li>
-            <li>
-              <strong>agent state, and how far to trust it</strong>
-              &mdash; agents report
-              <code>working</code>
-              /
-              <code>blocked</code>
-              /
-              <code>done</code>
-              /
-              <code>idle</code>
-              through their lifecycle hooks, and that report is
-              <em>latched</em>
-              : whatever was written last, by an agent that may since have
-              crashed, been interrupted, or never have been wired at all. So
-              <code>session get</code>
-              /
-              <code>list --json</code>
-              carry the raw
-              <code>hook_state</code>
-              beside what it takes to judge it &mdash;
-              <code>hook_state_at</code>
-              /
-              <code>hook_state_age_secs</code>
-              (when, and how long ago),
-              <code>hook_reported</code>
-              (silence is not
-              <code>idle</code>
-              ),
-              <code>hook_coverage</code>
-              /
-              <code>hook_states_reportable</code>
-              (what this agent can report at all &mdash;
-              <code>aider</code>
-              can only ever say
-              <code>blocked</code>
-              ),
-              <code>hook_blocked_is_heuristic</code>
-              , and
-              <code>state</code>
-              /
-              <code>state_source</code>
-              , and
-              <code>stopped</code>
-              . There is deliberately no staleness timeout: a turn may run for
-              an hour, so a guessed bound would report live work as finished.
-              The decisive check is the pane instead &mdash;
-              <code>session get</code>
-              resolves its foreground process and flags a
-              <code>working</code>
-              session sitting over a bare shell (
-              <code>hook_corroboration</code>
-              ,
-              <code>hook_state_contradicted</code>
-              ), reporting the contradiction rather than overwriting the agent's
-              own word.
-              <code>session list</code>
-              skips that probe unless you pass
-              <code>--verify</code>
-              , and a remote session answers
-              <code>unavailable</code>
-              . A pane whose foreground is an agent thurbox did not launch
-              reports
-              <code>state: "running"</code>
-              with
-              <code>state_source: "process"</code>
-              &mdash; coarser than a hook by design, but not silence.
-            </li>
-            <li>
-              <strong>automation</strong>
-              (alias
-              <code>auto</code>
-              ) &mdash;
-              <code>create</code>
-              /
-              <code>list</code>
-              /
-              <code>show</code>
-              /
-              <code>edit</code>
-              /
-              <code>remove</code>
-              /
-              <code>run</code>
-              /
-              <code>runs</code>
-              , plus
-              <code>tick</code>
-              (the headless entry point that fires all due automations &mdash; what the tmux
-              heartbeat keeper and any systemd/cron timer call).
-            </li>
-            <li>
-              <strong>message</strong>
-              (alias
-              <code>msg</code>
-              ) &mdash;
-              <code>send</code>
-              /
-              <code>inbox</code>
-              /
-              <code>prune</code>
-              : a general, agent-neutral
-              <strong>inter-session message queue</strong>
-              so one session hands another a structured payload (a free-form
-              <code>--kind</code>
-              , a body, optional task/sender provenance) instead of scraping its terminal.
-              <code>send</code>
-              enqueues and, by default, wakes the recipient;
-              <code>inbox --claim</code>
-              drains it exactly once. An orchestration lead collecting its workers' answers is
-              the shape it was built for.
-            </li>
-            <li>
-              <strong>task</strong>
-              (alias
-              <code>todo</code>
-              ) &mdash;
-              <code>create</code>
-              /
-              <code>list</code>
-              /
-              <code>show</code>
-              /
-              <code>edit</code>
-              /
-              <code>remove</code>
-              /
-              <code>run</code>
-              the
-              <a href="#tasks">todo list</a>
-              :
-              <code>create</code>
-              with neither
-              <code>--session</code>
-              nor
-              <code>--repo</code>
-              is a plain local todo, and
-              <code>run</code>
-              triggers its Send/Spawn agent action headlessly.
-            </li>
-            <li>
-              <strong>editor</strong>
-              &mdash;
-              <code>get</code>
-              /
-              <code>set</code>
-              the command
-              <code>Ctrl+O</code>
-              runs (the worktree path is appended as the final argument).
-            </li>
-            <li>
-              <strong>config</strong>
-              &mdash;
-              <code>validate</code>
-              strict-parses every config file (exit
-              <code>1</code>
-              on a problem &mdash; handy in dotfiles CI), and
-              <code>show</code>
-              prints the effective resolved configuration.
-            </li>
-            <li>
-              <strong>version</strong>
-              &mdash; prints the running version;
-              <code>--check</code>
-              queries GitHub's latest release (gated on the
-              <code>version_check</code>
-              feature).
-            </li>
-            <li>
-              <strong>update</strong>
-              &mdash; downloads, verifies, and replaces the installed binaries with the latest
-              release (
-              <code>--force</code>
-              bypasses the up-to-date / dev-build guards; gated on the
-              <code>auto_update</code>
-              feature).
-            </li>
-            <li>
-              <strong>notify</strong>
-              &mdash; diagnoses OS desktop notifications: prints the detected delivery backend and
-              last error;
-              <code>--test</code>
-              fires a sample.
-            </li>
-          </ul>
-
-          <h3>How session delete is handled</h3>
-          <p>
-            <code>session delete &lt;uuid&gt;</code> tears down immediately by default in every build.
-            Flagless <code>--json</code> deletes stay soft for legacy sharing compatibility; JSON
-            scripts must pass <code>--force</code> for immediate teardown.
-            Set <code>[features] soft_delete = true</code> or pass <code>--soft</code> for an undoable
-            delete that only marks the database row deleted. With that opt-in, its tmux windows &mdash; the agent's
-            and the companion shell's &mdash; come down once the 10-second undo window closes: a
-            running TUI does it, the
-            <code>automation tick</code>
-            heartbeat does it with no TUI open, and
-            <code>session reap &lt;session&gt;</code>
-            does it on demand. The worktrees stay, which is what makes
-            <code>session restore &lt;uuid&gt;</code>
-            lossless.
-          </p>
-          <p>
-            Pass
-            <code>--force</code>
-            to tear down immediately even when soft deletion is enabled. Default deletion
-            uses this same teardown:
-          </p>
-          <ul>
-            <li>kills the tmux window,</li>
-            <li>removes the session's git worktrees (the underlying repos are left intact),</li>
-            <li>
-              removes the multi-repo symlink workspace, if any (only the symlinks &mdash; never the
-              linked repos), and
-            </li>
-            <li>
-              disables any
-              <strong>send</strong>
-              automations that target the session.
-            </li>
-          </ul>
-          <p>
-            Teardown is
-            <strong>best-effort</strong>
-            : individual tmux/worktree failures are recorded in the JSON report (
-            <code>killed_window</code>
-            ,
-            <code>removed_worktrees</code>
-            ,
-            <code>worktree_errors</code>
-            ,
-            <code>disabled_automations</code>
-            ) but never abort the delete. The DB row is marked force-deleted before teardown, in one write.
-            Recovery after destructive deletion is best-effort, not a lossless undo.
+            <code>thurbox-cli</code> keeps what is the interface's own: <code>config</code>,
+            <code>doctor</code>, <code>version</code>, <code>update</code>, <code>plugin</code>,
+            <code>ui</code>, <code>schema</code>, <code>automation</code>, <code>editor</code>,
+            <code>notify</code> and <code>perf</code>.
+            <code>thurbox-cli --help</code> lists them.
           </p>

@@ -374,8 +374,7 @@ cargo build --release</code></pre>
                   >
                     claude
                   </a>
-                  , codex, antigravity, opencode, aider, copilot, vibe, pi, or omp &mdash; whichever
-                  agents you plan to run
+                  or codex &mdash; the agents Fleet has harness profiles for
                 </td>
               </tr>
               <tr>
@@ -455,13 +454,10 @@ cargo build --release</code></pre>
           </h2>
 
           <p>
-            Session state is stored in SQLite at
-            <code>~/.local/share/thurbox/thurbox.db</code>
-            (
+            Every session is a Fleet Task, so session state is Fleet's. Thurbox keeps its own
+            state in plain files under <code>~/.local/share/thurbox</code> (
             <code>$XDG_DATA_HOME</code>
-            respected). Agent definitions live in
-            <code>~/.config/thurbox/agents.toml</code>
-            (seeded on first run). Logs go to
+            respected) and its configuration under <code>~/.config/thurbox</code>. Logs go to
             <code>~/.local/share/thurbox/thurbox.log</code>
             .
           </p>
@@ -502,12 +498,12 @@ cargo build --release</code></pre>
           <h3 id="uninstall-stop">1. Stop sessions</h3>
           <p>
             Quit the TUI, then stop each multiplexer server Thurbox used. The command below
-            stops the default POSIX tmux server, including its agent sessions and heartbeat.
+            stops the default POSIX tmux server, including its agent sessions.
             <strong>Destructive:</strong>
             this ends every running agent session, and any unsaved agent conversation with it.
           </p>
           <pre data-wrap><code class="language-bash">thurbox-cli version --json      # note tmux_socket and data_dir
-tmux -L thurbox kill-server     # stops every session and the heartbeat</code></pre>
+tmux -L thurbox kill-server     # stops every session</code></pre>
           <p>
             For RMUX sessions run <code>rmux -L &lt;socket&gt; kill-server</code>;
             for psmux use <code>psmux -L &lt;socket&gt; kill-server</code>.
@@ -574,35 +570,17 @@ nix profile remove thurbox      # Nix, installed with nix profile install</code>
 
           <h3 id="uninstall-state">4. Optionally remove worktrees, config and state</h3>
           <p>
-            Every worktree Thurbox created lives under
-            <code>~/.local/share/thurbox/worktrees/</code>
-            , and can hold a lot, build output included. Each one is also registered in its
-            repository's
-            <code>.git/worktrees</code>
-            , so remove them through git rather than just deleting the directory.
-            <strong>Destructive:</strong>
-            <code>--force</code>
-            discards uncommitted changes in each worktree. The loop prints each branch and path
-            first, and commits already on a branch stay there.
-          </p>
-          <pre data-wrap><code class="language-bash">for wt in ~/.local/share/thurbox/worktrees/*/*/; do
-  [ -e "$wt/.git" ] || continue
-  echo "$(git -C "$wt" branch --show-current)  $wt"
-  git -C "$wt" worktree remove --force "$wt"
-done</code></pre>
-          <p>
-            Thurbox never deletes the branches it created; remove any you no longer want with
-            <code>git branch -D &lt;branch&gt;</code>
-            in their repository. If you already deleted the worktree directories by hand, run
-            <code>git worktree prune</code>
-            in each repository to drop the stale registrations.
+            Delete each session you no longer want with <code>fleet delete task &lt;name&gt;</code>
+            before uninstalling; <code>fleet list task</code> lists what is left. A session the
+            interface created ran in your repository as it is, so nothing is left to clean there. A
+            Task that named <code>repositories</code> had a worktree of Fleet's, which the delete
+            removes, keeping committed work that exists nowhere else under
+            <code>refs/fleet/preserved/</code> in the source repository.
           </p>
           <p>
             Then delete Thurbox's own directories.
             <strong>Destructive:</strong>
-            this erases the session database and history, logs,
-            <code>agents.toml</code>
-            ,
+            this erases Thurbox's state and logs,
             <code>hosts.toml</code>
             , your theme, keybindings and interface customisations (a later reinstall starts from
             scratch).

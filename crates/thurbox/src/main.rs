@@ -97,8 +97,8 @@ const LINK_SCAN_INTERVAL: Duration = Duration::from_millis(250);
 const PERF_WINDOW_TICKS: u64 = 1000;
 
 /// How often the JSON snapshot is written while timing is active. Slower than
-/// the log line because it is a database write every other thurbox connection
-/// pays for with a `data_version` bump.
+/// the log line because each one rewrites `perf.json`, which `thurbox-cli perf`
+/// reads.
 const PERF_PUBLISH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The floor between two paints.

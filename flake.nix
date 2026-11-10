@@ -190,7 +190,6 @@
           bats # install-script tests
           nodejs_22 # website linters (CI uses 26; 22 runs eleventy/eslint/etc.)
           just # task runner (see justfile)
-          sqlite # demo/record.sh queries the dev DB
           jq # handy for `thurbox-cli … --json` in the sandbox
         ];
 

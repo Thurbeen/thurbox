@@ -21,8 +21,8 @@ breadcrumb: 'Interface'
 <p>
   Not a setting, and not a theme: the panes themselves are files. thurbox ships a small set and
   reads whatever is in the directory, so adding one is adding a file and removing one is deleting
-  it. Your sessions, worktrees, tasks and automations are untouched by any of it &mdash; they live
-  in the database, not the interface.
+  it. Your sessions, worktrees and automations are untouched by any of it &mdash; sessions are
+  Fleet's, and automations live in <code>automations.json</code>, not the interface.
 </p>
 
 <h2 id="ask-the-agent">
@@ -140,8 +140,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
     ├── 20_agent.lua        the agent terminal
     ├── 65_search.lua       global search
     ├── 60_confirm.lua      the confirm float
-    ├── 70_new_session.lua  the new-session flow
-    └── 80_restore.lua      the restore list</pre>
+    └── 70_new_session.lua  the new-session flow</pre>
   </div>
 </div>
 <p>

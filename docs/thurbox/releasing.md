@@ -59,19 +59,10 @@ The archive still contains exactly `thurbox` and `thurbox-cli`, which is what th
 rule at the top of this file requires. The kernel inherited the *name*; nothing was
 added or removed, so no installed updater notices anything but a new version.
 
-A profile with v1 history meets `kernel::consent` on its first launch: it is asked
-once, before the interface takes the terminal, and declining turns `auto_update`
-off and prints how to reinstall 1.x. That gate is the only reason replacing an
-interface under an unchanged binary name is defensible.
-
-That off-switch is reversible, and only by the gate that threw it. Declining
-records a marker in `metadata` alongside the `settings.toml` write, and a later
-**accept** puts `auto_update` back only when that marker is present — so someone
-who declined once and returned to v2 is not left pinned forever, while an
-`auto_update = false` the *user* set is never overridden. The marker is the whole
-mechanism: without it the two cases are indistinguishable on disk, and the accept
-branch has to choose between overturning a preference and stranding a profile.
-It is taken in one `DELETE … RETURNING`, so it acts once.
+2.x asked a profile with v1 history once, on its first launch, before the
+interface took the terminal: declining turned `auto_update` off and printed how
+to reinstall 1.x. That gate is what made replacing an interface under an
+unchanged binary name defensible. 3.0 removed it with the database it read.
 
 ### Auto-update does not cross a major, and that has to be shipped to v1
 
@@ -88,7 +79,8 @@ take it. Closing that needs a **1.x maintenance cut carrying this change**,
 released the way this section describes — dispatch `cd.yml` from `v1.x` with an
 explicit `version`, which publishes with `make_latest: false` and skips the
 package channels. Until such a cut exists, the only reliable hold for an existing
-1.x install is `auto_update = false`, which is what the consent gate writes.
+1.x install is `auto_update = false`, which is what 2.x's first-launch question
+wrote when it was declined.
 
 Note the ordering trap when you do cut it: the guard reads the running binary's
 own major, so it is the *1.x* build that must contain it. Landing it on `main`

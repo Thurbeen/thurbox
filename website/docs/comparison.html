@@ -39,11 +39,10 @@ breadcrumb: 'Comparison'
                 <td>TUI</td>
                 <td><strong>Real multiplexers</strong> (tmux, psmux on Windows, opt-in <a href="installation.html#rmux">RMUX</a>)</td>
                 <td>
-                  <strong>Any CLI</strong>
-                  &mdash; data in
-                  <code>agents.toml</code>
+                  <strong>Fleet's harnesses</strong>
+                  &mdash; Claude Code, Codex
                 </td>
-                <td><strong>&#x2713;</strong> (one session, many repos)</td>
+                <td>&mdash; (one repository per session)</td>
                 <td><strong>&#x2713;</strong> (in-TUI diff, as an installable pane)</td>
                 <td>Linux &middot; macOS &middot; Windows</td>
                 <td><strong>&#x2713;</strong> (SSH hosts)</td>
@@ -170,25 +169,9 @@ breadcrumb: 'Comparison'
               wrapper in the way (vs Cursor, which runs its own models).
             </li>
             <li>
-              <strong>Any agent CLI as data</strong>
-              (
-              <code>~/.config/thurbox/agents.toml</code>
-              ) &mdash; add your own with no recompile; Thurbox is deliberately agent-neutral.
-            </li>
-            <li>
-              <strong>Multi-repo sessions.</strong>
-              One session can span several repos at once &mdash; each repo in its
-              <strong>own git worktree</strong>
-              on a shared branch, gathered into a per-session symlink workspace &mdash; not just one
-              worktree per task. (Of the GUI tools above, the closest is Conductor&rsquo;s
-              <code>/add-dir</code>
-              , which links separate pre-made workspaces rather than spawning one session across
-              repos; Cursor&rsquo;s multi-root/cloud path is folders-in-one-window, not
-              worktree-per-repo.) Thurbox also runs agents in
-              <strong>plain non-git directories</strong>
-              (and attaches them as-is with
-              <code>--add-dir</code>
-              ); worktree-only tools like Claude Squad require a git repo.
+              <strong>Agent-neutral.</strong>
+              Fleet launches each agent's own CLI from a harness profile, unmodified; a new agent is a
+              new profile, not a change to Thurbox.
             </li>
             <li>
               <strong>Mouse support in the terminal.</strong>

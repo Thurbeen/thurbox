@@ -15,9 +15,9 @@ operational guidance (build commands, module layout, event loop), see
 | [performance.md](performance.md) | Render/tick performance decisions | Changing the render loop, a cache, or a worker cadence |
 | [kernel.md](kernel.md) | The plugin kernel: its shape, rules and traps | Changing the kernel's contract with Lua |
 | [plugins.md](plugins.md) | Writing an interface plugin | Changing the plugin API or the `thurbox.*` shape |
-| [orchestration.md](orchestration.md) | The control-plane pattern for running sessions across many repos | Changing the session/message surface the pattern relies on |
+| [orchestration.md](orchestration.md) | What thurbox adds to Fleet's orchestration: Tasks as sessions, the `fleet` verbs | Changing how sessions map to Fleet Tasks |
 | [agents.md](agents.md) | Agents are Fleet's harnesses; `agents.toml` is not read | Adding or changing an agent |
-| [config.md](config.md) | Thurbox's own config files / env vars / DB settings in one place | Adding/changing a config file, env var, or DB setting |
+| [config.md](config.md) | Thurbox's own config files and env vars in one place | Adding/changing a config file or env var |
 | [releasing.md](releasing.md) | What a release may and may not change about the artifacts | Changing the release workflow or a published artifact |
 | [review.md](review.md) | The per-path house rules a change is reviewed against, and which document owns which class of fact | Encoding a new house rule, or moving what a document owns |
 

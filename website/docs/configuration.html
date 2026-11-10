@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Configuration — Thurbox Docs'
-description: 'Every config file and knob Thurbox reads: agents.toml, hosts.toml, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, interface.json, and environment variables.'
+description: 'Every config file and knob Thurbox reads: hosts.toml, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, interface.json, and environment variables.'
 currentPage: 'configuration'
 breadcrumb: 'Configuration'
 ---
@@ -67,13 +67,6 @@ breadcrumb: 'Configuration'
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td><code>~/.config/thurbox/agents.toml</code></td>
-                <td>TOML</td>
-                <td>you</td>
-                <td>live (mtime poll)</td>
-                <td>coding-agent CLI definitions</td>
-              </tr>
               <tr>
                 <td><code>~/.config/thurbox/hosts.toml</code></td>
                 <td>TOML</td>
@@ -196,11 +189,7 @@ breadcrumb: 'Configuration'
             knobs, the
             <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             feature flags, and the write-once scalars take effect on the next launch and the toast says so.
-            A changed
-            <code>agents.toml</code>
-            entry applies to the next session you create; a
-            <em>new</em>
-            agent, and any change to
+            A change to
             <code>hosts.toml</code>
             or
             <code>themes.toml</code>
@@ -208,7 +197,7 @@ breadcrumb: 'Configuration'
           </p>
           <p>
             Config problems land in the log file. Unknown TOML keys are tolerated and reported by
-            name, while syntax/type errors fall back to built-ins (agents), zero hosts, or defaults
+            name, while syntax/type errors fall back to zero hosts or defaults
             (settings). Check everything from the command line:
           </p>
           <pre><code class="language-bash">thurbox-cli config validate   # strict parse of every file; exit 1 on problems
@@ -230,8 +219,8 @@ thurbox-cli config show       # effective config + where each value came from</c
             </thead>
             <tbody>
               <tr>
-                <td>Add a coding agent, pin a model, change resume/fork flags</td>
-                <td><a href="#agents-toml"><code>agents.toml</code></a></td>
+                <td>Add a coding agent</td>
+                <td>a harness profile in Fleet (<a href="agents.html">Agents</a>)</td>
               </tr>
               <tr>
                 <td>Run sessions on a remote machine over SSH</td>
@@ -264,54 +253,23 @@ thurbox-cli config show       # effective config + where each value came from</c
             </tbody>
           </table>
 
-          <h2 id="agents-toml">
-            agents.toml
-            <a href="#agents-toml" class="heading-anchor">#</a>
+          <h2 id="fleet">
+            The Fleet in use
+            <a href="#fleet" class="heading-anchor">#</a>
           </h2>
           <p>
-            Declares the launchable coding agents. Seeded with the built-ins (
-            <code>claude</code>
-            ,
-            <code>codex</code>
-            ,
-            <code>antigravity</code>
-            ,
-            <code>opencode</code>
-            ,
-            <code>aider</code>
-            ,
-            <code>copilot</code>
-            ,
-            <code>vibe</code>
-            ,
-            <code>pi</code>
-            ,
-            <code>omp</code>
-            ) on first run; edit or add
-            <code>[[agents]]</code>
-            entries to support any CLI &mdash; no recompile. A malformed file falls back to the
-            built-ins and shows the error.
+            Every session is a Fleet Task. Thurbox reads them through
+            <code>fleet watch</code>, acts on them through <code>fleet apply</code>,
+            <code>send</code> and <code>delete</code>, and keeps a <code>fleet up</code> running.
+            <code>[fleet] program</code> in <code>settings.toml</code> names the <code>fleet</code>
+            binary (default <code>fleet</code> on <code>PATH</code>). Fleet reads its own config as it
+            does anywhere: <code>FLEET_CONFIG</code>, then its per-user file.
+            <code>thurbox-cli doctor</code>, <code>config show</code> and
+            <code>version --json</code> report the Fleet in force.
           </p>
-          <pre data-title="agents.toml"><code class="language-toml">config_version = 1
-default = "claude"          # agent preselected in the picker / headless spawns
-
-[[agents]]
-name = "claude"             # display + lookup name (unique)
-command = "claude"          # executable
-args = []                   # always passed; bake a model here if you want one
-resume_args = ["--resume", "{id}"]            # emitted when resuming
-fork_args = ["--resume", "{id}", "--fork-session"]
-new_session_args = ["--session-id", "{id}"]   # emitted on a fresh spawn
-resume_latest = false       # true = id-less "resume last session in cwd"</code></pre>
-          <p>
-            <code>{id}</code>
-            is substituted with the thurbox-generated session UUID. Groups are emitted only when
-            their driving value exists; precedence is fork &gt; resume &gt; new-session.
-          </p>
-          <p>
-            For each built-in's recommended configuration and runtime behavior &mdash; resume/fork
-            semantics, whether it pins a session id, and how it reports status &mdash; see
-            <a href="agents.html">Built-in agents</a>.
+          <p id="agents-toml">
+            The agents are Fleet's harness profiles (<a href="agents.html">Agents</a>). An
+            <code>agents.toml</code> left from 2.x is not read, and can be deleted.
           </p>
 
           <h2 id="hosts-toml">
@@ -482,7 +440,6 @@ three_panel_min_cols  = 120    # width unlocking the optional third column
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
-tasks         = true
 automations   = true
 file_viewer   = true
 global_search = true
@@ -491,7 +448,6 @@ shell_pane    = true
 code_review   = true           # accepted, gates nothing (the pane was removed)
 mouse         = true
 notifications = true
-soft_delete   = false          # TUI + CLI delete immediately; true = undo window
 version_check = false          # opt-in: makes a network call
 auto_update   = false          # opt-in: downloads + replaces binaries
 
@@ -538,15 +494,9 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             </thead>
             <tbody>
               <tr>
-                <td><code>tasks</code></td>
-                <td><code>true</code></td>
-                <td>Accepted, gates nothing &mdash; the tasks pane was removed and nothing reads
-                  this. <code>thurbox-cli task</code> works regardless</td>
-              </tr>
-              <tr>
                 <td><code>automations</code></td>
                 <td><code>true</code></td>
-                <td>heartbeat arming and headless firing. There is no pane, and no in-TUI scheduler &mdash; the tmux keeper runs due automations whether or not thurbox is open</td>
+                <td>the interface's own firing of due automations, every 15 seconds. <code>thurbox-cli automation tick</code> from an OS timer fires them with no interface open</td>
               </tr>
               <tr>
                 <td><code>file_viewer</code></td>
@@ -585,17 +535,6 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
                 <td>OS desktop notifications when a session needs attention</td>
               </tr>
               <tr>
-                <td><code>soft_delete</code></td>
-                <td><code>false</code></td>
-                <td>
-                  TUI <code>Ctrl+D</code> and <code>thurbox-cli session delete</code> tear down
-                  immediately by default in every build. Set <code>true</code> to keep the undo
-                  window. CLI <code>--soft</code> and <code>--force</code> override the setting.
-                  Flagless <code>--json</code> deletes stay soft for legacy sharing peers; JSON
-                  scripts must pass <code>--force</code> for immediate teardown.
-                </td>
-              </tr>
-              <tr>
                 <td><code>version_check</code></td>
                 <td><code>false</code></td>
                 <td>
@@ -616,7 +555,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
           <p>
             <code>automations = false</code>
             is the one flag with teeth beyond the UI: it also stops the TUI from firing due
-            schedules and arming the tmux heartbeat at startup (explicit
+            schedules (explicit
             <code>thurbox-cli automation</code>
             commands still work).
             <code>mouse = false</code>
@@ -913,7 +852,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
               </tr>
               <tr>
                 <td><code>THURBOX_CONFIG_DIR</code> / <code>THURBOX_DATA_DIR</code></td>
-                <td>relocate this instance's config / database (see below)</td>
+                <td>relocate this instance's config / data (see below)</td>
               </tr>
               <tr>
                 <td><code>THURBOX_SOCKET</code></td>
@@ -926,7 +865,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             <code>THURBOX_CONFIG_DIR</code>
             and
             <code>THURBOX_DATA_DIR</code>
-            move thurbox's config and its database, and an instance whose
+            move thurbox's config and its data, and an instance whose
             <em>data</em>
             dir has moved also gets a
             <strong>multiplexer socket of its own</strong>

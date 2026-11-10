@@ -3071,7 +3071,7 @@ the cursor's SQLite transaction, so delivery is at-least-once and carries
 `seq` for script-side deduplication. Watch and waits keep a process-local
 sequence number and share the bounded event reader and JSON projection with
 hooks. The limits and lifecycle rules lived in v2's `hooks.toml` section of
-config.md, and [orchestration.md](orchestration.md#bounded-waits-and-read-side-evidence).
+config.md, and in v2's orchestration.md.
 
 **Limits**: plain HTTP only. No TLS stack is in the tree, so an `https`
 backend is reached through a local Collector. A Prometheus backend needs the

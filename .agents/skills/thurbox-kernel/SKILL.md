@@ -79,8 +79,7 @@ session              nothing — pure data, the dependency sink (no
                      process state, no env reads, no rendering crate;
                      re-exports runtime-mux's host model and SessionId)
 agent                agent::* (declarations only)
-agent::*             every file a node: agent_config → session, shell,
-                     config::file; fetch → paths; input → nothing
+agent::*             every file a node: fetch → paths; input → nothing
                      (NEVER git, NEVER backend)
 config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
@@ -200,7 +199,7 @@ alias and re-export laundering, and test-only edges.
 - **`config/`** — thurbox's own config files beside `config.toml`
   (`automations`, `hosts`, `interface_state`, `settings`, `themes`).
   `config::file` is the one loader every config
-  file goes through, `agents.toml` included: its path,
+  file goes through: its path,
   seeding it on first run, parsing it with unknown keys reported, degrading to
   a fallback with a warning, and writing it back with `paths::write_atomically`.
 - **`update/`** — self-update: `version_check` (is a newer release out) and
@@ -401,8 +400,7 @@ preserving edits). A `./ui` beside the working directory is never picked on its
 own: editing a checkout's interface is an explicit `THURBOX_UI_DIR` (`just tui-ui`).
 Startup reports the directory whenever there is a question about it — an override
 is in force, the fallback was used, or this is a dev build. The user-copy path is
-derived from `paths::config_file()` like every other config path — `agents.toml`,
-`hosts.toml`, `settings.toml`, `themes.toml`, `ui.json` — so a **dev build reads
+derived from `paths::config_file()` like every other config path — `hosts.toml`, `settings.toml`, `themes.toml`, `ui.json` — so a **dev build reads
 `~/.config/thurbox-dev/ui`** and cannot touch the release copy.
 `THURBOX_CONFIG_DIR` overrides that anchor. `config show` prints
 the resolved `ui_dir`/`ui_json` beside the rest. The resolved directory is
@@ -547,8 +545,8 @@ them out, per call; `layout.lua` has an env that never holds either.
 
 **Driving sessions needs `sessions`.** `Command::requires` is an exhaustive match
 with no catch-all (a new verb must decide; `every_verb_states_what_it_requires`
-pins each): `send`, `create`, `fork`, `restart`, `dispatch`, `automation`, `plugin`
-and a force `delete` need `sessions`; `open` and an exec automation's command need
+pins each): `send`, `create`, `plugin` and `delete` (Fleet has no undo
+window, so every delete is for good) need `sessions`; `open` and an exec automation's command need
 `run`; `program` needs `program`; an `action` naming `kernel.paste` needs
 `sessions`, and every request carries the chain of plugins it came through
 (`LuaHost::acting_for`, `drain_requests`), allowed only with what every member

@@ -14,7 +14,7 @@ the session verbs are Fleet's command line, not thurbox-cli's:
 
 | Was | Now |
 | --- | --- |
-| `thurbox-cli session list/get` | `fleet get tasks`, `fleet get task <name>` |
+| `thurbox-cli session list/get` | `fleet list task`, `fleet get task <name>` |
 | `thurbox-cli session create` | `fleet apply -f <task>` (an interactive Task: no brief, dispatched) |
 | `thurbox-cli session send` | `fleet send <task> <text>` |
 | `thurbox-cli session delete` | `fleet delete task <name>` |

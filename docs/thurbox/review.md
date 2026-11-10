@@ -214,8 +214,8 @@ Runs the real binary under load and reports CPU. Its failures are plausible
 numbers rather than errors, so read it for the two it already guards: it must
 identify its OWN process (a developer's running thurbox answers to `pgrep -x
 thurbox` first, and every configuration then reports that instance's CPU), and
-the TUI must start before any session exists, or the v1->v2 consent gate waits
-for a keypress and the run reports 0%.
+the TUI must start before any session exists, or the run measures the start
+rather than the steady state.
 
 A reading is only comparable with another at the same terminal size and session
 count, so both stay explicit parameters and neither acquires a default that
@@ -345,7 +345,7 @@ kernel's shape and its five rules, and docs/thurbox/plugins.md owns interface-pl
 authoring. docs/thurbox/development.md owns the dev environment and the runtime
 sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/thurbox/releasing.md owns the release process and
-docs/thurbox/orchestration.md the control-plane pattern. docs/thurbox/benchmark-multiplexers.md
+docs/thurbox/orchestration.md what thurbox adds to Fleet's orchestration. docs/thurbox/benchmark-multiplexers.md
 owns how thurbox compares with raw tmux and Herdr as a host for agent sessions,
 and the method of the harness under scripts/bench/ that measures it. docs/README.md owns the
 system: the split between thurbox, Fleet and the runtimes, which page owns

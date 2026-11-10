@@ -13,11 +13,10 @@ breadcrumb: 'FAQ'
 
 <h2 id="what-is-thurbox">What is Thurbox?</h2>
 <p>
-  Thurbox is a multi-session TUI orchestrator that runs any coding-agent CLI
-  — Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi,
-  Oh My Pi, or any CLI you define — inside persistent multiplexer panes. Sessions, agents, and
-  git worktrees are first-class citizens, and sessions survive crashes,
-  restarts, and reboots because the multiplexer keeps the processes alive.
+  Thurbox is a multi-session TUI for coding agents — Claude Code and Codex,
+  through Fleet's harness profiles — running inside persistent multiplexer panes.
+  Every session is a Fleet Task: Fleet starts it in the repository you pick and
+  keeps it running, so sessions survive crashes and restarts.
 </p>
 
 <h2 id="how-different">
@@ -27,21 +26,17 @@ breadcrumb: 'FAQ'
   Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses an external
   multiplexer (tmux, psmux, or opt-in RMUX) for its sessions, runs
   as a lightweight terminal UI rather than an Electron or native desktop app,
-  and launches the unmodified vendor CLI rather than its own model. A single
-  session can span multiple repositories, and every pane of the interface is a
-  Lua file you can edit, turn off or replace. Agents are defined as data, so any
-  CLI works with no recompile. See the
+  and launches the unmodified vendor CLI rather than its own model. Every pane of
+  the interface is a Lua file you can edit, turn off or replace. See the
   <a href="comparison.html">comparison</a> for the full breakdown.
 </p>
 
 <h2 id="supported-agents">Which coding agents does Thurbox support?</h2>
 <p>
-  Thurbox is agent-neutral. It ships built-in definitions for Claude Code,
-  Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi, and Oh My Pi,
-  and you can add any other CLI by editing agents.toml — no recompile required. Thurbox only
-  knows how to launch each CLI with the right command and arguments; it never
-  touches the
-  agent's model, prompts, or permissions.
+  Thurbox runs the agents Fleet has harness profiles for: today Claude Code and
+  Codex. A new agent is a new profile in Fleet, not a change to Thurbox. Fleet
+  launches each agent's own CLI unmodified and never touches the agent's model,
+  prompts, or permissions.
 </p>
 
 <h2 id="install">How do I install Thurbox?</h2>
@@ -86,7 +81,7 @@ breadcrumb: 'FAQ'
 <p>
   Yes. Each session runs inside a persistent multiplexer session, so the agent
   processes keep running even if Thurbox crashes or you close and reopen it.
-  Session state is stored in SQLite and re-adopted on restart.
+  Every session is a Fleet Task, so a restarted Thurbox shows the same sessions.
 </p>
 
 <h2 id="orphaned-tmux-server">
@@ -109,10 +104,10 @@ breadcrumb: 'FAQ'
 
 <h2 id="headless">Can I use Thurbox without the TUI, headlessly?</h2>
 <p>
-  Yes. A second binary, thurbox-cli, drives the same SQLite-backed,
-  multiplexer-hosted sessions headlessly — create, list, send to, capture, restart,
-  and delete sessions, plus automations and tasks — sharing the database with
-  the TUI. This makes Thurbox scriptable for automation and CI.
+  Yes. Every session is a Fleet Task, so Fleet's command line, fleet, creates,
+  lists, sends to and deletes sessions headlessly, and the TUI shows every change.
+  thurbox-cli covers the interface's own files and automations. This makes
+  Thurbox scriptable for automation and CI.
 </p>
 
 <script type="application/ld+json">
@@ -125,7 +120,7 @@ breadcrumb: 'FAQ'
         "name": "What is Thurbox?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Thurbox is a multi-session TUI orchestrator that runs any coding-agent CLI — Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi, Oh My Pi, or any CLI you define — inside persistent multiplexer panes. Sessions, agents, and git worktrees are first-class citizens, and sessions survive crashes, restarts, and reboots because the multiplexer keeps the processes alive."
+          "text": "Thurbox is a multi-session TUI for coding agents — Claude Code and Codex, through Fleet's harness profiles — running inside persistent multiplexer panes. Every session is a Fleet Task: Fleet starts it in the repository you pick and keeps it running, so sessions survive crashes and restarts."
         }
       },
       {
@@ -133,7 +128,7 @@ breadcrumb: 'FAQ'
         "name": "How is Thurbox different from other parallel coding-agent tools?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses an external multiplexer (tmux, psmux, or opt-in RMUX) for its sessions, runs as a lightweight terminal UI rather than an Electron or native desktop app, and launches the unmodified vendor CLI rather than its own model. A single session can span multiple repositories, and every pane of the interface is a Lua file you can edit, turn off or replace. Agents are defined as data, so any CLI works with no recompile."
+          "text": "Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses an external multiplexer (tmux, psmux, or opt-in RMUX) for its sessions, runs as a lightweight terminal UI rather than an Electron or native desktop app, and launches the unmodified vendor CLI rather than its own model. Every pane of the interface is a Lua file you can edit, turn off or replace."
         }
       },
       {
@@ -141,7 +136,7 @@ breadcrumb: 'FAQ'
         "name": "Which coding agents does Thurbox support?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Thurbox is agent-neutral. It ships built-in definitions for Claude Code, Codex, Antigravity, opencode, aider, GitHub Copilot CLI, Vibe, pi, and Oh My Pi, and you can add any other CLI by editing agents.toml — no recompile required. Thurbox only knows how to launch each CLI with the right command and arguments; it never touches the agent's model, prompts, or permissions."
+          "text": "Thurbox runs the agents Fleet has harness profiles for: today Claude Code and Codex. A new agent is a new profile in Fleet, not a change to Thurbox. Fleet launches each agent's own CLI unmodified and never touches the agent's model, prompts, or permissions."
         }
       },
       {
@@ -165,7 +160,7 @@ breadcrumb: 'FAQ'
         "name": "Do my sessions survive a crash or restart?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes. Each session runs inside a persistent multiplexer session, so the agent processes keep running even if Thurbox crashes or you close and reopen it. Session state is stored in SQLite and re-adopted on restart."
+          "text": "Yes. Each session runs inside a persistent multiplexer session, so the agent processes keep running even if Thurbox crashes or you close and reopen it. Every session is a Fleet Task, so a restarted Thurbox shows the same sessions."
         }
       },
       {
@@ -181,7 +176,7 @@ breadcrumb: 'FAQ'
         "name": "Can I use Thurbox without the TUI, headlessly?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes. A second binary, thurbox-cli, drives the same SQLite-backed, multiplexer-hosted sessions headlessly — create, list, send to, capture, restart, and delete sessions, plus automations and tasks — sharing the database with the TUI. This makes Thurbox scriptable for automation and CI."
+          "text": "Yes. Every session is a Fleet Task, so Fleet's command line, fleet, creates, lists, sends to and deletes sessions headlessly, and the TUI shows every change. thurbox-cli covers the interface's own files and automations. This makes Thurbox scriptable for automation and CI."
         }
       }
     ]
