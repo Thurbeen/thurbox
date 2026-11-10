@@ -201,7 +201,11 @@ _tbx_stop_fleet() {
         pid="${pid%.log}"
         case "$pid" in
             *[!0-9]*|"") ;; # named before its manager started: no manager
-            *) kill "$pid" 2>/dev/null || true ;;
+            # A log can outlive its manager and the pid be reused: signal it
+            # only while it is still a `fleet up`.
+            *) case "$(ps -p "$pid" -o args= 2>/dev/null)" in
+                   *fleet" up") kill "$pid" 2>/dev/null || true ;;
+               esac ;;
         esac
     done
 }
