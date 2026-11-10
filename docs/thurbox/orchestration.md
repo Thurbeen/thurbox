@@ -29,9 +29,10 @@ The verbs:
 | follow every change | `fleet watch --json` |
 | delete one | `fleet delete task <name>` |
 
-A Task whose workspace is a `dir` runs in that directory as it is. One that
-names `repositories` gets a git worktree of its own from Fleet's
-`[workspaces]`, which needs the repository's URL in Fleet's repository map.
+A session the interface creates names its repository as a `repositories`
+workspace, so Fleet makes it a git worktree of its own. That needs the
+repository's URL in Fleet's repository map (`[workspaces.repositories]`). A
+Task you write with a `dir` workspace runs in that directory as it is.
 
 ## Read the state, do not infer it
 

@@ -254,11 +254,13 @@ breadcrumb: 'Features'
             <a href="#git-worktrees" class="heading-anchor">#</a>
           </h2>
           <p>
-            A session created from the interface runs in the repository you pick, as it is: its Task
-            has a <code>dir</code> workspace, which Fleet attaches without copying, and two sessions
-            on one repository share its checkout. A Task that names <code>repositories</code> instead
-            gets a git worktree of its own from Fleet's <code>[workspaces]</code>, under
+            Every session created from the interface gets a git worktree of its own: its Task names
+            the repository you pick as a <code>repositories</code> workspace, and Fleet's
+            <code>[workspaces]</code> makes the worktree, under
             <code>&lt;Fleet data dir&gt;/workspaces</code> unless <code>root</code> says otherwise.
+            Fleet makes worktrees of mapped repositories only, so the repository must be listed in
+            <code>[workspaces.repositories]</code>; an unmapped one is refused with the line to
+            add.
           </p>
           <ul>
             <li>
@@ -686,8 +688,9 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
               <tr>
                 <td><code>Ctrl+D</code> (Delete)</td>
                 <td>
-                  Deletes the Task (<code>fleet delete task</code>). Fleet stops the agent; a
-                  repository the session ran in is left as it is. There is no undo.
+                  Deletes the Task (<code>fleet delete task</code>). Fleet stops the agent
+                  and removes the session's worktree, keeping committed work that exists nowhere
+                  else under <code>refs/fleet/preserved/</code>. There is no undo.
                 </td>
               </tr>
             </tbody>

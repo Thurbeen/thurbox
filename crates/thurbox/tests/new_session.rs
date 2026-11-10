@@ -1624,7 +1624,10 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     let task = fleet.applied();
     // A Task's name is a DNS-like name: the typed one, made one.
     assert_eq!(task["metadata"]["name"], "read-the-code");
-    assert_eq!(task["spec"]["workspace"]["dir"], "/src/thurbox");
+    assert_eq!(
+        task["spec"]["workspace"]["repositories"],
+        serde_json::json!([{"name": "thurbox", "url": "https://example.invalid/thurbox"}])
+    );
     assert_eq!(task["spec"]["harness"], "claude");
     assert_eq!(task["spec"]["host"], "local");
 }
@@ -1654,7 +1657,7 @@ impl StubFleet {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\ncase \"$1\" in\n  get) exit 3 ;;\n  version) echo '{{\"harnesses\":[\"claude\",\"claude-code\",\"codex\"]}}' ;;\n  runtime) echo '{{\"hosts\":{hosts}}}' ;;\n  *) echo \"$@\" >> '{0}'; cat >> '{0}' ;;\nesac\n",
+                "#!/bin/sh\ncase \"$1\" in\n  get) exit 3 ;;\n  version) echo '{{\"harnesses\":[\"claude\",\"claude-code\",\"codex\"]}}' ;;\n  runtime) echo '{{\"hosts\":{hosts}}}' ;;\n  repositories) echo '{{\"repositories\":{{\"https://example.invalid/thurbox\":\"/src/thurbox\"}}}}' ;;\n  *) echo \"$@\" >> '{0}'; cat >> '{0}' ;;\nesac\n",
                 dir.path().join("asked").display()
             ),
         )

@@ -1181,6 +1181,11 @@ store's create is
 exclusive, so two clients applying one name at once get one object and one
 refusal. A view creates its Tasks this way.
 
+`fleet repositories --json` prints `{"repositories": {URL: source}}`: the
+repository map, each URL a Task's `repositories` workspace may name and its
+checkout on this machine. A view that makes a worktree per session looks the
+chosen checkout up there before it applies a Task.
+
 `fleet runtime hosts --json` prints `{"hosts": [...]}`: the names under
 `[hosts]`, the hosts a Task may name, or `null` when the fake `[runtime]`
 serves any host. `fleet version --json` lists the `harnesses` with a profile of

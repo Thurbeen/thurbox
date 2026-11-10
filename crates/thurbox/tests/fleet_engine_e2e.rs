@@ -118,6 +118,19 @@ impl Fleet {
         self.root.path().join("data")
     }
 
+    /// Map `repo` in Fleet's `[workspaces.repositories]`, which a session
+    /// thurbox creates must be: Fleet makes it a worktree of the mapped
+    /// checkout.
+    fn map(&self, repo: &Path) {
+        let config = self.root.path().join("fleet.toml");
+        let mut text = std::fs::read_to_string(&config).expect("config");
+        text.push_str(&format!(
+            "\n[workspaces.repositories]\n\"https://example.invalid/repo\" = \"{}\"\n",
+            repo.display()
+        ));
+        std::fs::write(&config, text).expect("a repository map");
+    }
+
     fn run(&self, args: &[&str]) -> Run {
         self.run_stdin(args, "")
     }
@@ -345,6 +358,7 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     let fleet = Fleet::new(bin);
     let repo = fleet.root.path().join("repo");
     std::fs::create_dir_all(&repo).expect("repo");
+    fleet.map(&repo);
     let mut bus = fleet_bus(&fleet.program);
 
     // A session thurbox creates is an interactive Task: no brief, dispatched.
@@ -363,8 +377,8 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert_eq!(gamma["spec"]["host"], "local");
     assert_eq!(gamma["spec"]["dispatch"], true);
     assert_eq!(
-        gamma["spec"]["workspace"]["dir"],
-        repo.to_string_lossy().as_ref()
+        gamma["spec"]["workspace"]["repositories"],
+        json!([{"name": "repo", "url": "https://example.invalid/repo"}])
     );
     assert!(gamma["spec"]["brief"].is_null(), "{gamma:#}");
 
@@ -412,6 +426,7 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
 fn a_created_session_keeps_the_name_it_was_given() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
+    fleet.map(fleet.root.path());
     let mut bus = fleet_bus(&fleet.program);
     run_command(
         &mut bus,
@@ -441,6 +456,7 @@ fn a_created_session_keeps_the_name_it_was_given() {
 fn a_name_already_taken_is_refused_and_the_task_left_alone() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
+    fleet.map(fleet.root.path());
     let mut bus = fleet_bus(&fleet.program);
     let create = |name: &str| Command::Create {
         name: name.into(),

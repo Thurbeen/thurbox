@@ -7195,6 +7195,95 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     assert!(tui.quit().success());
 }
 
+/// Create a session through `Ctrl+N` on `repo`, named `name`, taking the
+/// first agent offered; `map` first adds `repo` to Fleet's repository map.
+fn create_through_the_flow(map: bool, name: &str) -> Option<(Profile, Tui, PathBuf)> {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return None;
+    }
+    let profile = Profile::new();
+    profile.real_fleet()?;
+    let repo = repo(profile.root.path());
+    if map {
+        let fleet_toml = profile.path("fleet.toml");
+        let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
+        std::fs::write(
+            &fleet_toml,
+            format!(
+                "{config}\n[workspaces.repositories]\n\"https://example.invalid/repo\" = \"{}\"\n",
+                repo.display()
+            ),
+        )
+        .expect("a repository map");
+    }
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Select Repo");
+    tui.send(format!("\t{}", repo.display()).as_bytes());
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_until("the repository to be selected", |frame| {
+        repo_picker_selected(frame, "repo")
+    });
+    // Alt+Enter goes on from the path field, which still has the caret.
+    tui.send(b"\x1b\r");
+    tui.wait_gone("Select Repo");
+    tui.send(format!("{name}\r").as_bytes());
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    Some((profile, tui, repo))
+}
+
+/// A session the interface creates on a repository Fleet maps gets a git
+/// worktree of its own, not the checkout.
+#[test]
+fn a_session_created_on_a_mapped_repo_runs_in_its_own_worktree() {
+    let Some((profile, mut tui, repo)) = create_through_the_flow(true, "wt") else {
+        return;
+    };
+    tui.wait_for("wt");
+    let task = profile.fleet_task("wt");
+    assert_eq!(
+        task["spec"]["workspace"]["repositories"][0]["url"], "https://example.invalid/repo",
+        "the Task names the mapped repository: {task:#}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let dir = loop {
+        profile.fleet(&["reconcile"], "");
+        let task = profile.fleet_task("wt");
+        if let Some(dir) = task["status"]["workspace"]["dir"].as_str() {
+            break PathBuf::from(dir);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no workspace: {task:#}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert_ne!(dir, repo, "the session runs in the checkout");
+    assert!(
+        dir.join(".git").is_file(),
+        "{} is no worktree",
+        dir.display()
+    );
+    assert!(tui.quit().success());
+}
+
+/// A repository Fleet does not map is refused with what to add, and no Task
+/// is made in the checkout instead.
+#[test]
+fn a_session_on_an_unmapped_repo_is_refused_with_what_to_add() {
+    let Some((profile, mut tui, _repo)) = create_through_the_flow(false, "loose") else {
+        return;
+    };
+    tui.wait_for("Fleet maps no repository at");
+    let tasks = profile.fleet(&["list", "task", "--json"], "");
+    assert!(!tasks.contains("loose"), "a Task was made: {tasks}");
+    assert!(tui.quit().success());
+}
+
 /// Input that follows a held remote paste waits behind it: an `Enter` in the
 /// same batch submits the pasted path, and a second paste neither overtakes
 /// nor replaces the first.

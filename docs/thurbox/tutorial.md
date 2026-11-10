@@ -17,7 +17,7 @@ host bands, repository separators and indented session rows.
 - [Before you start](#before-you-start)
 - [1. Launch it](#1-launch-it)
 - [2. Add a repository](#2-add-a-repository)
-- [3. It runs in your repository](#3-it-runs-in-your-repository)
+- [3. Fleet gives it a worktree](#3-fleet-gives-it-a-worktree)
 - [4. Name it and pick an agent](#4-name-it-and-pick-an-agent)
 - [5. You have a session](#5-you-have-a-session)
 - [6. The second session is faster](#6-the-second-session-is-faster)
@@ -118,13 +118,19 @@ search, so the list's own keys are ones you cannot type:
 | `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
 | `Tab` / `Shift+Tab` | move between the search and the path field |
 
-## 3. It runs in your repository
+## 3. Fleet gives it a worktree
 
-There is no worktree step. The session runs in the repository you picked, as
-it is: thurbox creates its Task with a `dir` workspace, which Fleet attaches
-without copying. Two sessions on one repository share its checkout. A Task you
-start with `fleet` can name `repositories` instead, and Fleet then makes it a
-git worktree of its own.
+There is no worktree step. Fleet makes each session a **git worktree of its
+own**, so the agent never works in your checkout. Fleet makes worktrees of the
+repositories in its map only, so map the repository once in Fleet's config:
+
+```toml
+[workspaces.repositories]
+"https://github.com/me/api-server" = "/home/me/code/api-server"
+```
+
+A repository Fleet does not map is refused, and the refusal names the line to
+add.
 
 ## 4. Name it and pick an agent
 
@@ -139,8 +145,8 @@ Then the agent. This is the list of harnesses Fleet offers (`fleet version
 
 ![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp, shell](../../media/tutorial/10-agent-picker.png)
 
-`Enter` creates the session: a Fleet Task, which Fleet starts in that
-repository with the agent running inside it.
+`Enter` creates the session: a Fleet Task, which Fleet starts in its own
+worktree with the agent running inside it.
 
 ## 5. You have a session
 

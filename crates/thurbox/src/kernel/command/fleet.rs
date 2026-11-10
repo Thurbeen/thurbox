@@ -66,9 +66,10 @@ impl super::Executor for Fleet {
                 if let Some(agent) = agent {
                     self.harness(agent)?;
                 }
+                let workspace = self.worktree_of(&crate::paths::expand_tilde(repo))?;
                 let mut spec = json!({
                     "host": host,
-                    "workspace": {"dir": crate::paths::expand_tilde(repo)},
+                    "workspace": workspace,
                     "dispatch": true,
                 });
                 if let Some(agent) = agent {
@@ -167,6 +168,41 @@ impl Fleet {
             }
         }
         Ok(host)
+    }
+
+    /// The `repositories` workspace for the checkout at `dir`, so Fleet
+    /// makes the session a git worktree of its own. Fleet makes worktrees of
+    /// mapped repositories only (`[workspaces.repositories]`, a URL to its
+    /// checkout here), so an unmapped one is refused with the line to add,
+    /// never run in the checkout instead.
+    fn worktree_of(&self, dir: &std::path::Path) -> Result<serde_json::Value, String> {
+        let answer = self.json(&["repositories", "--json"])?;
+        let same = |source: &str| {
+            let canonical = |path: &std::path::Path| {
+                std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+            };
+            canonical(std::path::Path::new(source)) == canonical(dir)
+        };
+        let url = answer["repositories"].as_object().and_then(|map| {
+            map.iter()
+                .find(|(_, source)| source.as_str().is_some_and(same))
+                .map(|(url, _)| url.clone())
+        });
+        let Some(url) = url else {
+            return Err(format!(
+                "Fleet maps no repository at {dir}, so it cannot give the session a worktree: \
+                 add \"<its URL>\" = \"{dir}\" under [workspaces.repositories] in Fleet's config",
+                dir = dir.display()
+            ));
+        };
+        // Fleet names a workspace's repository as it names a Task, so a
+        // checkout called `My_Repo` is `my-repo`.
+        let name = dir
+            .file_name()
+            .map(|n| task_name(&n.to_string_lossy()))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "repo".to_string());
+        Ok(json!({"repositories": [{"name": name, "url": url}]}))
     }
 
     /// Refuse an agent Fleet has no harness profile for: Fleet would run a

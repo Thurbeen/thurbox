@@ -415,12 +415,10 @@ footer: true
           <a href="docs/features.html#git-worktrees" class="feature-link">
             <div class="card">
               <div class="card-icon" aria-hidden="true">&#x2442;</div>
-              <h3>Git Worktrees &amp; Sync</h3>
+              <h3>Git Worktrees</h3>
               <p>
-                Spawn sessions in isolated git worktrees for branch-level isolation. One-key sync (
-                <code>Ctrl+S</code>
-                ) rebases all worktrees from origin/main, with automatic conflict resolution and
-                worktree cleanup on session close.
+                Every session runs in a git worktree of its own, made by Fleet. Deleting the session
+                removes it and keeps committed work that exists nowhere else.
               </p>
             </div>
           </a>
@@ -804,8 +802,8 @@ Ctrl+,  Settings</pre>
               <p class="feature-row-eyebrow">Ctrl+N</p>
               <h3>Session creation</h3>
               <p>
-                Spin up a session in a few keystrokes: pick one or more repos, name it, and choose an
-                agent &mdash; optionally on a fresh git worktree for branch isolation.
+                Spin up a session in a few keystrokes: pick a repository, name it, and choose an
+                agent &mdash; Fleet gives it a git worktree of its own.
               </p>
               <a class="feature-row-link" href="docs/features.html#session-orchestration">
                 Learn more &rarr;

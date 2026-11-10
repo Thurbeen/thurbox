@@ -160,14 +160,18 @@ extraCss: ['tutorial.css']
 </table>
 
 <h2 id="worktree">
-  3. It runs in your repository
+  3. It gets a worktree of its own
   <a href="#worktree" class="heading-anchor">#</a>
 </h2>
 <p>
-  There is no worktree step. The session runs in the repository you picked, as it is: Thurbox
-  creates its Task with a <code>dir</code> workspace, which Fleet attaches without copying. Two
-  sessions on one repository share its checkout. A Task you start with <code>fleet</code> can name
-  <code>repositories</code> instead, and Fleet then makes it a git worktree of its own.
+  There is no worktree step: Fleet makes each session a git worktree of the repository you
+  picked. Fleet makes worktrees of mapped repositories only, so map the repository once in
+  Fleet's config:
+</p>
+<pre><code>[workspaces.repositories]
+"https://github.com/you/app" = "/home/you/src/app"</code></pre>
+<p>
+  An unmapped repository is refused with the line to add.
 </p>
 
 <h2 id="name-and-agent">

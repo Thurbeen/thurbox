@@ -252,6 +252,12 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    /// The repository map, `[workspaces.repositories]`: each URL a Task's
+    /// `repositories` workspace may name, and its source checkout here.
+    Repositories {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -493,6 +499,16 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         None => (Config::empty(), String::new()),
     };
+    if let Command::Repositories { json } = &cli.command {
+        let map = source_map(&config).map_err(fail)?;
+        if *json {
+            print_json(&json!({ "repositories": map }));
+        } else {
+            map.iter()
+                .for_each(|(url, source)| println!("{url} {source}"));
+        }
+        return Ok(());
+    }
     if let Command::Runtime {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
@@ -787,6 +803,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Version { .. }
         | Command::Signal { .. }
         | Command::Runtime { .. }
+        | Command::Repositories { .. }
         | Command::TermBridge { .. } => unreachable_version(),
     }
 }

@@ -167,6 +167,11 @@ runtime = "mux"
 [starter]
 workspace = "starter"
 EOF
+    # The demo repositories (`demo-repo.sh`), so a session the interface
+    # creates on one gets a worktree of its own: Fleet makes worktrees of
+    # mapped repositories only.
+    printf '\n[workspaces.repositories]\n"https://sandbox.invalid/demo" = "%s"\n"https://sandbox.invalid/big" = "%s"\n' \
+        "$TBX_SANDBOX_ROOT/repos/demo" "$TBX_SANDBOX_ROOT/repos/big" >> "$FLEET_CONFIG"
 }
 
 # tbx_fleet_task_name <name> — the Task name thurbox gives a session called

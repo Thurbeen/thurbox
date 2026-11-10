@@ -176,6 +176,26 @@ fn a_missing_multiplexer_is_reported_by_name_at_the_first_start() {
     assert!(status["session"].is_null(), "{status:#}");
 }
 
+/// A view asks which repositories Fleet can make a worktree of, and where
+/// their checkouts are, before it applies a Task that names one.
+#[test]
+fn the_repository_map_is_listed_for_a_view() {
+    let env = Env::new("repository-map");
+    fs::write(
+        &env.config,
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[workspaces.repositories]\n\"https://example.com/app\" = \"/src/app\"\n",
+    )
+    .expect("config");
+    let map = env.fleet(&["repositories", "--json"]).ok().json();
+    assert_eq!(
+        map,
+        json!({"repositories": {"https://example.com/app": "/src/app"}})
+    );
+    let none = Env::new("repository-map-empty");
+    let empty = none.fleet(&["repositories", "--json"]).ok().json();
+    assert_eq!(empty, json!({"repositories": {}}));
+}
+
 /// A view asks which hosts a Task may name, and which harnesses Fleet has a
 /// profile for, before it applies one.
 #[test]

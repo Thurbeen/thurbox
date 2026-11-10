@@ -571,11 +571,10 @@ nix profile remove thurbox      # Nix, installed with nix profile install</code>
           <h3 id="uninstall-state">4. Optionally remove worktrees, config and state</h3>
           <p>
             Delete each session you no longer want with <code>fleet delete task &lt;name&gt;</code>
-            before uninstalling; <code>fleet list task</code> lists what is left. A session the
-            interface created ran in your repository as it is, so nothing is left to clean there. A
-            Task that named <code>repositories</code> had a worktree of Fleet's, which the delete
-            removes, keeping committed work that exists nowhere else under
-            <code>refs/fleet/preserved/</code> in the source repository.
+            before uninstalling; <code>fleet list task</code> lists what is left. Each session
+            had a git worktree of Fleet's, which the delete removes, keeping committed work that
+            exists nowhere else under <code>refs/fleet/preserved/</code> in the source
+            repository.
           </p>
           <p>
             Then delete Thurbox's own directories.
