@@ -388,6 +388,7 @@ fn open(host: &LuaHost, world: &World) {
     }
 }
 
+#[cfg(unix)]
 fn devbox(platform: &str, available: &[&str]) -> HostRow {
     HostRow {
         name: "devbox".into(),

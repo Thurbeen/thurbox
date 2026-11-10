@@ -4,10 +4,11 @@
 --
 --     thurbox-cli plugin install tasks
 --
--- The list is the pane's own: it lives in `state`, which the kernel keeps for
--- the plugin across restarts. Nothing here is privileged: it reads nothing but
--- its own state, issues no command, and declares no capabilities, so it needs
--- no trust.
+-- The list is a scratch list for this run of thurbox: it lives in the pane's
+-- `state`, which outlives an interface reload but not a restart (thurbox gives
+-- a plugin no storage that does). Nothing here is privileged: it reads nothing
+-- but its own state, issues no command, and declares no capabilities, so it
+-- needs no trust.
 --
 -- What it shows that the other examples do not:
 --
@@ -40,7 +41,8 @@ local function status_style(status)
 end
 
 --- The list, read whole and written whole: `state` hands back a fresh table on
---- every read, so an item changed in place would not persist.
+--- every read, so an item changed in place would not be kept. `state` lives in
+--- memory, so the list ends when thurbox quits.
 local function tasks()
   return state.tasks or {}
 end
@@ -122,7 +124,7 @@ return {
       children[#children + 1] = {
         type = "text",
         len = 1,
-        text = theme.dim("  nothing on the list — n to add one"),
+        text = theme.dim("  nothing on the list — n to add one (kept until thurbox quits)"),
       }
     else
       local rows = {}

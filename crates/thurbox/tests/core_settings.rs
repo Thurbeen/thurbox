@@ -527,3 +527,30 @@ fn a_raised_column_threshold_leaves_only_the_central_pane() {
     .collect();
     assert!(placed.iter().any(|slot| slot == "sessions"), "{placed:?}");
 }
+
+/// A v2 file names a key 3.0 no longer reads on every load. That notice must
+/// not stop a reload: a later edit to a live switch still applies.
+#[test]
+fn a_retired_key_does_not_block_a_live_reload() {
+    let _home = isolate();
+    write_settings("multiplexer = \"tmux\"\n[features]\nshell_pane = true\n");
+    let (mut config, warnings) = Config::load();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("`multiplexer` is no longer read")),
+        "{warnings:?}"
+    );
+
+    write_settings("multiplexer = \"tmux\"\n[features]\nshell_pane = false\n");
+    let path = thurbox::config::settings::settings_config_path().expect("path");
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|file| file.set_modified(later))
+        .expect("move the mtime");
+
+    assert_eq!(config.poll(), Some(Reloaded::Live));
+    assert!(!config.features().shell_pane, "the edit is in force");
+}

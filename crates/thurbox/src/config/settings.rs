@@ -190,6 +190,12 @@ pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
     (settings, warnings)
 }
 
+/// Whether `warning` is only the notice that a retired key is in the file:
+/// worth saying at startup, and no reason to refuse a reload.
+pub fn is_retired_notice(warning: &str) -> bool {
+    reported_key(warning).is_none() && warning.contains("` is no longer read: ")
+}
+
 /// The unknown keys of `contents` that are not retired ones: what makes the
 /// file invalid for `thurbox-cli config validate`.
 pub fn unknown_keys(contents: &str) -> Result<Vec<String>, String> {

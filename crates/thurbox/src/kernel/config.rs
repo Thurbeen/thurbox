@@ -136,7 +136,12 @@ impl Config {
         self.stamp = Some(stamp);
 
         let (fresh, warnings) = crate::config::settings::load_or_seed_with_warnings();
-        if let Some(first) = warnings.first() {
+        // A key 3.0 no longer reads was reported at startup; the file still
+        // loads, so a later edit beside it applies.
+        if let Some(first) = warnings
+            .iter()
+            .find(|warning| !crate::config::settings::is_retired_notice(warning))
+        {
             // The loader falls back to defaults per bad key rather than failing,
             // so this is a report, not a refusal.
             return Some(Reloaded::Failed(first.clone()));
