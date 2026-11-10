@@ -316,8 +316,6 @@ globals:
     property: read-only
   thurbox.agents:
     property: read-only
-  thurbox.agent_default:
-    property: read-only
   thurbox.settings.features.automations:
     property: read-only
   thurbox.settings.features.file_viewer:

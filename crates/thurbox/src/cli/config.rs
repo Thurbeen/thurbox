@@ -3,10 +3,6 @@
 //! `validate` strictly parses every config file and fails (exit 1) when any
 //! is invalid — usable as a dotfiles CI check. `show` prints the *effective*
 //! resolved configuration and where each value came from.
-//!
-//! The agent module's loaders are reached via fully-qualified paths (no
-//! `use crate::agent`) to keep the cli module free of an `agent` import —
-//! see tests/architecture_rules.rs::cli_module_isolation.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -123,12 +119,6 @@ fn validate_plugin_state() -> (Value, bool) {
 /// Validate every config file. Returns the full report plus the list of files
 /// that failed (empty = all valid).
 fn validate() -> (Value, Vec<String>) {
-    let (agents, agents_ok) = validate_file(
-        crate::agent::agent_config::agents_config_path(),
-        |contents| {
-            crate::agent::agent_config::parse_for_reload(contents).map(|(_, warnings)| warnings)
-        },
-    );
     // Through the loader's own parse, so an entry the load refuses — a host
     // name holding `:` — fails validation rather than vanishing silently.
     let (hosts, hosts_ok) = validate_file(crate::config::hosts::hosts_config_path(), |c| {
@@ -148,7 +138,6 @@ fn validate() -> (Value, Vec<String>) {
     let (plugin_state, plugin_state_ok) = validate_plugin_state();
 
     let failed: Vec<String> = [
-        ("agents.toml", agents_ok),
         ("hosts.toml", hosts_ok),
         ("settings.toml", settings_ok),
         ("themes.toml", themes_ok),
@@ -162,7 +151,6 @@ fn validate() -> (Value, Vec<String>) {
 
     let report = json!({
         "valid": failed.is_empty(),
-        "agents_toml": agents,
         "hosts_toml": hosts,
         "settings_toml": settings,
         "themes_toml": themes,
@@ -175,7 +163,6 @@ fn validate() -> (Value, Vec<String>) {
 /// Render `config validate` as a per-file status list.
 fn render_validate(report: &Value, failed: &[String]) -> String {
     let files = [
-        ("agents.toml", "agents_toml"),
         ("hosts.toml", "hosts_toml"),
         ("settings.toml", "settings_toml"),
         ("themes.toml", "themes_toml"),
@@ -226,24 +213,6 @@ fn render_show(report: &Value) -> String {
         sections.push(format!("Paths\n{}", output::kv(&pairs)));
     }
 
-    let agents = &report["agents"];
-    let names = agents["names"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
-    sections.push(format!(
-        "Agents\n{}",
-        output::kv(&[
-            ("default", output::dash(agents["default"].as_str())),
-            ("names", names),
-        ])
-    ));
-
     let editor = &report["editor"];
     sections.push(format!(
         "Editor\n{}",
@@ -278,7 +247,6 @@ fn render_show(report: &Value) -> String {
 }
 
 fn show(settings: &crate::session::settings::Settings) -> Value {
-    let agents = crate::agent::agent_config::load_or_seed();
     // The *effective* host set: configured SSH/WSL hosts plus auto-discovered
     // WSL distros — matching what `--host` and the TUI picker actually offer
     // (`config validate` stays file-only).
@@ -289,8 +257,6 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
 
     json!({
         "paths": {
-            "agents_toml": crate::agent::agent_config::agents_config_path()
-                .map(|p| p.display().to_string()),
             "hosts_toml": crate::config::hosts::hosts_config_path()
                 .map(|p| p.display().to_string()),
             "settings_toml": crate::config::settings::settings_config_path()
@@ -314,7 +280,6 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
         // relocated data dir gets a socket of its own, so the name is resolved
         // rather than constant and worth reporting where the dirs are.
         "tmux_socket": crate::backend::instance::local_socket_name(),
-        "agents": { "default": agents.default_name(), "names": agents.names() },
         "hosts": { "names": hosts.names() },
         "settings": settings,
         // Fleet runs every session (ADR-41): which one, and what it reads.
@@ -357,40 +322,6 @@ mod tests {
         let (v, failed) = validate();
         assert!(failed.is_empty(), "got failures: {failed:?}");
         assert_eq!(v["valid"], json!(true));
-    }
-
-    #[test]
-    fn validate_fails_with_exit_error_on_malformed_agents_toml() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _g = TestPathGuard::new(tmp.path());
-        let path = crate::agent::agent_config::agents_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "not toml {{{").unwrap();
-
-        let (_, failed) = validate();
-        assert!(failed.iter().any(|f| f == "agents.toml"), "got: {failed:?}");
-    }
-
-    #[test]
-    fn validate_fails_on_an_unknown_agents_toml_placeholder() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _g = TestPathGuard::new(tmp.path());
-        let path = crate::agent::agent_config::agents_config_path().unwrap();
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "[[agents]]\nname = \"ok\"\ncommand = \"x\"\n\
-             [[agents]]\nname = \"coder\"\ncommand = \"x\"\n\
-             setup = [\"scripts/role.sh {rol}\"]\nvars = { role = \"coder\" }\n",
-        )
-        .unwrap();
-
-        let (report, failed) = validate();
-        assert!(failed.iter().any(|f| f == "agents.toml"), "got: {failed:?}");
-        assert!(
-            report.to_string().contains("unknown placeholder {rol}"),
-            "the message names the placeholder: {report}"
-        );
     }
 
     #[test]
@@ -467,6 +398,5 @@ mod tests {
         );
         assert!(v["settings"]["scrollback_lines"].is_number());
         assert_eq!(v["settings"]["features"]["mouse"], json!(true));
-        assert_eq!(v["agents"]["default"], json!("claude"));
     }
 }

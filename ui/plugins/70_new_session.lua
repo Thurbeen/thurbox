@@ -325,27 +325,15 @@ local function frame(title, rows_height, children, flow)
   })
 end
 
---- Assigned below, once `spawns_directly` exists: the warning needs to know
---- whether this step is the last one before the session is created.
-local preflight_warning
-
 --- A refusal this flow made itself, on its own row. Empty when there is none, so
 --- the row is spent either way and the modal does not change height as messages
 --- come and go.
----
---- The same row carries the preflight warning when there is no refusal to show:
---- what is already known to be missing is exactly as urgent as a refusal, and
---- spending a second row on it would move every step's height for a state most
---- machines are never in.
 local function message_row(flow)
-  local text, colour = flow.message, theme.bad
-  if not text then
-    text, colour = preflight_warning(flow)
-  end
+  local text = flow.message
   return {
     type = "text",
     len = 1,
-    text = { { { text = text and (" " .. text) or "", style = { fg = colour } } } },
+    text = { { { text = text and (" " .. text) or "", style = { fg = theme.bad } } } },
   }
 end
 
@@ -475,33 +463,6 @@ end
 --- drift apart.
 local function spawns_directly()
   return #agents() <= 1
-end
-
---- What is already known to be missing for the session about to be created.
----
---- The whole point of the flow knowing this: the agent is looked for *while the
---- user is still choosing*, so the answer does not arrive as a dead pane after
---- they have committed. Returns the sentence and the colour to draw it in, or
---- nothing when there is nothing to say.
----
---- Only ever about the local machine. A remote host's binaries live on the
---- host, and thurbox has not looked there — `unknown` is not `missing`, and
---- reporting one as the other is a claim it has not earned.
-preflight_warning = function(flow)
-  if (flow.host or "") ~= "" then
-    return nil
-  end
-  -- The agent is the last question, so it is only settled on that step; a flow
-  -- with a single agent never asks, and the answer is settled from the start.
-  if flow.step ~= "agent" and not spawns_directly() then
-    return nil
-  end
-  local picked = agents()[widgets.clamp(flow.agent_index, #agents())]
-  if picked and picked.presence == "missing" then
-    return "⚠ " .. picked.command .. " is not installed — its pane will exit at once",
-      theme.warn
-  end
-  return nil
 end
 
 local function render_repo(flow)
@@ -852,22 +813,10 @@ local function render_field(title, label, field, flow, placeholder)
 end
 
 local function render_agent(flow)
-  -- v1's label: the name alone when the two are the same, else `name
-  -- (command)`, so two entries wrapping the same CLI are distinguishable.
-  --
-  -- Local presence only, same as preflight_warning above: a remote host's
-  -- binaries live on the host and thurbox has not looked there.
-  local local_host = (flow.host or "") == ""
+  -- The harnesses Fleet has profiles for, by name.
   local labels = {}
   for _, agent in ipairs(agents()) do
-    local label = (agent.name == agent.command) and agent.name
-      or (agent.name .. "  (" .. agent.command .. ")")
-    -- Marked on the row rather than only in the warning below it, so the cost
-    -- of each choice is visible while the cursor is moving over the others.
-    if local_host and agent.presence == "missing" then
-      label = label .. "  ⚠ not installed"
-    end
-    labels[#labels + 1] = label
+    labels[#labels + 1] = agent.name
   end
   local height = math.max(1, math.min(#labels, REPO_LIST_MAX))
   return frame("Coding Agent", height + 4, {
@@ -947,11 +896,6 @@ local function after_name(flow)
   end
   flow.step = "agent"
   flow.agent_index = 1
-  for index, agent in ipairs(list) do
-    if agent.name == (thurbox and thurbox.agent_default) then
-      flow.agent_index = index
-    end
-  end
   return flow
 end
 

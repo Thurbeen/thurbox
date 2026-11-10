@@ -347,8 +347,8 @@ have null transcripts; a coincident local path is never a remote transcript.
 Thurbox does not parse agent transcripts to infer state.
 
 These fields are supervision evidence. Sub-work a turn outlives is reported
-as the `background` state; see
-[agents.md](agents.md#background-sub-work).
+as the `background` state; see Fleet's
+[harness profiles](../fleet/controllers/task.md#harness-profiles).
 
 ### The status field is not a completion signal
 

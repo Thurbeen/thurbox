@@ -492,6 +492,7 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     let mut bridged = row("bridged", "fleet", dir.path());
     bridged.key = Some("bridged.u1".into());
     tx.send(SourceRead {
+        harnesses: None,
         sessions: vec![bridged],
         error: None,
     })
@@ -576,6 +577,7 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
     let ticket = store.request_refresh();
     assert!(!store.fresh_since(ticket), "nothing was read since");
     tx.send(SourceRead {
+        harnesses: None,
         sessions: vec![row("made", "fleet", Path::new("/w"))],
         error: None,
     })
@@ -661,6 +663,7 @@ fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
     let mut made = row("made", "fleet", Path::new("/w"));
     made.name = "Made".into();
     tx.send(SourceRead {
+        harnesses: None,
         sessions: vec![made],
         error: None,
     })
@@ -713,6 +716,7 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
         &Default::default(),
     );
     tx.send(SourceRead {
+        harnesses: None,
         sessions: vec![elsewhere, row("local", "tmux", repo.path())],
         error: None,
     })

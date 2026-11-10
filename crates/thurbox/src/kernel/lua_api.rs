@@ -25,7 +25,9 @@
 /// to a plugin that fetches them through `run`, such as `thurbox-info-panel`.
 /// API 4 is thurbox 3.0's, on Fleet (ADR-41). It removes what no engine
 /// serves any more: `thurbox.deleted`, `thurbox.tasks`, `thurbox.preflight`,
-/// `thurbox.branches`, `thurbox.worktrees`, the `tasks` and `soft_delete`
+/// `thurbox.branches`, `thurbox.worktrees`, `thurbox.agent_default`, an
+/// agent's `command` and `presence` (agents are Fleet's harnesses), the
+/// `tasks` and `soft_delete`
 /// feature flags and `settings.three_panel_min_cols`, and the commands
 /// `restore`, `restart`, `fork`, `sync`, `reorder`, `task`, `dispatch` and
 /// `automation`.
@@ -321,13 +323,7 @@ pub static AGENT: Class = Class {
     name: "thurbox.Agent",
     doc: &[],
     exact: true,
-    fields: &[
-        leaf("name", "string"),
-        leaf("command", "string"),
-        leaf("presence", "thurbox.Presence").doc(
-            "Whether `command` resolves to something runnable. `unknown` is not `missing`: it means nothing was looked at.",
-        ),
-    ],
+    fields: &[leaf("name", "string").doc("A harness Fleet has a profile for.")],
 };
 
 pub static HOST: Class = Class {
@@ -839,7 +835,6 @@ pub static API_ROOT: Class = Class {
         field("sessions", Ty::List(&SESSION)),
         field("repos", Ty::List(&REPO)),
         field("agents", Ty::List(&AGENT)),
-        leaf("agent_default", "string").doc("What a bare launch would use."),
         field("settings", Ty::Record(&SETTINGS)),
         field("bookmarks", Ty::Record(&BOOKMARKS)),
         field("browse", Ty::Record(&BROWSE)),

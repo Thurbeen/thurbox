@@ -20,8 +20,7 @@
 //! rather than a nil three frames later. Pure data here in `session` — the
 //! dependency sink — so the kernel (which classifies a file's origin and resolves
 //! trust) and the CLI (which installs and converges) share one definition,
-//! exactly as they do for [`crate::session::AgentDef`] and
-//! [`crate::session::HostDef`]. Nothing here touches the filesystem.
+//! exactly as they do for [`crate::session::HostDef`]. Nothing here touches the filesystem.
 
 use std::collections::{BTreeMap, BTreeSet};
 

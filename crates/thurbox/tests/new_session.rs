@@ -16,7 +16,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use thurbox::backend::preflight::Presence;
 use thurbox::kernel::command::{BookmarkEdit, Command, InFlight, Phase};
 use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::node::Identity;
@@ -45,16 +44,11 @@ fn snapshot() -> Snapshot {
         agents: vec![
             AgentRow {
                 name: "claude".into(),
-                command: "claude".into(),
-                presence: Presence::Present,
             },
             AgentRow {
                 name: "codex".into(),
-                command: "codex".into(),
-                presence: Presence::Present,
             },
         ],
-        agent_default: "claude".into(),
         ..Snapshot::default()
     }
 }
@@ -1811,8 +1805,6 @@ fn an_agent_with_no_fleet_harness_is_refused_by_name() {
         let mut world = World::default();
         world.snapshot.agents.push(AgentRow {
             name: "shell".into(),
-            command: "bash -i".into(),
-            presence: Presence::Present,
         });
         open(&host, &world);
         press(&host, &world, "space");
@@ -1970,8 +1962,6 @@ fn one_agent_is_not_a_question() {
     let mut world = World::default();
     world.snapshot.agents = vec![AgentRow {
         name: "claude".into(),
-        command: "claude".into(),
-        presence: Presence::Present,
     }];
     open(&host, &world);
     press(&host, &world, "space");
@@ -2518,79 +2508,6 @@ fn a_name_the_repository_can_answer_for_keeps_its_pill() {
 }
 
 // ── What is missing, said before the user commits ──────────────────────────
-
-#[test]
-fn a_missing_agent_is_marked_on_the_row_that_would_launch_it() {
-    // The whole point of publishing presence: the cost of the choice is on the
-    // choice, while the cursor is still moving over the alternatives — not in a
-    // pane that exits after the user has committed.
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.agents[1].presence = Presence::Missing;
-    open(&host, &world);
-    press(&host, &world, "space");
-    press(&host, &world, "enter");
-    type_text(&host, &world, "work");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("Coding Agent"), "{screen}");
-    assert!(
-        screen.contains("not installed"),
-        "the agent that would fail is not marked: {screen}"
-    );
-}
-
-#[test]
-fn a_missing_agent_warns_only_once_it_is_the_question() {
-    // `codex` is missing, but the repository step is not where that is decided,
-    // and warning about an agent the user has not been offered yet reads as a
-    // refusal of the step they are on.
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.agents[1].presence = Presence::Missing;
-    open(&host, &world);
-    let screen = drawn(&host, &world);
-    assert!(
-        !screen.contains("pane will exit at once"),
-        "the repository step warned about an agent nobody has chosen: {screen}"
-    );
-}
-
-#[test]
-fn a_remote_agent_is_never_reported_as_missing_by_local_presence() {
-    // Presence is published from THIS machine's PATH — a remote host's binaries
-    // live on the host and were never looked at, and the agent row must say
-    // nothing rather than borrow the wrong machine's answer.
-    let host = host();
-    let mut world = World::default();
-    world.snapshot.hosts = vec![HostRow {
-        name: "devbox".into(),
-        detail: "me@devbox".into(),
-        backend: "ssh:devbox".into(),
-        platform: "posix".into(),
-        multiplexer: None,
-        available_multiplexers: vec!["tmux".into()],
-        probing: false,
-    }];
-    world.snapshot.agents[1].presence = Presence::Missing;
-    world
-        .repos
-        .set_bookmarks_for_test("ssh:devbox", vec![bookmark("/srv/thurbox", Some(true))]);
-    open(&host, &world);
-    press(&host, &world, "j"); // local → devbox
-    press(&host, &world, "enter");
-    world.wants.bookmarks = Some("ssh:devbox".into());
-    press(&host, &world, "space");
-    press(&host, &world, "enter");
-    type_text(&host, &world, "remote");
-    press(&host, &world, "enter");
-    let screen = drawn(&host, &world);
-    assert!(screen.contains("Coding Agent"), "{screen}");
-    assert!(
-        !screen.contains("not installed"),
-        "a remote host's agent was judged by the local machine's PATH: {screen}"
-    );
-}
 
 // ── Left click and hover, field by field ───────────────────────────────────
 //

@@ -6,13 +6,13 @@
 //! so the architecture is an explicit decision per module.
 //!
 //! A rule's name is a **node**: a top-level module (`kernel`) or a governed
-//! submodule (`agent::agent_config`). A file belongs to the deepest node containing it,
+//! submodule (`agent::fetch`). A file belongs to the deepest node containing it,
 //! and a reference is judged by the node it *resolves to* (see `resolver`):
 //! `super::`, `self::`, bare child-module paths, nested brace groups, `as`
 //! renames, imported names, `pub use` re-exports and `type` aliases are all
 //! followed, so no import shape and no alias carries a crossing past a rule. A
 //! grant names exactly one node and never its children: allowing `agent`
-//! admits nothing in a governed `agent::agent_config`.
+//! admits nothing in a governed `agent::fetch`.
 //!
 //! The graph is checked as a whole too: the actual production edges and the
 //! declared allowlist must both be acyclic, and every allowance must be used
@@ -38,7 +38,7 @@ use resolver::{cycles, strip_comments_and_strings, Edge, Reference, Tree};
 /// Per-node dependency allowlist.
 struct ModuleRules {
     /// A top-level module (`src/<name>/` or `src/<name>.rs`) or a governed
-    /// submodule path (`agent::agent_config`).
+    /// submodule path (`agent::fetch`).
     name: &'static str,
     /// Nodes this node may reference in any form.
     allowed: &'static [&'static str],
@@ -66,11 +66,6 @@ const MODULE_RULES: &[ModuleRules] = &[
     ModuleRules {
         name: "agent",
         allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::agent_config",
-        allowed: &["session", "shell", "config::file"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -185,11 +180,10 @@ const MODULE_RULES: &[ModuleRules] = &[
         // reporting are declaration-shaped — no `render`, an unplaced slot, a
         // clashing key — and a syntax check passes all of them) and `config`
         // (the interface directory and its `ui.json` overrides). Both are
-        // kernel-owned surfaces asked about from outside. Path-only, like the agent config, so the crossing stays visible at each call
+        // kernel-owned surfaces asked about from outside. Path-only, so the crossing stays visible at each call
         // site.
         allowed_path_only: &[
             "kernel",
-            "agent::agent_config",
             "backend",
             "config::file",
             "config::hosts",
@@ -222,7 +216,6 @@ const MODULE_RULES: &[ModuleRules] = &[
         // `cli` follows, so every crossing into the
         // side-effect layer is visible at its call site.
         allowed_path_only: &[
-            "agent::agent_config",
             "agent::fetch",
             "backend",
             "config::hosts",

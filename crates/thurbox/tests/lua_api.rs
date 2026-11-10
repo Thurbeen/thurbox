@@ -239,8 +239,6 @@ fn full() -> Snapshot {
         }],
         agents: vec![thurbox::kernel::snapshot::AgentRow {
             name: "claude".into(),
-            command: "claude".into(),
-            presence: thurbox::backend::preflight::Presence::Present,
         }],
         hosts: vec![HostRow {
             name: "box".into(),
@@ -253,7 +251,6 @@ fn full() -> Snapshot {
         }],
         taken_at_ms: 1_700_000_000_000,
         error: Some("a failed refresh".into()),
-        ..Snapshot::default()
     }
 }
 

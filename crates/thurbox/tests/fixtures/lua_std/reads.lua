@@ -13,7 +13,6 @@ return {
       tostring(thurbox.sessions),
       tostring(thurbox.repos),
       tostring(thurbox.agents),
-      tostring(thurbox.agent_default),
       tostring(thurbox.settings.features.automations),
       tostring(thurbox.settings.features.file_viewer),
       tostring(thurbox.settings.features.global_search),

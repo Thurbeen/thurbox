@@ -131,7 +131,6 @@ impl LuaHost {
         set(&table, "agents", agents)?;
         // What a bare launch would use, so a flow preselects it rather than
         // whichever agent happens to be first.
-        set(&table, "agent_default", snapshot.agent_default.clone())?;
 
         // `name` identifies, `detail` distinguishes on screen, `backend` is what
         // a command and a bookmark scope are keyed by — a flow needs all three,
@@ -693,15 +692,6 @@ fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     for (index, agent) in snapshot.agents.iter().enumerate() {
         let item = lua.create_table().map_err(|e| e.to_string())?;
         set(&item, "name", agent.name.clone())?;
-        // v1's picker labels a row `name  (command)` when the two differ, so
-        // the command travels with the name.
-        set(&item, "command", agent.command.clone())?;
-        // `present` / `missing` / `unknown`, so a flow can warn on the choice
-        // being made instead of letting the user find out from a pane that
-        // died. Three words rather than a boolean: a remote host's binaries
-        // were never looked at, and saying "missing" about them would be a
-        // claim thurbox has not earned.
-        set(&item, "presence", agent.presence.as_str())?;
         agents.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(agents))

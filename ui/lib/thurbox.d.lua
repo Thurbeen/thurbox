@@ -465,9 +465,7 @@
 ---| "unknown"
 
 ---@class (exact) thurbox.Agent
----@field name string
----@field command string
----@field presence thurbox.Presence Whether `command` resolves to something runnable. `unknown` is not `missing`: it means nothing was looked at.
+---@field name string A harness Fleet has a profile for.
 
 ---@class (exact) thurbox.Host
 ---@field name string
@@ -752,7 +750,6 @@
 ---@field sessions thurbox.Session[]
 ---@field repos thurbox.Repo[]
 ---@field agents thurbox.Agent[]
----@field agent_default string What a bare launch would use.
 ---@field settings thurbox.Settings
 ---@field bookmarks thurbox.Bookmarks
 ---@field browse thurbox.Browse

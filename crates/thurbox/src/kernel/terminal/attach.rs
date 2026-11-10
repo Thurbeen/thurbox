@@ -226,22 +226,6 @@ impl Terminals {
             );
             return;
         };
-        // A row whose agent has no definition is not attached. Nothing here
-        // launches the agent (that is Fleet's), so the definition itself
-        // is not needed — only that there is one, as there always had to be.
-        if self
-            .agents
-            .get(&row.agent)
-            .or_else(|| self.agents.default_agent())
-            .is_none()
-        {
-            self.fail(
-                &row.id,
-                Some(backend_id),
-                format!("no agent definition for {}", row.agent),
-            );
-            return;
-        }
         // The host a remote session's list row names, resolved here rather
         // than inside the backend contract, which reads no global config.
         let remote_host = crate::kernel::snapshot::remote_host_of(&row.backend);

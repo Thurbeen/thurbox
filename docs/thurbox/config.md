@@ -19,7 +19,6 @@ development checkout never touches your real setup.
 
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
-| `~/.config/thurbox/agents.toml` | TOML | you | **live** (content poll) | coding-agent CLI definitions |
 | `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
@@ -36,13 +35,9 @@ development checkout never touches your real setup.
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 | `~/.config/thurbox/automations.json` | JSON | `thurbox-cli automation` (or you) | each tick and each command | every automation: its trigger, action and prompt, its last and next run, and its 20 most recent runs. Rewritten whole under a lock every process takes (`automations.json.lock`); a file that does not parse is an error, never an empty list |
 
-`agents.toml` and `settings.toml` reload **live**: the TUI checks them about
-once per second and applies edits without a restart. The agent registry is
-compared by content; settings use mtime. A successful edit shows a toast.
-An `agents.toml` reload updates the picker and default together. A missing
-file, an invalid file, or one with no usable agents leaves the last good
-registry in force and reports the error; correcting it is picked up by the
-next poll.
+`settings.toml` reloads **live**: the TUI checks its mtime about once per
+second and applies edits without a restart. A successful edit shows a toast;
+an invalid file leaves the last good settings in force and reports the error.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
 `settings.toml` the values that apply live are the `shell_pane` and
@@ -65,7 +60,7 @@ the file (or the panel in another instance) is picked up the same way,
 via the live mtime poll.
 
 Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
-`ui.json`, `plugin-state.json`, `agents.toml` (and the other seeded config files),
+`ui.json`, `plugin-state.json` (and the other seeded config files),
 the keybindings JSON, the interface's plugin
 lock, spec and bundled files — is written through
 one writer, `paths::write_atomically`. It stages a complete file beside the
@@ -83,7 +78,7 @@ file and parent directory are not explicitly synced to stable storage.
 production write, apart from an allow-list of logs, a cache, the control
 socket's privately staged files and the self-update's staged binary.
 
-The config files beside `config.toml` — `agents.toml`, `settings.toml`,
+The config files beside `config.toml` — `settings.toml`,
 `themes.toml` and `hosts.toml` — are
 read and written by one loader, `config::file`. It seeds an absent file with
 its documented defaults, parses it reporting every unknown key as a warning,
@@ -101,7 +96,7 @@ the right knob:
 
 | I want to… | Edit | Section |
 |------------|------|---------|
-| Add a coding agent, pin a model, change resume/fork flags | `agents.toml` | [agents.toml](#agentstoml) |
+| Add a coding agent, pin a model | Fleet's harness profiles | [Agents](#agents) |
 | Run sessions on a remote machine over SSH, or in a local WSL distro | `hosts.toml` | [hosts.toml](#hoststoml) |
 | Turn a whole TUI feature on/off (mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
 | Tune scrollback, panel breakpoints, git polling | `settings.toml` | [settings.toml](#settingstoml) |
@@ -120,177 +115,28 @@ invalid chords, and chord conflicts surface as a status-bar toast on
 startup (and in the log file). Unknown TOML keys are tolerated —
 stale keys from older versions or typos are *reported by name* but
 your file still loads — while syntax/type errors fall back to
-built-ins (agents), zero hosts, or defaults (settings).
+zero hosts, or defaults (settings).
 
-`agents.toml` degrades **per entry**: a single malformed `[[agents]]`
-block (e.g. `args` given a string instead of an array) is skipped with
-a toast naming it, and your remaining agents still load — only a
-document-level syntax error (or a file with no usable agents) falls
-back to the built-ins.
+## Agents
 
-Check everything from the command line:
-
-```bash
-thurbox-cli config validate   # strict parse of every file; exit 1 on problems
-thurbox-cli config show       # effective config + where each value came from
-```
-
-`validate` fails on unknown keys (they are typos or leftovers either
-way), making it usable as a dotfiles CI gate.
-
-## agents.toml
-
-Declares the launchable coding agents. Seeded with the built-ins
-(`claude`, `codex`, `antigravity`, `opencode`, `aider`, `copilot`, `vibe`, `pi`,
-`omp`) on
-first run; edit or add `[[agents]]` entries to support any CLI — no
-recompile. A malformed `[[agents]]` entry is skipped (with a toast
-naming it) and the rest still load; only a document-level syntax error
-falls back to the built-ins. Either way the error is shown.
-
-The file is **seeded once** and never rewritten — so it stays yours to
-edit, but a thurbox **update that adds a new built-in agent does not
-merge it into an existing `agents.toml`**. To pick up a newly-bundled
-agent, add its `[[agents]]` block by hand (copy it from this file's
-built-in list) or delete `agents.toml` to re-seed the full set.
-
-```toml
-config_version = 1
-default = "claude"          # agent preselected in the picker / headless spawns
-
-[[agents]]
-name = "claude"             # display + lookup name (unique)
-command = "claude"          # executable
-args = []                   # always passed; bake a model here if you want one
-resume_args = ["--resume", "{id}"]            # emitted when resuming
-fork_args = ["--resume", "{id}", "--fork-session"]
-new_session_args = ["--session-id", "{id}"]   # emitted on a fresh spawn
-additional_dir_args = ["--add-dir", "{dir}"] # repeated per multi-repo member
-resume_latest = false       # true = id-less "resume last session in cwd"
-env = { CLAUDE_CONFIG_DIR = "{home}/.claude-work" } # frozen at creation
-telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1" }  # only while [telemetry] is on
-# telemetry_args = []       # appended only while [telemetry] is on
-# vars = { role = "coder" } # {role} in command/args/groups/env/setup — see below
-# setup = []                # sh commands run in the session's cwd before launch
-```
-
-A variant can inherit a named entry, including another variant. Definitions may
-appear in either order:
-
-```toml
-[[agents]]
-name = "claude-opus"
-extends = "claude"
-append_args = ["--model", "opus"]
-```
-
-`extends` resolves when the registry loads. Every field except the variant's
-own `name` is inherited; a field present on the variant replaces it, including
-`args = []`, empty maps and `resume_latest = false`. `append_args` follows the
-resolved `args`. A stock `shell` variant
-also retains the host's native shell selection until its command/args are edited.
-`config validate` rejects unknown bases, cycles and chains over 32 definitions.
-A bad entry and its dependents are skipped during a normal load; valid entries
-remain available.
-
-Editing TOML is the interface for adding variants.
-
-**thurbox launches no agent.** Fleet's harness profile for the chosen agent
-does (see [`[fleet]`](#fleet--the-session-engine)). thurbox reads
-`agents.toml` for:
-
-- the create flow's agent list and its default;
-- `thurbox-cli doctor`, which checks each agent's `command`;
-- `thurbox-cli config validate`;
-- attaching a session: a row whose agent has no definition here, with no
-  default to fall back on, is not attached.
-
-The launch fields — `args`, the `*_args` groups, `env`, `telemetry_env`,
-`telemetry_args`, `vars` and `setup` — are parsed and checked as below, and
-nothing in thurbox launches with them.
-
-### Templates, argument order and setup
-
-```toml
-[[agents]]
-name = "claude-coder"
-command = "claude"
-args = ["--permission-mode", "auto", "{session_args}", "--add-dir", "{home}/skills"]
-new_session_args = ["--session-id", "{id}"]
-resume_args = ["--resume", "{id}"]
-vars = { role = "coder" }
-setup = ["[ -x scripts/role.sh ] && scripts/role.sh {role} --agent claude"]
-```
-
-**`vars`** are per-entry template values. Each `{key}` naming a var is
-replaced by its value in `command`, `args`, every `*_args` group, `env`,
-`setup`, `telemetry_env` and `telemetry_args`, once, when the registry loads.
-A value is inserted as written: it may carry the launch-time placeholders
-(`{home}`, and `{id}` or `{name}` where the field allows it), but not another
-var. A var
-name is an identifier (letters, digits, `_`) and may not be one thurbox
-substitutes itself (`id`, `name`, `home`, `dir`, `session_args`, `otlp_endpoint`,
-`otlp_protocol`). Unlike every other field, a variant's `vars` **merge per
-key** over its base's: a template entry can give each var a default and each
-`extends` variant name only the ones it changes.
-
-**Every placeholder must resolve.** A placeholder is `{` + identifier + `}`;
-TOML-shaped text such as codex's `-c 'projects={"/w"={trust_level="trusted"}}'`
-is not one. What each field may name is fixed —
-`{id}` and `{name}` only in the session groups, `{dir}` only in
-`additional_dir_args`,
-`{otlp_endpoint}`/`{otlp_protocol}` only in the telemetry fields, `{home}` in
-`command`, `args`, the groups, `env` and `setup`, and `{session_args}` only as
-one whole `args` token, at most once. Anything else — a misspelt `{rol}`,
-`{id}` in `args` — fails `thurbox-cli config validate` and skips that entry on
-load (with a warning naming the field and the placeholder).
+thurbox keeps no agent registry and reads no `agents.toml`: the agents a
+session can run are the harnesses Fleet has profiles for, and Fleet launches,
+resumes and watches them ([agents.md](agents.md)). An `agents.toml` left from
+thurbox 2.x is not read.
 
 ### What happens when it is *not* installed
 
-thurbox starts with no multiplexer and no agent on the machine, and that is
-deliberate — browsing, reading and configuring must work on a fresh box. So the
-same lookup runs a second time, as a **preflight**, in the places where knowing
-early is worth something:
-
-- the **create-session flow** marks a local agent whose `command` resolves
-  nowhere (`⚠ not installed`) and says so on the step that offers it, and states a
-  missing multiplexer from the flow's first step. It never blocks: the answer is
-  a warning on the choice, because a `command` may still be launchable (a shell
-  function, or something installed a second later).
-- the **empty session list** — the one screen a first run always reaches — says
-  the multiplexer is missing, with the fix.
-- `thurbox-cli doctor` answers the whole question directly: the multiplexer and
-  its version, every registered agent's `command`, the launcher for each
-  configured host, and the full search path.
-
-The probe is a `stat` per absolute `PATH` entry per binary — no process spawn —
-and it runs on the kernel's own schedule behind a 10-second window, never on a
-render, a keystroke or a list row. Two things are reported as **unknown** rather
-than missing, because in both cases nothing was looked at: a **remote host**,
-whose binaries live on the host, and a **relative** `command` such as
-`./bin/agent`, which is resolved by whoever launches it from the *session's*
-own directory. Answering the latter from thurbox's working directory would call
-a binary that launches fine missing, and one that does not present. Only
-absolute `PATH` entries are searched, for the same reason.
+thurbox starts with no multiplexer on the machine, and that is deliberate —
+browsing, reading and configuring must work on a fresh box. `thurbox-cli
+doctor` answers the question directly: the Fleet in force (its program,
+version, harnesses and config), `runtime-mux`, the multiplexer and its
+version, the launcher for each configured host, and the full search path.
 
 The advice is platform-specific and never invented. A Windows user is pointed at
 [psmux](https://github.com/psmux/psmux), never at `tmux`; where the install
 command depends on a distribution, the package name is given and the link is
 tmux's own [install page](https://github.com/tmux/tmux/wiki/Installing) rather
-than a guessed invocation. A missing **agent** is answered with the `agents.toml`
-entry that decides what gets run, because thurbox bakes in no knowledge of any
-agent's installer.
-
-The seeded file also ships two commented, copy-pasteable templates
-below the built-ins — **Add your own agent** (every field annotated)
-and **Pin a model** (a `claude-opus` variant baking `--model opus`
-through `extends` and `append_args`). Both stay commented, so a fresh install still resolves
-to exactly the ten built-ins (nine coding agents plus `shell`).
-
-For **each built-in's** exact config and runtime behavior (resume/fork
-semantics and ID model), and the
-checklist for **adding a new built-in**, see
-[agents.md](agents.md).
+than a guessed invocation.
 
 ## hosts.toml
 
@@ -988,8 +834,8 @@ it as follows:
 | `Lost`, `Gone` | failed |
 | anything else, or absent | unreported |
 
-thurbox installs no hooks into an agent's own config (see
-[agents.md → Status hooks](agents.md#status-hooks)). To delete the hook
+thurbox installs no hooks into an agent's own config: Fleet's
+[harness profiles](../fleet/controllers/task.md#harness-profiles) do. To delete the hook
 entries an earlier thurbox wrote there, see
 [Removing old hook entries](https://thurbox.thurbeen.eu/docs/extensions.html).
 

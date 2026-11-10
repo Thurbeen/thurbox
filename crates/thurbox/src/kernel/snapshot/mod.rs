@@ -18,7 +18,7 @@ pub mod fleet;
 mod git;
 
 use crate::session::settings::Settings;
-use crate::session::{AgentRegistry, SessionId, SessionState};
+use crate::session::{SessionId, SessionState};
 use git::{git_poll_interval, GitStats};
 
 /// How often the snapshot is rebuilt. A read never waits on this; it only
@@ -35,18 +35,6 @@ const SOURCE_SETTLE: Duration = Duration::from_secs(1);
 /// creation Fleet refused late, or a watch that is down, must not hold the
 /// creation's report for good.
 const SOURCE_AWAIT: Duration = Duration::from_secs(10);
-
-/// How long "is the multiplexer installed, does each agent's command resolve"
-/// is trusted before it is asked again.
-///
-/// Asking is a `stat` per absolute `PATH` entry per binary and no process
-/// spawn, so the answer is cheap — but it is not free, and doing it on the
-/// render path (a `which` per frame, per keystroke or per list row) is the
-/// regression this window exists to prevent. Ten seconds is short enough that a
-/// user who reads "install tmux", installs it, and comes back sees the flow
-/// agree without restarting thurbox, and long enough that an idle instance
-/// costs a few `stat`s a minute.
-const PREFLIGHT_TTL: Duration = Duration::from_secs(10);
 
 /// A session's git working tree, when it has been computed.
 ///
@@ -262,15 +250,6 @@ pub struct RepoRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentRow {
     pub name: String,
-    pub command: String,
-    /// Whether `command` resolves to something runnable right now.
-    ///
-    /// Published so the create-session flow can say it *before* the user
-    /// commits: a missing agent binary leaves the multiplexer with a window
-    /// whose pane exits instantly, which it reports as a successful create, so
-    /// the answer never arrives on its own. Probed on a TTL, never per frame —
-    /// see `SnapshotStore::poll_preflight`.
-    pub presence: crate::backend::preflight::Presence,
 }
 
 /// A machine a session can be created on.
@@ -296,11 +275,9 @@ pub struct Snapshot {
     pub sessions: Vec<SessionRow>,
     /// Repositories a new session can be created against.
     pub repos: Vec<RepoRow>,
-    /// Agents, from the same registry the launcher uses.
+    /// The harnesses Fleet has profiles for (`fleet version --json`): the
+    /// agents a session can run. Empty until Fleet has answered.
     pub agents: Vec<AgentRow>,
-    /// The registry's default agent, so a flow preselects what a bare launch
-    /// would use rather than whichever agent happens to sort first.
-    pub agent_default: String,
     /// Configured and discovered hosts; empty means local only.
     pub hosts: Vec<HostRow>,
     pub automations: Vec<AutomationRow>,
@@ -336,6 +313,8 @@ pub trait SnapshotSource: Send {
 pub struct SourceRead {
     pub sessions: Vec<SessionRow>,
     pub error: Option<String>,
+    /// The harnesses Fleet has profiles for, once it has said.
+    pub harnesses: Option<Vec<String>>,
 }
 
 /// Owns the snapshot and decides when to rebuild it.
@@ -355,13 +334,6 @@ pub struct SnapshotStore {
     /// [`Self::request_refresh_awaiting`].
     awaited: Vec<String>,
     git: GitStats,
-    /// The registry shared by picker, default, and status coverage.
-    registry: std::sync::Arc<AgentRegistry>,
-    agents: Vec<AgentRow>,
-    agent_default: String,
-    /// Last observed contents or read error, sampled behind `registry_polled_at`.
-    registry_contents: Option<Result<String, String>>,
-    registry_polled_at: Option<Instant>,
     hosts: Vec<HostRow>,
     /// Whether the create flow is open, so each host may be probed for its
     /// multiplexers — see [`Self::probe_hosts`].
@@ -369,9 +341,6 @@ pub struct SnapshotStore {
     /// The routes the process's registry serves, read once from it: which
     /// multiplexers the create flow may offer, here and on each host.
     served: std::collections::HashSet<crate::session::Route>,
-    /// When the agent commands were last looked for.
-    /// Gates [`Self::poll_preflight`]; see [`PREFLIGHT_TTL`].
-    preflight_at: Instant,
     current: Snapshot,
     last_refresh: Option<Instant>,
     /// Moves whenever anything in [`Self::current`] does.
@@ -414,17 +383,19 @@ impl SnapshotStore {
         self.source_reads += 1;
         self.current.sessions = read.sessions;
         self.current.error = read.error;
+        if let Some(harnesses) = read.harnesses {
+            self.current.agents = harnesses
+                .into_iter()
+                .map(|name| AgentRow { name })
+                .collect();
+        }
         self.current.taken_at_ms = taken_at_stamp();
         self.mark_changed();
         true
     }
 
     fn build(backends: &crate::backend::BackendRegistry, settings: &Settings) -> Self {
-        let registry = read_registry();
-        crate::agent::agent_config::publish_registry(&registry);
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
-        let agents = read_agents(&registry);
-        let agent_default = registry.default_name().to_string();
         let hosts = read_hosts(&served, false);
         Self {
             source: None,
@@ -433,21 +404,13 @@ impl SnapshotStore {
             awaited: Vec::new(),
             git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             current: Snapshot {
-                agents: agents.clone(),
-                agent_default: agent_default.clone(),
                 hosts: hosts.clone(),
                 taken_at_ms: taken_at_stamp(),
                 ..Snapshot::default()
             },
-            agents,
-            agent_default,
-            registry,
-            registry_contents: None,
-            registry_polled_at: None,
             hosts,
             probe_hosts: false,
             served,
-            preflight_at: Instant::now(),
             last_refresh: None,
             version: 0,
         }
@@ -469,51 +432,6 @@ impl SnapshotStore {
         &self.current
     }
 
-    pub fn agent_registry(&self) -> &AgentRegistry {
-        &self.registry
-    }
-
-    /// Adopt an edited agents.toml at the same cadence as settings polling.
-    /// A failed edit keeps all four readers on the last good registry.
-    pub fn poll_registry(&mut self) -> Option<Result<Vec<String>, String>> {
-        const POLL_INTERVAL: Duration = Duration::from_secs(1);
-        if self
-            .registry_polled_at
-            .is_some_and(|at| at.elapsed() < POLL_INTERVAL)
-        {
-            return None;
-        }
-        self.registry_polled_at = Some(Instant::now());
-        let first_poll = self.registry_contents.is_none();
-        let contents = crate::agent::agent_config::read_for_reload();
-        if self.registry_contents.as_ref() == Some(&contents) {
-            return None;
-        }
-        self.registry_contents = Some(contents.clone());
-        let (registry, warnings) = match contents
-            .and_then(|contents| crate::agent::agent_config::parse_for_reload(&contents))
-        {
-            Ok(loaded) => loaded,
-            Err(error) => return Some(Err(error)),
-        };
-        if *self.registry != registry {
-            self.agent_default = registry.default_name();
-            self.agents = read_agents(&registry);
-            self.registry = std::sync::Arc::new(registry);
-            crate::agent::agent_config::publish_registry(&self.registry);
-            // The picker's rows come from the registry, not the database, so
-            // they publish now; each session's coverage is judged against it
-            // too, which is what the read is for.
-            self.current.agents = self.agents.clone();
-            self.current.agent_default = self.agent_default.clone();
-            self.mark_changed();
-            self.request_refresh();
-        } else if first_poll && warnings.is_empty() {
-            return None;
-        }
-        Some(Ok(warnings))
-    }
-
     /// Apply what the source has answered and, when the refresh interval has
     /// elapsed, fold in the git stats and the preflight answers. Called from
     /// the event loop, never from a plugin. Returns whether rows from the
@@ -532,7 +450,7 @@ impl SnapshotStore {
             return applied;
         }
         self.last_refresh = Some(now);
-        let preflight_moved = self.poll_preflight() | self.poll_hosts();
+        let preflight_moved = self.poll_hosts();
         self.current.taken_at_ms = taken_at_stamp();
         // Git stats landing rewrite rows here, so this changes more than the
         // timestamp, and the snapshot moved if they did.
@@ -635,33 +553,6 @@ impl SnapshotStore {
         moved
     }
 
-    /// Look for each agent's command again, at most once
-    /// per [`PREFLIGHT_TTL`]. Returns whether any answer moved.
-    ///
-    /// The whole cost model of this feature lives here: the create-session flow
-    /// reads a *published* answer, so the probe happens on the kernel's
-    /// schedule and behind a window, never on a render, a keystroke or a row.
-    fn poll_preflight(&mut self) -> bool {
-        if self.preflight_at.elapsed() < PREFLIGHT_TTL {
-            return false;
-        }
-        self.preflight_at = Instant::now();
-        let mut moved = false;
-        for row in &mut self.agents {
-            let presence = crate::backend::preflight::look_up(&row.command);
-            if presence != row.presence {
-                row.presence = presence;
-                moved = true;
-            }
-        }
-        if moved {
-            // `refresh` may not run for minutes on an idle database, and until
-            // it does `current` is what every reader sees.
-            self.current.agents = self.agents.clone();
-        }
-        moved
-    }
-
     /// Whether the create flow is open. Only then is a host probed for which
     /// multiplexers it has: a closed flow costs no connection to any host.
     pub fn probe_hosts(&mut self, wanted: bool) {
@@ -693,24 +584,6 @@ impl SnapshotStore {
         self.current.taken_at_ms = taken_at_stamp();
         self.mark_changed();
     }
-}
-
-fn read_registry() -> std::sync::Arc<AgentRegistry> {
-    std::sync::Arc::new(crate::agent::agent_config::load_or_seed())
-}
-
-/// Agents from the registry the launcher itself uses — so the flow can never
-/// offer one that would fail to launch.
-fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
-    registry
-        .agents
-        .iter()
-        .map(|agent| AgentRow {
-            name: agent.name.clone(),
-            command: agent.command.clone(),
-            presence: crate::backend::preflight::look_up(&agent.command),
-        })
-        .collect()
 }
 
 /// Configured and discovered hosts. Empty means local only, and the flow skips

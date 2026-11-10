@@ -162,6 +162,11 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     if let Some(e) = bridge_error {
         tracing::warn!("{e}");
     }
+    // Read before any subscriber took them, so logged now: a key the file
+    // should not hold is worth a line in the log, not only the status band.
+    for warning in &config_warnings {
+        tracing::warn!("{warning}");
+    }
 
     // The one registry this process drives every backend through, built here
     // and handed to each consumer: attach, the command workers and the startup

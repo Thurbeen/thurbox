@@ -479,7 +479,7 @@ agent picker with no recompile; the snapshot re-reads it on change and
 publishes the registry to the interface. Each built-in's exact config and
 behavior (and the checklist for adding a new built-in) is in
 [agents.md](agents.md), and the format and validation are in
-[config.md](config.md#agentstoml).
+[config.md](config.md#agents).
 
 Each definition (`session::AgentDef`) carries a `name` (the display and
 lookup key, unique in the registry), the `command` to launch, and its

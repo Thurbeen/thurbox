@@ -48,15 +48,12 @@ struct Finding {
 
 /// Report on this machine's readiness to run a session.
 ///
-/// Exits non-zero only when something that must work does not: no Fleet, no
-/// multiplexer, or no registered agent that resolves anywhere. A
-/// partially-installed registry is a `warn` and exits 0 — having `claude` but
-/// not `aider` is an ordinary machine, not breakage.
+/// Exits non-zero only when something that must work does not: no Fleet, or
+/// no multiplexer. The agents are Fleet's harnesses, reported with Fleet.
 pub fn run(fleet_program: &str) -> Result<CommandOutput, CommandError> {
     let fleet = FleetFacts::read(fleet_program);
     let mut findings = fleet.findings();
     findings.push(multiplexer_finding());
-    findings.extend(agent_findings());
     findings.extend(host_findings());
 
     let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
@@ -92,70 +89,6 @@ fn multiplexer_finding() -> Finding {
             key: "multiplexer".into(),
             level: Level::Fail,
             detail: crate::backend::preflight::Dependency::LocalMultiplexer.missing_summary(),
-        },
-    }
-}
-
-/// One row per registered agent, plus the verdict on the registry as a whole.
-fn agent_findings() -> Vec<Finding> {
-    let registry = crate::agent::agent_config::load_or_seed();
-    let mut findings: Vec<Finding> = registry.agents.iter().map(agent_finding).collect();
-
-    // Every individual miss above is a warning; all of them together is not. A
-    // machine where no registered agent resolves can still create a session,
-    // and every one of them will open a pane that exits. An agent whose
-    // presence is *unknown* counts as resolving: it may well launch, and
-    // failing the report over a machine nothing looked at is the conflation
-    // `Presence` exists to prevent.
-    let missing = findings.iter().filter(|f| f.level == Level::Warn).count();
-    if !registry.agents.is_empty() && missing == registry.agents.len() {
-        findings.push(Finding {
-            key: "agents".into(),
-            level: Level::Fail,
-            detail: format!(
-                "none of the {} registered agents resolves on PATH — a session created now \
-                 would open a pane that exits immediately",
-                registry.agents.len()
-            ),
-        });
-    }
-    findings
-}
-
-/// What one agent's `command` resolves to.
-///
-/// Three answers, not two. A relative `command` is launched from the session's
-/// own directory, so this machine's answer about it would be about the wrong
-/// directory — reported as such rather than guessed.
-fn agent_finding(agent: &crate::session::AgentDef) -> Finding {
-    let key = format!("agent:{}", agent.name);
-    match crate::backend::preflight::look_up(&agent.command) {
-        crate::backend::preflight::Presence::Present => Finding {
-            key,
-            level: Level::Ok,
-            detail: format!("{} runs `{}`", agent.name, agent.command),
-        },
-        crate::backend::preflight::Presence::Unknown => Finding {
-            key,
-            level: Level::Ok,
-            detail: format!(
-                "{} runs `{}`, which is resolved from the session's own directory — not \
-                 something this machine can answer",
-                agent.name, agent.command
-            ),
-        },
-        // The short form: the search path is printed once below, and repeating
-        // it on every row of a ten-agent registry buries the name that differs
-        // between them.
-        crate::backend::preflight::Presence::Missing => Finding {
-            key,
-            level: Level::Warn,
-            detail: crate::backend::preflight::Dependency::Agent {
-                name: &agent.name,
-                command: &agent.command,
-                registry: crate::agent::agent_config::agents_config_path().as_deref(),
-            }
-            .missing_summary(),
         },
     }
 }
@@ -454,29 +387,6 @@ fn fleet_config_path() -> Option<(std::path::PathBuf, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::AgentDef;
-
-    /// Before the `Presence::Unknown` fix, `look_up` answered a relative
-    /// `command` as `Missing` (checked against thurbox's own directory, not
-    /// the session's), so this row read as a `warn` telling the user to
-    /// install a CLI that was already there. Reproduces with `left: Warn`.
-    #[test]
-    fn a_relative_agent_command_is_reported_ok_not_a_warning() {
-        let agent = AgentDef {
-            name: "custom".into(),
-            command: "./bin/agent".into(),
-            ..Default::default()
-        };
-        let finding = agent_finding(&agent);
-        assert_eq!(finding.level, Level::Ok, "{}", finding.detail);
-        assert!(
-            finding
-                .detail
-                .contains("resolved from the session's own directory"),
-            "{}",
-            finding.detail
-        );
-    }
 
     /// `doctor` names the Fleet that runs every session, its harnesses and
     /// the config it reads.
@@ -527,16 +437,5 @@ mod tests {
         );
         assert!(out.unwrap_err().contains("did not answer"));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    }
-
-    #[test]
-    fn a_missing_agent_command_is_still_a_warning() {
-        let agent = AgentDef {
-            name: "custom".into(),
-            command: "definitely-not-a-real-binary-xyz".into(),
-            ..Default::default()
-        };
-        let finding = agent_finding(&agent);
-        assert_eq!(finding.level, Level::Warn, "{}", finding.detail);
     }
 }

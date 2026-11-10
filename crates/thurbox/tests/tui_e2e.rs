@@ -802,7 +802,7 @@ fn a_signal_restores_the_terminal_before_exiting() {
 /// `export_diagnostic_logs` bridges the interface's own `tracing` events to the
 /// collector, at WARN and above only, while the file log keeps everything
 /// (ADR-38, issue #1465 phase 3). The WARN comes from the interface's first
-/// read of an `agents.toml` with a key it does not know.
+/// read of a `settings.toml` with a key it does not know.
 #[test]
 fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
@@ -812,17 +812,12 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     let profile = Profile::new();
     let settings = profile.path("config/settings.toml");
     let mut seeded = std::fs::read_to_string(&settings).expect("read settings");
+    seeded.insert_str(0, "stray_key = 1\n");
     seeded.push_str(&format!(
         "\n[telemetry]\nenabled = true\nendpoint = \"{}\"\nexport_diagnostic_logs = true\n",
         collector.endpoint()
     ));
     std::fs::write(&settings, seeded).expect("write settings");
-    std::fs::write(
-        profile.path("config/agents.toml"),
-        "config_version = 1\ndefault = \"claude\"\nstray_key = 1\n\n\
-         [[agents]]\nname = \"claude\"\ncommand = \"claude\"\n",
-    )
-    .expect("write agents.toml");
 
     let mut tui = Tui::spawn_with(&profile, 24, 80, |cmd| {
         // A suite run inside a session with [telemetry] on inherits these.

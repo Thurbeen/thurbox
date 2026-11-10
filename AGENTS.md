@@ -127,7 +127,7 @@ full flavor). Single source of truth for the `thurbox-dev` sandbox pattern;
 
 ## Working reference (skills)
 
-The per-subsystem reference that used to live in this file is now **ten
+The per-subsystem reference that used to live in this file is now **nine
 skills** under `.agents/skills/`, loaded on demand instead of on every turn.
 Every skill's body lives there, agent-neutrally; `.claude/skills/<name>` is a
 relative symlink into it, so Claude Code and opencode read the one copy.
@@ -140,7 +140,6 @@ that names it. Read the one your change touches:
 | `thurbox-testing` | Testing · Kernel and interface tests · Session-backend e2e harnesses |
 | `thurbox-performance` | Performance (render loop) |
 | `thurbox-release` | Release Process · Distribution Packages · Installation Script |
-| `thurbox-agents` | Agent Definitions · Multi-repo sessions |
 | `thurbox-remote-hosts` | Remote SSH & WSL Sessions |
 | `thurbox-cli` | thurbox-cli · its subcommands · where the session verbs went |
 | `thurbox-session-status` | Session status (hooks-driven) · OS notifications |
@@ -436,8 +435,8 @@ For rationale behind decisions, see `docs/`:
 - `docs/thurbox/architecture.md` — Architectural decisions with rationale
 - `docs/thurbox/features.md` — Feature-level design choices
 - `docs/thurbox/config.md` — Thurbox's own config files and env vars in one place
-- `docs/thurbox/agents.md` — Each built-in agent's exact config + behavior, and
-  the checklist for adding a new built-in
+- `docs/thurbox/agents.md` — Agents are Fleet's harnesses: where each is
+  defined, and what thurbox no longer reads
 - `docs/thurbox/performance.md` — Render/tick performance: demand-driven redraw,
   perf counters, the session-order cache, and how to measure
 - `docs/thurbox/benchmark-multiplexers.md` — thurbox against raw tmux and Herdr as a

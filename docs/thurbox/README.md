@@ -16,7 +16,7 @@ operational guidance (build commands, module layout, event loop), see
 | [kernel.md](kernel.md) | The plugin kernel: its shape, rules and traps | Changing the kernel's contract with Lua |
 | [plugins.md](plugins.md) | Writing an interface plugin | Changing the plugin API or the `thurbox.*` shape |
 | [orchestration.md](orchestration.md) | The control-plane pattern for running sessions across many repos | Changing the session/message surface the pattern relies on |
-| [agents.md](agents.md) | Each built-in agent's config and status-hook mechanism | Adding or changing a built-in agent |
+| [agents.md](agents.md) | Agents are Fleet's harnesses; `agents.toml` is not read | Adding or changing an agent |
 | [config.md](config.md) | Thurbox's own config files / env vars / DB settings in one place | Adding/changing a config file, env var, or DB setting |
 | [releasing.md](releasing.md) | What a release may and may not change about the artifacts | Changing the release workflow or a published artifact |
 | [review.md](review.md) | The per-path house rules a change is reviewed against, and which document owns which class of fact | Encoding a new house rule, or moving what a document owns |

@@ -181,23 +181,6 @@ impl App {
             }
             None => {}
         }
-        match self.snapshots.poll_registry() {
-            Some(Ok(warnings)) => {
-                self.terminals
-                    .set_agents(self.snapshots.agent_registry().clone());
-                if warnings.is_empty() {
-                    self.toast("agents reloaded".to_string());
-                } else {
-                    for warning in &warnings {
-                        tracing::warn!("{warning}");
-                    }
-                    self.report(format!("agents: {}", warnings[0]), Level::Info);
-                }
-                self.dirty = true;
-            }
-            Some(Err(error)) => self.report(format!("agents: {error}"), Level::Error),
-            None => {}
-        }
         if self.reload_at.is_some_and(|at| Instant::now() >= at) {
             self.reload_at = None;
             self.time_op("interface_reload", |app| {

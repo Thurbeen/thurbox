@@ -293,7 +293,6 @@ pub struct Terminals {
     /// Kept beside the backends because a pane needs more than a connection: a
     /// remote session's launch directory is resolved against its `HostDef`.
     hosts: crate::session::HostRegistry,
-    agents: crate::session::AgentRegistry,
     live: HashMap<String, Live>,
     /// Backends whose control-mode connection has been opened. Readying is
     /// blocking (an ssh connect for a remote host), so it happens once, lazily,
@@ -385,10 +384,6 @@ pub struct Terminals {
 }
 
 impl Terminals {
-    pub fn set_agents(&mut self, agents: crate::session::AgentRegistry) {
-        self.agents = agents;
-    }
-
     /// Open each local tmux pane through `view`, a terminal stream, from now
     /// on. A stream pane keeps its grid while hidden: it comes back only
     /// through its stream.
@@ -427,7 +422,6 @@ impl Terminals {
         Self {
             backends,
             hosts,
-            agents: crate::agent::agent_config::load_or_seed(),
             live: HashMap::new(),
             ready: RefCell::new(std::collections::HashSet::new()),
             meta: HashMap::new(),
