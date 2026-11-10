@@ -362,27 +362,54 @@ ref; Fleet needs no verb for it.
 ### workspace-git, the default for git URLs
 
 `workspace-git` is a small program a runtime runs where its files belong: on
-the host, against a volume, inside a guest. `runtime-mux` and
-`runtime-process` use it directly, and the others inside their own places.
-Its layout:
+the host, against a volume, inside a guest. No runtime links it: each runs the
+program, so it runs where the runtime's files are. Its layout:
 
 ```text
 <root>/<key>/<name>/                  one real worktree per git URL
 <root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
-<root>/.sources/<digest>.git          a bare mirror per repository, fetched before each make
+<root>/.sources/<digest>.git          a bare source per repository, fetched before each make
 ```
 
+- A source fetches its remote's branches into `refs/remotes/origin/*`, and
+  its tags. A fetch therefore never moves a branch that a worktree has
+  checked out. Every branch in the source's `refs/heads/` is one that
+  `workspace-git` made.
+- Each worktree belongs to its source, so its branch and its preserved ref are
+  in the source: the source is the mirror.
 - With one URL the session starts in `<root>/<key>/<name>`; with several the
   first URL's worktree is still the start, and every worktree is a real
-  directory, so thurbox's symlink workspace goes.
-- With no `branch`, the branch is named after the key; an existing branch is
-  checked out, and one checked out elsewhere gets `<branch>-<n>`.
+  directory, so thurbox's symlink workspace goes. Two URLs with one name get
+  `<name>-2`.
+- With no `branch`, the branch is named after the key. An existing branch is
+  checked out, and one checked out elsewhere gets `<branch>-<n>`, from 2.
+- A fragment names the base: a remote branch, a tag, a branch of the source,
+  or a ref or commit as given, in that order. A `refs/…` fragment that a fetch
+  of branches does not bring, such as preserved work, is fetched by name.
+  With no fragment, the base is the remote's default branch.
+- A `file://` URL takes no query and no fragment, and names an existing
+  absolute directory. A `%XX` in a path is decoded.
+- A key holds one workspace: the same key with other URLs fails.
 - On release, a dirty worktree is committed, untracked files included,
-  through a temporary index onto `refs/fleet/preserved/<key>/<name>`; that ref
-  and the branch are pushed to the mirror; then the worktree goes. Branches
-  are never deleted on release.
-- On each call it prunes its own retention: preserved refs older than
-  `preserve.days` (default 30), and branches whose head a remote already has.
+  through a temporary index onto `refs/fleet/preserved/<key>/<name>`; then
+  the worktree goes. Branches are never deleted on release. The release of a
+  key that holds no workspace succeeds.
+- On each make it prunes its own retention: preserved refs older than
+  `preserve.days` (default 30), and branches not checked out whose head the
+  remote already has.
+- Git never waits for a person: `GIT_TERMINAL_PROMPT=0`, and ssh runs in
+  batch mode unless `GIT_SSH_COMMAND` or `GIT_SSH` names another command.
+
+The program takes one JSON request on stdin and prints one answer:
+
+| Call | Request | Answer |
+| --- | --- | --- |
+| `workspace-git make` | `{root, key, urls, preserveDays?}` | `{"made": {dirs, adopted}}`, `{"unsupported": {url}}` or `{"failed": {why}}` |
+| `workspace-git release` | `{root, key}` | `"released"` |
+
+Any other answer is `{"unknown": {why}}`, such as a rollback that did not
+finish, and the caller concludes nothing from it. `root` is an absolute
+path.
 
 ### Customizing a workspace
 
