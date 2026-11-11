@@ -284,6 +284,13 @@ jobs:
       # dbus: `notify_send_e2e` delivers to a private session bus.
       - name: Install tmux, Xvfb and dbus
         run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus
+      # The `fleet` binary, beside `thurbox-cli` in target/debug, for the
+      # tests that drive a real Fleet: `tests/fleet_engine_e2e.rs` and the
+      # `Profile::real_fleet` scenarios of `tests/tui_e2e.rs`. The run below
+      # excludes Fleet's crates, so it never builds it, and under `CI` those
+      # tests fail rather than skip without it. `runtime-mux` and
+      # `workspace-git` are workspace members the run builds itself.
+      - run: cargo build -p fleet-cli --bin fleet
       - run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci
       # The crossterm patch's parser tests live in the vendored crate, which
       # `--all` does not reach: the workspace excludes it, so it builds from its
