@@ -163,6 +163,10 @@ pub struct SessionRow {
     /// Where a Fleet row's status came from (the Task's `status.activity`);
     /// `None` for a row whose status Fleet's agent state did not decide.
     pub status_source: Option<StatusSource>,
+    /// A deletion Fleet has not finished: set on a published row only once it
+    /// has run past [`fleet::DELETION_STUCK_AFTER`], since one that has not is
+    /// not published at all.
+    pub deleting: Option<Deleting>,
 }
 
 /// Where a session's agent state came from: the agent's hooks, a screen
@@ -176,6 +180,15 @@ pub struct StatusSource {
     /// When Fleet first saw this state from this source, in ms since the
     /// epoch.
     pub since_ms: Option<i64>,
+}
+
+/// A Task Fleet marked for deletion and still lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleting {
+    /// When Fleet marked it, in ms since the epoch.
+    pub since_ms: i64,
+    /// Why Fleet has not let it go: its `Released` condition's message.
+    pub why: Option<String>,
 }
 
 impl SessionRow {
@@ -329,6 +342,10 @@ pub struct SourceRead {
     pub harnesses: Option<Vec<String>>,
     /// The hosts Fleet defines, once it has said.
     pub hosts: Option<Vec<String>>,
+    /// The sessions that went since the source's last answer, though one of
+    /// the same id may be listed again: a Task deleted and made anew between
+    /// two answers.
+    pub removed: Vec<String>,
 }
 
 /// Owns the snapshot and decides when to rebuild it.
@@ -347,6 +364,9 @@ pub struct SnapshotStore {
     /// The names of the sessions the last refresh awaits: see
     /// [`Self::request_refresh_awaiting`].
     awaited: Vec<String>,
+    /// Sessions deleted here that the source may still list: see
+    /// [`Self::hide_until_gone`].
+    gone: std::collections::HashSet<String>,
     git: GitStats,
     current: Snapshot,
     last_refresh: Option<Instant>,
@@ -380,7 +400,11 @@ impl SnapshotStore {
             return false;
         };
         self.source_reads += 1;
-        self.current.sessions = read.sessions;
+        let mut sessions = read.sessions;
+        self.gone
+            .retain(|id| !read.removed.contains(id) && sessions.iter().any(|row| &row.id == id));
+        sessions.retain(|row| !self.gone.contains(&row.id));
+        self.current.sessions = sessions;
         self.current.error = read.error;
         if let Some(harnesses) = read.harnesses {
             self.current.agents = Some(
@@ -404,6 +428,7 @@ impl SnapshotStore {
             source_reads: 0,
             source_asked: Instant::now(),
             awaited: Vec::new(),
+            gone: std::collections::HashSet::new(),
             git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             current: Snapshot {
                 // This machine until Fleet lists its hosts, so a Fleet that is
@@ -460,6 +485,29 @@ impl SnapshotStore {
             self.mark_changed();
         }
         applied
+    }
+
+    /// Stop publishing the row of `id`, a session whose delete succeeded,
+    /// until the source reports it removed or no longer lists it. A source
+    /// reads on a schedule of its own, so its next answers can still hold the
+    /// session as it was.
+    ///
+    /// A row already marked as a stuck deletion stays: deleting it again
+    /// changes nothing in Fleet, so no removal would ever lift the hiding.
+    pub fn hide_until_gone(&mut self, id: String) {
+        if self
+            .current
+            .session(&id)
+            .is_some_and(|row| row.deleting.is_some())
+        {
+            return;
+        }
+        let before = self.current.sessions.len();
+        self.current.sessions.retain(|row| row.id != id);
+        if self.current.sessions.len() != before {
+            self.mark_changed();
+        }
+        self.gone.insert(id);
     }
 
     /// [`Self::request_refresh`], for commands that created sessions named

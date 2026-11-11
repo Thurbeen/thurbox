@@ -653,6 +653,13 @@ fn build_sessions(
             opt_lua_string(lua, source.and_then(|s| s.rule.as_deref()))?,
         )?;
         set(&entry, "status_since_ms", source.and_then(|s| s.since_ms))?;
+        let deleting = row.deleting.as_ref();
+        set(&entry, "deleting_since_ms", deleting.map(|d| d.since_ms))?;
+        set(
+            &entry,
+            "deleting_why",
+            opt_lua_string(lua, deleting.and_then(|d| d.why.as_deref()))?,
+        )?;
         let attach_error = attach_errors.get(&row.id).map(String::as_str);
         set(&entry, "backend", to_lua_string(lua, &row.backend)?)?;
         set(&entry, "repo", opt_lua_string(lua, row.repo.as_deref())?)?;

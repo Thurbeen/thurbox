@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use thurbox::kernel::command::{Command, CommandBus, Phase};
 use thurbox::kernel::snapshot::fleet::FleetWatch;
-use thurbox::kernel::snapshot::{SessionRow, SnapshotSource, SnapshotStore, SourceRead};
+use thurbox::kernel::snapshot::{Deleting, SessionRow, SnapshotSource, SnapshotStore, SourceRead};
 
 const BOUND: Duration = Duration::from_secs(60);
 
@@ -547,6 +547,7 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
         hosts: None,
         sessions: vec![bridged],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -629,6 +630,7 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
         hosts: None,
         sessions: vec![row("made", "fleet", Path::new("/w"))],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     store.refresh_if_due();
@@ -639,6 +641,67 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
     assert!(!store.fresh_since(quiet));
     std::thread::sleep(Duration::from_secs(2));
     assert!(store.fresh_since(quiet), "a source that has nothing to say");
+}
+
+/// A session whose delete succeeded stays hidden while the source still
+/// lists it, and a session of the same name made after the source dropped
+/// it, or reported it removed, is shown again.
+#[test]
+fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
+    let read = |names: &[&str]| SourceRead {
+        sessions: names
+            .iter()
+            .map(|name| row(name, "fleet", Path::new("/w")))
+            .collect(),
+        ..Default::default()
+    };
+    tx.send(read(&["kept", "gone"])).unwrap();
+    store.refresh_if_due();
+    store.hide_until_gone("gone".into());
+    assert_eq!(names(&mut store), ["kept"]);
+
+    tx.send(read(&["kept", "gone"])).unwrap();
+    assert_eq!(names(&mut store), ["kept"], "a read from before the delete");
+    tx.send(read(&["kept"])).unwrap();
+    assert_eq!(names(&mut store), ["kept"]);
+    tx.send(read(&["kept", "gone"])).unwrap();
+    assert_eq!(names(&mut store), ["gone", "kept"], "made again since");
+
+    // Removed and made again between two answers: the name never leaves the
+    // rows, and the source says it went.
+    store.hide_until_gone("gone".into());
+    tx.send(SourceRead {
+        removed: vec!["gone".into()],
+        ..read(&["kept", "gone"])
+    })
+    .unwrap();
+    assert_eq!(names(&mut store), ["gone", "kept"], "the new one shows");
+}
+
+/// Deleting a stuck deletion again changes nothing in Fleet, which reports
+/// no removal for a Task already marked: its row stays listed as stuck rather
+/// than hidden for the rest of the run.
+#[test]
+fn a_stuck_deletion_deleted_again_stays_listed() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
+    let mut stuck = row("stuck", "fleet", Path::new("/w"));
+    stuck.deleting = Some(Deleting {
+        since_ms: 1,
+        why: Some("waiting for the session to be at rest".into()),
+    });
+    let read = || SourceRead {
+        sessions: vec![stuck.clone()],
+        ..Default::default()
+    };
+    tx.send(read()).unwrap();
+    assert_eq!(names(&mut store), ["stuck"]);
+
+    store.hide_until_gone("stuck".into());
+    tx.send(read()).unwrap();
+    assert_eq!(names(&mut store), ["stuck"]);
 }
 
 /// Input a stream refused is said in the interface's own notices, not in
@@ -712,6 +775,7 @@ fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
         hosts: None,
         sessions: vec![made],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     store.refresh_if_due();
@@ -762,6 +826,7 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
         hosts: None,
         sessions: vec![elsewhere, row("local", "tmux", repo.path())],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     until("the local row has its git state", || {

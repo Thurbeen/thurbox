@@ -450,6 +450,8 @@
 ---@field status_source? thurbox.StatusSource Where a Fleet session's status came from; absent for a status Fleet's agent state did not decide.
 ---@field status_rule? string The screen rule, `<set>/<rule id>`, of a `screen` status.
 ---@field status_since_ms? integer When Fleet first saw this status from this source, in ms since the epoch.
+---@field deleting_since_ms? integer When Fleet marked this session for deletion, in ms since the epoch. Present only on a deletion that has run past the time a teardown takes: one that has not is not listed.
+---@field deleting_why? string Why Fleet has not finished that deletion: its `Released` condition.
 ---@field backend string
 ---@field repo? string
 ---@field branch? string

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{repo_name, SessionRow, SnapshotSource, SourceRead, StatusSource};
+use super::{repo_name, Deleting, SessionRow, SnapshotSource, SourceRead, StatusSource};
 use crate::session::SessionState;
 
 /// How long a watch that ended waits before it is started again, resuming
@@ -28,6 +28,20 @@ const RETRY: Duration = Duration::from_secs(2);
 /// about again: each ask is a `fleet up`, which exits at once while another
 /// holds the lease.
 const MANAGER_CHECK: Duration = Duration::from_secs(10);
+
+/// How long a Task marked for deletion stays off the list while Fleet tears
+/// its session down. Past it, the row comes back marked so a teardown that
+/// does not end can be seen.
+///
+/// Fleet releases a session once it is at rest. A release is one runtime
+/// operation: at most two calls, each bounded by the host's runtime
+/// `callTimeoutMs` (15 s by default, ssh hosts included) plus 4 s of grace,
+/// so 38 s. A failed one is tried again after 30 s, and the third failure
+/// raises NeedsAttention. Three attempts and the two waits between them take
+/// 174 s at most, so three minutes covers every release Fleet still expects
+/// to finish on its own. A session busy when it is deleted is released only
+/// once it is at rest, and can pass the mark that way.
+pub const DELETION_STUCK_AFTER: Duration = Duration::from_secs(180);
 
 /// `fleet up`'s exit code when another manager holds the lease.
 const LEASE_HELD: i32 = 6;
@@ -41,7 +55,9 @@ pub const BACKEND: &str = "fleet";
 pub const NAME_LABEL: &str = "thurbox.dev/name";
 
 enum Update {
-    Rows(Vec<SessionRow>),
+    /// Every row, and the Tasks that went since the last rows: see
+    /// [`SourceRead::removed`].
+    Rows(Vec<SessionRow>, Vec<String>),
     /// Why the watch is not running, or `None` once it reads again.
     Watch(Option<String>),
     /// Why no manager runs, or `None` once one does.
@@ -63,6 +79,10 @@ pub struct FleetWatch {
     tasks: Vec<SessionRow>,
     /// Whether the watch has delivered rows yet.
     rows_seen: bool,
+    /// When the next Task marked for deletion runs past
+    /// [`DELETION_STUCK_AFTER`], in ms since the epoch: the rows change then
+    /// though the watch says nothing.
+    next_stuck_ms: Option<i64>,
     /// `interface.json` as last read, and the generation it was read at.
     interface: Option<(u64, crate::config::interface_state::InterfaceState)>,
     /// The running `fleet watch`, killed when the source goes.
@@ -107,6 +127,7 @@ impl FleetWatch {
             manager_error: None,
             tasks: Vec::new(),
             rows_seen: false,
+            next_stuck_ms: None,
             interface: None,
             child,
         }
@@ -119,9 +140,10 @@ impl SnapshotSource for FleetWatch {
         while let Ok(update) = self.updates.try_recv() {
             moved = true;
             match update {
-                Update::Rows(rows) => {
+                Update::Rows(rows, removed) => {
                     self.tasks = rows;
                     self.rows_seen = true;
+                    self.read.removed.extend(removed);
                 }
                 Update::Watch(error) => self.watch_error = error,
                 Update::Manager(error) => self.manager_error = error,
@@ -141,13 +163,27 @@ impl SnapshotSource for FleetWatch {
             // Before the first rows there is nothing to lay it over.
             moved |= self.rows_seen;
         }
+        let now = now_ms();
+        moved |= self.next_stuck_ms.is_some_and(|at| at <= now);
         if !moved {
             return None;
         }
+        let stuck_after = DELETION_STUCK_AFTER.as_millis() as i64;
+        let stuck_at = |row: &SessionRow| row.deleting.as_ref().map(|d| d.since_ms + stuck_after);
+        self.next_stuck_ms = self
+            .tasks
+            .iter()
+            .filter_map(stuck_at)
+            .filter(|at| *at > now)
+            .min();
         let state = self.interface.as_ref().map(|(_, state)| state);
         self.read.sessions = self
             .tasks
             .iter()
+            // A Task marked for deletion is going: its controller is
+            // releasing the session. It is shown again only once that has
+            // taken longer than a release does.
+            .filter(|row| stuck_at(row).is_none_or(|at| at <= now))
             .cloned()
             .map(|mut row| {
                 if let Some(state) = state {
@@ -166,7 +202,9 @@ impl SnapshotSource for FleetWatch {
             .map(String::as_str)
             .collect();
         self.read.error = (!errors.is_empty()).then(|| errors.join("; "));
-        Some(self.read.clone())
+        let read = self.read.clone();
+        self.read.removed.clear();
+        Some(read)
     }
 }
 
@@ -178,6 +216,12 @@ impl Drop for FleetWatch {
             }
         }
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// Ask Fleet which hosts it defines (`fleet runtime hosts --json`), again
@@ -234,9 +278,10 @@ fn read_harnesses(program: &Path, tx: &Sender<Update>) {
 /// ends.
 fn watch(program: &Path, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
     let mut tasks: BTreeMap<String, Value> = BTreeMap::new();
+    let mut removed = Vec::new();
     let mut since = 0u64;
     loop {
-        let why = match follow(program, &mut tasks, &mut since, tx, held) {
+        let why = match follow(program, &mut tasks, &mut removed, &mut since, tx, held) {
             Ok(()) => return,
             Err(why) => why,
         };
@@ -248,10 +293,13 @@ fn watch(program: &Path, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
 }
 
 /// One `fleet watch`, from `since`. `Ok` when the source went; otherwise why
-/// the watch ended.
+/// the watch ended. `removed` gathers the names of the Tasks that went
+/// (deleted, marked for deletion, or replaced by a Task of another uid) until
+/// rows are sent with them.
 fn follow(
     program: &Path,
     tasks: &mut BTreeMap<String, Value>,
+    removed: &mut Vec<String>,
     since: &mut u64,
     tx: &Sender<Update>,
     held: &Mutex<Option<Child>>,
@@ -307,13 +355,21 @@ fn follow(
         }
         match event["type"].as_str() {
             Some("changed") => {
-                if let Some(name) = event["object"]["metadata"]["name"].as_str() {
-                    tasks.insert(name.to_string(), event["object"].clone());
+                let task = &event["object"];
+                if let Some(name) = task["metadata"]["name"].as_str() {
+                    let replaced = tasks
+                        .get(name)
+                        .is_some_and(|held| held["metadata"]["uid"] != task["metadata"]["uid"]);
+                    if replaced || !task["metadata"]["deletionTimestamp"].is_null() {
+                        removed.push(name.to_string());
+                    }
+                    tasks.insert(name.to_string(), task.clone());
                 }
             }
             Some("deleted") => {
                 if let Some(name) = event["name"].as_str() {
                     tasks.remove(name);
+                    removed.push(name.to_string());
                 }
             }
             // A resumed watch reports only what moved: a Task deleted while
@@ -325,7 +381,13 @@ fn follow(
                     .flatten()
                     .filter_map(Value::as_str)
                     .collect();
-                tasks.retain(|name, _| names.contains(&name.as_str()));
+                tasks.retain(|name, _| {
+                    let kept = names.contains(&name.as_str());
+                    if !kept {
+                        removed.push(name.clone());
+                    }
+                    kept
+                });
                 synced = true;
                 if tx.send(Update::Watch(None)).is_err() {
                     return stop(held);
@@ -333,10 +395,13 @@ fn follow(
             }
             _ => continue,
         }
-        if synced
-            && tx
-                .send(Update::Rows(tasks.values().map(row_of).collect()))
-                .is_err()
+        if !synced {
+            continue;
+        }
+        let rows = tasks.values().map(row_of).collect();
+        if tx
+            .send(Update::Rows(rows, std::mem::take(removed)))
+            .is_err()
         {
             return stop(held);
         }
@@ -612,6 +677,21 @@ pub fn row_of(task: &Value) -> SessionRow {
         detected_agent: None,
         meta: BTreeMap::new(),
         status_source,
+        deleting: task["metadata"]["deletionTimestamp"]
+            .as_i64()
+            .map(|since_ms| Deleting {
+                since_ms,
+                why: status["conditions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|c| c["type"] == "Released")
+                    .and_then(|c| {
+                        text(&c["message"])
+                            .filter(|m| !m.is_empty())
+                            .or_else(|| text(&c["reason"]))
+                    }),
+            }),
     }
 }
 
@@ -721,6 +801,92 @@ mod tests {
         std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).expect("fleet");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         program
+    }
+
+    /// A Task deleted and made again under its name between two polls is
+    /// reported removed, though its name is still in the rows: the snapshot
+    /// stops hiding the deleted one on that, not on the name going.
+    #[cfg(unix)]
+    #[test]
+    fn a_task_replaced_between_two_polls_is_reported_removed() {
+        let bin = tempfile::tempdir().expect("bin");
+        let event = |value: Value| format!("echo '{value}'");
+        let task = |name: &str, uid: &str, revision: u64| {
+            event(serde_json::json!({"type": "changed", "revision": revision,
+                "object": {"metadata": {"name": name, "uid": uid}}}))
+        };
+        let script = [
+            "[ \"$1\" = watch ] || exit 1".to_string(),
+            task("gone", "u1", 1),
+            event(serde_json::json!({"type": "synced", "revision": 1, "names": ["gone"]})),
+            "sleep 1".to_string(),
+            event(serde_json::json!({"type": "deleted", "revision": 2, "name": "gone"})),
+            task("gone", "u2", 2),
+            task("kept", "u3", 3),
+            "exec sleep 30".to_string(),
+        ]
+        .join("\n");
+        let mut source = FleetWatch::spawn(fake_fleet(bin.path(), &script));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let (mut removed, mut ids) = (Vec::new(), Vec::new());
+        while !ids.iter().any(|id| id == "kept") {
+            assert!(std::time::Instant::now() < deadline, "no second read");
+            // Slower than the script, so the replacement lands in one poll.
+            std::thread::sleep(Duration::from_millis(1500));
+            if let Some(read) = source.poll() {
+                removed.extend(read.removed);
+                ids = read.sessions.into_iter().map(|row| row.id).collect();
+            }
+        }
+        assert_eq!(removed, ["gone"]);
+        assert!(ids.iter().any(|id| id == "gone"), "{ids:?}");
+    }
+
+    /// A Task marked for deletion is off the list until its teardown has run
+    /// past [`DELETION_STUCK_AFTER`], then back, marked, though the watch
+    /// said nothing more; one Fleet drops in time is never listed.
+    #[cfg(unix)]
+    #[test]
+    fn a_deletion_is_listed_again_only_once_it_runs_past_the_timeout() {
+        let bin = tempfile::tempdir().expect("bin");
+        let stuck_after = DELETION_STUCK_AFTER.as_millis() as i64;
+        let task = |name: &str, marked: i64| {
+            serde_json::json!({"type": "changed", "revision": 1, "object": {
+                "metadata": {"name": name, "uid": name, "deletionTimestamp": marked}}})
+        };
+        let script = [
+            "[ \"$1\" = watch ] || exit 1".to_string(),
+            format!("echo '{}'", task("stuck", now_ms() - stuck_after + 2_000)),
+            format!("echo '{}'", task("prompt", now_ms())),
+            r#"echo '{"type": "synced", "revision": 1, "names": ["prompt", "stuck"]}'"#.into(),
+            "sleep 1".into(),
+            r#"echo '{"type": "deleted", "revision": 2, "name": "prompt"}'"#.into(),
+            "exec sleep 30".into(),
+        ]
+        .join("\n");
+        let mut source = FleetWatch::spawn(fake_fleet(bin.path(), &script));
+        let started = std::time::Instant::now();
+        let mut seen: Vec<(Duration, Vec<String>)> = Vec::new();
+        while started.elapsed() < Duration::from_secs(5) {
+            if let Some(read) = source.poll() {
+                let ids = read.sessions.iter().map(|row| row.id.clone()).collect();
+                seen.push((started.elapsed(), ids));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            seen.iter()
+                .all(|(_, ids)| !ids.contains(&"prompt".to_string())),
+            "{seen:?}"
+        );
+        let shown = seen
+            .iter()
+            .find(|(_, ids)| ids.contains(&"stuck".to_string()))
+            .unwrap_or_else(|| panic!("never listed as stuck: {seen:?}"));
+        assert!(
+            shown.0 >= Duration::from_millis(1_000),
+            "listed early: {seen:?}"
+        );
     }
 
     #[cfg(unix)]

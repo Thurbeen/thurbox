@@ -6785,6 +6785,112 @@ fn a_session_moved_up_stays_there_across_a_restart() {
     });
 }
 
+/// Delete the selected session from the list: `Ctrl+D` (0x04), then `y` on
+/// the question.
+fn delete_from_the_list(tui: &mut Tui) {
+    focus_the_list(tui);
+    tui.send(b"\x04");
+    tui.wait_for("Delete probe for good?");
+    tui.send(b"y");
+}
+
+#[test]
+fn a_deleted_sessions_row_stays_gone_while_fleet_removes_it() {
+    // `fleet delete` only marks the Task. Fleet keeps it, marked, until its
+    // controller has released the session, which waits for the agent to be at
+    // rest; this `sh` agent never says it is. The row goes on the keystroke
+    // and must not come back while Fleet still lists the Task.
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    delete_from_the_list(&mut tui);
+    tui.wait_until("the row to go", |_| tui.session_row("probe").is_none());
+    let watched = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < watched {
+        assert!(
+            tui.session_row("probe").is_none(),
+            "the deleted session came back:\n{}",
+            tui.frame()
+        );
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    let task = profile.fleet_task("probe");
+    assert!(
+        task["metadata"]["deletionTimestamp"].is_u64(),
+        "Fleet still holds the Task, marked for deletion: {task}"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_delete_fleet_refuses_keeps_the_row_and_says_why() {
+    // A delete that fails loses nothing: the row stays, or comes back, and
+    // the message band says why.
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let fleet = profile.bin.join("fleet");
+            let script = std::fs::read_to_string(&fleet).expect("the fleet script");
+            write_script(
+                &fleet,
+                &script.replacen(
+                    "\nexec ",
+                    "\n[ \"$1\" = delete ] && { echo 'error: refused by the test' >&2; exit 1; }\nexec ",
+                    1,
+                ),
+            );
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    delete_from_the_list(&mut tui);
+    tui.wait_until("the refusal reported beside the row", |frame| {
+        frame.contains("refused by the test") && tui.session_row("probe").is_some()
+    });
+    // Past the time a failed command lingers in the bus.
+    std::thread::sleep(Duration::from_secs(9));
+    assert!(
+        tui.session_row("probe").is_some(),
+        "a refused delete lost the row:\n{}",
+        tui.frame()
+    );
+    assert!(profile.fleet_task("probe")["metadata"]["deletionTimestamp"].is_null());
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_deletion_fleet_never_finishes_comes_back_marked_stuck() {
+    // A Task Fleet marked for deletion ten minutes ago and still lists is a
+    // teardown that has run far past the time one takes: its row is shown,
+    // marked, with why Fleet has not let it go, so it can be inspected.
+    let profile = Profile::new();
+    let marked = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64
+        - 600_000;
+    let task = serde_json::json!({"type": "changed", "revision": 1, "object": {
+        "metadata": {"name": "d", "uid": "u1", "deletionTimestamp": marked},
+        "spec": {"harness": "claude-code", "host": "local", "workspace": []},
+        "status": {"conditions": [{"type": "Released", "status": "False",
+            "reason": "SessionBusy", "message": "waiting for the session to be at rest"}]},
+    }});
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["d"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{task}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  *) exit 1 ;;\nesac\n"
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_until("the stuck deletion's row", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains(" d ") && line.contains("deletion stuck"))
+    });
+    assert!(tui.quit().success());
+}
+
 /// The companion shell is the user's `$SHELL`, and a zsh started in the
 /// profile's empty HOME opens its first-run wizard instead of a prompt.
 fn plain_shell(cmd: &mut Command) {
