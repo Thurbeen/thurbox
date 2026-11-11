@@ -124,9 +124,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   exit restoring the terminal (alternate screen, mouse, bracketed paste, cursor)
   — and, where tmux and a workspace build of `fleet` and `runtime-mux`
   exist, a Fleet session attached, painted and typed into. Under `CI` a missing
-  `fleet` or `runtime-mux` fails these scenarios instead of skipping them. Every profile puts
-  a stand-in `fleet` first on `PATH` (no Tasks, no manager), so no interface
-  under test ever reaches a real Fleet store; `Profile::real_fleet` swaps in
+  `fleet` or `runtime-mux` fails these scenarios instead of skipping them.
+  Every profile puts a stand-in `fleet` first on `PATH` (no Tasks, no
+  manager), so no interface under test ever reaches a real Fleet store; `Profile::real_fleet` swaps in
   the real binary on a store, config and tmux directory of the profile's own,
   with `claude` running `sh`, and `Profile::fleet_session` applies and
   reconciles an interactive Task. `just smoke` drives the same harness.
