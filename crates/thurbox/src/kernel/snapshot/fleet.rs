@@ -533,8 +533,8 @@ fn local_dir(url: &str) -> Option<String> {
 /// The Task's name is the row's id: every command addresses a Task by name.
 /// The row's name is the one the session was given ([`NAME_LABEL`]), or the
 /// Task's for a Task made elsewhere. What a row says of git, panes and hook
-/// columns is thurbox's own engine's and stays empty here; Fleet's
-/// `sessionState` is the status.
+/// columns is thurbox's own engine's and stays empty here; the status is
+/// Fleet's `agentState`, the agent's own report, over its `sessionState`.
 pub fn row_of(task: &Value) -> SessionRow {
     let text = |value: &Value| value.as_str().map(str::to_string);
     let (spec, status) = (&task["spec"], &task["status"]);
@@ -551,11 +551,17 @@ pub fn row_of(task: &Value) -> SessionRow {
         id,
         name,
         agent: text(&spec["harness"]).unwrap_or_default(),
-        status: match session_state {
-            Some("Running") => SessionState::Running,
-            Some("Idle") => SessionState::Idle,
-            Some("Paused") => SessionState::Stopped,
-            Some("Lost" | "Gone") => SessionState::Failed,
+        // A stopped, lost or gone session is that, whatever its agent last
+        // said; otherwise the agent's own report, as v2 showed it, and only
+        // with no report what the runtime proved.
+        status: match (session_state, status["agentState"].as_str()) {
+            (Some("Paused"), _) => SessionState::Stopped,
+            (Some("Lost" | "Gone"), _) => SessionState::Failed,
+            (_, Some("working")) => SessionState::Working,
+            (_, Some("attention")) => SessionState::Blocked,
+            (_, Some("idle")) => SessionState::Idle,
+            (Some("Running"), _) => SessionState::Running,
+            (Some("Idle"), _) => SessionState::Idle,
             _ => SessionState::Unreported,
         },
         repos: repo.iter().cloned().collect(),

@@ -94,6 +94,38 @@ impl SessionState {
     }
 }
 
+/// What the agent itself last reported through its hooks, finer than
+/// [`SessionState`]: a view tells an agent at work from one waiting on a
+/// person from one at rest. Only the agent's report sets it; the runtime
+/// knows nothing of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentState {
+    /// A turn is running: the agent was given a prompt, or works on one.
+    Working,
+    /// The agent waits on a person: a permission to grant, or input it
+    /// asked for.
+    Attention,
+    /// The turn finished, and the agent waits for its next prompt.
+    Idle,
+    /// The agent has reported nothing since it last started. Not idle: a
+    /// silent agent may be at work.
+    Unknown,
+}
+
+impl AgentState {
+    /// The state a session's folded signal file says.
+    pub fn reported(r: &crate::signal::Reported) -> AgentState {
+        use crate::signal::State;
+        match r.state {
+            Some(State::Working | State::Prompt) => AgentState::Working,
+            Some(State::Blocked) => AgentState::Attention,
+            Some(State::Idle) => AgentState::Idle,
+            Some(State::Started) | None => AgentState::Unknown,
+        }
+    }
+}
+
 /// The session key for a Task: deterministic, so a second spawn finds the
 /// first session instead of twinning it. The uid keeps a Task recreated under
 /// the same name from adopting a session it never owned.

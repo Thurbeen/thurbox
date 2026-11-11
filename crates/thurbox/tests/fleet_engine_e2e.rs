@@ -928,7 +928,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
 }
 
 /// An interactive session's row follows what its agent's hooks report:
-/// `fleet signal idle` makes it idle, `working` running, and idle again.
+/// `fleet signal idle` makes it idle, `working` working, and idle again.
 #[test]
 fn an_interactive_rows_status_follows_its_agents_hooks() {
     use thurbox::session::SessionState;
@@ -964,11 +964,57 @@ fn an_interactive_rows_status_follows_its_agents_hooks() {
         status(&mut store) == Some(SessionState::Idle)
     });
     signal("working");
-    until("the row runs", || {
-        status(&mut store) == Some(SessionState::Running)
+    until("the row works", || {
+        status(&mut store) == Some(SessionState::Working)
     });
     signal("idle");
     until("the row is idle again", || {
+        status(&mut store) == Some(SessionState::Idle)
+    });
+}
+
+/// The row shows the agent's finer state the way v2 did: working, then
+/// waiting on a person (blocked, v2's red diamond), then idle.
+#[test]
+fn an_interactive_rows_status_shows_working_attention_and_idle() {
+    use thurbox::session::SessionState;
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin.clone());
+    let mut t = task("alpha");
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"]["dispatch"] = json!(true);
+    fleet.apply(json!([t]));
+    fleet.run(&["reconcile"]).ok();
+    let key = fleet.get("alpha").expect("the Task")["status"]["session"]["key"]
+        .as_str()
+        .expect("a session key")
+        .to_string();
+    let file = fleet.data().join("signals").join(format!("{key}.jsonl"));
+    let signal = |state: &str| {
+        let ran = Process::new(&bin)
+            .args(["signal", state])
+            .env("FLEET_SIGNAL_FILE", &file)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .expect("fleet signal");
+        assert!(ran.success());
+        fleet.run(&["reconcile"]).ok();
+    };
+    let mut store = store_over(&fleet);
+    let status = |store: &mut SnapshotStore| {
+        store.refresh_if_due();
+        store.current().session("alpha").map(|row| row.status)
+    };
+    signal("working");
+    until("the row works", || {
+        status(&mut store) == Some(SessionState::Working)
+    });
+    signal("blocked");
+    until("the row waits on a person", || {
+        status(&mut store) == Some(SessionState::Blocked)
+    });
+    signal("idle");
+    until("the row is idle", || {
         status(&mut store) == Some(SessionState::Idle)
     });
 }

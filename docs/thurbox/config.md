@@ -621,9 +621,10 @@ database:
   data directory.
 - A `fleet up` the interface started runs in a process group of its own and
   outlives the interface: Tasks keep reconciling with no interface open.
-- A session row's status is the Task's `sessionState`: `Running`, `Idle`,
-  `Paused` as `stopped`, `Lost` and `Gone` as `failed`, absent as
-  `unreported`.
+- A session row's status is the Task's `agentState` (`working`, `attention`
+  as `blocked`, `idle`) over its `sessionState`: `Paused` as `stopped`,
+  `Lost` and `Gone` as `failed` whatever the agent said, then `Running`,
+  `Idle`, and absent as `unreported`.
 - A Task is named after the session, made a Fleet name: lowercase, with each
   run of other characters one `-` (`Read the code` is `read-the-code`). The
   name as given is kept in the Task's `thurbox.dev/name` label, and the row
@@ -803,17 +804,20 @@ send` itself.
 
 ## Session status
 
-A session's state is its Task's `status.sessionState`. Fleet derives it from
-the agent's own hooks: each Fleet harness profile passes its harness status
-hooks at launch, and they report through `fleet signal`. The interface reads
-it as follows:
+A session's state is its Task's `status.agentState` and `status.sessionState`.
+Fleet derives both from the agent's own hooks: each Fleet harness profile
+passes its harness status hooks at launch, and they report through
+`fleet signal`. The interface reads them as follows, first match wins:
 
-| `sessionState` | Shown as |
+| Task status | Shown as |
 | --- | --- |
-| `Running` | running |
-| `Idle` | idle |
-| `Paused` | stopped |
-| `Lost`, `Gone` | failed |
+| `sessionState: Paused` | stopped |
+| `sessionState: Lost`, `Gone` | failed |
+| `agentState: working` | working |
+| `agentState: attention` | blocked |
+| `agentState: idle` | idle |
+| `sessionState: Running` | running |
+| `sessionState: Idle` | idle |
 | anything else, or absent | unreported |
 
 thurbox installs no hooks into an agent's own config: Fleet's

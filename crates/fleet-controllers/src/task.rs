@@ -313,15 +313,19 @@ impl Pass<'_, '_> {
     fn observe_session(&mut self) {
         let Some(session) = &self.st.session else {
             self.st.session_state = None;
+            self.st.agent_state = None;
             return;
         };
         if let Some(state) = SessionState::observe(session, &self.input.observations) {
             self.st.session_state = Some(state);
         }
-        if let Some(Observation::Known(r)) = &self.input.observations.signals
-            && r.conversation.is_some()
-        {
-            self.st.conversation = r.conversation.clone();
+        // Only a file that was read says what the agent reported; an
+        // unreadable one keeps the last state rather than claiming silence.
+        if let Some(Observation::Known(r)) = &self.input.observations.signals {
+            self.st.agent_state = Some(fleet_api::task::AgentState::reported(r));
+            if r.conversation.is_some() {
+                self.st.conversation = r.conversation.clone();
+            }
         }
     }
 

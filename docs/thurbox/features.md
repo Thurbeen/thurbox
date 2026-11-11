@@ -118,15 +118,19 @@ query of tmux's `window_name`.
 
 The colored **status dot** is Fleet's. Each agent's own hooks report through
 `fleet signal` (Fleet's harness profiles, `crates/fleet-api/src/harness.rs`),
-Fleet derives the Task's `status.sessionState` from them, and the snapshot maps
-that onto a `SessionState` (`kernel::snapshot::fleet::row_of`):
+Fleet derives the Task's `status.agentState` and `status.sessionState` from
+them, and the snapshot maps those onto a `SessionState`
+(`kernel::snapshot::fleet::row_of`), first match wins:
 
-| `sessionState` | State | Colour | Glyph |
-|----------------|-------|--------|-------|
-| `Running` | `running` | accent | `◉`, a spinner while its pane prints |
-| `Idle` | `idle` | green | `○` |
-| `Paused` | `stopped` | green | `○` |
-| `Lost`, `Gone` | `failed` | `status_error` (red) | `✗` |
+| Task status | State | Colour | Glyph |
+|-------------|-------|--------|-------|
+| `sessionState: Paused` | `stopped` | green | `○` |
+| `sessionState: Lost`, `Gone` | `failed` | `status_error` (red) | `✗` |
+| `agentState: working` | `working` | yellow | braille spinner |
+| `agentState: attention` | `blocked` | red | `◆` |
+| `agentState: idle` | `idle` | green | `○` |
+| `sessionState: Running` | `running` | accent | `◉`, a spinner while its pane prints |
+| `sessionState: Idle` | `idle` | green | `○` |
 | anything else, or none | `unreported` | muted grey | `◌` |
 
 `unreported` is drawn apart from `idle` on purpose: `idle` says *the agent

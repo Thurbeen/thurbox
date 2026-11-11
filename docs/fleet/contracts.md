@@ -992,6 +992,12 @@ Unknown for any other host: reading a remote file takes the runtime's
 `exec`. TaskController reads the file for every live session, not only one that
 may be paused: `status.sessionState` is `Idle` once the agent's last report
 is `idle`, and `Running` while it reports `working`, `blocked` or `prompt`.
+`status.agentState` is the agent's report itself, finer: `working` for
+`working` and `prompt`, `attention` for `blocked` (a permission prompt or a
+wait for input; Claude Code's `Notification` hook), `idle` for `idle`, and
+`unknown` while the agent has reported nothing since it last started. An
+unreadable file keeps the last `agentState`. TaskController is its only
+writer.
 `e2e_signal` covers state, an interactive session and pause,
 `e2e_delivery_proof` the prompt proof, and `e2e_harness` the profiles' argv
 and resume.

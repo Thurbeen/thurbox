@@ -407,6 +407,12 @@ pub struct TaskStatus {
     /// that proved nothing keeps the last state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_state: Option<SessionState>,
+    /// What the agent last reported through its hooks (see
+    /// [`crate::session::AgentState`]): `unknown` until it reports. Absent
+    /// with no session; a pass whose signal file could not be read keeps
+    /// the last state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_state: Option<AgentState>,
     /// The harness's own id of the session's conversation, as its hooks
     /// last reported it: what a revive or a resume names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -549,7 +555,7 @@ pub struct BriefRecord {
 
 /// A Task's session is defined in [`crate::session`]; these names stay here
 /// for the code that reaches them through the Task.
-pub use crate::session::{SessionRef, SessionState, session_key, uid_of_session_key};
+pub use crate::session::{AgentState, SessionRef, SessionState, session_key, uid_of_session_key};
 
 /// The status fields the worker owns.
 pub const WORKER_FIELDS: &[&str] = &["result", "declared"];

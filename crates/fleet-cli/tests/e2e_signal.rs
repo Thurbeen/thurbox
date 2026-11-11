@@ -164,3 +164,35 @@ fn an_interactive_sessions_hooks_drive_its_session_state() {
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Idle");
 }
+
+/// The agent's own report, finer than `sessionState`: `agentState` is
+/// `unknown` until the agent reports, then follows its hooks. `prompt` and
+/// `working` are a turn at work, `blocked` waits on a person (attention),
+/// and `idle` is a finished turn.
+#[test]
+fn an_interactive_sessions_hooks_drive_its_agent_state() {
+    let env = Env::new("signal-agent-state");
+    let mut t = support::task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"].as_object_mut().unwrap().remove("outputs");
+    env.apply(json!([t])).ok();
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    let agent_state = |env: &Env| env.get("t1")["status"]["agentState"].clone();
+    assert_eq!(agent_state(&env), "unknown", "nothing reported yet");
+    for (word, state) in [
+        ("working", "working"),
+        ("blocked", "attention"),
+        ("prompt", "working"),
+        ("idle", "idle"),
+    ] {
+        signal(&env, &file, &[word]);
+        env.reconcile().ok();
+        assert_eq!(
+            agent_state(&env),
+            state,
+            "after `fleet signal {word}`: {:#}",
+            env.get("t1")["status"]
+        );
+    }
+}

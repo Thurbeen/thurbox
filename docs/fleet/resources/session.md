@@ -59,6 +59,22 @@ over `Lost`, `Lost` over `Paused`, `Paused` over the agent's activity.
 The state is absent until a pass proved something. A pass that proves the
 same state again writes nothing.
 
+## Agent state
+
+`status.agentState` is the agent's own last report, finer than
+`sessionState`. Only the agent's hooks set it, through `fleet signal`; the
+runtime knows nothing of it.
+
+| `agentState` | The agent's last report |
+| --- | --- |
+| `working` | `working` or `prompt`: a turn runs. |
+| `attention` | `blocked`: it waits on a person, for a permission or for input. |
+| `idle` | `idle`: the turn finished. |
+| `unknown` | Nothing since it last started. Not idle: a silent agent may be at work. |
+
+A signal file that cannot be read keeps the last state. The state is
+absent while the Task has no session.
+
 ## State and phase
 
 `status.phase` says where the Task is in its own lifecycle. `sessionState`

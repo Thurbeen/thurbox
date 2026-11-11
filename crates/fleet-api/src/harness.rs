@@ -97,6 +97,9 @@ impl Profile {
                     "SessionStart": hook("idle"),
                     "UserPromptSubmit": hook("prompt"),
                     "PreToolUse": hook("working"),
+                    // A permission prompt, or a wait for input: the agent
+                    // needs a person.
+                    "Notification": hook("blocked"),
                     "Stop": hook("idle"),
                 }});
                 vec!["--settings".into(), settings.to_string()]
@@ -250,6 +253,9 @@ mod tests {
             ("UserPromptSubmit", "prompt"),
             ("Stop", "idle"),
             ("PreToolUse", "working"),
+            // Claude Code's notification is a permission prompt or a wait
+            // for input: the agent needs a person.
+            ("Notification", "blocked"),
         ] {
             let command = settings["hooks"][event][0]["hooks"][0]["command"]
                 .as_str()
