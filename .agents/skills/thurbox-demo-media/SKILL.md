@@ -43,6 +43,11 @@ scripts/demo/record.sh                 # regenerate ALL demo videos
 scripts/demo/record.sh theme search    # re-record a subset
 ```
 
+Re-recording every clip adds every new file to history for good: the earlier
+`docs/media/` re-records are 405 MiB of this repository's 478 MiB pack. Re-record
+only the clips whose screen changed. The `check-added-large-files` hook fails a
+file over 1 MiB (see "Large files" in `CONTRIBUTING.md`).
+
 One VHS tape each (`scripts/demo/<feature>.tape`); no args = all, otherwise tape
 stems. Every clip uses **real agent CLIs**, one session per installed CLI, with
 `HOME` overridden so agents boot with fresh history (keyring-authenticated CLIs stay

@@ -381,7 +381,7 @@ framework). Install with `prek install`; a clone that installed the
 hooks before the pre-push stage existed needs it run again. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
-- **pre-commit** (fast): fmt, clippy, bats (the install script, the
+- **pre-commit** (fast): fmt, clippy, large files, bats (the install script, the
   rumdl version check), shellcheck, rumdl (after checking the local
   version matches CI's pin), selene, stylua, prettier, htmlhint,
   stylelint, eslint

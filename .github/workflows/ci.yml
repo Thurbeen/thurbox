@@ -537,6 +537,21 @@ jobs:
       - name: Run shellcheck
         run: git ls-files -z '*.sh' | xargs -0 shellcheck
 
+  # Runs on every PR: any path can carry a large file, and the check reads only
+  # the tree. A file a branch adds and then deletes never reaches main, since
+  # squash merge lands the PR's final tree alone. Only the one builtin hook
+  # runs here; the config's other hooks are `language: system` and need the
+  # toolchains their own jobs install.
+  large-files:
+    name: Large Files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: j178/prek-action@44924fe9ef4a6f88253c4b6b1bf11c689d3ce53d # v3.1.0
+        with:
+          prek-version: 0.5.10
+          extra-args: check-added-large-files --all-files
+
   lua:
     name: Lua Lint
     needs: changes
@@ -802,6 +817,7 @@ jobs:
       - fleet
       - runtime-protocol
       - shellcheck
+      - large-files
       - lua
       - website-lint
       - sonarqube

@@ -184,3 +184,23 @@ repos:
         language: system
         files: ^website/.*\.js$
         pass_filenames: true
+
+  # Every committed version of a file stays in the history each clone
+  # downloads: re-recorded demo GIFs/MP4s grew the pack to 478 MiB while the
+  # tree is 39 MiB. prek's Rust-native copy of pre-commit-hooks'
+  # check-added-large-files, so nothing is fetched. `--enforce-all` weighs a
+  # modified file too, not only an added one, which is what CI's `--all-files`
+  # run (the `Large Files` job) checks. The exclusions are the files already
+  # over the cap when it arrived: shrink one and drop it, never add to them.
+  - repo: builtin
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1024", "--enforce-all"]
+        exclude: |
+          (?x)^(
+            media/doom-easter-egg\.mp4|
+            media/search-demo\.gif|
+            media/thurbox-interface\.gif|
+            media/thurbox-theme\.gif|
+            website/assets/performance-v2-observations\.json
+          )$
