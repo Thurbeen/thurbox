@@ -540,7 +540,8 @@ await Promise.all(running);
 "#;
 
 /// Fleet's kilo plugin, run on kilo's prompt hook and events: a turn whose
-/// subagent asks a permission, and a question the agent asks itself. The
+/// subagent asks a permission, then a question, suggestions and network
+/// requests the agent asks itself, two of them at once. The
 /// agent works until every session is idle, waits on a person while a
 /// request is open, and a subagent's prompt is neither a prompt nor the
 /// conversation.
@@ -571,6 +572,10 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
             ]}
         ])
     };
+    // A request is opened with its `id` and closed with its `requestID`.
+    let open = |kind: &str, id: &str| event(kind, json!({"id": id, "sessionID": "ses-root"}));
+    let close =
+        |kind: &str, id: &str| event(kind, json!({"requestID": id, "sessionID": "ses-root"}));
     let steps = json!([
         event(
             "session.created",
@@ -601,6 +606,15 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
             "question.rejected",
             json!({"requestID": "que-1", "sessionID": "ses-root"})
         ),
+        // Two requests at once: the agent waits until both are closed.
+        open("suggestion.shown", "sug-1"),
+        open("session.network.asked", "net-1"),
+        close("suggestion.dismissed", "sug-1"),
+        close("session.network.replied", "net-1"),
+        open("suggestion.shown", "sug-2"),
+        close("suggestion.accepted", "sug-2"),
+        open("session.network.asked", "net-2"),
+        close("session.network.rejected", "net-2"),
         event("message.updated", json!({"sessionID": "ses-root"})),
         status("ses-root", "idle"),
     ]);
@@ -616,6 +630,7 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
         states,
         [
             "idle", "prompt", "working", "working", "blocked", "working", "working", "blocked",
+            "working", "blocked", "blocked", "blocked", "working", "blocked", "working", "blocked",
             "working", "idle"
         ],
         "{sent:?}"
