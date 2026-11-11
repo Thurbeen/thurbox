@@ -741,6 +741,45 @@ fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
     });
 }
 
+/// A releasing stop runs the workspace's teardown, which may be slow, under
+/// its key's lock only: a start on another key goes on at once.
+#[test]
+fn a_slow_releasing_stop_does_not_hold_up_a_start_on_another_key() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let url = ws.origin("app");
+    ws.configure(&format!(
+        "[[workspace.teardown]]\nmatch = '{url}'\nrun = ['printf x > ../tearing; sleep 6']\n"
+    ));
+    let made = ws.workspace("w.down", &[url.as_str()]);
+    assert!(made["known"]["made"].is_object(), "{made}");
+    let ws = &ws;
+    std::thread::scope(|scope| {
+        let stopping = scope.spawn(|| {
+            ws.rt.call(
+                "stop",
+                json!({"protocol": 1, "key": "w.down", "release": true}),
+            )
+        });
+        // The teardown runs: the stop holds its locks.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ws.base.join("root/w.down/tearing").exists() {
+            assert!(Instant::now() < deadline, "the teardown never began");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let begun = Instant::now();
+        started(&ws.rt.start("w.other", &["sleep", "300"]));
+        let waited = begun.elapsed();
+        assert!(
+            waited < Duration::from_secs(3),
+            "the start waited {waited:?} for another key's releasing stop"
+        );
+        let stopped = stopping.join().expect("the stop");
+        assert_eq!(stopped["known"], "stopped", "{stopped}");
+    });
+}
+
 /// A runtime that stopped after `workspace-git` made the workspace and
 /// before its setup finished leaves a workspace that is whole to
 /// `workspace-git`. The next call runs the setup steps before it answers.

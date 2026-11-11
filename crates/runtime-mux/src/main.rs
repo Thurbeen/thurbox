@@ -42,29 +42,31 @@ fn main() {
     // first clone, setup steps), so it holds only its key's lock, never the
     // server's. A stop that releases the workspace takes the key's lock
     // first, then the server's: no call takes them the other way round.
-    let mut _turns = Vec::new();
     let key_lock = match verb.as_str() {
         "workspace" => true,
         "stop" => released(&request),
         _ => false,
     };
-    let mut names = Vec::new();
+    let mut _key_turn = None;
     if key_lock {
         if let Some(key) = request_key(&request) {
-            names.push(format!("runtime-mux-{socket}.key-{key}.lock"));
+            match take(&format!("runtime-mux-{socket}.key-{key}.lock")) {
+                Ok(file) => _key_turn = Some(file),
+                Err(answer) => {
+                    println!("{answer}");
+                    return;
+                }
+            }
         }
     }
+    // A releasing stop lets go of the server's lock once the process is
+    // stopped: the workspace's teardown and release hold the key only.
+    let mut server_turn = None;
     if matches!(verb.as_str(), "start" | "stop") {
-        names.push(format!("runtime-mux-{socket}.lock"));
-    }
-    for name in names {
-        match lock(&name) {
-            Ok(file) => _turns.push(file),
-            Err(e) => {
-                println!(
-                    "{}",
-                    serde_json::json!({ "unknown": { "why": format!("cannot take the lock {name}: {e}") } })
-                );
+        match take(&format!("runtime-mux-{socket}.lock")) {
+            Ok(file) => server_turn = Some(file),
+            Err(answer) => {
+                println!("{answer}");
                 return;
             }
         }
@@ -74,14 +76,22 @@ fn main() {
         ..MuxSettings::default()
     };
     let registry = runtime_mux::wiring::local_only(&settings);
-    let answer = protocol::serve(
+    let answer = protocol::serve_with(
         registry.default_backend().as_ref(),
         &verb,
         &request,
         &view_argv(&settings),
+        &mut || drop(server_turn.take()),
     );
     registry.shutdown_all();
     println!("{answer}");
+}
+
+/// The lock file `name`, or the Unknown answer when it cannot be taken.
+fn take(name: &str) -> Result<std::fs::File, serde_json::Value> {
+    lock(name).map_err(|e| {
+        serde_json::json!({ "unknown": { "why": format!("cannot take the lock {name}: {e}") } })
+    })
 }
 
 /// The request's key when it names a valid one: the runtime protocol's

@@ -74,6 +74,19 @@ fn unknown(why: impl std::fmt::Display) -> Value {
 /// the argv that runs this program's `view` against the same server, which
 /// `attach` answers with the key after it.
 pub fn serve(backend: &dyn SessionBackend, verb: &str, request: &[u8], view: &[String]) -> Value {
+    serve_with(backend, verb, request, view, &mut || {})
+}
+
+/// [`serve`], with `process_done` called once a releasing stop has stopped
+/// the process and before it releases the workspace: the caller lets go of
+/// the server's lock there, so a slow teardown holds only its key.
+pub fn serve_with(
+    backend: &dyn SessionBackend,
+    verb: &str,
+    request: &[u8],
+    view: &[String],
+    process_done: &mut dyn FnMut(),
+) -> Value {
     if verb == "manifest" {
         // The files a workspace holds are on the host, so they outlive the
         // process: a stop without release keeps them.
@@ -104,6 +117,7 @@ pub fn serve(backend: &dyn SessionBackend, verb: &str, request: &[u8], view: &[S
             if !r.release || stopped.get("known").is_none() {
                 return stopped;
             }
+            process_done();
             match Workspaces::load().and_then(|w| w.release(&r.key)) {
                 Ok(()) => stopped,
                 Err(why) => unknown(format!(

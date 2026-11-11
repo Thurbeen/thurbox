@@ -96,7 +96,9 @@ It makes workspaces by running `workspace-git` on this machine
 ([its workspaces](#runtime-muxs-workspaces)). A workspace call takes a lock
 of its key only, never the server's lock: a first clone or a long setup step
 does not hold up a start or a stop of another key. A stop that releases a
-workspace takes the key's lock first, then the server's.
+workspace takes the key's lock first, then the server's, and lets go of the
+server's lock once the process is stopped: the teardown and the release hold
+the key only.
 
 thurbox's stream pane (`stream_panes` in its `settings.toml`) is a view: it
 opens a local tmux pane through `runtime-mux view --scrollback <lines> --pane

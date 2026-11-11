@@ -286,21 +286,20 @@ fn read_record(dir: &Path) -> Result<Option<Record>, String> {
     }
 }
 
-/// Undo whatever of the key's workspace exists: each source's worktrees under
-/// the key's directory, then the directory. Nothing is preserved: a partial
-/// workspace was never answered, so no session worked in it.
+/// Undo whatever of the key's workspace exists: the worktrees under the
+/// key's directory, in each repository the key names, then the directory.
+/// Only those repositories are locked, so another key's fetch never holds
+/// a rollback up. Nothing is preserved: a partial workspace was never
+/// answered, so no session worked in it.
 fn rollback(cfg: &Config, key: &str) -> Result<(), String> {
     let dir = cfg.root.join(key);
     if !dir.exists() {
         return Ok(());
     }
-    let mut repositories = sources(cfg);
-    for checkout in listed_paths(&dir.join(KEY_SOURCES)) {
-        if !repositories.contains(&checkout) {
-            repositories.push(checkout);
+    for source in listed_paths(&dir.join(KEY_SOURCES)) {
+        if !source.is_dir() {
+            continue;
         }
-    }
-    for source in repositories {
         let _lock = lock_repository(cfg, &source)?;
         let listed = git(&source, &["worktree", "list", "--porcelain"], &[]).unwrap_or_default();
         for line in listed.lines() {
@@ -370,14 +369,32 @@ fn list_path(file: &Path, path: &Path) -> Result<(), String> {
 
 /// The local checkout a `git+file` URL names, when it is one: a repository
 /// with a working tree. A bare repository, or a path git cannot read, is
-/// none.
+/// none. A linked worktree or a subdirectory names its main checkout, the
+/// directory that holds the common git directory, as git names it: one
+/// repository has one identity, so one lock, and a linked worktree removed
+/// later never leaves a release running git in a missing directory.
 fn checkout(remote: &str) -> Option<PathBuf> {
     let path = PathBuf::from(remote);
     if !path.is_dir() {
         return None;
     }
     let bare = git(&path, &["rev-parse", "--is-bare-repository"], &[]).ok()?;
-    (bare == "false").then_some(path)
+    if bare != "false" {
+        return None;
+    }
+    let common = git(
+        &path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        &[],
+    )
+    .ok()?;
+    let common = PathBuf::from(common);
+    if common.file_name().is_some_and(|n| n == ".git") {
+        common.parent().map(Path::to_path_buf)
+    } else {
+        // A git directory kept apart from its working tree: git runs in it.
+        Some(common)
+    }
 }
 
 /// Commit the worktree's uncommitted work, untracked files included, onto
@@ -456,10 +473,13 @@ fn worktree(
     fs::create_dir_all(&key_dir).map_err(|e| format!("cannot make {}: {e}", key_dir.display()))?;
     if checkout.is_some() {
         list_path(&cfg.root.join(CHECKOUTS), &source)?;
-        list_path(&key_dir.join(KEY_SOURCES), &source)?;
     } else {
         fill_source(&source, remote)?;
     }
+    // Before the worktree is added, so a rollback of a partial workspace
+    // finds it; a registration a removed partial directory left is pruned.
+    list_path(&key_dir.join(KEY_SOURCES), &source)?;
+    let _ = git(&source, &["worktree", "prune"], &[]);
     let path = key_dir.join(name);
     let path_s = path.display().to_string();
     let wanted = branch.unwrap_or(key);

@@ -150,6 +150,27 @@ fn plain(path: PathBuf) -> PathBuf {
     }
 }
 
+/// Whether `git worktree list --porcelain` output names `tree`. git spells a
+/// Windows path with `/`, so both sides are compared as canonical paths.
+fn lists_worktree(listed: &str, tree: &Path) -> bool {
+    let canonical = |p: &Path| plain(p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+    let tree = canonical(tree);
+    listed
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|p| canonical(Path::new(p)) == tree)
+}
+
+/// The directory that holds `checkout`'s common git directory, as git names
+/// it: the identity workspace-git keys a checkout's lock on.
+fn main_checkout(checkout: &Path) -> PathBuf {
+    let common = git(
+        checkout,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    Path::new(&common).parent().expect("parent").to_path_buf()
+}
+
 fn branch_of(dir: &str) -> String {
     git(Path::new(dir), &["branch", "--show-current"])
 }
@@ -525,7 +546,7 @@ fn a_local_checkout_gets_a_worktree_of_itself() {
     let tree = PathBuf::from(&dirs[0]);
     let listed = git(&origin, &["worktree", "list", "--porcelain"]);
     assert!(
-        listed.contains(&format!("worktree {}", tree.display())),
+        lists_worktree(&listed, &tree),
         "the checkout lists the worktree: {listed}"
     );
     fs::write(tree.join("work.txt"), "work\n").unwrap();
@@ -639,3 +660,108 @@ fn the_retention_leaves_a_repository_another_call_holds() {
 }
 
 const PRESERVED_PREFIX: &str = "refs/fleet/preserved";
+
+/// The picker may offer a linked worktree's path. Its worktree is made from
+/// the main checkout, so removing the linked worktree later does not break
+/// the release.
+#[test]
+fn a_linked_worktree_url_makes_its_worktree_from_the_main_checkout() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    let linked = s.base.join("app-linked");
+    git(
+        &origin,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            &linked.display().to_string(),
+        ],
+    );
+    let (dirs, _) = s.made(
+        "t.linked",
+        &[format!(
+            "{}?branch=from-linked#main",
+            url("git+file", &linked)
+        )],
+    );
+    git(
+        &origin,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            &linked.display().to_string(),
+        ],
+    );
+    fs::write(Path::new(&dirs[0]).join("w.txt"), "w\n").unwrap();
+    release(&s.cfg, "t.linked").expect("the release after the linked worktree went");
+    assert!(!Path::new(&dirs[0]).exists());
+    git(
+        &origin,
+        &[
+            "rev-parse",
+            "--verify",
+            "refs/fleet/preserved/t.linked/app-linked",
+        ],
+    );
+}
+
+/// A URL naming a checkout's subdirectory is the same repository: its make
+/// takes the checkout's one lock.
+#[test]
+fn a_subdirectory_url_takes_the_checkouts_one_lock() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    fs::create_dir_all(origin.join("sub")).unwrap();
+    let held = repository_lock(&s.cfg.root, &main_checkout(&origin));
+    held.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cfg = s.cfg.clone();
+    let sub = format!(
+        "{}?branch=sub-branch#main",
+        url("git+file", &origin.join("sub"))
+    );
+    let maker = std::thread::spawn(move || {
+        let answer = make(&cfg, "t.sub", &[sub]).expect("answer");
+        let _ = tx.send(answer);
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(1500))
+            .is_err(),
+        "the make went on while the checkout's lock was held"
+    );
+    drop(held);
+    let answer = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the make finishes once the lock is free");
+    assert!(matches!(answer, Answer::Made { .. }), "{answer:?}");
+    maker.join().unwrap();
+}
+
+/// A discard locks only the repositories its own key uses: a fetch of
+/// another key's source does not hold it up.
+#[test]
+fn a_discard_waits_on_no_other_keys_repository() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    let remote = s.bare("lib");
+    s.made("t.lib", &[url("git+file", &remote)]);
+    s.made("t.mine", &[url("git+file", &origin)]);
+    let held = repository_lock(&s.cfg.root, &s.source());
+    held.lock().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cfg = s.cfg.clone();
+    let discarding = std::thread::spawn(move || {
+        let done = workspace_git::discard(&cfg, "t.mine");
+        let _ = tx.send(done);
+    });
+    let done = rx.recv_timeout(std::time::Duration::from_secs(5));
+    drop(held);
+    discarding.join().unwrap();
+    done.expect("the discard waited on another key's repository")
+        .expect("discard");
+    assert!(!s.cfg.root.join("t.mine").exists());
+}
