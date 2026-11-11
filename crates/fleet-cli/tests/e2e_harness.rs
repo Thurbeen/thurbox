@@ -132,6 +132,318 @@ fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],
-        json!(["vendor", "claude", "claude-code", "codex"])
+        json!(["vendor", "claude", "claude-code", "codex", "pi", "opencode"])
     );
+}
+
+/// The `node` on PATH, which runs the plugin files Fleet ships for pi and
+/// opencode; without it a test that runs one says so and skips.
+#[cfg(unix)]
+fn node() -> Option<std::path::PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("node"))
+            .find(|p| p.is_file())
+    });
+    if found.is_none() {
+        eprintln!("skipping: node is not installed");
+    }
+    found
+}
+
+/// A `fleet` that records each signal it is asked for: its arguments, then
+/// the payload on its stdin.
+#[cfg(unix)]
+const STUB_FLEET: &str = "#!/bin/sh\npayload=$(cat)\nprintf '%s\\t%s\\n' \"$*\" \"$payload\" >> \"$FLEET_SIGNAL_FILE\"\n";
+
+/// Run `driver` under `node` on the plugin file `asset`, with `steps`, and
+/// the stub `fleet` first on PATH unless `with_fleet` is false; each signal
+/// the plugin sent, as its state and its payload. `signal_file`: whether
+/// FLEET_SIGNAL_FILE is set, as in a session Fleet started.
+#[cfg(unix)]
+fn run_asset(
+    env: &Env,
+    node: &std::path::Path,
+    (driver, asset): (&str, &std::path::Path),
+    steps: serde_json::Value,
+    (with_fleet, signal_file): (bool, bool),
+) -> Vec<(String, serde_json::Value)> {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = env.root.join("stub-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fleet = bin.join("fleet");
+    if with_fleet {
+        std::fs::write(&fleet, STUB_FLEET).unwrap();
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).unwrap();
+    } else {
+        let _ = std::fs::remove_file(&fleet);
+    }
+    let log = env.root.join("signals.log");
+    let _ = std::fs::remove_file(&log);
+    let path = format!("{}:{}", bin.display(), node.parent().unwrap().display());
+    let mut cmd = std::process::Command::new(node);
+    cmd.env_clear()
+        .env("PATH", path)
+        .args(["--input-type=module", "-e", driver, "--"])
+        .arg(asset)
+        .arg(steps.to_string());
+    if signal_file {
+        cmd.env("FLEET_SIGNAL_FILE", &log);
+    }
+    let out = cmd.output().expect("node");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| {
+            let (args, payload) = l.split_once('\t').unwrap();
+            let state = args.strip_prefix("signal ").unwrap_or(args).to_string();
+            (state, serde_json::from_str(payload).unwrap())
+        })
+        .collect()
+}
+
+/// pi's extension API, as much of it as Fleet's extension uses: each step
+/// is an event and its payload, given to every handler of the event.
+#[cfg(unix)]
+const PI_DRIVER: &str = r#"
+const [asset, steps] = process.argv.slice(1);
+const { default: extension } = await import(asset);
+const handlers = new Map();
+extension({ on: (name, fn) => handlers.set(name, [...(handlers.get(name) ?? []), fn]) });
+const ctx = { sessionManager: { getSessionId: () => "pi-1" } };
+for (const [name, event] of JSON.parse(steps)) {
+  for (const fn of handlers.get(name) ?? []) await fn(event, ctx);
+}
+"#;
+
+/// The context an OpenCode 2 plugin's server part gets, as much of it as
+/// Fleet's plugin uses, after its TUI part's start. A step `["prompt",
+/// event]` runs the prompt hook; a step
+/// `["event", event]` is one event of the stream, and the next step waits
+/// until the plugin asked for the event after it. `ses-sub` is a subagent's.
+/// A plugin that registered nothing is given nothing.
+#[cfg(unix)]
+const OPENCODE_DRIVER: &str = r#"
+const [asset, steps] = process.argv.slice(1);
+const { default: plugin } = await import(asset + "/index.js");
+const { default: tui } = await import(asset + "/tui.js");
+const sessions = { "ses-root": { id: "ses-root" }, "ses-sub": { id: "ses-sub", parentID: "ses-root" } };
+let prompt, deliver, onWait, subscribed;
+let waiting = new Promise((r) => (onWait = r));
+const stream = {
+  async *[Symbol.asyncIterator]() {
+    for (;;) yield await new Promise((r) => { deliver = r; onWait(); });
+  },
+};
+const ctx = {
+  session: {
+    hook: async (name, fn) => { if (name === "prompt") prompt = fn; return { dispose() {} }; },
+    get: async ({ sessionID }) => sessions[sessionID],
+  },
+  event: { subscribe: () => ((subscribed = true), stream) },
+};
+const dispose = await plugin.setup(ctx);
+await tui.setup({});
+for (const [kind, event] of JSON.parse(steps)) {
+  if (kind === "prompt") {
+    await prompt?.(event);
+  } else if (subscribed) {
+    await waiting;
+    waiting = new Promise((r) => (onWait = r));
+    deliver(event);
+    await waiting;
+  }
+}
+dispose?.();
+"#;
+
+/// pi and opencode take their hooks at launch from a plugin file Fleet
+/// writes under its own data directory: pi with `-e`, opencode through
+/// `OPENCODE_CONFIG_CONTENT`, which it merges with the user's config.
+#[test]
+fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
+    let env = Env::new("harness-launch-hooks");
+    let mut pi = support::task("p1", true);
+    pi["spec"]["harness"] = json!("pi");
+    pi["spec"]["workspace"] = json!([format!("file://{}/work/p1", env.root.display())]);
+    let mut opencode = support::task("o1", true);
+    opencode["spec"]["harness"] = json!("opencode");
+    env.apply(json!([pi, opencode])).ok();
+    env.reconcile().ok();
+    let assets = env.data.join("harness-assets");
+
+    let pi = session(&env, "p1");
+    let extension = assets.join("fleet-pi.ts");
+    // `--approve`: the project is trusted for this run only.
+    assert_eq!(
+        pi.argv,
+        ["pi", "-e", &*extension.to_string_lossy(), "--approve"],
+        "{:?}",
+        pi.argv
+    );
+    assert!(extension.is_file(), "{}", extension.display());
+
+    let opencode = session(&env, "o1");
+    // Its own server: a shared background service was started with another
+    // environment, and would load neither the plugin nor the signal file.
+    assert_eq!(opencode.argv, ["opencode", "--standalone"]);
+    let content: serde_json::Value = serde_json::from_str(
+        opencode
+            .env
+            .get("OPENCODE_CONFIG_CONTENT")
+            .expect("OPENCODE_CONFIG_CONTENT"),
+    )
+    .unwrap();
+    let plugin = assets.join("fleet-opencode");
+    assert_eq!(content, json!({"plugins": [plugin.to_string_lossy()]}));
+    for part in ["index.js", "tui.js", "signal.js"] {
+        assert!(plugin.join(part).is_file(), "{}/{part}", plugin.display());
+    }
+
+    // A revive resumes each on the conversation its hooks reported.
+    env.host().reboot().unwrap();
+    env.reconcile().ok();
+    let pi = session(&env, "p1");
+    let resumed = pi.restarts.last().expect("revived");
+    assert_eq!(
+        resumed[resumed.len() - 2..],
+        ["--session".to_string(), format!("conv-{}", pi.id)]
+    );
+    let opencode = session(&env, "o1");
+    let resumed = opencode.restarts.last().expect("revived");
+    assert_eq!(
+        resumed,
+        &[
+            "opencode".to_string(),
+            "--standalone".into(),
+            "--session".into(),
+            format!("conv-{}", opencode.id)
+        ]
+    );
+}
+
+/// Fleet's pi extension, run on pi's events: a start, a prompt, a run and
+/// its end, each reported with the session id.
+#[cfg(unix)]
+#[test]
+fn the_pi_extension_reports_each_event_with_its_session() {
+    let Some(node) = node() else { return };
+    let env = Env::new("asset-pi");
+    let mut task = support::task("p1", true);
+    task["spec"]["harness"] = json!("pi");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    // Node runs a module by its extension; the file is plain JavaScript.
+    let asset = env.root.join("fleet-pi.mjs");
+    std::fs::copy(env.data.join("harness-assets/fleet-pi.ts"), &asset).unwrap();
+    let steps = json!([
+        ["session_start", {"reason": "startup"}],
+        ["before_agent_start", {"prompt": "the brief"}],
+        ["agent_start", {}],
+        ["agent_end", {"messages": []}],
+        ["agent_settled", {}],
+    ]);
+    let sent = run_asset(
+        &env,
+        &node,
+        (PI_DRIVER, &asset),
+        steps.clone(),
+        (true, true),
+    );
+    let session = json!({"session_id": "pi-1"});
+    assert_eq!(
+        sent,
+        [
+            ("idle".to_string(), session.clone()),
+            (
+                "prompt".into(),
+                json!({"session_id": "pi-1", "prompt": "the brief"})
+            ),
+            ("working".into(), session.clone()),
+            ("idle".into(), session),
+        ]
+    );
+    // Outside a session Fleet started, nothing; without `fleet`, no failure.
+    assert!(
+        run_asset(
+            &env,
+            &node,
+            (PI_DRIVER, &asset),
+            steps.clone(),
+            (true, false)
+        )
+        .is_empty()
+    );
+    assert!(run_asset(&env, &node, (PI_DRIVER, &asset), steps, (false, true)).is_empty());
+}
+
+/// Fleet's opencode plugin, run on opencode's prompt hook and events: a
+/// turn whose subagent asks a permission and a question. The agent works
+/// until every session ends, waits on a person while a request is open, and
+/// a subagent's prompt is neither a prompt nor the conversation.
+#[cfg(unix)]
+#[test]
+fn the_opencode_plugin_reports_each_change_of_state_with_its_session() {
+    let Some(node) = node() else { return };
+    let env = Env::new("asset-opencode");
+    let mut task = support::task("o1", true);
+    task["spec"]["harness"] = json!("opencode");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    let asset = env.data.join("harness-assets/fleet-opencode");
+    let event =
+        |kind: &str, data: serde_json::Value| json!(["event", {"type": kind, "data": data}]);
+    let steps = json!([
+        ["prompt", {"sessionID": "ses-root", "prompt": {"text": "the brief"}}],
+        event("session.execution.started", json!({"sessionID": "ses-root"})),
+        ["prompt", {"sessionID": "ses-sub", "prompt": {"text": "a subagent's task"}}],
+        event("session.execution.started", json!({"sessionID": "ses-sub"})),
+        event("permission.asked", json!({"id": "per-1", "sessionID": "ses-sub"})),
+        event("permission.replied", json!({"requestID": "per-1", "sessionID": "ses-sub"})),
+        event("session.execution.succeeded", json!({"sessionID": "ses-sub"})),
+        event("form.created", json!({"form": {"id": "frm-1", "sessionID": "ses-root"}})),
+        event("form.replied", json!({"id": "frm-1", "sessionID": "ses-root"})),
+        event("session.execution.succeeded", json!({"sessionID": "ses-root"})),
+    ]);
+    let sent = run_asset(
+        &env,
+        &node,
+        (OPENCODE_DRIVER, &asset),
+        steps.clone(),
+        (true, true),
+    );
+    let states: Vec<&str> = sent.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(
+        states,
+        [
+            "idle", "prompt", "working", "working", "blocked", "working", "working", "blocked",
+            "working", "idle"
+        ],
+        "{sent:?}"
+    );
+    // The TUI part reports the start, before any session.
+    assert_eq!(sent[0].1, json!({}));
+    assert_eq!(
+        sent[1].1,
+        json!({"session_id": "ses-root", "prompt": "the brief"})
+    );
+    for (state, payload) in &sent[2..] {
+        assert_eq!(payload, &json!({"session_id": "ses-root"}), "{state}");
+    }
+    assert!(
+        run_asset(
+            &env,
+            &node,
+            (OPENCODE_DRIVER, &asset),
+            steps.clone(),
+            (true, false)
+        )
+        .is_empty()
+    );
+    assert!(run_asset(&env, &node, (OPENCODE_DRIVER, &asset), steps, (false, true)).is_empty());
 }

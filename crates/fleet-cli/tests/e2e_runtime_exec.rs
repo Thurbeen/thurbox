@@ -12,6 +12,7 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -270,7 +271,7 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],
-        json!(["claude", "claude-code", "codex"])
+        json!(["claude", "claude-code", "codex", "pi", "opencode"])
     );
 }
 
@@ -643,7 +644,7 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],
-        json!(["stub", "claude", "claude-code", "codex"]),
+        json!(["stub", "claude", "claude-code", "codex", "pi", "opencode"]),
         "a view offers the user's harness"
     );
     let work = env.root.join("work").join("t1");
@@ -1362,5 +1363,257 @@ fn a_message_typed_into_the_agent_is_recorded_as_one_the_route_may_hold() {
             .iter()
             .any(|c| c["type"] == "NeedsAttention" && c["status"] == "True")),
         "{status:#}"
+    );
+}
+
+/// A coding agent's CLI on the PATH this test runs with. Only a developer's
+/// machine has one, signed in: without it a test that drives it says so and
+/// skips, and CI never runs one.
+fn agent(name: &str) -> Option<PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|p| p.is_file())
+    });
+    if found.is_none() {
+        eprintln!("skipping: {name} is not installed");
+    }
+    found
+}
+
+/// Every file under `dir` but those under `skip`, with its bytes.
+fn snapshot(dir: &Path, skip: &[&str]) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path.strip_prefix(dir).unwrap().to_path_buf();
+            if skip.iter().any(|s| rel.starts_with(s)) {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => todo.push(path),
+                Ok(t) if t.is_file() => {
+                    files.insert(rel, fs::read(&path).unwrap_or_default());
+                }
+                _ => {}
+            }
+        }
+    }
+    files
+}
+
+/// The states and conversations a session's hooks reported, from its
+/// signal file, in order.
+fn reported(env: &Env, task: &str) -> Vec<(String, Option<String>)> {
+    let file = env
+        .data
+        .join("signals")
+        .join(format!("{}.jsonl", env.session_key(task)));
+    fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|s| {
+            (
+                s["state"].as_str().unwrap_or_default().to_string(),
+                s["conversation"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+/// Whether `want` occurs in `states` in order, others between.
+fn in_order(states: &[(String, Option<String>)], want: &[&str]) -> bool {
+    let mut want = want.iter().peekable();
+    for (s, _) in states {
+        if want.peek().is_some_and(|w| *w == s) {
+            want.next();
+        }
+    }
+    want.peek().is_none()
+}
+
+/// An environment that runs a real agent: the operator's PATH after
+/// `fleet`'s directory. Its Task gives the agent the operator's HOME, where
+/// its sign-in is; Fleet itself keeps the test's.
+fn agent_env(name: &str, program: &Path, sockets: &Sockets) -> Env {
+    let mut env = mux_env(name, program, sockets);
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", fleet_dir.display())));
+    env
+}
+
+/// The agent's process under the session's pane, ended as a crash would.
+fn end_agent(sockets: &Sockets, work: &Path) {
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_pid} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let pid = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    let _ = Command::new("pkill").args(["-TERM", "-P", &pid]).status();
+    let _ = Command::new("kill").args(["-TERM", &pid]).status();
+}
+
+/// pi, as Fleet starts it: its hooks are an extension Fleet wrote under its
+/// own data directory and passed with `-e`. Its state follows them, its
+/// session id is the conversation a revive resumes, and pi's own config
+/// directory is left byte for byte as it was. Whatever pi's provider
+/// answers, a turn starts and settles.
+#[test]
+fn pi_reports_its_state_through_the_extension_fleet_passes_at_launch() {
+    let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("pi")) else {
+        return;
+    };
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
+    let config = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map_or_else(|| home.join(".pi/agent"), PathBuf::from);
+    // pi's own transcripts: another pi on this machine may write them.
+    let before = snapshot(&config, &["sessions"]);
+    let sockets = Sockets::new("pi");
+    let env = agent_env("runtime-mux-pi", &program, &sockets);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let sessions = env.root.join("pi-sessions");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("pi");
+    task["spec"]["brief"] = json!("Reply with the single word ok.");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    // No update check, and this test's transcripts in its own directory.
+    task["spec"]["env"] = json!({
+        "HOME": home.to_string_lossy(),
+        "PI_OFFLINE": "1",
+        "PI_CODING_AGENT_SESSION_DIR": sessions.to_string_lossy(),
+    });
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on pi's prompt hook", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    reconcile_until(&env, "the turn settled", |env| {
+        in_order(&reported(env, "t1"), &["idle", "prompt", "working", "idle"])
+            && env.get("t1")["status"]["agentState"] == "idle"
+    });
+    let conversation = env.get("t1")["status"]["conversation"]
+        .as_str()
+        .expect("a conversation")
+        .to_string();
+    let transcript = snapshot(&sessions, &[])
+        .keys()
+        .any(|f| f.to_string_lossy().contains(&conversation));
+    assert!(
+        transcript,
+        "pi's session {conversation} is the conversation"
+    );
+
+    // pi ends: the revive resumes its session, whose start reports it again.
+    end_agent(&sockets, &work);
+    reconcile_until(&env, "resumed on its session", |env| {
+        let states = reported(env, "t1");
+        states
+            .iter()
+            .rposition(|(s, _)| s == "started")
+            .is_some_and(|at| {
+                states[at..]
+                    .iter()
+                    .any(|(s, c)| s == "idle" && c.as_deref() == Some(&*conversation))
+            })
+    });
+    end_agent(&sockets, &work);
+    assert!(
+        snapshot(&config, &["sessions"]) == before,
+        "pi's config directory {} changed",
+        config.display()
+    );
+}
+
+/// opencode, as Fleet starts it: its own server, with Fleet's plugin named
+/// in `OPENCODE_CONFIG_CONTENT`, which opencode merges with the user's and
+/// the project's config. The project asks before each shell command: the
+/// agent waits on a person until it is answered. Its session id is the
+/// conversation a revive resumes, and opencode's config directory is left
+/// byte for byte as it was.
+#[test]
+fn opencode_reports_its_state_through_the_plugin_fleet_names_at_launch() {
+    let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("opencode")) else {
+        return;
+    };
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map_or_else(|| home.join(".config"), PathBuf::from)
+        .join("opencode");
+    let before = snapshot(&config, &[]);
+    let sockets = Sockets::new("opencode");
+    let env = agent_env("runtime-mux-opencode", &program, &sockets);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    fs::write(
+        work.join("opencode.jsonc"),
+        r#"{"permissions":[{"action":"shell","resource":"*","effect":"ask"}]}"#,
+    )
+    .expect("project config");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("opencode");
+    task["spec"]["env"] = json!({"HOME": home.to_string_lossy()});
+    task["spec"]["brief"] =
+        json!("Run the shell command `echo fleet` yourself, with your shell tool, then stop.");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on opencode's prompt hook", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    reconcile_until(&env, "waiting on the permission", |env| {
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    let conversation = env.get("t1")["status"]["conversation"]
+        .as_str()
+        .expect("a conversation")
+        .to_string();
+    assert!(conversation.starts_with("ses_"), "{conversation}");
+    // Allow once: the default choice.
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    reconcile_until(&env, "the turn ended", |env| {
+        in_order(
+            &reported(env, "t1"),
+            &["idle", "prompt", "working", "blocked", "working", "idle"],
+        ) && env.get("t1")["status"]["agentState"] == "idle"
+    });
+
+    // opencode ends: the revive resumes its session, which the next prompt
+    // names again.
+    end_agent(&sockets, &work);
+    reconcile_until(&env, "resumed on its session", |env| {
+        let states = reported(env, "t1");
+        states
+            .iter()
+            .rposition(|(s, _)| s == "started")
+            .is_some_and(|at| {
+                states[at..]
+                    .iter()
+                    .any(|(s, c)| s == "prompt" && c.as_deref() == Some(&*conversation))
+            })
+    });
+    end_agent(&sockets, &work);
+    assert!(
+        snapshot(&config, &[]) == before,
+        "opencode's config directory {} changed",
+        config.display()
     );
 }

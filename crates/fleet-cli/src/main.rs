@@ -485,7 +485,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
     if let Some(dir) = harnesses {
         profiles = profiles.from_dir(dir.to_string_lossy().into_owned());
     }
-    fleet_api::harness::install(profiles);
     if let Command::Runtime {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
@@ -511,6 +510,16 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
+    // The plugin files a profile names sit under the data dir, where
+    // `open_signals` writes them.
+    fleet_api::harness::install(
+        profiles.with_assets(
+            bootstrap::absolute(&data_dir.join(fleet_api::harness::ASSET_DIR))
+                .map_err(fail)?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    );
     if matches!(cli.command, Command::Up { .. })
         && let Some(override_dir) = &cli.data_dir
     {
@@ -1233,8 +1242,13 @@ fn version(json: bool, config: Option<PathBuf>) -> Result<(), Failure> {
     Ok(())
 }
 
-/// The signal files, one per session on this machine, under the store.
+/// The signal files, one per session on this machine, under the store, and
+/// beside them the plugin files the harness profiles name: every command
+/// that starts a session opens the signals first.
 fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
+    let assets = data_dir.join(fleet_api::harness::ASSET_DIR);
+    fleet_runtime::assets::write(&assets)
+        .map_err(|e| fail(format!("{}: {e}", assets.display())))?;
     let dir = data_dir.join("signals");
     FileSignals::open(&dir).map_err(|e| fail(format!("{}: {e}", dir.display())))
 }

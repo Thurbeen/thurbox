@@ -28,7 +28,9 @@ snapshot maps the Task's `status.agentState` and `status.sessionState` onto
 Fleet derives both from the agent's own hooks: `agentState` is the agent's
 last report (`working`, `attention`, `idle`, or `unknown` before it reports).
 Claude Code's `Notification` hook, matched to `permission_prompt`, reports
-`blocked`, which is `attention`; its `idle_prompt` notification is idle. Each hook reports
+`blocked`, which is `attention`; its `idle_prompt` notification is idle.
+opencode's plugin reports `blocked` while a permission or a question is open;
+pi asks a person nothing, so it never reports `attention`. Each hook reports
 through `fleet signal`, and Fleet's harness profiles wire those hooks at launch
 (`crates/fleet-api/src/harness.rs`). thurbox installs nothing into an agent's
 config and derives no state of its own.

@@ -373,8 +373,8 @@ controller plans the send it records the text's digest in
 
 A harness with no prompt hook keeps the runtime's answer, and its journal
 for a lost one. A profile has a prompt hook when its `authority` is `full`
-or `partial` and its `[payload]` names a prompt field: of the bundled
-profiles, Claude Code's and Codex's.
+or `partial` and its `[payload]` names a prompt field: every bundled
+profile has one.
 
 ### Harness profiles
 
@@ -386,6 +386,8 @@ A profile is data: one TOML document per harness. Fleet ships these:
 | --- | --- | --- | --- |
 | `claude-code`, `claude` | `claude --settings <hooks>` and `--add-dir` per extra directory | the launch argv, then `--resume <conversation>` | its dialog is read from the screen and never answered |
 | `codex` | `codex -c notify=… -c projects=<root>` and `--add-dir` per extra directory | `codex resume <conversation>` and the launch arguments | the `projects=` launch override, for this session only |
+| `pi` | `pi -e <Fleet's extension> --approve` | the launch argv, then `--session <conversation>` | `--approve`, for this run only |
+| `opencode` | `opencode --standalone`, and `OPENCODE_CONFIG_CONTENT` naming Fleet's plugin | the launch argv, then `--session <conversation>` | none Fleet knows |
 | any other | the harness name | the launch argv: a fresh start | none Fleet knows |
 
 Claude Code's hooks report its start (`SessionStart`, as `idle`), each
@@ -397,6 +399,37 @@ Codex has no start hook: its `notify` runs only once a turn ends. Before
 that report, the `exec` kind reads its screen: the empty composer under its
 welcome screen, with Codex in the foreground, is ready and trusted (its
 launch override trusts the workspace).
+
+pi and opencode take their hooks as a plugin file, not an argument. Fleet
+ships each file and writes it under its data dir, in `harness-assets/`, at
+each command that starts sessions; the launch names it. Fleet never writes
+the agent's config dir, and the agent loads the user's own plugins beside
+Fleet's. Each file only runs `fleet signal <state>` with its JSON on stdin,
+and registers nothing where `FLEET_SIGNAL_FILE` is unset
+([signal contract](../signal-contract.md)).
+
+| Harness | File | Reports |
+| --- | --- | --- |
+| `pi` | [`fleet-pi.ts`](../../../crates/fleet-runtime/src/assets/fleet-pi.ts), passed with `-e` | `session_start` as `idle`, `before_agent_start` as `prompt`, `agent_start` as `working`, `agent_settled` as `idle`, each with pi's session id |
+| `opencode` | [`fleet-opencode/`](../../../crates/fleet-runtime/src/assets/fleet-opencode/index.js), an OpenCode 2 plugin directory named in `OPENCODE_CONFIG_CONTENT` | its terminal UI's start as `idle`; each user prompt as `prompt`; `working` while any session executes; `blocked` while a permission or a question is open; `idle` when every session ends |
+
+- pi asks a person nothing of its own: its hooks report no `blocked`. pi
+  reports `idle` at `agent_settled`, not `agent_end`: after a run ends, pi
+  may still retry, compact or take a queued message.
+- pi asks to trust a directory with project resources (`.pi`, `.agents`,
+  in it or a parent) before it loads them. `--approve` trusts the project
+  for this run only, as Codex's launch override does.
+- opencode runs its own server (`--standalone`). The shared background
+  service was started with another environment: it would load neither
+  Fleet's plugin nor the session's signal file.
+- opencode's server loads before its terminal UI takes input, and a brief
+  typed then is lost. So the plugin's TUI part reports the start, not its
+  server part.
+- An opencode subagent runs in a session of its own, with a parent. Its
+  prompt is not a prompt to the agent, and its session is not the
+  conversation.
+- A Task's own `OPENCODE_CONFIG_CONTENT` replaces Fleet's, as every Task
+  variable replaces the profile's: that session reports nothing.
 
 The `exec` runtime kind and the fake runtime run the profile's argv.
 
@@ -433,6 +466,9 @@ conversation = ["session_id", "thread-id"]
 - `authority` says what the hooks report: `full` reports working, idle and
   blocked; `partial` reports some states; `session` reports the
   conversation only; `none` has no hooks.
+- In `[launch]` and `[resume]`, `{asset:<name>}` is the path of the file
+  or directory `<name>` that Fleet ships, under `harness-assets/` in its
+  data dir, with `/` separators.
 - In `[resume]`, `{program}` is the launched program and `{conversation}`
   the reported conversation. The argument `{launch_args}`, alone, is every
   launch argument after the program.

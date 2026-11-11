@@ -936,6 +936,7 @@ harness its trust at spawn:
 | --- | --- |
 | `codex` | The launch argv adds `-c projects={"<root>"={trust_level="trusted"}}`. This override trusts the root for this session only. |
 | `claude`, `claude-code` | Nothing. Claude Code has no per-session trust interface. |
+| `pi` | The launch argv adds `--approve`. pi trusts the project's own resources for this run only. |
 | any other | Nothing. |
 
 The exec runtime answers `workspace_trust` from the agent's signals and

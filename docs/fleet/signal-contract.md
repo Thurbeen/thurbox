@@ -100,7 +100,10 @@ file, and the bundled profile or the default names apply.
 - Fleet reads the signal file only for a session on its own machine. For a
   session on another host, the state stays Unknown.
 
-## Example
+## Examples
+
+Fleet's own plugin files for pi and opencode follow this contract
+([harness profiles](controllers/task.md#harness-profiles)).
 
 A hook that reports the end of a turn, with the conversation `s1`:
 
