@@ -133,7 +133,9 @@ tbx_sandbox_init_full() {
 # session is a Fleet Task, and thurbox reads them through `fleet watch` and
 # starts `fleet up` itself. Without this, `fleet` would read the operator's own
 # config — their real Tasks in a sandbox's interface. Exports FLEET_CONFIG and
-# writes the config once, under the sandbox root:
+# writes the config under the sandbox root on every run: the file is generated,
+# so a profile made by an older checkout never keeps a section the current
+# `fleet` refuses. Edit this function, not the file:
 #
 #   - `runtime-mux` (target/debug, on PATH after an init) serves `local`, on
 #     the sandbox's tmux directory and socket, which it inherits.
@@ -144,7 +146,6 @@ tbx_sandbox_fleet() {
     fleet_dir="$TBX_SANDBOX_ROOT/fleet"
     FLEET_CONFIG="$fleet_dir/config.toml"
     export FLEET_CONFIG
-    [ -f "$FLEET_CONFIG" ] && return 0
     mkdir -p "$fleet_dir"
     cat > "$FLEET_CONFIG" <<'EOF'
 version = 1
@@ -164,11 +165,10 @@ EOF
 
 # tbx_sandbox_runtime — keep runtime-mux's workspaces (the worktrees it makes
 # from a session's `git+file` URL) inside the sandbox, not under the real
-# `~/.local/share/runtime-mux`.
+# `~/.local/share/runtime-mux`. Written on every run, like the Fleet config.
 tbx_sandbox_runtime() {
     RUNTIME_MUX_CONFIG="$TBX_SANDBOX_ROOT/fleet/runtime-mux.toml"
     export RUNTIME_MUX_CONFIG
-    [ -f "$RUNTIME_MUX_CONFIG" ] && return 0
     mkdir -p "$TBX_SANDBOX_ROOT/fleet"
     printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" > "$RUNTIME_MUX_CONFIG"
 }

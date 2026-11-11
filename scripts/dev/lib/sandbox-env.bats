@@ -12,6 +12,7 @@ setup() {
   # shellcheck disable=SC1091
   . "${BATS_TEST_DIRNAME}/sandbox-env.sh"
   ROOT="${BATS_TEST_TMPDIR}/root"
+  export TBX_SANDBOX_ROOT="$ROOT"
   mkdir -p "$ROOT/data"
 }
 
@@ -54,4 +55,19 @@ teardown() {
   : > "$ROOT/data/fleet-up-$OTHER.log"
   _tbx_stop_fleet "$ROOT"
   kill -0 "$OTHER"
+}
+
+@test "a profile made before 3.0 gets a Fleet config the new fleet reads" {
+  mkdir -p "$ROOT/fleet"
+  printf 'version = 1\n\n[starter]\nworkspace = "starter"\n' > "$ROOT/fleet/config.toml"
+  tbx_sandbox_fleet
+  run ! grep -q '^\[starter\]' "$ROOT/fleet/config.toml"
+  grep -qx '\[hosts.local\]' "$ROOT/fleet/config.toml"
+}
+
+@test "an old runtime-mux config is written again with the sandbox's root" {
+  mkdir -p "$ROOT/fleet"
+  printf "[workspace]\nroot = '/elsewhere'\n" > "$ROOT/fleet/runtime-mux.toml"
+  tbx_sandbox_fleet
+  grep -qF "root = '$ROOT/fleet/workspaces'" "$ROOT/fleet/runtime-mux.toml"
 }

@@ -38,7 +38,9 @@
 #
 # Sessions are Fleet Tasks (ADR-41). The sandbox has a Fleet of its own
 # (`<sandbox>/fleet/config.toml`, exported as FLEET_CONFIG), and the TUI starts
-# its `fleet up`.
+# its `fleet up`. That config and runtime-mux's are generated on every run, so
+# edit `tbx_sandbox_fleet`, not the files. A TUI launch first stops the `fleet
+# up` an earlier run left alive, so the manager is always this build's.
 #
 # State (persistent mode): target/dev-sandbox/<profile>/ (gitignored). Sessions
 # survive across runs — the tmux servers and the `fleet up` the TUI started are
@@ -124,7 +126,11 @@ run_in_sandbox() {
         cli) "$TBX_REPO_ROOT/target/debug/thurbox-cli" "${cli_args[@]}" ;;
         # Run from the sandbox root, not the repo: see the note in the header.
         # Otherwise the sandbox isolates the sessions but not the interface.
-        tui) ( cd "$TBX_SANDBOX_ROOT" && "$TBX_REPO_ROOT/target/debug/$tui_binary" ) ;;
+        tui)
+            # A `fleet up` left alive by an earlier run is an older build's:
+            # stop it, and the TUI starts this build's.
+            _tbx_stop_fleet "$TBX_SANDBOX_ROOT"
+            ( cd "$TBX_SANDBOX_ROOT" && "$TBX_REPO_ROOT/target/debug/$tui_binary" ) ;;
     esac
 }
 
