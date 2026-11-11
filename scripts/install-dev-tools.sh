@@ -30,7 +30,9 @@ $INSTALL_CMD prek
 $INSTALL_CMD cocogitto
 $INSTALL_CMD cargo-nextest
 $INSTALL_CMD cargo-deny
-$INSTALL_CMD rumdl
+# The version CI lints markdown with, read from its pin in ci.yml; `just lint`
+# refuses any other (scripts/ci/check-rumdl-version.sh).
+$INSTALL_CMD "rumdl@$("$(dirname "$0")/ci/check-rumdl-version.sh" --print)"
 # The Lua interface in ui/. Both are single Rust binaries, which is why they were
 # chosen over luacheck (a LuaRocks package needing a Lua toolchain).
 $INSTALL_CMD selene
@@ -46,6 +48,19 @@ if ! command -v lua-language-server &> /dev/null; then
     echo "     macOS:         brew install lua-language-server"
     echo "     Arch:          sudo pacman -S lua-language-server"
     echo "     Otherwise:     https://github.com/LuaLS/lua-language-server/releases"
+fi
+
+# `just clippy-windows` (part of `just lint`) cross-checks the Windows CI job
+# from here: the target's standard library plus a MinGW gcc for C build scripts.
+if command -v rustup &> /dev/null; then
+    rustup target add x86_64-pc-windows-gnu
+fi
+if ! command -v x86_64-w64-mingw32-gcc &> /dev/null; then
+    echo ""
+    echo "⚠️  x86_64-w64-mingw32-gcc not found — install it for \`just clippy-windows\`:"
+    echo "     Debian/Ubuntu: sudo apt-get install gcc-mingw-w64-x86-64"
+    echo "     macOS:         brew install mingw-w64"
+    echo "     Arch:          sudo pacman -S mingw-w64-gcc"
 fi
 
 # ShellCheck is not a cargo crate — install it from your package manager

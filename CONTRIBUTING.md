@@ -162,20 +162,25 @@ and the three Lua gates (`selene`, `stylua`, `lua-language-server`).
 
 ## Pre-commit hooks
 
-[`prek`](https://github.com/j178/prek) runs the same checks CI does before each
-commit. Install the hooks once after cloning:
+[`prek`](https://github.com/j178/prek) runs the checks CI does, in two speeds:
+the fast ones before each commit, the ones needing a full build before each
+push. Install the hooks once after cloning (a clone that installed them before
+the pre-push stage existed needs this run again):
 
 ```bash
 prek install
 ```
 
 - **commit-msg** — conventional-commit validation (`cog verify`)
-- **pre-commit** — fmt, clippy, check, nextest, architecture rules, cargo-deny,
-  rustdoc, bats, shellcheck, rumdl, selene, stylua, prettier, htmlhint,
+- **pre-commit** — fmt, clippy, bats, shellcheck, rumdl (and a check that the
+  local rumdl is the version CI pins), selene, stylua, prettier, htmlhint,
   stylelint, eslint
+- **pre-push** — nextest (the architecture rules included), rustdoc,
+  cargo-deny, and Windows clippy cross-checked from Linux
+  (`just clippy-windows`)
 
-There is no **pre-push** stage. The hook that used it walked the branch's own
-commit messages, and squash merge discards those — see below.
+Commit messages are not checked at push: squash merge discards them — see
+below.
 
 ## Commit conventions
 

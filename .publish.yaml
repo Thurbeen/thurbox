@@ -24,8 +24,9 @@ review:
     - CONTRIBUTING.md
 
 gate:
-  # The repo's canonical gate: rustfmt, clippy -D warnings, cargo-deny, rumdl,
-  # shellcheck, selene, stylua and the Lua checks. Needs the dev toolchain
+  # The repo's canonical gate: rustfmt, clippy -D warnings (Linux and the
+  # Windows target), cargo-deny, rumdl at CI's pinned version, shellcheck,
+  # selene, stylua and the Lua checks. Needs the dev toolchain
   # (`nix develop`, or scripts/install-dev-tools.sh plus a lua-language-server
   # package).
   #

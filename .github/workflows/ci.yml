@@ -90,6 +90,7 @@ jobs:
             markdown:
               - '**/*.md'
               - '.rumdl.toml'
+              - 'scripts/ci/check-rumdl-version.*'
               - '.github/workflows/ci.yml'
             lua:
               - 'ui/**'
@@ -438,6 +439,13 @@ jobs:
         uses: rvben/rumdl@1e0f1d13c87418c31e0d59dacddd98f27a02efcc # v0.3.2
         with:
           report-type: annotations
+      # The pin above is what `just lint` holds a local rumdl to, read by
+      # scripts/ci/check-rumdl-version.sh from that `# vX.Y.Z` comment; the suite
+      # fails if the line stops parsing.
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: Test the local rumdl version check
+        run: bats scripts/ci/check-rumdl-version.bats
 
   install-script:
     name: Install Script Tests

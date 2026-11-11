@@ -366,7 +366,10 @@ thurbox-demo-media), which AGENTS.md indexes: detail an agent needs only when
 working on that subsystem belongs in its skill rather than back in AGENTS.md,
 and a change that invalidates one updates it in the same change. A skill is a
 working reference, not an owner - the docs above still own the rationale.
-ui/AGENTS.md owns interface-authoring guidance for whichever coding CLI is
+.agents/agents/thurbox-builder.md owns the standing checklist a delegated
+build agent follows (scope, gate, house rules, hand-back), so a
+brief carries only the task; .claude/agents/ holds a symlink to it, never a
+copy. ui/AGENTS.md owns interface-authoring guidance for whichever coding CLI is
 editing ui/; ui/CLAUDE.md and ui/GEMINI.md are deliberately one-line pointers
 to it, never copies, so do not expand them.
 

@@ -37,6 +37,7 @@ test-scripts:
     bats packaging/winget/winget.bats
     bats scripts/dev/e2e/windows-vm.bats
     bats scripts/dev/lib/sandbox-env.bats
+    bats scripts/ci/check-rumdl-version.bats
 
 # Format Rust + website code.
 fmt:
@@ -49,6 +50,10 @@ lint:
     cargo clippy --all-targets --all-features -- -D warnings
     cargo deny check advisories
     cargo deny check bans licenses sources
+    just clippy-windows
+    # CI lints markdown with the rumdl pinned in ci.yml; an older local one
+    # passes what CI then fails.
+    scripts/ci/check-rumdl-version.sh
     rumdl check .
     git ls-files -z '*.sh' | xargs -0 shellcheck
     selene ui examples
@@ -64,6 +69,22 @@ lint:
     # clean, and one misspelt pane per table, which must not — so a table
     # declared without its fields fails instead of passing unread.
     scripts/ci/check-lua-std.sh
+
+# The `Windows (clippy)` CI job, cross-checked from Linux: code and tests under
+# `cfg(windows)` (or unused only there) fail here instead of after a push.
+# Needs the x86_64-pc-windows-gnu standard library (`rustup target add
+# x86_64-pc-windows-gnu`) and a MinGW gcc (`x86_64-w64-mingw32-gcc`) for the C
+# build scripts. Without the target (the Nix shell ships none) it says so and
+# skips, rather than failing `just lint` for a toolchain CI already covers.
+clippy-windows:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d "$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-gnu" ]; then
+        echo "clippy-windows: SKIPPED — x86_64-pc-windows-gnu is not installed, so only CI's Windows (clippy) job checks it." >&2
+        echo "clippy-windows: install it with: rustup target add x86_64-pc-windows-gnu" >&2
+        exit 0
+    fi
+    cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
 
 # Format the Lua interface in place (the counterpart to `cargo fmt`).
 fmt-lua:
