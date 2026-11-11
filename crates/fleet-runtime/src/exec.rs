@@ -14,7 +14,8 @@
 //! Unknown never concludes.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use fleet_api::Observation;
 use fleet_api::harness::{
@@ -47,6 +48,11 @@ const ANSWER_CAP: usize = 4 * 1024 * 1024;
 /// The calls one port operation can make: `spawn` is a `start`, and nothing
 /// makes more than two.
 const MAX_CALLS_PER_OPERATION: u32 = 2;
+
+/// How long one capture answers the screen probe: a session's screen rules
+/// are for a view, so a screen this recent is current enough, and a sweep
+/// every second does not run a capture per session every second.
+pub const SCREEN_REUSE: Duration = Duration::from_secs(2);
 
 /// The bound on a `workspace` call when `[runtimes.<name>]` names none:
 /// a first clone of a repository can take minutes.
@@ -278,12 +284,15 @@ pub enum Captured {
         cursor_row: Option<u64>,
         cursor_col: Option<u64>,
         foreground: Option<String>,
+        /// The title the program set; a runtime that predates it omits it.
+        #[serde(default)]
+        title: Option<String>,
     },
     None,
 }
 
 /// What an agent's screen shows before its first report.
-enum Screen {
+enum FirstScreen {
     /// A workspace-trust dialog, which only a person answers.
     TrustDialog,
     /// Codex's empty composer: it takes input, and reports nothing until
@@ -297,7 +306,12 @@ enum Screen {
 pub struct ExecRuntime {
     hosts: BTreeMap<String, ExecProgram>,
     signals: Option<FileSignals>,
+    /// The last screen of each session, by session id, with when it was
+    /// captured.
+    screens: Arc<Mutex<BTreeMap<String, (Instant, CapturedScreen)>>>,
 }
+
+type CapturedScreen = Observation<Option<fleet_api::screen::Screen>>;
 
 impl ExecRuntime {
     /// `hosts` maps each host name a Task may give to the program serving it.
@@ -305,6 +319,7 @@ impl ExecRuntime {
         ExecRuntime {
             hosts,
             signals: None,
+            screens: Arc::default(),
         }
     }
 
@@ -432,39 +447,43 @@ impl ExecRuntime {
         })
     }
 
-    /// What the agent's screen shows before its first report, read through
-    /// `capture`.
-    fn screen(&self, session: &SessionRef) -> Observation<Screen> {
+    /// The session's visible screen, through `capture`.
+    fn capture(&self, session: &SessionRef) -> Observation<Captured> {
         let rt = match self.program(&session.host) {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        let captured = rt.ask::<Captured>(
+        rt.ask::<Captured>(
             "capture",
             Self::request(json!({ "key": rt.key(&session.key), "lines": 0 })),
-        );
-        captured.map(|captured| {
+        )
+    }
+
+    /// What the agent's screen shows before its first report.
+    fn first_screen(&self, session: &SessionRef) -> Observation<FirstScreen> {
+        self.capture(session).map(|captured| {
             let Captured::Screen {
                 text,
                 cursor_row,
                 cursor_col,
                 foreground,
+                ..
             } = captured
             else {
-                return Screen::Other;
+                return FirstScreen::Other;
             };
             let at = |n: Option<u64>| n.and_then(|n| usize::try_from(n).ok());
             let (row, col) = (at(cursor_row), at(cursor_col));
             if codex_trust_dialog(&text) || row.is_some_and(|r| claude_trust_dialog(&text, r)) {
-                Screen::TrustDialog
+                FirstScreen::TrustDialog
             } else if foreground.as_deref().is_some_and(codex_process)
                 && row
                     .zip(col)
                     .is_some_and(|(r, c)| codex_initial_composer(&text, r, c))
             {
-                Screen::CodexComposer
+                FirstScreen::CodexComposer
             } else {
-                Screen::Other
+                FirstScreen::Other
             }
         })
     }
@@ -644,8 +663,8 @@ impl Runtime for ExecRuntime {
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
         bind(self.reported(session), |r| match r.state {
             Some(State::Blocked) => Observation::Known(false),
-            Some(State::Started) | None => match self.screen(session) {
-                Observation::Known(Screen::CodexComposer) => Observation::Known(true),
+            Some(State::Started) | None => match self.first_screen(session) {
+                Observation::Known(FirstScreen::CodexComposer) => Observation::Known(true),
                 Observation::Known(_) => {
                     Observation::unknown("the agent reported no state since it started")
                 }
@@ -673,8 +692,8 @@ impl Runtime for ExecRuntime {
             Observation::Known(_) => {}
             Observation::Unknown { why } => return Observation::Unknown { why },
         }
-        match self.screen(session) {
-            Observation::Known(Screen::TrustDialog) => {
+        match self.first_screen(session) {
+            Observation::Known(FirstScreen::TrustDialog) => {
                 Observation::Known(WorkspaceTrust::Untrusted {
                     gap: TrustGap::Unsupported,
                     why: format!(
@@ -685,12 +704,12 @@ impl Runtime for ExecRuntime {
             }
             // The exec kind starts Codex with its launch override trusting
             // the workspace, so its composer is a trusted session's.
-            Observation::Known(Screen::CodexComposer) => {
+            Observation::Known(FirstScreen::CodexComposer) => {
                 Observation::Known(WorkspaceTrust::Trusted {
                     how: "Codex runs with its launch override trusting the workspace".into(),
                 })
             }
-            Observation::Known(Screen::Other) => Observation::unknown(
+            Observation::Known(FirstScreen::Other) => Observation::unknown(
                 "the agent has not reported yet and shows neither a trust dialog nor its composer",
             ),
             Observation::Unknown { why } => Observation::Unknown { why },
@@ -758,6 +777,30 @@ impl Runtime for ExecRuntime {
         let request = Self::request(json!({ "key": rt.key(&session.key), "release": true }));
         rt.ask::<Stopped>("stop", request)
             .map(|Stopped::Stopped| EffectOutcome::Released)
+    }
+
+    /// The runtime's `capture`, reused for [`SCREEN_REUSE`] by this process.
+    fn screen(&self, session: &SessionRef) -> Observation<Option<fleet_api::screen::Screen>> {
+        let now = Instant::now();
+        let mut screens = self
+            .screens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((at, screen)) = screens.get(&session.id)
+            && now.duration_since(*at) < SCREEN_REUSE
+        {
+            return screen.clone();
+        }
+        let screen = self.capture(session).map(|captured| match captured {
+            Captured::Screen { text, title, .. } => Some(fleet_api::screen::Screen {
+                text,
+                title: title.unwrap_or_default(),
+            }),
+            Captured::None => None,
+        });
+        screens.retain(|_, (at, _)| now.duration_since(*at) < SCREEN_REUSE);
+        screens.insert(session.id.clone(), (now, screen.clone()));
+        screen
     }
 
     /// The runtime's `attach`, asked only when its manifest declares it: a

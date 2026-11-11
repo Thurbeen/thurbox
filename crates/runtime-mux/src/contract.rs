@@ -508,6 +508,9 @@ pub struct PaneState {
     /// before the program is reaped, and can then leave it unreaped until
     /// another of its children exits — see [`WindowLifecycle::reap_exited`].
     pub reaped: Option<bool>,
+    /// The title the pane's program last set with OSC 0 or 2
+    /// (`#{pane_title}`). Many agents say their state in it.
+    pub title: Option<String>,
 }
 
 /// Metadata returned when discovering existing sessions from the backend.

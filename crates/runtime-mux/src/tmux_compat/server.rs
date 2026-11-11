@@ -3605,6 +3605,8 @@ impl<M: TmuxCompatible> WindowLifecycle for Server<M> {
             "#{pane_dead_status}",
             "#{pane_dead_signal}",
             "#{version}",
+            // Last: a program sets it, so it may hold anything.
+            "#{pane_title}",
         ]
         .join(&PANE_STATE_SEP.to_string());
         let mut argv = M::DISPLAY_FLAGS.to_vec();
@@ -4614,6 +4616,7 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
         (Some(true), Some(version)) if !version.starts_with("3.2") => Some(false),
         _ => None,
     };
+    let title = next().map(str::to_string);
 
     (
         PaneState {
@@ -4625,6 +4628,7 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
             dead,
             exit_status,
             reaped,
+            title,
         },
         tty,
         window,
@@ -7862,6 +7866,29 @@ done
         assert_eq!(tty.as_deref(), Some("/dev/pts/7"));
         // Only the `ps` pass can fill this in — the tmux answer never does.
         assert_eq!(state.foreground_command, None);
+        assert_eq!(state.title, None);
+    }
+
+    #[test]
+    fn parse_pane_state_reads_the_title_last() {
+        let (state, _, _) = parse_pane_state(&pane_state_answer(&[
+            "0",
+            "0",
+            "codex",
+            "/w",
+            "/dev/pts/1",
+            "0",
+            "tb-x",
+            "%1",
+            "",
+            "",
+            "3.8",
+            "⠋ Action Required: allow command?",
+        ]));
+        assert_eq!(
+            state.title.as_deref(),
+            Some("⠋ Action Required: allow command?")
+        );
     }
 
     #[test]

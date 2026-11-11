@@ -27,6 +27,12 @@ snapshot maps the Task's `status.agentState` and `status.sessionState` onto
 
 Fleet derives both from the agent's own hooks: `agentState` is the agent's
 last report (`working`, `attention`, `idle`, or `unknown` before it reports).
+Below the hooks, Fleet reads `agentState` off the screen with the harness's
+screen rules (`crates/fleet-api/src/screen.rs`), and `status.activity.source`
+says which (`hook`, `screen`, `none`). `row_of` carries it as the row's
+`status_source`, published as `status_source`, `status_rule` and
+`status_since_ms`; `ui.status` draws a `screen` state dimmed (blocked as `◇`)
+and `none` as `?`, and the sessions pane names the source after the name.
 Claude Code's `Notification` hook, matched to `permission_prompt`, reports
 `blocked`, which is `attention`; its `idle_prompt` notification is idle. Each hook reports
 through `fleet signal`, and Fleet's harness profiles wire those hooks at launch

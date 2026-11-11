@@ -419,6 +419,14 @@
 ---| "uncovered"
 ---| "unreported"
 
+--- Where a Fleet session's status came from: `hook` is the agent's own
+--- report, `screen` a screen rule Fleet read it with, and `none` neither,
+--- so the status is unknown.
+---@alias thurbox.StatusSource
+---| "hook"
+---| "screen"
+---| "none"
+
 --- Uncommitted work in a session's tree. Absent until it has been measured,
 --- which a plugin must be able to tell apart from a clean tree.
 ---@class (exact) thurbox.GitStats
@@ -439,6 +447,9 @@
 ---@field reports_as? string What a driver declared this session runs (`session reports-as`).
 ---@field detected_agent? string The registered agent observed in the pane, when it is not `agent`.
 ---@field status thurbox.Status
+---@field status_source? thurbox.StatusSource Where a Fleet session's status came from; absent for a status Fleet's agent state did not decide.
+---@field status_rule? string The screen rule, `<set>/<rule id>`, of a `screen` status.
+---@field status_since_ms? integer When Fleet first saw this status from this source, in ms since the epoch.
 ---@field backend string
 ---@field repo? string
 ---@field branch? string

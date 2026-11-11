@@ -1,0 +1,30 @@
+# GitHub Copilot CLI 1.0.105, captured through runtime-mux.
+state = "blocked"
+rule = "copilot/select"
+title = "Write Lighthouse Keeper Story - GitHub Copilot"
+text = '''
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+ ● Copilot Fusion selected MAI-Code-1.1-Flash because it was the best choice   ┃
+   out of the models available in your plan.                                   ┃
+                                                                               ┃
+ $ Shell Create the requested file in the current working directory        13s ┃
+   touch created-by-copilot.txt                                                ┃
+                                                                               ┃
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Create the requested file in the current working directory                   │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ touch created-by-copilot.txt                                             │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ Do you want to run this command?                                             │
+│                                                                              │
+│ ❯ 1. Yes                                                                     │
+│   2. Yes, and don't ask again for `touch` in this directory                  │
+│   (/tmp/claude-1000/.../copilot)                                             │
+│   3. No, and tell Copilot what to do differently (Esc to stop)               │
+│                                                                              │
+│ ↑/↓ to navigate · enter to select · esc to cancel                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+'''

@@ -241,6 +241,16 @@ pub static STATUS: Alias = Alias {
     ]),
 };
 
+pub static STATUS_SOURCE: Alias = Alias {
+    name: "thurbox.StatusSource",
+    doc: &[
+        "Where a Fleet session's status came from: `hook` is the agent's own",
+        "report, `screen` a screen rule Fleet read it with, and `none` neither,",
+        "so the status is unknown.",
+    ],
+    values: Some(&["hook", "screen", "none"]),
+};
+
 pub static GIT_STATS: Class = Class {
     name: "thurbox.GitStats",
     doc: &[
@@ -280,6 +290,15 @@ pub static SESSION: Class = Class {
             .opt()
             .doc("The registered agent observed in the pane, when it is not `agent`."),
         leaf("status", "thurbox.Status"),
+        leaf("status_source", "thurbox.StatusSource").opt().doc(
+            "Where a Fleet session's status came from; absent for a status Fleet's agent state did not decide.",
+        ),
+        leaf("status_rule", "string")
+            .opt()
+            .doc("The screen rule, `<set>/<rule id>`, of a `screen` status."),
+        leaf("status_since_ms", "integer")
+            .opt()
+            .doc("When Fleet first saw this status from this source, in ms since the epoch."),
         leaf("backend", "string"),
         leaf("repo", "string").opt(),
         leaf("branch", "string").opt(),
@@ -910,6 +929,7 @@ pub static API_ROOT: Class = Class {
 pub static ITEMS: &[Item] = &[
     Item::Alias(&ROLE),
     Item::Alias(&STATUS),
+    Item::Alias(&STATUS_SOURCE),
     Item::Class(&GIT_STATS),
     Item::Class(&SESSION),
     Item::Class(&REPO),

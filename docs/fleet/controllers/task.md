@@ -428,6 +428,9 @@ args = []                      # launch-override only; {root} is replaced
 [payload]                      # read by `fleet signal`
 prompt = ["prompt", "input-messages"]
 conversation = ["session_id", "thread-id"]
+
+[screen]
+rules = "codex"                # a bundled rule set; omit for the set named as the profile
 ```
 
 - `authority` says what the hooks report: `full` reports working, idle and
@@ -443,6 +446,40 @@ conversation = ["session_id", "thread-id"]
   and names the file.
 - A harness that no profile names runs its name as a program, with no
   hooks, trust or resume.
+- `[screen] rules` names a bundled rule set, which must exist. Omitted, the
+  profile uses the set of its own name, when Fleet ships one.
+
+#### Screen rules
+
+A screen rule reads an agent's state off its screen: the text and title the
+runtime's `capture` returns. It is the second source of `agentState`, below
+the hooks ([agent state](../contracts.md#agent-state)). Fleet ships one rule
+set per agent whose screens it captured: `claude`, `codex`, `copilot`,
+`opencode` and `pi`
+([bundled rule sets](../../../crates/fleet-api/src/screen/bundled.rs)). A
+harness that no profile names, such as `copilot`, uses the set of its name.
+
+```toml
+[[rule]]
+id = "action-required"         # reported as `<set>/<id>`
+state = "blocked"              # working | idle | blocked
+priority = 900                 # the highest match wins; the first listed on a tie
+region = "osc_title"           # bottom_lines(<n>) | whole | osc_title
+contains = ["Action Required"] # every string is in the region
+# all = [<matcher>, ...]       # every matcher holds
+# any = [<matcher>, ...]       # at least one matcher holds
+# not = <matcher>              # the matcher does not hold
+```
+
+- `bottom_lines(<n>)` is the last `n` lines of text, after the blank rows
+  under them are dropped.
+- A matcher is a table of `contains`, `all`, `any` and `not`, read on the
+  rule's region. A rule gives at least one of them.
+- An unknown key, region or state is an error.
+- Each bundled rule is checked against a real screen of its agent: the
+  fixtures under `crates/fleet-api/tests/fixtures/screens/`, run by
+  `crates/fleet-api/tests/screen_rules.rs`. A rule that no fixture shows
+  fails that test.
 
 ### Deletion protocol
 

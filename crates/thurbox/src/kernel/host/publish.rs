@@ -639,6 +639,20 @@ fn build_sessions(
             opt_lua_string(lua, row.detected_agent.as_deref())?,
         )?;
         set(&entry, "status", to_lua_string(lua, row.status.as_str())?)?;
+        // Where a Fleet row's status came from, so a pane draws a hook's
+        // report apart from a screen rule's reading and from neither.
+        let source = row.status_source.as_ref();
+        set(
+            &entry,
+            "status_source",
+            opt_lua_string(lua, source.map(|s| s.source.as_str()))?,
+        )?;
+        set(
+            &entry,
+            "status_rule",
+            opt_lua_string(lua, source.and_then(|s| s.rule.as_deref()))?,
+        )?;
+        set(&entry, "status_since_ms", source.and_then(|s| s.since_ms))?;
         let attach_error = attach_errors.get(&row.id).map(String::as_str);
         set(&entry, "backend", to_lua_string(lua, &row.backend)?)?;
         set(&entry, "repo", opt_lua_string(lua, row.repo.as_deref())?)?;

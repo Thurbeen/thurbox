@@ -23,7 +23,7 @@ use thurbox::kernel::events::Event;
 use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render as paint_node, PlaceholderSurfaces};
 use thurbox::kernel::registry::{Registry, Value};
-use thurbox::kernel::snapshot::{GitState, HostRow, SessionRow, Snapshot};
+use thurbox::kernel::snapshot::{GitState, HostRow, SessionRow, Snapshot, StatusSource};
 use thurbox::kernel::terminal::AgentMeta;
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
@@ -64,6 +64,7 @@ fn row(id: &str, name: &str) -> SessionRow {
         shell_backend_id: None,
         member_dirs: Vec::new(),
         meta: Default::default(),
+        status_source: None,
     }
 }
 
@@ -2290,4 +2291,120 @@ fn each_grouping_level_indents_sessions_once() {
             "┃                                      ┃",
         ]
     );
+}
+
+/// A Fleet session's status says where it came from: the agent's hooks draw
+/// the state's glyph, a screen rule draws it dimmed (blocked's diamond
+/// hollow), and neither draws `?`. The detail after the name names the
+/// source, and a state keeps its colour whatever the source, in every theme.
+#[test]
+fn a_fleet_status_draws_its_source_in_every_theme() {
+    let host = host();
+    let registry = registry_for(&host);
+    let taken = 1_700_000_000_000;
+    let source = |source: &str, rule: Option<&str>, ago: i64| {
+        Some(StatusSource {
+            source: source.into(),
+            rule: rule.map(Into::into),
+            since_ms: Some(taken - ago),
+        })
+    };
+    let mut hooked = row("hk", "hooked");
+    hooked.status = SessionState::Blocked;
+    hooked.status_source = source("hook", None, 3_000);
+    let mut screened = row("sc", "screened");
+    screened.agent = "codex".into();
+    screened.status = SessionState::Blocked;
+    screened.status_source = source("screen", Some("codex/action-required"), 1_000);
+    let mut silent = row("sl", "silent");
+    silent.status = SessionState::Unreported;
+    silent.status_source = source("none", None, 0);
+    let snapshot = Snapshot {
+        sessions: vec![hooked, screened, silent],
+        taken_at_ms: taken,
+        ..Snapshot::default()
+    };
+    let mut themes = Themes::load(None);
+    let names: Vec<String> = themes
+        .choices()
+        .iter()
+        .filter(|choice| !choice.is_custom)
+        .map(|choice| choice.name.clone())
+        .collect();
+    assert!(names.len() > 20, "{names:?}");
+    for name in names {
+        themes.preview(&name).expect("a preset");
+        publish_full(
+            &host,
+            &snapshot,
+            &registry,
+            &[],
+            &themes,
+            &Default::default(),
+        );
+        let buffer = paint(&host, PLUGIN, 90, 8);
+        let row_of = |session: &str| {
+            (0..buffer.area.height)
+                .find(|&y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains(session)
+                })
+                .unwrap_or_else(|| panic!("{name}: no row for {session}"))
+        };
+        let line = |y: u16| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        let glyph = |y: u16, want: &str| {
+            let x = (0..buffer.area.width)
+                .find(|&x| buffer[(x, y)].symbol() == want)
+                .unwrap_or_else(|| panic!("{name}: no {want} in {:?}", line(y)));
+            &buffer[(x, y)]
+        };
+        let (hk, sc, sl) = (row_of("hooked"), row_of("screened"), row_of("silent"));
+        assert!(
+            line(hk).contains("blocked · hook (claude) · 3s ago"),
+            "{name}: {:?}",
+            line(hk)
+        );
+        assert!(
+            line(sc).contains("blocked · screen (codex/action-required) · 1s ago"),
+            "{name}: {:?}",
+            line(sc)
+        );
+        assert!(
+            line(sl).contains("unknown · no hook, no screen rule"),
+            "{name}: {:?}",
+            line(sl)
+        );
+        // The first row carries the selection bar, which paints its own
+        // colours; every other glyph wears its state's role.
+        let blocked = themes.roles()["status_blocked"]
+            .parse::<ratatui::style::Color>()
+            .expect("a colour");
+        let (solid, hollow) = (glyph(hk, "◆"), glyph(sc, "◇"));
+        for cell in [solid, hollow] {
+            assert!(
+                cell.fg == blocked || cell.bg != ratatui::style::Color::Reset,
+                "{name}: blocked is {blocked:?}, drawn {:?}",
+                cell.fg
+            );
+        }
+        assert_eq!(
+            hollow.fg, blocked,
+            "{name}: a screen state keeps its colour"
+        );
+        assert!(
+            !solid.modifier.contains(ratatui::style::Modifier::DIM),
+            "{name}"
+        );
+        assert!(
+            hollow.modifier.contains(ratatui::style::Modifier::DIM),
+            "{name}"
+        );
+        glyph(sl, "?");
+    }
 }

@@ -709,7 +709,9 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
             Probe::Lost { session: session() },
             Probe::Paused { session: session() },
             Probe::Ready { session: session() },
-            Probe::Activity { session: session() }
+            Probe::Activity { session: session() },
+            // Claude Code has screen rules, and its hooks have not spoken.
+            Probe::Screen { session: session() }
         ]
     );
     let (plan, st) = run(
@@ -1021,7 +1023,9 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
                     host: "local".into(),
                     key: "t.u7".into()
                 },
-                Probe::Activity { session: session() }
+                Probe::Activity { session: session() },
+                // Claude Code has screen rules, and its hooks have not spoken.
+                Probe::Screen { session: session() }
             ],
             "{checked:?}"
         );
@@ -1037,7 +1041,9 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
             Probe::Lost { session: session() },
             Probe::Paused { session: session() },
             Probe::Ready { session: session() },
-            Probe::Activity { session: session() }
+            Probe::Activity { session: session() },
+            // Claude Code has screen rules, and its hooks have not spoken.
+            Probe::Screen { session: session() }
         ]
     );
     let (plan, st) = run(
@@ -1817,4 +1823,85 @@ fn the_status_reports_what_the_runtime_proved_about_the_session() {
     let (_, after) = run(&obj, obs);
     assert_eq!(after.session_state, Some(SessionState::Lost));
     assert_eq!(cond(&after, "SessionLost").status, ConditionStatus::True);
+}
+
+/// The screen is read for a harness Fleet has rules for, unless the last
+/// pass took the state from hooks whose authority is full; a screen rule's
+/// state then shows, below a full harness's hooks once they report.
+#[test]
+fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
+    use fleet_api::screen::{AgentActivity, Screen, Source};
+    use fleet_api::signal::{Reported, State};
+    use fleet_api::task::AgentState;
+    let with = |harness: &str, source: Option<Source>| {
+        let mut obj = briefed_with(&[], |st| {
+            st.activity = source.map(|source| AgentActivity {
+                source,
+                rule: None,
+                at: 1,
+            });
+        });
+        obj.spec["harness"] = json!(harness);
+        obj
+    };
+    let screen = Probe::Screen { session: session() };
+    let asks = |obj: &Object| probes(obj).contains(&screen);
+    assert!(
+        !asks(&with("claude", Some(Source::Hook))),
+        "full hooks speak"
+    );
+    assert!(asks(&with("claude", Some(Source::Screen))));
+    assert!(asks(&with("claude", None)));
+    assert!(asks(&with("codex", Some(Source::Hook))), "partial hooks");
+    assert!(asks(&with("copilot", None)), "a bare harness with rules");
+    assert!(!asks(&with("aider", None)), "no rules, no capture");
+
+    let approval = Screen {
+        text: "Press enter to confirm or esc to cancel\n".into(),
+        title: "[ . ] Action Required | codex".into(),
+    };
+    let observe = |obj: &Object, state: Option<State>, screen: Observation<Option<Screen>>| {
+        let (_, st) = run(
+            obj,
+            Observations {
+                find: live(),
+                signals: Some(Observation::Known(Reported {
+                    state,
+                    ..Reported::default()
+                })),
+                screen: Some(screen),
+                ..Observations::default()
+            },
+        );
+        (st.agent_state, st.activity.map(|a| (a.source, a.rule)))
+    };
+    let codex = with("codex", None);
+    assert_eq!(
+        observe(
+            &codex,
+            Some(State::Idle),
+            Observation::Known(Some(approval.clone()))
+        ),
+        (
+            Some(AgentState::Attention),
+            Some((Source::Screen, Some("codex/action-required".into())))
+        )
+    );
+    assert_eq!(
+        observe(
+            &with("claude", None),
+            Some(State::Idle),
+            Observation::Known(Some(approval.clone()))
+        ),
+        (Some(AgentState::Idle), Some((Source::Hook, None)))
+    );
+    assert_eq!(
+        observe(&codex, None, Observation::Known(None)),
+        (Some(AgentState::Unknown), Some((Source::None, None)))
+    );
+    // A failed capture keeps a screen state.
+    let seen = with("codex", Some(Source::Screen));
+    let (state, activity) = observe(&seen, None, Observation::unknown("capture timed out"));
+    assert_eq!(activity.map(|a| a.0), Some(Source::Screen));
+    assert_eq!(state, None, "kept as it was");
 }

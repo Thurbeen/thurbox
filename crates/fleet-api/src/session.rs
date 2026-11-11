@@ -94,10 +94,10 @@ impl SessionState {
     }
 }
 
-/// What the agent itself last reported through its hooks, finer than
-/// [`SessionState`]: a view tells an agent at work from one waiting on a
-/// person from one at rest. Only the agent's report sets it; the runtime
-/// knows nothing of it.
+/// What the agent is doing, finer than [`SessionState`]: a view tells an
+/// agent at work from one waiting on a person from one at rest. The agent's
+/// own report sets it, and below that a screen rule ([`crate::screen`]);
+/// nothing decides on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentState {

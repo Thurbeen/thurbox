@@ -1,0 +1,30 @@
+# GitHub Copilot CLI 1.0.105, captured through runtime-mux.
+state = "blocked"
+rule = "copilot/select"
+title = "GitHub Copilot"
+text = '''
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                         │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ /tmp/claude-1000/-home-magicletur--local-share-thurbox-worktrees-e854f81 │ │
+│ │ b312b7e11-f23a6c3f349013b1b613b0a70-thurbox-v3-monorepo-u146593-234c62a4 │ │
+│ │ 610263ab/66d2057b-5174-4c51-8a7c-440a49d2e527/scratchpad/lab/work/copilo │ │
+│ │ t                                                                        │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ Copilot can read files in this folder and, with your permission, edit them   │
+│ or run code and shell commands. It will remember your permissions for the    │
+│ rest of this session.                                                        │
+│                                                                              │
+│ Do you trust the files in this folder?                                       │
+│                                                                              │
+│ ❯ 1. Yes                                                                     │
+│   2. Yes, and remember this folder for future sessions                       │
+│   3. No (Esc)                                                                │
+│                                                                              │
+│ ↑/↓ to navigate · enter to select · esc to cancel                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+'''

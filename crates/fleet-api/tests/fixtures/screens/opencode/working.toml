@@ -1,0 +1,30 @@
+# opencode 2.2.5, captured through runtime-mux.
+state = "working"
+rule = "opencode/interrupt"
+title = "OpenCode"
+text = '''
+ ⠏ New session                   +                                              
+                                                                                
+  ┃                                                                             
+  ┃  Write a 300-word story about a lighthouse keeper. Do not use any tools.    
+  ┃                                                                             
+                                                                                
+     ⠸ Thinking: Planning the lighthouse story                                  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+  ┃                                                                             
+  ┃                                                                             
+  ┃                                                                             
+  ┃  Build · Iceman Free OpenCode                                               
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+   ⬝⬝⬝⬝⬝⬝⬝⬝ esc interrupt                    shift+tab agents  ctrl+p commands  
+                                                                                
+'''

@@ -407,12 +407,16 @@ pub struct TaskStatus {
     /// that proved nothing keeps the last state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_state: Option<SessionState>,
-    /// What the agent last reported through its hooks (see
-    /// [`crate::session::AgentState`]): `unknown` until it reports. Absent
-    /// with no session; a pass whose signal file could not be read keeps
-    /// the last state.
+    /// What the agent is doing (see [`crate::session::AgentState`]): its
+    /// hooks' report, else what a screen rule reads off its screen, else
+    /// `unknown`. Absent with no session; a pass whose signal file could
+    /// not be read keeps the last state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<AgentState>,
+    /// Where `agentState` came from: the hooks, a screen rule, or neither
+    /// (see [`crate::screen::merge`]). Absent with no session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<crate::screen::AgentActivity>,
     /// The harness's own id of the session's conversation, as its hooks
     /// last reported it: what a revive or a resume names.
     #[serde(default, skip_serializing_if = "Option::is_none")]

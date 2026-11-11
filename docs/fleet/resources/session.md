@@ -61,19 +61,21 @@ same state again writes nothing.
 
 ## Agent state
 
-`status.agentState` is the agent's own last report, finer than
-`sessionState`. Only the agent's hooks set it, through `fleet signal`; the
-runtime knows nothing of it.
+`status.agentState` is what the agent is doing, finer than
+`sessionState`. The agent's hooks set it, through `fleet signal`. Below
+them, a screen rule reads it off the session's screen
+([agent state](../contracts.md#agent-state)). `status.activity.source` says
+which: `hook`, `screen` or `none`.
 
-| `agentState` | The agent's last report |
-| --- | --- |
-| `working` | `working` or `prompt`: a turn runs. |
-| `attention` | `blocked`: it waits on a person, for a permission or for input. |
-| `idle` | `idle`: the turn finished. |
-| `unknown` | Nothing since it last started. Not idle: a silent agent may be at work. |
+| `agentState` | The agent's last report | A screen rule's state |
+| --- | --- | --- |
+| `working` | `working` or `prompt`: a turn runs. | `working` |
+| `attention` | `blocked`: it waits on a person, for a permission or for input. | `blocked` |
+| `idle` | `idle`: the turn finished. | `idle` |
+| `unknown` | Nothing since it last started, and no rule matched. Not idle: a silent agent may be at work. | — |
 
 A signal file that cannot be read keeps the last state. The state is
-absent while the Task has no session.
+absent while the Task has no session. Nothing decides on a screen state.
 
 ## State and phase
 

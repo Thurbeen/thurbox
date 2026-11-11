@@ -314,6 +314,7 @@ impl Pass<'_, '_> {
         let Some(session) = &self.st.session else {
             self.st.session_state = None;
             self.st.agent_state = None;
+            self.st.activity = None;
             return;
         };
         if let Some(state) = SessionState::observe(session, &self.input.observations) {
@@ -321,11 +322,39 @@ impl Pass<'_, '_> {
         }
         // Only a file that was read says what the agent reported; an
         // unreadable one keeps the last state rather than claiming silence.
-        if let Some(Observation::Known(r)) = &self.input.observations.signals {
-            self.st.agent_state = Some(fleet_api::task::AgentState::reported(r));
-            if r.conversation.is_some() {
-                self.st.conversation = r.conversation.clone();
+        let Some(Observation::Known(r)) = &self.input.observations.signals else {
+            return;
+        };
+        if r.conversation.is_some() {
+            self.st.conversation = r.conversation.clone();
+        }
+        let profile = fleet_api::harness::profile(&self.spec.harness);
+        let screen = &self.input.observations.screen;
+        let seen = match screen {
+            Some(Observation::Known(Some(s))) => {
+                profile.screen_rules().and_then(|rules| rules.evaluate(s))
             }
+            _ => None,
+        };
+        let merged = fleet_api::screen::merge(profile.authority, r, seen.as_ref());
+        // A capture that failed says nothing: a screen state stands until a
+        // capture reads another, or the hooks speak.
+        let last = self.st.activity.as_ref();
+        if merged.source != fleet_api::screen::Source::Hook
+            && matches!(screen, Some(Observation::Unknown { .. }))
+            && last.is_some_and(|a| a.source == fleet_api::screen::Source::Screen)
+        {
+            return;
+        }
+        let same = self.st.agent_state == Some(merged.state)
+            && last.is_some_and(|a| a.source == merged.source && a.rule == merged.rule);
+        if !same {
+            self.st.agent_state = Some(merged.state);
+            self.st.activity = Some(fleet_api::screen::AgentActivity {
+                source: merged.source,
+                rule: merged.rule,
+                at: self.now(),
+            });
         }
     }
 
@@ -1988,15 +2017,33 @@ pub fn watches_activity(obj: &Object) -> bool {
 /// signal`. Asked of every live session, not only one that may be paused:
 /// `sessionState` is how a person, and thurbox's status dot, tells an agent
 /// at work from one waiting for input. Reading it is a local file read.
+///
+/// With it, the screen probe, for a harness Fleet has screen rules for,
+/// unless the last pass took the state from hooks whose authority is full:
+/// those win while they report, so their screen is not read. A capture runs
+/// a process, so this is the costlier read, and its runtime may answer it
+/// from a recent capture.
 fn activity_probe(
     input: &TaskInput<'_>,
-    _spec: &TaskSpec,
+    spec: &TaskSpec,
     st: &TaskStatus,
     session: &SessionRef,
     probes: &mut Vec<Probe>,
 ) {
-    if !input.task.is_deleting() && !st.not_before.is_some_and(|t| t > input.now) {
-        probes.push(Probe::Activity {
+    if input.task.is_deleting() || st.not_before.is_some_and(|t| t > input.now) {
+        return;
+    }
+    probes.push(Probe::Activity {
+        session: session.clone(),
+    });
+    let profile = fleet_api::harness::profile(&spec.harness);
+    let hooks_say = profile.authority == fleet_api::harness::Authority::Full
+        && st
+            .activity
+            .as_ref()
+            .is_some_and(|a| a.source == fleet_api::screen::Source::Hook);
+    if profile.screen_rules().is_some() && !hooks_say {
+        probes.push(Probe::Screen {
             session: session.clone(),
         });
     }

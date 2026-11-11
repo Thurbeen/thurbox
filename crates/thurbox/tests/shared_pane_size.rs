@@ -333,6 +333,7 @@ fn snapshot(pane: &str) -> Snapshot {
             shell_backend_id: None,
             member_dirs: Vec::new(),
             meta: Default::default(),
+            status_source: None,
         }],
         ..Snapshot::default()
     }

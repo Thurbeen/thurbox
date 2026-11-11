@@ -11,7 +11,9 @@
 //! - **trust**: how the agent is trusted in its workspace, and how to read
 //!   a trust dialog on its screen, which Fleet never answers.
 //!
-//! - **payload**: the fields of a hook's JSON that `fleet signal` reads.
+//! - **payload**: the fields of a hook's JSON that `fleet signal` reads;
+//! - **screen**: the rule set that reads the agent's state off its screen
+//!   when its hooks do not say it ([`crate::screen`]).
 //!
 //! A profile is data: one TOML document per harness. Fleet ships the
 //! profiles of Claude Code (`claude`, alias `claude-code`) and Codex
@@ -141,6 +143,16 @@ impl Default for Payload {
     }
 }
 
+/// The `[screen]` table: the bundled rule set that reads the agent's state
+/// off its screen. Omitted: the set named as the profile, when Fleet ships
+/// one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenSpec {
+    #[serde(default)]
+    pub rules: Option<String>,
+}
+
 /// One harness's profile: one TOML document.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,6 +172,8 @@ pub struct Profile {
     pub trust: TrustSpec,
     #[serde(default)]
     pub payload: Payload,
+    #[serde(default)]
+    pub screen: ScreenSpec,
 }
 
 /// Parse one profile.
@@ -181,6 +195,13 @@ pub fn parse(text: &str) -> Result<Profile, String> {
     if p.trust.mode == Trust::LaunchOverride && p.trust.args.is_empty() {
         return Err("trust mode launch-override needs trust.args".into());
     }
+    if let Some(name) = &p.screen.rules
+        && crate::screen::rules(name).is_none()
+    {
+        return Err(format!(
+            "screen.rules {name:?} names no rule set Fleet ships"
+        ));
+    }
     Ok(p)
 }
 
@@ -196,6 +217,7 @@ pub fn bare(harness: &str) -> Profile {
         resume: Resume::default(),
         trust: TrustSpec::default(),
         payload: Payload::default(),
+        screen: ScreenSpec::default(),
     }
 }
 
@@ -305,6 +327,13 @@ impl Profile {
 
     pub fn trust(&self) -> Trust {
         self.trust.mode
+    }
+
+    /// The rule set that reads the agent's state off its screen: the one
+    /// `[screen]` names, else the one named as the profile; `None` when
+    /// Fleet ships neither, and the screen is never read.
+    pub fn screen_rules(&self) -> Option<&'static crate::screen::Rules> {
+        crate::screen::rules(self.screen.rules.as_deref().unwrap_or(&self.name))
     }
 
     /// The arguments that install the hooks reporting through
@@ -608,7 +637,9 @@ conversation = ["sessionID"]
     fn a_profile_with_an_unknown_table_or_a_misplaced_launch_args_is_refused() {
         let base = "name = \"x\"\nprogram = \"x\"\nauthority = \"full\"\n";
         assert!(parse(base).is_ok());
+        assert!(parse(&format!("{base}[install]\nversion = 1\n")).is_err());
         assert!(parse(&format!("{base}[screen]\nmanifest = \"x\"\n")).is_err());
+        assert!(parse(&format!("{base}[screen]\nrules = \"no-such-set\"\n")).is_err());
         assert!(parse(&format!("{base}[resume]\nargs = [\"a{{launch_args}}\"]\n")).is_err());
         assert!(parse(&format!("{base}[trust]\nmode = \"launch-override\"\n")).is_err());
         assert!(parse("name = \"\"\nprogram = \"x\"\nauthority = \"full\"\n").is_err());

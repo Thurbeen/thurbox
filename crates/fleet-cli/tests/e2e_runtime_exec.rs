@@ -666,6 +666,103 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
     );
 }
 
+/// An agent whose hooks are full but have not reported yet. Its first start
+/// draws Codex's approval and sets Codex's title, then reports idle once the
+/// test lets it. A second start draws nothing and reports nothing.
+const SCREEN_AGENT: &str = r#"#!/bin/sh
+echo start >> "$PWD/starts"
+if [ "$(wc -l < "$PWD/starts")" -gt 1 ]; then exec sleep 300; fi
+printf '\033]2;[ . ] Action Required | stub\007'
+printf '  Would you like to run the following command?\n\n  $ touch x\n\n'
+printf '\342\200\272 1. Yes, proceed (y)\n\n  Press enter to confirm or esc to cancel\n'
+while [ ! -e "$PWD/go" ]; do sleep 0.2; done
+fleet signal idle
+exec sleep 300
+"#;
+
+const SCREEN_PROFILE: &str = r#"name = "stub"
+program = "stub-agent"
+authority = "full"
+
+[screen]
+rules = "codex"
+"#;
+
+/// The agent state of a harness whose hooks have not reported is read off
+/// its screen, and shown as such; the hooks win once they report, and an
+/// agent with neither is unknown, never idle.
+#[test]
+fn an_agent_state_comes_from_the_screen_below_the_hooks_on_runtime_mux() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("screen");
+    let mut env = mux_env("runtime-mux-screen", &program, &sockets);
+    let harnesses = env.config.parent().unwrap().join("harnesses");
+    fs::create_dir_all(&harnesses).expect("harnesses dir");
+    fs::write(harnesses.join("stub.toml"), SCREEN_PROFILE).expect("profile");
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let agent = bin.join("stub-agent");
+    fs::write(&agent, SCREEN_AGENT).expect("agent");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("stub");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    let shows = |env: &Env, state: &str, source: &str| {
+        let status = env.get("t1")["status"].clone();
+        status["agentState"] == state && status["activity"]["source"] == source
+    };
+    reconcile_until(&env, "blocked, from the screen", |env| {
+        shows(env, "attention", "screen")
+    });
+    assert_eq!(
+        env.get("t1")["status"]["activity"]["rule"],
+        "codex/action-required"
+    );
+    let shown = env.fleet(&["get", "task", "t1"]).ok().json();
+    assert_eq!(
+        shown["status"]["activity"]["source"], "screen",
+        "fleet get task prints it"
+    );
+
+    fs::write(work.join("go"), "").expect("go");
+    reconcile_until(&env, "idle, from the hooks", |env| {
+        shows(env, "idle", "hook")
+    });
+    assert!(env.get("t1")["status"]["activity"]["rule"].is_null());
+
+    // Started again: the hooks have not reported since, and the screen
+    // shows no rule's text.
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    sockets.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    reconcile_until(&env, "unknown, from neither", |env| {
+        shows(env, "unknown", "none")
+            && fs::read_to_string(work.join("starts")).is_ok_and(|s| s.lines().count() >= 2)
+    });
+}
+
 /// A PATH holding only what the reference script and the conformance cases
 /// run, without `flock`: the script takes its lock through perl, as on
 /// macOS.

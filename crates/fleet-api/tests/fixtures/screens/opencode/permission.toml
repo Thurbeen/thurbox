@@ -1,0 +1,30 @@
+# opencode 2.2.5, captured through runtime-mux.
+state = "blocked"
+rule = "opencode/permission"
+title = "OC | Lighthouse keeper's watch"
+text = '''
+ ! Lighthouse keeper's watch     +                                              
+     Build · Iceman Free · 25.2s · 57.3 tok/s                                   
+                                                                                
+  ┃                                                                             
+  ┃  Use the bash tool to run exactly: touch created-by-opencode.txt            
+  ┃                                                                             
+                                                                                
+     + Thought · 410ms                                                          
+                                                                                
+  ┃                                                                             
+  ┃  ⠼ touch created-by-opencode.txt                                            
+  ┃                                                                             
+                                                                                
+     Press ctrl+b to move running work to the background                        
+                                                                                
+  ┃                                                                             
+  ┃  △ Permission required                                                      
+  ┃                                                                             
+  ┃  $ touch created-by-opencode.txt                                            
+  ┃                                                                             
+  ┃                                                                             
+  ┃   Allow once   Always allow   Reject  ctrl+f fullscreen  ⇆ select  enter con
+  ┃                                                                             
+                                                                                
+'''

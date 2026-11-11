@@ -2103,6 +2103,9 @@ impl Manager<'_> {
                 });
                 obs.signals = Some(o);
             }
+            // For a view only: a screen that cannot be read is not a
+            // reconcile problem worth reporting.
+            Probe::Screen { session } => obs.screen = Some(rt.screen(session)),
             // Not TaskController's probes: it never asks them.
             Probe::Change { .. }
             | Probe::Object { .. }

@@ -73,6 +73,41 @@ end
 --- arrived, which is honest but not diagnosable, so the text names what thurbox
 --- does know: the agent found in the pane, or why the silence means nothing.
 --- Naming the agent never displaces what it said.
+--- How long ago `since_ms` was, as of the rows' read: `3s ago`, `5m ago`.
+local function ago(since_ms)
+  local now = thurbox.taken_at_ms
+  if not since_ms or not now then
+    return nil
+  end
+  local s = math.floor(math.max(0, now - since_ms) / 1000)
+  if s < 60 then
+    return s .. "s ago"
+  elseif s < 3600 then
+    return math.floor(s / 60) .. "m ago"
+  end
+  return math.floor(s / 3600) .. "h ago"
+end
+
+--- Where a Fleet session's status came from, for its row:
+--- `blocked · screen (codex/action-required) · 1s ago`. Nil for a status
+--- Fleet's agent state did not decide.
+local function source_detail(session)
+  local source = session.status_source
+  if not source then
+    return nil
+  end
+  if source == "none" then
+    return "unknown · no hook, no screen rule"
+  end
+  local from = "hook (" .. (session.agent or "") .. ")"
+  if source == "screen" then
+    from = "screen (" .. (session.status_rule or "") .. ")"
+  end
+  local text = session.status .. " · " .. from
+  local age = ago(session.status_since_ms)
+  return age and (text .. " · " .. age) or text
+end
+
 local function agent_status(session)
   -- Nothing the agent said can be current on a host we cannot reach, so the
   -- row says why instead of showing a last message as if it were live.
@@ -81,6 +116,10 @@ local function agent_status(session)
       return "host " .. session.remote_host .. " unreachable", nil
     end
     return "unreachable", nil
+  end
+  local detail = source_detail(session)
+  if detail then
+    return detail, current_action(session)
   end
   if session.status == "blocked" then
     return session.notification or "Blocked", nil
@@ -252,8 +291,8 @@ end
 --- leaves blank, so a parent's dot and its siblings' line up.
 local function session_line(item, layout, elapsed, is_selected, work, search)
   local session = item.session
-  local spec = ui.status(session.status, elapsed, ui.printing(session.id))
-  local glyph, glyph_color = spec.glyph, spec.color
+  local spec = ui.status(session.status, elapsed, ui.printing(session.id), session.status_source)
+  local glyph, glyph_color, glyph_dim = spec.glyph, spec.color, spec.dim
   local width = layout.width
   -- A blocked row's text is an attention message, so it keeps the dot's colour;
   -- everything else is muted, leaving the title the row's visual anchor. v1
@@ -289,11 +328,11 @@ local function session_line(item, layout, elapsed, is_selected, work, search)
   -- geometry is v1's, the signal is v2's.
   if work then
     if work.phase == "failed" then
-      glyph, glyph_color = "✗", theme.role("status_error")
+      glyph, glyph_color, glyph_dim = "✗", theme.role("status_error"), nil
       trailing = work.error and ("failed: " .. work.error) or "failed"
       trailing_color = theme.role("status_error")
     else
-      glyph, glyph_color = "◌", theme.muted
+      glyph, glyph_color, glyph_dim = "◌", theme.muted, nil
       trailing, trailing_color = work.kind, theme.muted
     end
   end
@@ -337,7 +376,7 @@ local function session_line(item, layout, elapsed, is_selected, work, search)
   else
     row:gap(2)
   end
-  row:add(glyph .. " ", { fg = glyph_color })
+  row:add(glyph .. " ", { fg = glyph_color, dim = glyph_dim })
   -- A child whose parent renders in another group: indentation cannot show
   -- that link, so the mark does.
   if item.cross_group then
