@@ -624,7 +624,9 @@ database:
 - A session row's status is the Task's `agentState` (`working`, `attention`
   as `blocked`, `idle`) over its `sessionState`: `Paused` as `stopped`,
   `Lost` and `Gone` as `failed` whatever the agent said, then `Running`,
-  `Idle`, and absent as `unreported`.
+  `Idle`, and absent as `unreported`. The row names the Task's
+  `activity.source`: a hook's state is drawn solid, a screen rule's dimmed,
+  and neither as `?` ([Session status](#session-status)).
 - A Task is named after the session, made a Fleet name: lowercase, with each
   run of other characters one `-` (`Read the code` is `read-the-code`). The
   name as given is kept in the Task's `thurbox.dev/name` label, and the row
@@ -808,7 +810,10 @@ send` itself.
 A session's state is its Task's `status.agentState` and `status.sessionState`.
 Fleet derives both from the agent's own hooks: each Fleet harness profile
 passes its harness status hooks at launch, and they report through
-`fleet signal`. The interface reads them as follows, first match wins:
+`fleet signal`. Below the hooks, Fleet reads `agentState` off the session's
+screen with the harness's screen rules, and `status.activity.source` says
+which (`hook`, `screen` or `none`). The interface reads them as follows,
+first match wins:
 
 | Task status | Shown as |
 | --- | --- |
@@ -831,6 +836,9 @@ The status colours are tunable theme keys (`status_working` /
 `status_running` / `status_unknown` / `status_background` — see
 `themes.toml`). `status_unknown` is `unreported`, spelled apart from
 `status_idle`, which is the agent's own report that it is at rest.
+A screen rule's state keeps its state's colour and is drawn dimmed, with
+blocked's diamond hollow (`◇`); a state from neither source draws `?` in
+`status_unknown`, and the row says `unknown · no hook, no screen rule`.
 `status_error` is the role of a failed *command* in the list and of the one
 session state that is a failure: `failed`.
 

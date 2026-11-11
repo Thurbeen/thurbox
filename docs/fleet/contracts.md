@@ -858,7 +858,10 @@ answers keep the last state. Nothing decides on the state; a view reads it.
 `prepare_execution`, `env_source`, `spawn`, `find`, `ready`, `workspace_trust`,
 `brief`, `brief_delivered`, `at_rest`, `release`, `lost`, `revive`,
 `paused`, `pause` and `resume`, each answering Known or Unknown, and
-`can_pause`. A runtime reports no activity: the agent's hooks do. `revive`
+`can_pause`, and `screen`, which returns a session's `capture` text and
+title. A runtime reports no activity: the agent's hooks do, and below them
+Fleet's screen rules read the screen `screen` returns
+([agent state](#agent-state)). `revive`
 and `resume` take the conversation the hooks last reported, which the
 harness profile's resume argv names, and the spawn's launch (harness,
 workspace, environment), for a runtime that starts the argv itself; the
@@ -978,6 +981,33 @@ These rules hold for every harness:
 cannot be read, on the fake runtime. `e2e_runtime_exec` covers a Codex Task
 on `runtime-mux` that is briefed before its first turn ends.
 
+## Agent state
+
+`status.agentState` has two sources. The agent's hooks are the first; a
+screen rule is the second, lower one. `fleet_api::screen::merge` is the
+rule, pure:
+
+| Profile `authority` | Hooks reported since the last start | A screen rule matched | `agentState` from | `activity.source` |
+| --- | --- | --- | --- | --- |
+| `full` | yes | any | the hooks | `hook` |
+| `full` | no | yes | the screen | `screen` |
+| `partial`, `session`, `none` | any | yes | the screen | `screen` |
+| `partial`, `session`, `none` | yes | no | the hooks | `hook` |
+| any | no | no | neither: `unknown`, never `idle` | `none` |
+
+- The runtime's `screen` returns the screen; Fleet evaluates the rules
+  (`fleet_api::screen::Rules::evaluate`). The runtime knows no harness.
+- `status.activity` is `{source, rule, at}`: the rule is `<set>/<rule id>`
+  for a screen state, and `at` is when Fleet first saw this state from this
+  source.
+- TaskController asks the screen only of a harness with rules, and not while
+  the last pass took the state from hooks whose authority is `full`. The
+  `exec` adapter answers one capture per session for 2 s.
+- A capture that fails keeps a screen state. An unreadable signal file, as
+  on another host, keeps the state unless a screen rule matches.
+- A screen state is for a view only. Readiness, rest, a pause and the proof
+  of a delivery read the hooks alone.
+
 ## Signal contract
 
 `fleet_api::signal::Signals`: `file` names the file a session's hooks
@@ -1005,6 +1035,8 @@ unreadable file keeps the last `agentState`. TaskController is its only
 writer. A `blocked` report whose hook payload is Claude Code's `idle_prompt`
 notification (60 s of input idle) folds to `idle`: the agent waits for its
 next prompt, which needs no one, and stays pausable.
+`status.activity.source` says which source set `agentState`
+([agent state](#agent-state)).
 `e2e_signal` covers state, an interactive session and pause,
 `e2e_delivery_proof` the prompt proof, and `e2e_harness` the profiles' argv
 and resume.

@@ -1,0 +1,30 @@
+# GitHub Copilot CLI 1.0.105, captured through runtime-mux.
+state = "blocked"
+rule = "copilot/select"
+title = "GitHub Copilot"
+text = '''
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                         │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ /home/user/work/copilot                                                  │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ Copilot can read files in this folder and, with your permission, edit them   │
+│ or run code and shell commands. It will remember your permissions for the    │
+│ rest of this session.                                                        │
+│                                                                              │
+│ Do you trust the files in this folder?                                       │
+│                                                                              │
+│ ❯ 1. Yes                                                                     │
+│   2. Yes, and remember this folder for future sessions                       │
+│   3. No (Esc)                                                                │
+│                                                                              │
+│ ↑/↓ to navigate · enter to select · esc to cancel                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+'''

@@ -1,0 +1,30 @@
+# pi 0.84.3, captured through runtime-mux.
+state = "working"
+rule = "pi/escape-to-cancel"
+title = "π - pi"
+text = '''
+
+────────────────────────────────────────────────────────────────────────────────
+ Package Updates Available                                                      
+ Package updates are available. Run pi update --extensions                      
+ Packages:                                                                      
+ - pi-web-access                                                                
+ - @juicesharp/rpiv-ask-user-question                                           
+ - @tintinweb/pi-subagents                                                      
+────────────────────────────────────────────────────────────────────────────────
+
+                                                                                
+ Say hi.                                                                        
+                                                                                
+
+ Error: 429: {"code":"1113","message":"Insufficient balance or no resource      
+ package. Please recharge."}                                                    
+
+ ⠋ Retrying (1/3) in 2s... (escape to cancel)                                   
+
+────────────────────────────────────────────────────────────────────────────────
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+/home/user/work/pi                                                             .
+0.0%/1.0M (auto)                                            (zai) glm-5.2 • high
+'''

@@ -1,0 +1,30 @@
+# Claude Code 2.1.322, captured through runtime-mux.
+state = "idle"
+rule = "claude/composer"
+title = "✳ Lighthouse keeper story"
+text = '''
+  bay.                                                                         
+                                                                               
+  In March, a storm came in sideways. The power failed at midnight, and the new 
+  backup system, installed only a week earlier, sputtered and died. Elias heard
+  it go quiet the way you notice a heartbeat that has stopped.                  
+                                                                                
+  He climbed the steps in the dark, counting them by feel, and lit the old      
+  kerosene lamp he had never quite managed to throw away. He wound the clockwork
+  by hand, again and again, until his shoulders burned and the sky turned gray. 
+                                                                               
+  At dawn, the Corrigan limped into harbor, late as always, but whole.          
+                                                                                
+  The technician arrived that afternoon to fix the system. He found Elias asleep
+  in the lantern room with the logbook open on his chest. The last entry was    
+  written in a shaking hand:                                                    
+                                                                                
+  Light kept. All boats home.                                                   
+                                                                                
+✻ Cooked for 21s · done 5:33 PM                                                 
+                                                                              
+────────────────────────────────────────────────────────────────────────────────
+❯                                                                        
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 1 agent   
+'''

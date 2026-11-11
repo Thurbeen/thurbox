@@ -485,6 +485,7 @@ fn capture(backend: &dyn SessionBackend, request: Capture) -> Value {
         "cursorRow": state.cursor_row,
         "cursorCol": state.cursor_col,
         "foreground": state.foreground_process,
+        "title": state.title,
     }}))
 }
 

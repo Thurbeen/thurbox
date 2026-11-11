@@ -119,7 +119,8 @@ query of tmux's `window_name`.
 The colored **status dot** is Fleet's. Each agent's own hooks report through
 `fleet signal` (Fleet's harness profiles, `crates/fleet-api/src/harness.rs`),
 Fleet derives the Task's `status.agentState` and `status.sessionState` from
-them, and the snapshot maps those onto a `SessionState`
+them (and, below the hooks, `agentState` from a screen rule), and the
+snapshot maps those onto a `SessionState`
 (`kernel::snapshot::fleet::row_of`), first match wins:
 
 | Task status | State | Colour | Glyph |
@@ -135,7 +136,20 @@ them, and the snapshot maps those onto a `SessionState`
 
 `unreported` is drawn apart from `idle` on purpose: `idle` says *the agent
 reported that it is at rest*, and `unreported` says nothing has reported at
-all. `stopped` is a paused Task, at rest by definition, so it draws the idle
+all.
+
+Fleet's `status.activity.source` says where the agent state came from, and
+the dot says it too, in the state's own colour in every theme:
+
+| `activity.source` | Dot | Row text after the name |
+|-------------------|-----|-------------------------|
+| `hook` | the state's glyph | `blocked · hook (claude) · 3s ago` |
+| `screen` | the state's glyph dimmed; blocked's diamond hollow (`◇`) | `blocked · screen (codex/action-required) · 1s ago` |
+| `none` | `?` in `status_unknown` | `unknown · no hook, no screen rule` |
+
+A `screen` state is a screen rule's reading of an agent whose hooks do not
+say its state now ([screen rules](../fleet/controllers/task.md#screen-rules)).
+ `stopped` is a paused Task, at rest by definition, so it draws the idle
 dot.
 
 `SessionState` also names the agent's own hook words (`working`, `blocked`,

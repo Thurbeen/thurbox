@@ -1,0 +1,30 @@
+# Claude Code 2.1.322, captured through runtime-mux.
+state = "working"
+rule = "claude/interrupt"
+title = "✳ Lighthouse keeper story"
+text = '''
+
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  Opus 5.5 · Claude Team
+ ▝▝   ▝▝   /home/user/work/claude       
+
+
+❯ Write a 300-word story about a lighthouse keeper. Do not use any tools.       
+
+
+
+
+
+
+
+
+
+
+
+✻ Finagling… (3s · thinking)
+  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…
+────────────────────────────────────────────────────────────────────────────────
+❯                                                                        
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← 1 agent  
+'''

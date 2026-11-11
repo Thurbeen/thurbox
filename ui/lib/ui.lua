@@ -39,6 +39,11 @@ local ui = {}
 
 -- ── Status ──────────────────────────────────────────────────────────────────
 
+-- The glyphs a screen rule's reading draws instead of the state's own. Only
+-- blocked has a hollow twin: idle's circle is hollow already, and working
+-- animates.
+local SCREEN_GLYPHS = { blocked = "◇" }
+
 --- Glyph and colour for a session status, with the moving ones animated.
 ---
 --- `theme.status` answers the static half; the spinner is for the statuses
@@ -57,16 +62,28 @@ local ui = {}
 --- `printing` comes from `thurbox.printing`, which only a surface holding the
 --- terminals can fill. A caller that passes nothing gets the static answer,
 --- which is the honest one when nobody looked.
+---
+--- `source` is where a Fleet session's status came from. A screen rule's
+--- reading is drawn dimmed, and blocked's diamond hollow, so it reads apart
+--- from the agent's own report in the same colour; with neither, the state is
+--- unknown and the glyph is `?`.
 ---@param name thurbox.Status
 ---@param elapsed number?
 ---@param printing boolean?
----@return { glyph: string, color: thurbox.Color? }
-function ui.status(name, elapsed, printing)
+---@param source thurbox.StatusSource?
+---@return { glyph: string, color: thurbox.Color?, dim: boolean? }
+function ui.status(name, elapsed, printing, source)
+  if source == "none" then
+    return { glyph = "?", color = theme.status("unreported").color }
+  end
   local spec = theme.status(name)
   if name == "working" or (name == "running" and printing) then
-    return { glyph = theme.spinner_frame(elapsed), color = spec.color }
+    spec = { glyph = theme.spinner_frame(elapsed), color = spec.color }
   end
-  return spec
+  if source == "screen" then
+    return { glyph = SCREEN_GLYPHS[name] or spec.glyph, color = spec.color, dim = true }
+  end
+  return { glyph = spec.glyph, color = spec.color }
 end
 
 --- Whether `session_id`'s pane is producing output right now.

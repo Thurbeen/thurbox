@@ -187,6 +187,12 @@ pub trait Runtime {
         conversation: Option<&str>,
         launch: &SpawnSpec,
     ) -> Observation<EffectOutcome>;
+    /// The session's screen, as `capture` answers it: what Fleet's screen
+    /// rules read when the agent's hooks do not say its state. Known(None):
+    /// the runtime holds no process under the key.
+    fn screen(&self, _session: &SessionRef) -> Observation<Option<crate::screen::Screen>> {
+        Observation::unknown("this runtime reads no screen")
+    }
     /// How to open `session`'s terminal stream. Known(None): the runtime
     /// offers no live view, or holds no process under the key.
     fn attach(&self, _session: &SessionRef) -> Observation<Option<Attach>> {

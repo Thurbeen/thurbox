@@ -1,0 +1,30 @@
+# GitHub Copilot CLI 1.0.105, captured through runtime-mux.
+state = "idle"
+rule = "copilot/commands"
+title = "GitHub Copilot"
+text = '''
+ [Current]  Sessions   Issues   Pull requests   Gists
+
+╭────────────────────────────────────────────────────────────────────────────╮  
+│                                                                            │  
+│  ╭─╮╭─╮                             │  Getting started                     │  
+│  ╰─╯╰─╯  Copilot v1.0.105 uses AI.  │  Use the tabs above to explore your… │  
+│  █ ▘▝ █  Check for mistakes.        │  /init — Initialize Copilot instruc… │  
+│   ▔▔▔▔                              │  /model — Switch models across prov… │  
+│                                                                            │  
+╰────────────────────────────────────────────────────────────────────────────╯  
+
+ ● Tip: /usage                                                                  
+   └ Display session usage metrics and statistics                               
+
+ ● Copilot CLI v1.0.109 was downloaded, but the executable was not replaced:    
+   Error: EACCES: permission denied, mkdir '/usr/lib/node_modules/@github/copi  
+   lot/node_modules/@github/copilot-linux-x64/.copilot-update-1794415199366'.   
+   Run /update to retry.                                                        
+
+ /home/user/work/copilot                                    Session: 0 AIC used 
+────────────────────────────────────────────────────────────────────────────────
+❯                                                                               
+────────────────────────────────────────────────────────────────────────────────
+ ← open sidebar · Interactive · Manual Approval · / commands     Copilot Fusion 
+'''

@@ -1,0 +1,30 @@
+# Claude Code 2.1.322, captured through runtime-mux.
+state = "idle"
+rule = "claude/composer"
+title = "✳ Claude Code"
+text = '''
+
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  Opus 5.5 · Claude Team
+ ▝▝   ▝▝   /home/user/work/claude       
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                            ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────
+❯ Try "create a util logging.py that..."
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 1 agent   
+'''

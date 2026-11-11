@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{repo_name, SessionRow, SnapshotSource, SourceRead};
+use super::{repo_name, SessionRow, SnapshotSource, SourceRead, StatusSource};
 use crate::session::SessionState;
 
 /// How long a watch that ended waits before it is started again, resuming
@@ -534,7 +534,8 @@ fn local_dir(url: &str) -> Option<String> {
 /// The row's name is the one the session was given ([`NAME_LABEL`]), or the
 /// Task's for a Task made elsewhere. What a row says of git, panes and hook
 /// columns is thurbox's own engine's and stays empty here; the status is
-/// Fleet's `agentState`, the agent's own report, over its `sessionState`.
+/// Fleet's `agentState` (the agent's hooks, else its screen) over its
+/// `sessionState`, and `status.activity` says which source decided it.
 pub fn row_of(task: &Value) -> SessionRow {
     let text = |value: &Value| value.as_str().map(str::to_string);
     let (spec, status) = (&task["spec"], &task["status"]);
@@ -558,7 +559,18 @@ pub fn row_of(task: &Value) -> SessionRow {
         .filter(|dirs: &Vec<PathBuf>| !dirs.is_empty())
         .unwrap_or_else(|| cwd.iter().cloned().collect());
     let session_state = status["sessionState"].as_str();
+    let agent_state = status["agentState"].as_str();
     let repo = repo_name(&cwd, None);
+    // The source of a status the agent state decided: not of a stopped,
+    // lost or gone session's.
+    let status_source = match (session_state, &status["activity"]["source"]) {
+        (Some("Paused" | "Lost" | "Gone"), _) | (_, Value::Null) => None,
+        (_, source) => Some(StatusSource {
+            source: text(source).unwrap_or_default(),
+            rule: text(&status["activity"]["rule"]),
+            since_ms: status["activity"]["at"].as_i64(),
+        }),
+    };
     SessionRow {
         id,
         name,
@@ -566,7 +578,7 @@ pub fn row_of(task: &Value) -> SessionRow {
         // A stopped, lost or gone session is that, whatever its agent last
         // said; otherwise the agent's own report, as v2 showed it, and only
         // with no report what the runtime proved.
-        status: match (session_state, status["agentState"].as_str()) {
+        status: match (session_state, agent_state) {
             (Some("Paused"), _) => SessionState::Stopped,
             (Some("Lost" | "Gone"), _) => SessionState::Failed,
             (_, Some("working")) => SessionState::Working,
@@ -599,6 +611,7 @@ pub fn row_of(task: &Value) -> SessionRow {
         reports_as: None,
         detected_agent: None,
         meta: BTreeMap::new(),
+        status_source,
     }
 }
 
@@ -623,6 +636,34 @@ mod tests {
             row.member_dirs,
             vec![PathBuf::from("/w/k/a"), PathBuf::from("/w/k/b")]
         );
+    }
+
+    /// A row names where its agent state came from, but a paused, lost or
+    /// gone session's status is not the agent state's.
+    #[test]
+    fn a_row_carries_the_source_of_its_agent_state() {
+        let task = |session_state: &str| {
+            serde_json::json!({
+                "metadata": {"name": "t"},
+                "spec": {"harness": "codex", "host": "local", "workspace": []},
+                "status": {"sessionState": session_state, "agentState": "attention",
+                           "activity": {"source": "screen", "rule": "codex/action-required", "at": 7}},
+            })
+        };
+        let row = row_of(&task("Running"));
+        assert_eq!(row.status, SessionState::Blocked);
+        assert_eq!(
+            row.status_source,
+            Some(StatusSource {
+                source: "screen".into(),
+                rule: Some("codex/action-required".into()),
+                since_ms: Some(7),
+            })
+        );
+        assert_eq!(row_of(&task("Paused")).status_source, None);
+        let mut bare = task("Running");
+        bare["status"].as_object_mut().unwrap().remove("activity");
+        assert_eq!(row_of(&bare).status_source, None);
     }
 
     /// The agents a session can run are the harnesses Fleet has profiles

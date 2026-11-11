@@ -1,0 +1,30 @@
+# opencode 2.2.5, captured through runtime-mux.
+state = "idle"
+rule = "opencode/commands"
+title = "OC | Lighthouse keeper's watch"
+text = '''
+ • Lighthouse keeper's watch     +                                              
+     He worked quickly, adjusting the beam, making sure it cut clearly across   
+     the violent water. Minutes stretched into an hour as he watched the        
+     vessel fight the current, inching away from the jagged shoreline. When at  
+     last it slipped safely into the harbor’s mouth, Elias let out a breath he  
+     hadn’t realized he was holding.                                            
+                                                                                
+     Later, as the storm softened to a murmur, he stood alone in the lantern    
+     room, listening to the waves below. The lighthouse could not return what   
+     the sea had stolen, but it could offer passage, warning, and hope. For     
+     Elias, that was more than enough.                                          
+                                                                                
+     He descended the long stairs slowly, leaving the bright light burning      
+     behind him—a steady, silent promise in the endless night.                  
+                                                                                
+     Build · Iceman Free · 25.2s · 57.3 tok/s                                   
+                                                                                
+  ┃                                                                             
+  ┃                                                                             
+  ┃                                                                             
+  ┃  Build · Iceman Free OpenCode                                               
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+  /home/user/work/opencode                          9.5K (4%)  ctrl+p commands  
+                                                                                
+'''

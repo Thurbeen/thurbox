@@ -454,6 +454,11 @@ pub enum Probe {
     Activity {
         session: SessionRef,
     },
+    /// The session's screen, through the runtime's `capture`, for the
+    /// screen rules of a harness whose hooks do not say its state now.
+    Screen {
+        session: SessionRef,
+    },
     /// One complete observation of a change, through the Forge port.
     Change {
         change: ChangeRef,
@@ -513,6 +518,9 @@ pub struct Observations {
     pub activity: Option<Observation<crate::runtime::Activity>>,
     /// Everything the agent's hooks reported, folded.
     pub signals: Option<Observation<crate::signal::Reported>>,
+    /// The session's screen; `Known(None)` when the runtime holds no
+    /// process under the key.
+    pub screen: Option<Observation<Option<crate::screen::Screen>>>,
     /// `Known(None)` means the runtime proved it made no workspace under the
     /// key.
     pub workspace: Option<Observation<Option<crate::workspace::WorkspaceRef>>>,

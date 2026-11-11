@@ -160,6 +160,22 @@ pub struct SessionRow {
     /// [`crate::kernel::lua_api::META_KEYS`]; empty when it has none. Every
     /// other key is a driver's or thurbox's own and never reaches a plugin.
     pub meta: std::collections::BTreeMap<String, String>,
+    /// Where a Fleet row's status came from (the Task's `status.activity`);
+    /// `None` for a row whose status Fleet's agent state did not decide.
+    pub status_source: Option<StatusSource>,
+}
+
+/// Where a session's agent state came from: the agent's hooks, a screen
+/// rule Fleet read it with, or neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusSource {
+    /// `hook`, `screen` or `none`.
+    pub source: String,
+    /// The screen rule, `<set>/<rule id>`, for a screen state.
+    pub rule: Option<String>,
+    /// When Fleet first saw this state from this source, in ms since the
+    /// epoch.
+    pub since_ms: Option<i64>,
 }
 
 impl SessionRow {

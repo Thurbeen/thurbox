@@ -29,7 +29,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | `stop` | yes | a process already gone counts as stopped; `release: true` also removes the key's workspace |
 | `list` | no | every key the runtime holds a process or a workspace for, for the collector |
 | `input` | no | types text, optionally submits |
-| `capture` | no | screen text, cursor, foreground process |
+| `capture` | no | screen text, cursor, foreground process, title |
 | `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
 | `workspace` | no | `{key, urls}` → one directory per URL, as the process sees it ([workspaces](#workspaces)) |
 | `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream ([the terminal stream](#the-terminal-stream)) |
@@ -37,7 +37,8 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 Every verb is idempotent by key. The runtime knows no harness, Task or
 journal: pause is `stop`, resume and revive are `start` with the harness's
 resume argv, idle comes from agent hooks, delivery is proven by the agent's
-prompt hook.
+prompt hook. Fleet reads an agent's state off the `capture` screen with its
+own rules, below the hooks; the runtime only returns the screen.
 
 Fleet's config names each runtime in `[runtimes.<name>]`, a `program`, and
 each host in `[hosts.<name>]`, the runtime serving it, so a Task's
@@ -72,7 +73,7 @@ Unknown.
 | `stop` | `key`, `release` (optional) | `"stopped"`, whether or not a process was there |
 | `list` | — | `{"keys": [...]}` |
 | `input` | `key`, `text`, `submit` | `"sent"`, or `"none"` when no process holds the key |
-| `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground"}}`, or `"none"` |
+| `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground", "title"}}`, or `"none"`; `title` is the one the program set (OSC 0 or 2), and a runtime that cannot read it omits it |
 | `exec` | `argv`, `in` (`host`), `dir`, `timeoutMs`, `outputCap` | `{"exited": {"code", "stdout", "stderr"}}`, `{"timedOut": {"stdout", "stderr"}}` or `{"failed": {"why"}}` |
 | `attach` | `key` | `{"stream": {"argv"}}`, `{"tty": {"argv"}}`, or `"none"` when no process holds the key |
 | `workspace` | `key`, `urls` | `{"made": {"dirs", "adopted"}}`, `{"unsupported": {"url"}}` or `{"failed": {"why"}}` ([Workspaces](#workspaces)) |
@@ -132,6 +133,11 @@ What Fleet's `exec` kind does with the answers:
   its first report, a trust dialog on its `capture` is Untrusted, and anything
   else Unknown, so a brief waits;
 - delivery is proven by the agent's prompt hook, not by `input`;
+- the agent state of a session whose hooks do not say it now is read off its
+  `capture` text and title with the harness's screen rules
+  ([screen rules](../fleet/controllers/task.md#screen-rules)), at most one
+  capture per session every 2 s. A screen state is for a view: readiness,
+  rest and delivery still wait for the hooks;
 - an `exited` process is lost, since a `stop` leaves `none`: revive is `start`
   with the profile's resume argv on the conversation the hooks reported. Fleet
   first marks the restart in the signal file, so readiness and trust wait for

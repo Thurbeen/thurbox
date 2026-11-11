@@ -244,6 +244,30 @@ fn input_reaches_the_process_and_capture_reads_it_back() {
     );
 }
 
+/// The title an agent sets with OSC 0 or 2 is part of its screen: Fleet's
+/// screen rules read it.
+#[test]
+fn capture_reads_the_title_the_process_sets() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start(
+        "titled",
+        &[
+            "sh",
+            "-c",
+            r"printf '\033]2;⠋ Action Required\007ready\n'; exec sleep 300",
+        ],
+    ));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let screen = rt.call("capture", json!({"protocol": 1, "key": "titled"}));
+        if screen["known"]["screen"]["title"] == "⠋ Action Required" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{screen}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn exec_runs_a_bounded_command_on_the_host() {
     let Some(rt) = Runtime::new() else { return };
