@@ -491,7 +491,17 @@ impl SnapshotStore {
     /// until the source reports it removed or no longer lists it. A source
     /// reads on a schedule of its own, so its next answers can still hold the
     /// session as it was.
+    ///
+    /// A row already marked as a stuck deletion stays: deleting it again
+    /// changes nothing in Fleet, so no removal would ever lift the hiding.
     pub fn hide_until_gone(&mut self, id: String) {
+        if self
+            .current
+            .session(&id)
+            .is_some_and(|row| row.deleting.is_some())
+        {
+            return;
+        }
         let before = self.current.sessions.len();
         self.current.sessions.retain(|row| row.id != id);
         if self.current.sessions.len() != before {

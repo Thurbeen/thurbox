@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use thurbox::kernel::command::{Command, CommandBus, Phase};
 use thurbox::kernel::snapshot::fleet::FleetWatch;
-use thurbox::kernel::snapshot::{SessionRow, SnapshotSource, SnapshotStore, SourceRead};
+use thurbox::kernel::snapshot::{Deleting, SessionRow, SnapshotSource, SnapshotStore, SourceRead};
 
 const BOUND: Duration = Duration::from_secs(60);
 
@@ -678,6 +678,30 @@ fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
     })
     .unwrap();
     assert_eq!(names(&mut store), ["gone", "kept"], "the new one shows");
+}
+
+/// Deleting a stuck deletion again changes nothing in Fleet, which reports
+/// no removal for a Task already marked: its row stays listed as stuck rather
+/// than hidden for the rest of the run.
+#[test]
+fn a_stuck_deletion_deleted_again_stays_listed() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
+    let mut stuck = row("stuck", "fleet", Path::new("/w"));
+    stuck.deleting = Some(Deleting {
+        since_ms: 1,
+        why: Some("waiting for the session to be at rest".into()),
+    });
+    let read = || SourceRead {
+        sessions: vec![stuck.clone()],
+        ..Default::default()
+    };
+    tx.send(read()).unwrap();
+    assert_eq!(names(&mut store), ["stuck"]);
+
+    store.hide_until_gone("stuck".into());
+    tx.send(read()).unwrap();
+    assert_eq!(names(&mut store), ["stuck"]);
 }
 
 /// Input a stream refused is said in the interface's own notices, not in
