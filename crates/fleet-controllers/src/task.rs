@@ -320,14 +320,6 @@ impl Pass<'_, '_> {
         if let Some(state) = SessionState::observe(session, &self.input.observations) {
             self.st.session_state = Some(state);
         }
-        // Only a file that was read says what the agent reported; an
-        // unreadable one keeps the last state rather than claiming silence.
-        let Some(Observation::Known(r)) = &self.input.observations.signals else {
-            return;
-        };
-        if r.conversation.is_some() {
-            self.st.conversation = r.conversation.clone();
-        }
         let profile = fleet_api::harness::profile(&self.spec.harness);
         let screen = &self.input.observations.screen;
         let seen = match screen {
@@ -336,6 +328,18 @@ impl Pass<'_, '_> {
             }
             _ => None,
         };
+        // Only a file that was read says what the agent reported. An
+        // unreadable one, as on another host, claims no silence: a matched
+        // screen rule still says the state, and otherwise the last stands.
+        let unread = fleet_api::signal::Reported::default();
+        let r = match &self.input.observations.signals {
+            Some(Observation::Known(r)) => r,
+            Some(Observation::Unknown { .. }) if seen.is_some() => &unread,
+            _ => return,
+        };
+        if r.conversation.is_some() {
+            self.st.conversation = r.conversation.clone();
+        }
         let merged = fleet_api::screen::merge(profile.authority, r, seen.as_ref());
         // A capture that failed says nothing: a screen state stands until a
         // capture reads another, or the hooks speak.

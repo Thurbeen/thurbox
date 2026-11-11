@@ -1899,6 +1899,33 @@ fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
         observe(&codex, None, Observation::Known(None)),
         (Some(AgentState::Unknown), Some((Source::None, None)))
     );
+    // A signal file Fleet cannot read, as on another host, still lets the
+    // screen say the state; with no rule matched, the state is kept.
+    let (_, st) = run(
+        &codex,
+        Observations {
+            find: live(),
+            signals: Some(Observation::unknown("no signal file on host remote")),
+            screen: Some(Observation::Known(Some(approval.clone()))),
+            ..Observations::default()
+        },
+    );
+    assert_eq!(st.agent_state, Some(AgentState::Attention));
+    assert_eq!(st.activity.map(|a| a.source), Some(Source::Screen));
+    let (_, st) = run(
+        &codex,
+        Observations {
+            find: live(),
+            signals: Some(Observation::unknown("no signal file on host remote")),
+            screen: Some(Observation::Known(None)),
+            ..Observations::default()
+        },
+    );
+    assert_eq!(
+        (st.agent_state, st.activity),
+        (None, None),
+        "kept as it was"
+    );
     // A failed capture keeps a screen state.
     let seen = with("codex", Some(Source::Screen));
     let (state, activity) = observe(&seen, None, Observation::unknown("capture timed out"));

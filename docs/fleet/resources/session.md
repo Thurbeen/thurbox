@@ -74,8 +74,9 @@ which: `hook`, `screen` or `none`.
 | `idle` | `idle`: the turn finished. | `idle` |
 | `unknown` | Nothing since it last started, and no rule matched. Not idle: a silent agent may be at work. | — |
 
-A signal file that cannot be read keeps the last state. The state is
-absent while the Task has no session. Nothing decides on a screen state.
+A signal file that cannot be read keeps the last state, unless a screen
+rule matches. The state is absent while the Task has no session. Nothing
+decides on a screen state.
 
 ## State and phase
 

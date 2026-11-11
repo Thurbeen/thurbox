@@ -1002,8 +1002,8 @@ rule, pure:
 - TaskController asks the screen only of a harness with rules, and not while
   the last pass took the state from hooks whose authority is `full`. The
   `exec` adapter answers one capture per session for 2 s.
-- A capture that fails keeps a screen state. An unreadable signal file keeps
-  the whole state.
+- A capture that fails keeps a screen state. An unreadable signal file, as
+  on another host, keeps the state unless a screen rule matches.
 - A screen state is for a view only. Readiness, rest, a pause and the proof
   of a delivery read the hooks alone.
 

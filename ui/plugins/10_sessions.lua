@@ -355,12 +355,14 @@ local function session_line(item, layout, elapsed, is_selected, work, search)
     --- The colour a span wears, unless the ROW speaks for all of them.
     ---
     --- Selected: nothing names a foreground, so every cell takes the bar's —
-    --- a span that named one would poke a hole in it. Unmatched: v1 keeps a
+    --- a span that named one would poke a hole in it. A dimmed span stays
+    --- dim: that is how a screen rule's status reads apart from a hook's.
+    --- Unmatched: v1 keeps a
     --- non-matching row on screen and lets the contrast do the filtering, so
     --- the list never jumps around under a cursor you are still moving.
     tone = function(style)
       if is_selected then
-        return nil
+        return style and style.dim and { dim = true } or nil
       end
       if search and hits == nil then
         return { fg = theme.muted }

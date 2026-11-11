@@ -410,7 +410,7 @@ pub struct TaskStatus {
     /// What the agent is doing (see [`crate::session::AgentState`]): its
     /// hooks' report, else what a screen rule reads off its screen, else
     /// `unknown`. Absent with no session; a pass whose signal file could
-    /// not be read keeps the last state.
+    /// not be read keeps the last state, unless a screen rule matched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<AgentState>,
     /// Where `agentState` came from: the hooks, a screen rule, or neither

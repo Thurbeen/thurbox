@@ -2407,4 +2407,24 @@ fn a_fleet_status_draws_its_source_in_every_theme() {
         );
         glyph(sl, "?");
     }
+
+    // Selected, a screen state's glyph takes the bar's colours and stays dim.
+    let mut first = snapshot.clone();
+    first.sessions.rotate_left(1);
+    themes.preview("default").expect("a preset");
+    // A fresh interface: the selection follows a session, not a row.
+    let host = self::host();
+    publish_full(&host, &first, &registry, &[], &themes, &Default::default());
+    let buffer = paint(&host, PLUGIN, 90, 8);
+    let hollow = (0..buffer.area.height)
+        .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+        .map(|(x, y)| &buffer[(x, y)])
+        .find(|cell| cell.symbol() == "◇")
+        .expect("the screen row");
+    assert_ne!(
+        hollow.bg,
+        ratatui::style::Color::Reset,
+        "the row is selected"
+    );
+    assert!(hollow.modifier.contains(ratatui::style::Modifier::DIM));
 }
