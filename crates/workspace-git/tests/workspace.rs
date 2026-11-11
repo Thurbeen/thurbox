@@ -161,14 +161,10 @@ fn lists_worktree(listed: &str, tree: &Path) -> bool {
         .any(|p| canonical(Path::new(p)) == tree)
 }
 
-/// The directory that holds `checkout`'s common git directory, as git names
-/// it: the identity workspace-git keys a checkout's lock on.
+/// The identity workspace-git keys a checkout's lock on: the canonical
+/// directory that holds its `.git`.
 fn main_checkout(checkout: &Path) -> PathBuf {
-    let common = git(
-        checkout,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    );
-    Path::new(&common).parent().expect("parent").to_path_buf()
+    plain(checkout.canonicalize().expect("canonical checkout"))
 }
 
 fn branch_of(dir: &str) -> String {

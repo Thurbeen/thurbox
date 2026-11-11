@@ -367,34 +367,62 @@ fn list_path(file: &Path, path: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot write {}: {e}", file.display()))
 }
 
+/// The main checkout a repository at `repo` belongs to, from the common git
+/// directory `git rev-parse --git-common-dir` printed there. git before 2.31
+/// prints it relative to where it ran (`.git`, `../.git`), so it is read
+/// against `repo`, then canonicalized: one checkout has one identity
+/// whichever directory of it a URL names. A common directory named `.git`
+/// belongs to the directory holding it; any other is a git directory kept
+/// apart from its working tree, and git runs in it.
+fn main_checkout(repo: &Path, common: &str) -> Result<PathBuf, String> {
+    let joined = repo.join(common);
+    let common = joined
+        .canonicalize()
+        .map(plain)
+        .map_err(|e| format!("cannot read {}: {e}", joined.display()))?;
+    if common.file_name().is_some_and(|n| n == ".git") {
+        common
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| format!("{} has no parent directory", common.display()))
+    } else {
+        Ok(common)
+    }
+}
+
+/// `path` without Windows' `\\?\` prefix, which `canonicalize` adds and git
+/// cannot read back.
+fn plain(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(rest) => PathBuf::from(rest),
+        None => path,
+    }
+}
+
 /// The local checkout a `git+file` URL names, when it is one: a repository
-/// with a working tree. A bare repository, or a path git cannot read, is
-/// none. A linked worktree or a subdirectory names its main checkout, the
-/// directory that holds the common git directory, as git names it: one
-/// repository has one identity, so one lock, and a linked worktree removed
-/// later never leaves a release running git in a missing directory.
-fn checkout(remote: &str) -> Option<PathBuf> {
+/// with a working tree. `None` for a bare repository, which gets a source
+/// of its own, and for a path that is no directory, whose source then fails
+/// by name. A linked worktree or a subdirectory names its main checkout
+/// ([`main_checkout`]): one repository has one identity, so one lock, and a
+/// linked worktree removed later never leaves a release running git in a
+/// missing directory. A directory git cannot read as a repository, or a
+/// checkout whose main checkout cannot be found, fails the make: a local
+/// checkout never falls back to a copy of itself.
+fn checkout(remote: &str) -> Result<Option<PathBuf>, String> {
     let path = PathBuf::from(remote);
     if !path.is_dir() {
-        return None;
+        return Ok(None);
     }
-    let bare = git(&path, &["rev-parse", "--is-bare-repository"], &[]).ok()?;
+    let bare = git(&path, &["rev-parse", "--is-bare-repository"], &[])
+        .map_err(|why| format!("{remote} is no git repository: {why}"))?;
     if bare != "false" {
-        return None;
+        return Ok(None);
     }
-    let common = git(
-        &path,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        &[],
-    )
-    .ok()?;
-    let common = PathBuf::from(common);
-    if common.file_name().is_some_and(|n| n == ".git") {
-        common.parent().map(Path::to_path_buf)
-    } else {
-        // A git directory kept apart from its working tree: git runs in it.
-        Some(common)
-    }
+    let common = git(&path, &["rev-parse", "--git-common-dir"], &[])
+        .map_err(|why| format!("cannot find the checkout {remote} belongs to: {why}"))?;
+    main_checkout(&path, &common)
+        .map(Some)
+        .map_err(|why| format!("cannot find the checkout {remote} belongs to: {why}"))
 }
 
 /// Commit the worktree's uncommitted work, untracked files included, onto
@@ -461,7 +489,7 @@ fn worktree(
     branch: Option<&str>,
     base: Option<&str>,
 ) -> Result<Tree, String> {
-    let checkout = if local { checkout(remote) } else { None };
+    let checkout = if local { checkout(remote)? } else { None };
     let source = match &checkout {
         Some(dir) => dir.clone(),
         None => source_dir(cfg, remote),
@@ -1013,5 +1041,23 @@ mod tests {
         ];
         dedupe_names(&mut requests);
         assert!(matches!(&requests[1], Request::Git { name, .. } if name == "app-2"));
+    }
+    /// git before 2.31 has no `--path-format`, and prints the common
+    /// directory relative to where it ran: `.git` at the top, `../.git` in a
+    /// subdirectory. Both name the same checkout.
+    #[test]
+    fn a_relative_common_dir_resolves_to_the_main_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("app");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(repo.join("sub")).unwrap();
+        let top = main_checkout(&repo, ".git").unwrap();
+        let below = main_checkout(&repo.join("sub"), "../.git").unwrap();
+        let canonical = repo.canonicalize().unwrap();
+        assert_eq!(top.canonicalize().unwrap(), canonical);
+        assert_eq!(top, below, "one checkout, one identity");
+        let absolute =
+            main_checkout(&repo.join("sub"), &repo.join(".git").display().to_string()).unwrap();
+        assert_eq!(absolute, top, "an absolute answer names it the same way");
     }
 }
