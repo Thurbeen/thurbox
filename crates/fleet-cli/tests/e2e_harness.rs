@@ -729,7 +729,7 @@ await Promise.all(running);
 /// Fleet's omp extension, run on omp's events: a start, a prompt, a run
 /// with two tool calls waiting on a person at once, a subagent, and the
 /// run's end, each reported with the session id. A run that will continue
-/// is not an end, and a subagent reports nothing.
+/// is not an end, and neither a subagent nor a revive reports anything.
 #[cfg(unix)]
 #[test]
 fn the_omp_extension_reports_each_event_with_its_session() {
@@ -757,6 +757,8 @@ fn the_omp_extension_reports_each_event_with_its_session() {
         ["agent_end", {"messages": []}, "sub"],
         ["agent_end", {"messages": [], "willContinue": true}],
         ["agent_end", {"messages": []}],
+        // `--restore` goes on with an unfinished turn: no prompt was given.
+        ["before_agent_start", {"reason": "revive", "prompt": ""}],
     ]);
     let sent = run_asset(
         &env,
@@ -819,12 +821,12 @@ fn run_qwen_hook(env: &Env, command: &str, with_fleet: bool) -> Vec<(String, ser
         .spawn()
         .expect("sh");
     use std::io::Write;
-    child
+    // Without `fleet` the shell exits unread, and the write may break its pipe.
+    let _ = child
         .stdin
         .take()
         .unwrap()
-        .write_all(br#"{"session_id":"qwen-1","prompt":"the brief"}"#)
-        .unwrap();
+        .write_all(br#"{"session_id":"qwen-1","prompt":"the brief"}"#);
     let status = child.wait().unwrap();
     assert!(status.success(), "{command}: {status}");
     std::fs::read_to_string(&log)
