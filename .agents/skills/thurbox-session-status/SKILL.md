@@ -33,6 +33,9 @@ says which (`hook`, `screen`, `none`). `row_of` carries it as the row's
 `status_source`, published as `status_source`, `status_rule` and
 `status_since_ms`; `ui.status` draws a `screen` state dimmed (blocked as `◇`)
 and `none` as `?`, and the sessions pane names the source after the name.
+Only an agent can be unknown: Fleet writes no `activity` for a harness with
+no hooks and no screen rules, such as a shell, so its row keeps the dot of
+what the runtime proved and no source text.
 Claude Code's `Notification` hook, matched to `permission_prompt`, reports
 `blocked`, which is `attention`; its `idle_prompt` notification is idle.
 opencode's plugin reports `blocked` while a permission or a question is open;

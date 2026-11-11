@@ -147,6 +147,10 @@ the dot says it too, in the state's own colour in every theme:
 | `screen` | the state's glyph dimmed; blocked's diamond hollow (`◇`) | `blocked · screen (codex/action-required) · 1s ago` |
 | `none` | `?` in `status_unknown` | `unknown · no hook, no screen rule` |
 
+A row with no `activity`, such as a shell's (a harness with no hooks and no
+screen rules), draws the dot of what the runtime proved (`◉` running, `◌` with
+no report) and no source text: only an agent can be unknown.
+
 A `screen` state is a screen rule's reading of an agent whose hooks do not
 say its state now ([screen rules](../fleet/controllers/task.md#screen-rules)).
  `stopped` is a paused Task, at rest by definition, so it draws the idle

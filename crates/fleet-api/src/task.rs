@@ -414,7 +414,9 @@ pub struct TaskStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<AgentState>,
     /// Where `agentState` came from: the hooks, a screen rule, or neither
-    /// (see [`crate::screen::merge`]). Absent with no session.
+    /// (see [`crate::screen::merge`]). Absent with no session, and for a
+    /// harness with no hooks and no screen rules, which has no agent state
+    /// to report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<crate::screen::AgentActivity>,
     /// The harness's own id of the session's conversation, as its hooks

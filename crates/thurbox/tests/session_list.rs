@@ -2293,6 +2293,76 @@ fn each_grouping_level_indents_sessions_once() {
     );
 }
 
+/// Only an agent can be unknown. A shell's Task carries no `activity`, as
+/// Fleet writes it for a harness with no hooks and no screen rules, so its
+/// row keeps the glyph of what the runtime proved, with no unknown detail;
+/// an agent that has said nothing draws `?`. In every theme.
+#[test]
+fn a_shell_row_keeps_its_glyph_and_only_an_agent_is_unknown() {
+    let host = host();
+    let registry = registry_for(&host);
+    let task = |name: &str, harness: &str, activity: serde_json::Value| {
+        thurbox::kernel::snapshot::fleet::row_of(&serde_json::json!({
+            "metadata": {"name": name},
+            "spec": {"harness": harness, "host": "local", "workspace": []},
+            "status": {"sessionState": "Running", "agentState": "unknown",
+                       "activity": activity},
+        }))
+    };
+    let shell = task("plainshell", "bash", serde_json::Value::Null);
+    let agent = task(
+        "silentagent",
+        "claude",
+        serde_json::json!({"source": "none", "at": 1}),
+    );
+    let snapshot = Snapshot {
+        sessions: vec![shell, agent],
+        ..Snapshot::default()
+    };
+    let mut themes = Themes::load(None);
+    let names: Vec<String> = themes
+        .choices()
+        .iter()
+        .filter(|choice| !choice.is_custom)
+        .map(|choice| choice.name.clone())
+        .collect();
+    assert!(names.len() > 20, "{names:?}");
+    for name in names {
+        themes.preview(&name).expect("a preset");
+        publish_full(
+            &host,
+            &snapshot,
+            &registry,
+            &[],
+            &themes,
+            &Default::default(),
+        );
+        let buffer = paint(&host, PLUGIN, 90, 8);
+        let lines: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        let line = |session: &str| {
+            lines
+                .iter()
+                .find(|line| line.contains(session))
+                .unwrap_or_else(|| panic!("{name}: no row for {session} in {lines:#?}"))
+        };
+        let (shell, agent) = (line("plainshell"), line("silentagent"));
+        assert!(shell.contains("◉ plainshell"), "{name}: {shell:?}");
+        assert!(!shell.contains('?'), "{name}: {shell:?}");
+        assert!(!shell.contains("unknown"), "{name}: {shell:?}");
+        assert!(agent.contains("? silentagent"), "{name}: {agent:?}");
+        assert!(
+            agent.contains("unknown · no hook, no screen rule"),
+            "{name}: {agent:?}"
+        );
+    }
+}
+
 /// A Fleet session's status says where it came from: the agent's hooks draw
 /// the state's glyph, a screen rule draws it dimmed (blocked's diamond
 /// hollow), and neither draws `?`. The detail after the name names the

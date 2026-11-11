@@ -496,6 +496,8 @@ set per agent whose screens it captured: `claude`, `codex`, `copilot`,
 `opencode` and `pi`
 ([bundled rule sets](../../../crates/fleet-api/src/screen/bundled.rs)). A
 harness that no profile names, such as `copilot`, uses the set of its name.
+A harness with no hooks and no rule set, such as a shell, has no agent state
+to report: its Task gets no `activity`, so only an agent can be unknown.
 
 ```toml
 [[rule]]

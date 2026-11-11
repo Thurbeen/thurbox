@@ -838,7 +838,9 @@ The status colours are tunable theme keys (`status_working` /
 `status_idle`, which is the agent's own report that it is at rest.
 A screen rule's state keeps its state's colour and is drawn dimmed, with
 blocked's diamond hollow (`◇`); a state from neither source draws `?` in
-`status_unknown`, and the row says `unknown · no hook, no screen rule`.
+`status_unknown`, and the row says `unknown · no hook, no screen rule`. A
+session with no hooks and no screen rules, such as a shell, is never unknown:
+it keeps the dot of what the runtime proved.
 `status_error` is the role of a failed *command* in the list and of the one
 session state that is a failure: `failed`.
 

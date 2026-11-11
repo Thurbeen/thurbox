@@ -341,6 +341,16 @@ impl Pass<'_, '_> {
             self.st.conversation = r.conversation.clone();
         }
         let merged = fleet_api::screen::merge(profile.authority, r, seen.as_ref());
+        // A harness with no hooks and no screen rules, such as a shell, has
+        // no agent state to report, so no source either: only an agent can
+        // be unknown.
+        if profile.authority == fleet_api::harness::Authority::None
+            && profile.screen_rules().is_none()
+        {
+            self.st.agent_state = Some(merged.state);
+            self.st.activity = None;
+            return;
+        }
         // A capture that failed says nothing: a screen state stands until a
         // capture reads another, or the hooks speak.
         let last = self.st.activity.as_ref();
