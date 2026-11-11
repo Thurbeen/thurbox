@@ -53,7 +53,7 @@ no `[taskConfig]` section in that file and no implicit global TaskConfig.
   "spec": {
     "configRef": {"name": "reviewer"},
     "env": {"REVIEW_MODE": "focused"},
-    "workspace": {"dir": "/work/project"},
+    "workspace": ["file:///work/project"],
     "brief": "Review the current change.",
     "dispatch": false
   }

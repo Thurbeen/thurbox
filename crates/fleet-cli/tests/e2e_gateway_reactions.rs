@@ -446,7 +446,7 @@ fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
     let env = admitting("queued-then-working");
     // Another Task holds the thread's own directory: the request queues.
     let mut holder = support::task("holder", false);
-    holder["spec"]["workspace"]["dir"] = json!(format!("{}/{}", env.gateway_workspace(), conv()));
+    holder["spec"]["workspace"] = json!([format!("file://{}/{}", env.gateway_workspace(), conv())]);
     env.apply(holder).ok();
     mention(&env, "Ev01", MENTION, T0 + 300_000);
     reconcile_clean(&env);
@@ -515,7 +515,7 @@ fn the_queued_reaction_can_be_renamed_and_a_failing_one_holds_nothing_back() {
         .add_fault(GatewayFault::new("react", "failed").times(1))
         .unwrap();
     let mut holder = support::task("holder", false);
-    holder["spec"]["workspace"]["dir"] = json!(format!("{}/{}", env.gateway_workspace(), conv()));
+    holder["spec"]["workspace"] = json!([format!("file://{}/{}", env.gateway_workspace(), conv())]);
     env.apply(holder).ok();
     mention(&env, "Ev01", MENTION, T0 + 300_000);
     reconcile_clean(&env);

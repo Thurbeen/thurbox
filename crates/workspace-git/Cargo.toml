@@ -1,0 +1,30 @@
+[package]
+name = "workspace-git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Makes a runtime's workspaces from git URLs: a worktree per URL, work preserved on release"
+
+[lib]
+name = "workspace_git"
+
+# The program a runtime runs where its files belong (docs/runtime/README.md,
+# "workspace-git"): `workspace-git make|release`, a JSON request on stdin, the
+# answer on stdout. Runtimes run it; none links it.
+[[bin]]
+name = "workspace-git"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

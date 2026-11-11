@@ -115,7 +115,7 @@ ensure_fonts
 
 # --- Build the dev binaries (BEFORE the HOME override, so cargo finds ~/.cargo) -
 log "Building thurbox (dev) ..."
-cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux >&2
+cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux --bin workspace-git >&2
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
 [ -x "$THURBOX_BIN" ] || die "dev binary not found at $THURBOX_BIN"
 

@@ -29,9 +29,6 @@ pub struct TaskInput<'a> {
     pub task: &'a Object,
     pub observations: Observations,
     pub now: Millis,
-    /// Whether Fleet materializes a `{repositories}` workspace through the
-    /// workspace port before the spawn. False: the runtime makes it.
-    pub materialize: bool,
 }
 
 /// How many times a spawn or a brief send is tried before the Task stalls,
@@ -72,8 +69,8 @@ pub mod conditions {
     /// The runtime holds the session with its agent stopped: Fleet paused
     /// it while it was idle, or someone else stopped it.
     pub const PAUSED: &str = "Paused";
-    /// Whether the workspace Fleet makes for the session is whole: True
-    /// once made, False once cleaned or refused.
+    /// Whether the workspace the runtime makes for the session is whole:
+    /// True once made, False once cleaned or refused.
     pub const WORKSPACE_READY: &str = "WorkspaceReady";
 }
 use conditions::*;
@@ -83,8 +80,8 @@ const MATERIALIZE: &str = "materialize";
 const CLEAN: &str = "cleanWorkspace";
 /// The NeedsAttention reason once cleans keep failing.
 const CLEAN_FAILED: &str = "CleanFailed";
-/// The reason a spawn waits for the runtime to map a repository.
-const UNMAPPED: &str = "RepositoryUnmapped";
+/// The reason a Task waits for a runtime that handles one of its URLs.
+const UNSUPPORTED: &str = "WorkspaceUnsupported";
 /// The reason a spawn waits for the runtime to map the harness's trust.
 const TRUST_UNMAPPED: &str = "TrustUnmapped";
 /// The NeedsAttention reason while a known trust gap holds the brief.
@@ -156,13 +153,15 @@ impl TaskController {
         let find_workspace = materialize_in_flight(input.task, &st).then(|| Probe::FindWorkspace {
             host: spec.host.clone(),
             key: session_key(input.task),
+            urls: spec.workspace.urls().to_vec(),
         });
         if input.task.is_deleting() {
+            // A workspace call whose answer was lost is released by its key,
+            // never made again to be found.
             let mut probes = vec![find];
             if let Some(s) = &st.session {
                 probes.push(Probe::AtRest { session: s.clone() });
             }
-            probes.extend(find_workspace);
             return Ok(probes);
         }
         Ok(match st.phase {
@@ -175,6 +174,7 @@ impl TaskController {
             Phase::Spawned => {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
+                    activity_probe(input, &spec, &st, s, &mut probes);
                     probes.push(Probe::Lost { session: s.clone() });
                     probes.push(Probe::WorkspaceTrust {
                         session: s.clone(),
@@ -313,15 +313,19 @@ impl Pass<'_, '_> {
     fn observe_session(&mut self) {
         let Some(session) = &self.st.session else {
             self.st.session_state = None;
+            self.st.agent_state = None;
             return;
         };
         if let Some(state) = SessionState::observe(session, &self.input.observations) {
             self.st.session_state = Some(state);
         }
-        if let Some(Observation::Known(r)) = &self.input.observations.signals
-            && r.conversation.is_some()
-        {
-            self.st.conversation = r.conversation.clone();
+        // Only a file that was read says what the agent reported; an
+        // unreadable one keeps the last state rather than claiming silence.
+        if let Some(Observation::Known(r)) = &self.input.observations.signals {
+            self.st.agent_state = Some(fleet_api::task::AgentState::reported(r));
+            if r.conversation.is_some() {
+                self.st.conversation = r.conversation.clone();
+            }
         }
     }
 
@@ -478,7 +482,7 @@ impl Pass<'_, '_> {
         let key = self.key(SPAWN, Some(attempt));
         self.st.spawn_attempts = attempt;
         self.st.not_before = None;
-        // An attempt given back after an unmapped repository reuses its key.
+        // An attempt given back after a trust gap reuses its key.
         self.st.receipts.remove(&key);
         self.st.phase = Phase::Spawning;
         self.cond(
@@ -518,10 +522,6 @@ impl Pass<'_, '_> {
                 self.adopt(session, "Spawned")
             }
             Some(Observation::Known(EffectOutcome::Failed { why })) => self.spawn_retry(&why),
-            Some(Observation::Known(EffectOutcome::Unmapped { url })) => self.spawn_unmapped(
-                UNMAPPED,
-                format!("repository {url} is not in workspaces.repositories"),
-            ),
             Some(Observation::Known(EffectOutcome::TrustUnmapped { harness })) => self
                 .spawn_unmapped(
                     TRUST_UNMAPPED,
@@ -568,7 +568,7 @@ impl Pass<'_, '_> {
         self.settle_spawn_gaps();
     }
 
-    /// A repository or harness the runtime does not map is a configuration
+    /// A harness the runtime does not map is a configuration
     /// gap, not a failed attempt: nothing started, so the attempt is given
     /// back. The spawn is tried again after [`RETRY_DELAY_MS`], without
     /// limit, until the runtime maps it.
@@ -581,7 +581,6 @@ impl Pass<'_, '_> {
     }
 
     fn settle_spawn_gaps(&mut self) {
-        self.settle_attention(UNMAPPED);
         self.settle_attention(TRUST_UNMAPPED);
     }
 
@@ -1676,16 +1675,15 @@ impl Pass<'_, '_> {
         self.intend(key, Action::Release { session });
     }
 
-    /// Whether Fleet makes this Task's workspace: the workspace port is
-    /// configured and the Task names repositories. A `{dir}` exists before
-    /// the Task and is never made.
+    /// Whether the runtime makes this Task's workspace: every non-empty
+    /// URL list, a `file://` directory included, which it uses as it is.
     fn makes_workspace(&self) -> bool {
-        self.input.materialize && matches!(self.spec.workspace, task::Workspace::Repositories(_))
+        !self.spec.workspace.is_empty()
     }
 
     /// One step toward a whole workspace; true once `status.workspace`
-    /// holds it. A lost answer is settled by looking the workspace key up,
-    /// never by a blind second materialize.
+    /// holds it. A lost answer is settled by asking the runtime again under
+    /// the same key, which is idempotent, never by a new attempt.
     fn materialize(&mut self) -> bool {
         let attempt = self.st.materialize_attempts;
         let key = self.key(MATERIALIZE, Some(attempt));
@@ -1697,20 +1695,25 @@ impl Pass<'_, '_> {
                         if adopted { "Adopted" } else { "Materialized" },
                     );
                 }
-                Some(Observation::Known(EffectOutcome::Unmapped { url })) => {
-                    // A configuration gap, not an attempt: given back.
+                Some(Observation::Known(EffectOutcome::Unsupported { url })) => {
+                    // A configuration gap, not an attempt: given back. Nothing
+                    // spawns until a runtime that handles the URL serves the
+                    // host.
                     self.st.intents.remove(&key);
                     self.st.receipts.remove(&key);
                     self.st.materialize_attempts = attempt - 1;
                     self.wait_from(self.now());
-                    let why = format!("repository {url} is not in workspaces.repositories");
+                    let why = format!(
+                        "the runtime of host {} does not handle {url}",
+                        self.spec.host
+                    );
                     self.cond(
                         WORKSPACE_READY,
                         ConditionStatus::False,
-                        UNMAPPED,
+                        UNSUPPORTED,
                         why.clone(),
                     );
-                    self.needs_attention(UNMAPPED, why);
+                    self.needs_attention(UNSUPPORTED, why);
                     return false;
                 }
                 Some(Observation::Known(EffectOutcome::Failed { why })) => {
@@ -1762,13 +1765,10 @@ impl Pass<'_, '_> {
             "Materializing",
             format!("attempt {attempt}"),
         );
-        let task::Workspace::Repositories(repositories) = self.spec.workspace.clone() else {
-            return false;
-        };
         let action = Action::Materialize {
             host: self.spec.host.clone(),
             key: session_key(self.input.task),
-            repositories,
+            urls: self.spec.workspace.urls().to_vec(),
         };
         self.intend(key, action);
         false
@@ -1779,12 +1779,12 @@ impl Pass<'_, '_> {
         workspace: fleet_api::workspace::WorkspaceRef,
         reason: &str,
     ) -> bool {
-        self.settle_attention(UNMAPPED);
+        self.settle_attention(UNSUPPORTED);
         self.cond(
             WORKSPACE_READY,
             ConditionStatus::True,
             reason,
-            workspace.dir.clone(),
+            workspace.dir().unwrap_or_default().to_string(),
         );
         self.st.workspace = Some(workspace);
         true
@@ -1795,7 +1795,7 @@ impl Pass<'_, '_> {
     /// intent is settled, so the next pass plans the next attempt.
     fn materialize_retry(&mut self, key: &str, why: &str) {
         self.st.intents.remove(key);
-        self.settle_attention(UNMAPPED);
+        self.settle_attention(UNSUPPORTED);
         let attempts = self.st.materialize_attempts;
         if attempts >= MAX_ATTEMPTS {
             self.st.phase = Phase::Stalled;
@@ -1823,8 +1823,8 @@ impl Pass<'_, '_> {
         );
     }
 
-    /// The session is released, or there never was one: clean the
-    /// workspace Fleet made, then drop the finalizer.
+    /// The session is released, or there never was one: release the
+    /// workspace the runtime made, then drop the finalizer.
     fn let_go(&mut self) {
         let finalizer = Some(task::RELEASE_FINALIZER.to_string());
         let workspace = match self.workspace_to_clean() {
@@ -1893,9 +1893,10 @@ impl Pass<'_, '_> {
         self.intend(key, Action::CleanWorkspace { workspace });
     }
 
-    /// The workspace Fleet made, if any: recorded, or still to be learned
-    /// from a materialize whose answer was lost. `Err` while the key cannot
-    /// be read: deletion waits rather than leave a workspace behind.
+    /// The workspace the runtime made, if any: recorded, or under the key
+    /// of a workspace call whose answer was lost, which is released by its
+    /// key alone. A release of nothing is harmless, so deletion never makes
+    /// a workspace to learn what to release.
     fn workspace_to_clean(&mut self) -> Result<Option<fleet_api::workspace::WorkspaceRef>, ()> {
         if let Some(w) = &self.st.workspace {
             return Ok(Some(w.clone()));
@@ -1911,19 +1912,11 @@ impl Pass<'_, '_> {
         if !self.st.intents.contains_key(&key) {
             return Ok(None);
         }
-        match self.input.observations.workspace.clone() {
-            Some(Observation::Known(found)) => Ok(found),
-            Some(Observation::Unknown { why }) => {
-                self.cond(
-                    WORKSPACE_READY,
-                    ConditionStatus::Unknown,
-                    "WorkspaceUnreadable",
-                    why,
-                );
-                Err(())
-            }
-            None => Err(()),
-        }
+        Ok(Some(fleet_api::workspace::WorkspaceRef {
+            key: session_key(self.input.task),
+            host: self.spec.host.clone(),
+            dirs: Vec::new(),
+        }))
     }
 
     fn key(&self, action: &str, attempt: Option<u32>) -> String {
@@ -1991,19 +1984,18 @@ pub fn watches_activity(obj: &Object) -> bool {
     decode(obj).is_ok_and(|(spec, st)| watched(obj, &spec, &st))
 }
 
-/// The activity probe, asked only of a session that may be paused: what
-/// the agent's own hooks reported through `fleet signal`.
+/// The activity probe: what the agent's own hooks reported through `fleet
+/// signal`. Asked of every live session, not only one that may be paused:
+/// `sessionState` is how a person, and thurbox's status dot, tells an agent
+/// at work from one waiting for input. Reading it is a local file read.
 fn activity_probe(
     input: &TaskInput<'_>,
-    spec: &TaskSpec,
+    _spec: &TaskSpec,
     st: &TaskStatus,
     session: &SessionRef,
     probes: &mut Vec<Probe>,
 ) {
-    if pause_candidate(spec, st)
-        && !input.task.is_deleting()
-        && !st.not_before.is_some_and(|t| t > input.now)
-    {
+    if !input.task.is_deleting() && !st.not_before.is_some_and(|t| t > input.now) {
         probes.push(Probe::Activity {
             session: session.clone(),
         });

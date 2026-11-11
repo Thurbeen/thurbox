@@ -8,7 +8,7 @@
 #   fleet-controllers    pure   decisions          -> api
 #   fleet-exec           adapter the one process spawner
 #   fleet-store          adapter                   -> api
-#   fleet-runtime        adapter runtime, workspaces, term-bridge -> api, exec, term-stream
+#   fleet-runtime        adapter runtime, term-bridge -> api, exec, term-stream
 #   fleet-forge          adapter                   -> api, exec
 #   fleet-gateway        adapter                   -> api, exec
 #   fleet-plugin         adapter                   -> api, exec
@@ -21,6 +21,7 @@
 #
 #   term-stream          the terminal stream's frames: a wire format
 #   runtime-mux          component the multiplexer runtime: tmux, psmux, rmux -> term-stream
+#   workspace-git        component makes workspaces from git URLs; runtimes run its program
 #   thurbox              component the interface; reaches Fleet only by
 #                                  running its CLI   -> term-stream, and
 #                                  runtime-mux until Fleet drives its sessions
@@ -107,6 +108,13 @@ forbidden_methods = [
 [crates.runtime-mux]
 role = "component"
 deps = ["term-stream"]
+
+# Makes a runtime's workspaces from git URLs: a worktree per URL, work
+# preserved on release (docs/runtime/README.md, "workspace-git"). A runtime
+# runs its program where its files belong; no crate links it.
+[crates.workspace-git]
+role = "component"
+deps = []
 
 # The terminal stream's frames and codec: a wire format, not a component.
 # No process, no runtime, no transport; every component may depend on it.
@@ -225,13 +233,3 @@ why = "only the manager performs the open, post and react effects, through the p
 path = "fleet_api::plugin::Plugins"
 allowed = ["fleet-api", "fleet-plugin", "fleet-manager", "fleet-cli"]
 why = "only the manager may invoke plugin observer and effect calls"
-
-# The Workspaces port makes and removes the files a Session works in. As the
-# Forge port, it is defined by the API, implemented by fleet-runtime, wired by
-# the CLI and performed by the manager alone, after the intent is written and
-# the lease renewed: no controller holds a handle that could make or remove a
-# workspace.
-[[restricted]]
-path = "fleet_api::workspace::Workspaces"
-allowed = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-cli"]
-why = "only the manager performs the materialize and clean effects, through the port the CLI wired"

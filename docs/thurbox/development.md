@@ -319,6 +319,10 @@ To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for 
   `cargo clean` or `--clean` removes them). Their tmux socket dir is kept short
   under `$XDG_RUNTIME_DIR` (AF_UNIX socket paths are length-limited, and the
   repo's `target/` path is often too long). Sessions survive across runs.
+  The profile's Fleet and runtime-mux configs are generated on every run, so
+  a profile an older checkout made never keeps a section the current `fleet`
+  refuses; a TUI launch stops the `fleet up` an earlier run left alive, and
+  starts this build's.
 - **Fresh** (`--fresh`) is a `mktemp` dir wiped on exit — same isolation the
   demo recorder uses.
 

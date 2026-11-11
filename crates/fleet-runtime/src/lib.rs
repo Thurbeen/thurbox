@@ -3,10 +3,8 @@
 //! - [`ExecRuntime`]: any program speaking the runtime protocol
 //!   (docs/runtime/README.md), `runtime-mux` by default, chosen per host.
 //! - [`FakeRuntime`]: a file-backed fake host for tests and local trials. It
-//!   keeps sessions as records, not processes, and runs nothing. It is a
-//!   fake workspace adapter too.
-//! - [`WorktreeWorkspaces`]: the workspace port's git worktree adapter, on
-//!   this machine.
+//!   keeps sessions and workspaces as records, not processes or files, and
+//!   runs nothing.
 //! - [`FileSignals`]: the signal port's adapter, one file per session on
 //!   this machine.
 
@@ -14,12 +12,10 @@ pub mod bridge;
 pub mod exec;
 pub mod fake;
 pub mod signals;
-pub mod worktree;
 
 pub use exec::{ExecProgram, ExecRuntime};
 pub use fake::{FakeHost, FakeRuntime, FakeSession, FakeWorkspace, Fault};
 pub use signals::FileSignals;
-pub use worktree::{Repositories, WorktreeConfig, WorktreeWorkspaces};
 
 /// Resolve manager-local explicit sources, never an implicit shell. Errors
 /// deliberately omit child output, paths and parser text (all may contain values).

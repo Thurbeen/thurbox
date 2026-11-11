@@ -213,55 +213,146 @@ fn amendment_block(a: &Amendment) -> String {
     text
 }
 
-/// Where the session works. Fleet names it; the runtime makes it, and cleans
-/// it up when the session is deleted, as the runtime is configured to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    untagged,
-    expecting = "a workspace: {\"dir\": PATH} or {\"repositories\": [{\"name\", \"url\", \"ref\"?}]}"
-)]
-pub enum Workspace {
-    Dir(DirWorkspace),
-    Repositories(RepositoriesWorkspace),
-}
+/// Where the session works: a list of absolute URLs. Fleet checks that each
+/// is one, and nothing else: the scheme, the reference and any query are the
+/// runtime's to read. The runtime makes one directory per URL before the
+/// first start and removes what it made after the release. The first is
+/// where the agent starts; the others are the extra directories it spans.
+/// An empty list: the agent starts in the runtime's default directory.
+///
+/// ```text
+/// ["git+https://host/org/app.git#main",   a worktree, made from main
+///  "git+file:///home/me/lib",             a worktree of a local repository
+///  "file:///home/me/notes"]               the directory, as it is
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Workspace(pub Vec<String>);
 
-/// A directory that exists before the Task; the runtime attaches it as is.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DirWorkspace {
-    pub dir: String,
-}
+/// What a workspace that does not decode is told: the shapes before the URL
+/// list (`{dir}`, `{repositories}`) are refused by this, never converted.
+pub const WORKSPACE_EXPECTED: &str = "a workspace: a list of absolute URLs, such as [\"git+https://host/org/repo.git#main\", \"file:///home/me/notes\"]";
 
-/// Repositories the runtime materializes under the session key. The first is
-/// the primary, where the agent starts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RepositoriesWorkspace {
-    pub repositories: Vec<Repository>,
+impl<'de> Deserialize<'de> for Workspace {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Workspace, D::Error> {
+        struct Urls;
+        impl<'de> serde::de::Visitor<'de> for Urls {
+            type Value = Workspace;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(WORKSPACE_EXPECTED)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Workspace, A::Error> {
+                let mut urls = Vec::new();
+                while let Some(url) = seq.next_element::<String>()? {
+                    urls.push(url);
+                }
+                Ok(Workspace(urls))
+            }
+        }
+        d.deserialize_seq(Urls)
+    }
 }
 
 impl Workspace {
-    /// A `{dir}` workspace.
-    pub fn at(dir: impl Into<String>) -> Workspace {
-        Workspace::Dir(DirWorkspace { dir: dir.into() })
+    /// A workspace of these URLs.
+    pub fn of<S: Into<String>>(urls: impl IntoIterator<Item = S>) -> Workspace {
+        Workspace(urls.into_iter().map(Into::into).collect())
     }
 
-    /// The directory of a `{dir}` workspace.
-    pub fn dir(&self) -> Option<&str> {
-        match self {
-            Workspace::Dir(w) => Some(&w.dir),
-            Workspace::Repositories(_) => None,
+    /// The directory `dir`, used as it is: `["file://<dir>"]`.
+    pub fn at(dir: impl AsRef<str>) -> Workspace {
+        Workspace(vec![file_url(dir.as_ref())])
+    }
+
+    pub fn urls(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The directory the first URL names when it is `file://`: where the
+    /// agent starts, made by nobody. `None` for any other workspace.
+    pub fn dir(&self) -> Option<String> {
+        self.0.first().and_then(|u| file_path(u))
+    }
+
+    /// [`Workspace::dir`] as text, normalised so two spellings of one
+    /// directory compare equal: `\\` as `/`, repeated and trailing
+    /// separators dropped, `.` segments dropped. Nothing is resolved against
+    /// a filesystem, so a symlink or `..` is another spelling.
+    pub fn normalised(&self) -> Option<String> {
+        self.dir().as_deref().map(normalise_dir)
+    }
+}
+
+/// `file://<dir>`: the URL of a directory used as it is. The bytes a URL
+/// reads apart, `%`, `?`, `#` and whitespace, are percent-encoded, as a
+/// runtime decodes them.
+pub fn file_url(dir: &str) -> String {
+    let mut url = String::from("file://");
+    for c in dir.chars() {
+        if matches!(c, '%' | '?' | '#') || c.is_whitespace() {
+            let mut buf = [0; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                url.push_str(&format!("%{b:02X}"));
+            }
+        } else {
+            url.push(c);
         }
     }
+    url
+}
 
-    /// The directory of a `{dir}` workspace as text, normalised so two
-    /// spellings of one directory compare equal: `\\` as `/`, repeated and
-    /// trailing separators dropped, `.` segments dropped. Nothing is
-    /// resolved against a filesystem, so a symlink or `..` is another
-    /// spelling. A `repositories` workspace has no shared directory.
-    pub fn normalised(&self) -> Option<String> {
-        self.dir().map(normalise_dir)
+/// The path a `file://` URL names, percent-decoded as a runtime reads it,
+/// with a Windows drive's leading `/` dropped; `None` for any other URL.
+pub fn file_path(url: &str) -> Option<String> {
+    let raw = url.strip_prefix("file://").filter(|p| !p.is_empty())?;
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(hex) = bytes.get(i + 1..i + 3)
+            && let Ok(hex) = std::str::from_utf8(hex)
+            && let Ok(b) = u8::from_str_radix(hex, 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
     }
+    let path = String::from_utf8_lossy(&out).into_owned();
+    // `/C:/dir` is how a URL spells the Windows path `C:/dir`.
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        return Some(path[1..].to_string());
+    }
+    Some(path)
+}
+
+/// The directory a stored Task's spec names as its first URL, when that is
+/// `file://`: what a thread's directory is checked against.
+pub fn spec_dir(spec: &serde_json::Value) -> Option<String> {
+    spec["workspace"][0].as_str().and_then(file_path)
+}
+
+/// The scheme of an absolute URL, `<scheme>://…`, in lower case; `None`
+/// when `url` is not one. A path, `C:/…` included, is not a URL.
+pub fn url_scheme(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    (first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && !rest.is_empty())
+    .then(|| scheme.to_ascii_lowercase())
 }
 
 /// See [`Workspace::normalised`].
@@ -278,19 +369,6 @@ pub fn normalise_dir(dir: &str) -> String {
     } else {
         joined
     }
-}
-
-/// A repository a Task works on: its identity, never how it is provisioned.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Repository {
-    /// Unique in the Task; labels the repository for people and the runtime.
-    pub name: String,
-    /// The repository's forge URL.
-    pub url: String,
-    /// Where to start from. Opaque to Fleet; the runtime interprets it.
-    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
-    pub reference: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,12 +407,18 @@ pub struct TaskStatus {
     /// that proved nothing keeps the last state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_state: Option<SessionState>,
+    /// What the agent last reported through its hooks (see
+    /// [`crate::session::AgentState`]): `unknown` until it reports. Absent
+    /// with no session; a pass whose signal file could not be read keeps
+    /// the last state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_state: Option<AgentState>,
     /// The harness's own id of the session's conversation, as its hooks
     /// last reported it: what a revive or a resume names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
-    /// The workspace Fleet made for the session (see [`crate::workspace`]).
-    /// Absent while the runtime makes the workspace itself.
+    /// The workspace the runtime made for the session (see
+    /// [`crate::workspace`]). Absent for an empty workspace list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<crate::workspace::WorkspaceRef>,
     /// Effect intents, written before the effect runs.
@@ -352,7 +436,7 @@ pub struct TaskStatus {
     pub spawn_attempts: u32,
     #[serde(default)]
     pub release_attempts: u32,
-    /// Materialize effects planned for the workspace, bounded like spawn
+    /// Workspace calls planned before the first start, bounded like spawn
     /// attempts; the current one's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub materialize_attempts: u32,
@@ -471,7 +555,7 @@ pub struct BriefRecord {
 
 /// A Task's session is defined in [`crate::session`]; these names stay here
 /// for the code that reaches them through the Task.
-pub use crate::session::{SessionRef, SessionState, session_key, uid_of_session_key};
+pub use crate::session::{AgentState, SessionRef, SessionState, session_key, uid_of_session_key};
 
 /// The status fields the worker owns.
 pub const WORKER_FIELDS: &[&str] = &["result", "declared"];
@@ -493,7 +577,7 @@ mod tests {
     #[test]
     fn a_task_runs_on_this_machine_unless_it_names_a_host() {
         let spec: TaskSpec = serde_json::from_value(serde_json::json!({
-            "harness": "claude-code", "brief": "b", "workspace": {"dir": "w"}
+            "harness": "claude-code", "brief": "b", "workspace": ["file:///w"]
         }))
         .unwrap();
         assert_eq!(spec.host, LOCAL_HOST);
@@ -501,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_is_a_directory_or_repositories_and_nothing_else() {
+    fn a_workspace_is_a_list_of_urls_and_nothing_else() {
         let parse = |w: serde_json::Value| {
             serde_json::from_value::<TaskSpec>(serde_json::json!({
                 "harness": "claude-code", "brief": "b", "workspace": w
@@ -509,26 +593,33 @@ mod tests {
             .map(|s| s.workspace)
         };
         assert_eq!(
-            parse(serde_json::json!({"dir": "w"})).unwrap(),
-            Workspace::at("w")
+            parse(serde_json::json!(["file:///w"])).unwrap(),
+            Workspace::at("/w")
         );
-        let repos = parse(serde_json::json!({"repositories": [
-            {"name": "app", "url": "https://example.invalid/app", "ref": "main"}
-        ]}))
-        .unwrap();
-        let Workspace::Repositories(w) = repos else {
-            panic!("{repos:?}")
-        };
-        assert_eq!(w.repositories[0].reference.as_deref(), Some("main"));
+        assert_eq!(parse(serde_json::json!([])).unwrap(), Workspace::default());
         for refused in [
-            serde_json::json!({"dir": "w", "repositories": []}),
-            serde_json::json!({"dir": "w", "branch": "x"}),
-            serde_json::json!({"repositories": [{"name": "a", "url": "u", "baseBranch": "x"}]}),
+            serde_json::json!({"dir": "w"}),
+            serde_json::json!({"repositories": [{"name": "a", "url": "https://x/a"}]}),
+            serde_json::json!("file:///w"),
             serde_json::json!({}),
         ] {
             let err = parse(refused.clone()).unwrap_err().to_string();
-            assert!(err.contains("a workspace:"), "{refused}: {err}");
+            assert!(err.contains("a list of absolute URLs"), "{refused}: {err}");
         }
+    }
+
+    #[test]
+    fn a_url_has_a_scheme_and_a_path_has_none() {
+        assert_eq!(
+            url_scheme("git+https://h/o/r.git#main").as_deref(),
+            Some("git+https")
+        );
+        assert_eq!(url_scheme("FILE:///w").as_deref(), Some("file"));
+        for not in ["/w", "C:/w", "C:\\w", "file://", "://x", "1x://y", "w"] {
+            assert_eq!(url_scheme(not), None, "{not}");
+        }
+        assert_eq!(Workspace::at("/w").dir().as_deref(), Some("/w"));
+        assert_eq!(Workspace::of(["git+https://h/o/r"]).dir(), None);
     }
 
     #[test]
@@ -547,10 +638,32 @@ mod tests {
         assert_ne!(normalise_dir("/work/a"), normalise_dir("work/a"));
         assert_eq!(normalise_dir("/"), "/");
         assert_eq!(Workspace::at("/w/").normalised().as_deref(), Some("/w"));
-        let repos: Workspace = serde_json::from_value(serde_json::json!({"repositories": [
-            {"name": "app", "url": "https://example.invalid/app"}
-        ]}))
-        .unwrap();
-        assert_eq!(repos.normalised(), None);
+        assert_eq!(Workspace::of(["git+https://h/o/r"]).normalised(), None);
+    }
+
+    /// A directory becomes a URL a runtime reads back to that directory:
+    /// whitespace, `%`, `?` and `#` are escaped, and a path is decoded
+    /// before two spellings of it are compared.
+    #[test]
+    fn a_directory_round_trips_through_its_file_url() {
+        for dir in ["/work/team notes", "/work/a#b?c", "/work/100%"] {
+            let url = file_url(dir);
+            assert!(!url.contains(char::is_whitespace), "{url}");
+            assert!(!url["file://".len()..].contains(['#', '?']), "{url}");
+            assert_eq!(file_path(&url).as_deref(), Some(dir), "{url}");
+        }
+        assert_eq!(
+            file_path("file:///work/conv%2D123").as_deref(),
+            Some("/work/conv-123")
+        );
+    }
+
+    /// A URL spells a Windows drive after a `/`; the directory it names is
+    /// the drive path, as a runtime reads it.
+    #[test]
+    fn a_file_url_names_a_windows_drive_path_as_the_runtime_reads_it() {
+        let dir = file_path("file:///C:/work/conv-123").expect("a path");
+        assert_eq!(dir, "C:/work/conv-123");
+        assert_eq!(normalise_dir(&dir), normalise_dir(r"C:\work\conv-123"));
     }
 }

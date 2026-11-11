@@ -10,18 +10,25 @@ description: Session status in thurbox: the SessionState vocabulary, where a row
 ## Where a session's state comes from
 
 Fleet owns a session's state (ADR-41). Every session is a Fleet Task, and the
-snapshot maps the Task's `status.sessionState` onto `SessionState`
-(`src/session/hook_status.rs`) in `row_of` (`src/kernel/snapshot/fleet.rs`):
+snapshot maps the Task's `status.agentState` and `status.sessionState` onto
+`SessionState` (`src/session/hook_status.rs`) in `row_of`
+(`src/kernel/snapshot/fleet.rs`), first match wins:
 
-| `status.sessionState` | `SessionState` |
+| Task status | `SessionState` |
 |---|---|
-| `Running` | `running` |
-| `Idle` | `idle` |
-| `Paused` | `stopped` (the row's `stopped` is set too) |
-| `Lost`, `Gone` | `failed` |
+| `sessionState: Paused` | `stopped` (the row's `stopped` is set too) |
+| `sessionState: Lost` or `Gone` | `failed` |
+| `agentState: working` | `working` |
+| `agentState: attention` | `blocked` |
+| `agentState: idle` | `idle` |
+| `sessionState: Running` | `running` |
+| `sessionState: Idle` | `idle` |
 | anything else, or absent | `unreported` |
 
-Fleet derives `sessionState` from the agent's own hooks. Each hook reports
+Fleet derives both from the agent's own hooks: `agentState` is the agent's
+last report (`working`, `attention`, `idle`, or `unknown` before it reports).
+Claude Code's `Notification` hook, matched to `permission_prompt`, reports
+`blocked`, which is `attention`; its `idle_prompt` notification is idle. Each hook reports
 through `fleet signal`, and Fleet's harness profiles wire those hooks at launch
 (`crates/fleet-api/src/harness.rs`). thurbox installs nothing into an agent's
 config and derives no state of its own.
@@ -32,9 +39,9 @@ config and derives no state of its own.
 agent's own hook words (`working`, `blocked`, `background`, `done`, `idle`);
 `SessionState::from_hook_state` parses them. The rest are inferred. Each
 inferred word is spelled apart from `idle`, so "nothing reported" never reads
-as "the agent says it is at rest". The Fleet mapping above produces only
-`running`, `idle`, `stopped`, `failed` and `unreported`; a plugin still draws
-every word.
+as "the agent says it is at rest". The Fleet mapping above produces
+`working`, `blocked`, `idle`, `running`, `stopped`, `failed` and
+`unreported`; a plugin still draws every word.
 
 | State | Theme role | Glyph |
 |-------|------------|-------|

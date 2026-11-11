@@ -661,13 +661,47 @@ pub struct RouteConfig {
     /// An absolute path the manager reads when it loads the config and
     /// copies into each Task it creates.
     pub brief: PathBuf,
-    /// The Task's workspace. A `dir` is a base directory: each thread's
-    /// Tasks get `<dir>/<conversation>`, so no thread waits for another.
-    /// `repositories` are materialized for each Task.
-    pub workspace: Workspace,
+    /// The Task's workspace: `{base}`, a base directory, of which each
+    /// thread's Tasks get `<base>/<conversation>`, so no thread waits for
+    /// another; or a URL list each Task gets as it is (a `git+` URL already
+    /// gives each Task a worktree of its own).
+    pub workspace: RouteWorkspace,
     /// The one polite refusal; `DEFAULT_REFUSAL` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
+}
+
+/// A route's workspace (see [`RouteConfig::workspace`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    untagged,
+    expecting = "a route workspace: {\"base\": ABSOLUTE_DIR} or a list of absolute URLs"
+)]
+pub enum RouteWorkspace {
+    Urls(Workspace),
+    Base(BaseWorkspace),
+}
+
+/// `{base}`: the directory under which each thread gets its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaseWorkspace {
+    pub base: String,
+}
+
+impl RouteWorkspace {
+    /// A `{base}` route workspace.
+    pub fn base(dir: impl Into<String>) -> RouteWorkspace {
+        RouteWorkspace::Base(BaseWorkspace { base: dir.into() })
+    }
+
+    /// The base directory, when the route has one.
+    pub fn base_dir(&self) -> Option<&str> {
+        match self {
+            RouteWorkspace::Base(b) => Some(&b.base),
+            RouteWorkspace::Urls(_) => None,
+        }
+    }
 }
 
 /// The `channels` entry that covers every channel of the route's account
@@ -1181,15 +1215,17 @@ impl GatewayConfig {
             if !is_absolute_path(&route.brief.to_string_lossy()) {
                 return Err(format!("{at}: brief must be an absolute path"));
             }
-            crate::validate::validate_workspace(&route.workspace)
-                .map_err(|e| format!("{at}: workspace{e}"))?;
-            // A base directory needs its own route; repositories are
-            // materialized per Task, so nothing is shared between routes.
-            let dir = route.workspace.dir().map(Path::new);
-            if let Some(d) = route.workspace.dir()
+            if let RouteWorkspace::Urls(w) = &route.workspace {
+                crate::validate::validate_workspace(w)
+                    .map_err(|e| format!("{at}: workspace{e}"))?;
+            }
+            // A base directory needs its own route; a URL list is made per
+            // Task, so nothing is shared between routes.
+            let dir = route.workspace.base_dir().map(Path::new);
+            if let Some(d) = route.workspace.base_dir()
                 && !is_absolute_path(d)
             {
-                return Err(format!("{at}: workspace.dir must be an absolute path"));
+                return Err(format!("{at}: workspace.base must be an absolute path"));
             }
             if route
                 .refusal
@@ -1397,7 +1433,7 @@ mod tests {
             allow_bots: vec!["B0123ABCD".into()],
             task_config: "conversation".into(),
             brief: "/etc/fleet/briefs/conversation.md".into(),
-            workspace: Workspace::at(dir),
+            workspace: RouteWorkspace::base(dir),
             refusal: None,
         }
     }
@@ -1583,7 +1619,7 @@ mod tests {
             "people": {"alex": {"slack-main": "U0123ABCD"}},
             "routes": {"eng": {"account": "slack-main", "channels": ["C0123ABCD"], "allow": ["alex"],
                                "taskConfig": "conversation", "brief": "/etc/fleet/briefs/conversation.md",
-                               "workspace": {"dir": "/work/conversations"}}}
+                               "workspace": {"base": "/work/conversations"}}}
         });
         let cfg: GatewayConfig = serde_json::from_value(toml_like).unwrap();
         assert_eq!(cfg.validate(), Ok(()));
@@ -1674,26 +1710,35 @@ mod tests {
                 "{dir}"
             );
         }
-        // Repositories are materialized per Task: two routes share nothing.
+        // A URL list is made per Task: two routes share nothing.
         let mut c = config();
-        let repositories: Workspace = serde_json::from_value(serde_json::json!(
-            {"repositories": [{"name": "app", "url": "https://example.invalid/app"}]}
-        ))
-        .unwrap();
-        c.routes.get_mut("eng").unwrap().workspace = repositories.clone();
+        let urls: RouteWorkspace =
+            serde_json::from_value(serde_json::json!(["git+https://example.invalid/app.git"]))
+                .unwrap();
+        c.routes.get_mut("eng").unwrap().workspace = urls.clone();
         let mut ops = route("/work");
         ops.channels = vec!["C0789IJKL".into()];
-        ops.workspace = repositories;
+        ops.workspace = urls;
         c.routes.insert("ops".into(), ops);
         assert_eq!(c.validate(), Ok(()));
         let mut c = config();
         c.routes.get_mut("eng").unwrap().workspace =
-            serde_json::from_value(serde_json::json!({"repositories": []})).unwrap();
+            serde_json::from_value(serde_json::json!(["/work/app"])).unwrap();
         assert!(
             c.validate()
                 .unwrap_err()
-                .contains("routes.eng: workspace.repositories must name at least one repository")
+                .contains("routes.eng: workspace[0] \"/work/app\" is not an absolute URL")
         );
+        for refused in [
+            serde_json::json!({"dir": "/w"}),
+            serde_json::json!({"repositories": []}),
+            serde_json::json!({"base": "/w", "dir": "/w"}),
+        ] {
+            assert!(
+                serde_json::from_value::<RouteWorkspace>(refused.clone()).is_err(),
+                "{refused}"
+            );
+        }
         let mut c = config();
         let mut ops = route("/work/conversations-2");
         ops.channels = vec!["C0789IJKL".into()];
@@ -1728,11 +1773,11 @@ mod tests {
                 .contains("routes.eng: brief must be an absolute path")
         );
         let mut c = config();
-        c.routes.get_mut("eng").unwrap().workspace = Workspace::at("work");
+        c.routes.get_mut("eng").unwrap().workspace = RouteWorkspace::base("work");
         assert!(
             c.validate()
                 .unwrap_err()
-                .contains("routes.eng: workspace.dir must be an absolute path")
+                .contains("routes.eng: workspace.base must be an absolute path")
         );
         let mut c = config();
         let r = c.routes.get_mut("eng").unwrap();
@@ -1782,7 +1827,7 @@ mod tests {
         c.routes.get_mut("eng").unwrap().refusal = Some("  ".into());
         assert!(c.validate().unwrap_err().contains("refusal is empty"));
         assert!(serde_json::from_value::<RouteConfig>(json!({
-            "account": "a", "taskConfig": "t", "brief": "/b", "workspace": {"dir": "/w"}, "colour": "red"
+            "account": "a", "taskConfig": "t", "brief": "/b", "workspace": {"base": "/w"}, "colour": "red"
         })).unwrap_err().to_string().contains("unknown field `colour`"));
         assert!(
             serde_json::from_value::<AccountConfig>(json!({

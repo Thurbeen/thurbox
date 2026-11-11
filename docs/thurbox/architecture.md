@@ -2789,8 +2789,9 @@ installation, selection, and the verified version table.
 ## ADR-32: Hook status and the heartbeat are the route's backend's
 
 > **Superseded in v3 (ADR-41).** thurbox reads no hook status and keeps no
-> heartbeat. A session's state is Fleet's `status.sessionState`, which Fleet
-> derives from the agent's own hooks through `fleet signal`. The contract's
+> heartbeat. A session's state is Fleet's `status.agentState` and
+> `status.sessionState`, which Fleet derives from the agent's own hooks
+> through `fleet signal`. The contract's
 > `StatusChannel` role has no caller in thurbox or the runtime protocol.
 
 **Choice**: how a hook in a session's pane reports its state, how that state is

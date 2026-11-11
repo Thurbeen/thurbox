@@ -134,7 +134,9 @@ fn runtime_mux_passes_the_conformance_suite() {
         .stdout_has("ok   concurrent starts with one key leave one process")
         .stdout_has("ok   a protocol mismatch answers Unknown")
         .stdout_has("ok   an error answers Unknown, never None")
-        .stdout_has("ok   a stop of an absent process succeeds");
+        .stdout_has("ok   a stop of an absent process succeeds")
+        .stdout_has("ok   workspace: idempotent by key")
+        .stdout_has("ok   workspace: release never removes what it did not make");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
 }
 
@@ -165,7 +167,7 @@ fn a_missing_multiplexer_is_reported_by_name_at_the_first_start() {
     fs::create_dir_all(&empty).expect("empty PATH");
     env.only_on_path(&empty);
     let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!({"dir": env.root.to_string_lossy()});
+    task["spec"]["workspace"] = json!([format!("file://{}", env.root.display())]);
     env.apply(json!([task])).ok();
     env.reconcile();
     let status = env.get("t1")["status"].clone();
@@ -176,24 +178,74 @@ fn a_missing_multiplexer_is_reported_by_name_at_the_first_start() {
     assert!(status["session"].is_null(), "{status:#}");
 }
 
-/// A view asks which repositories Fleet can make a worktree of, and where
-/// their checkouts are, before it applies a Task that names one.
+/// A URL whose scheme the host's runtime does not list is refused before
+/// any spawn: the Task waits, and the runtime holds nothing under its key.
 #[test]
-fn the_repository_map_is_listed_for_a_view() {
-    let env = Env::new("repository-map");
-    fs::write(
-        &env.config,
-        "version = 1\n\n[data]\ndir = \"data\"\n\n[workspaces.repositories]\n\"https://example.com/app\" = \"/src/app\"\n",
-    )
-    .expect("config");
-    let map = env.fleet(&["repositories", "--json"]).ok().json();
-    assert_eq!(
-        map,
-        json!({"repositories": {"https://example.com/app": "/src/app"}})
+fn a_scheme_the_runtime_does_not_list_is_refused_before_any_spawn() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("scheme");
+    let mut env = mux_env("runtime-mux-scheme", &program, &sockets);
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!(["hg+https://example.test/app"]);
+    env.apply(json!([task])).ok();
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["phase"], "Pending", "{status:#}");
+    support::assert_condition(&status, "WorkspaceReady", "False", "WorkspaceUnsupported");
+    assert!(
+        status.to_string().contains("hg+https://example.test/app"),
+        "the status names the URL: {status:#}"
     );
-    let none = Env::new("repository-map-empty");
-    let empty = none.fleet(&["repositories", "--json"]).ok().json();
-    assert_eq!(empty, json!({"repositories": {}}));
+    assert!(status["session"].is_null(), "{status:#}");
+    let key = format!(
+        "fleet.{}",
+        env.get("t1")["metadata"]["uid"].as_str().unwrap()
+    );
+    assert_eq!(
+        mux_call(
+            &program,
+            &sockets,
+            "inspect",
+            &json!({"protocol": 1, "key": key})
+        ),
+        json!({"known": "none"}),
+        "nothing was started"
+    );
+}
+
+/// runtime-mux's own config: its workspace root under the environment.
+fn mux_config(env: &Env) -> PathBuf {
+    let config = env.root.join("runtime-mux.toml");
+    fs::write(
+        &config,
+        format!("[workspace]\nroot = '{}'\n", env.root.join("ws").display()),
+    )
+    .expect("runtime-mux config");
+    config
+}
+
+/// One verb of `runtime-mux` and its answer.
+fn mux_call(program: &Path, sockets: &Sockets, verb: &str, request: &Value) -> Value {
+    use std::io::Write;
+    let out = Command::new(program)
+        .arg(verb)
+        .env("TMUX_TMPDIR", &sockets.0)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(request.to_string().as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect(verb);
+    serde_json::from_slice(&out.stdout).expect("JSON")
 }
 
 /// A view asks which hosts a Task may name, and which harnesses Fleet has a
@@ -255,7 +307,7 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
     fs::create_dir_all(&work).expect("workspace");
 
     let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     env.apply(json!([task])).ok();
     env.reconcile().ok();
 
@@ -388,7 +440,7 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     // Watched for idleness, which is what reads the agent's activity.
     task["spec"]["configRef"] = json!({"name": "pausing"});
     let config = support::object("TaskConfig", "pausing", json!({"pauseAfterMs": 1}));
@@ -505,7 +557,7 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     env.apply(json!([task])).ok();
     reconcile_until(&env, "briefed", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
@@ -747,7 +799,7 @@ fn a_codex_task_on_runtime_mux_is_briefed_before_its_first_turn_ends() {
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
     task["spec"]["harness"] = json!("codex");
-    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     env.apply(json!([task])).ok();
 
     // Nothing reported before the brief: its empty composer on the screen
@@ -760,10 +812,24 @@ fn a_codex_task_on_runtime_mux_is_briefed_before_its_first_turn_ends() {
     assert_eq!(env.get("t1")["status"]["conversation"], "t9");
 }
 
-/// `git` in `dir`, blind to any repository a parent process points at.
-fn git(dir: &Path, args: &[&str]) {
+/// The variables that point git at a repository other than its `-C`
+/// directory: a hook that runs these tests exports some of them.
+const GIT_LOCATION: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+];
+
+/// `git` in `dir`, blind to any repository a parent process points at, and
+/// what it printed.
+fn git(dir: &Path, args: &[&str]) -> String {
     let mut cmd = Command::new("git");
-    for var in fleet_runtime::worktree::GIT_LOCATION {
+    for var in GIT_LOCATION {
         cmd.env_remove(var);
     }
     let out = cmd
@@ -774,25 +840,39 @@ fn git(dir: &Path, args: &[&str]) {
         .output()
         .expect("git");
     assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// Every preserved ref in `repository`.
+fn preserved_refs(repository: &Path) -> Vec<String> {
+    git(
+        repository,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/fleet/preserved",
+        ],
+    )
+    .lines()
+    .map(str::to_string)
+    .collect()
+}
+
+/// A Task naming a local repository as a `git+file` URL runs in a worktree
+/// of that checkout under runtime-mux's workspace root, and its release keeps
+/// the work the session left uncommitted in the checkout.
 #[test]
-fn a_repository_task_on_runtime_mux_runs_in_the_worktree_fleet_makes() {
+fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_work() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
     let sockets = Sockets::new("repo");
     let mut env = mux_env("runtime-mux-repo", &program, &sockets);
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
     let src = env.root.join("src");
     fs::create_dir_all(&src).expect("source");
     git(&src, &["init", "-q", "-b", "main"]);
     git(&src, &["commit", "-q", "--allow-empty", "-m", "first"]);
-    let mut config = fs::read_to_string(&env.config).expect("config");
-    config.push_str(&format!(
-        "\n[workspaces.repositories]\n\"https://example.test/app\" = '{}'\n",
-        src.display()
-    ));
-    fs::write(&env.config, config).expect("config");
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let claude = bin.join("claude");
@@ -807,24 +887,46 @@ fn a_repository_task_on_runtime_mux_runs_in_the_worktree_fleet_makes() {
         fleet_dir.display()
     )));
     let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!({"repositories": [
-        {"name": "app", "url": "https://example.test/app", "ref": "main"}
-    ]});
+    task["spec"]["workspace"] = json!([format!("git+file://{}#main", src.display())]);
     env.apply(json!([task])).ok();
 
     reconcile_until(&env, "briefed in its worktree", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
     });
-    let key = env.session_key("t1");
-    let dir = env.data.join("workspaces").join(&key).join("app");
     let status = env.get("t1")["status"].clone();
-    assert_eq!(
-        status["workspace"]["dir"],
-        dir.to_string_lossy().as_ref(),
-        "{status:#}"
+    let dir = PathBuf::from(
+        status["workspace"]["dirs"][0]
+            .as_str()
+            .unwrap_or_else(|| panic!("no workspace dirs: {status:#}")),
     );
-    assert!(dir.join(".git").exists(), "{status:#}");
+    let root = env.root.join("ws");
+    assert!(
+        dir.starts_with(&root),
+        "{} under {}",
+        dir.display(),
+        root.display()
+    );
+    assert!(dir.join(".git").is_file(), "a worktree: {status:#}");
+    assert_ne!(dir, src, "never the checkout itself");
     assert_eq!(starts(&dir).len(), 1, "the agent started in the worktree");
+
+    // Work the session leaves uncommitted outlives the release.
+    fs::write(dir.join("notes.txt"), "kept\n").expect("work");
+    env.fleet(&["delete", "task", "t1"]).ok();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1"));
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert!(!dir.exists(), "the release removed the worktree");
+    // The worktree was the checkout's own, so the work is kept there.
+    let refs = preserved_refs(&src);
+    assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
+    assert_eq!(
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
+        "kept\n"
+    );
 }
 
 fn uid() -> String {
@@ -910,11 +1012,15 @@ fn task_running(env: &mut Env, script: &str) -> PathBuf {
     fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
     let path = std::env::var("PATH").unwrap_or_default();
     env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    // An empty workspace: the reference script makes none, so a session
+    // on it runs in the runtime's default directory.
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
-    let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
-    env.apply(json!([task, support::task("t2", false)])).ok();
+    env.apply(json!([
+        support::task("t1", true),
+        support::task("t2", false)
+    ]))
+    .ok();
     env.reconcile().ok();
     work
 }
@@ -1166,7 +1272,7 @@ fn a_message_typed_into_the_agent_is_recorded_as_one_the_route_may_hold() {
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     env.apply(json!([task])).ok();
     reconcile_until(&env, "briefed", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"

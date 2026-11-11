@@ -69,7 +69,7 @@ fn discord_env(name: &str) -> (Env, PathBuf) {
 inbound = \"discord-gateway\"\ncli = '{}'\ncurlConfig = \"{root}/discord-curl.conf\"\n\n\
 [gateway.people.alex]\n{ACCOUNT} = \"{ALEX}\"\n\n\
 [gateway.routes.eng]\naccount = \"{ACCOUNT}\"\nchannels = [\"{CHANNEL}\"]\nmention = \"required\"\nallow = [\"alex\"]\n\
-taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworkspace = {{ dir = \"{root}/work/conversations\" }}\n",
+taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworkspace = {{ base = \"{root}/work/conversations\" }}\n",
         curl.to_string_lossy(),
     );
     let mut cfg = fs::read_to_string(&env.config).expect("config");

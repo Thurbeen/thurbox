@@ -61,19 +61,41 @@ impl super::Executor for Fleet {
                 repo,
                 agent,
                 host,
+                worktree,
+                branch,
+                base,
+                extras,
             } => {
                 let host = self.host(host.as_deref())?;
                 if let Some(agent) = agent {
                     self.harness(agent)?;
                 }
-                // Fleet makes worktrees on its own machine only (its worktree
-                // adapter refuses any other host), so a session elsewhere
-                // runs in the repository directory there, as it is.
-                let workspace = if host == "local" {
-                    self.worktree_of(&crate::paths::expand_tilde(repo))?
-                } else {
-                    json!({"dir": repo})
-                };
+                let session = task_name(name);
+                let mut urls = vec![workspace_url(
+                    &host,
+                    repo,
+                    Choice {
+                        worktree: *worktree,
+                        branch: branch.as_deref(),
+                        base: base.as_deref(),
+                    },
+                    &session,
+                )?];
+                // Every other repository is on the same branch, from its own
+                // default: the base asked for is the first repository's.
+                for extra in extras {
+                    urls.push(workspace_url(
+                        &host,
+                        &extra.path,
+                        Choice {
+                            worktree: Some(extra.worktree),
+                            branch: branch.as_deref(),
+                            base: None,
+                        },
+                        &session,
+                    )?);
+                }
+                let workspace = json!(urls);
                 let mut spec = json!({
                     "host": host,
                     "workspace": workspace,
@@ -184,51 +206,6 @@ impl Fleet {
         Ok(host)
     }
 
-    /// The `repositories` workspace for the checkout at `dir`, so Fleet
-    /// makes the session a git worktree of its own. Fleet makes worktrees of
-    /// mapped repositories only (`[workspaces.repositories]`, a URL to its
-    /// checkout here), so an unmapped one is refused with the line to add,
-    /// never run in the checkout instead.
-    fn worktree_of(&self, dir: &std::path::Path) -> Result<serde_json::Value, String> {
-        // A directory that is no git repository (the installed interface the
-        // picker offers to edit) has no worktree to make: it runs as it is.
-        // Decided from the filesystem, not from asking `git`, so a `git` that
-        // cannot run never passes for a directory with no repository. A bare
-        // repository keeps its files where a checkout keeps `.git`.
-        let bare =
-            dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
-        if !bare && !dir.ancestors().any(|at| at.join(".git").exists()) {
-            return Ok(json!({"dir": dir}));
-        }
-        let answer = self.json(&["repositories", "--json"])?;
-        let same = |source: &str| {
-            let canonical = |path: &std::path::Path| {
-                std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-            };
-            canonical(std::path::Path::new(source)) == canonical(dir)
-        };
-        let url = answer["repositories"].as_object().and_then(|map| {
-            map.iter()
-                .find(|(_, source)| source.as_str().is_some_and(same))
-                .map(|(url, _)| url.clone())
-        });
-        let Some(url) = url else {
-            return Err(format!(
-                "Fleet maps no repository at {dir}, so it cannot give the session a worktree: \
-                 add \"<its URL>\" = \"{dir}\" under [workspaces.repositories] in Fleet's config",
-                dir = dir.display()
-            ));
-        };
-        // Fleet names a workspace's repository as it names a Task, so a
-        // checkout called `My_Repo` is `my-repo`.
-        let name = dir
-            .file_name()
-            .map(|n| task_name(&n.to_string_lossy()))
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "repo".to_string());
-        Ok(json!({"repositories": [{"name": name, "url": url}]}))
-    }
-
     /// Refuse an agent Fleet has no harness profile for: Fleet would run a
     /// program named as the agent, which is not the command thurbox's
     /// registry runs for it (`shell` is `bash -i`).
@@ -321,9 +298,213 @@ impl Fleet {
     }
 }
 
+/// What the creation flow chose for a session's workspace.
+#[derive(Debug, Clone, Copy, Default)]
+struct Choice<'a> {
+    /// A worktree (`git+file`) or the directory as it is (`file`). `None`:
+    /// a worktree for a git repository on this machine, the directory
+    /// otherwise.
+    worktree: Option<bool>,
+    /// The worktree's branch. `None`: a new branch named after the session.
+    branch: Option<&'a str>,
+    /// What a new branch starts from. `None`: the repository's default.
+    base: Option<&'a str>,
+}
+
+/// The workspace URL of a session over `repo` on the Fleet host `host`.
+///
+/// A worktree is `git+file://<repo>?branch=<branch>#<base>`: the runtime
+/// makes the worktree on the branch, from the base when the branch is new.
+/// The directory as it is is `file://<repo>`. A path on another host must be
+/// absolute, because only that host could expand a `~`, and Fleet takes no
+/// relative URL. Whether a host's runtime makes worktrees at all is its own:
+/// Fleet refuses a scheme the runtime does not list.
+fn workspace_url(
+    host: &str,
+    repo: &str,
+    choice: Choice<'_>,
+    session: &str,
+) -> Result<String, String> {
+    let local = host == "local";
+    let dir = if local {
+        crate::paths::expand_tilde(repo)
+    } else {
+        std::path::PathBuf::from(repo)
+    };
+    // Another host's path is read as that host reads it, which need not be
+    // this machine's way: `/srv/app` is absolute on a Linux host even when
+    // thurbox runs on Windows.
+    let absolute = if local {
+        dir.is_absolute()
+    } else {
+        repo.starts_with('/') || has_drive(repo)
+    };
+    if !absolute {
+        return Err(if local {
+            format!("not an absolute path: {repo}")
+        } else {
+            format!("a path on {host} must be absolute, not {repo}")
+        });
+    }
+    let worktree = match choice.worktree {
+        Some(true) if local && !is_git(&dir) => {
+            return Err(format!(
+                "{} is no git repository, so it has no worktree",
+                dir.display()
+            ))
+        }
+        Some(chosen) => chosen,
+        None => local && is_git(&dir),
+    };
+    if !worktree {
+        return Ok(dir_url("file", &dir));
+    }
+    let mut url = dir_url("git+file", &dir);
+    url.push_str("?branch=");
+    url.push_str(&encode(choice.branch.unwrap_or(session)));
+    if let Some(base) = choice.base {
+        url.push('#');
+        url.push_str(&encode(base));
+    }
+    Ok(url)
+}
+
+/// Whether `dir` on this machine is a git repository or inside one. Decided
+/// from the filesystem, not from asking `git`, so a `git` that cannot run
+/// never passes for a directory with no repository. A bare repository keeps
+/// its files where a checkout keeps `.git`.
+fn is_git(dir: &std::path::Path) -> bool {
+    let bare =
+        dir.join("HEAD").is_file() && dir.join("objects").is_dir() && dir.join("refs").is_dir();
+    bare || dir.ancestors().any(|at| at.join(".git").exists())
+}
+
+/// Whether `path` starts with a Windows drive, `C:\\` or `C:/`.
+fn has_drive(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
+}
+
+/// A path as a URL spells it: `/` separators, and a Windows drive after a
+/// leading `/` (`C:\\x` is `/C:/x`); Windows' `\\?\` prefix dropped.
+fn url_path(path: &str) -> String {
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    if has_drive(path) {
+        format!("/{}", path.replace('\\', "/"))
+    } else {
+        path.to_string()
+    }
+}
+
+/// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
+/// whitespace) percent-encoded, as the runtime decodes them.
+pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
+    let mut url = format!("{scheme}://");
+    for c in url_path(&dir.to_string_lossy()).chars() {
+        push_char(&mut url, c, |c| {
+            c == '%' || c == '?' || c == '#' || c.is_whitespace()
+        });
+    }
+    url
+}
+
+/// A branch or base as a query value or fragment: also `&` and `=`, which
+/// would end or split the value, are percent-encoded.
+fn encode(value: &str) -> String {
+    let mut out = String::new();
+    for c in value.chars() {
+        push_char(&mut out, c, |c| {
+            matches!(c, '%' | '?' | '#' | '&' | '=') || c.is_whitespace()
+        });
+    }
+    out
+}
+
+fn push_char(out: &mut String, c: char, reserved: impl Fn(char) -> bool) {
+    if reserved(c) {
+        let mut buf = [0; 4];
+        for b in c.encode_utf8(&mut buf).bytes() {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    } else {
+        out.push(c);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::task_name;
+    use super::{task_name, workspace_url, Choice};
+
+    /// A worktree names its branch, the session's by default, and its base
+    /// when one was chosen; the directory as it is takes neither.
+    #[test]
+    fn a_workspace_url_carries_the_branch_and_base_chosen() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(repo.path().join(".git")).expect(".git");
+        let dir = repo.path().display().to_string();
+        let new = |branch, base| Choice {
+            worktree: Some(true),
+            branch,
+            base,
+        };
+        assert_eq!(
+            workspace_url("local", &dir, new(None, Some("main")), "wt").unwrap(),
+            format!("git+file://{}?branch=wt#main", super::url_path(&dir))
+        );
+        assert_eq!(
+            workspace_url("local", &dir, new(Some("feat/a&b"), None), "wt").unwrap(),
+            format!("git+file://{}?branch=feat/a%26b", super::url_path(&dir))
+        );
+        assert_eq!(
+            workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
+            format!("git+file://{}?branch=wt", super::url_path(&dir))
+        );
+        let off = Choice {
+            worktree: Some(false),
+            ..Choice::default()
+        };
+        assert_eq!(
+            workspace_url("local", &dir, off, "wt").unwrap(),
+            format!("file://{}", super::url_path(&dir))
+        );
+    }
+
+    /// A directory with no repository has no worktree to make, and a path on
+    /// another host must be absolute: only that host knows its `~`.
+    #[test]
+    fn a_workspace_url_refuses_what_no_runtime_could_make() {
+        let plain = tempfile::tempdir().expect("tempdir");
+        let dir = plain.path().display().to_string();
+        let on = Choice {
+            worktree: Some(true),
+            ..Choice::default()
+        };
+        assert!(workspace_url("local", &dir, on, "wt")
+            .unwrap_err()
+            .contains("no git repository"));
+        assert_eq!(
+            workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
+            format!("file://{}", super::url_path(&dir))
+        );
+        assert!(workspace_url("devbox", "~/app", Choice::default(), "wt")
+            .unwrap_err()
+            .contains("must be absolute"));
+        assert_eq!(
+            workspace_url("devbox", "/srv/app", Choice::default(), "wt").unwrap(),
+            "file:///srv/app"
+        );
+    }
+
+    /// A Windows path is spelled as a URL spells one, so a runtime reads it
+    /// back to the same directory.
+    #[test]
+    fn a_windows_path_is_spelled_with_its_drive_after_a_slash() {
+        use super::{has_drive, url_path};
+        assert_eq!(url_path(r"C:\Users\me\app"), "/C:/Users/me/app");
+        assert_eq!(url_path(r"\\?\C:\x"), "/C:/x");
+        assert_eq!(url_path("/srv/app"), "/srv/app");
+        assert!(has_drive("D:/w") && !has_drive("/srv"));
+    }
 
     /// Fleet's names forbid `..`, so a folder such as `app..backup` must not
     /// make one.

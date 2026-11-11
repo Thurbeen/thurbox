@@ -19,7 +19,7 @@ fn task(dispatch: bool, status: Option<TaskStatus>) -> Object {
         "apiVersion": "fleet/v1alpha1",
         "kind": "Task",
         "metadata": {"name": "t", "uid": "u7", "generation": 1, "resourceVersion": 7, "finalizers": ["fleet.dev/release"]},
-        "spec": {"harness": "claude-code", "brief": "do it", "workspace": {"dir": "w"}, "dispatch": dispatch}
+        "spec": {"harness": "claude-code", "brief": "do it", "workspace": [], "dispatch": dispatch}
     }))
     .unwrap();
     if let Some(s) = status {
@@ -41,7 +41,6 @@ fn run_at(obj: &Object, obs: Observations, now: u64) -> (Plan, TaskStatus) {
         task: obj,
         observations: obs,
         now,
-        materialize: false,
     };
     let plan = TaskController.reconcile(&input).unwrap();
     let st = match &plan.status {
@@ -60,7 +59,6 @@ fn probes(obj: &Object) -> Vec<Probe> {
         task: obj,
         observations: Observations::default(),
         now: NOW,
-        materialize: false,
     };
     TaskController.probes(&input).unwrap()
 }
@@ -231,9 +229,9 @@ fn spawn_once(obj: &Object, outcome: EffectOutcome, now: u64) -> (Object, TaskSt
 }
 
 #[test]
-fn an_unmapped_repository_spends_no_attempt_and_never_stalls_the_task() {
-    let unmapped = || EffectOutcome::Unmapped {
-        url: "https://example.invalid/app".into(),
+fn a_trust_gap_spends_no_attempt_and_never_stalls_the_task() {
+    let unmapped = || EffectOutcome::TrustUnmapped {
+        harness: "codex-coder".into(),
     };
     let mut obj = task(true, None);
     let mut now = NOW;
@@ -246,8 +244,8 @@ fn an_unmapped_repository_spends_no_attempt_and_never_stalls_the_task() {
             1,
             "the given-back attempt reuses its key"
         );
-        assert_eq!(cond(&st, "Spawned").reason, "RepositoryUnmapped");
-        assert_eq!(cond(&st, "NeedsAttention").reason, "RepositoryUnmapped");
+        assert_eq!(cond(&st, "Spawned").reason, "TrustUnmapped");
+        assert_eq!(cond(&st, "NeedsAttention").reason, "TrustUnmapped");
         assert_eq!(st.not_before, Some(now + RETRY_DELAY_MS));
         let (plan, _) = run_at(&next, Observations::default(), now + 1);
         assert!(plan.effects.is_empty(), "the retry waits");
@@ -273,7 +271,7 @@ fn an_unmapped_repository_spends_no_attempt_and_never_stalls_the_task() {
 }
 
 #[test]
-fn an_untrusted_harness_waits_like_an_unmapped_repository() {
+fn an_untrusted_harness_is_named_in_the_attention() {
     let trust = || EffectOutcome::TrustUnmapped {
         harness: "codex-coder".into(),
     };
@@ -299,25 +297,19 @@ fn an_untrusted_harness_waits_like_an_unmapped_repository() {
 
 #[test]
 fn a_mapping_added_while_waiting_spawns_and_resolves_the_attention() {
-    for gap in [
-        EffectOutcome::Unmapped {
-            url: "https://example.invalid/app".into(),
-        },
-        EffectOutcome::TrustUnmapped {
-            harness: "codex-coder".into(),
-        },
-    ] {
-        let (obj, _) = spawn_once(&task(true, None), gap, NOW);
-        let later = NOW + RETRY_DELAY_MS;
-        let spawned = EffectOutcome::Spawned {
-            session: session(),
-            adopted: false,
-        };
-        let (_, st) = spawn_once(&obj, spawned, later);
-        assert_eq!(st.phase, Phase::Spawned);
-        assert_eq!(st.spawn_attempts, 1);
-        assert_eq!(cond(&st, "NeedsAttention").reason, "Resolved");
-    }
+    let gap = EffectOutcome::TrustUnmapped {
+        harness: "codex-coder".into(),
+    };
+    let (obj, _) = spawn_once(&task(true, None), gap, NOW);
+    let later = NOW + RETRY_DELAY_MS;
+    let spawned = EffectOutcome::Spawned {
+        session: session(),
+        adopted: false,
+    };
+    let (_, st) = spawn_once(&obj, spawned, later);
+    assert_eq!(st.phase, Phase::Spawned);
+    assert_eq!(st.spawn_attempts, 1);
+    assert_eq!(cond(&st, "NeedsAttention").reason, "Resolved");
 }
 
 fn spawned(extra: impl FnOnce(&mut TaskStatus)) -> Object {
@@ -716,7 +708,8 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
             },
             Probe::Lost { session: session() },
             Probe::Paused { session: session() },
-            Probe::Ready { session: session() }
+            Probe::Ready { session: session() },
+            Probe::Activity { session: session() }
         ]
     );
     let (plan, st) = run(
@@ -1018,14 +1011,18 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
         probes(&concluded(&[])).is_empty(),
         "nothing queued, session just looked up: at rest"
     );
-    // At rest, the session is looked up again once per recheck interval.
+    // At rest, the session is looked up again once per recheck interval,
+    // and what its agent last reported is read with it.
     for checked in [None, Some(NOW - SESSION_RECHECK_MS)] {
         assert_eq!(
             probes(&concluded_checked(&[], checked)),
-            vec![Probe::Find {
-                host: "local".into(),
-                key: "t.u7".into()
-            }],
+            vec![
+                Probe::Find {
+                    host: "local".into(),
+                    key: "t.u7".into()
+                },
+                Probe::Activity { session: session() }
+            ],
             "{checked:?}"
         );
     }
@@ -1039,7 +1036,8 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
             },
             Probe::Lost { session: session() },
             Probe::Paused { session: session() },
-            Probe::Ready { session: session() }
+            Probe::Ready { session: session() },
+            Probe::Activity { session: session() }
         ]
     );
     let (plan, st) = run(
@@ -1236,7 +1234,7 @@ fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
     let obj = spawned(|_| {});
     assert!(probes(&obj).contains(&Probe::WorkspaceTrust {
         session: session(),
-        workspace: fleet_api::task::Workspace::at("w"),
+        workspace: fleet_api::task::Workspace::default(),
         ready: None,
     }));
     let obs = |trust| Observations {
@@ -1584,9 +1582,10 @@ fn only_a_known_idle_lasting_pause_after_ms_pauses() {
         pause_obs(idle(), Observation::unknown("cannot tell")),
     );
     assert!(plan.effects.is_empty(), "{plan:#?}");
-    // Nor is a Task with no pause setting.
+    // Nor is a Task with no pause setting, though its activity is read for
+    // its session state.
     let plain = briefed_with(&[], |st| st.idle_since = Some(0));
-    assert!(!probes(&plain).contains(&Probe::Activity { session: session() }));
+    assert!(probes(&plain).contains(&Probe::Activity { session: session() }));
     let (plan, _) = run(&plain, pause_obs(idle(), Observation::Known(false)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
 }

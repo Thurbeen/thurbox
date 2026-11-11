@@ -1360,3 +1360,19 @@ fn an_existing_empty_directory_is_used_and_kept_when_the_clone_fails() {
         "a directory the user made is not ours to remove"
     );
 }
+
+/// A repository git cannot read, here one whose `.git` names no repository,
+/// is a failure to show, not a directory with no repository: the flow must
+/// keep its worktree choices.
+#[test]
+fn a_repository_git_cannot_read_is_a_failure_not_a_plain_directory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".git"), "gitdir: /nowhere/at/all\n").expect(".git");
+    let read = branches(&dir.path().display().to_string());
+    assert!(matches!(read, Err(BranchesUnread::Failed(_))), "{read:?}");
+    let plain = tempfile::tempdir().expect("tempdir");
+    assert_eq!(
+        branches(&plain.path().display().to_string()),
+        Err(BranchesUnread::NotGit)
+    );
+}

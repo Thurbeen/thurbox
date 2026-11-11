@@ -17,30 +17,26 @@ breadcrumb: 'Recipes'
   <a href="#monorepo" class="heading-anchor">#</a>
 </h2>
 <p>
-  One interactive Task per package, each in a git worktree of its own, each sent its part of the
-  work. A worktree needs the repository in Fleet's map, once, in Fleet's config:
-</p>
-<pre data-title="Fleet config.toml"><code class="language-toml">[workspaces.repositories]
-"https://github.com/me/mono" = "/home/me/code/mono"   # the URL, and its checkout here</code></pre>
-<p>
-  Then each Task names the repository instead of a directory, and Fleet makes its worktree. The
-  Task's <code>thurbox.dev/name</code> label is the name the session list shows.
+  One interactive Task per package, each in a git worktree of its own on a branch of its own, each
+  sent its part of the work. Each Task names the repository as a <code>git+file</code> URL, and the
+  runtime makes its worktree. The Task's <code>thurbox.dev/name</code> label is the name the session
+  list shows.
 </p>
 <pre data-title="sessions.sh"><code class="language-bash">#!/usr/bin/env bash
 set -euo pipefail
-url=https://github.com/me/mono
+repo=/home/me/code/mono
 for pkg in api web worker; do
   printf '{"apiVersion":"fleet/v1alpha1","kind":"Task",
     "metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},
     "spec":{"harness":"claude-code","host":"local",
-            "workspace":{"repositories":[{"name":"mono","url":"%s"}]},
+            "workspace":["git+file://%s?branch=%s"],
             "dispatch":true}}' \
-    "$pkg" "$pkg" "$url" | fleet apply --create-only -f -
+    "$pkg" "$pkg" "$repo" "$pkg" | fleet apply --create-only -f -
   fleet send "$pkg" "work only in packages/$pkg: run its tests and fix what fails"
 done
 fleet list task</code></pre>
 <p>
   <code>fleet send</code> queues each message, and Fleet delivers it once the agent is ready.
   <code>fleet delete task &lt;name&gt;</code> ends a session and removes its worktree, keeping
-  committed work that exists nowhere else under <code>refs/fleet/preserved/</code>.
+  work that exists nowhere else under <code>refs/fleet/preserved/</code> in the runtime's mirror.
 </p>

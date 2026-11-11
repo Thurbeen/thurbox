@@ -42,8 +42,8 @@ made, then exits at a fixed point or `--max-passes`. It does not sleep until a
 retry deadline or run a background watch; the caller invokes it again.
 `fleet up` is the resident alternative: it retains the manager lease and
 periodically invokes bounded sweeps for all due Tasks, independently of agent
-activity. Its default VEGA session is an ordinary Task from the bundled
-starter. See [bootstrap and recovery](../configuration.md).
+activity, and creates no Task of its own. See
+[bootstrap and recovery](../configuration.md).
 `NeedsAttention` is a condition, not a phase: delivery reads and releases can
 recover while attention is raised. See the [state machine](#task-state-machine)
 for the distinction between bounded sends and continuing recovery attempts.
@@ -100,18 +100,17 @@ concludes nothing.
 | --- | --- | --- | --- |
 | Pending | `dispatch: false` | Pending | Set `Spawned=False/AwaitingDispatch`; do not spawn. |
 | Pending | Dispatched; host false, Unknown or unanswered | Pending | Report host condition; do not spawn. |
-| Pending | Dispatched; host reachable; Fleet makes the workspace and `status.workspace` is empty; no materialize in flight | Pending | Increment materialize attempt; set `WorkspaceReady=Unknown/Materializing`; persist the intent and plan `Materialize` under the workspace key. |
-| Pending | Known `Materialized` receipt, or a missing/Unknown receipt with the workspace key found | Spawning | Record `status.workspace`; set `WorkspaceReady=True` (`Materialized` or `Adopted`); plan Spawn with the workspace as `ready`. |
-| Pending | Known failure, or a missing/Unknown receipt with the workspace key proven absent; attempts below 3 | Pending | Set `WorkspaceReady=False/MaterializeRetry`; wait, then materialize again under the next key. |
-| Pending | Known `Unmapped` materialize receipt | Pending | Give the attempt back; raise `NeedsAttention/RepositoryUnmapped`; wait, then materialize again. |
+| Pending | Dispatched; host reachable; a non-empty URL list and `status.workspace` is empty; no workspace call in flight | Pending | Increment materialize attempt; set `WorkspaceReady=Unknown/Materializing`; persist the intent and plan `Materialize`, the runtime's `workspace` call, under the workspace key. |
+| Pending | Known `Materialized` receipt, or a missing/Unknown receipt and the same call again answers it made the workspace | Spawning | Record `status.workspace`; set `WorkspaceReady=True` (`Materialized` or `Adopted`); plan Spawn with the workspace as `ready`. |
+| Pending | Known failure, or a missing/Unknown receipt and the same call again answers it made nothing; attempts below 3 | Pending | Set `WorkspaceReady=False/MaterializeRetry`; wait, then call again under the next key. |
+| Pending | Known `Unsupported` receipt: the runtime does not handle a URL | Pending | Give the attempt back; set `WorkspaceReady=False` and raise NeedsAttention, both `WorkspaceUnsupported`; wait, then call again. Nothing spawns. |
 | Pending | Same failure with 3 materialize attempts spent | Stalled | Set `WorkspaceReady=False/MaterializeFailed`; raise `Stalled/MaterializeAttemptsExhausted` and NeedsAttention. |
-| Pending | Missing/Unknown materialize receipt; workspace key unreadable | Pending | Set `WorkspaceReady=Unknown/WorkspaceUnreadable`; never materialize again blindly. |
+| Pending | Missing/Unknown receipt; the call again is Unknown too | Pending | Set `WorkspaceReady=Unknown/WorkspaceUnreadable`; spend no attempt. |
 | Pending | Dispatched; host reachable | Spawning | Increment spawn attempt; persist spawn intent and plan Spawn. |
 | Spawning | Known Spawned receipt | Spawned | Record returned SessionRef. |
 | Spawning | Missing/Unknown receipt; session key found | Spawned | Adopt the session and recover its receipt. |
 | Spawning | Known failure, or ambiguous outcome with key proven absent; attempts below 3 | Pending | Schedule a wait before another spawn. |
-| Spawning | Known `Unmapped` receipt | Pending | Give the attempt back; set `Spawned=False` and NeedsAttention, both `RepositoryUnmapped`; schedule a wait, then spawn again under the same key. |
-| Spawning | Known `TrustUnmapped` receipt | Pending | As for `Unmapped`, with reason `TrustUnmapped`. |
+| Spawning | Known `TrustUnmapped` receipt | Pending | Give the attempt back; set `Spawned=False` and NeedsAttention, both `TrustUnmapped`; schedule a wait, then spawn again under the same key. |
 | Spawning | Same failure with 3 spawn attempts spent | Stalled | Raise `Stalled/SpawnAttemptsExhausted` and NeedsAttention. |
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
 | Spawned | Readable lookup lacks the recorded session identity | Spawned | Raise WorkerGone and NeedsAttention; do not send. |
@@ -209,7 +208,7 @@ are last recorded observations; absence of a condition is not a True value.
 | Type | True means / relevant reason |
 | --- | --- |
 | HostReachable | The host answered reachable during the dispatch check. |
-| WorkspaceReady | The workspace Fleet makes is whole: `Materialized` or `Adopted`. Unknown while `Materializing`, `WorkspaceUnreadable`, `Cleaning` or `CleanRetry`. False with `MaterializeRetry`, `MaterializeFailed`, `RepositoryUnmapped` or, after the release, `Cleaned`. Absent for a `dir` workspace. |
+| WorkspaceReady | The workspace the runtime makes is whole: `Materialized` or `Adopted`. Unknown while `Materializing`, `WorkspaceUnreadable`, `Cleaning` or `CleanRetry`. False with `MaterializeRetry`, `MaterializeFailed`, `WorkspaceUnsupported` or, after the release, `Cleaned`. Absent for an empty URL list. |
 | Spawned | The spawn returned a session or the controller adopted its key. |
 | Briefed | The brief has a `ReceiptWritten` or `ReceiptRecovered` record. |
 | Stalled | `MaterializeAttemptsExhausted`, `SpawnAttemptsExhausted` or `BriefAttemptsExhausted`. |
@@ -219,10 +218,10 @@ are last recorded observations; absence of a condition is not a True value.
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
 | SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
 | Paused | The runtime holds the session with its agent stopped. `Idle` when Fleet paused it; `External` when Fleet found it stopped. False with `Resumed` once the agent runs again, and with `PauseFailed` after a pause that did not happen. The phase does not change. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, RepositoryUnmapped, TrustUnmapped, WorkspaceUntrusted, ReviveFailed, ResumeFailed or CleanFailed. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, WorkspaceUnsupported, TrustUnmapped, WorkspaceUntrusted, ReviveFailed, ResumeFailed or CleanFailed. |
 
 WorkerGone clears when the exact recorded session is seen again.
-RepositoryUnmapped clears when a later spawn does not answer Unmapped.
+WorkspaceUnsupported clears when a later workspace call does not answer Unsupported.
 TrustUnmapped clears when a later spawn does not answer TrustUnmapped. A successful
 delivery recovery clears attention whose reason is BriefUnconfirmed. A
 delivery clears attention whose reason is DeliveryUnconfirmed while no
@@ -407,13 +406,15 @@ For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. The finalizer remains while release is failed or ambiguous. It is removed
 only after Known Released, or when there is no session to release.
 
-When Fleet made the workspace, the release is followed by `CleanWorkspace`:
+When the runtime made the workspace, the release is followed by
+`CleanWorkspace`, the runtime's `stop` with `release`:
 
 - The finalizer stays until the clean has a `Deleted` receipt.
 - A failed or unknown clean is repeated after each wait. Three raise
   `NeedsAttention/CleanFailed`.
-- A Task deleted before its materialize has a Known receipt looks the
-  workspace key up first. An unreadable key holds the finalizer. The
+- A Task deleted before its `workspace` call has a Known receipt releases
+  the workspace key without making anything: a release of nothing is
+  harmless. The
 session and its conversation/workspace may be deleted by the runtime, so a
 worker result does not itself authorize release before Task deletion.
 
@@ -464,7 +465,7 @@ skips a Concluded Task whose inbox is empty, unless one of these holds:
 | Task state | Probes |
 | --- | --- |
 | Pending, `dispatch: false` | None. |
-| Pending, `dispatch: true` | `Host { host }`; `FindWorkspace { host, key }` while a materialize has no Known receipt. |
+| Pending, `dispatch: true` | `Host { host }`; `FindWorkspace { host, key, urls }`, the `workspace` call again, while one has no Known receipt. |
 | Spawning | `Find { host, key }`. |
 | Spawned | `Find`; `Lost`, `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
 | Briefed, no worker result for `status.brief.generation` | `Find`; `Lost`; `Paused`; the delivery probes below; `Activity` when the session may be paused. |
@@ -472,7 +473,7 @@ skips a Concluded Task whose inbox is empty, unless one of these holds:
 | Concluded, session recheck due | `Find`. |
 | Concluded, session may be paused or a pause or resume in flight | `Find` when the recheck is due; `Lost`; `Paused`; `Activity` when the session may be paused. |
 | Concluded otherwise, or Stalled | None. |
-| Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded; `FindWorkspace` while a materialize has no Known receipt. |
+| Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded. |
 
 The inbox probes, for the oldest entry not given up on: `Ready` for the
 recorded session, and `BriefDelivered` under the entry's key when it was
@@ -584,7 +585,7 @@ return `Observation<T>`; a refused effect is
 | `prepare_execution` | Resolved execution | The execution to freeze, unchanged by default, or Unknown. |
 | `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
-| `spawn` | `SpawnSpec`, with `ready` when Fleet made the workspace | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
+| `spawn` | `SpawnSpec`, with `ready` when the runtime made the workspace | `Spawned { session, adopted }`, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
 | `find` | Host and session key | Optional session under that key, or Unknown. |
 | `ready` | `SessionRef` | Whether the session's agent can take a message now. A working turn can take one; a dialog that holds the agent cannot. |
 | `workspace_trust` | `SessionRef`, the Task's workspace and the `ready` workspace Fleet made, if any | `Trusted { how }`, `Untrusted { gap, why }` with gap `Unsupported` or `Mismatch`, or Unknown. |
@@ -620,24 +621,20 @@ with either adapter; command resolution requires a lease above 20000 ms and
 renews it per source. Both implement the same port; neither is called from
 pure code.
 
-#### Workspace port
+#### Workspace calls
 
-Source: [Workspaces](../../../crates/fleet-api/src/workspace.rs). The CLI
-always wires this port: the `[workspaces]` section picks the adapter, and
-without one it is the default (see the [workspace
-contract](../contracts.md#workspace-contract), which states the adapter
-rules). `TaskInput.materialize` is false only for a manager built without
-the port, and the controller then plans no workspace effect.
+Source: the [runtime port](../../../crates/fleet-api/src/runtime.rs). The
+runtime makes every workspace (see the [workspace
+contract](../contracts.md#workspace-contract), which states the rules).
 
 | Method | Input | Answer |
 | --- | --- | --- |
-| `operation_bound` | None | Worst-case duration of one call, in milliseconds. The lease must outlast it. |
-| `materialize` | Host, workspace key and the Task's repositories | `Materialized { workspace, adopted }`, `Unmapped { url }`, or Failed/Unknown. |
-| `find` | Host and workspace key | The whole workspace under the key, `Known(None)` when none is whole, or Unknown. |
-| `clean` | `WorkspaceRef` | `Deleted`, also for a workspace already gone, or Failed/Unknown. |
+| `workspace` | Host, workspace key and the Task's URLs | `Materialized { workspace, adopted }`, `Unsupported { url }`, or Failed/Unknown. |
+| `find_workspace` | Host, workspace key and the Task's URLs | The same call again, which is idempotent: the whole workspace, `Known(None)` when the runtime made none, or Unknown. |
+| `release_workspace` | `WorkspaceRef` | `Deleted`, also for a workspace already gone, or Failed/Unknown. |
 
-The controller asks `FindWorkspace` only while a materialize has no Known
-receipt. The manager performs `Materialize` and `CleanWorkspace` as it
+The controller asks `FindWorkspace` only while a `workspace` call has no
+Known receipt. The manager performs `Materialize` and `CleanWorkspace` as it
 performs a spawn: intent first, then the effect, then the receipt.
 
 #### Workspace trust

@@ -757,7 +757,7 @@ jobs:
           tool: cargo-nextest
       - name: Install tmux and jq
         run: sudo apt-get update && sudo apt-get install -y tmux jq
-      - run: cargo build --locked -p fleet-cli -p runtime-mux --bin fleet --bin runtime-mux
+      - run: cargo build --locked -p fleet-cli -p runtime-mux -p workspace-git --bin fleet --bin runtime-mux --bin workspace-git
       - name: Check runtime-mux
         run: |
           export TMUX_TMPDIR="$RUNNER_TEMP/runtime-mux"

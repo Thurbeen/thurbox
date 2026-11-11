@@ -502,35 +502,83 @@ fn open_log(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::File, PathBu
 
 /// One Task as a session row.
 ///
+/// The directory a `file` or `git+file` URL names, without a query or a
+/// fragment, `%XX` decoded; `None` for any other URL.
+fn local_dir(url: &str) -> Option<String> {
+    let path = url
+        .strip_prefix("file://")
+        .or_else(|| url.strip_prefix("git+file://"))?;
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut bytes = Vec::with_capacity(path.len());
+    let mut rest = path.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        let hex = tail
+            .get(..2)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b, hex) {
+            (b'%', Some(decoded)) => {
+                bytes.push(decoded);
+                rest = &tail[2..];
+            }
+            _ => {
+                bytes.push(b);
+                rest = tail;
+            }
+        }
+    }
+    String::from_utf8(bytes).ok().filter(|p| !p.is_empty())
+}
+
 /// The Task's name is the row's id: every command addresses a Task by name.
 /// The row's name is the one the session was given ([`NAME_LABEL`]), or the
 /// Task's for a Task made elsewhere. What a row says of git, panes and hook
-/// columns is thurbox's own engine's and stays empty here; Fleet's
-/// `sessionState` is the status.
+/// columns is thurbox's own engine's and stays empty here; the status is
+/// Fleet's `agentState`, the agent's own report, over its `sessionState`.
 pub fn row_of(task: &Value) -> SessionRow {
     let text = |value: &Value| value.as_str().map(str::to_string);
     let (spec, status) = (&task["spec"], &task["status"]);
     let id = text(&task["metadata"]["name"]).unwrap_or_default();
     let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| id.clone());
-    let cwd = text(&status["workspace"]["dir"])
-        .or_else(|| text(&spec["workspace"]["dir"]))
+    // Where the session runs once the runtime made its workspace; before,
+    // the directory its first URL names on this machine.
+    let cwd = text(&status["workspace"]["dirs"][0])
+        .or_else(|| spec["workspace"][0].as_str().and_then(local_dir))
         .map(PathBuf::from);
+    // Every directory the session spans, in order: the runtime's answer, or
+    // before it, the session's own directory.
+    let member_dirs: Vec<PathBuf> = status["workspace"]["dirs"]
+        .as_array()
+        .map(|dirs| {
+            dirs.iter()
+                .filter_map(Value::as_str)
+                .map(PathBuf::from)
+                .collect()
+        })
+        .filter(|dirs: &Vec<PathBuf>| !dirs.is_empty())
+        .unwrap_or_else(|| cwd.iter().cloned().collect());
     let session_state = status["sessionState"].as_str();
     let repo = repo_name(&cwd, None);
     SessionRow {
         id,
         name,
         agent: text(&spec["harness"]).unwrap_or_default(),
-        status: match session_state {
-            Some("Running") => SessionState::Running,
-            Some("Idle") => SessionState::Idle,
-            Some("Paused") => SessionState::Stopped,
-            Some("Lost" | "Gone") => SessionState::Failed,
+        // A stopped, lost or gone session is that, whatever its agent last
+        // said; otherwise the agent's own report, as v2 showed it, and only
+        // with no report what the runtime proved.
+        status: match (session_state, status["agentState"].as_str()) {
+            (Some("Paused"), _) => SessionState::Stopped,
+            (Some("Lost" | "Gone"), _) => SessionState::Failed,
+            (_, Some("working")) => SessionState::Working,
+            (_, Some("attention")) => SessionState::Blocked,
+            (_, Some("idle")) => SessionState::Idle,
+            (Some("Running"), _) => SessionState::Running,
+            (Some("Idle"), _) => SessionState::Idle,
             _ => SessionState::Unreported,
         },
         repos: repo.iter().cloned().collect(),
         repo,
-        member_dirs: cwd.iter().cloned().collect(),
+        member_dirs,
         cwd,
         branch: None,
         base_branch: None,
@@ -557,6 +605,25 @@ pub fn row_of(task: &Value) -> SessionRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session over several repositories spans every directory the runtime
+    /// made, in order: the editor (`Ctrl+O`) opens them all, not the first.
+    #[test]
+    fn a_row_spans_every_directory_of_its_workspace() {
+        let task = serde_json::json!({
+            "metadata": {"name": "pair"},
+            "spec": {"harness": "claude", "host": "local", "workspace": [
+                "git+file:///src/a?branch=pair", "git+file:///src/b?branch=pair"
+            ]},
+            "status": {"workspace": {"key": "k", "host": "local", "dirs": ["/w/k/a", "/w/k/b"]}},
+        });
+        let row = row_of(&task);
+        assert_eq!(row.cwd, Some(PathBuf::from("/w/k/a")));
+        assert_eq!(
+            row.member_dirs,
+            vec![PathBuf::from("/w/k/a"), PathBuf::from("/w/k/b")]
+        );
+    }
 
     /// The agents a session can run are the harnesses Fleet has profiles
     /// for, read from `fleet version --json`: thurbox keeps no list of its own.

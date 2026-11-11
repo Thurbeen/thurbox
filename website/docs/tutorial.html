@@ -123,8 +123,7 @@ extraCss: ['tutorial.css']
   </figcaption>
 </figure>
 <p>
-  Either way the repository lands in memory, with the cursor on it &mdash;
-  and stays there for next time.
+  Either way the repository lands in memory, ticked &mdash; and stays there for next time.
 </p>
 <figure class="shot">
   <img
@@ -145,6 +144,18 @@ extraCss: ['tutorial.css']
   <tbody>
     <tr><td>any letter</td><td>Filter the list &mdash; the search is focused from the start</td></tr>
     <tr>
+      <td><kbd>Space</kbd></td>
+      <td>Tick a repository (<code>[x]</code>); every ticked one goes into the session</td>
+    </tr>
+    <tr>
+      <td><kbd>Alt</kbd>+<kbd>W</kbd></td>
+      <td>Give it a worktree of its own (<code>[wt]</code>)</td>
+    </tr>
+    <tr>
+      <td><kbd>&rarr;</kbd> / <kbd>&larr;</kbd></td>
+      <td>Open or close a repository's existing worktrees</td>
+    </tr>
+    <tr>
       <td><kbd>Del</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd></td>
       <td>Forget a remembered repository</td>
     </tr>
@@ -160,19 +171,21 @@ extraCss: ['tutorial.css']
 </table>
 
 <h2 id="worktree">
-  3. It gets a worktree of its own
+  3. Choose its worktree
   <a href="#worktree" class="heading-anchor">#</a>
 </h2>
 <p>
-  There is no worktree step: Fleet makes each session on this machine a git worktree of the
-  repository you picked. A session on another Fleet host runs in the repository directory there,
-  as it is. Fleet makes worktrees of mapped repositories only, so map the repository once in
-  Fleet's config:
+  A ticked repository runs as it is unless you press <kbd>Alt</kbd>+<kbd>W</kbd> on it: then it
+  gets a <strong>git worktree of its own</strong> (<code>[wt]</code>), so the agent never works in
+  your checkout. Two more steps follow: <strong>Base Branch</strong>, what the new branch starts
+  from (the default branch is under the cursor), and, after the name, <strong>Branch Name</strong>,
+  prefilled from it. A branch that exists is checked out. Tick several repositories and the session
+  spans them all, one worktree each on the same branch. No configuration is needed: the runtime
+  makes each worktree from the repository's path.
 </p>
-<pre><code>[workspaces.repositories]
-"https://github.com/you/app" = "/home/you/src/app"</code></pre>
 <p>
-  An unmapped repository is refused with the line to add.
+  A directory that is no git repository is refused a worktree and runs as it is, and so does a
+  session on another Fleet host.
 </p>
 
 <h2 id="name-and-agent">
@@ -354,7 +367,7 @@ fleet get task docs                        # one Task, its spec and status
 echo '{"apiVersion":"fleet/v1alpha1","kind":"Task",
   "metadata":{"name":"docs","labels":{"thurbox.dev/name":"docs"}},
   "spec":{"harness":"claude-code","host":"local",
-          "workspace":{"dir":"/home/me/code/web-app"},"dispatch":true}}' \
+          "workspace":["file:///home/me/code/web-app"],"dispatch":true}}' \
   | fleet apply --create-only -f -
 
 # Talk to one

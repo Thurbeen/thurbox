@@ -196,7 +196,7 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
             EffectOutcome::WorkspaceBusy { .. } => "workspaceBusy",
             EffectOutcome::Deleted => "deleted",
             EffectOutcome::Failed { .. } => "failed",
-            EffectOutcome::Unmapped { .. } => "unmapped",
+            EffectOutcome::Unsupported { .. } => "unsupported",
             EffectOutcome::TrustUnmapped { .. } => "trustUnmapped",
         },
     }

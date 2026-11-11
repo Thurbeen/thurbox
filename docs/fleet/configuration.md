@@ -1,43 +1,21 @@
 # Configuration
 
-## Initialization and the VEGA starter
+## Initialization and `fleet up`
 
-`fleet init` creates the native config and the bundled, editable VEGA
-workspace. `fleet up` starts VEGA and keeps every due Task reconciling.
-This page owns their behaviour. The [native Fleet TOML](#native-fleet-configuration-fleettoml)
+`fleet init` writes the native config. `fleet up` keeps every due Task
+reconciling. This page owns their behaviour. The [native Fleet TOML](#native-fleet-configuration-fleettoml)
 reference owns the config fields.
 
 ### Prerequisites
 
 `init` works offline. To run real sessions, put `runtime-mux` on PATH,
-install tmux, and install and authenticate the chosen harness first. Fleet
-does not install prerequisites or change login state. `up` asks the runtime
-of `Task/vega`'s host for its manifest and reports an unavailable or unknown
-runtime. Harness login/readiness failures remain visible in Task status;
-inspect `fleet status task vega --json` before retrying.
-
-### Choosing the harness
-
-The harness is the coding agent that a Task's session runs, such as `claude`
-or `codex`. `fleet init` writes one harness into the workspace's `task.json`:
-
-- `fleet init --harness NAME` writes `NAME`.
-- With no flag, `init` asks at a terminal if it never installed a
-  `task.json` in this workspace. An empty answer, or no terminal, keeps the
-  bundled default, `codex`.
-- With no flag and an installed `task.json`, `init` keeps its harness.
-
-VEGA's brief tells VEGA to give each worker Task the same harness as
-`Task/vega`. A user or a repository can ask for another harness for one
-worker.
-
-The first `fleet up` creates `Task/vega` from `task.json`. Before that,
-`init --harness NAME` rewrites an unedited `task.json`. If you edited
-`task.json`, `init` keeps your file. It writes its own version as a conflict
-copy, as `init --update` does.
-
-After the first `up`, the harness of `Task/vega` is immutable.
-`init --harness` refuses a different harness at that point.
+install tmux, and install and authenticate each harness your Tasks name.
+Fleet does not install prerequisites or change login state. `up` asks the
+runtime of each configured host for its manifest. When no host answers, `up`
+exits and names the runtime it could not start. When some hosts answer, `up`
+reports each other host and starts. Harness login and readiness failures stay
+visible in Task status: inspect `fleet status task NAME --json` before you
+retry.
 
 Fleet starts the `codex` harness with a launch override that trusts its
 workspace. Claude Code can show its trust dialog in a new workspace. Fleet
@@ -46,15 +24,16 @@ brief follows. See [workspace trust](contracts.md#workspace-trust).
 
 ### Running `fleet up`
 
-`up` runs in the foreground and continuously reconciles every due Task, even
-while VEGA is busy or idle. Keep it running in a terminal or your own service
-supervisor. Ctrl-C (also SIGTERM on Unix) finishes the bounded sweep, releases
-the manager lease and retains sessions. Run `fleet up` again to reconnect to
-the same ordinary `Task/vega`; a simultaneous manager exits with code 6.
-After a crash, wait for the recorded lease to expire before restarting. Unknown
-session observations never trigger a blind replacement. Stalled, completed or
-deleting VEGA Tasks require inspection and deliberate recovery, not another
-automatic Task identity.
+`up` runs in the foreground and continuously reconciles every due Task. It
+creates no Task of its own: Tasks come from `fleet apply`, from an interface
+such as thurbox, or from a gateway route. Keep `up` running in a terminal or
+your own service supervisor. Ctrl-C (also SIGTERM on Unix) finishes the
+bounded sweep, releases the manager lease and retains sessions. Run
+`fleet up` again to reconnect; a simultaneous manager exits with code 6.
+After a crash, wait for the recorded lease to expire before restarting.
+Unknown session observations never trigger a blind replacement. Each sweep
+reports a Task that is blocked at startup or that needs attention, so no
+separate status query is needed to see why.
 
 Polling defaults to one bounded sweep per second; `up --poll-ms` accepts 100
 through 10000 ms. Each unfinished Briefed Task costs two bounded session
@@ -71,7 +50,7 @@ that has `WantedBy=default.target` in its `[Install]` section:
 
 ```sh
 loginctl enable-linger "$USER"
-systemctl --user enable fleet-vega.service
+systemctl --user enable fleet.service
 ```
 
 ### Configuration and customization
@@ -85,55 +64,46 @@ Config selection is `--config PATH`, then `FLEET_CONFIG`, then exactly one
 native per-user path: `$XDG_CONFIG_HOME/fleet/config.toml` (fallback
 `~/.config/fleet/config.toml`). Fleet never searches the current directory or
 its parents. Explicit paths must exist for commands other than `init`;
-`init --config PATH` creates a separate configuration and a default
-data/workspace root at `<native-data>/fleet/instances/<config-path-hash>/`.
-Relative paths inside TOML resolve beside that file. With no native data-home
-variables, explicit `--config` uses a `fleet-data` directory beside the config
-as its data root. An explicit store must be separate from the config and
-workspace.
+`init --config PATH` creates a separate configuration and a default data
+root at `<native-data>/fleet/instances/<config-path-hash>/`. Relative paths
+inside TOML resolve beside that file. With no native data-home variables,
+explicit `--config` uses a `fleet-data` directory beside the config as its
+data root. An explicit store must be separate from the config.
 
-Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
-`~/.local/share/fleet/vega`) and a fresh resource store under the same Fleet
-directory at `store-v1`. The config records absolute paths and a generated
-per-instance session key prefix. It writes
+Default init writes a fresh resource store path at
+`$XDG_DATA_HOME/fleet/store-v1` (fallback `~/.local/share/fleet/store-v1`).
+The config records absolute paths and a session key prefix derived from the
+config's path, so two configs never share a session. It writes
 `runtimes.mux.callTimeoutMs = 10000`, below the built-in default of `15000`;
-edit it to change the bound. `[starter] workspace` selects the workspace.
-Its `task.json` is a runnable JSON array containing one Task. Before first
-`up`, edit its brief and customize `AGENTS.md`, prompts and skills.
-No runtime under `[runtimes]` passes a model to its harness: it refuses a
-Task that sets `spec.model`. Give the model in the harness's own
-configuration instead. After creation, reconnect keeps the stored immutable
-Task inputs. Updated instructions can be read from the workspace; changing
-Task inputs requires deliberate deletion/recreation after session release.
-VEGA's rendered brief names the exact config file for all Task operations and
-child-worker handoffs.
+edit it to change the bound. No runtime under `[runtimes]` passes a model to
+its harness: it refuses a Task that sets `spec.model`. Give the model in the
+harness's own configuration instead.
 
-Repeated `init` preserves existing files and config. After updating the binary,
-run `fleet init --update` to offer its bundled content. Unedited managed
-workspace files advance; edits, deletions and private files survive. Config is
-user-owned after creation and is never replaced by an update. Review proposed
-conflicts under `vega/.fleet/conflicts/<content-hash>/`; merge them manually.
-The `.fleet` directory holds instance identity, baseline hashes, manifest and
-source provenance; preserve it with the workspace. Malformed metadata is
-refused. A symlink at or above the path of a managed file is refused. The
-`.claude/skills` link below is not a managed file. Initializers serialize
-with OS locks; a crash releases the locks and a repeat init completes missing
-files conservatively.
+The config is yours once written. A repeated `init` validates it and keeps
+it as it is; a malformed config is an error, never replaced. A symlink at or
+above the config's path is refused. Initializers serialize with an OS lock,
+so two concurrent `init` runs write one config.
 
-VEGA's skills have one canonical copy under `vega/.agents/skills`, where
-Codex finds them. Claude Code finds project skills only under
-`.claude/skills`. `init` and `init --update` therefore create the relative
-symlink `vega/.claude/skills` to `../.agents/skills`. This link is the only
-symlink that init manages. Init never replaces an existing `.claude/skills`
-that is not this link; it reports that path instead. When the link cannot
-be created, init reports the failure and completes. Claude Code sessions then
-do not find VEGA's skills.
+A `[starter]` section is refused at load: earlier releases bundled the VEGA
+workspace and made `fleet up` create `Task/vega` from it. Remove the section.
 
-The bundled content is MIT licensed at exact source commit
-`3c4798dbdb33672576958cf8f1849c16e519d95d`. The build verifies every allowlisted
-asset against [the provenance hashes](../../crates/fleet-cli/bundle/vega/provenance.json)
-and embeds the assets, source manifest and license in the executable. Runtime
-init/update never fetches a branch or downloads content.
+### Running VEGA
+
+VEGA, the dispatch-only Mission Control, is content in its own repository,
+[Thurbeen/vega](https://github.com/Thurbeen/vega). It is an ordinary Task
+that Fleet runs like any other. To run it:
+
+1. Clone the repository. Its `workspace/` directory is the session's
+   workspace; edit its instructions, prompts and skills as you like.
+2. In `tasks/vega.json`, set `spec.workspace` to the `file://` URL of that
+   `workspace/` directory, and `spec.harness` to your harness. Append the
+   path of your Fleet config to `spec.brief`: VEGA passes it to the workers
+   it dispatches, so every Task lands in one store.
+3. Apply it: `fleet apply -f tasks/vega.json`. A running `fleet up` starts
+   the session and delivers the brief.
+
+After creation, Fleet keeps the stored Task inputs. Changing them requires
+deleting the Task after its session is released, and applying it again.
 
 ### Resource commands
 
@@ -170,8 +140,8 @@ purity contract, not a sandbox.
 
 ## Native Fleet configuration (fleet.toml)
 
-The native versioned TOML file selects a resource store, runtime, optional
-VEGA workspace and the forges ChangeRequests are read from. It is separate
+The native versioned TOML file selects a resource store, runtimes and hosts,
+and the forges ChangeRequests are read from. It is separate
 from the JSON [Task](resources/task.md),
 [TaskConfig](resources/task-config.md),
 [EnvProvider](resources/env-provider.md) and
@@ -194,11 +164,11 @@ Selection order is `--config PATH`, then `FLEET_CONFIG`, then one native path:
 Fleet does not search the current directory or parents. Explicit config paths
 must exist, except `fleet init --config PATH`, which creates an isolated
 instance without replacing an existing config. `fleet init` creates the
-native config and bundled workspace; see
+native config; see
 [initialization/customization](#configuration-and-customization)
-for data roots, managed files, conflict handling and per-instance paths.
+for data roots and per-instance paths.
 
-Relative `data.dir`, `runtime.dir`, `starter.workspace`, a fake forge host's
+Relative `data.dir`, `runtime.dir`, a fake forge host's
 `dir` and a fake gateway account's `dir` resolve beside the TOML file. A
 runtime executable should be a PATH name or absolute path;
 `runtimes.<name>.program` is passed to process execution without rebasing it
@@ -226,9 +196,6 @@ keyPrefix = "fleet"
 
 [hosts.local]
 runtime = "mux"
-
-[starter]
-workspace = "vega"
 ```
 
 This is what `fleet init` writes, with an instance-specific `keyPrefix`:
@@ -238,10 +205,8 @@ missing binary, and the Task's `Spawned` condition says so. Another runtime
 is opt-in: add its table and point a host at it. `fleet runtime check -- <program>`
 tells whether a program speaks the protocol before a host names it.
 
-Set `starter.workspace` to an initialized VEGA workspace when using `fleet up`.
-For ordinary `apply`/`reconcile`, the starter section is optional. A second
-Fleet installation on the same runtime needs a distinct `keyPrefix`. Store,
-workspace and config must remain separate paths.
+A second Fleet installation on the same runtime needs a distinct
+`keyPrefix`. Store and config must remain separate paths.
 
 ### Fake runtime
 
@@ -257,38 +222,26 @@ refused. See the [offline fake-runtime example](#offline-fake-runtime-example).
 | `data.dir` | Optional | Resource store. `--data-dir` overrides it; otherwise Fleet uses its native data directory. |
 | `runtimes.<name>.program` | Required for each runtime | The runtime's executable, a path or a name on PATH. Fleet runs `<program> [args] <verb>` through its bounded spawner. |
 | `runtimes.<name>.args` | `[]` | Arguments before the verb. |
-| `runtimes.<name>.callTimeoutMs` | `15000` | Bound for each call, 1 to 300000; the manager lease must outlast the runtime's reported worst case. |
+| `runtimes.<name>.callTimeoutMs` | `15000` | Bound for each call but `workspace`, 1 to 300000; the manager lease must outlast the runtime's reported worst case. |
+| `runtimes.<name>.workspaceTimeoutMs` | `600000` | Bound for a `workspace` call, which can clone a repository. Unknown on timeout concludes nothing: the next pass asks again under the same key. |
 | `runtimes.<name>.keyPrefix` | `fleet` | The first part of every key Fleet gives the runtime, `<keyPrefix>.<uid>`; at most 32 lowercase letters, digits and `-`. |
 | `hosts.<name>.runtime` | Required for each host | The `[runtimes.<name>]` serving the host. A host naming no runtime, and a runtime no host names, are refused at load. A Task whose `spec.host` is not listed fails its spawn. |
 | `runtime.kind` | Required when configuring `[runtime]` | `fake`; excludes `[runtimes]` and `[hosts]`. |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
-| `workspaces.kind` | `worktree`; `fake` with the fake runtime and no section | `worktree` or `fake`. Fleet makes each `repositories` workspace before the spawn and cleans it after the release, with or without this section; the section only picks the adapter and its settings. See [the workspace port](contracts.md#workspace-contract). |
-| `workspaces.root` | Worktree: `<data dir>/workspaces` | The directory that holds every workspace on the local host, relative to this config file. |
-| `workspaces.repositories` | Empty | Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees, whatever the runtime. A `file://` URL needs no entry: it names a directory used as it is. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. With `[runtimes]`, a running `fleet up` reloads this table; see [Reloading](#reloading-the-repository-map). |
-| `workspaces.git` | Worktree: PATH `git` | The `git` executable. |
-| `workspaces.callTimeoutMs` | Worktree: `30000` | Bound for each `git` command. The manager lease must outlast the adapter's reported worst case. |
-| `workspaces.branchPrefix` | Worktree: `fleet` | The first part of each workspace branch, `<branchPrefix>/<session key>`. Lowercase letters, digits and `-`. |
-| `workspaces.dir` | Required for `fake` | The fake host's directory, relative to this config file. Use `runtime.dir` to share records with the fake runtime. |
-| `starter.workspace` | Required for `up` | Initialized VEGA workspace, relative to this config file. |
+| `starter` | Refused | Earlier releases' VEGA starter; refused at load with a message that names it. |
 
 `--data-dir` is for explicit store operations. `fleet up` rejects a differing
 override because its workers must share the store selected by the persisted
 config. Persist `data.dir` before using `up` with a different store. All
 resource commands in one workflow should use the same `--config` path.
 
-#### Reloading the repository map
+`fleet up` reads this file once, when it starts. A change to it applies at
+the next start: a running process never switches its store, lease holder,
+runtime or key prefix.
 
-With `[runtimes]`, `fleet up` reads this file again before each sweep. It
-applies the repository map (`workspaces.repositories`) only, so a new mapping
-needs no restart:
-
-- A valid file replaces the map. The next spawn uses it, and a Task waiting
-  with `RepositoryUnmapped` spawns at its next retry.
-- An unreadable, unparsable or invalid file changes nothing. The last valid
-  map stays in force. `fleet up` reports the refusal once on standard error.
-- A change to any other setting is not applied. `fleet up` reports it once
-  and asks for a restart. A running process never switches its store, lease
-  holder, runtime or key prefix.
+Each runtime makes the workspaces of the hosts it serves, from the URLs a
+Task names ([workspaces](../runtime/README.md#workspaces)). Fleet keeps no
+workspace section: a file with `[workspaces]` is refused at load.
 
 Every session Fleet starts gets `FLEET_SIGNAL_FILE` in its environment: the
 file under `<data dir>/signals` its hooks append to through `fleet signal`
@@ -341,7 +294,7 @@ Apply uses JSON resources. File/command provider output uses a third format:
 resource manifests. Config schema `1`, resource API `fleet/v1alpha1` and store
 format `1` are separate version contracts; `fleet version --json` reports
 them. No live store/config migration or service restart occurs through this
-feature. `fleet init --update` preserves the user-owned native config.
+feature. A repeated `fleet init` keeps the user-owned native config.
 
 ### The `[forge]` section
 
@@ -494,7 +447,7 @@ mention = "required"          # a new thread needs a mention of Fleet's bot
 allow = ["alex", "sam"]       # names under [gateway.people]
 taskConfig = "conversation"   # a TaskConfig resource: harness, host, model, env
 brief = "/etc/fleet/briefs/conversation.md"
-workspace = { dir = "/work/conversations" }   # a base: each thread gets /work/conversations/<conversation name>
+workspace = { base = "/work/conversations" }   # a base: each thread gets /work/conversations/<conversation name>
 refusal = "Sorry, I only take requests from people on this channel's list."
 
 [gateway.routes.alerts]
@@ -505,7 +458,7 @@ allow = ["alex", "sam"]
 allowBots = ["B0123ABCD"]     # the alerting app whose posts are requests
 taskConfig = "conversation"
 brief = "/etc/fleet/briefs/triage.md"
-workspace = { dir = "/work/triage" }   # a base: each alert's thread gets its own directory
+workspace = { base = "/work/triage" }   # a base: each alert's thread gets its own directory
 
 [gateway.routes.anywhere]
 account = "slack-main"
@@ -513,7 +466,7 @@ channels = ["*", "dm:*"]      # the wildcard: every other channel the bot is in;
 allow = ["alex", "sam"]       # mention = "required", the only mention a wildcard route takes; a DM needs none
 taskConfig = "conversation"
 brief = "/etc/fleet/briefs/conversation.md"
-workspace = { dir = "/work/anywhere" }
+workspace = { base = "/work/anywhere" }
 ```
 
 | Field | Required/default | Meaning |
@@ -528,7 +481,7 @@ workspace = { dir = "/work/anywhere" }
 | `gateway.reactions` | On: `queued = "hourglass_flowing_sand"`, `working = "eyes"`, `replied = "white_check_mark"` | The reactions that mark a person's message: `queued` while admission holds the request for its Task, `working` once the Task exists or Fleet relayed the message to it, when `queued` is removed, and `replied` once Fleet posted in the thread, when `working` is removed. Each is a platform emoji name, which each adapter maps as its [adapter page](controllers/gateway-adapters.md#capabilities) says. A name left out keeps its default. `false` turns reactions off, and `true` keeps the defaults. Refused when a name is empty or holds whitespace, when two name one emoji, or for another key. |
 | `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, `discord`, or `fake` with a `dir`, in this build, and later `telegram` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity (Slack: the team or enterprise id, optional; Discord: the guild id, required); `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart (Discord: a snowflake, as is `team`); `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; Discord: `discord-gateway`, an authenticated connection; `fake`: `connection`), and an envelope claiming another is refused; `messageContent`, Discord only, default `false`, whether the application holds the privileged message content intent, which sets the `intents` that `fleet gateway account` prints; `cli`, default `curl`, and the platform's credential reference, here `curlConfig`, required for Slack and Discord, an absolute path Fleet passes to `curl -K` and never reads. The [Slack](controllers/gateway-adapters.md#configuration) and [Discord](controllers/gateway-adapters.md#configuration-1) adapter pages list each platform's keys and errors. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
-| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, `"*"`, the wildcard, or `"dm:*"`, the DM entry (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel id belongs to at most one route. A route lists at least one channel and names at least one person in `allow` or one bot in `allowBots`. |
+| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, `"*"`, the wildcard, or `"dm:*"`, the DM entry (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace: `{base}`, an absolute base directory, below which each thread's Tasks get `["file://<base>/<conversation name>"]`, the directory created by the manager with the Task on the TaskConfig's host, recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or a list of absolute URLs, which each Task gets as it is and its runtime makes for it, so a route's Tasks share nothing (a `git+` URL gives each Task its own worktree); `refusal`, the one polite refusal. A channel id belongs to at most one route. A route lists at least one channel and names at least one person in `allow` or one bot in `allowBots`. |
 
 A wildcard route has `"*"` in `channels`. It covers every channel of its
 account that the account's listener delivers, with these exceptions:
@@ -705,7 +658,7 @@ fails has the error status.
 | Span | `fleet.outcome` values |
 | --- | --- |
 | `reconcile KIND` | `changed`, `unchanged`, `conflict`, `error`, `leaseLost` |
-| `effect …` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `revived`, `paused`, `resumed`, `markedReady`, `moved`, `failed`, `unmapped`, `trustUnmapped`, `unknown` |
+| `effect …` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `revived`, `paused`, `resumed`, `markedReady`, `moved`, `failed`, `trustUnmapped`, `unknown` |
 | `forge poll` | `known`, `absent`, `timeout`, `incomplete`, `throttled`, `unreadable`, `notLoggedIn`, `refused`, `unavailable` |
 
 The `fleet.controller` values are `TaskController`, `ForgeController`,

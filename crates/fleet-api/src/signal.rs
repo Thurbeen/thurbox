@@ -109,6 +109,13 @@ impl Signal {
             && (in_flight("background_tasks") || in_flight("session_crons"))
         {
             State::Working
+        } else if state == State::Blocked
+            && payload.and_then(|p| p["notification_type"].as_str()) == Some("idle_prompt")
+        {
+            // Claude Code's notification after 60 s of input idle: the agent
+            // waits for its next prompt, which needs no one. A hook wired
+            // without a matcher reports it as `blocked`.
+            State::Idle
         } else {
             state
         };

@@ -417,8 +417,9 @@ footer: true
               <div class="card-icon" aria-hidden="true">&#x2442;</div>
               <h3>Git Worktrees</h3>
               <p>
-                Every session runs in a git worktree of its own, made by Fleet. Deleting the session
-                removes it and keeps committed work that exists nowhere else.
+                A session can run in a git worktree of its own, on a new or an existing branch, made
+                by its runtime. Deleting the session removes it and keeps work that exists nowhere
+                else.
               </p>
             </div>
           </a>
@@ -469,7 +470,7 @@ footer: true
                 Run an agent on another machine while the interface stays local &mdash; over SSH, or
                 in a WSL distro that is
                 <strong>discovered with no config</strong>
-                . The agent, its tmux window and its worktrees all live on that host.
+                . The agent and its tmux window live on that host, in a directory there.
               </p>
             </div>
           </a>
@@ -802,8 +803,8 @@ Ctrl+,  Settings</pre>
               <p class="feature-row-eyebrow">Ctrl+N</p>
               <h3>Session creation</h3>
               <p>
-                Spin up a session in a few keystrokes: pick a repository, name it, and choose an
-                agent &mdash; Fleet gives it a git worktree of its own.
+                Spin up a session in a few keystrokes: pick a repository, choose its worktree and
+                branch, name it, and choose an agent.
               </p>
               <a class="feature-row-link" href="docs/features.html#session-orchestration">
                 Learn more &rarr;
@@ -881,7 +882,7 @@ Ctrl+,  Settings</pre>
               </li>
               <li>
                 <strong>git</strong>
-                &mdash; your repositories, and Fleet's worktrees
+                &mdash; your repositories, and the worktrees the runtime makes
               </li>
               <li>
                 <strong>Rust 1.95+</strong>

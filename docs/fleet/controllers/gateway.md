@@ -81,7 +81,8 @@ to check the model.
 4. The mention passes the route's admission rules. ConversationController
    creates one Task from the route, with the route's TaskConfig and brief
    and the thread's own workspace, and records the tie. On a route with a
-   `dir` workspace, the thread's directory is `<dir>/<conversation name>`.
+   `{base}` workspace, the thread's directory is
+   `<base>/<conversation name>`.
    The manager creates it when it creates the Task.
 5. GatewayController sends the whole retained thread to the Task as its
    first inbox entry, after the brief.
@@ -243,7 +244,7 @@ Rules:
 - An Unknown read never counts as absence. The retirement waits.
 - Fleet removes only a directory that it created for the thread. It never
   removes a directory that existed before, a route's base directory or a
-  `repositories` workspace.
+  workspace a runtime made from a route's URL list.
 - Nothing on the platform changes. A later message there is treated as a
   new thread: a new Conversation, the mention rule again, the thread's
   history, and an empty directory.
@@ -340,11 +341,11 @@ These rules hold across all flows:
 - **A thread Fleet opened belongs to its Question's Task.** While that Task
   exists, a mention there starts no other Task. If Fleet cannot tell which
   Task opened the thread, the thread ignores mentions rather than guess.
-- **A route with a directory workspace gives each thread its own
-  directory.** The route's `dir` is a base directory. Every Task of one
-  thread gets `<dir>/<conversation name>`, so a later Task finds what an
-  earlier one left. A route with a `repositories` workspace gives each Task
-  its own workspace.
+- **A route with a base directory gives each thread its own directory.**
+  The route's `{base}` is a base directory. Every Task of one thread gets
+  `["file://<base>/<conversation name>"]`, so a later Task finds what an
+  earlier one left. A route with a URL list gives each Task its own
+  workspace, which its runtime makes.
 - **Threads never wait for each other.** A thread waits only while another
   Task already holds its own directory. Examples are the previous Task of
   an Orphaned thread that is still being deleted, or a Task that someone
@@ -457,7 +458,7 @@ Out of scope, deliberately:
 | --- | --- |
 | Where does the earlier history go when a mention lands partway through a thread? | In the first inbox entry, not in the brief. The brief stays the route's brief, the same for every conversation Task. |
 | What brief and workspace does a conversation Task get? | The route's. TaskConfig holds execution defaults only. So a route names a TaskConfig, and carries the brief and the workspace itself. |
-| How can a route run several conversations at once? | Every route can. A `dir` route gives each thread its own directory below the route's base directory. A `repositories` route has Fleet make a workspace for each Task, git worktrees by default, and clean it after the session is released. |
+| How can a route run several conversations at once? | Every route can. A `{base}` route gives each thread its own directory below the route's base directory. A URL list route has the runtime make a workspace for each Task, a worktree for a `git+` URL, and release it after the session. |
 | Who deletes a thread's directory? | Fleet, when the thread retires, and only a directory that the manager created. The Conversation records that the manager created it. A directory that existed before stays, as do a route's base directory and anything else in it. |
 | Who deletes a conversation Task? | ConversationController, when its thread retires: only a Concluded Task, idle for `gateway.retainMs`. A person or a conductor can also delete it at any time, as for any Task. The thread then becomes Orphaned. |
 | How long is a Conversation kept? | Until its thread retires: `gateway.retainMs`, seven days by default, after the later of its last message and its orphaning, once its Task is Concluded or gone. A thread with a running Task, or one that waits for its own directory, is kept. |
@@ -496,7 +497,7 @@ and adds its crate edges, field managers and negative fixtures to
 | 5 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests; recorded Socket Mode payloads; `e2e_gateway` against the stub `curl` |
 | 6 | The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
 | 7 | The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
-| 8 | One directory per thread, and one end of life: a route's `dir` is a base directory; each thread's Tasks get `<dir>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
+| 8 | One directory per thread, and one end of life: a route's `{base}` is a base directory; each thread's Tasks get `<base>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
 | 9 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
 | 10 | Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
 | 11 | The wildcard route: `"*"` in `channels`; an explicit channel id wins; the log channel stays uncovered; one wildcard route per account, with `mention = "required"`; a questions route needs a channel id | `fleet-api/src/gateway.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `e2e_gateway_wildcard` |
@@ -537,8 +538,8 @@ Behaviour in every phase:
 - A Conversation never leaves Tied because its Task is Unknown. Only a
   readably absent Task orphans it.
 - A message seen twice, from the listener and from history, is one message.
-- On a route with a `dir` workspace, every Task of the thread gets the
-  thread's own directory, `<dir>/<conversation name>`. Threads never wait
+- On a route with a `{base}` workspace, every Task of the thread gets the
+  thread's own directory, `<base>/<conversation name>`. Threads never wait
   for each other.
 - When another Task already holds the thread's own directory, the thread
   stays where it is, says so once, and starts its Task when the directory
@@ -1041,7 +1042,7 @@ The Task it creates:
   "spec": {
     "configRef": {"name": "conversation"},
     "brief": "<the route's brief file, as read when the Task is created>",
-    "workspace": {"dir": "/work/conversations/conv-3f9a1c0d2b7e"},
+    "workspace": ["file:///work/conversations/conv-3f9a1c0d2b7e"],
     "dispatch": true
   }
 }
@@ -1053,9 +1054,10 @@ labels; `apply` refuses them.
 
 ##### Workspaces
 
-A route with a `dir` workspace names a base directory. Each thread gets
-its own directory below it: `<dir>/<conversation name>`, for example
-`/work/conversations/conv-3f9a1c0d2b7e`. These rules apply:
+A route with a `{base}` workspace names a base directory. Each thread gets
+its own directory below it: `<base>/<conversation name>`, for example
+`/work/conversations/conv-3f9a1c0d2b7e`, which its Tasks name as
+`["file:///work/conversations/conv-3f9a1c0d2b7e"]`. These rules apply:
 
 - Every Task of one thread gets the thread's directory. After an
   orphaning, the next Task gets the same directory, so it finds what the
@@ -1087,9 +1089,9 @@ then:
 - starts the Task, with the whole thread, once the directory is free,
 - starts nothing if the message that asked is removed meanwhile.
 
-A route with a `repositories` workspace has no shared directory. Its create
-carries no `exclusive` precondition, and each Task gets the workspace the
-runtime makes for it.
+A route with a URL list has no shared directory. Its create carries no
+`exclusive` precondition, and each Task gets the list as it is: its runtime
+makes the workspace for it, a worktree of its own for a `git+` URL.
 
 The manager records the thread's directory on the Conversation, as
 `status.dir`, when it created the directory. A directory that existed
@@ -1100,7 +1102,7 @@ thread retires, and only a recorded one:
   Untied, Orphaned, or tied to a Concluded Task.
 - The manager removes the directory only while no Task names it.
 - Fleet never removes a directory that existed before, a route's base
-  directory, or a `repositories` workspace.
+  directory, or a workspace a runtime made from a route's URL list.
 
 The [state machine](#conversation-phases) gives the order
 of the retirement's steps.

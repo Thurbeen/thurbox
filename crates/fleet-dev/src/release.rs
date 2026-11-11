@@ -109,14 +109,9 @@ fn package(target: &str, v: &str, binary: &Path, out: &Path) -> Result {
 fn checksums(v: &str, dir: &Path) -> Result {
     let v = normalized(v)?;
     let mut names = TARGETS.iter().map(|t| archive(&v, t)).collect::<Vec<_>>();
-    for name in [
-        "install-release.sh",
-        "vega-provenance.json",
-        "vega-starter.toml",
-    ] {
-        if dir.join(name).is_file() {
-            names.push(name.into());
-        }
+    let installer = "install-release.sh";
+    if dir.join(installer).is_file() {
+        names.push(installer.into());
     }
     names.sort();
     let mut sums = String::new();
@@ -199,21 +194,11 @@ pub fn run(c: Command) -> Result {
                 if outcome.success_text().is_none() {
                     return Err(format!("offline bootstrap failed: {}", outcome.failure()).into());
                 }
-                for file in [
-                    "config/fleet/config.toml",
-                    "data/fleet/vega/AGENTS.md",
-                    "data/fleet/vega/task.json",
-                    "data/fleet/vega/LICENSE",
-                    "data/fleet/vega/.fleet/starter.toml",
-                    "data/fleet/vega/.fleet/provenance.json",
-                ] {
-                    if !root.join(file).is_file() {
-                        return Err(format!("bootstrap missing {file}").into());
-                    }
+                let file = "config/fleet/config.toml";
+                if !root.join(file).is_file() {
+                    return Err(format!("bootstrap missing {file}").into());
                 }
-                println!(
-                    "offline installed bootstrap: config, starter, license and provenance verified"
-                );
+                println!("offline installed bootstrap: config verified");
             }
             Ok(())
         }

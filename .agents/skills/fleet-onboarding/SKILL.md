@@ -16,23 +16,24 @@ with `FLEET_VERSION` set to the tag the user chose. The repository's
 without `FLEET_VERSION`. Windows is not a release target. `FLEET_RELEASE_BASE`
 supports an offline release base.
 
-For a fresh v2 deployment, run `fleet init` to create native per-user config
-and the bundled editable VEGA workspace without Git or network. Read
-[Initialization and the VEGA starter](../../../docs/fleet/configuration.md#initialization-and-the-vega-starter)
-for config selection, the harness choice and the managed-file and conflict
-rules. Put `runtime-mux` on PATH, install tmux, and authenticate the
-configured harness before `fleet up`; that foreground manager starts or reconnects VEGA as an ordinary
-Task and keeps all due Tasks progressing. Ctrl-C retains sessions and releases
-its lease; after a crash, wait for lease expiry before reconnecting.
-`fleet init --update` preserves edited files and writes conflict copies for
-review.
+For a fresh v2 deployment, run `fleet init` to create the native per-user
+config without Git or network. Read
+[Initialization and `fleet up`](../../../docs/fleet/configuration.md#initialization-and-fleet-up)
+for config selection and paths. Put `runtime-mux` on PATH, install tmux, and
+authenticate each harness your Tasks name before `fleet up`; that foreground
+manager keeps all due Tasks progressing and creates no Task of its own.
+Ctrl-C retains sessions and releases its lease; after a crash, wait for lease
+expiry before reconnecting. A repeated `fleet init` keeps the existing config.
+To run VEGA, follow
+[Running VEGA](../../../docs/fleet/configuration.md#running-vega): it is an
+ordinary Task applied from its own repository.
 
 Run `fleet version --json` before applying Tasks. Apply each Task with
 `fleet apply -f FILE`, keeping `dispatch` false until it has been inspected.
 Use the fake-runtime examples for an isolated trial. Real sessions use the
 runtime that `[hosts.<name>]` names for the host each Task names:
 `runtime-mux` by default (`fleet runtime check -- <program>` checks another).
-Workers must use the same config as Mission Control; persist its data.dir instead of a differing
+Workers must use the same config as the Task that dispatches them; persist its data.dir instead of a differing
 `up --data-dir` override. `fleet reconcile` is a bounded diagnostic command
 for use while the resident manager is stopped.
 

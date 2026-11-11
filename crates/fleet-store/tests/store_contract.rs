@@ -59,7 +59,7 @@ fn task(name: &str) -> Object {
         "apiVersion": "fleet/v1alpha1",
         "kind": "Task",
         "metadata": {"name": name},
-        "spec": {"harness": "h", "brief": "b", "workspace": {"dir": "d"}}
+        "spec": {"harness": "h", "brief": "b", "workspace": []}
     }))
     .unwrap()
 }

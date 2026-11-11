@@ -118,15 +118,19 @@ query of tmux's `window_name`.
 
 The colored **status dot** is Fleet's. Each agent's own hooks report through
 `fleet signal` (Fleet's harness profiles, `crates/fleet-api/src/harness.rs`),
-Fleet derives the Task's `status.sessionState` from them, and the snapshot maps
-that onto a `SessionState` (`kernel::snapshot::fleet::row_of`):
+Fleet derives the Task's `status.agentState` and `status.sessionState` from
+them, and the snapshot maps those onto a `SessionState`
+(`kernel::snapshot::fleet::row_of`), first match wins:
 
-| `sessionState` | State | Colour | Glyph |
-|----------------|-------|--------|-------|
-| `Running` | `running` | accent | `◉`, a spinner while its pane prints |
-| `Idle` | `idle` | green | `○` |
-| `Paused` | `stopped` | green | `○` |
-| `Lost`, `Gone` | `failed` | `status_error` (red) | `✗` |
+| Task status | State | Colour | Glyph |
+|-------------|-------|--------|-------|
+| `sessionState: Paused` | `stopped` | green | `○` |
+| `sessionState: Lost`, `Gone` | `failed` | `status_error` (red) | `✗` |
+| `agentState: working` | `working` | yellow | braille spinner |
+| `agentState: attention` | `blocked` | red | `◆` |
+| `agentState: idle` | `idle` | green | `○` |
+| `sessionState: Running` | `running` | accent | `◉`, a spinner while its pane prints |
+| `sessionState: Idle` | `idle` | green | `○` |
 | anything else, or none | `unreported` | muted grey | `◌` |
 
 `unreported` is drawn apart from `idle` on purpose: `idle` says *the agent
@@ -333,20 +337,21 @@ spatial map you can build muscle memory against.
 session. Each step has a sensible default and can be skipped when
 not applicable.
 
-1. **Host picker** — choose where the session runs: `local`, or any
-   SSH or WSL host defined in `hosts.toml`. Skipped entirely when no
-   remote hosts are configured. The session's Task runs on the Fleet
-   host of that name, which Fleet's own config must define: a host it
-   does not define is refused, naming the hosts it has. For a remote
-   host the repo picker shows the repos previously used *on that host*
-   (bookmarks are host-scoped) and every remote filesystem touch — the
-   path browser's listings, Enter validation, `Alt+P` parent scans and
-   their periodic re-scan — runs on a worker, never blocking the UI on a
-   host round trip.
+1. **Host picker** — choose where the session runs: this machine at
+   once, and the hosts Fleet defines (`fleet runtime hosts --json`) when
+   Fleet names them. The session's Task runs on the Fleet host of that
+   name. thurbox reads this machine only, so for another host a typed
+   path is remembered as typed and must be absolute.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
-   paths. `Space` toggles selection, `Alt+D` (or `Delete`) deletes the
-   bookmark — chords rather than letters, because the step types every
-   letter into its search — and a path-input field
+   paths. `Space` ticks a repository (`[x]`), and every ticked one goes
+   into the session. `Alt+W` gives the repository under the cursor a
+   worktree of its own (`[wt]`, ticking it too); a directory that is no
+   git repository, or a path on another host, is refused one and stays
+   ticked as it is. `→` opens a repository's existing worktrees under it
+   (`↳`), `←` closes them, and `Enter` on one runs the session in that
+   checkout as it is. `Alt+D` (or `Delete`) deletes the bookmark — chords
+   rather than letters, because the step types every letter into its
+   search — and a path-input field
    adds new bookmarks: `Tab` accepts the inline autocomplete
    suggestion, or — with nothing to complete — opens a **path
    browser** dropdown listing the typed directory (git repos marked
@@ -357,7 +362,7 @@ not applicable.
    Remote paths expand `~` against the remote home and are verified
    (exists + is-it-git, one round trip, async with a `checking…`
    spinner) on Enter; git-ness is kept per bookmark so it's learned
-   once. The selected repo becomes the Task's workspace directory.
+   once.
 
    **A folder imported with `Alt+P` is a scan, not a snapshot.** Its
    members are whatever it holds *now*, so a repository cloned into
@@ -375,10 +380,17 @@ not applicable.
    a mount point goes empty while its drive is unmounted (an unmounted
    mount point is a readable empty directory) and refills when it
    comes back.
-3. **Session name** — free text identifier shown in the sidebar. The
+3. **Base branch** — only when a ticked repository has a worktree: the
+   branch the first worktree repository's new branch starts from, with
+   the default branch under the cursor. The list is read with local git
+   on a worker.
+4. **Session name** — free text identifier shown in the sidebar. The
    Task's name is derived from it (lowercase letters, digits, `-` and
    `.`), and the name as typed is the Task's `thurbox.dev/name` label.
-4. **Agent picker** — choose which coding agent runs in this
+5. **Branch name** — only with a worktree: prefilled from the session
+   name (`Fix tooltips` → `fix-tooltips`). A branch that already exists
+   is checked out rather than made.
+6. **Agent picker** — choose which coding agent runs in this
    session, from the harnesses Fleet offers (`fleet version --json`).
    Skipped when Fleet offers one. Until Fleet answers, the list is
    unknown and the step waits for it, so no Task is ever created
@@ -386,12 +398,21 @@ not applicable.
    profile, so a harness Fleet does not have is refused at create,
    naming the harnesses Fleet runs.
 
+   Each ticked repository is one URL of the Task's workspace, the first
+   where the agent starts: the worktree repositories first, then the
+   plain ones, in the list's order. A worktree is
+   `git+file:///repo?branch=<branch>#<base>` for the first and
+   `git+file:///repo?branch=<branch>` (its own default branch) for the
+   rest, all on one branch; a repository as it is, an existing worktree
+   and a directory with no repository are `file:///repo`. The runtime
+   makes every worktree, as a worktree of the checkout itself: an existing
+   branch is the repository's own, and the session's commits are in the
+   repository at once (`git worktree list` there shows the worktree).
+
 Creating applies an interactive Task with `fleet apply --create-only`, so two
 names that make one Task name (`Review`, `review`) are refused rather than
-merged. The flow may also ask for a multiplexer, a worktree branch or further
-repositories. The multiplexer is dropped, and a branch, a base branch, an
-existing worktree or a second repository is refused: Fleet makes a Task's
-workspace, and its runtime runs the terminal.
+merged. The runtime of the Task's host makes its workspace and runs its
+terminal; the flow asks for no multiplexer.
 
 **The flow says what is missing before you commit.** thurbox starts with no
 agent installed — that is deliberate, and browsing and configuring keep

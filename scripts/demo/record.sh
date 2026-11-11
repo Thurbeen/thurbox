@@ -106,7 +106,7 @@ fi
 # --- Build the dev binaries (version 0.0.0-dev => dev_build cfg) -------------
 # Build BEFORE the HOME override so cargo still finds ~/.cargo.
 echo "==> Building thurbox (dev) ..."
-cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux
+cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux --bin workspace-git
 
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
 CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"

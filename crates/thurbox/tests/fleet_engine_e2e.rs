@@ -120,7 +120,7 @@ impl Fleet {
         Fleet { root, program }
     }
 
-    /// The same, after `fleet init`, so `fleet up` has its starter Task.
+    /// The same, from the config `fleet init` writes, on the fake runtime.
     fn initialized(bin: PathBuf) -> Fleet {
         let fleet = Fleet::new(bin);
         let config = fleet.root.path().join("fleet.toml");
@@ -156,18 +156,9 @@ impl Fleet {
         self.root.path().join("data")
     }
 
-    /// Map `repo` in Fleet's `[workspaces.repositories]`, which a session
-    /// thurbox creates must be: Fleet makes it a worktree of the mapped
-    /// checkout.
+    /// Make `repo` a git repository, of which a session gets a worktree.
     fn map(&self, repo: &Path) {
         git_init(repo);
-        let config = self.root.path().join("fleet.toml");
-        let mut text = std::fs::read_to_string(&config).expect("config");
-        text.push_str(&format!(
-            "\n[workspaces.repositories]\n\"https://example.invalid/repo\" = \"{}\"\n",
-            repo.display()
-        ));
-        std::fs::write(&config, text).expect("a repository map");
     }
 
     fn run(&self, args: &[&str]) -> Run {
@@ -263,7 +254,7 @@ fn task(name: &str) -> Value {
             "harness": "claude-code",
             "host": "local",
             "brief": format!("Do the work for {name}."),
-            "workspace": {"dir": format!("work/{name}")},
+            "workspace": [format!("file:///work/{name}")],
         }
     })
 }
@@ -309,7 +300,7 @@ fn the_snapshot_shows_each_fleet_task_as_a_session_and_follows_a_deletion() {
     let alpha = store.current().session("alpha").expect("by name").clone();
     assert_eq!(alpha.agent, "claude-code");
     assert_eq!(alpha.backend, "fleet");
-    assert_eq!(alpha.cwd.as_deref(), Some(Path::new("work/alpha")));
+    assert_eq!(alpha.cwd.as_deref(), Some(Path::new("/work/alpha")));
 
     // The controller releases a deleted Task, then it leaves the store.
     fleet.run(&["delete", "task", "beta"]).ok();
@@ -403,6 +394,10 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
             repo: repo.to_string_lossy().into_owned(),
             agent: Some("claude-code".into()),
             host: None,
+            worktree: None,
+            branch: None,
+            base: None,
+            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -410,9 +405,11 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert_eq!(gamma["spec"]["harness"], "claude-code");
     assert_eq!(gamma["spec"]["host"], "local");
     assert_eq!(gamma["spec"]["dispatch"], true);
+    // A repository on this machine: the runtime makes the session a
+    // worktree of its own, on a branch named after the session.
     assert_eq!(
-        gamma["spec"]["workspace"]["repositories"],
-        json!([{"name": "repo", "url": "https://example.invalid/repo"}])
+        gamma["spec"]["workspace"],
+        json!([format!("git+file://{}?branch=gamma", repo.display())])
     );
     assert!(gamma["spec"]["brief"].is_null(), "{gamma:#}");
 
@@ -469,6 +466,10 @@ fn a_created_session_keeps_the_name_it_was_given() {
             repo: fleet.root.path().to_string_lossy().into_owned(),
             agent: Some("claude-code".into()),
             host: None,
+            worktree: None,
+            branch: None,
+            base: None,
+            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -497,6 +498,10 @@ fn a_name_already_taken_is_refused_and_the_task_left_alone() {
         repo: fleet.root.path().to_string_lossy().into_owned(),
         agent: Some("claude-code".into()),
         host: None,
+        worktree: None,
+        branch: None,
+        base: None,
+        extras: Vec::new(),
     };
     run_command(&mut bus, create("Review")).expect("the first");
     let refused = run_command(&mut bus, create("review")).expect_err("the same Task");
@@ -583,12 +588,12 @@ fn a_confirmed_delete_is_checked_then_deletes_the_task() {
         member_dirs: vec![PathBuf::from(cwd)],
     };
 
-    let moved = run_command(&mut bus, guarded("beta", "work/elsewhere"))
+    let moved = run_command(&mut bus, guarded("beta", "/work/elsewhere"))
         .expect_err("the target moved since it was confirmed");
     assert!(moved.contains("confirmation target changed"), "{moved}");
     assert!(fleet.get("beta").unwrap()["metadata"]["deletionTimestamp"].is_null());
 
-    run_command(&mut bus, guarded("alpha", "work/alpha")).expect("the confirmed delete");
+    run_command(&mut bus, guarded("alpha", "/work/alpha")).expect("the confirmed delete");
     assert!(fleet.get("alpha").unwrap()["metadata"]["deletionTimestamp"].is_u64());
 }
 
@@ -604,7 +609,7 @@ impl SnapshotSource for Fed {
 fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
     let mut row = thurbox::kernel::snapshot::fleet::row_of(&json!({
         "metadata": {"name": name},
-        "spec": {"harness": "claude-code", "workspace": {"dir": cwd}},
+        "spec": {"harness": "claude-code", "workspace": [format!("file://{}", cwd.display())]},
     }));
     row.backend = backend.into();
     row
@@ -794,14 +799,15 @@ fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     let fleet = Fleet::initialized(bin);
     assert_eq!(fleet.manager(), None);
 
+    fleet.apply(json!([task("alpha")]));
     let mut store = store_of(FleetWatch::with_manager(fleet.program.clone()));
-    // `fleet up` ensures the starter Task and reconciles it.
+    // The `fleet up` thurbox starts reconciles the Tasks it finds.
     until("a manager holds the lease", || fleet.manager().is_some());
-    until("the starter Task is a row", || {
-        names(&mut store).contains(&"vega".to_string())
+    until("the Task is a row", || {
+        names(&mut store).contains(&"alpha".to_string())
     });
     let first = fleet.manager();
-    let phase = || fleet.get("vega").map(|t| t["status"]["phase"].clone());
+    let phase = || fleet.get("alpha").map(|t| t["status"]["phase"].clone());
     until("the manager reconciles", || {
         phase().is_some_and(|p| p.is_string())
     });
@@ -809,7 +815,7 @@ fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     // A second interface finds the lease held, and leaves that manager be.
     let mut second = store_of(FleetWatch::with_manager(fleet.program.clone()));
     until("the second store reads the Tasks", || {
-        names(&mut second).contains(&"vega".to_string())
+        names(&mut second).contains(&"alpha".to_string())
     });
     std::thread::sleep(Duration::from_secs(2));
     second.refresh_if_due();
@@ -879,7 +885,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let work = fleet.root.path().join("work");
     std::fs::create_dir_all(&work).expect("work");
     let mut t1 = task("t1");
-    t1["spec"]["workspace"] = json!({"dir": work});
+    t1["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     t1["spec"]["dispatch"] = json!(true);
     fleet.apply(t1);
     fleet.run(&["reconcile"]).ok();
@@ -918,5 +924,97 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     );
     until("the agent answers what was typed", || {
         screen(&mut terminals).contains("pong-ping")
+    });
+}
+
+/// An interactive session's row follows what its agent's hooks report:
+/// `fleet signal idle` makes it idle, `working` working, and idle again.
+#[test]
+fn an_interactive_rows_status_follows_its_agents_hooks() {
+    use thurbox::session::SessionState;
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin.clone());
+    let mut t = task("alpha");
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"]["dispatch"] = json!(true);
+    fleet.apply(json!([t]));
+    fleet.run(&["reconcile"]).ok();
+    let key = fleet.get("alpha").expect("the Task")["status"]["session"]["key"]
+        .as_str()
+        .expect("a session key")
+        .to_string();
+    let file = fleet.data().join("signals").join(format!("{key}.jsonl"));
+    let signal = |state: &str| {
+        let ran = Process::new(&bin)
+            .args(["signal", state])
+            .env("FLEET_SIGNAL_FILE", &file)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .expect("fleet signal");
+        assert!(ran.success());
+        fleet.run(&["reconcile"]).ok();
+    };
+    let mut store = store_over(&fleet);
+    let status = |store: &mut SnapshotStore| {
+        store.refresh_if_due();
+        store.current().session("alpha").map(|row| row.status)
+    };
+    signal("idle");
+    until("the row is idle", || {
+        status(&mut store) == Some(SessionState::Idle)
+    });
+    signal("working");
+    until("the row works", || {
+        status(&mut store) == Some(SessionState::Working)
+    });
+    signal("idle");
+    until("the row is idle again", || {
+        status(&mut store) == Some(SessionState::Idle)
+    });
+}
+
+/// The row shows the agent's finer state the way v2 did: working, then
+/// waiting on a person (blocked, v2's red diamond), then idle.
+#[test]
+fn an_interactive_rows_status_shows_working_attention_and_idle() {
+    use thurbox::session::SessionState;
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin.clone());
+    let mut t = task("alpha");
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"]["dispatch"] = json!(true);
+    fleet.apply(json!([t]));
+    fleet.run(&["reconcile"]).ok();
+    let key = fleet.get("alpha").expect("the Task")["status"]["session"]["key"]
+        .as_str()
+        .expect("a session key")
+        .to_string();
+    let file = fleet.data().join("signals").join(format!("{key}.jsonl"));
+    let signal = |state: &str| {
+        let ran = Process::new(&bin)
+            .args(["signal", state])
+            .env("FLEET_SIGNAL_FILE", &file)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .expect("fleet signal");
+        assert!(ran.success());
+        fleet.run(&["reconcile"]).ok();
+    };
+    let mut store = store_over(&fleet);
+    let status = |store: &mut SnapshotStore| {
+        store.refresh_if_due();
+        store.current().session("alpha").map(|row| row.status)
+    };
+    signal("working");
+    until("the row works", || {
+        status(&mut store) == Some(SessionState::Working)
+    });
+    signal("blocked");
+    until("the row waits on a person", || {
+        status(&mut store) == Some(SessionState::Blocked)
+    });
+    signal("idle");
+    until("the row is idle", || {
+        status(&mut store) == Some(SessionState::Idle)
     });
 }

@@ -8,6 +8,7 @@ use fleet_api::conversation::{
     ConversationStatus, MESSAGE_CAP, Phase, Retiring, SEEN_EVENTS_CAP, StoredMessage, ThreadDir,
     Tie, TieState, Via, retire_dir_key, retire_task_key,
 };
+use fleet_api::gateway::RouteWorkspace;
 use fleet_api::gateway::{
     Author, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
     HISTORY_FIRST_READ, History, HistoryObservation, HistoryQuery, Marker, Mention, Message,
@@ -41,7 +42,7 @@ fn route() -> RouteConfig {
         allow_bots: Vec::new(),
         task_config: "conversation".into(),
         brief: "/etc/fleet/briefs/conversation.md".into(),
-        workspace: Workspace::at("/work/conversations"),
+        workspace: RouteWorkspace::base("/work/conversations"),
         refusal: None,
     }
 }
@@ -634,7 +635,7 @@ fn task_object(uid: &str) -> Object {
         "apiVersion": "fleet/v1alpha1",
         "kind": "Task",
         "metadata": {"name": format!("{NAME}-1"), "uid": uid, "generation": 1, "resourceVersion": 9},
-        "spec": {"harness": "claude-code", "brief": "b", "workspace": {"dir": "w"}}
+        "spec": {"harness": "claude-code", "brief": "b", "workspace": []}
     }))
     .unwrap()
 }
@@ -998,14 +999,11 @@ fn create_key() -> String {
 }
 
 #[test]
-fn a_repositories_route_starts_its_task_without_a_workspace_precondition() {
-    let workspace: Workspace = serde_json::from_value(json!({"repositories": [
-        {"name": "app", "url": "https://example.invalid/app", "ref": "main"}
-    ]}))
-    .unwrap();
+fn a_url_list_route_starts_its_task_without_a_workspace_precondition() {
+    let workspace = Workspace::of(["git+https://example.invalid/app.git#main"]);
     let defaults = GatewayDefaults {
         route: Some(RouteConfig {
-            workspace: workspace.clone(),
+            workspace: RouteWorkspace::Urls(workspace.clone()),
             ..route()
         }),
         ..defaults()
@@ -1074,7 +1072,7 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
         "spec": {
             "configRef": {"name": "conversation"},
             "brief": BRIEF,
-            "workspace": {"dir": "/work/conversations/conv-3f9a1c0d2b7e"},
+            "workspace": ["file:///work/conversations/conv-3f9a1c0d2b7e"],
             "dispatch": true,
         }
     }))
@@ -2052,7 +2050,7 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
     assert_eq!(plan.creates[0].object.metadata.name, format!("{NAME}-2"));
     assert_eq!(
         plan.creates[0].object.spec["workspace"],
-        json!({"dir": format!("/work/conversations/{NAME}")}),
+        json!([format!("file:///work/conversations/{NAME}")]),
         "the thread's next Task finds what the last one left"
     );
     assert_eq!(

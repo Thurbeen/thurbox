@@ -47,8 +47,12 @@ each host in `[hosts.<name>]`, the runtime serving it, so a Task's
 
 Built: `runtime-mux` and the reference script answer it, Fleet's `exec`
 runtime kind speaks it, and `fleet runtime check` holds both to it in CI.
-`workspace` is not built yet: no runtime declares it, and Fleet makes no
-call to it. `attach` is built: Fleet asks it in `fleet attach`, once the
+`workspace` is built: `runtime-mux` declares it, `fleet runtime check` tests
+it, and Fleet calls it before a Task's first start, bounded by the
+runtime's `workspaceTimeoutMs`. Fleet reads the manifest's
+`workspace.schemes` first and refuses a URL whose scheme is not listed,
+without a call.
+`attach` is built: Fleet asks it in `fleet attach`, once the
 runtime's `manifest` declares it, and `runtime-mux` and the reference script
 answer it.
 
@@ -62,7 +66,7 @@ Unknown.
 
 | Verb | Request (besides `protocol`) | Known answer |
 | --- | --- | --- |
-| `manifest` | — | `{"protocol": 1, "verbs": [...]}` |
+| `manifest` | — | `{"protocol": 1, "verbs": [...]}`, and `workspace: {schemes, survivesStop}` with the `workspace` verb |
 | `start` | `key`, `argv`, `env` (object), `dir` (absolute, optional) | `{"started": {"id", "adopted"}}`, or `{"failed": {"why"}}` when nothing can have started, such as a missing multiplexer |
 | `inspect` | `key` | `"none"`, `{"running": {"id"}}` or `{"exited": {"id", "code"}}`, `code` null for a signal |
 | `stop` | `key`, `release` (optional) | `"stopped"`, whether or not a process was there |
@@ -71,6 +75,7 @@ Unknown.
 | `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground"}}`, or `"none"` |
 | `exec` | `argv`, `in` (`host`), `dir`, `timeoutMs`, `outputCap` | `{"exited": {"code", "stdout", "stderr"}}`, `{"timedOut": {"stdout", "stderr"}}` or `{"failed": {"why"}}` |
 | `attach` | `key` | `{"stream": {"argv"}}`, `{"tty": {"argv"}}`, or `"none"` when no process holds the key |
+| `workspace` | `key`, `urls` | `{"made": {"dirs", "adopted"}}`, `{"unsupported": {"url"}}` or `{"failed": {"why"}}` ([Workspaces](#workspaces)) |
 
 `runtime-mux` answers every verb above. It runs its windows on a tmux
 server of its own, socket `runtime-mux` (`RUNTIME_MUX_SOCKET` names
@@ -87,6 +92,13 @@ each stream to its end and keeps `outputCap` bytes, so a long output does
 not change how the command ends; a child that left the group and holds a
 stream open does not hold the answer past the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
+It makes workspaces by running `workspace-git` on this machine
+([its workspaces](#runtime-muxs-workspaces)). A workspace call takes a lock
+of its key only, never the server's lock: a first clone or a long setup step
+does not hold up a start or a stop of another key. A stop that releases a
+workspace takes the key's lock first, then the server's, and lets go of the
+server's lock once the process is stopped: the teardown and the release hold
+the key only.
 
 thurbox's stream pane (`stream_panes` in its `settings.toml`) is a view: it
 opens a local tmux pane through `runtime-mux view --scrollback <lines> --pane
@@ -344,7 +356,9 @@ The URL is the whole request: Fleet adds nothing to it.
 | `git+https://host/org/repo.git` | a worktree on a new branch from the default branch |
 | `git+https://host/org/repo.git#v2` | the same, from `v2` |
 | `git+ssh://git@host/org/repo.git?branch=feat-x#main` | a worktree on `feat-x`, made from `main` when it does not exist |
-| `git+file:///srv/mirrors/repo.git#refs/fleet/preserved/<key>/repo` | a worktree on work an earlier release preserved |
+| `git+file:///home/me/app?branch=feat-x#main` | a worktree of that checkout itself, on its own `feat-x` |
+| `git+file:///home/me/app#refs/fleet/preserved/<key>/app` | a worktree on work an earlier release preserved in that checkout |
+| `git+file:///srv/mirrors/repo.git#refs/fleet/preserved/<key>/repo` | a worktree on work an earlier release preserved in a bare repository |
 | `file:///home/me/notes` | nothing: the directory, as it is |
 
 Restoring preserved work is therefore a new Task whose URL names the preserved
@@ -362,27 +376,75 @@ ref; Fleet needs no verb for it.
 ### workspace-git, the default for git URLs
 
 `workspace-git` is a small program a runtime runs where its files belong: on
-the host, against a volume, inside a guest. `runtime-mux` and
-`runtime-process` use it directly, and the others inside their own places.
-Its layout:
+the host, against a volume, inside a guest. No runtime links it: each runs the
+program, so it runs where the runtime's files are. Its layout:
 
 ```text
 <root>/<key>/<name>/                  one real worktree per git URL
 <root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
-<root>/.sources/<digest>.git          a bare mirror per repository, fetched before each make
+<root>/<key>/.fleet-sources           the checkouts the key's worktrees belong to
+<root>/.sources/<digest>.git          a bare source per remote repository, fetched before each make
+<root>/.sources/<digest>.lock         one lock per repository a worktree is made from
+<root>/.checkouts                     the local checkouts worktrees were made from
 ```
 
+- A `git+file` URL that names a local checkout, a repository with a working
+  tree, gets a worktree of that checkout itself. Nothing is fetched or
+  copied:
+  - an existing branch is the checkout's own branch;
+  - a new branch is made in the checkout;
+  - a commit made in the worktree is in the checkout at once;
+  - `git -C <checkout> worktree list` lists the worktree.
+- Any other git URL, a remote or a bare repository, gets a bare source of its
+  own. A source fetches its remote's branches into `refs/remotes/origin/*`,
+  and its tags. A fetch therefore never moves a branch that a worktree has
+  checked out. Every branch in a source's `refs/heads/` is one that
+  `workspace-git` made.
+- Each worktree belongs to its repository, the checkout or the source, so its
+  branch and its preserved ref are there.
+- One lock per repository orders every make, release, rollback and retention
+  on it, across runtimes that share a root.
 - With one URL the session starts in `<root>/<key>/<name>`; with several the
   first URL's worktree is still the start, and every worktree is a real
-  directory, so thurbox's symlink workspace goes.
-- With no `branch`, the branch is named after the key; an existing branch is
-  checked out, and one checked out elsewhere gets `<branch>-<n>`.
+  directory, so thurbox's symlink workspace goes. Two URLs with one name get
+  `<name>-2`.
+- With no `branch`, the branch is named after the key. An existing branch is
+  checked out, and one checked out elsewhere gets `<branch>-<n>`, from 2.
+- A fragment names the base: a remote branch, a tag, a branch of the source,
+  or a ref or commit as given, in that order. A checkout reads its own
+  branches before its remote's. A `refs/…` fragment that a fetch
+  of branches does not bring, such as preserved work, is fetched by name.
+  With no fragment, the base is the remote's default branch; a checkout with
+  no remote starts from the branch it has checked out.
+- A `file://` URL takes no query and no fragment, and names an existing
+  absolute directory. A `%XX` in a path is decoded.
+- A key holds one workspace: the same key with other URLs fails.
 - On release, a dirty worktree is committed, untracked files included,
-  through a temporary index onto `refs/fleet/preserved/<key>/<name>`; that ref
-  and the branch are pushed to the mirror; then the worktree goes. Branches
-  are never deleted on release.
-- On each call it prunes its own retention: preserved refs older than
-  `preserve.days` (default 30), and branches whose head a remote already has.
+  through a temporary index onto `refs/fleet/preserved/<key>/<name>` in its
+  repository; then the worktree goes. The temporary index lives in the key's
+  directory, never in a checkout's working tree. Branches are never deleted
+  on release. The release of a
+  key that holds no workspace succeeds.
+- On each make it prunes its own retention: preserved refs older than
+  `preserve.days` (default 30), in sources and in checkouts, and a source's
+  branches not checked out whose head the remote already has. A checkout's
+  branches are the user's and are never deleted. A repository another call
+  holds is left for the next make.
+- Git never waits for a person: `GIT_TERMINAL_PROMPT=0`, and ssh runs in
+  batch mode unless `GIT_SSH_COMMAND` or `GIT_SSH` names another command.
+
+The program takes one JSON request on stdin and prints one answer:
+
+| Call | Request | Answer |
+| --- | --- | --- |
+| `workspace-git make` | `{root, key, urls, preserveDays?}` | `{"made": {dirs, adopted}}`, `{"unsupported": {url}}` or `{"failed": {why}}` |
+| `workspace-git release` | `{root, key}` | `"released"` |
+| `workspace-git discard` | `{root, key}` | `"discarded"`: the worktrees go, nothing is preserved, for a workspace no session worked in |
+| `workspace-git inspect` | `{root, key}` | `{"workspace": {urls, dirs}}`, or `"none"` |
+
+Any other answer is `{"unknown": {why}}`, such as a rollback that did not
+finish, and the caller concludes nothing from it. `root` is an absolute
+path.
 
 ### Customizing a workspace
 
@@ -404,3 +466,40 @@ A failing setup step fails the whole `workspace` call, which rolls back. A
 need no configuration covers is a runtime of one's own: a script that answers
 the protocol, starting from the runtime template, held to the same rules by
 `fleet runtime check`.
+
+### runtime-mux's workspaces
+
+`runtime-mux` runs the `workspace-git` program on this machine, so a session
+sees the same paths. Its own config file holds the settings: the file at
+`RUNTIME_MUX_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/runtime-mux/config.toml`.
+A missing file gives the defaults. An unknown key is refused.
+
+```toml
+[workspace]
+root = "/home/me/.local/share/runtime-mux/workspaces"
+program = "workspace-git"
+preserve.days = 30
+
+[[workspace.setup]]
+match = "git+https://github.com/acme/app.git"
+run = ["npm ci"]
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `workspace.root` | `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/workspaces` | where `workspace-git` makes workspaces; an absolute path |
+| `workspace.program` | `workspace-git` beside the `runtime-mux` program, else on `PATH` | the program it runs |
+| `workspace.preserve.days` | 30 | how long preserved work is kept |
+| `workspace.setup`, `workspace.teardown` | none | steps, as above |
+
+- A step matches a URL as written, or the URL without its query and fragment.
+  Its commands run in order, through `sh -c`, in the directory made for that
+  URL.
+- Setup runs only in a workspace the call made, not in one it adopted. A
+  failing command discards the workspace, with nothing preserved, and the
+  call answers `failed`, naming the command and its exit code.
+- `stop {release: true}` stops the process first, then runs the teardown
+  steps, then releases the workspace. A failing teardown command does not
+  stop the release.
+- A `workspace-git` that does not start answers `failed`: nothing was made.
+  One that starts and gives no answer is Unknown.

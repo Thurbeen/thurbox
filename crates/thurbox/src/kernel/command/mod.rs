@@ -21,7 +21,7 @@
 mod bus;
 mod execute;
 mod fleet;
-pub(crate) use fleet::task_name;
+pub(crate) use fleet::{dir_url, task_name};
 
 pub use bus::{CommandBus, InFlight, Phase};
 
@@ -73,6 +73,19 @@ pub enum Command {
         repo: String,
         agent: Option<String>,
         host: Option<String>,
+        /// The session's own worktree of `repo` (`git+file`), or `repo` as
+        /// it is (`file`). `None`: a worktree for a git repository on this
+        /// machine, the directory as it is otherwise.
+        worktree: Option<bool>,
+        /// The worktree's branch: an existing one, or a new one to make.
+        /// `None`: a new branch named after the session.
+        branch: Option<String>,
+        /// What a new branch starts from. `None`: the repository's default.
+        base: Option<String>,
+        /// The other repositories the session spans, after `repo` and in the
+        /// order chosen. A worktree of each is on the same `branch`, made from
+        /// that repository's own default branch.
+        extras: Vec<ExtraMember>,
     },
     /// Remember, forget, or import a folder of repositories.
     ///
@@ -724,6 +737,10 @@ impl Command {
             repo,
             agent: args.agent.filter(|a| !a.is_empty()),
             host: args.host.filter(|h| !h.is_empty()),
+            worktree: args.worktree,
+            branch: args.branch.filter(|b| !b.is_empty()),
+            base: args.base.filter(|b| !b.is_empty()),
+            extras: args.extras,
         })
     }
 
@@ -834,6 +851,14 @@ impl Command {
     }
 }
 
+/// A repository a session spans besides its first, and whether it gets a
+/// worktree of its own (`git+file`) or is used as it is (`file`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtraMember {
+    pub path: String,
+    pub worktree: bool,
+}
+
 /// Options a plugin passed alongside a command name.
 ///
 /// A struct rather than a parameter list because commands want different
@@ -854,6 +879,14 @@ pub struct Args {
     pub repo: Option<String>,
     pub agent: Option<String>,
     pub host: Option<String>,
+    /// `create`: a worktree of the repository, or the directory as it is.
+    pub worktree: Option<bool>,
+    /// `create`: the worktree's branch.
+    pub branch: Option<String>,
+    /// `create`: what a new branch starts from.
+    pub base: Option<String>,
+    /// `create`: the other repositories the session spans.
+    pub extras: Vec<ExtraMember>,
     /// An ordered list of session ids, for the order command.
     pub list: Vec<String>,
     /// A path within the interface directory, for the plugin command.
@@ -1136,6 +1169,10 @@ mod tests {
                     repo: "/srv/repo".into(),
                     agent: None,
                     host: Some("box".into()),
+                    worktree: None,
+                    branch: None,
+                    base: None,
+                    extras: Vec::new(),
                 }),
             ),
             (

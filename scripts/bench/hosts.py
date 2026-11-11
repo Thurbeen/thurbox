@@ -358,9 +358,7 @@ auto_update = false
 """
 
 # thurbox runs every session as a Fleet Task (ADR-41), on the runtime-mux
-# runtime. `fleet up` refuses to start without a starter Task/vega; this one is
-# never dispatched, so no agent runs for it. Same shape as
-# scripts/dev/lib/sandbox-env.sh's tbx_sandbox_fleet.
+# runtime. Same shape as scripts/dev/lib/sandbox-env.sh's tbx_sandbox_fleet.
 FLEET_CONFIG = """\
 version = 1
 
@@ -374,9 +372,6 @@ keyPrefix = "bench"
 
 [hosts.local]
 runtime = "mux"
-
-[starter]
-workspace = "starter"
 """
 
 #: The socket runtime-mux keeps the sessions on, named outright so teardown can
@@ -401,23 +396,10 @@ class Thurbox(Host):
         with open(os.path.join(env["THURBOX_CONFIG_DIR"], "settings.toml"), "w") as f:
             f.write(THURBOX_SETTINGS)
         fleet_dir = os.path.join(env["XDG_CONFIG_HOME"], "fleet")
-        os.makedirs(os.path.join(fleet_dir, "starter"), exist_ok=True)
+        os.makedirs(fleet_dir, exist_ok=True)
         env["FLEET_CONFIG"] = os.path.join(fleet_dir, "config.toml")
         with open(env["FLEET_CONFIG"], "w") as f:
             f.write(FLEET_CONFIG.format(runtime=tools["runtime-mux"]))
-        vega = {
-            "apiVersion": "fleet/v1alpha1",
-            "kind": "Task",
-            "metadata": {"name": "vega"},
-            "spec": {
-                "harness": "sh",
-                "host": "local",
-                "workspace": {"dir": sandbox.work},
-                "dispatch": False,
-            },
-        }
-        with open(os.path.join(fleet_dir, "starter", "task.json"), "w") as f:
-            json.dump([vega], f)
         self.cli = tools["thurbox-cli"]
         self.fleet_bin = tools["fleet"]
         self.runtime = tools["runtime-mux"]
@@ -455,7 +437,7 @@ class Thurbox(Host):
             "spec": {
                 "harness": wrapper,
                 "host": "local",
-                "workspace": {"dir": self.sb.work},
+                "workspace": ["file://" + self.sb.work],
                 "dispatch": True,
             },
         }

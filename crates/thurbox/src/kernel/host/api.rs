@@ -881,6 +881,29 @@ fn command_for(
             repo: get_string("repo"),
             agent: get_string("agent"),
             host: get_string("host"),
+            worktree: get_bool("worktree"),
+            branch: get_string("branch"),
+            base: get_string("base"),
+            // `create`'s other repositories, each `{ path, worktree }`. An
+            // entry with no path is dropped rather than guessed at.
+            extras: opts
+                .as_ref()
+                .and_then(|t| t.get::<Option<Table>>("extras").ok().flatten())
+                .map(|table| {
+                    table
+                        .sequence_values::<Table>()
+                        .filter_map(Result::ok)
+                        .filter_map(|entry| {
+                            let path: String = entry.get("path").ok()?;
+                            (!path.is_empty()).then(|| crate::kernel::command::ExtraMember {
+                                path,
+                                worktree: entry.get::<Option<bool>>("worktree").ok().flatten()
+                                    == Some(true),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             level: get_string("level"),
             file: get_string("file"),
             action: get_string("action"),

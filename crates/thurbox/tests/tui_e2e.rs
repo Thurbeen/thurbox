@@ -196,6 +196,21 @@ impl Profile {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
+    /// One bounded `fleet reconcile`. While a TUI runs, its `fleet up` holds
+    /// the lease and reconciles on its own, so a held lease is no failure.
+    fn reconcile(&self) {
+        let output = Command::new(self.bin.join("fleet"))
+            .arg("reconcile")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run fleet");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() || stderr.contains("lease held"),
+            "fleet reconcile failed:\n{stderr}"
+        );
+    }
+
     /// The Task `name` as Fleet stores it.
     fn fleet_task(&self, name: &str) -> serde_json::Value {
         serde_json::from_str(&self.fleet(&["get", "task", name], "")).expect("a Task as JSON")
@@ -205,11 +220,11 @@ impl Profile {
     /// session started.
     fn fleet_session(&self, name: &str, dir: &Path) {
         let task = format!(
-            r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"{name}"}},"spec":{{"harness":"claude-code","host":"local","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+            r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"{name}"}},"spec":{{"harness":"claude-code","host":"local","dispatch":true,"workspace":["file://{}"]}}}}"#,
             dir.display()
         );
         self.fleet(&["apply", "-f", "-"], &task);
-        self.fleet(&["reconcile"], "");
+        self.reconcile();
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -1059,17 +1074,62 @@ fn a_saved_search_shortcut_opens_from_the_agent_pane() {
     assert!(tui.quit().success());
 }
 
+/// A data directory whose `ui-control` cannot be a directory: the control
+/// socket has nowhere to live.
+fn data_without_ui_control(profile: &Profile) -> std::path::PathBuf {
+    let data = profile.path("data").join("blocked");
+    std::fs::create_dir_all(&data).expect("data path");
+    std::fs::write(data.join("ui-control"), "").expect("ui-control as a file");
+    data
+}
+
 #[test]
 fn an_unavailable_control_socket_does_not_abort_the_tui() {
+    let profile = Profile::new();
+    let blocked = data_without_ui_control(&profile);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_DATA_DIR", &blocked);
+    });
+    tui.wait_for("interface from");
+    tui.wait_for("No sessions yet");
+    tui.wait_for("local UI control unavailable");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_data_dir_too_deep_for_a_socket_still_serves_ui_control() {
     let profile = Profile::new();
     let long_data = profile.path("data").join("x".repeat(100));
     std::fs::create_dir_all(&long_data).expect("long data path");
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_DATA_DIR", &long_data);
     });
-    tui.wait_for("interface from");
     tui.wait_for("No sessions yet");
-    tui.wait_for("local UI control unavailable");
+    let deadline = Instant::now() + WAIT;
+    let listed = loop {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        cmd.env("THURBOX_DATA_DIR", &long_data);
+        let output = cmd
+            .args(["--json", "ui", "instances"])
+            .output()
+            .expect("ui instances");
+        let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+        if listed["instances"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["pid"] == tui.child.id()))
+        {
+            break listed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the TUI never served UI control: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!tui.frame().contains("local UI control unavailable"));
+    drop(listed);
     assert!(tui.quit().success());
 }
 
@@ -1094,10 +1154,9 @@ fn a_queued_startup_notice_waits_for_an_active_error() {
 }"#,
     );
     let profile = Profile::new();
-    let long_data = profile.path("data").join("x".repeat(100));
-    std::fs::create_dir_all(&long_data).expect("long data path");
+    let blocked = data_without_ui_control(&profile);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
-        cmd.env("THURBOX_DATA_DIR", &long_data);
+        cmd.env("THURBOX_DATA_DIR", &blocked);
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("interface from");
@@ -4637,7 +4696,7 @@ fn repo_picker_selected(frame: &str, path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap();
     frame
         .lines()
-        .any(|line| line.contains("▸ ") && line.contains(name))
+        .any(|line| line.contains("[x]") && line.contains(name))
 }
 
 fn repo_picker_fixture(profile: &Profile) {
@@ -6899,11 +6958,11 @@ fn an_image_dropped_on_a_remote_session_is_refused_not_typed() {
     .expect("a second host");
     let repo = repo(profile.root.path());
     let task = format!(
-        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":["file://{}"]}}}}"#,
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
-    profile.fleet(&["reconcile"], "");
+    profile.reconcile();
     let shot = profile.path("shot.png");
     std::fs::write(&shot, b"\x89PNG\r\n\x1a\n").expect("an image");
 
@@ -6952,11 +7011,11 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     .expect("a second host");
     let repo = repo(profile.root.path());
     let task = format!(
-        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":["file://{}"]}}}}"#,
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
-    profile.fleet(&["reconcile"], "");
+    profile.reconcile();
     // A path on the Task's host, which names nothing here: a paste, not a
     // drop of this machine's files.
     let shot = std::path::PathBuf::from("/tb-remote-only/far-shot.png");
@@ -6981,9 +7040,95 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     assert!(tui.quit().success());
 }
 
-/// Create a session through `Ctrl+N` on `repo`, named `name`, taking the
-/// first agent offered; `map` first adds `repo` to Fleet's repository map.
-fn create_through_the_flow(map: bool, name: &str) -> Option<(Profile, Tui, PathBuf)> {
+/// The output of `git <args>` in `dir`, trimmed.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let mut cmd = Command::new("git");
+    for var in GIT_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+    let out = cmd.args(args).current_dir(dir).output().expect("run git");
+    assert!(out.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// One repository the creation flow is to gather: its path, and whether it
+/// gets a worktree of its own (`alt+w` on its row, v2's `[wt]`).
+struct Pick<'a> {
+    dir: &'a Path,
+    worktree: bool,
+}
+
+/// Create a session through `Ctrl+N`, v2's flow: each repository added by
+/// its path and ticked (`[x]`), given a worktree where asked (`[wt]`), then
+/// the base branch when one has a worktree, the session's name, its branch,
+/// and the first agent offered. Every step title seen is pushed onto
+/// `titles`, in order.
+fn create_through_the_flow(
+    profile: &Profile,
+    picks: &[Pick<'_>],
+    name: &str,
+    titles: &mut Vec<&'static str>,
+) -> Tui {
+    let mut tui = Tui::spawn(profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Run On");
+    titles.push("Run On");
+    tui.send(b"\r");
+    tui.wait_for("Select Repos");
+    titles.push("Select Repos");
+    tui.send(b"\t");
+    for pick in picks {
+        tui.wait_until_quiet();
+        tui.send(format!("{}\r", pick.dir.display()).as_bytes());
+        let leaf = pick
+            .dir
+            .file_name()
+            .expect("a leaf")
+            .to_string_lossy()
+            .into_owned();
+        tui.wait_until("the repository to be ticked", |frame| {
+            repo_picker_selected(frame, &leaf)
+        });
+        if pick.worktree {
+            tui.wait_until_quiet();
+            tui.send(b"\x1bw");
+            tui.wait_until("the repository to take a worktree", |frame| {
+                frame
+                    .lines()
+                    .any(|line| line.contains(&leaf) && line.contains("[wt]"))
+            });
+        }
+    }
+    // Alt+Enter goes on from the path field, which still has the caret.
+    tui.wait_until_quiet();
+    tui.send(b"\x1b\r");
+    tui.wait_gone("Select Repos");
+    if picks.iter().any(|pick| pick.worktree) {
+        tui.wait_for("Base Branch");
+        titles.push("Base Branch");
+        tui.wait_for("main");
+        tui.wait_until_quiet();
+        tui.send(b"\r");
+    }
+    tui.wait_for("Session Name");
+    titles.push("Session Name");
+    tui.send(format!("{name}\r").as_bytes());
+    if picks.iter().any(|pick| pick.worktree) {
+        tui.wait_for("Branch Name");
+        titles.push("Branch Name");
+        tui.wait_until_quiet();
+        tui.send(b"\r");
+    }
+    tui.wait_for("Coding Agent");
+    titles.push("Coding Agent");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui
+}
+
+/// A profile on a real Fleet, with a repository holding `main` and `dev`.
+fn profile_with_two_branches() -> Option<(Profile, PathBuf)> {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return None;
@@ -6991,58 +7136,119 @@ fn create_through_the_flow(map: bool, name: &str) -> Option<(Profile, Tui, PathB
     let profile = Profile::new();
     profile.real_fleet()?;
     let repo = repo(profile.root.path());
-    if map {
-        let fleet_toml = profile.path("fleet.toml");
-        let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
-        std::fs::write(
-            &fleet_toml,
-            format!(
-                "{config}\n[workspaces.repositories]\n\"https://example.invalid/repo\" = \"{}\"\n",
-                repo.display()
-            ),
-        )
-        .expect("a repository map");
-    }
-    let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
-    tui.send(b"\x0e");
-    tui.wait_for("Run On");
-    tui.send(b"\r");
-    tui.wait_for("Select Repo");
-    tui.send(format!("\t{}", repo.display()).as_bytes());
-    tui.wait_until_quiet();
-    tui.send(b"\r");
-    tui.wait_until("the repository to be selected", |frame| {
-        repo_picker_selected(frame, "repo")
-    });
-    // Alt+Enter goes on from the path field, which still has the caret.
-    tui.send(b"\x1b\r");
-    tui.wait_gone("Select Repo");
-    tui.send(format!("{name}\r").as_bytes());
-    tui.wait_until_quiet();
-    tui.send(b"\r");
-    Some((profile, tui, repo))
+    git(&repo, &["branch", "dev"]);
+    Some((profile, repo))
 }
 
-/// A session the interface creates on a repository Fleet maps gets a git
-/// worktree of its own, not the checkout.
+/// The directory the runtime made for the Task `name`, once it has.
+fn workspace_dir(profile: &Profile, name: &str) -> PathBuf {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        profile.reconcile();
+        let task = profile.fleet_task(name);
+        if let Some(dir) = task["status"]["workspace"]["dirs"][0].as_str() {
+            return PathBuf::from(dir);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no workspace: {task:#}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// The URL of every directory in the Task's workspace, as Fleet holds it,
+/// once Fleet has the Task: the flow's last key and the apply are not one
+/// step.
+fn workspace_urls(profile: &Profile, name: &str) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let listed = profile.fleet(&["list", "task"], "");
+        if listed
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(name))
+        {
+            return profile.fleet_task(name)["spec"]["workspace"].clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no Task/{name}: {listed}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// v2's questions, in v2's order: the host, the repositories, the base
+/// branch, the session's name, its branch, and the agent.
 #[test]
-fn a_session_created_on_a_mapped_repo_runs_in_its_own_worktree() {
-    let Some((profile, mut tui, repo)) = create_through_the_flow(true, "wt") else {
+fn the_flow_asks_v2s_questions_in_v2s_order() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
         return;
     };
-    tui.wait_for("wt");
-    let task = profile.fleet_task("wt");
+    let mut titles = Vec::new();
+    let mut tui = create_through_the_flow(
+        &profile,
+        &[Pick {
+            dir: &repo,
+            worktree: true,
+        }],
+        "order",
+        &mut titles,
+    );
+    tui.wait_for("order");
     assert_eq!(
-        task["spec"]["workspace"]["repositories"][0]["url"], "https://example.invalid/repo",
-        "the Task names the mapped repository: {task:#}"
+        titles,
+        [
+            "Run On",
+            "Select Repos",
+            "Base Branch",
+            "Session Name",
+            "Branch Name",
+            "Coding Agent"
+        ]
+    );
+    assert!(tui.quit().success());
+}
+
+/// Two repositories, each with a worktree: one URL each, on one branch, in
+/// the list's order as v2 gathered them (a repository just added is listed
+/// first). The first starts from the base branch asked for; the second from
+/// its own default.
+#[test]
+fn two_repositories_get_a_worktree_each_on_one_branch() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
+        return;
+    };
+    let other = named_repo(profile.root.path(), "other");
+    let mut tui = create_through_the_flow(
+        &profile,
+        &[
+            Pick {
+                dir: &repo,
+                worktree: true,
+            },
+            Pick {
+                dir: &other,
+                worktree: true,
+            },
+        ],
+        "pair",
+        &mut Vec::new(),
+    );
+    tui.wait_for("pair");
+    assert_eq!(
+        workspace_urls(&profile, "pair"),
+        serde_json::json!([
+            format!("git+file://{}?branch=pair#main", other.display()),
+            format!("git+file://{}?branch=pair", repo.display()),
+        ])
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let dir = loop {
-        profile.fleet(&["reconcile"], "");
-        let task = profile.fleet_task("wt");
-        if let Some(dir) = task["status"]["workspace"]["dir"].as_str() {
-            break PathBuf::from(dir);
+    let dirs = loop {
+        profile.reconcile();
+        let task = profile.fleet_task("pair");
+        if let Some(dirs) = task["status"]["workspace"]["dirs"].as_array() {
+            break dirs.clone();
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -7050,25 +7256,159 @@ fn a_session_created_on_a_mapped_repo_runs_in_its_own_worktree() {
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
-    assert_ne!(dir, repo, "the session runs in the checkout");
-    assert!(
-        dir.join(".git").is_file(),
-        "{} is no worktree",
-        dir.display()
+    assert_eq!(dirs.len(), 2, "{dirs:?}");
+    for dir in &dirs {
+        let dir = PathBuf::from(dir.as_str().expect("a directory"));
+        assert!(
+            dir.join(".git").is_file(),
+            "{} is no worktree",
+            dir.display()
+        );
+        assert_eq!(git_out(&dir, &["symbolic-ref", "--short", "HEAD"]), "pair");
+    }
+    assert!(tui.quit().success());
+}
+
+/// A repository ticked without a worktree runs as it is: `file://`, and
+/// neither branch question is asked.
+#[test]
+fn a_repository_without_a_worktree_runs_as_it_is() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
+        return;
+    };
+    let mut titles = Vec::new();
+    let mut tui = create_through_the_flow(
+        &profile,
+        &[Pick {
+            dir: &repo,
+            worktree: false,
+        }],
+        "plain",
+        &mut titles,
+    );
+    tui.wait_for("plain");
+    assert_eq!(
+        workspace_urls(&profile, "plain"),
+        serde_json::json!([format!("file://{}", repo.display())])
+    );
+    assert!(!titles.contains(&"Base Branch") && !titles.contains(&"Branch Name"));
+    assert!(tui.quit().success());
+}
+
+/// A branch name that already exists is checked out, not made: the session
+/// named `dev` works on the repository's `dev`.
+#[test]
+fn naming_an_existing_branch_checks_it_out() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
+        return;
+    };
+    let mut tui = create_through_the_flow(
+        &profile,
+        &[Pick {
+            dir: &repo,
+            worktree: true,
+        }],
+        "dev",
+        &mut Vec::new(),
+    );
+    tui.wait_for("dev");
+    assert_eq!(
+        workspace_urls(&profile, "dev"),
+        serde_json::json!([format!("git+file://{}?branch=dev#main", repo.display())])
+    );
+    let dir = workspace_dir(&profile, "dev");
+    assert_eq!(git_out(&dir, &["symbolic-ref", "--short", "HEAD"]), "dev");
+    assert!(tui.quit().success());
+}
+
+/// A directory with no repository is still a workspace, but `alt+w` refuses
+/// it a worktree in v2's words, and the session runs in it as it is.
+#[test]
+fn a_directory_with_no_repository_is_refused_a_worktree() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let dir = profile.path("notes");
+    std::fs::create_dir_all(&dir).expect("a plain directory");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Run On");
+    tui.send(b"\r");
+    tui.wait_for("Select Repos");
+    tui.send(format!("\t{}\r", dir.display()).as_bytes());
+    tui.wait_until("the directory to be ticked", |frame| {
+        repo_picker_selected(frame, "notes")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"\x1bw");
+    tui.wait_for("Not a git repo");
+    tui.send(b"\x1b\r");
+    tui.wait_for("Session Name");
+    tui.send(b"notes\r");
+    tui.wait_for("Coding Agent");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("notes");
+    assert_eq!(
+        workspace_urls(&profile, "notes"),
+        serde_json::json!([format!("file://{}", dir.display())])
     );
     assert!(tui.quit().success());
 }
 
-/// A repository Fleet does not map is refused with what to add, and no Task
-/// is made in the checkout instead.
+/// A repository's existing worktrees open under it (`→`), and picking one
+/// runs the session in that checkout as it is.
 #[test]
-fn a_session_on_an_unmapped_repo_is_refused_with_what_to_add() {
-    let Some((profile, mut tui, _repo)) = create_through_the_flow(false, "loose") else {
+fn an_existing_worktree_is_opened_as_it_is() {
+    let Some((profile, repo)) = profile_with_two_branches() else {
         return;
     };
-    tui.wait_for("Fleet maps no repository at");
-    let tasks = profile.fleet(&["list", "task", "--json"], "");
-    assert!(!tasks.contains("loose"), "a Task was made: {tasks}");
+    let feat = profile.root.path().join("repo-feat");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat",
+            &feat.display().to_string(),
+        ],
+    );
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("Run On");
+    tui.send(b"\r");
+    tui.wait_for("Select Repos");
+    tui.send(format!("\t{}\r", repo.display()).as_bytes());
+    tui.wait_until("the repository to be ticked", |frame| {
+        repo_picker_selected(frame, "repo")
+    });
+    // Untick it, back to the search, and open its worktrees.
+    tui.send(b"\x1b[Z");
+    tui.wait_until_quiet();
+    tui.send(b" ");
+    tui.wait_until_quiet();
+    tui.send(b"\x1b[C");
+    tui.wait_for("feat");
+    tui.send(b"\x1b[B");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("Coding Agent");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("repo-feat");
+    assert_eq!(
+        workspace_urls(&profile, "repo-feat"),
+        serde_json::json!([format!("file://{}", feat.display())])
+    );
     assert!(tui.quit().success());
 }
 
@@ -7134,11 +7474,11 @@ fn input_after_a_held_remote_paste_keeps_its_order() {
     .expect("a second host");
     let repo = repo(profile.root.path());
     let task = format!(
-        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":{{"dir":"{}"}}}}}}"#,
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":["file://{}"]}}}}"#,
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
-    profile.fleet(&["reconcile"], "");
+    profile.reconcile();
 
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("far");

@@ -195,11 +195,11 @@ elif [ "$PROFILE" = release ]; then
     BIN_DIR="$REPO_ROOT/target/release"
     say "building (release)…"
     cargo build --release --bin thurbox --bin thurbox-cli --bin fleet \
-        --bin runtime-mux >/dev/null 2>&1
+        --bin runtime-mux --bin workspace-git >/dev/null 2>&1
 else
     BIN_DIR="$REPO_ROOT/target/debug"
     say "building (dev)…"
-    cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux \
+    cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux --bin workspace-git \
         >/dev/null 2>&1
 fi
 

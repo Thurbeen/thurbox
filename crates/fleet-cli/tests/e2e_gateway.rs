@@ -196,7 +196,7 @@ fn second_route(env: &Env, channel: &str, dir: &str) -> String {
     let root = root(env);
     format!(
         "\n[gateway.routes.ops]\naccount = \"{GATEWAY_ACCOUNT}\"\nchannels = [\"{channel}\"]\nallow = [\"alex\"]\n\
-taskConfig = \"conversation\"\nbrief = \"{root}/briefs/ops.md\"\nworkspace = {{ dir = \"{dir}\" }}\n"
+taskConfig = \"conversation\"\nbrief = \"{root}/briefs/ops.md\"\nworkspace = {{ base = \"{dir}\" }}\n"
     )
 }
 
@@ -309,10 +309,10 @@ fn each_invalid_gateway_case_is_refused_at_load() {
         ),
         (
             base.replace(
-                &format!("workspace = {{ dir = \"{dir}\" }}"),
-                "workspace = { dir = \"work/conversations\" }",
+                &format!("workspace = {{ base = \"{dir}\" }}"),
+                "workspace = { base = \"work/conversations\" }",
             ),
-            "routes.eng: workspace.dir must be an absolute path",
+            "routes.eng: workspace.base must be an absolute path",
         ),
         (
             base.replace("allow = [\"alex\", \"sam\"]", "allow = []"),
@@ -1793,7 +1793,7 @@ fn an_admitted_mention_starts_one_task_tied_to_the_thread() {
         json!({
             "configRef": {"name": "conversation"},
             "brief": support::GATEWAY_BRIEF,
-            "workspace": {"dir": thread_dir(&env, &conv)},
+            "workspace": [format!("file://{}", thread_dir(&env, &conv))],
             "dispatch": true,
         }),
         "the Task is the interface page's JSON: {task:#}"
@@ -1989,7 +1989,7 @@ fn two_threads_on_one_route_each_start_a_task_in_their_own_directory() {
     let task = env.get(&first);
     assert_eq!(
         task["spec"]["workspace"],
-        json!({"dir": thread_dir(&env, &first_conv)}),
+        json!([format!("file://{}", thread_dir(&env, &first_conv))]),
         "{task:#}"
     );
     assert!(
@@ -2028,7 +2028,7 @@ fn two_threads_on_one_route_each_start_a_task_in_their_own_directory() {
     let task = env.get(&second);
     assert_eq!(
         task["spec"]["workspace"],
-        json!({"dir": thread_dir(&env, &second_conv)}),
+        json!([format!("file://{}", thread_dir(&env, &second_conv))]),
         "{task:#}"
     );
     assert!(Path::new(&thread_dir(&env, &second_conv)).is_dir());
@@ -2096,7 +2096,7 @@ fn a_thread_directory_the_manager_cannot_make_is_a_refused_create_and_no_task() 
     let task = env.get(&task_name);
     assert_eq!(
         task["spec"]["workspace"],
-        json!({"dir": thread_dir(&env, &conv)})
+        json!([format!("file://{}", thread_dir(&env, &conv))])
     );
     assert!(Path::new(&thread_dir(&env, &conv)).is_dir());
     let st = env.conversation_status(&conv);
@@ -2129,7 +2129,7 @@ fn a_thread_directory_whose_creation_is_unknown_is_recovered_by_a_lookup_and_a_r
     let task = env.get(&task_name);
     assert_eq!(
         task["spec"]["workspace"],
-        json!({"dir": thread_dir(&env, &conv)})
+        json!([format!("file://{}", thread_dir(&env, &conv))])
     );
     assert!(Path::new(&thread_dir(&env, &conv)).is_dir());
     let st = env.conversation_status(&conv);
@@ -2287,12 +2287,12 @@ fn a_busy_thread_directory_holds_the_thread_says_so_once_and_starts_when_free() 
     // A Task applied by hand into the route's base directory holds no
     // thread's directory.
     let mut bystander = support::task("bystander", false);
-    bystander["spec"]["workspace"]["dir"] = json!(env.gateway_workspace());
+    bystander["spec"]["workspace"] = json!([format!("file://{}", env.gateway_workspace())]);
     env.apply(bystander).ok();
     // Another Task already runs in this thread's own directory, spelled
     // with a trailing slash: the same directory.
     let mut holder = support::task("holder", false);
-    holder["spec"]["workspace"]["dir"] = json!(format!("{}/", thread_dir(&env, &conv)));
+    holder["spec"]["workspace"] = json!([format!("file://{}/", thread_dir(&env, &conv))]);
     env.apply(holder).ok();
     env.receive("Ev01", mention("1730000300000", T0 + 300_000))
         .ok();
@@ -2476,8 +2476,8 @@ fn a_same_named_task_created_for_another_thread_is_never_adopted() {
     let path = env.object_path("Task", &task_name);
     let mut task: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_ne!(
-        task["spec"]["workspace"]["dir"],
-        json!(env.gateway_workspace())
+        task["spec"]["workspace"][0],
+        json!(format!("file://{}", env.gateway_workspace()))
     );
     task["metadata"]["labels"]["gateway.fleet.dev/conversation"] = json!(conv);
     task["metadata"]["labels"]["gateway.fleet.dev/conversation-uid"] = json!("u0-another");

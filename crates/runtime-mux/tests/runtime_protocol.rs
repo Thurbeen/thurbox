@@ -21,6 +21,8 @@ const INTERFACE_SOCKET: &str = "thurbox-interface";
 
 struct Runtime {
     server: tmux_server::TmuxServer,
+    /// Variables every call sets, such as the runtime's own config.
+    env: Vec<(String, String)>,
 }
 
 impl Runtime {
@@ -32,6 +34,7 @@ impl Runtime {
         }
         Some(Runtime {
             server: tmux_server::TmuxServer::private(INTERFACE_SOCKET),
+            env: Vec::new(),
         })
     }
 
@@ -40,6 +43,7 @@ impl Runtime {
         // The guard pins the interface's socket name, as a runtime started
         // from a thurbox pane inherits it; the runtime must not use it.
         self.server.scope(&mut command);
+        command.envs(self.env.iter().map(|(k, v)| (k, v)));
         let mut child = command
             .arg(verb)
             .env_remove("TMUX")
@@ -112,9 +116,11 @@ fn the_manifest_names_the_protocol_and_the_verbs() {
     for verb in ["manifest", "start", "inspect", "stop"] {
         assert!(verbs.iter().any(|v| v == verb), "{verb} in {answer}");
     }
-    assert!(
-        !verbs.iter().any(|v| v == "workspace"),
-        "runtime-mux makes no workspace yet: {answer}"
+    assert!(verbs.iter().any(|v| v == "workspace"), "{answer}");
+    assert_eq!(
+        answer["known"]["workspace"],
+        json!({"schemes": ["git+https", "git+ssh", "git+file", "file"], "survivesStop": true}),
+        "{answer}"
     );
 }
 
@@ -509,4 +515,390 @@ fn the_lock_follows_no_link_planted_where_it_used_to_live() {
     .expect("link");
     started(&rt.start("k.link", &["sleep", "300"]));
     assert!(!planted.exists(), "the lock opened through the link");
+}
+
+/// The `workspace-git` program cargo built beside this one, which
+/// runtime-mux runs; `None`, and a note, when the workspace has not built it.
+fn workspace_git() -> Option<std::path::PathBuf> {
+    let found = std::path::Path::new(env!("CARGO_BIN_EXE_runtime-mux"))
+        .parent()
+        .map(|dir| dir.join("workspace-git"))
+        .filter(|p| p.is_file());
+    if found.is_none() {
+        eprintln!(
+            "skipping: no workspace-git binary; build it with `cargo build -p workspace-git`"
+        );
+    }
+    found
+}
+
+/// A git command for a fixture, with the variables a hook pins git with
+/// cleared.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let mut cmd = Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_NAMESPACE",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    ] {
+        cmd.env_remove(var);
+    }
+    let out = cmd
+        .current_dir(dir)
+        .args(["-c", "user.name=T", "-c", "user.email=t@example.invalid"])
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A runtime with a directory of its own for repositories, a workspace root
+/// and its config, which [`Workspaces::configure`] writes.
+struct Workspaces {
+    rt: Runtime,
+    base: std::path::PathBuf,
+    program: std::path::PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl Workspaces {
+    /// Configured with no steps.
+    fn new() -> Option<Workspaces> {
+        let mut ws = Workspaces::unconfigured()?;
+        ws.configure("");
+        Some(ws)
+    }
+
+    fn unconfigured() -> Option<Workspaces> {
+        let program = workspace_git()?;
+        let rt = Runtime::new()?;
+        let dir = tempfile::tempdir().expect("dir");
+        let base = dir.path().canonicalize().expect("canonical");
+        Some(Workspaces {
+            rt,
+            base,
+            program,
+            _dir: dir,
+        })
+    }
+
+    /// The runtime's config: the root, the program, and `extra` TOML.
+    fn configure(&mut self, extra: &str) {
+        let config = self.base.join("runtime-mux.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "[workspace]\nroot = '{}'\nprogram = '{}'\n{extra}",
+                self.base.join("root").display(),
+                self.program.display()
+            ),
+        )
+        .expect("config");
+        self.rt.env = vec![("RUNTIME_MUX_CONFIG".into(), config.display().to_string())];
+    }
+
+    fn origin(&self, name: &str) -> String {
+        let dir = self.base.join(name);
+        std::fs::create_dir_all(&dir).expect("origin");
+        git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("README"), "hi\n").expect("README");
+        git(&dir, &["add", "README"]);
+        git(&dir, &["commit", "-q", "-m", "first"]);
+        format!("git+file://{}", dir.display())
+    }
+
+    fn workspace(&self, key: &str, urls: &[&str]) -> Value {
+        self.rt.call(
+            "workspace",
+            json!({"protocol": 1, "key": key, "urls": urls}),
+        )
+    }
+}
+
+#[test]
+fn a_workspace_is_made_and_a_release_takes_it_with_the_process() {
+    let Some(ws) = Workspaces::new() else { return };
+    let url = ws.origin("app");
+    let made = ws.workspace("w.one", &[&url]);
+    let tree = ws.base.join("root/w.one/app");
+    assert_eq!(
+        made["known"]["made"],
+        json!({"dirs": [tree.display().to_string()], "adopted": false}),
+        "{made}"
+    );
+    assert_eq!(
+        ws.workspace("w.one", &[&url])["known"]["made"]["adopted"],
+        true,
+        "a second call adopts"
+    );
+    let answer = ws.rt.call(
+        "start",
+        json!({"protocol": 1, "key": "w.one", "argv": ["sleep", "300"], "env": {}, "dir": tree}),
+    );
+    started(&answer);
+    std::fs::write(tree.join("work.txt"), "unsaved").expect("work");
+    let stopped = ws.rt.call(
+        "stop",
+        json!({"protocol": 1, "key": "w.one", "release": true}),
+    );
+    assert_eq!(stopped["known"], "stopped", "{stopped}");
+    assert_eq!(ws.rt.inspect("w.one")["known"], "none");
+    assert!(!tree.exists(), "the release removes the worktree");
+    // A local checkout's worktree keeps its preserved work in the checkout.
+    git(
+        &ws.base.join("app"),
+        &["rev-parse", "--verify", "refs/fleet/preserved/w.one/app"],
+    );
+}
+
+#[test]
+fn a_stop_without_release_keeps_the_workspace() {
+    let Some(ws) = Workspaces::new() else { return };
+    let url = ws.origin("app");
+    ws.workspace("w.kept", &[&url]);
+    let stopped = ws.rt.call("stop", json!({"protocol": 1, "key": "w.kept"}));
+    assert_eq!(stopped["known"], "stopped", "{stopped}");
+    assert!(ws.base.join("root/w.kept/app/README").is_file());
+}
+
+#[test]
+fn setup_steps_run_in_a_new_workspace_and_a_failing_one_rolls_it_back() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let good = ws.origin("good");
+    let bad = ws.origin("bad");
+    ws.configure(&format!(
+        "[[workspace.setup]]\nmatch = '{good}'\nrun = ['printf ready > setup.txt']\n\n\
+         [[workspace.setup]]\nmatch = '{bad}'\nrun = ['exit 3']\n"
+    ));
+    let made = ws.workspace("w.setup", &[&good]);
+    assert_eq!(made["known"]["made"]["adopted"], false, "{made}");
+    let tree = ws.base.join("root/w.setup/good");
+    assert_eq!(
+        std::fs::read_to_string(tree.join("setup.txt")).unwrap_or_default(),
+        "ready"
+    );
+    let failed = ws.workspace("w.broken", &[&bad]);
+    let why = failed["known"]["failed"]["why"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        why.contains("exit 3") || why.contains("exited 3"),
+        "{failed}"
+    );
+    assert!(!ws.base.join("root/w.broken").exists(), "rolled back");
+}
+
+/// A slow workspace call, such as a first clone or a long setup, holds only
+/// its own key: a start on another key goes on at once.
+#[test]
+fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let url = ws.origin("app");
+    ws.configure(&format!(
+        "[[workspace.setup]]\nmatch = '{url}'\nrun = ['sleep 6']\n"
+    ));
+    let ws = &ws;
+    std::thread::scope(|scope| {
+        let slow = scope.spawn(|| ws.workspace("w.slow", &[url.as_str()]));
+        // The worktree exists: the workspace call holds its lock and runs
+        // its setup.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ws.base.join("root/w.slow/app").exists() {
+            assert!(Instant::now() < deadline, "the workspace call never began");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let begun = Instant::now();
+        started(&ws.rt.start("w.other", &["sleep", "300"]));
+        let waited = begun.elapsed();
+        assert!(
+            waited < Duration::from_secs(3),
+            "the start waited {waited:?} for another key's workspace"
+        );
+        let made = slow.join().expect("the workspace call");
+        assert!(made["known"]["made"].is_object(), "{made}");
+    });
+}
+
+/// A releasing stop runs the workspace's teardown, which may be slow, under
+/// its key's lock only: a start on another key goes on at once.
+#[test]
+fn a_slow_releasing_stop_does_not_hold_up_a_start_on_another_key() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let url = ws.origin("app");
+    ws.configure(&format!(
+        "[[workspace.teardown]]\nmatch = '{url}'\nrun = ['printf x > ../tearing; sleep 6']\n"
+    ));
+    let made = ws.workspace("w.down", &[url.as_str()]);
+    assert!(made["known"]["made"].is_object(), "{made}");
+    let ws = &ws;
+    std::thread::scope(|scope| {
+        let stopping = scope.spawn(|| {
+            ws.rt.call(
+                "stop",
+                json!({"protocol": 1, "key": "w.down", "release": true}),
+            )
+        });
+        // The teardown runs: the stop holds its locks.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ws.base.join("root/w.down/tearing").exists() {
+            assert!(Instant::now() < deadline, "the teardown never began");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let begun = Instant::now();
+        started(&ws.rt.start("w.other", &["sleep", "300"]));
+        let waited = begun.elapsed();
+        assert!(
+            waited < Duration::from_secs(3),
+            "the start waited {waited:?} for another key's releasing stop"
+        );
+        let stopped = stopping.join().expect("the stop");
+        assert_eq!(stopped["known"], "stopped", "{stopped}");
+    });
+}
+
+/// A runtime that stopped after `workspace-git` made the workspace and
+/// before its setup finished leaves a workspace that is whole to
+/// `workspace-git`. The next call runs the setup steps before it answers.
+#[test]
+fn a_workspace_whose_setup_never_finished_runs_it_when_adopted() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let url = ws.origin("app");
+    ws.configure(&format!(
+        "[[workspace.setup]]\nmatch = '{url}'\nrun = ['printf ready > setup.txt']\n"
+    ));
+    // `workspace-git` alone: what a runtime killed during setup leaves.
+    let mut child = Command::new(&ws.program)
+        .arg("make")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("workspace-git");
+    std::io::Write::write_all(
+        child.stdin.as_mut().expect("stdin"),
+        json!({"root": ws.base.join("root"), "key": "w.half", "urls": [url]})
+            .to_string()
+            .as_bytes(),
+    )
+    .expect("request");
+    drop(child.stdin.take());
+    assert!(child.wait().expect("wait").success());
+    let tree = ws.base.join("root/w.half/app");
+    assert!(!tree.join("setup.txt").exists());
+    let made = ws.workspace("w.half", &[&url]);
+    assert!(made["known"]["made"].is_object(), "{made}");
+    assert_eq!(
+        std::fs::read_to_string(tree.join("setup.txt")).unwrap_or_default(),
+        "ready",
+        "setup runs before the workspace is answered: {made}"
+    );
+}
+
+/// A failed setup's discard that `workspace-git` could not finish is no
+/// known failure: what is left may still be adopted.
+#[cfg(unix)]
+#[test]
+fn a_discard_that_does_not_finish_leaves_the_workspace_unknown() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let stub = ws.base.join("stub-workspace-git");
+    let dir = ws.base.join("made");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\ncase \"$1\" in\n  make) printf '{{\"made\":{{\"dirs\":[\"{}\"],\"adopted\":false}}}}' ;;\n  discard) printf '{{\"unknown\":{{\"why\":\"busy\"}}}}' ;;\nesac\n",
+            dir.display()
+        ),
+    )
+    .expect("stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    ws.program = stub;
+    ws.configure("[[workspace.setup]]\nmatch = 'file:///x'\nrun = ['exit 3']\n");
+    let answer = ws.workspace("w.stuck", &["file:///x"]);
+    assert!(answer["unknown"]["why"].is_string(), "{answer}");
+}
+
+#[test]
+fn teardown_steps_run_before_the_release() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let url = ws.origin("app");
+    let mark = ws.base.join("torn-down");
+    ws.configure(&format!(
+        "[[workspace.teardown]]\nmatch = '{url}'\nrun = ['test -f README && printf gone > \"{}\"']\n",
+        mark.display()
+    ));
+    ws.workspace("w.torn", &[&url]);
+    let stopped = ws.rt.call(
+        "stop",
+        json!({"protocol": 1, "key": "w.torn", "release": true}),
+    );
+    assert_eq!(stopped["known"], "stopped", "{stopped}");
+    assert_eq!(std::fs::read_to_string(&mark).unwrap_or_default(), "gone");
+}
+
+#[test]
+fn a_url_no_scheme_of_the_runtime_handles_is_unsupported() {
+    let Some(ws) = Workspaces::new() else { return };
+    let answer = ws.workspace("w.hg", &["hg+https://example.invalid/r"]);
+    assert_eq!(
+        answer["known"]["unsupported"]["url"], "hg+https://example.invalid/r",
+        "{answer}"
+    );
+}
+
+#[test]
+fn a_missing_workspace_program_fails_the_workspace_by_name() {
+    let Some(mut rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let config = dir.path().join("runtime-mux.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[workspace]\nroot = '{}'\nprogram = '/nonexistent/workspace-git'\n",
+            dir.path().join("root").display()
+        ),
+    )
+    .expect("config");
+    rt.env
+        .push(("RUNTIME_MUX_CONFIG".into(), config.display().to_string()));
+    let notes = dir.path().join("notes");
+    std::fs::create_dir_all(&notes).expect("notes");
+    let answer = rt.call(
+        "workspace",
+        json!({"protocol": 1, "key": "w.none", "urls": [format!("file://{}", notes.display())]}),
+    );
+    let why = answer["known"]["failed"]["why"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(why.contains("workspace-git"), "{answer}");
 }

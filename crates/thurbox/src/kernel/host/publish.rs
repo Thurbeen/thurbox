@@ -442,7 +442,70 @@ impl LuaHost {
         })?;
         set(table, "browse", browse_value)?;
 
+        let branches_key = fnv64([
+            &b"repo_branches"[..],
+            wants.branches.as_deref().unwrap_or("\x01none").as_bytes(),
+        ]);
+        let branches_value =
+            self.group("repo_branches", [epoch.data, branches_key, 0, 0], || {
+                self.build_repo_branches(store, wants).map(Value::Table)
+            })?;
+        set(table, "repo_branches", branches_value)?;
+
         Ok(())
+    }
+
+    /// The branches of the repository `store.want_branches` names: empty
+    /// while nothing is asked, `loading` until git answers, and `is_git`
+    /// false for a directory that is no repository.
+    fn build_repo_branches(
+        &self,
+        store: &crate::kernel::repos::RepoStore,
+        wants: &crate::kernel::repos::Wants,
+    ) -> Result<Table, String> {
+        use crate::kernel::repos::BranchListing;
+
+        let out = self.lua.create_table().map_err(|e| e.to_string())?;
+        let Some(repo) = &wants.branches else {
+            return Ok(out);
+        };
+        out.set("repo", repo.clone()).map_err(|e| e.to_string())?;
+        let listing = store.branches(repo);
+        out.set(
+            "loading",
+            matches!(listing, None | Some(BranchListing::Pending)),
+        )
+        .map_err(|e| e.to_string())?;
+        out.set("is_git", !matches!(listing, Some(BranchListing::NotGit)))
+            .map_err(|e| e.to_string())?;
+        if let Some(BranchListing::Failed(why)) = listing {
+            out.set("error", why.clone()).map_err(|e| e.to_string())?;
+        }
+        let names = self.lua.create_table().map_err(|e| e.to_string())?;
+        let worktrees = self.lua.create_table().map_err(|e| e.to_string())?;
+        if let Some(BranchListing::Ready(found)) = listing {
+            for (index, tree) in found.worktrees.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.set("path", tree.path.clone())
+                    .map_err(|e| e.to_string())?;
+                item.set("branch", opt_lua_string(&self.lua, tree.branch.as_deref())?)
+                    .map_err(|e| e.to_string())?;
+                worktrees.set(index + 1, item).map_err(|e| e.to_string())?;
+            }
+            out.set(
+                "default",
+                opt_lua_string(&self.lua, found.default.as_deref())?,
+            )
+            .map_err(|e| e.to_string())?;
+            for (index, name) in found.names.iter().enumerate() {
+                names
+                    .set(index + 1, name.clone())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        out.set("names", names).map_err(|e| e.to_string())?;
+        out.set("worktrees", worktrees).map_err(|e| e.to_string())?;
+        Ok(out)
     }
 
     fn build_bookmarks(

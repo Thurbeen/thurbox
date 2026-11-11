@@ -67,7 +67,7 @@ and the `fleet-*` skills own the detail):
   runtime.
 - A test that runs `git` in a scratch directory removes git's location
   variables (`GIT_DIR`, `GIT_WORK_TREE`, … — `GIT_LOCATION` in
-  `crates/fleet-runtime/src/worktree.rs`) from the child: a commit hook
+  `crates/fleet-cli/tests/e2e_runtime_exec.rs`) from the child: a commit hook
   exports them, and an unscrubbed `git config` rewrites this repository's.
 - Design pages follow ASD-STE100 Simplified Technical English's writing rules:
   one fact per sentence, active voice, one term per concept, lists for steps.

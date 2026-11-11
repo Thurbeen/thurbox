@@ -20,8 +20,8 @@ itself reads this machine only:
   becomes the Task's `spec.host`; this machine is `local`
   (`Fleet::host`, `src/kernel/command/fleet.rs`). A host Fleet does not list
   is refused, with a hint to add `[hosts.<name>]` to Fleet's config. A
-  session on another host gets a `dir` workspace: Fleet makes worktrees on
-  this machine only.
+  session on another host gets a `file://` workspace URL: the creation flow
+  reads branches on this machine only, so it never offers a worktree there.
 - **The creation flow's reads** happen on this machine only
   (`src/kernel/repos.rs`). A path typed for another host is remembered and
   forgotten as typed (`src/kernel/command/execute.rs`).

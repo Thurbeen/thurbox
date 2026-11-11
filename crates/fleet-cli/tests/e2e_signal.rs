@@ -138,3 +138,100 @@ fn a_turn_that_ends_with_background_work_is_not_idle_and_never_pauses() {
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Idle");
 }
+
+/// An interactive session (no brief, no pause) shows what its agent's hooks
+/// report: a person reads `sessionState` to know whether it works or waits.
+#[test]
+fn an_interactive_sessions_hooks_drive_its_session_state() {
+    let env = Env::new("signal-interactive");
+    let mut t = support::task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"].as_object_mut().unwrap().remove("outputs");
+    env.apply(json!([t])).ok();
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    assert_eq!(session_state(&env), "Running", "nothing reported yet");
+
+    signal(&env, &file, &["idle"]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Idle", "{:#}", env.get("t1")["status"]);
+
+    signal(&env, &file, &["working"]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Running");
+
+    signal(&env, &file, &["idle"]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Idle");
+}
+
+/// The agent's own report, finer than `sessionState`: `agentState` is
+/// `unknown` until the agent reports, then follows its hooks. `prompt` and
+/// `working` are a turn at work, `blocked` waits on a person (attention),
+/// and `idle` is a finished turn.
+#[test]
+fn an_interactive_sessions_hooks_drive_its_agent_state() {
+    let env = Env::new("signal-agent-state");
+    let mut t = support::task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"].as_object_mut().unwrap().remove("outputs");
+    env.apply(json!([t])).ok();
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    let agent_state = |env: &Env| env.get("t1")["status"]["agentState"].clone();
+    assert_eq!(agent_state(&env), "unknown", "nothing reported yet");
+    for (word, state) in [
+        ("working", "working"),
+        ("blocked", "attention"),
+        ("prompt", "working"),
+        ("idle", "idle"),
+    ] {
+        signal(&env, &file, &[word]);
+        env.reconcile().ok();
+        assert_eq!(
+            agent_state(&env),
+            state,
+            "after `fleet signal {word}`: {:#}",
+            env.get("t1")["status"]
+        );
+    }
+}
+
+/// Claude Code's `Notification` hook fires for a permission prompt, and also
+/// after 60 s of input idle. Only the first needs a person: an idle
+/// notification leaves an idle agent idle, so it still reads idle and can
+/// still be paused.
+#[test]
+fn an_idle_notification_keeps_an_idle_agent_idle() {
+    let env = Env::new("signal-idle-notification");
+    let mut t = support::task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"].as_object_mut().unwrap().remove("outputs");
+    env.apply(json!([t])).ok();
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    signal(&env, &file, &["idle"]);
+    signal(
+        &env,
+        &file,
+        &[
+            "blocked",
+            r#"{"hook_event_name":"Notification","notification_type":"idle_prompt"}"#,
+        ],
+    );
+    env.reconcile().ok();
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["sessionState"], "Idle", "{status:#}");
+    assert_eq!(status["agentState"], "idle", "{status:#}");
+
+    signal(
+        &env,
+        &file,
+        &[
+            "blocked",
+            r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#,
+        ],
+    );
+    env.reconcile().ok();
+    assert_eq!(env.get("t1")["status"]["agentState"], "attention");
+}

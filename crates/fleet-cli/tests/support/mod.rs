@@ -619,7 +619,7 @@ pub fn task(name: &str, dispatch: bool) -> Value {
             "harness": "claude-code",
             "host": "local",
             "brief": format!("Do the work for {name}."),
-            "workspace": {"dir": format!("work/{name}")},
+            "workspace": [],
             "dispatch": dispatch,
             "outputs": {"prUrl": {"type": "string", "required": true}, "tests": {"type": "integer"}}
         }
@@ -720,7 +720,7 @@ pub fn gateway_section(root: &Path) -> String {
 [gateway.people.alex]\n{GATEWAY_ACCOUNT} = \"{ALEX_ID}\"\n\n\
 [gateway.people.sam]\n{GATEWAY_ACCOUNT} = \"{SAM_ID}\"\n\n\
 [gateway.routes.{GATEWAY_ROUTE}]\naccount = \"{GATEWAY_ACCOUNT}\"\nchannels = [\"{GATEWAY_CHANNEL}\"]\nmention = \"required\"\nallow = [\"alex\", \"sam\"]\n\
-taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworkspace = {{ dir = \"{root}/work/conversations\" }}\n"
+taskConfig = \"conversation\"\nbrief = \"{root}/briefs/conversation.md\"\nworkspace = {{ base = \"{root}/work/conversations\" }}\n"
     )
 }
 

@@ -74,15 +74,15 @@ pub struct Effect {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum Action {
-    /// Make the Task's workspace under `key` on `host`, through the
-    /// workspace port, before the spawn.
+    /// Make the Task's workspace of `urls` under `key` on `host`, through
+    /// the runtime's `workspace` call, before the first start.
     Materialize {
         host: String,
         key: String,
-        repositories: crate::task::RepositoriesWorkspace,
+        urls: Vec<String>,
     },
-    /// Remove a workspace Fleet made, through the workspace port, once its
-    /// session is released.
+    /// Remove the workspace the runtime made, through its `stop` with
+    /// `release`, once its session is released.
     CleanWorkspace {
         workspace: crate::workspace::WorkspaceRef,
     },
@@ -245,11 +245,11 @@ pub struct SpawnSpec {
     pub host: String,
     pub key: String,
     pub harness: String,
-    /// What the Task named; the runtime decides how to make it, unless
-    /// `ready` is set.
+    /// What the Task named.
     pub workspace: crate::task::Workspace,
-    /// The workspace Fleet made for this session: the runtime runs the
-    /// session in `ready.dir` on `ready.host` and makes nothing.
+    /// The workspace the runtime made for this session: the session runs in
+    /// its first directory and spans the others. `None` for an empty list:
+    /// the session runs in the runtime's default directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ready: Option<crate::workspace::WorkspaceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,16 +263,13 @@ pub struct SpawnSpec {
 
 impl SpawnSpec {
     /// The harness profile's launch argv: its hooks, the trust of the
-    /// workspace root and each other directory the workspace spans.
+    /// directory the session starts in and each other directory it spans.
     pub fn launch_argv(&self) -> Result<Vec<String>, String> {
         let (extra, root) = match &self.ready {
-            Some(r) => (
-                r.extra_dirs.clone(),
-                Some(r.trust_root.clone().unwrap_or_else(|| r.dir.clone())),
-            ),
-            None => (Vec::new(), self.workspace.dir().map(str::to_string)),
+            Some(r) => (r.extra_dirs().to_vec(), r.dir()),
+            None => (Vec::new(), None),
         };
-        crate::harness::profile(&self.harness).launch(&extra, root.as_deref())
+        crate::harness::profile(&self.harness).launch(&extra, root)
     }
 }
 
@@ -395,14 +392,15 @@ pub enum EffectOutcome {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         adopted: bool,
     },
-    /// The runtime maps no source for a repository the workspace names.
-    /// Nothing was started: the runtime's configuration lacks the mapping,
-    /// and adding it, not a retry, is the fix.
-    Unmapped {
+    /// The host's runtime does not handle a URL the workspace names: its
+    /// manifest lists no `workspace` verb, or not the URL's scheme, or it
+    /// answered so. Nothing was made: a runtime that handles the URL, not a
+    /// retry, is the fix.
+    Unsupported {
         url: String,
     },
     /// The runtime knows no workspace-trust interface for the harness.
-    /// Nothing was started, for the same reason as `Unmapped`.
+    /// Nothing was started, for the same reason as `Unsupported`.
     TrustUnmapped {
         harness: String,
     },
@@ -422,17 +420,19 @@ pub enum Probe {
     Ready {
         session: SessionRef,
     },
-    /// Whether the session's agent trusts the Task's workspace, or the one
-    /// Fleet made for it (`ready`).
+    /// Whether the session's agent trusts the workspace the runtime made for
+    /// it (`ready`), or its default directory.
     WorkspaceTrust {
         session: SessionRef,
         workspace: crate::task::Workspace,
         ready: Option<crate::workspace::WorkspaceRef>,
     },
-    /// The whole workspace under `key` on `host`, through the workspace port.
+    /// The whole workspace of `urls` under `key` on `host`: the runtime's
+    /// `workspace` call again, which is idempotent by key.
     FindWorkspace {
         host: String,
         key: String,
+        urls: Vec<String>,
     },
     BriefDelivered {
         session: SessionRef,
@@ -513,7 +513,8 @@ pub struct Observations {
     pub activity: Option<Observation<crate::runtime::Activity>>,
     /// Everything the agent's hooks reported, folded.
     pub signals: Option<Observation<crate::signal::Reported>>,
-    /// `Known(None)` means the host proved no whole workspace holds the key.
+    /// `Known(None)` means the runtime proved it made no workspace under the
+    /// key.
     pub workspace: Option<Observation<Option<crate::workspace::WorkspaceRef>>>,
 }
 

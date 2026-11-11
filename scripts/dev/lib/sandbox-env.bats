@@ -12,6 +12,7 @@ setup() {
   # shellcheck disable=SC1091
   . "${BATS_TEST_DIRNAME}/sandbox-env.sh"
   ROOT="${BATS_TEST_TMPDIR}/root"
+  export TBX_SANDBOX_ROOT="$ROOT"
   mkdir -p "$ROOT/data"
 }
 
@@ -54,4 +55,43 @@ teardown() {
   : > "$ROOT/data/fleet-up-$OTHER.log"
   _tbx_stop_fleet "$ROOT"
   kill -0 "$OTHER"
+}
+
+@test "a profile made before 3.0 gets a Fleet config the new fleet reads" {
+  mkdir -p "$ROOT/fleet"
+  printf 'version = 1\n\n[starter]\nworkspace = "starter"\n' > "$ROOT/fleet/config.toml"
+  tbx_sandbox_fleet
+  run ! grep -q '^\[starter\]' "$ROOT/fleet/config.toml"
+  grep -qx '\[hosts.local\]' "$ROOT/fleet/config.toml"
+}
+
+@test "an old runtime-mux config is written again with the sandbox's root" {
+  mkdir -p "$ROOT/fleet"
+  printf "[workspace]\nroot = '/elsewhere'\n" > "$ROOT/fleet/runtime-mux.toml"
+  tbx_sandbox_fleet
+  grep -qF "root = '$ROOT/fleet/workspaces'" "$ROOT/fleet/runtime-mux.toml"
+}
+
+@test "a rewrite replaces each config in one step, never truncating it in place" {
+  mkdir -p "$ROOT/fleet"
+  printf 'old\n' > "$ROOT/fleet/config.toml"
+  printf 'old\n' > "$ROOT/fleet/runtime-mux.toml"
+  before_fleet=$(stat -c %i "$ROOT/fleet/config.toml")
+  before_mux=$(stat -c %i "$ROOT/fleet/runtime-mux.toml")
+  tbx_sandbox_fleet
+  [ "$(stat -c %i "$ROOT/fleet/config.toml")" != "$before_fleet" ]
+  [ "$(stat -c %i "$ROOT/fleet/runtime-mux.toml")" != "$before_mux" ]
+  run ! ls "$ROOT/fleet/"*.toml.*
+}
+
+@test "two launches writing the configs at once both finish" {
+  mkdir -p "$ROOT/fleet"
+  for _ in 1 2 3 4 5 6 7 8; do
+    ( tbx_sandbox_fleet ) & a=$!
+    ( tbx_sandbox_fleet ) & b=$!
+    wait "$a"
+    wait "$b"
+  done
+  grep -qx '\[hosts.local\]' "$ROOT/fleet/config.toml"
+  run ! ls "$ROOT/fleet/"*.toml.*
 }

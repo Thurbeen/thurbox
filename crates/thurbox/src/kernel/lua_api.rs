@@ -599,6 +599,40 @@ pub static BROWSE: Class = Class {
     ],
 };
 
+pub static REPO_BRANCHES: Class = Class {
+    name: "thurbox.RepoBranches",
+    doc: &[
+        "A repository's local branches on this machine, served only while `store.want_branches` names it.",
+    ],
+    exact: true,
+    fields: &[
+        leaf("repo", "string"),
+        leaf("loading", "boolean"),
+        leaf("is_git", "boolean").doc("False when the directory is no git repository."),
+        leaf("error", "string")
+            .opt()
+            .doc("Why a git repository's branches could not be read; its worktree choices stay offered."),
+        leaf("default", "string")
+            .opt()
+            .doc("The branch a new worktree starts from by default."),
+        leaf("names", "string[]"),
+        field("worktrees", Ty::List(&EXISTING_WORKTREE))
+            .doc("The worktrees the repository already has besides its own checkout."),
+    ],
+};
+
+pub static EXISTING_WORKTREE: Class = Class {
+    name: "thurbox.ExistingWorktree",
+    doc: &["A worktree a repository already has, which a session can open as it is."],
+    exact: true,
+    fields: &[
+        leaf("path", "string"),
+        leaf("branch", "string")
+            .opt()
+            .doc("Its branch; absent when its HEAD is detached."),
+    ],
+};
+
 pub static SYSTEM_METRICS: Class = Class {
     name: "thurbox.SystemMetrics",
     doc: &[],
@@ -834,6 +868,7 @@ pub static API_ROOT: Class = Class {
         field("settings", Ty::Record(&SETTINGS)),
         field("bookmarks", Ty::Record(&BOOKMARKS)),
         field("browse", Ty::Record(&BROWSE)),
+        field("repo_branches", Ty::Record(&REPO_BRANCHES)),
         field("hosts", Ty::List(&HOST)).opt().doc(
             "Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.",
         ),
@@ -896,6 +931,8 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&BOOKMARKS),
     Item::Class(&BROWSE_ENTRY),
     Item::Class(&BROWSE),
+    Item::Class(&EXISTING_WORKTREE),
+    Item::Class(&REPO_BRANCHES),
     Item::Class(&SYSTEM_METRICS),
     Item::Class(&AGENT_METRICS),
     Item::Class(&SESSION_METRICS),

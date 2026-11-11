@@ -24,7 +24,8 @@ use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Attach, Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::session::uid_of_session_key;
 use fleet_api::signal::{Reported, Signal, Signals, State};
-use fleet_api::task::{SessionRef, Workspace};
+use fleet_api::task::{SessionRef, Workspace, url_scheme};
+use fleet_api::workspace::WorkspaceRef;
 use fleet_exec::{Outcome, Spec};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -47,6 +48,10 @@ const ANSWER_CAP: usize = 4 * 1024 * 1024;
 /// makes more than two.
 const MAX_CALLS_PER_OPERATION: u32 = 2;
 
+/// The bound on a `workspace` call when `[runtimes.<name>]` names none:
+/// a first clone of a repository can take minutes.
+pub const DEFAULT_WORKSPACE_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// One program that speaks the protocol, as `[runtimes.<name>]` gives it.
 #[derive(Debug, Clone)]
 pub struct ExecProgram {
@@ -56,8 +61,10 @@ pub struct ExecProgram {
     pub program: String,
     /// Arguments before the verb.
     pub args: Vec<String>,
-    /// The bound on every call.
+    /// The bound on every call but `workspace`.
     pub call_timeout: Duration,
+    /// The bound on a `workspace` call, which may clone a repository.
+    pub workspace_timeout: Duration,
     /// The first part of every key this Fleet gives the runtime: a second
     /// Fleet on the same runtime takes its own.
     pub key_prefix: String,
@@ -70,6 +77,7 @@ impl ExecProgram {
             program: program.into(),
             args: Vec::new(),
             call_timeout: Duration::from_secs(15),
+            workspace_timeout: DEFAULT_WORKSPACE_TIMEOUT,
             key_prefix: "fleet".into(),
         }
     }
@@ -79,8 +87,17 @@ impl ExecProgram {
         self.call_raw(verb, request.to_string().into_bytes())
     }
 
+    /// The bound on one call of `verb`.
+    fn timeout(&self, verb: &str) -> Duration {
+        if verb == "workspace" {
+            self.workspace_timeout
+        } else {
+            self.call_timeout
+        }
+    }
+
     fn call_raw(&self, verb: &str, request: Vec<u8>) -> Answer {
-        let mut spec = Spec::new(&self.program, self.call_timeout)
+        let mut spec = Spec::new(&self.program, self.timeout(verb))
             .args(&self.args)
             .arg(verb)
             .stdin(request);
@@ -165,6 +182,35 @@ enum Wire {
 pub struct Manifest {
     pub protocol: u64,
     pub verbs: Vec<String>,
+    /// What a runtime that declares the `workspace` verb makes.
+    #[serde(default)]
+    pub workspace: Option<WorkspaceManifest>,
+}
+
+/// The manifest's `workspace`: the URL schemes the runtime handles, and
+/// whether the files outlive the process.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceManifest {
+    #[serde(default)]
+    pub schemes: Vec<String>,
+    #[serde(default)]
+    pub survives_stop: bool,
+}
+
+impl Manifest {
+    /// The first of `urls` this runtime does not make a directory for: it
+    /// lists no `workspace` verb, or not the URL's scheme.
+    pub fn unsupported<'a>(&self, urls: &'a [String]) -> Option<&'a String> {
+        let schemes = match (&self.workspace, self.verbs.iter().any(|v| v == "workspace")) {
+            (Some(w), true) => &w.schemes,
+            _ => return urls.first(),
+        };
+        urls.iter().find(|url| {
+            url_scheme(url)
+                .is_none_or(|s| !schemes.iter().any(|have| have.eq_ignore_ascii_case(&s)))
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -322,27 +368,27 @@ impl ExecRuntime {
                 ),
             });
         }
-        let dir = match (&spec.ready, &spec.workspace) {
-            (Some(ready), _) => ready.dir.clone(),
-            (None, Workspace::Dir(w)) => w.dir.clone(),
-            (None, Workspace::Repositories(_)) => {
-                return Observation::Known(Started::Failed {
-                    why: format!(
-                        "runtime {} makes no repositories workspace; Fleet's workspace port makes it",
-                        rt.name
-                    ),
-                });
-            }
-        };
-        rt.ask(
-            "start",
-            Self::request(json!({
-                "key": rt.key(&spec.key),
-                "argv": argv,
-                "env": spec.env,
-                "dir": dir,
-            })),
-        )
+        // A non-empty workspace is made before the first start, and the
+        // session runs in its first directory; an empty one runs in the
+        // runtime's default directory.
+        let dir = spec.ready.as_ref().and_then(WorkspaceRef::dir);
+        if dir.is_none() && !spec.workspace.is_empty() {
+            return Observation::Known(Started::Failed {
+                why: format!(
+                    "runtime {}: the workspace is not made yet; Fleet makes it before the first start",
+                    rt.name
+                ),
+            });
+        }
+        let mut request = json!({
+            "key": rt.key(&spec.key),
+            "argv": argv,
+            "env": spec.env,
+        });
+        if let Some(dir) = dir {
+            request["dir"] = json!(dir);
+        }
+        rt.ask("start", Self::request(request))
     }
 
     /// Start the agent of `session` again on the harness profile's resume
@@ -447,13 +493,19 @@ impl ExecRuntime {
 
 impl Runtime for ExecRuntime {
     fn operation_bound(&self) -> fleet_api::Millis {
+        // A workspace call is a manifest, then the `workspace` verb.
         let longest = self
             .hosts
             .values()
-            .map(|rt| fleet_exec::worst_case(rt.call_timeout))
+            .map(|rt| {
+                (fleet_exec::worst_case(rt.call_timeout) * MAX_CALLS_PER_OPERATION).max(
+                    fleet_exec::worst_case(rt.call_timeout)
+                        + fleet_exec::worst_case(rt.workspace_timeout),
+                )
+            })
             .max()
             .unwrap_or_default();
-        u64::try_from((longest * MAX_CALLS_PER_OPERATION).as_millis()).unwrap_or(u64::MAX)
+        u64::try_from(longest.as_millis()).unwrap_or(u64::MAX)
     }
 
     fn host(&self, host: &str) -> Observation<bool> {
@@ -523,6 +575,49 @@ impl Runtime for ExecRuntime {
         )
     }
 
+    /// The runtime's `workspace` verb, asked only of a URL list its
+    /// manifest lists every scheme of.
+    fn workspace(&self, host: &str, key: &str, urls: &[String]) -> Observation<EffectOutcome> {
+        let rt = match self.program(host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        bind(
+            rt.ask::<Manifest>("manifest", Self::request(json!({}))),
+            |manifest| {
+                if let Some(url) = manifest.unsupported(urls) {
+                    return Observation::Known(EffectOutcome::Unsupported { url: url.clone() });
+                }
+                let request = Self::request(json!({ "key": rt.key(key), "urls": urls }));
+                rt.ask::<WorkspaceAnswer>("workspace", request)
+                    .map(|answer| match answer {
+                        WorkspaceAnswer::Made { dirs, adopted } => EffectOutcome::Materialized {
+                            workspace: Box::new(WorkspaceRef {
+                                key: key.to_string(),
+                                host: host.to_string(),
+                                dirs,
+                            }),
+                            adopted,
+                        },
+                        WorkspaceAnswer::Unsupported { url } => EffectOutcome::Unsupported { url },
+                        WorkspaceAnswer::Failed { why } => EffectOutcome::Failed { why },
+                    })
+            },
+        )
+    }
+
+    /// The runtime's `stop` with `release`: the process goes, and the
+    /// workspace with it, its work kept as the runtime's rules say.
+    fn release_workspace(&self, workspace: &WorkspaceRef) -> Observation<EffectOutcome> {
+        let rt = match self.program(&workspace.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        let request = Self::request(json!({ "key": rt.key(&workspace.key), "release": true }));
+        rt.ask::<Stopped>("stop", request)
+            .map(|Stopped::Stopped| EffectOutcome::Deleted)
+    }
+
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
         let argv = match spec.launch_argv() {
             Ok(argv) => argv,
@@ -567,7 +662,7 @@ impl Runtime for ExecRuntime {
         &self,
         session: &SessionRef,
         _workspace: &Workspace,
-        _ready: Option<&fleet_api::workspace::WorkspaceRef>,
+        _ready: Option<&WorkspaceRef>,
     ) -> Observation<WorkspaceTrust> {
         match self.reported(session) {
             Observation::Known(r) if r.reported() => {

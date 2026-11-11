@@ -112,6 +112,114 @@ pub fn list_dir_entries(dir: &str) -> DirListing {
     DirListing::Entries(names)
 }
 
+/// A repository's local branches and the one a new worktree starts from by
+/// default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Branches {
+    /// The default base: the branch `origin/HEAD` names when the repository
+    /// has that branch locally, else the branch checked out, else the first.
+    /// `None` for a repository with no branch yet.
+    pub default: Option<String>,
+    /// Every local branch, sorted by name.
+    pub names: Vec<String>,
+    /// The worktrees the repository already has besides its own checkout,
+    /// in git's order: a session can open one as it is.
+    pub worktrees: Vec<Worktree>,
+}
+
+/// A worktree a repository already has: where it is checked out, and its
+/// branch (`None` when its HEAD is detached).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    pub path: String,
+    pub branch: Option<String>,
+}
+
+/// The worktrees in `git worktree list --porcelain` output, less the first
+/// record: that one is the repository's own checkout (or, bare, no checkout
+/// at all), which is the repository row itself.
+pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
+    porcelain
+        .split("\n\n")
+        .skip(1)
+        .filter_map(|record| {
+            let mut path = None;
+            let mut branch = None;
+            for line in record.lines() {
+                if let Some(at) = line.strip_prefix("worktree ") {
+                    path = Some(at.to_string());
+                } else if let Some(name) = line.strip_prefix("branch ") {
+                    branch = Some(name.strip_prefix("refs/heads/").unwrap_or(name).to_string());
+                } else if line == "bare" {
+                    return None;
+                }
+            }
+            Some(Worktree {
+                path: path?,
+                branch,
+            })
+        })
+        .collect()
+}
+
+/// The local branches of the repository at `repo` on this machine, or `None`
+/// when `repo` is no git repository.
+///
+/// Local branches only: a `git+file` workspace is made from a clone of this
+/// checkout, and that clone holds exactly these branches.
+pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
+    let repo = paths::expand_tilde(repo);
+    // Whether there is a repository is read from the filesystem, so a `git`
+    // that cannot run, or refuses the repository, never passes for none.
+    let bare = repo.join("HEAD").is_file() && repo.join("objects").is_dir();
+    if !bare && !repo.ancestors().any(|at| at.join(".git").exists()) {
+        return Err(BranchesUnread::NotGit);
+    }
+    super::run_git_capture(&["rev-parse", "--git-dir"], &repo)
+        .ok_or_else(|| BranchesUnread::Failed(format!("git could not read {}", repo.display())))?;
+    let mut names: Vec<String> = super::run_git_capture(
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        &repo,
+    )
+    .unwrap_or_default()
+    .lines()
+    .map(str::trim)
+    .filter(|name| !name.is_empty())
+    .map(str::to_string)
+    .collect();
+    names.sort();
+    let local = |name: &str| names.iter().any(|known| known == name);
+    let advertised = super::run_git_capture(
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        &repo,
+    )
+    .and_then(|out| out.trim().strip_prefix("origin/").map(str::to_string))
+    .filter(|name| local(name));
+    let checked_out = super::run_git_capture(&["symbolic-ref", "--short", "HEAD"], &repo)
+        .map(|out| out.trim().to_string())
+        .filter(|name| local(name));
+    let default = advertised
+        .or(checked_out)
+        .or_else(|| names.first().cloned());
+    let worktrees = super::run_git_capture(&["worktree", "list", "--porcelain"], &repo)
+        .map(|out| parse_worktrees(&out))
+        .unwrap_or_default();
+    Ok(Branches {
+        default,
+        names,
+        worktrees,
+    })
+}
+
+/// Why [`branches`] has no answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchesUnread {
+    /// The directory is no git repository.
+    NotGit,
+    /// It is one, and `git` could not read it: the message says why.
+    Failed(String),
+}
+
 /// Parse repo name from the origin remote URL.
 pub(super) fn repo_name_from_remote(path: &Path) -> Option<String> {
     let output = git_program()

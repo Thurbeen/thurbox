@@ -26,10 +26,7 @@ use fleet_manager::{
     apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
     receive, record_result, send,
 };
-use fleet_runtime::{
-    ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals, Repositories, WorktreeConfig,
-    WorktreeWorkspaces,
-};
+use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 
@@ -56,17 +53,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create local config and the bundled editable VEGA workspace, offline.
-    Init {
-        /// Offer bundled updates, preserving edited files with conflict copies.
-        #[arg(long)]
-        update: bool,
-        /// The coding agent for VEGA and, by default, its workers, such as
-        /// claude or codex. Without it, a terminal prompts on first init.
-        #[arg(long, value_name = "NAME")]
-        harness: Option<String>,
-    },
-    /// Start/reconnect VEGA and keep all due Tasks reconciling until Ctrl-C.
+    /// Create the local config, offline; an existing config is kept.
+    Init,
+    /// Keep every due Task reconciling until Ctrl-C.
     Up {
         /// Interval between bounded sweeps (100..=10000 ms).
         #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(100..=10000))]
@@ -251,12 +240,6 @@ enum Command {
     Runtime {
         #[command(subcommand)]
         command: RuntimeCommand,
-    },
-    /// The repository map, `[workspaces.repositories]`: each URL a Task's
-    /// `repositories` workspace may name, and its source checkout here.
-    Repositories {
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -458,63 +441,36 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .map(|p| bootstrap::absolute(&p))
         .transpose()
         .map_err(fail)?;
-    if let Command::Init { update, harness } = cli.command {
+    if let Command::Init = cli.command {
         let path = config_path
             .ok_or_else(|| fail("no config location: pass --config or set HOME/APPDATA"))?;
         let root = default_data_dir()
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
-        let done = bootstrap::init(
-            &path,
-            &root,
-            cli.data_dir.as_deref(),
-            update,
-            harness.as_deref(),
-            &ask_harness,
-        )
-        .map_err(fail)?;
-        for notice in done.notices {
-            println!("{notice}");
-        }
-        match done.harness {
-            Some(h) => println!(
-                "initialized {}; task.json chooses harness {h} for VEGA and its workers; run fleet up (runtime-mux, tmux and an authenticated {h} are required)",
-                path.display()
-            ),
-            None => println!(
-                "initialized {}; run fleet up (runtime-mux, tmux and an authenticated harness are required)",
-                path.display()
-            ),
-        }
+        let written = bootstrap::init(&path, &root, cli.data_dir.as_deref()).map_err(fail)?;
+        println!(
+            "{} {}; run fleet up (runtime-mux, tmux and an authenticated harness are required)",
+            if written { "initialized" } else { "kept" },
+            path.display()
+        );
         return Ok(());
     }
-    // The text is kept: `fleet up` compares later edits against it.
-    let (config, config_text) = match &config_path {
+    let config = match &config_path {
         Some(p) if !explicit_config && !p.try_exists().map_err(|e| fail(e.to_string()))? => {
-            (Config::empty(), String::new())
+            Config::empty()
         }
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .map_err(|e| fail(format!("cannot read config {}: {e}", p.display())))?;
-            (Config::parse(&text, p).map_err(fail)?, text)
+            Config::parse(&text, p).map_err(fail)?
         }
-        None => (Config::empty(), String::new()),
+        None => Config::empty(),
     };
-    if let Command::Repositories { json } = &cli.command {
-        let map = source_map(&config).map_err(fail)?;
-        if *json {
-            print_json(&json!({ "repositories": map }));
-        } else {
-            map.iter()
-                .for_each(|(url, source)| println!("{url} {source}"));
-        }
-        return Ok(());
-    }
     if let Command::Runtime {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
     {
         // Runtime programs serve exactly the hosts named for them, as
-        // `open_reloadable_runtime` wires them.
+        // `open_runtime` wires them.
         let hosts = (!config.runtimes.is_empty()).then(|| config.hosts.keys().collect::<Vec<_>>());
         if *json {
             print_json(&json!({ "hosts": hosts }));
@@ -534,26 +490,21 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
-    if matches!(cli.command, Command::Up { .. }) {
-        if config.starter.is_none() {
+    if matches!(cli.command, Command::Up { .. })
+        && let Some(override_dir) = &cli.data_dir
+    {
+        let configured = config
+            .data
+            .dir
+            .clone()
+            .or_else(default_data_dir)
+            .ok_or_else(|| fail("no configured data directory"))?;
+        if bootstrap::absolute(override_dir).map_err(fail)?
+            != bootstrap::absolute(&configured).map_err(fail)?
+        {
             return Err(fail(
-                "no starter workspace configured; run fleet init first",
+                "fleet up requires workers to share its config: persist data.dir in that config instead of using a differing --data-dir override",
             ));
-        }
-        if let Some(override_dir) = &cli.data_dir {
-            let configured = config
-                .data
-                .dir
-                .clone()
-                .or_else(default_data_dir)
-                .ok_or_else(|| fail("no configured data directory"))?;
-            if bootstrap::absolute(override_dir).map_err(fail)?
-                != bootstrap::absolute(&configured).map_err(fail)?
-            {
-                return Err(fail(
-                    "fleet up requires workers to share its config: persist data.dir in that config instead of using a differing --data-dir override",
-                ));
-            }
         }
     }
     let plugins = fleet_plugin::StdioPlugins::new(config.plugins.clone());
@@ -589,14 +540,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let path = config_path.ok_or_else(|| fail("no configuration; run fleet init first"))?;
             cmd_up(
                 store,
-                (&config, &config_text, &data_dir),
+                (&config, &data_dir),
                 &path,
                 poll_ms,
                 lease_ttl_ms,
                 (&plugins, &registrations),
             )
         }
-        Command::Init { .. } => unreachable_version(),
+        Command::Init => unreachable_version(),
         Command::Apply {
             file,
             json,
@@ -733,13 +684,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
             json,
         } => {
             let signals = open_signals(&data_dir)?;
-            let (runtime, map) = open_reloadable_runtime(&config, &signals)?;
-            let workspaces = open_workspaces(&config, &data_dir, map.as_ref())?;
+            let runtime = open_runtime(&config, &signals)?;
             let forge = open_forge(&config)?;
             let gateway = open_gateway(&config)?;
             let bound = runtime
                 .operation_bound()
-                .max(workspaces.as_ref().map_or(0, |w| w.operation_bound()))
                 .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
                 .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
                 .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
@@ -751,7 +700,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 clock: &SystemClock,
                 holder,
                 forge: forge.as_ref().map(|f| f as &dyn Forge),
-                workspaces: workspaces.as_deref(),
                 signals: Some(&signals),
                 change_request_defaults: forge_defaults(&config),
                 forge_defaults: relay_defaults(&config),
@@ -791,7 +739,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Gateway { command } => cmd_gateway(store, &config, command),
         Command::Attach { task, json } => {
             let signals = open_signals(&data_dir)?;
-            let (runtime, _) = open_reloadable_runtime(&config, &signals)?;
+            let runtime = open_runtime(&config, &signals)?;
             cmd_attach(store, runtime.as_ref(), &task, json)
         }
         Command::Watch {
@@ -803,7 +751,6 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Version { .. }
         | Command::Signal { .. }
         | Command::Runtime { .. }
-        | Command::Repositories { .. }
         | Command::TermBridge { .. } => unreachable_version(),
     }
 }
@@ -1003,27 +950,9 @@ fn gateway_side<'a>(
     })
 }
 
-/// Ask for the coding agent, only when a person is at a terminal. An empty
-/// answer keeps `default`.
-fn ask_harness(default: &str) -> Result<Option<String>, String> {
-    use std::io::{BufRead, IsTerminal, Write};
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        return Ok(None);
-    }
-    eprint!("Coding agent for VEGA and its workers, such as claude or codex [{default}]: ");
-    std::io::stderr().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| e.to_string())?;
-    let answer = answer.trim();
-    Ok((!answer.is_empty()).then(|| answer.to_string()))
-}
-
 fn cmd_up(
     store: &dyn Store,
-    (config, config_text, data_dir): (&Config, &str, &Path),
+    (config, data_dir): (&Config, &Path),
     config_path: &Path,
     poll_ms: u64,
     lease_ttl_ms: Option<u64>,
@@ -1032,54 +961,39 @@ fn cmd_up(
         &[fleet_api::plugin::Registration],
     ),
 ) -> Result<(), Failure> {
-    let starter = config
-        .starter
-        .as_ref()
-        .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
     let signals = open_signals(data_dir)?;
-    let (runtime, repositories) = open_reloadable_runtime(config, &signals)?;
-    let workspaces = open_workspaces(config, data_dir, repositories.as_ref())?;
-    let mut reload = repositories.map(|map| Reload::new(config_path, config_text, map));
+    let runtime = open_runtime(config, &signals)?;
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
-    let task = match store.get("Task", "vega") {
-        Observation::Known(Some(task)) => task,
-        Observation::Known(None) => {
-            let mut tasks: Vec<Object> = serde_json::from_slice(
-                &std::fs::read(starter.workspace.join("task.json"))
-                    .map_err(|e| fail(format!("starter task.json: {e}; run fleet init")))?,
-            )
-            .map_err(|e| fail(format!("starter task.json: {e}")))?;
-            if tasks.len() != 1 || tasks[0].kind != "Task" || tasks[0].metadata.name != "vega" {
-                return Err(fail("starter task.json must contain exactly Task/vega"));
-            }
-            fleet_manager::verbs::ensure_task(store, tasks.remove(0))?
-        }
-        Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
+    // Every host the config names, or `local` under one `[runtime]`. One
+    // that answers is enough to start; each other is reported, and its
+    // Tasks wait in their own status.
+    let hosts: Vec<&str> = if config.hosts.is_empty() {
+        vec!["local"]
+    } else {
+        config.hosts.keys().map(String::as_str).collect()
     };
-    let host = task.spec["host"].as_str().unwrap_or("local");
-    match runtime.host(host) {
-        Observation::Known(true) => {}
-        Observation::Known(false) => {
-            return Err(fail(format!(
-                "host {host} is unavailable: no runtime configured for it answers; install and configure its runtime (runtime-mux by default) and an authenticated agent harness, then retry fleet up"
-            )));
-        }
-        Observation::Unknown { why } => {
-            return Err(fail(format!(
-                "the runtime of host {host} could not be checked: {why}; install and configure it (runtime-mux by default) and authenticate the agent harness before fleet up"
-            )));
+    let mut down = Vec::new();
+    for host in &hosts {
+        match runtime.host(host) {
+            Observation::Known(true) => {}
+            Observation::Known(false) => down.push(format!(
+                "host {host} is unavailable: no runtime configured for it answers; install and configure its runtime (runtime-mux by default)"
+            )),
+            Observation::Unknown { why } => down.push(format!(
+                "the runtime of host {host} could not be checked: {why}; install and configure it (runtime-mux by default)"
+            )),
         }
     }
-    if task.metadata.deletion_timestamp.is_some() || !task.status["result"].is_null() {
-        return Err(fail(
-            "Task/vega is deleting or has a worker result; inspect fleet status task vega before deliberately creating a new session",
-        ));
+    if down.len() == hosts.len() {
+        return Err(fail(format!("{}; then retry fleet up", down.join("; "))));
+    }
+    for line in &down {
+        eprintln!("{line}");
     }
     let ttl = lease_for(
         runtime
             .operation_bound()
-            .max(workspaces.as_ref().map_or(0, |w| w.operation_bound()))
             .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
             .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
             .max(poll_ms.saturating_mul(2))
@@ -1096,7 +1010,6 @@ fn cmd_up(
         clock: &SystemClock,
         holder: format!("fleet-up-{}", std::process::id()),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
-        workspaces: workspaces.as_deref(),
         signals: Some(&signals),
         change_request_defaults: forge_defaults(config),
         forge_defaults: relay_defaults(config),
@@ -1104,8 +1017,7 @@ fn cmd_up(
         gateway: gateway_side(config, gateway.as_ref()),
     };
     println!(
-        "Task/vega {}: reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
-        task.metadata.uid,
+        "reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
         config_path.display()
     );
     let mut last = Vec::new();
@@ -1121,21 +1033,23 @@ fn cmd_up(
                 .chain(&report.unknowns)
                 .cloned()
                 .collect();
-            match store.get("Task", "vega") {
-                Observation::Known(Some(task)) => {
-                    if let Some(conditions) = task.status["conditions"].as_array() {
-                        for condition in conditions {
+            // A Task blocked at startup, or needing attention, is reported
+            // here, so no separate status query is needed to see why.
+            match store.list("Task") {
+                Observation::Known(tasks) => {
+                    for task in tasks {
+                        let name = &task.metadata.name;
+                        for condition in task.status["conditions"].as_array().into_iter().flatten() {
                             let status = condition["status"].as_str().unwrap_or("");
                             let startup = matches!(condition["type"].as_str(), Some("HostReachable" | "Spawned" | "Briefed"));
                             let attention = matches!(condition["type"].as_str(), Some("NeedsAttention" | "Stalled" | "WorkerGone"));
                             if (startup && matches!(status, "False" | "Unknown")) || (attention && status == "True") {
-                                diagnostics.push(format!("Task/vega {}: {} {}. Inspect the session and authenticated harness if readiness or startup is blocked", condition["type"].as_str().unwrap_or(""), condition["reason"].as_str().unwrap_or(""), condition["message"].as_str().unwrap_or("")));
+                                diagnostics.push(format!("Task/{name} {}: {} {}. Inspect the session and authenticated harness if readiness or startup is blocked", condition["type"].as_str().unwrap_or(""), condition["reason"].as_str().unwrap_or(""), condition["message"].as_str().unwrap_or("")));
                             }
                         }
                     }
-                },
-                Observation::Unknown { why } => diagnostics.push(format!("Task/vega status unknown: {why}")),
-                Observation::Known(None) => diagnostics.push("Task/vega is absent; inspect its deletion before restarting Mission Control".into()),
+                }
+                Observation::Unknown { why } => diagnostics.push(format!("the Tasks are unknown: {why}")),
             }
             if diagnostics != last {
                 for line in &diagnostics {
@@ -1148,9 +1062,6 @@ fn cmd_up(
                 && std::time::Instant::now() < deadline
             {
                 std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            if let Some(reload) = reload.as_mut() {
-                reload.poll();
             }
             !stopped.load(std::sync::atomic::Ordering::Relaxed)
         },
@@ -1228,176 +1139,14 @@ fn version(json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-/// What `fleet up` re-reads from its config file between sweeps: the
-/// repository map (`workspaces.repositories`), and nothing else. Every other setting, the store
-/// and the runtime's identity among them, stays as the process started.
-struct Reload<'a> {
-    path: &'a Path,
-    repositories: Repositories,
-    /// The file as it started, without the repository map.
-    started: Option<toml::Value>,
-    /// The last notice printed, so a lasting state is reported once.
-    notice: String,
-}
-
-impl<'a> Reload<'a> {
-    /// `text` is the file the process started from, as it was read then.
-    fn new(path: &'a Path, text: &str, repositories: Repositories) -> Reload<'a> {
-        Reload {
-            path,
-            repositories,
-            started: without_repositories(text),
-            notice: String::new(),
-        }
-    }
-
-    /// Apply a valid file's repository map; keep the last valid map when
-    /// the file cannot be read, parsed or validated.
-    fn poll(&mut self) {
-        let notice = match self.read() {
-            Err(why) => {
-                format!("config reload refused: {why}; keeping the last valid repository map")
-            }
-            Ok((map, others)) => {
-                let count = map.len();
-                if self.repositories.replace(map) {
-                    println!("config reloaded: the repository map has {count} repositories");
-                }
-                if others == self.started {
-                    String::new()
-                } else {
-                    "config changed outside the repository map; restart fleet up to apply it".into()
-                }
-            }
-        };
-        if notice != self.notice {
-            if !notice.is_empty() {
-                eprintln!("{notice}");
-            }
-            self.notice = notice;
-        }
-    }
-
-    /// The file's valid map, and the file without it.
-    fn read(&self) -> Result<(BTreeMap<String, String>, Option<toml::Value>), String> {
-        let text = std::fs::read_to_string(self.path)
-            .map_err(|e| format!("cannot read config {}: {e}", self.path.display()))?;
-        let config = Config::parse(&text, self.path)?;
-        Ok((source_map(&config)?, without_repositories(&text)))
-    }
-}
-
-fn without_repositories(text: &str) -> Option<toml::Value> {
-    let mut value: toml::Value = toml::from_str(text).ok()?;
-    if let Some(t) = value
-        .get_mut("workspaces")
-        .and_then(toml::Value::as_table_mut)
-    {
-        t.remove("repositories");
-    }
-    Some(value)
-}
-
-/// Each repository URL's source checkout: `workspaces.repositories`, each
-/// source an absolute path.
-fn source_map(config: &Config) -> Result<BTreeMap<String, String>, String> {
-    let map: BTreeMap<String, String> = config
-        .workspaces
-        .iter()
-        .flat_map(|ws| ws.repositories.clone())
-        .collect();
-    if let Some((url, source)) = map
-        .iter()
-        .find(|(_, source)| !fleet_api::validate::is_absolute_path(source))
-    {
-        return Err(format!(
-            "workspaces.repositories: the source {source:?} of {url} must be an absolute path"
-        ));
-    }
-    Ok(map)
-}
-
-/// The workspace port the `[workspaces]` section names. Without one, Fleet
-/// still makes every workspace: on the fake runtime's host when the runtime
-/// is the fake, else with git worktrees under `<data dir>/workspaces`. The
-/// worktree adapter reads [`source_map`], through `map` when the runtime
-/// already holds the reloadable handle to it.
-fn open_workspaces(
-    config: &Config,
-    data_dir: &Path,
-    map: Option<&Repositories>,
-) -> Result<Option<Box<dyn fleet_api::workspace::Workspaces>>, Failure> {
-    let default;
-    let ws = match &config.workspaces {
-        Some(ws) => ws,
-        None => {
-            let fake = config.runtime.as_ref().filter(|rt| rt.kind == "fake");
-            default = config::WorkspacesConfig {
-                kind: if fake.is_some() { "fake" } else { "worktree" }.into(),
-                dir: fake.and_then(|rt| rt.dir.clone()),
-                root: Some(data_dir.join("workspaces")),
-                repositories: BTreeMap::new(),
-                git: None,
-                call_timeout_ms: None,
-                branch_prefix: None,
-            };
-            &default
-        }
-    };
-    match ws.kind.as_str() {
-        "fake" => {
-            let dir = ws
-                .dir
-                .clone()
-                .ok_or_else(|| fail("workspaces.dir is required for the fake adapter"))?;
-            let host = FakeHost::open(&dir)
-                .map_err(|e| fail(format!("fake host {}: {e}", dir.display())))?;
-            Ok(Some(Box::new(FakeRuntime::new(host))))
-        }
-        "worktree" => {
-            let root = ws
-                .root
-                .clone()
-                .unwrap_or_else(|| data_dir.join("workspaces"));
-            let map = match map {
-                Some(m) => m.clone(),
-                None => Repositories::new(source_map(config).map_err(fail)?),
-            };
-            let mut cfg = WorktreeConfig::new(root, map);
-            if let Some(git) = &ws.git {
-                cfg.git = git.into();
-            }
-            if let Some(ms) = ws.call_timeout_ms {
-                cfg.call_timeout = std::time::Duration::from_millis(ms);
-            }
-            if let Some(p) = &ws.branch_prefix {
-                if fleet_api::validate::validate_name(p).is_err() {
-                    return Err(fail(format!(
-                        "workspaces.branchPrefix {p:?}: use lowercase letters, digits and '-'"
-                    )));
-                }
-                cfg.branch_prefix = p.clone();
-            }
-            Ok(Some(Box::new(WorktreeWorkspaces::new(cfg))))
-        }
-        other => Err(fail(format!(
-            "unknown workspaces kind {other:?}; this build has worktree and fake"
-        ))),
-    }
-}
-
 /// The signal files, one per session on this machine, under the store.
 fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
     let dir = data_dir.join("signals");
     FileSignals::open(&dir).map_err(|e| fail(format!("{}: {e}", dir.display())))
 }
 
-/// The runtime, and for programs under `[runtimes]` the handle to the
-/// repository map, which `fleet up` reloads.
-fn open_reloadable_runtime(
-    config: &Config,
-    signals: &FileSignals,
-) -> Result<(Box<dyn Runtime>, Option<Repositories>), Failure> {
+/// The runtime: the programs under `[runtimes]`, one per host, or the fake.
+fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtime>, Failure> {
     if !config.runtimes.is_empty() {
         let mut hosts = BTreeMap::new();
         for (host, h) in &config.hosts {
@@ -1407,15 +1156,16 @@ fn open_reloadable_runtime(
             rt.call_timeout = std::time::Duration::from_millis(
                 p.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS),
             );
+            if let Some(ms) = p.workspace_timeout_ms {
+                rt.workspace_timeout = std::time::Duration::from_millis(ms);
+            }
             if let Some(prefix) = &p.key_prefix {
                 rt.key_prefix = prefix.clone();
             }
             hosts.insert(host.clone(), rt);
         }
         let runtime = ExecRuntime::new(hosts).with_signals(signals.clone());
-        // The worktree adapter reads the map; `fleet up` reloads it.
-        let handle = Repositories::new(source_map(config).map_err(fail)?);
-        return Ok((Box::new(runtime), Some(handle)));
+        return Ok(Box::new(runtime));
     }
     let Some(rt) = &config.runtime else {
         return Err(Failure {
@@ -1435,7 +1185,7 @@ fn open_reloadable_runtime(
                 .ok_or_else(|| fail("runtime.dir is required for the fake runtime"))?;
             let host = FakeHost::open(&dir)
                 .map_err(|e| fail(format!("fake host {}: {e}", dir.display())))?;
-            Ok((Box::new(FakeRuntime::new(host)), None))
+            Ok(Box::new(FakeRuntime::new(host)))
         }
         other => Err(fail(format!(
             "unknown runtime kind {other:?}; [runtime] is the fake, and a real runtime is a program under [runtimes]"
@@ -2148,7 +1898,7 @@ fn print_status(s: &Value) {
             s["sessionState"].as_str().unwrap_or("(not yet observed)")
         );
     }
-    if let Some(dir) = s["workspace"]["dir"].as_str() {
+    if let Some(dir) = s["workspace"]["dirs"][0].as_str() {
         println!(
             "workspace {} on {} at {dir}",
             s["workspace"]["key"].as_str().unwrap_or("-"),

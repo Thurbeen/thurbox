@@ -10,6 +10,7 @@ use fleet_api::condition::{Condition, ConditionStatus};
 use fleet_api::conversation::{
     ConversationStatus, Phase, StoredMessage, Tie, TieState as ThreadTie, Via,
 };
+use fleet_api::gateway::RouteWorkspace;
 use fleet_api::gateway::{
     Author, AuthorKind, GatewayDefaults, Mention, Person, RouteConfig, Verified,
 };
@@ -20,7 +21,7 @@ use fleet_api::talk::{
     Answer, ChildEntry, ConversationTie, ENTRY_CAP, GatewayStatus, MAX_CHILDREN, PARENT_LABEL,
     PARENT_UID_LABEL, PostedQuestion, TieState,
 };
-use fleet_api::task::{TaskStatus, Workspace};
+use fleet_api::task::TaskStatus;
 use fleet_api::{Object, Observation};
 use fleet_controllers::{GatewayController, GatewayInput, GatewayObservations};
 use serde_json::{Value, json};
@@ -47,7 +48,7 @@ fn route() -> RouteConfig {
         allow_bots: vec!["B0123ABCD".into()],
         task_config: "conversation".into(),
         brief: "/etc/fleet/briefs/conversation.md".into(),
-        workspace: Workspace::at("/work/conversations"),
+        workspace: RouteWorkspace::base("/work/conversations"),
         refusal: None,
     }
 }
@@ -74,7 +75,7 @@ fn task(gateway: Option<GatewayStatus>, st: TaskStatus) -> Object {
         "metadata": {"name": TASK, "uid": TASK_UID, "generation": 1, "resourceVersion": 9,
                      "labels": {"gateway.fleet.dev/conversation": CONV,
                                 "gateway.fleet.dev/conversation-uid": CONV_UID}},
-        "spec": {"harness": "claude-code", "host": "local", "brief": "b", "workspace": {"dir": "w"}, "dispatch": true},
+        "spec": {"harness": "claude-code", "host": "local", "brief": "b", "workspace": [], "dispatch": true},
         "status": serde_json::to_value(&st).unwrap()
     }))
     .unwrap()
@@ -86,7 +87,7 @@ fn plain(name: &str, uid: &str, labels: Value, st: TaskStatus) -> Object {
         "apiVersion": "fleet/v1alpha1",
         "kind": "Task",
         "metadata": {"name": name, "uid": uid, "generation": 1, "resourceVersion": 9, "labels": labels},
-        "spec": {"harness": "claude-code", "host": "local", "brief": "b", "workspace": {"dir": "w"}, "dispatch": true},
+        "spec": {"harness": "claude-code", "host": "local", "brief": "b", "workspace": [], "dispatch": true},
         "status": serde_json::to_value(&st).unwrap()
     }))
     .unwrap()

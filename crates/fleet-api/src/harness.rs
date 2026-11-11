@@ -93,10 +93,15 @@ impl Profile {
         match self.kind {
             Kind::Claude => {
                 let hook = |state: &str| serde_json::json!([{"hooks": [{"type": "command", "command": signal_command(state)}]}]);
+                // Only a permission prompt needs a person: Claude Code also
+                // notifies after 60 s of input idle (`idle_prompt`), which a
+                // matcher-less hook would report as attention.
+                let attention = serde_json::json!([{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": signal_command("blocked")}]}]);
                 let settings = serde_json::json!({"hooks": {
                     "SessionStart": hook("idle"),
                     "UserPromptSubmit": hook("prompt"),
                     "PreToolUse": hook("working"),
+                    "Notification": attention,
                     "Stop": hook("idle"),
                 }});
                 vec!["--settings".into(), settings.to_string()]
@@ -250,6 +255,9 @@ mod tests {
             ("UserPromptSubmit", "prompt"),
             ("Stop", "idle"),
             ("PreToolUse", "working"),
+            // Claude Code's notification is a permission prompt or a wait
+            // for input: the agent needs a person.
+            ("Notification", "blocked"),
         ] {
             let command = settings["hooks"][event][0]["hooks"][0]["command"]
                 .as_str()
@@ -259,6 +267,12 @@ mod tests {
                 "{command}"
             );
         }
+        // Only a permission prompt needs a person: Claude Code also notifies
+        // after 60 s of input idle (`idle_prompt`), which is no attention.
+        assert_eq!(
+            settings["hooks"]["Notification"][0]["matcher"],
+            "permission_prompt"
+        );
         assert_eq!(&claude[3..], ["--add-dir", "/w/docs"]);
         // Claude Code keeps the last of several `--settings`, so the hooks
         // are one, and a resume keeps them one.

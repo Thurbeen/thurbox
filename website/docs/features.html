@@ -254,21 +254,38 @@ breadcrumb: 'Features'
             <a href="#git-worktrees" class="heading-anchor">#</a>
           </h2>
           <p>
-            Every session created from the interface on this machine gets a git worktree of its own:
-            its Task names the repository you pick as a <code>repositories</code> workspace, and Fleet's
-            <code>[workspaces]</code> makes the worktree, under
-            <code>&lt;Fleet data dir&gt;/workspaces</code> unless <code>root</code> says otherwise.
-            Fleet makes worktrees of mapped repositories only, so the repository must be listed in
-            <code>[workspaces.repositories]</code>; an unmapped one is refused with the line to
-            add. Fleet makes worktrees on its own machine only, so a session on another Fleet host
-            runs in the repository directory there, as it is. A directory that is no git repository,
-            such as the installed interface, also runs as it is.
+            A Task's workspace is a list of URLs, and the runtime of its host makes them. The
+            new-session flow gives each repository it ticks one URL, the first where the agent
+            starts:
           </p>
           <ul>
             <li>
-              Deleting such a Task (<code>fleet delete task</code>) removes its worktree. Committed
-              work that exists nowhere else is kept under <code>refs/fleet/preserved/</code> in the
-              source repository.
+              A repository given a worktree with <kbd>Alt</kbd>+<kbd>W</kbd>:
+              <code>git+file:///path/to/repo?branch=&lt;branch&gt;#&lt;base&gt;</code> for the
+              first, from the base branch picked, and without <code>#&lt;base&gt;</code> for the
+              others, from their own default branch. All are on the one branch the flow names; a
+              branch that exists is checked out
+            </li>
+            <li>
+              A repository ticked as it is, or an existing worktree opened with <kbd>&rarr;</kbd>:
+              <code>file:///path/to/repo</code>
+            </li>
+          </ul>
+          <p>
+            <code>runtime-mux</code> makes each worktree under its workspace root
+            (<code>~/.local/share/runtime-mux/workspaces</code> unless its config says otherwise),
+            as a worktree of your checkout itself: its branches are your own, and a commit made in
+            the session is in your repository at once (<code>git worktree list</code> shows it).
+            No mapping is needed: the URL is the whole request. A directory that is no git repository, such as the installed interface,
+            is refused a worktree and runs as it is. A session on another Fleet host gets a
+            <code>file://</code> URL and runs in that directory.
+          </p>
+          <ul>
+            <li>
+              Deleting such a Task (<code>fleet delete task</code>) removes its worktree. Work that
+              exists nowhere else, committed or not, is kept under
+              <code>refs/fleet/preserved/</code> in your repository, and a new Task can restore
+              it by naming that ref in a <code>git+file</code> URL.
             </li>
             <li>
               Ignored files (build output, caches) are not kept: the repository declares them
@@ -286,8 +303,8 @@ breadcrumb: 'Features'
           </p>
           <ul>
             <li>
-              A session on another host runs in its directory there, with no worktree: Fleet makes
-              worktrees on this machine only
+              A session on another host runs in its directory there, with no worktree: the flow
+              reads branches on this machine only, so it sends a <code>file://</code> URL
             </li>
             <li>
               thurbox reads this machine only. Diffs, git stats and plugin runs refuse a session on
