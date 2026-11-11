@@ -60,20 +60,6 @@ fn customize_config(path: &std::path::Path) -> Vec<u8> {
     bytes
 }
 
-fn assert_config_instruction(brief: &str, expected: &std::path::Path) {
-    use serde::Deserialize;
-    let (_, encoded) = brief
-        .rsplit_once("Fleet configuration path (JSON string): ")
-        .expect("explicit config instruction");
-    let mut parser = serde_json::Deserializer::from_str(encoded);
-    let emitted = std::path::PathBuf::deserialize(&mut parser).expect("usable JSON config path");
-    assert_eq!(
-        fs::canonicalize(emitted).unwrap(),
-        fs::canonicalize(expected).unwrap(),
-        "the brief must identify the effective config file regardless of native path spelling"
-    );
-}
-
 struct Running(std::process::Child);
 impl Drop for Running {
     fn drop(&mut self) {
@@ -93,13 +79,9 @@ fn until(mut predicate: impl FnMut() -> bool) {
     }
 }
 
+/// `fleet init`, then point the generated config at the fake runtime and
+/// the test store.
 fn fake_bootstrap(name: &str) -> Env {
-    fake_bootstrap_with(name, &["init"])
-}
-
-/// Bootstrap with `init_args`, then point the generated config at the fake
-/// runtime and the test store.
-fn fake_bootstrap_with(name: &str, init_args: &[&str]) -> Env {
     let mut env = Env::new(name);
     env.set_var(
         "LOCALAPPDATA",
@@ -108,7 +90,7 @@ fn fake_bootstrap_with(name: &str, init_args: &[&str]) -> Env {
     env.set_var("APPDATA", &env.root.join("config").to_string_lossy());
     // An explicit fresh config uses the same discovery and bootstrap machinery.
     fs::remove_file(&env.config).unwrap();
-    env.fleet(init_args).ok();
+    env.fleet(&["init"]).ok();
     let generated = fs::read_to_string(&env.config).unwrap();
     let mut config: toml::Value = toml::from_str(&generated).unwrap();
     // The three shipped ready policies, exactly as the config page shows
@@ -143,14 +125,14 @@ fn up_continues_reconciling_other_tasks_and_reconnects_without_duplicate_session
     // Use the normal lease: a short test-only lease can expire during a
     // legitimate filesystem operation on a busy native runner.
     let first = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
-    until(|| env.status("vega")["phase"] == "Briefed");
+    env.apply(support::task("first", true)).ok();
+    until(|| env.status("first")["phase"] == "Briefed");
     env.host()
-        .set_at_rest(&env.session_key("vega"), false)
+        .set_at_rest(&env.session_key("first"), false)
         .unwrap();
-    let original = env.get("vega");
-    env.apply(support::task("while-vega-busy", true)).ok();
-    until(|| env.status("while-vega-busy")["phase"] == "Briefed");
+    let original = env.get("first");
+    env.apply(support::task("while-first-busy", true)).ok();
+    until(|| env.status("while-first-busy")["phase"] == "Briefed");
     assert_eq!(env.calls("spawn"), 2);
     // A competing startup is refused while the resident owns the lease.
     env.fleet(&["up", "--poll-ms", "100"]).code(6);
@@ -171,210 +153,10 @@ fn up_continues_reconciling_other_tasks_and_reconnects_without_duplicate_session
     env.apply(support::task("after-restart", true)).ok();
     until(|| env.status("after-restart")["phase"] == "Briefed");
     assert_eq!(
-        env.get("vega")["metadata"]["uid"],
+        env.get("first")["metadata"]["uid"],
         original["metadata"]["uid"]
     );
-    assert_eq!(env.calls("spawn"), 3, "restart adopts existing VEGA");
-}
-
-#[test]
-fn installed_first_run_creates_runnable_config_and_editable_workspace_without_git() {
-    let env = Env::without_tools("installed-init");
-    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
-    let config = env.root.join("config/fleet/config.toml");
-    let workspace = env.root.join("local-data/fleet/vega");
-    assert!(config.is_file(), "native config discovery path");
-    assert!(
-        workspace.join("AGENTS.md").is_file(),
-        "bundled instructions"
-    );
-    assert!(
-        workspace.join("task.json").is_file(),
-        "ordinary Task manifest"
-    );
-    let customized_config = customize_config(&config);
-    fs::write(workspace.join("AGENTS.md"), "custom instructions").unwrap();
-    fs::write(workspace.join("private.txt"), "private customization").unwrap();
-    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
-    wait(installed(&env, &["init", "--update"]).spawn().unwrap()).ok();
-    assert_eq!(fs::read(&config).unwrap(), customized_config);
-
-    assert_eq!(
-        fs::read_to_string(workspace.join("AGENTS.md")).unwrap(),
-        "custom instructions"
-    );
-    assert_eq!(
-        fs::read_to_string(workspace.join("private.txt")).unwrap(),
-        "private customization"
-    );
-    wait(
-        installed(
-            &env,
-            &["apply", "-f", workspace.join("task.json").to_str().unwrap()],
-        )
-        .spawn()
-        .unwrap(),
-    )
-    .ok()
-    .stdout_has("Task/vega created");
-    // No runtime-mux on PATH: `up` names the program it could not start.
-    wait(installed(&env, &["up"]).spawn().unwrap())
-        .code(1)
-        .stderr_has("runtime-mux");
-}
-
-#[cfg(unix)]
-#[test]
-fn installed_workspace_exposes_each_skill_to_codex_and_claude_code() {
-    // Codex discovers project skills under .agents/skills, Claude Code only
-    // under .claude/skills: a VEGA session on either harness must find them.
-    let env = Env::without_tools("installed-skills");
-    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
-    let workspace = env.root.join("local-data/fleet/vega");
-    let canonical = workspace.join(".agents/skills");
-    let mut names: Vec<_> = fs::read_dir(&canonical)
-        .unwrap()
-        .map(|e| e.unwrap().file_name())
-        .collect();
-    names.sort();
-    assert!(
-        names.iter().any(|n| n == "status-digest"),
-        "the bundle ships Mission Control's skills: {names:?}"
-    );
-    for name in names {
-        let skill = std::path::Path::new(&name).join("SKILL.md");
-        let claude = workspace.join(".claude/skills").join(&skill);
-        assert_eq!(
-            fs::read_to_string(&claude).ok(),
-            Some(fs::read_to_string(canonical.join(&skill)).unwrap()),
-            "Claude Code finds no {} under .claude/skills",
-            skill.display()
-        );
-    }
-    let link = workspace.join(".claude/skills");
-    assert_eq!(
-        fs::read_link(&link).unwrap(),
-        std::path::Path::new("..").join(".agents").join("skills"),
-        "one canonical copy, linked relatively so the workspace can move"
-    );
-
-    // A workspace installed before the link existed gains it on update.
-    fs::remove_file(&link).unwrap();
-    wait(installed(&env, &["init", "--update"]).spawn().unwrap()).ok();
-    assert!(link.join("status-digest/SKILL.md").is_file());
-
-    // A user's own skills directory is never replaced.
-    fs::remove_file(&link).unwrap();
-    fs::create_dir_all(link.join("mine")).unwrap();
-    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
-        .ok()
-        .stdout_has("preserved");
-    assert!(link.join("mine").is_dir() && !link.is_symlink());
-
-    // Nor is a user's own `.claude` link: init keeps it and still succeeds.
-    let elsewhere = env.root.join("elsewhere");
-    fs::create_dir_all(&elsewhere).unwrap();
-    fs::remove_dir_all(workspace.join(".claude")).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, workspace.join(".claude")).unwrap();
-    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
-        .ok()
-        .stdout_has("preserved");
-    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
-
-    // A link that cannot be made is reported; init still completes.
-    use std::os::unix::fs::PermissionsExt;
-    fs::remove_file(workspace.join(".claude")).unwrap();
-    fs::create_dir(workspace.join(".claude")).unwrap();
-    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o555)).unwrap();
-    fs::remove_file(workspace.join(".fleet/provenance.json")).unwrap();
-    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
-        .ok()
-        .stdout_has("could not link");
-    assert!(workspace.join(".fleet/provenance.json").is_file());
-    // Nor does a `.claude` init cannot read.
-    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o000)).unwrap();
-    fs::remove_file(workspace.join(".fleet/provenance.json")).unwrap();
-    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
-        .ok()
-        .stdout_has("could not inspect");
-    assert!(workspace.join(".fleet/provenance.json").is_file());
-    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-#[test]
-fn concurrent_init_preserves_identity_config_and_private_files_and_updates_safely() {
-    let env = Env::without_tools("concurrent-init");
-    let one = installed(&env, &["init"]).spawn().unwrap();
-    let two = installed(&env, &["init"]).spawn().unwrap();
-    wait(one).ok();
-    wait(two).ok();
-    let config = env.root.join("config/fleet/config.toml");
-    let workspace = env.root.join("local-data/fleet/vega");
-    let newest_config = fs::read(&config).unwrap();
-    let original_config = customize_config(&config);
-    let original_instance = fs::read(workspace.join(".fleet/instance")).unwrap();
-    let original_task = fs::read(workspace.join("task.json")).unwrap();
-    fs::write(workspace.join("AGENTS.md"), "user edit").unwrap();
-    fs::write(workspace.join("private.txt"), "private").unwrap();
-    // Simulate an older pristine managed prompt to exercise an upgrade.
-    let prompt = workspace.join("prompts/mission-control.md");
-    let newest = fs::read(&prompt).unwrap();
-    fs::write(&prompt, "older managed instructions").unwrap();
-    let state_path = workspace.join(".fleet/baseline.json");
-    let mut state: serde_json::Value =
-        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
-    use sha2::{Digest, Sha256};
-    state["files"]["prompts/mission-control.md"] = serde_json::json!(
-        Sha256::digest(b"older managed instructions")
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    );
-    // Config remains user-owned even when it matches its older managed
-    // baseline; a new binary must offer a conflict instead of upgrading it.
-    state["files"]["config"] = serde_json::json!(
-        Sha256::digest(&original_config)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-    );
-    fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
-    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
-        .ok()
-        .stdout_has("preserved customization");
-    assert_eq!(fs::read(&prompt).unwrap(), newest);
-    assert_eq!(
-        fs::read_to_string(workspace.join("AGENTS.md")).unwrap(),
-        "user edit"
-    );
-    assert_eq!(
-        fs::read_to_string(workspace.join("private.txt")).unwrap(),
-        "private"
-    );
-    assert_eq!(fs::read(&config).unwrap(), original_config);
-    let candidate_hash: String = Sha256::digest(&newest_config)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    assert_eq!(
-        fs::read(
-            workspace
-                .join(".fleet/conflicts")
-                .join(candidate_hash)
-                .join("config")
-        )
-        .unwrap(),
-        newest_config
-    );
-
-    assert_eq!(
-        fs::read(workspace.join(".fleet/instance")).unwrap(),
-        original_instance
-    );
-    assert_eq!(
-        fs::read(workspace.join("task.json")).unwrap(),
-        original_task
-    );
+    assert_eq!(env.calls("spawn"), 3, "restart adopts the existing session");
 }
 
 #[test]
@@ -420,16 +202,15 @@ fn data_directory_override_and_config_precedence_keep_all_commands_in_one_store(
 fn up_never_reads_a_session_it_cannot_see_as_gone() {
     let env = fake_bootstrap("up-unknown-host");
     let _resident = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
-    until(|| env.status("vega")["phase"] == "Briefed");
-    let original = env.get("vega");
-    assert_config_instruction(original["spec"]["brief"].as_str().unwrap(), &env.config);
+    env.apply(support::task("first", true)).ok();
+    until(|| env.status("first")["phase"] == "Briefed");
+    let original = env.get("first");
     assert_eq!(env.calls("spawn"), 1);
     // An unreadable host is explicit Unknown, never evidence of absence.
     env.host().set_host("local", "unknown").unwrap();
     thread::sleep(Duration::from_millis(600));
     assert_eq!(env.calls("spawn"), 1);
-    let now = env.get("vega");
+    let now = env.get("first");
     assert_eq!(now["status"]["session"], original["status"]["session"]);
     assert!(
         now["status"]["conditions"]
@@ -477,16 +258,12 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         atomic::{AtomicU64, Ordering},
     };
 
-    // First exercise the emitted starter through the CLI and real controller.
+    // First run a Task through the CLI and the real controller.
     let env = fake_bootstrap("up-lease-clock");
-    let cfg: toml::Value = toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
-    let manifest =
-        std::path::Path::new(cfg["starter"]["workspace"].as_str().unwrap()).join("task.json");
-    env.apply(serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap())
-        .ok();
+    env.apply(support::task("first", true)).ok();
     env.reconcile().ok();
     let session: SessionRef =
-        serde_json::from_value(env.get("vega")["status"]["session"].clone()).unwrap();
+        serde_json::from_value(env.get("first")["status"]["session"].clone()).unwrap();
 
     #[derive(Debug)]
     struct TestClock(AtomicU64);
@@ -605,9 +382,9 @@ fn up_reports_known_spawn_failures_without_requiring_a_separate_status_query() {
     let mut command = env.command(&["up", "--poll-ms", "100"]);
     command.stderr(fs::File::create(&error_path).unwrap());
     let _resident = Running(command.spawn().unwrap());
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
+    env.apply(support::task("first", true)).ok();
     until(|| {
-        env.status("vega")["conditions"]
+        env.status("first")["conditions"]
             .as_array()
             .is_some_and(|cs| cs.iter().any(|c| c["reason"] == "SpawnRetry"))
     });
@@ -619,46 +396,20 @@ fn up_reports_known_spawn_failures_without_requiring_a_separate_status_query() {
 }
 
 #[test]
-fn healthy_briefed_vega_does_not_report_a_startup_failure() {
+fn a_healthy_briefed_task_does_not_report_a_startup_failure() {
     let env = fake_bootstrap("up-healthy-diagnostic");
     let path = env.root.join("stderr");
     let mut command = env.command(&["up", "--poll-ms", "100"]);
     command.stderr(fs::File::create(&path).unwrap());
     let _resident = Running(command.spawn().unwrap());
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
-    until(|| env.status("vega")["phase"] == "Briefed");
+    env.apply(support::task("first", true)).ok();
+    until(|| env.status("first")["phase"] == "Briefed");
     let before = env.calls("find");
     until(|| env.calls("find") >= before + 3);
     assert!(
         fs::read_to_string(path).unwrap().is_empty(),
         "a healthy running Task is not a startup failure"
     );
-}
-
-#[test]
-fn reconnect_uses_stored_immutable_inputs_after_the_editable_template_changes() {
-    let env = fake_bootstrap("up-retained-inputs");
-    let config: toml::Value = toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
-    let path =
-        std::path::Path::new(config["starter"]["workspace"].as_str().unwrap()).join("task.json");
-    let template: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    env.apply(template).ok();
-    env.reconcile().ok();
-    assert_eq!(env.status("vega")["phase"], "Briefed");
-    let original = env.get("vega");
-    let mut changed: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    changed[0]["spec"]["host"] = serde_json::json!("unused-host");
-    fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
-    env.host().set_host("unused-host", "down").unwrap();
-    let mut resident = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    thread::sleep(Duration::from_millis(600));
-    assert!(
-        resident.0.try_wait().unwrap().is_none(),
-        "reconnect must probe the retained host, not a changed template"
-    );
-    env.apply(support::task("still-progressing", true)).ok();
-    until(|| env.status("still-progressing")["phase"] == "Briefed");
-    assert_eq!(env.get("vega")["spec"], original["spec"]);
 }
 
 /// `fleet up` exports each sweep as a trace of its own, and Ctrl-C flushes
@@ -671,8 +422,8 @@ fn up_flushes_its_sweeps_to_a_collector_when_interrupted() {
     let mut env = fake_bootstrap("up-telemetry");
     env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
     let mut resident = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
-    until(|| env.status("vega")["phase"] == "Briefed");
+    env.apply(support::task("first", true)).ok();
+    until(|| env.status("first")["phase"] == "Briefed");
     let interrupted = Command::new("kill")
         .args(["-INT", &resident.0.id().to_string()])
         .status()
@@ -707,7 +458,7 @@ fn up_flushes_its_sweeps_to_a_collector_when_interrupted() {
     assert!(
         spans
             .iter()
-            .any(|s| s.name == "effect spawn" && s.attrs["fleet.name"] == "vega"),
+            .any(|s| s.name == "effect spawn" && s.attrs["fleet.name"] == "first"),
         "{spans:#?}"
     );
     assert!(!spans.iter().any(|s| s.name == "fleet up"), "{spans:#?}");
@@ -745,7 +496,16 @@ fn native_config_and_data_can_live_on_different_filesystems() {
     command.env("XDG_DATA_HOME", &other);
     wait(command.spawn().unwrap()).ok();
     assert!(env.root.join("config/fleet/config.toml").is_file());
-    assert!(other.join("fleet/vega/task.json").is_file());
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(env.root.join("config/fleet/config.toml")).unwrap())
+            .unwrap();
+    assert!(
+        config["data"]["dir"]
+            .as_str()
+            .unwrap()
+            .starts_with(other.to_str().unwrap()),
+        "{config}"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -753,9 +513,9 @@ fn native_config_and_data_can_live_on_different_filesystems() {
 fn graceful_shutdown_releases_the_lease_and_reconnects_without_waiting_for_expiry() {
     let env = fake_bootstrap("up-graceful");
     let mut first = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
-    until(|| env.status("vega")["phase"] == "Briefed");
-    let session = env.get("vega")["status"]["session"].clone();
+    env.apply(support::task("first", true)).ok();
+    until(|| env.status("first")["phase"] == "Briefed");
+    let session = env.get("first")["status"]["session"].clone();
     assert!(
         Command::new("/bin/kill")
             .args(["-TERM", &first.0.id().to_string()])
@@ -772,46 +532,8 @@ fn graceful_shutdown_releases_the_lease_and_reconnects_without_waiting_for_expir
     let _second = Running(env.spawn(&["up", "--poll-ms", "100"]));
     env.apply(support::task("after-graceful-stop", true)).ok();
     until(|| env.status("after-graceful-stop")["phase"] == "Briefed");
-    assert_eq!(env.get("vega")["status"]["session"], session);
+    assert_eq!(env.get("first")["status"]["session"], session);
     assert_eq!(env.calls("spawn"), 2);
-}
-
-#[test]
-fn separate_configurations_get_separate_starter_instances_and_boot_instructions() {
-    let env = Env::without_tools("separate-instances");
-    let one = env.root.join("one.toml");
-    let two = env.root.join("two.toml");
-    wait(
-        installed(&env, &["--config", one.to_str().unwrap(), "init"])
-            .spawn()
-            .unwrap(),
-    )
-    .ok();
-    wait(
-        installed(&env, &["--config", two.to_str().unwrap(), "init"])
-            .spawn()
-            .unwrap(),
-    )
-    .ok();
-    let a: toml::Value = toml::from_str(&fs::read_to_string(&one).unwrap()).unwrap();
-    let b: toml::Value = toml::from_str(&fs::read_to_string(&two).unwrap()).unwrap();
-    assert_ne!(
-        a["runtimes"]["mux"]["keyPrefix"], b["runtimes"]["mux"]["keyPrefix"],
-        "separate configs must not share session namespace"
-    );
-    assert_ne!(a["starter"]["workspace"], b["starter"]["workspace"]);
-    assert_ne!(a["data"]["dir"], b["data"]["dir"]);
-    for (config, path) in [(a, one), (b, two)] {
-        let task: serde_json::Value = serde_json::from_slice(
-            &fs::read(
-                std::path::Path::new(config["starter"]["workspace"].as_str().unwrap())
-                    .join("task.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_config_instruction(task[0]["spec"]["brief"].as_str().unwrap(), &path);
-    }
 }
 
 #[test]
@@ -857,115 +579,89 @@ fn explicit_config_and_store_work_without_native_home_variables() {
     assert!(store.join("store.json").is_file());
 }
 
-fn starter_task(env: &Env) -> (std::path::PathBuf, serde_json::Value) {
-    let config: toml::Value = toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
-    let path =
-        std::path::Path::new(config["starter"]["workspace"].as_str().unwrap()).join("task.json");
-    let task = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    (path, task)
+/// `fleet up` is a plain manager: a config with no starter runs it, and it
+/// reconciles the Tasks applied to its store.
+#[test]
+fn up_runs_without_a_starter_and_reconciles_a_task() {
+    let env = Env::new("up-no-starter");
+    let _resident = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    env.apply(support::task("plain", true)).ok();
+    until(|| env.status("plain")["phase"] == "Briefed");
+    assert_eq!(env.calls("spawn"), 1, "up creates no Task of its own");
+    env.fleet(&["get", "task", "vega"]).code(3);
 }
 
-/// The coding agent is chosen at `fleet init`, without a manual edit of
-/// `task.json`. The choice reaches Mission Control's Task and its brief,
-/// which gives the same harness to the workers it dispatches.
+/// `init` writes the native config and nothing else: no `[starter]`, no
+/// bundled workspace.
 #[test]
-fn init_harness_flag_reaches_mission_control_and_its_workers() {
-    let env = fake_bootstrap_with("init-harness", &["init", "--harness", "claude"]);
-    let (path, task) = starter_task(&env);
-    assert_eq!(task[0]["spec"]["harness"], "claude");
-    let brief = task[0]["spec"]["brief"].as_str().unwrap();
-    assert!(
-        brief.contains("Give each worker Task the same harness as Task/vega"),
-        "{brief}"
-    );
-    assert_config_instruction(brief, &env.config);
-
-    // Repeating init, or updating it, keeps the choice.
-    let chosen = fs::read(&path).unwrap();
-    env.fleet(&["init"]).ok().stdout_has("harness claude");
-    env.fleet(&["init", "--update"]).ok();
-    assert_eq!(fs::read(&path).unwrap(), chosen);
-
-    // Before the first `fleet up`, init can choose again.
-    env.fleet(&["init", "--harness", "codex"])
-        .ok()
-        .stdout_has("harness codex");
-    let (_, task) = starter_task(&env);
-    assert_eq!(task[0]["spec"]["harness"], "codex");
-    env.fleet(&["init", "--harness", "claude"]).ok();
-
-    // The first `fleet up` creates Mission Control on the chosen harness.
-    let _up = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
-    until(|| env.status("vega")["phase"] == "Briefed");
-    assert_eq!(env.get("vega")["spec"]["harness"], "claude");
-    let session = env.host().session(&env.session_key("vega")).unwrap();
-    assert_eq!(session.unwrap().harness, "claude");
-}
-
-#[test]
-fn init_without_a_harness_flag_uses_the_bundled_default_and_keeps_edits() {
-    let env = fake_bootstrap("init-harness-default");
-    let (path, mut task) = starter_task(&env);
-    assert_eq!(task[0]["spec"]["harness"], "codex");
-    // A hand-edited task.json is the user's: a new choice does not replace it.
-    task[0]["spec"]["model"] = serde_json::json!("custom");
-    let edited = serde_json::to_vec_pretty(&task).unwrap();
-    fs::write(&path, &edited).unwrap();
-    let run = env.fleet(&["init", "--harness", "claude"]);
-    run.ok().stdout_has("preserved customization");
-    assert_eq!(fs::read(&path).unwrap(), edited);
-    // The candidate carries the new choice for the user to merge.
-    let stdout = run.stdout.clone();
-    let (_, candidate) = stdout.split_once("; candidate ").unwrap();
-    let candidate: serde_json::Value =
-        serde_json::from_slice(&fs::read(candidate.lines().next().unwrap()).unwrap()).unwrap();
-    assert_eq!(candidate[0]["spec"]["harness"], "claude");
-
-    // A deleted task.json is not reported as choosing a harness.
-    fs::remove_file(&path).unwrap();
-    let run = env.fleet(&["init", "--harness", "claude"]);
-    let stdout = run.stdout.clone();
-    assert!(!stdout.contains("chooses harness"), "{stdout}");
-}
-
-/// After the first `fleet up`, Task/vega's harness is immutable, so init
-/// refuses another choice instead of reporting one that never applies.
-#[test]
-fn init_refuses_a_new_harness_once_mission_control_exists() {
-    let env = fake_bootstrap("init-harness-after-up");
-    let (path, task) = starter_task(&env);
-    env.apply(task).ok();
-    let before = fs::read(&path).unwrap();
-    env.fleet(&["init", "--harness", "claude"])
-        .code(1)
-        .stderr_has("immutable");
-    assert_eq!(fs::read(&path).unwrap(), before);
-    // `fleet up` keeps the config's store, so another --data-dir changes nothing.
-    let other = env.root.join("other-store");
-    env.fleet(&[
-        "--data-dir",
-        other.to_str().unwrap(),
-        "init",
-        "--harness",
-        "claude",
-    ])
-    .code(1)
-    .stderr_has("immutable");
-    assert_eq!(fs::read(&path).unwrap(), before);
-    env.fleet(&["init", "--harness", "codex"]).ok();
-}
-
-#[test]
-fn init_refuses_an_invalid_harness_before_writing_anything() {
-    let env = Env::without_tools("init-bad-harness");
+fn init_writes_the_config_and_no_starter_workspace() {
+    let env = Env::without_tools("init-config-only");
+    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
     let config = env.root.join("config/fleet/config.toml");
-    wait(
-        installed(&env, &["init", "--harness", "Not A Harness"])
-            .spawn()
-            .unwrap(),
-    )
-    .code(1)
-    .stderr_has("harness");
-    assert!(!config.exists());
+    let text = fs::read_to_string(&config).unwrap();
+    assert!(!text.contains("[starter]"), "{text}");
+    assert!(
+        text.contains("[runtimes.mux]") && text.contains("[hosts.local]"),
+        "{text}"
+    );
+    assert!(!env.root.join("local-data/fleet/vega").exists());
+    // The config is the user's once written: a second init keeps it.
+    let customized = customize_config(&config);
+    wait(installed(&env, &["init"]).spawn().unwrap())
+        .ok()
+        .stdout_has("kept");
+    assert_eq!(fs::read(&config).unwrap(), customized);
+    // No runtime-mux on PATH: `up` names the program it could not start.
+    wait(installed(&env, &["up"]).spawn().unwrap())
+        .code(1)
+        .stderr_has("runtime-mux");
+}
+
+/// Two inits racing write one config, never two halves.
+#[test]
+fn concurrent_init_writes_one_config() {
+    let env = Env::without_tools("concurrent-init");
+    let one = installed(&env, &["init"]).spawn().unwrap();
+    let two = installed(&env, &["init"]).spawn().unwrap();
+    wait(one).ok();
+    wait(two).ok();
+    let config = env.root.join("config/fleet/config.toml");
+    let text = fs::read_to_string(&config).unwrap();
+    toml::from_str::<toml::Value>(&text).unwrap();
+    assert_eq!(text.matches("[runtimes.mux]").count(), 1, "{text}");
+}
+
+#[test]
+fn separate_configurations_get_separate_sessions_and_stores() {
+    let env = Env::without_tools("separate-instances");
+    let one = env.root.join("one.toml");
+    let two = env.root.join("two.toml");
+    for path in [&one, &two] {
+        wait(
+            installed(&env, &["--config", path.to_str().unwrap(), "init"])
+                .spawn()
+                .unwrap(),
+        )
+        .ok();
+    }
+    let a: toml::Value = toml::from_str(&fs::read_to_string(&one).unwrap()).unwrap();
+    let b: toml::Value = toml::from_str(&fs::read_to_string(&two).unwrap()).unwrap();
+    assert_ne!(
+        a["runtimes"]["mux"]["keyPrefix"], b["runtimes"]["mux"]["keyPrefix"],
+        "separate configs must not share session namespace"
+    );
+    assert_ne!(a["data"]["dir"], b["data"]["dir"]);
+}
+
+/// A config written for the starter is refused by name, not as an unknown
+/// field.
+#[test]
+fn a_starter_section_is_refused_at_load() {
+    let env = Env::new("starter-refused");
+    let mut text = fs::read_to_string(&env.config).unwrap();
+    text.push_str("\n[starter]\nworkspace = \"vega\"\n");
+    fs::write(&env.config, text).unwrap();
+    env.fleet(&["list", "task"])
+        .code(1)
+        .stderr_has("[starter] is no longer read");
 }

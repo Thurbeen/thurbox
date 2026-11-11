@@ -33,12 +33,13 @@ breadcrumb: 'Orchestration'
   </li>
   <li>
     <strong>Isolated workers.</strong>
-    A Task's workspace is a directory, or one or more repositories, each on its own git worktree.
+    A Task's workspace is a list of URLs its runtime makes: a git URL becomes a worktree of its own,
+    and a <code>file://</code> URL is a directory used as it is.
   </li>
   <li>
     <strong>A reconcile loop.</strong>
     <code>fleet up</code>
-    keeps every Task moving until you stop it, and starts VEGA, the bundled lead workspace.
+    keeps every Task moving until you stop it. It creates no Task of its own.
   </li>
   <li>
     <strong>Forge follow-through.</strong>
@@ -53,10 +54,10 @@ breadcrumb: 'Orchestration'
   <code>thurbox-cli</code>
   on
   <code>PATH</code>
-  , and an agent CLI that is installed and logged in (the VEGA starter uses Codex).
+  , and an agent CLI that is installed and logged in.
 </p>
 <pre data-wrap><code class="language-bash">curl -fsSL https://github.com/Thurbeen/fleet/releases/latest/download/install-release.sh | sh
-fleet init     # the config and the VEGA workspace, offline
+fleet init     # the config, offline
 fleet up       # the manager; keep it running in its own terminal</code></pre>
 <p>
   Fleet's
@@ -68,7 +69,7 @@ fleet up       # the manager; keep it running in its own terminal</code></pre>
     rel="noopener"
     >initialization guide</a
   >
-  covers the config, the workspace and
+  covers the config and
   <code>fleet up</code>
   .
 </p>

@@ -954,16 +954,10 @@ fn release_smoke_requires_offline_bootstrap_from_the_installed_binary() {
 }
 
 #[test]
-fn release_checksums_include_published_installers_and_starter_metadata() {
+fn release_checksums_include_the_published_installer() {
     let e = Env::new();
     install_fixture(&e);
-    for name in [
-        "install-release.sh",
-        "vega-provenance.json",
-        "vega-starter.toml",
-    ] {
-        e.write(&format!("releases/v1.2.3/{name}"), "release metadata");
-    }
+    e.write("releases/v1.2.3/install-release.sh", "release metadata");
     let (ok, out) = e.call(
         &[
             "release",
@@ -976,13 +970,7 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
     );
     assert!(ok, "{out}");
     let sums = fs::read_to_string(e.0.join("releases/v1.2.3/fleet-v1.2.3-checksums.txt")).unwrap();
-    for name in [
-        "install-release.sh",
-        "vega-provenance.json",
-        "vega-starter.toml",
-    ] {
-        assert!(sums.contains(&format!("  {name}\n")), "{sums}");
-    }
+    assert!(sums.contains("  install-release.sh\n"), "{sums}");
 }
 
 #[test]

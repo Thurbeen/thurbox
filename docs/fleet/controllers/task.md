@@ -42,8 +42,8 @@ made, then exits at a fixed point or `--max-passes`. It does not sleep until a
 retry deadline or run a background watch; the caller invokes it again.
 `fleet up` is the resident alternative: it retains the manager lease and
 periodically invokes bounded sweeps for all due Tasks, independently of agent
-activity. Its default VEGA session is an ordinary Task from the bundled
-starter. See [bootstrap and recovery](../configuration.md).
+activity, and creates no Task of its own. See
+[bootstrap and recovery](../configuration.md).
 `NeedsAttention` is a condition, not a phase: delivery reads and releases can
 recover while attention is raised. See the [state machine](#task-state-machine)
 for the distinction between bounded sends and continuing recovery attempts.

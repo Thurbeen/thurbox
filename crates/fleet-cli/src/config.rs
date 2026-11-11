@@ -33,8 +33,10 @@ pub struct Config {
     /// may name.
     #[serde(default)]
     pub hosts: BTreeMap<String, HostConfig>,
+    /// A `[starter]` section from a release that bundled VEGA, read only
+    /// to refuse it by name: `fleet up` needs no starter Task.
     #[serde(default)]
-    pub starter: Option<StarterConfig>,
+    starter: Option<toml::Value>,
     #[serde(default)]
     pub forge: Option<ForgeConfig>,
     #[serde(default)]
@@ -49,12 +51,6 @@ pub struct Config {
     /// starts carries. An unreadable brief refuses the config.
     #[serde(skip)]
     pub gateway_briefs: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StarterConfig {
-    pub workspace: PathBuf,
 }
 
 /// The `[forge]` section: the forges ChangeRequests are mirrored from, the
@@ -177,8 +173,11 @@ impl Config {
         config
             .check_runtimes()
             .map_err(|e| format!("config {}: {e}", path.display()))?;
-        if let Some(starter) = config.starter.as_mut() {
-            starter.workspace = base.join(&starter.workspace);
+        if config.starter.is_some() {
+            return Err(format!(
+                "config {}: [starter] is no longer read: fleet up needs no starter Task. Remove the section; to run VEGA, apply its Task from its own repository (see the configuration page)",
+                path.display()
+            ));
         }
         if let Some(forge) = config.forge.as_mut() {
             for host in forge.hosts.values_mut() {

@@ -120,13 +120,13 @@ persisted as `status.notBefore`; due Tasks progress without agent activity.
 Shutdown releases the lease and retains sessions; crash recovery waits for
 lease expiry and observes deterministic session/effect keys.
 
-The CLI's `init` installs the embedded, pinned VEGA workspace and a local
-config without Git or network. Bootstrap file ownership and conflict copies
-are local file concerns, separate from resource writes. `up` asks the manager
-to create `Task/vega` only when absent, then runs the ordinary Task controller
-for every due Task. VEGA has no extra resource kind, controller or privileges.
-The [initialization guide](configuration.md#configuration-and-customization) owns config precedence,
-managed/editable files, source provenance and startup/recovery instructions.
+The CLI's `init` writes a local config without Git or network, separate from
+resource writes. `up` runs the ordinary Task controller for every due Task
+and creates no Task of its own. VEGA, the Mission Control content in its own
+repository, is an ordinary Task applied like any other: it has no extra
+resource kind, controller or privileges. The
+[initialization guide](configuration.md#configuration-and-customization) owns
+config precedence and startup and recovery instructions.
 
 The runtime is chosen in versioned TOML config, not a separate resource.
 A runtime program owns host connections and session execution. Fleet calls

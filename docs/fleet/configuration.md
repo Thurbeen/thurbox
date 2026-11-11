@@ -1,43 +1,21 @@
 # Configuration
 
-## Initialization and the VEGA starter
+## Initialization and `fleet up`
 
-`fleet init` creates the native config and the bundled, editable VEGA
-workspace. `fleet up` starts VEGA and keeps every due Task reconciling.
-This page owns their behaviour. The [native Fleet TOML](#native-fleet-configuration-fleettoml)
+`fleet init` writes the native config. `fleet up` keeps every due Task
+reconciling. This page owns their behaviour. The [native Fleet TOML](#native-fleet-configuration-fleettoml)
 reference owns the config fields.
 
 ### Prerequisites
 
 `init` works offline. To run real sessions, put `runtime-mux` on PATH,
-install tmux, and install and authenticate the chosen harness first. Fleet
-does not install prerequisites or change login state. `up` asks the runtime
-of `Task/vega`'s host for its manifest and reports an unavailable or unknown
-runtime. Harness login/readiness failures remain visible in Task status;
-inspect `fleet status task vega --json` before retrying.
-
-### Choosing the harness
-
-The harness is the coding agent that a Task's session runs, such as `claude`
-or `codex`. `fleet init` writes one harness into the workspace's `task.json`:
-
-- `fleet init --harness NAME` writes `NAME`.
-- With no flag, `init` asks at a terminal if it never installed a
-  `task.json` in this workspace. An empty answer, or no terminal, keeps the
-  bundled default, `codex`.
-- With no flag and an installed `task.json`, `init` keeps its harness.
-
-VEGA's brief tells VEGA to give each worker Task the same harness as
-`Task/vega`. A user or a repository can ask for another harness for one
-worker.
-
-The first `fleet up` creates `Task/vega` from `task.json`. Before that,
-`init --harness NAME` rewrites an unedited `task.json`. If you edited
-`task.json`, `init` keeps your file. It writes its own version as a conflict
-copy, as `init --update` does.
-
-After the first `up`, the harness of `Task/vega` is immutable.
-`init --harness` refuses a different harness at that point.
+install tmux, and install and authenticate each harness your Tasks name.
+Fleet does not install prerequisites or change login state. `up` asks the
+runtime of each configured host for its manifest. When no host answers, `up`
+exits and names the runtime it could not start. When some hosts answer, `up`
+reports each other host and starts. Harness login and readiness failures stay
+visible in Task status: inspect `fleet status task NAME --json` before you
+retry.
 
 Fleet starts the `codex` harness with a launch override that trusts its
 workspace. Claude Code can show its trust dialog in a new workspace. Fleet
@@ -46,15 +24,16 @@ brief follows. See [workspace trust](contracts.md#workspace-trust).
 
 ### Running `fleet up`
 
-`up` runs in the foreground and continuously reconciles every due Task, even
-while VEGA is busy or idle. Keep it running in a terminal or your own service
-supervisor. Ctrl-C (also SIGTERM on Unix) finishes the bounded sweep, releases
-the manager lease and retains sessions. Run `fleet up` again to reconnect to
-the same ordinary `Task/vega`; a simultaneous manager exits with code 6.
-After a crash, wait for the recorded lease to expire before restarting. Unknown
-session observations never trigger a blind replacement. Stalled, completed or
-deleting VEGA Tasks require inspection and deliberate recovery, not another
-automatic Task identity.
+`up` runs in the foreground and continuously reconciles every due Task. It
+creates no Task of its own: Tasks come from `fleet apply`, from an interface
+such as thurbox, or from a gateway route. Keep `up` running in a terminal or
+your own service supervisor. Ctrl-C (also SIGTERM on Unix) finishes the
+bounded sweep, releases the manager lease and retains sessions. Run
+`fleet up` again to reconnect; a simultaneous manager exits with code 6.
+After a crash, wait for the recorded lease to expire before restarting.
+Unknown session observations never trigger a blind replacement. Each sweep
+reports a Task that is blocked at startup or that needs attention, so no
+separate status query is needed to see why.
 
 Polling defaults to one bounded sweep per second; `up --poll-ms` accepts 100
 through 10000 ms. Each unfinished Briefed Task costs two bounded session
@@ -71,7 +50,7 @@ that has `WantedBy=default.target` in its `[Install]` section:
 
 ```sh
 loginctl enable-linger "$USER"
-systemctl --user enable fleet-vega.service
+systemctl --user enable fleet.service
 ```
 
 ### Configuration and customization
@@ -85,55 +64,46 @@ Config selection is `--config PATH`, then `FLEET_CONFIG`, then exactly one
 native per-user path: `$XDG_CONFIG_HOME/fleet/config.toml` (fallback
 `~/.config/fleet/config.toml`). Fleet never searches the current directory or
 its parents. Explicit paths must exist for commands other than `init`;
-`init --config PATH` creates a separate configuration and a default
-data/workspace root at `<native-data>/fleet/instances/<config-path-hash>/`.
-Relative paths inside TOML resolve beside that file. With no native data-home
-variables, explicit `--config` uses a `fleet-data` directory beside the config
-as its data root. An explicit store must be separate from the config and
-workspace.
+`init --config PATH` creates a separate configuration and a default data
+root at `<native-data>/fleet/instances/<config-path-hash>/`. Relative paths
+inside TOML resolve beside that file. With no native data-home variables,
+explicit `--config` uses a `fleet-data` directory beside the config as its
+data root. An explicit store must be separate from the config.
 
-Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
-`~/.local/share/fleet/vega`) and a fresh resource store under the same Fleet
-directory at `store-v1`. The config records absolute paths and a generated
-per-instance session key prefix. It writes
+Default init writes a fresh resource store path at
+`$XDG_DATA_HOME/fleet/store-v1` (fallback `~/.local/share/fleet/store-v1`).
+The config records absolute paths and a session key prefix derived from the
+config's path, so two configs never share a session. It writes
 `runtimes.mux.callTimeoutMs = 10000`, below the built-in default of `15000`;
-edit it to change the bound. `[starter] workspace` selects the workspace.
-Its `task.json` is a runnable JSON array containing one Task. Before first
-`up`, edit its brief and customize `AGENTS.md`, prompts and skills.
-No runtime under `[runtimes]` passes a model to its harness: it refuses a
-Task that sets `spec.model`. Give the model in the harness's own
-configuration instead. After creation, reconnect keeps the stored immutable
-Task inputs. Updated instructions can be read from the workspace; changing
-Task inputs requires deliberate deletion/recreation after session release.
-VEGA's rendered brief names the exact config file for all Task operations and
-child-worker handoffs.
+edit it to change the bound. No runtime under `[runtimes]` passes a model to
+its harness: it refuses a Task that sets `spec.model`. Give the model in the
+harness's own configuration instead.
 
-Repeated `init` preserves existing files and config. After updating the binary,
-run `fleet init --update` to offer its bundled content. Unedited managed
-workspace files advance; edits, deletions and private files survive. Config is
-user-owned after creation and is never replaced by an update. Review proposed
-conflicts under `vega/.fleet/conflicts/<content-hash>/`; merge them manually.
-The `.fleet` directory holds instance identity, baseline hashes, manifest and
-source provenance; preserve it with the workspace. Malformed metadata is
-refused. A symlink at or above the path of a managed file is refused. The
-`.claude/skills` link below is not a managed file. Initializers serialize
-with OS locks; a crash releases the locks and a repeat init completes missing
-files conservatively.
+The config is yours once written. A repeated `init` validates it and keeps
+it as it is; a malformed config is an error, never replaced. A symlink at or
+above the config's path is refused. Initializers serialize with an OS lock,
+so two concurrent `init` runs write one config.
 
-VEGA's skills have one canonical copy under `vega/.agents/skills`, where
-Codex finds them. Claude Code finds project skills only under
-`.claude/skills`. `init` and `init --update` therefore create the relative
-symlink `vega/.claude/skills` to `../.agents/skills`. This link is the only
-symlink that init manages. Init never replaces an existing `.claude/skills`
-that is not this link; it reports that path instead. When the link cannot
-be created, init reports the failure and completes. Claude Code sessions then
-do not find VEGA's skills.
+A `[starter]` section is refused at load: earlier releases bundled the VEGA
+workspace and made `fleet up` create `Task/vega` from it. Remove the section.
 
-The bundled content is MIT licensed at exact source commit
-`3c4798dbdb33672576958cf8f1849c16e519d95d`. The build verifies every allowlisted
-asset against [the provenance hashes](../../crates/fleet-cli/bundle/vega/provenance.json)
-and embeds the assets, source manifest and license in the executable. Runtime
-init/update never fetches a branch or downloads content.
+### Running VEGA
+
+VEGA, the dispatch-only Mission Control, is content in its own repository,
+[Thurbeen/vega](https://github.com/Thurbeen/vega). It is an ordinary Task
+that Fleet runs like any other. To run it:
+
+1. Clone the repository. Its `workspace/` directory is the session's
+   workspace; edit its instructions, prompts and skills as you like.
+2. In `tasks/vega.json`, set `spec.workspace` to the `file://` URL of that
+   `workspace/` directory, and `spec.harness` to your harness. Append the
+   path of your Fleet config to `spec.brief`: VEGA passes it to the workers
+   it dispatches, so every Task lands in one store.
+3. Apply it: `fleet apply -f tasks/vega.json`. A running `fleet up` starts
+   the session and delivers the brief.
+
+After creation, Fleet keeps the stored Task inputs. Changing them requires
+deleting the Task after its session is released, and applying it again.
 
 ### Resource commands
 
@@ -170,8 +140,8 @@ purity contract, not a sandbox.
 
 ## Native Fleet configuration (fleet.toml)
 
-The native versioned TOML file selects a resource store, runtime, optional
-VEGA workspace and the forges ChangeRequests are read from. It is separate
+The native versioned TOML file selects a resource store, runtimes and hosts,
+and the forges ChangeRequests are read from. It is separate
 from the JSON [Task](resources/task.md),
 [TaskConfig](resources/task-config.md),
 [EnvProvider](resources/env-provider.md) and
@@ -194,11 +164,11 @@ Selection order is `--config PATH`, then `FLEET_CONFIG`, then one native path:
 Fleet does not search the current directory or parents. Explicit config paths
 must exist, except `fleet init --config PATH`, which creates an isolated
 instance without replacing an existing config. `fleet init` creates the
-native config and bundled workspace; see
+native config; see
 [initialization/customization](#configuration-and-customization)
-for data roots, managed files, conflict handling and per-instance paths.
+for data roots and per-instance paths.
 
-Relative `data.dir`, `runtime.dir`, `starter.workspace`, a fake forge host's
+Relative `data.dir`, `runtime.dir`, a fake forge host's
 `dir` and a fake gateway account's `dir` resolve beside the TOML file. A
 runtime executable should be a PATH name or absolute path;
 `runtimes.<name>.program` is passed to process execution without rebasing it
@@ -226,9 +196,6 @@ keyPrefix = "fleet"
 
 [hosts.local]
 runtime = "mux"
-
-[starter]
-workspace = "vega"
 ```
 
 This is what `fleet init` writes, with an instance-specific `keyPrefix`:
@@ -238,10 +205,8 @@ missing binary, and the Task's `Spawned` condition says so. Another runtime
 is opt-in: add its table and point a host at it. `fleet runtime check -- <program>`
 tells whether a program speaks the protocol before a host names it.
 
-Set `starter.workspace` to an initialized VEGA workspace when using `fleet up`.
-For ordinary `apply`/`reconcile`, the starter section is optional. A second
-Fleet installation on the same runtime needs a distinct `keyPrefix`. Store,
-workspace and config must remain separate paths.
+A second Fleet installation on the same runtime needs a distinct
+`keyPrefix`. Store and config must remain separate paths.
 
 ### Fake runtime
 
@@ -263,7 +228,7 @@ refused. See the [offline fake-runtime example](#offline-fake-runtime-example).
 | `hosts.<name>.runtime` | Required for each host | The `[runtimes.<name>]` serving the host. A host naming no runtime, and a runtime no host names, are refused at load. A Task whose `spec.host` is not listed fails its spawn. |
 | `runtime.kind` | Required when configuring `[runtime]` | `fake`; excludes `[runtimes]` and `[hosts]`. |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
-| `starter.workspace` | Required for `up` | Initialized VEGA workspace, relative to this config file. |
+| `starter` | Refused | Earlier releases' VEGA starter; refused at load with a message that names it. |
 
 `--data-dir` is for explicit store operations. `fleet up` rejects a differing
 override because its workers must share the store selected by the persisted
@@ -329,7 +294,7 @@ Apply uses JSON resources. File/command provider output uses a third format:
 resource manifests. Config schema `1`, resource API `fleet/v1alpha1` and store
 format `1` are separate version contracts; `fleet version --json` reports
 them. No live store/config migration or service restart occurs through this
-feature. `fleet init --update` preserves the user-owned native config.
+feature. A repeated `fleet init` keeps the user-owned native config.
 
 ### The `[forge]` section
 

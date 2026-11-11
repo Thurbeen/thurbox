@@ -120,7 +120,7 @@ impl Fleet {
         Fleet { root, program }
     }
 
-    /// The same, after `fleet init`, so `fleet up` has its starter Task.
+    /// The same, from the config `fleet init` writes, on the fake runtime.
     fn initialized(bin: PathBuf) -> Fleet {
         let fleet = Fleet::new(bin);
         let config = fleet.root.path().join("fleet.toml");
@@ -796,14 +796,15 @@ fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     let fleet = Fleet::initialized(bin);
     assert_eq!(fleet.manager(), None);
 
+    fleet.apply(json!([task("alpha")]));
     let mut store = store_of(FleetWatch::with_manager(fleet.program.clone()));
-    // `fleet up` ensures the starter Task and reconciles it.
+    // The `fleet up` thurbox starts reconciles the Tasks it finds.
     until("a manager holds the lease", || fleet.manager().is_some());
-    until("the starter Task is a row", || {
-        names(&mut store).contains(&"vega".to_string())
+    until("the Task is a row", || {
+        names(&mut store).contains(&"alpha".to_string())
     });
     let first = fleet.manager();
-    let phase = || fleet.get("vega").map(|t| t["status"]["phase"].clone());
+    let phase = || fleet.get("alpha").map(|t| t["status"]["phase"].clone());
     until("the manager reconciles", || {
         phase().is_some_and(|p| p.is_string())
     });
@@ -811,7 +812,7 @@ fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     // A second interface finds the lease held, and leaves that manager be.
     let mut second = store_of(FleetWatch::with_manager(fleet.program.clone()));
     until("the second store reads the Tasks", || {
-        names(&mut second).contains(&"vega".to_string())
+        names(&mut second).contains(&"alpha".to_string())
     });
     std::thread::sleep(Duration::from_secs(2));
     second.refresh_if_due();

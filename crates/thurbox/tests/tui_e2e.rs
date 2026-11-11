@@ -196,6 +196,21 @@ impl Profile {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
+    /// One bounded `fleet reconcile`. While a TUI runs, its `fleet up` holds
+    /// the lease and reconciles on its own, so a held lease is no failure.
+    fn reconcile(&self) {
+        let output = Command::new(self.bin.join("fleet"))
+            .arg("reconcile")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run fleet");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() || stderr.contains("lease held"),
+            "fleet reconcile failed:\n{stderr}"
+        );
+    }
+
     /// The Task `name` as Fleet stores it.
     fn fleet_task(&self, name: &str) -> serde_json::Value {
         serde_json::from_str(&self.fleet(&["get", "task", name], "")).expect("a Task as JSON")
@@ -209,7 +224,7 @@ impl Profile {
             dir.display()
         );
         self.fleet(&["apply", "-f", "-"], &task);
-        self.fleet(&["reconcile"], "");
+        self.reconcile();
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -6903,7 +6918,7 @@ fn an_image_dropped_on_a_remote_session_is_refused_not_typed() {
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
-    profile.fleet(&["reconcile"], "");
+    profile.reconcile();
     let shot = profile.path("shot.png");
     std::fs::write(&shot, b"\x89PNG\r\n\x1a\n").expect("an image");
 
@@ -6956,7 +6971,7 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
-    profile.fleet(&["reconcile"], "");
+    profile.reconcile();
     // A path on the Task's host, which names nothing here: a paste, not a
     // drop of this machine's files.
     let shot = std::path::PathBuf::from("/tb-remote-only/far-shot.png");
@@ -7059,7 +7074,7 @@ fn profile_with_two_branches() -> Option<(Profile, PathBuf)> {
 fn workspace_dir(profile: &Profile, name: &str) -> PathBuf {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
-        profile.fleet(&["reconcile"], "");
+        profile.reconcile();
         let task = profile.fleet_task(name);
         if let Some(dir) = task["status"]["workspace"]["dirs"][0].as_str() {
             return PathBuf::from(dir);
@@ -7225,7 +7240,7 @@ fn input_after_a_held_remote_paste_keeps_its_order() {
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
-    profile.fleet(&["reconcile"], "");
+    profile.reconcile();
 
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("far");

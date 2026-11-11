@@ -53,17 +53,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create local config and the bundled editable VEGA workspace, offline.
-    Init {
-        /// Offer bundled updates, preserving edited files with conflict copies.
-        #[arg(long)]
-        update: bool,
-        /// The coding agent for VEGA and, by default, its workers, such as
-        /// claude or codex. Without it, a terminal prompts on first init.
-        #[arg(long, value_name = "NAME")]
-        harness: Option<String>,
-    },
-    /// Start/reconnect VEGA and keep all due Tasks reconciling until Ctrl-C.
+    /// Create the local config, offline; an existing config is kept.
+    Init,
+    /// Keep every due Task reconciling until Ctrl-C.
     Up {
         /// Interval between bounded sweeps (100..=10000 ms).
         #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(100..=10000))]
@@ -449,33 +441,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .map(|p| bootstrap::absolute(&p))
         .transpose()
         .map_err(fail)?;
-    if let Command::Init { update, harness } = cli.command {
+    if let Command::Init = cli.command {
         let path = config_path
             .ok_or_else(|| fail("no config location: pass --config or set HOME/APPDATA"))?;
         let root = default_data_dir()
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
-        let done = bootstrap::init(
-            &path,
-            &root,
-            cli.data_dir.as_deref(),
-            update,
-            harness.as_deref(),
-            &ask_harness,
-        )
-        .map_err(fail)?;
-        for notice in done.notices {
-            println!("{notice}");
-        }
-        match done.harness {
-            Some(h) => println!(
-                "initialized {}; task.json chooses harness {h} for VEGA and its workers; run fleet up (runtime-mux, tmux and an authenticated {h} are required)",
-                path.display()
-            ),
-            None => println!(
-                "initialized {}; run fleet up (runtime-mux, tmux and an authenticated harness are required)",
-                path.display()
-            ),
-        }
+        let written = bootstrap::init(&path, &root, cli.data_dir.as_deref()).map_err(fail)?;
+        println!(
+            "{} {}; run fleet up (runtime-mux, tmux and an authenticated harness are required)",
+            if written { "initialized" } else { "kept" },
+            path.display()
+        );
         return Ok(());
     }
     let config = match &config_path {
@@ -514,26 +490,21 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
-    if matches!(cli.command, Command::Up { .. }) {
-        if config.starter.is_none() {
+    if matches!(cli.command, Command::Up { .. })
+        && let Some(override_dir) = &cli.data_dir
+    {
+        let configured = config
+            .data
+            .dir
+            .clone()
+            .or_else(default_data_dir)
+            .ok_or_else(|| fail("no configured data directory"))?;
+        if bootstrap::absolute(override_dir).map_err(fail)?
+            != bootstrap::absolute(&configured).map_err(fail)?
+        {
             return Err(fail(
-                "no starter workspace configured; run fleet init first",
+                "fleet up requires workers to share its config: persist data.dir in that config instead of using a differing --data-dir override",
             ));
-        }
-        if let Some(override_dir) = &cli.data_dir {
-            let configured = config
-                .data
-                .dir
-                .clone()
-                .or_else(default_data_dir)
-                .ok_or_else(|| fail("no configured data directory"))?;
-            if bootstrap::absolute(override_dir).map_err(fail)?
-                != bootstrap::absolute(&configured).map_err(fail)?
-            {
-                return Err(fail(
-                    "fleet up requires workers to share its config: persist data.dir in that config instead of using a differing --data-dir override",
-                ));
-            }
         }
     }
     let plugins = fleet_plugin::StdioPlugins::new(config.plugins.clone());
@@ -576,7 +547,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 (&plugins, &registrations),
             )
         }
-        Command::Init { .. } => unreachable_version(),
+        Command::Init => unreachable_version(),
         Command::Apply {
             file,
             json,
@@ -979,24 +950,6 @@ fn gateway_side<'a>(
     })
 }
 
-/// Ask for the coding agent, only when a person is at a terminal. An empty
-/// answer keeps `default`.
-fn ask_harness(default: &str) -> Result<Option<String>, String> {
-    use std::io::{BufRead, IsTerminal, Write};
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        return Ok(None);
-    }
-    eprint!("Coding agent for VEGA and its workers, such as claude or codex [{default}]: ");
-    std::io::stderr().flush().map_err(|e| e.to_string())?;
-    let mut answer = String::new();
-    std::io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| e.to_string())?;
-    let answer = answer.trim();
-    Ok((!answer.is_empty()).then(|| answer.to_string()))
-}
-
 fn cmd_up(
     store: &dyn Store,
     (config, data_dir): (&Config, &Path),
@@ -1008,47 +961,35 @@ fn cmd_up(
         &[fleet_api::plugin::Registration],
     ),
 ) -> Result<(), Failure> {
-    let starter = config
-        .starter
-        .as_ref()
-        .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
     let signals = open_signals(data_dir)?;
     let runtime = open_runtime(config, &signals)?;
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
-    let task = match store.get("Task", "vega") {
-        Observation::Known(Some(task)) => task,
-        Observation::Known(None) => {
-            let mut tasks: Vec<Object> = serde_json::from_slice(
-                &std::fs::read(starter.workspace.join("task.json"))
-                    .map_err(|e| fail(format!("starter task.json: {e}; run fleet init")))?,
-            )
-            .map_err(|e| fail(format!("starter task.json: {e}")))?;
-            if tasks.len() != 1 || tasks[0].kind != "Task" || tasks[0].metadata.name != "vega" {
-                return Err(fail("starter task.json must contain exactly Task/vega"));
-            }
-            fleet_manager::verbs::ensure_task(store, tasks.remove(0))?
-        }
-        Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
+    // Every host the config names, or `local` under one `[runtime]`. One
+    // that answers is enough to start; each other is reported, and its
+    // Tasks wait in their own status.
+    let hosts: Vec<&str> = if config.hosts.is_empty() {
+        vec!["local"]
+    } else {
+        config.hosts.keys().map(String::as_str).collect()
     };
-    let host = task.spec["host"].as_str().unwrap_or("local");
-    match runtime.host(host) {
-        Observation::Known(true) => {}
-        Observation::Known(false) => {
-            return Err(fail(format!(
-                "host {host} is unavailable: no runtime configured for it answers; install and configure its runtime (runtime-mux by default) and an authenticated agent harness, then retry fleet up"
-            )));
-        }
-        Observation::Unknown { why } => {
-            return Err(fail(format!(
-                "the runtime of host {host} could not be checked: {why}; install and configure it (runtime-mux by default) and authenticate the agent harness before fleet up"
-            )));
+    let mut down = Vec::new();
+    for host in &hosts {
+        match runtime.host(host) {
+            Observation::Known(true) => {}
+            Observation::Known(false) => down.push(format!(
+                "host {host} is unavailable: no runtime configured for it answers; install and configure its runtime (runtime-mux by default)"
+            )),
+            Observation::Unknown { why } => down.push(format!(
+                "the runtime of host {host} could not be checked: {why}; install and configure it (runtime-mux by default)"
+            )),
         }
     }
-    if task.metadata.deletion_timestamp.is_some() || !task.status["result"].is_null() {
-        return Err(fail(
-            "Task/vega is deleting or has a worker result; inspect fleet status task vega before deliberately creating a new session",
-        ));
+    if down.len() == hosts.len() {
+        return Err(fail(format!("{}; then retry fleet up", down.join("; "))));
+    }
+    for line in &down {
+        eprintln!("{line}");
     }
     let ttl = lease_for(
         runtime
@@ -1076,8 +1017,7 @@ fn cmd_up(
         gateway: gateway_side(config, gateway.as_ref()),
     };
     println!(
-        "Task/vega {}: reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
-        task.metadata.uid,
+        "reconciling all Tasks; config {}; Ctrl-C stops Fleet and retains sessions",
         config_path.display()
     );
     let mut last = Vec::new();
@@ -1093,21 +1033,23 @@ fn cmd_up(
                 .chain(&report.unknowns)
                 .cloned()
                 .collect();
-            match store.get("Task", "vega") {
-                Observation::Known(Some(task)) => {
-                    if let Some(conditions) = task.status["conditions"].as_array() {
-                        for condition in conditions {
+            // A Task blocked at startup, or needing attention, is reported
+            // here, so no separate status query is needed to see why.
+            match store.list("Task") {
+                Observation::Known(tasks) => {
+                    for task in tasks {
+                        let name = &task.metadata.name;
+                        for condition in task.status["conditions"].as_array().into_iter().flatten() {
                             let status = condition["status"].as_str().unwrap_or("");
                             let startup = matches!(condition["type"].as_str(), Some("HostReachable" | "Spawned" | "Briefed"));
                             let attention = matches!(condition["type"].as_str(), Some("NeedsAttention" | "Stalled" | "WorkerGone"));
                             if (startup && matches!(status, "False" | "Unknown")) || (attention && status == "True") {
-                                diagnostics.push(format!("Task/vega {}: {} {}. Inspect the session and authenticated harness if readiness or startup is blocked", condition["type"].as_str().unwrap_or(""), condition["reason"].as_str().unwrap_or(""), condition["message"].as_str().unwrap_or("")));
+                                diagnostics.push(format!("Task/{name} {}: {} {}. Inspect the session and authenticated harness if readiness or startup is blocked", condition["type"].as_str().unwrap_or(""), condition["reason"].as_str().unwrap_or(""), condition["message"].as_str().unwrap_or("")));
                             }
                         }
                     }
-                },
-                Observation::Unknown { why } => diagnostics.push(format!("Task/vega status unknown: {why}")),
-                Observation::Known(None) => diagnostics.push("Task/vega is absent; inspect its deletion before restarting Mission Control".into()),
+                }
+                Observation::Unknown { why } => diagnostics.push(format!("the Tasks are unknown: {why}")),
             }
             if diagnostics != last {
                 for line in &diagnostics {

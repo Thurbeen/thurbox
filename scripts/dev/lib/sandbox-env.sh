@@ -137,9 +137,6 @@ tbx_sandbox_init_full() {
 #
 #   - `runtime-mux` (target/debug, on PATH after an init) serves `local`, on
 #     the sandbox's tmux directory and socket, which it inherits.
-#   - `fleet up` refuses to start without a starter Task/vega. The starter
-#     here is one that is never dispatched, so no agent runs for it; it does
-#     show as a row named `vega`.
 #
 # Call it after an init flavor.
 tbx_sandbox_fleet() {
@@ -148,9 +145,7 @@ tbx_sandbox_fleet() {
     FLEET_CONFIG="$fleet_dir/config.toml"
     export FLEET_CONFIG
     [ -f "$FLEET_CONFIG" ] && return 0
-    mkdir -p "$fleet_dir/starter"
-    printf '[{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"vega"},"spec":{"harness":"sh","host":"local","workspace":["file://%s"],"dispatch":false}}]\n' \
-        "$TBX_SANDBOX_ROOT" > "$fleet_dir/starter/task.json"
+    mkdir -p "$fleet_dir"
     cat > "$FLEET_CONFIG" <<'EOF'
 version = 1
 
@@ -164,9 +159,6 @@ keyPrefix = "tbx-sandbox"
 
 [hosts.local]
 runtime = "mux"
-
-[starter]
-workspace = "starter"
 EOF
 }
 

@@ -1238,22 +1238,21 @@ A Task manifest:
 raised to twice the longest operation of the runtime, forge, gateway or
 plugin port.
 
-`fleet init` installs the pinned embedded VEGA starter offline and creates
-native per-user config; `--update` advances unedited managed workspace files
-and writes conflict candidates for customizations. Config is never replaced.
-The [initialization guide](configuration.md#configuration-and-customization) specifies precedence,
-paths, provenance and recovery. Bootstrap does not read v1 data.
+`fleet init` creates the native per-user config offline. A config that
+exists is kept, never replaced. The
+[initialization guide](configuration.md#configuration-and-customization)
+specifies precedence and paths. Bootstrap does not read v1 data.
 
-`fleet up` ensures one ordinary `Task/vega` through the manager, then retains
-the manager lease across periodic sweeps for all due Tasks. The poll interval
+`fleet up` creates no Task. It retains the manager lease across periodic
+sweeps for all due Tasks. The poll interval
 must fit inside the lease as well as runtime operations. Ctrl-C/SIGTERM stops
 after bounded work and releases the lease; Tasks and sessions survive. Crash
 recovery waits for lease expiry. Uncertain runtime observations remain Unknown.
 
 `fleet up` reads its config file once, when it starts.
-`e2e_bootstrap` covers installed first-run, repeat/concurrent initialization,
-customized updates, resident progress, exclusive startup and
-crash/reconnect.
+`e2e_bootstrap` covers installed first-run, repeat and concurrent
+initialization, a kept customized config, the refused `[starter]`, resident
+progress with no starter, exclusive startup and crash/reconnect.
 
 ## Tests
 
