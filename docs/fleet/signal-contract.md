@@ -64,7 +64,12 @@ it. Each harness profile names the fields in its `[payload]` table
 - Fleet stores a prompt only as a digest. It never stores the prompt text.
 - Fleet reads the first conversation field that is a string. An empty
   string is no conversation.
-- Fleet ignores every other field.
+- Nonempty `background_tasks` or `session_crons` lists turn `idle` into
+  `working`: the turn left work running.
+- `notification_type = "idle_prompt"` turns `blocked` into `idle`: the agent
+  only waits for its next prompt.
+- These two state rules apply to every harness. Fleet ignores every other
+  field.
 - A payload that is not JSON gives no prompt and no conversation. The state
   still counts.
 
@@ -73,7 +78,8 @@ stdin.
 
 ## Which fields Fleet reads
 
-Fleet sets `FLEET_HARNESS` to the session's harness name at spawn.
+Fleet sets `FLEET_HARNESS` to the session's harness name at spawn, and
+`FLEET_HARNESS_DIR` to the directory it read the user's profiles from.
 `fleet signal` reads the payload with the `[payload]` fields of that
 harness's profile:
 
@@ -82,10 +88,11 @@ harness's profile:
 2. Else `FLEET_HARNESS` names the harness.
 3. A harness with no profile, or no name, uses the default names.
 
-`fleet signal` finds a user profile in Fleet's config dir: the directory of
-the config file that `fleet` finds (`--config`, else `FLEET_CONFIG`, else
-the per-user config). A user profile that `fleet signal` cannot read does
-not fail the hook: the bundled profile or the default names apply.
+`fleet signal` reads the user's profiles from `FLEET_HARNESS_DIR`. Without
+it, it reads them beside the config file that this `fleet` finds
+(`--config`, else `FLEET_CONFIG`, else the per-user config). A user profile
+that `fleet signal` cannot read does not fail the hook. Fleet skips that one
+file, and the bundled profile or the default names apply.
 
 ## Limits
 

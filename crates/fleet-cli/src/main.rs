@@ -479,8 +479,13 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         None => Config::empty(),
     };
-    let user = user_profiles(config_path.as_deref()).map_err(fail)?;
-    fleet_api::harness::install(fleet_api::harness::Profiles::bundled().with(user));
+    let harnesses = harness_dir(config_path.as_deref());
+    let user = user_profiles(harnesses.as_deref(), true).map_err(fail)?;
+    let mut profiles = fleet_api::harness::Profiles::bundled().with(user);
+    if let Some(dir) = harnesses {
+        profiles = profiles.from_dir(dir.to_string_lossy().into_owned());
+    }
+    fleet_api::harness::install(profiles);
     if let Command::Runtime {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
@@ -771,17 +776,25 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
 }
 
-/// The user's harness profiles: each `*.toml` under the `harnesses`
-/// directory beside the config file, in file-name order. A missing
-/// directory is none.
-fn user_profiles(config: Option<&Path>) -> Result<Vec<fleet_api::harness::Profile>, String> {
-    let Some(dir) = config
+/// The `harnesses` directory beside the config file.
+fn harness_dir(config: Option<&Path>) -> Option<PathBuf> {
+    config
         .and_then(Path::parent)
         .map(|d| d.join(fleet_api::harness::USER_DIR))
-    else {
+}
+
+/// The user's harness profiles: each `*.toml` in `dir`, in file-name order.
+/// A missing directory is none. `strict`: a file that cannot be read or
+/// parsed is an error; otherwise it alone is left out, so a hook or a view
+/// keeps every other profile.
+fn user_profiles(
+    dir: Option<&Path>,
+    strict: bool,
+) -> Result<Vec<fleet_api::harness::Profile>, String> {
+    let Some(dir) = dir else {
         return Ok(Vec::new());
     };
-    let entries = match std::fs::read_dir(&dir) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("harness profiles {}: {e}", dir.display())),
@@ -792,15 +805,18 @@ fn user_profiles(config: Option<&Path>) -> Result<Vec<fleet_api::harness::Profil
         .map_err(|e| format!("harness profiles {}: {e}", dir.display()))?;
     paths.retain(|p| p.extension().is_some_and(|x| x == "toml"));
     paths.sort();
-    paths
-        .iter()
-        .map(|p| {
-            let text = std::fs::read_to_string(p)
-                .map_err(|e| format!("harness profile {}: {e}", p.display()))?;
-            fleet_api::harness::parse(&text)
-                .map_err(|e| format!("harness profile {}: {e}", p.display()))
-        })
-        .collect()
+    let mut profiles = Vec::new();
+    for p in &paths {
+        let parsed = std::fs::read_to_string(p)
+            .map_err(|e| e.to_string())
+            .and_then(|text| fleet_api::harness::parse(&text));
+        match parsed {
+            Ok(profile) => profiles.push(profile),
+            Err(e) if strict => return Err(format!("harness profile {}: {e}", p.display())),
+            Err(_) => {}
+        }
+    }
+    Ok(profiles)
 }
 
 /// `fleet signal`: one line appended to the session's signal file. It needs
@@ -812,7 +828,7 @@ fn cmd_signal(
     payload: Option<&str>,
     config: Option<PathBuf>,
 ) -> Result<(), Failure> {
-    use fleet_api::harness::{HARNESS_ENV, Payload, Profiles};
+    use fleet_api::harness::{HARNESS_DIR_ENV, HARNESS_ENV, Payload, Profiles};
     use fleet_api::signal::{SIGNAL_FILE_ENV, Signal, State};
     use std::io::{IsTerminal, Read};
     let Some(file) = std::env::var_os(SIGNAL_FILE_ENV).filter(|f| !f.is_empty()) else {
@@ -838,13 +854,19 @@ fn cmd_signal(
     };
     let payload = serde_json::from_str::<serde_json::Value>(&text).ok();
     let now = fleet_api::store::Clock::now(&SystemClock);
-    // A user profile that cannot be read never fails the agent's turn: the
-    // bundled profile, or the default fields, read the payload.
+    // The profiles Fleet launched the session with: the directory it names
+    // at spawn, else the one beside the config this `fleet` finds. A user
+    // profile that cannot be read never fails the agent's turn: the bundled
+    // profile, or the default fields, read the payload.
     let fields = harness
         .or_else(|| std::env::var(HARNESS_ENV).ok())
         .filter(|h| !h.is_empty())
         .map_or_else(Payload::default, |h| {
-            let user = user_profiles(config::discover(config).as_deref()).unwrap_or_default();
+            let dir = std::env::var_os(HARNESS_DIR_ENV)
+                .filter(|d| !d.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| harness_dir(config::discover(config).as_deref()));
+            let user = user_profiles(dir.as_deref(), false).unwrap_or_default();
             Profiles::bundled().with(user).get(&h).payload
         });
     let signal = Signal::from_hook_with(now, state, payload.as_ref(), &fields);
@@ -1187,8 +1209,12 @@ fn version(json: bool, config: Option<PathBuf>) -> Result<(), Failure> {
     if json {
         // The user's profiles too, so a view offers their harnesses; one
         // that does not parse is left out here and refused by every
-        // command that runs a Task.
-        let user = user_profiles(config::discover(config).as_deref()).unwrap_or_default();
+        // command that loads the config.
+        let user = user_profiles(
+            harness_dir(config::discover(config).as_deref()).as_deref(),
+            false,
+        )
+        .unwrap_or_default();
         print_json(&json!({
             "version": VERSION,
             "apiVersions": [API_VERSION],

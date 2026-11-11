@@ -37,6 +37,11 @@ pub const HARNESS_ENV: &str = "FLEET_HARNESS";
 /// The directory under Fleet's config dir that holds the user's profiles.
 pub const USER_DIR: &str = "harnesses";
 
+/// The variable Fleet names that directory in at spawn, so `fleet signal`
+/// reads the profiles the session was launched with, whatever config the
+/// hook's own `fleet` would find.
+pub const HARNESS_DIR_ENV: &str = "FLEET_HARNESS_DIR";
+
 /// What the agent's hooks report, which decides how far Fleet trusts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -199,6 +204,7 @@ pub fn bare(harness: &str) -> Profile {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Profiles {
     list: Vec<Profile>,
+    dir: Option<String>,
 }
 
 impl Profiles {
@@ -209,7 +215,19 @@ impl Profiles {
                 .iter()
                 .map(|text| parse(text).expect("a bundled harness profile parses"))
                 .collect(),
+            dir: None,
         }
+    }
+
+    /// These profiles, read with the user's from `dir`.
+    pub fn from_dir(mut self, dir: String) -> Profiles {
+        self.dir = Some(dir);
+        self
+    }
+
+    /// The directory the user's profiles were read from, when any was.
+    pub fn dir(&self) -> Option<&str> {
+        self.dir.as_deref()
     }
 
     /// These profiles with `user`'s: a user profile replaces the one of the
@@ -227,7 +245,10 @@ impl Profiles {
             .filter(|b| !list.iter().any(|u| u.name == b.name))
             .collect();
         list.extend(shipped);
-        Profiles { list }
+        Profiles {
+            list,
+            dir: self.dir,
+        }
     }
 
     /// The profile `harness` names, by name and then by alias; a bare one
@@ -264,9 +285,14 @@ pub fn install(profiles: Profiles) -> bool {
     INSTALLED.set(profiles).is_ok()
 }
 
+/// The installed set, else the bundled one.
+pub fn installed() -> &'static Profiles {
+    INSTALLED.get_or_init(Profiles::bundled)
+}
+
 /// The profile of `harness`, from the installed set, else the bundled one.
 pub fn profile(harness: &str) -> Profile {
-    INSTALLED.get_or_init(Profiles::bundled).get(harness)
+    installed().get(harness)
 }
 
 impl Profile {

@@ -1902,15 +1902,20 @@ impl Manager<'_> {
                 }
             }
         }
-        // The harness profile's variables, under the Task's own; then the
-        // file the agent's hooks report to, on the host it runs on, and the
-        // harness whose profile reads their payload.
+        // The harness profile's variables under the Task's own, unless the
+        // launch is frozen: a frozen one took them when it was resolved, and
+        // keeps them. Then the file the agent's hooks report to, on the host
+        // it runs on, and the harness and profile directory whose
+        // `[payload]` reads them.
+        let profiles = fleet_api::harness::installed();
         for effect in &mut plan.effects {
             let Some(spawn) = effect.action.launch_mut() else {
                 continue;
             };
-            for (k, v) in fleet_api::harness::profile(&spawn.harness).launch.env {
-                spawn.env.entry(k).or_insert(v);
+            if !spawn.environment_frozen {
+                let mut env = profiles.get(&spawn.harness).launch.env;
+                fleet_api::config::merge_env(&mut env, &spawn.env);
+                spawn.env = env;
             }
             if let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key)) {
                 spawn
@@ -1920,6 +1925,12 @@ impl Manager<'_> {
                     fleet_api::harness::HARNESS_ENV.to_string(),
                     spawn.harness.clone(),
                 );
+                if let Some(dir) = profiles.dir() {
+                    spawn.env.insert(
+                        fleet_api::harness::HARNESS_DIR_ENV.to_string(),
+                        dir.to_string(),
+                    );
+                }
             }
         }
         self.perform_plan(obj, plan, lease, ttl, report)

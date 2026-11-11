@@ -78,3 +78,60 @@ fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() 
         ]
     );
 }
+
+fn write_profile(env: &Env, file: &str, text: &str) {
+    let dir = env.config.parent().unwrap().join("harnesses");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(file), text).unwrap();
+}
+
+const VENDOR: &str = "name = \"vendor\"\nprogram = \"vendor\"\nauthority = \"full\"\n\n[launch]\nenv = { API_KEY = \"profile\", VENDOR_HOOKS = \"on\" }\n";
+
+/// A profile's `[launch] env` sits under the Task's own, whatever the
+/// spelling of a name, and Fleet names the profile directory to the hooks.
+#[test]
+fn a_profiles_launch_env_sits_under_the_tasks_and_names_its_directory() {
+    let env = Env::new("harness-env");
+    write_profile(&env, "vendor.toml", VENDOR);
+    let mut frozen = support::task("t1", true);
+    frozen["spec"]["harness"] = json!("vendor");
+    frozen["spec"]["env"] = json!({"api_key": "task"});
+    let mut bare = support::task("t2", true);
+    bare["spec"]["harness"] = json!("vendor");
+    env.apply(json!([frozen, bare])).ok();
+    env.reconcile().ok();
+
+    let t1 = session(&env, "t1");
+    assert_eq!(
+        t1.env.get("api_key").map(String::as_str),
+        Some("task"),
+        "{:?}",
+        t1.env
+    );
+    assert!(!t1.env.contains_key("API_KEY"), "{:?}", t1.env);
+    assert_eq!(t1.env.get("VENDOR_HOOKS").map(String::as_str), Some("on"));
+    let t2 = session(&env, "t2");
+    assert_eq!(t2.env.get("API_KEY").map(String::as_str), Some("profile"));
+    let dir = env.config.parent().unwrap().join("harnesses");
+    assert_eq!(
+        t2.env.get("FLEET_HARNESS_DIR").map(String::as_str),
+        Some(&*dir.to_string_lossy())
+    );
+}
+
+/// A profile file that does not parse stops a command that runs Tasks, but
+/// a view still lists every other user harness.
+#[test]
+fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
+    let env = Env::new("harness-broken");
+    write_profile(&env, "vendor.toml", VENDOR);
+    write_profile(&env, "zz-broken.toml", "name = \"broken\"\n");
+    env.fleet(&["reconcile"])
+        .code(1)
+        .stderr_has("zz-broken.toml");
+    let version = env.fleet(&["version", "--json"]).ok().json();
+    assert_eq!(
+        version["harnesses"],
+        json!(["vendor", "claude", "claude-code", "codex"])
+    );
+}

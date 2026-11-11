@@ -640,8 +640,6 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
         bin.display(),
         fleet_dir.display()
     )));
-    let config = env.config.to_string_lossy().into_owned();
-    env.set_var("FLEET_CONFIG", &config);
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],

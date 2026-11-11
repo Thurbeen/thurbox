@@ -302,3 +302,28 @@ fn a_session_is_started_with_its_harness_named() {
         Some("claude-code")
     );
 }
+
+/// `fleet signal` reads the profiles from the directory Fleet named at
+/// spawn, not beside the config its own `fleet` would find, and one profile
+/// it cannot parse leaves the others read.
+#[test]
+fn a_hook_reads_the_profiles_fleet_launched_it_with() {
+    let env = setup("signal-harness-dir");
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    let dir = env.root.join("elsewhere");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("vendor.toml"),
+        "name = \"vendor\"\nprogram = \"vendor\"\nauthority = \"full\"\n\n[payload]\nconversation = [\"sessionID\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("broken.toml"), "not toml [").unwrap();
+    let mut cmd = env.command(&["signal", "idle", r#"{"sessionID":"d1"}"#]);
+    cmd.env("FLEET_SIGNAL_FILE", &file)
+        .env("FLEET_HARNESS", "vendor")
+        .env("FLEET_HARNESS_DIR", &dir);
+    wait(cmd.spawn().expect("fleet signal")).ok();
+    env.reconcile().ok();
+    assert_eq!(env.get("t1")["status"]["conversation"], "d1");
+}
