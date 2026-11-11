@@ -308,8 +308,8 @@ pub fn file_url(dir: &str) -> String {
     url
 }
 
-/// The path a `file://` URL names, percent-decoded as a runtime reads it;
-/// `None` for any other URL.
+/// The path a `file://` URL names, percent-decoded as a runtime reads it,
+/// with a Windows drive's leading `/` dropped; `None` for any other URL.
 pub fn file_path(url: &str) -> Option<String> {
     let raw = url.strip_prefix("file://").filter(|p| !p.is_empty())?;
     let bytes = raw.as_bytes();
@@ -328,7 +328,13 @@ pub fn file_path(url: &str) -> Option<String> {
         out.push(bytes[i]);
         i += 1;
     }
-    Some(String::from_utf8_lossy(&out).into_owned())
+    let path = String::from_utf8_lossy(&out).into_owned();
+    // `/C:/dir` is how a URL spells the Windows path `C:/dir`.
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        return Some(path[1..].to_string());
+    }
+    Some(path)
 }
 
 /// The directory a stored Task's spec names as its first URL, when that is
@@ -644,5 +650,14 @@ mod tests {
             file_path("file:///work/conv%2D123").as_deref(),
             Some("/work/conv-123")
         );
+    }
+
+    /// A URL spells a Windows drive after a `/`; the directory it names is
+    /// the drive path, as a runtime reads it.
+    #[test]
+    fn a_file_url_names_a_windows_drive_path_as_the_runtime_reads_it() {
+        let dir = file_path("file:///C:/work/conv-123").expect("a path");
+        assert_eq!(dir, "C:/work/conv-123");
+        assert_eq!(normalise_dir(&dir), normalise_dir(r"C:\work\conv-123"));
     }
 }

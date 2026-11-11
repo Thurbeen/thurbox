@@ -142,9 +142,14 @@ fn one_git_url_makes_a_worktree_on_a_branch_named_after_the_key() {
     let origin = s.origin("app");
     let (dirs, adopted) = s.made("t.one", &[url("git+file", &origin)]);
     assert!(!adopted);
-    assert_eq!(dirs, [s.cfg.root.join("t.one/app").display().to_string()]);
     assert_eq!(
-        fs::read_to_string(Path::new(&dirs[0]).join("README")).unwrap(),
+        dirs,
+        [s.cfg.root.join("t.one").join("app").display().to_string()]
+    );
+    assert_eq!(
+        fs::read_to_string(Path::new(&dirs[0]).join("README"))
+            .unwrap()
+            .replace("\r\n", "\n"),
         "app\n"
     );
     assert_eq!(branch_of(&dirs[0]), "t.one");
@@ -192,13 +197,15 @@ fn several_urls_answer_one_directory_each_in_order() {
     assert_eq!(
         dirs,
         [
-            s.cfg.root.join("t.many/app").display().to_string(),
-            s.cfg.root.join("t.many/lib").display().to_string(),
+            s.cfg.root.join("t.many").join("app").display().to_string(),
+            s.cfg.root.join("t.many").join("lib").display().to_string(),
             notes.display().to_string(),
         ]
     );
     assert_eq!(
-        fs::read_to_string(Path::new(&dirs[1]).join("README")).unwrap(),
+        fs::read_to_string(Path::new(&dirs[1]).join("README"))
+            .unwrap()
+            .replace("\r\n", "\n"),
         "lib\n"
     );
 }
@@ -275,11 +282,15 @@ fn a_dirty_release_is_preserved_and_a_git_file_url_restores_it() {
     let restore = format!("{}#{preserved}", url("git+file", &source));
     let (back, _) = s.made("t.restored", &[restore]);
     let tree = Path::new(&back[0]);
-    assert_eq!(fs::read_to_string(tree.join("README")).unwrap(), "edited\n");
-    assert_eq!(
-        fs::read_to_string(tree.join("new.txt")).unwrap(),
-        "untracked\n"
-    );
+    // A checkout follows the user's git config: `core.autocrlf` on a
+    // Windows runner writes CRLF.
+    let text = |name: &str| {
+        fs::read_to_string(tree.join(name))
+            .unwrap()
+            .replace("\r\n", "\n")
+    };
+    assert_eq!(text("README"), "edited\n");
+    assert_eq!(text("new.txt"), "untracked\n");
 }
 
 #[test]
@@ -411,7 +422,7 @@ fn the_program_answers_a_make_and_a_release_as_json() {
     assert_eq!(made["made"]["adopted"], false, "{made}");
     assert_eq!(
         made["made"]["dirs"][0],
-        s.cfg.root.join("t.cli/app").display().to_string()
+        s.cfg.root.join("t.cli").join("app").display().to_string()
     );
     let released = run("release", serde_json::json!({"root": root, "key": "t.cli"}));
     assert_eq!(released, serde_json::json!("released"));
