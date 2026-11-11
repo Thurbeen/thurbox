@@ -3,8 +3,9 @@
 //! own screen; crates/fleet-api/tests/screen_rules.rs holds those screens
 //! and checks every rule against them.
 
-/// Claude Code: a permission question, the interrupt hint of a running
-/// turn, and the composer between its two rules. Its title keeps `✳`
+/// Claude Code: its workspace-trust dialog and a permission question, which
+/// both wait on a person, the interrupt hint of a running turn, and the
+/// composer between its two rules. Its title keeps `✳`
 /// whether a turn runs or not, so no rule reads it.
 pub const CLAUDE: &str = r#"
 [[rule]]
@@ -13,6 +14,13 @@ state = "blocked"
 priority = 900
 region = "bottom_lines(12)"
 contains = ["Do you want to proceed?", "Esc to cancel"]
+
+[[rule]]
+id = "trust"
+state = "blocked"
+priority = 900
+region = "whole"
+contains = ["Accessing workspace:", "Yes, I trust this folder", "Enter to confirm"]
 
 [[rule]]
 id = "interrupt"

@@ -9,10 +9,10 @@ text = '''
 │ Confirm folder trust                                                         │
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ ╭──────────────────────────────────────────────────────────────────────────╮ │
-│ │ /tmp/claude-1000/-home-magicletur--local-share-thurbox-worktrees-e854f81 │ │
-│ │ b312b7e11-f23a6c3f349013b1b613b0a70-thurbox-v3-monorepo-u146593-234c62a4 │ │
-│ │ 610263ab/66d2057b-5174-4c51-8a7c-440a49d2e527/scratchpad/lab/work/copilo │ │
-│ │ t                                                                        │ │
+│ │ /home/user/work/copilot                                                  │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
 │ ╰──────────────────────────────────────────────────────────────────────────╯ │
 │                                                                              │
 │ Copilot can read files in this folder and, with your permission, edit them   │

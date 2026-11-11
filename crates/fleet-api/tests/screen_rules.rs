@@ -22,6 +22,7 @@ const FIXTURES: &[(&str, &str, &str)] = fixtures![
     "claude" / "idle-after-turn",
     "claude" / "working",
     "claude" / "permission",
+    "claude" / "trust",
     "codex" / "idle",
     "codex" / "idle-after-deny",
     "codex" / "working",

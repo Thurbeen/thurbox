@@ -781,16 +781,18 @@ impl Runtime for ExecRuntime {
 
     /// The runtime's `capture`, reused for [`SCREEN_REUSE`] by this process.
     fn screen(&self, session: &SessionRef) -> Observation<Option<fleet_api::screen::Screen>> {
+        let screens = || {
+            self.screens
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
         let now = Instant::now();
-        let mut screens = self
-            .screens
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((at, screen)) = screens.get(&session.id)
+        if let Some((at, screen)) = screens().get(&session.id)
             && now.duration_since(*at) < SCREEN_REUSE
         {
             return screen.clone();
         }
+        // Not under the lock: a capture runs a process.
         let screen = self.capture(session).map(|captured| match captured {
             Captured::Screen { text, title, .. } => Some(fleet_api::screen::Screen {
                 text,
@@ -798,6 +800,7 @@ impl Runtime for ExecRuntime {
             }),
             Captured::None => None,
         });
+        let mut screens = screens();
         screens.retain(|_, (at, _)| now.duration_since(*at) < SCREEN_REUSE);
         screens.insert(session.id.clone(), (now, screen.clone()));
         screen

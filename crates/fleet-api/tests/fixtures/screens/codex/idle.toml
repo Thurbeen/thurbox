@@ -14,7 +14,7 @@ text = '''
  
                            
   >_ OpenAI Codex (v0.165.0)
-     /tmp/claude-1000/…3ab/66d2057b-5174-4c51-8a7c-440a49d2e527/…/lab/work/codex
+     /home/user/work/codex                                                      
  
  
  
@@ -25,6 +25,6 @@ text = '''
  
 › Ask Codex to do anything
  
-  GPT-5.6-Luna low · /tmp/claude-1000/-home-magicletur--local-share-thurbox-wor…
+  GPT-5.6-Luna low · /home/user/work/codex                                     …
   ? for shortcuts
 '''

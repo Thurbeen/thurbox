@@ -117,9 +117,15 @@ local function agent_status(session)
     end
     return "unreachable", nil
   end
+  -- The source never displaces what the agent said: a narrow list keeps the
+  -- reason and drops the action, so with an action the source follows it.
   local detail = source_detail(session)
   if detail then
-    return detail, current_action(session)
+    local said = current_action(session)
+    if said then
+      return nil, said .. " · " .. detail
+    end
+    return detail, nil
   end
   if session.status == "blocked" then
     return session.notification or "Blocked", nil

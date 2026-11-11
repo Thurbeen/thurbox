@@ -22,7 +22,7 @@ text = '''
    lot/node_modules/@github/copilot-linux-x64/.copilot-update-1794415199366'.   
    Run /update to retry.                                                        
 
- /tmp/claude-1000/.../copilot                               Session: 0 AIC used 
+ /home/user/work/copilot                                    Session: 0 AIC used 
 ────────────────────────────────────────────────────────────────────────────────
 ❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────
