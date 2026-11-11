@@ -1850,6 +1850,26 @@ fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
     assert_eq!(observe("bash"), None, "a shell");
     assert_eq!(observe("claude"), Some(Source::None), "an agent");
     assert_eq!(observe("copilot"), Some(Source::None), "rules, no hooks");
+
+    // A record written before this rule, on a host whose signal file cannot
+    // be read, drops its source too.
+    let mut stale = briefed_with(&[], |st| {
+        st.activity = Some(fleet_api::screen::AgentActivity {
+            source: Source::None,
+            rule: None,
+            at: 1,
+        });
+    });
+    stale.spec["harness"] = json!("bash");
+    let (_, st) = run(
+        &stale,
+        Observations {
+            find: live(),
+            signals: Some(Observation::unknown("no signal file on host remote")),
+            ..Observations::default()
+        },
+    );
+    assert_eq!(st.activity, None);
 }
 
 /// The screen is read for a harness Fleet has rules for, unless the last

@@ -321,6 +321,15 @@ impl Pass<'_, '_> {
             self.st.session_state = Some(state);
         }
         let profile = fleet_api::harness::profile(&self.spec.harness);
+        // A harness with no hooks and no screen rules, such as a shell, has
+        // no agent state to report, so no source either: only an agent can
+        // be unknown. Cleared before the signals are read, so a session on a
+        // host whose signal file cannot be read drops one too.
+        let agentless = profile.authority == fleet_api::harness::Authority::None
+            && profile.screen_rules().is_none();
+        if agentless {
+            self.st.activity = None;
+        }
         let screen = &self.input.observations.screen;
         let seen = match screen {
             Some(Observation::Known(Some(s))) => {
@@ -341,14 +350,8 @@ impl Pass<'_, '_> {
             self.st.conversation = r.conversation.clone();
         }
         let merged = fleet_api::screen::merge(profile.authority, r, seen.as_ref());
-        // A harness with no hooks and no screen rules, such as a shell, has
-        // no agent state to report, so no source either: only an agent can
-        // be unknown.
-        if profile.authority == fleet_api::harness::Authority::None
-            && profile.screen_rules().is_none()
-        {
+        if agentless {
             self.st.agent_state = Some(merged.state);
-            self.st.activity = None;
             return;
         }
         // A capture that failed says nothing: a screen state stands until a
