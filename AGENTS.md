@@ -376,19 +376,42 @@ responsibilities and the event loop are in the `thurbox-kernel` skill.
 
 ## Pre-commit Hooks
 
-18 hooks run automatically via `prek` (Rust-based pre-commit
-framework). Install with `prek install`. Stages:
+19 hooks run automatically via `prek` (Rust-based pre-commit
+framework). Install with `prek install`; a clone that installed the
+hooks before the pre-push stage existed needs it run again. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
-- **pre-commit**: fmt, clippy, check, nextest, architecture,
-  deny, doc, bats (the install script), shellcheck, rumdl, selene,
-  stylua, prettier, htmlhint, stylelint, eslint
+- **pre-commit** (fast): fmt, clippy, bats (the install script, the
+  rumdl version check), shellcheck, rumdl (after checking the local
+  version matches CI's pin), selene, stylua, prettier, htmlhint,
+  stylelint, eslint
+- **pre-push** (full build): nextest (which includes the architecture
+  rules), rustdoc, cargo-deny, Windows clippy (`just clippy-windows`)
 
-There is no **pre-push** stage: the hook that used it walked the
-branch's commit messages, which squash merge discards.
+The suite runs at push rather than per commit, so committing stays
+cheap. Commit messages are not walked at push, since squash merge
+discards them.
 
-The bats hook has a CI twin (`install-script`), so the suite that
-guards that script is actually run rather than merely present.
+Each bats hook has a CI twin (`install-script`, `markdown-lint`), so
+the suite that guards a script is actually run rather than merely
+present.
+
+**Delegated build agents** follow `.agents/agents/thurbox-builder.md`:
+the repository facts, gate and house rules a brief would otherwise
+repeat. Like the skills, the body is agent-neutral and
+`.claude/agents/thurbox-builder.md` is a relative symlink to it, so
+Claude Code offers it as the `thurbox-builder` agent type; brief any
+other coding CLI to read the file first.
+
+**Coordinating multi-PR work.**
+
+- Settle the design first. Before a step's code, write its decision
+  list (features kept or dropped, config files, data model, UI flow)
+  and ask the maintainer all of it in one batch. A decision asked
+  after the code exists means rebuilding it.
+- One concern per pull request, small enough for one agent's turn
+  budget. The release hold (`.github/release-hold`) makes merging a
+  partial step safe.
 
 Shell scripts are linted with **shellcheck** (config in
 `.shellcheckrc`); install it from your package manager (it is not a

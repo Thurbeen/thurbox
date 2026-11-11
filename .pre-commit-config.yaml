@@ -1,10 +1,16 @@
 default_stages: [pre-commit]
-# No `pre-push`: the hook that used it walked the branch's commit messages, and
-# squash merge discards those — the pull request title is the commit that lands
-# on main, and .github/workflows/pr-title.yml is what validates it.
+# Two speeds. A commit runs what is fast and catches most mistakes (format,
+# clippy, the linters). A push runs what needs a full build or the network: the
+# suite, rustdoc, cargo-deny and the Windows cross-check. The suite on every
+# commit made each commit cost minutes; nothing reaches the pull request
+# without passing the push stage, and CI stays the full gate.
+#
+# Commit messages are not walked at push: squash merge discards them, and the
+# pull request title (.github/workflows/pr-title.yml) is the commit that lands.
 default_install_hook_types:
   - commit-msg
   - pre-commit
+  - pre-push
 repos:
   - repo: local
     hooks:
@@ -36,13 +42,19 @@ repos:
         pass_filenames: false
         args: ["--all-targets", "--all-features", "--", "-D", "warnings"]
 
-      - id: cargo-check
-        name: Cargo check
-        entry: cargo check
+      # No `cargo check`: clippy above type-checks the same targets (the reason
+      # CI dropped its check job too).
+
+      # The `Windows (clippy)` CI job, cross-checked from Linux (`just
+      # clippy-windows`): code unused only under cfg(windows) otherwise fails
+      # only after the push.
+      - id: cargo-clippy-windows
+        name: Cargo clippy (Windows target)
+        entry: just clippy-windows
         language: system
         types: [rust]
         pass_filenames: false
-        args: ["--all"]
+        stages: [pre-push]
 
       # git exports its location variables to a hook, and a test that runs git
       # in a scratch repository would act on this one instead. Fleet's tests
@@ -55,13 +67,10 @@ repos:
         types: [rust]
         pass_filenames: false
         args: ["--all"]
+        stages: [pre-push]
 
-      - id: architecture-rules
-        name: Architecture rules
-        entry: cargo test --test architecture_rules
-        language: system
-        types: [rust]
-        pass_filenames: false
+      # No separate architecture-rules hook: tests/architecture_rules.rs is an
+      # ordinary integration test, so the suite above already runs it.
 
       - id: cargo-deny-advisories
         name: Cargo deny advisories
@@ -69,6 +78,7 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-push]
 
       - id: cargo-deny-bans-licenses-sources
         name: Cargo deny bans licenses sources
@@ -76,6 +86,7 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-push]
 
       - id: cargo-doc
         name: Cargo doc
@@ -83,6 +94,7 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+        stages: [pre-push]
 
       - id: bash-install-tests
         name: Bash install script tests
@@ -98,6 +110,23 @@ repos:
         entry: shellcheck
         language: system
         types: [shell]
+
+      # Before the lint itself: an older local rumdl passes markdown that CI's
+      # pinned one fails.
+      - id: rumdl-version
+        name: Markdown linter matches CI
+        entry: scripts/ci/check-rumdl-version.sh
+        language: system
+        files: (\.md|^\.rumdl\.toml|^scripts/ci/check-rumdl-version\..*)$
+        pass_filenames: false
+
+      # CI twin: the `Markdown Lint` job.
+      - id: rumdl-version-tests
+        name: Markdown linter version check tests
+        entry: bats scripts/ci/check-rumdl-version.bats
+        language: system
+        files: ^(scripts/ci/check-rumdl-version\..*|\.github/workflows/ci\.yml)$
+        pass_filenames: false
 
       - id: rumdl-check
         name: Markdown lint check

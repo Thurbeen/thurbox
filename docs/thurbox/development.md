@@ -36,7 +36,15 @@ direnv allow          # auto-enters the shell on `cd` (see .envrc)
 ```
 
 Two tools aren't packaged in nixpkgs yet (`prek`, `rumdl`); the shell prints a
-hint to install them via `scripts/install-dev-tools.sh`.
+hint to install them via `scripts/install-dev-tools.sh`. That script installs
+rumdl at the version CI pins, which `just lint` and the commit hook enforce
+(`scripts/ci/check-rumdl-version.sh`).
+
+`just clippy-windows` (part of `just lint` and the pre-push hook) also needs
+`rustup target add x86_64-pc-windows-gnu` and a MinGW gcc
+(`x86_64-w64-mingw32-gcc`); the install script adds the target and names the
+package for your OS. Without the target (the Nix shell ships none) the recipe
+prints `SKIPPED` and leaves the check to CI's `Windows (clippy)` job.
 
 ### Fallback: no Nix
 
@@ -64,7 +72,8 @@ records version evidence and RMUX platform limits.
 | `just test` | `cargo nextest run --all` |
 | `just test-one NAME` | one test by name (`cargo nextest run -E 'test(NAME)'`) |
 | `just test-scripts` | the four bats suites: `scripts/install.bats`, the pull-request-title checker, `packaging/winget/winget.bats`, `scripts/dev/e2e/windows-vm.bats` (needs `bats`) |
-| `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck + selene, stylua and lua-language-server |
+| `just lint` | fmt-check + clippy + cargo-deny + Windows clippy + rumdl (CI's version) + shellcheck + selene, stylua and lua-language-server |
+| `just clippy-windows` | the `Windows (clippy)` CI job, cross-checked from Linux (`--target x86_64-pc-windows-gnu`) |
 | `just fmt` / `just fmt-lua` | format Rust + website / format the Lua interface |
 | `just lua-api` | regenerate `thurbox.d.lua`, `thurbox.yml` and the selene probe from `src/kernel/lua_api.rs` |
 | `just arch` | architecture-rule + rustdoc checks |
