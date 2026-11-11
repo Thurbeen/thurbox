@@ -11,25 +11,49 @@
 //! - **trust**: how the agent is trusted in its workspace, and how to read
 //!   a trust dialog on its screen, which Fleet never answers.
 //!
-//! | Harness | Program | Hooks | Trust | Resume |
-//! | --- | --- | --- | --- | --- |
-//! | `claude-code`, `claude` | `claude` | one `--settings` with hooks: start, prompt, working, idle | its dialog, read, never answered | `--resume <id>` |
-//! | `codex` | `codex` | `notify`: idle, with the turn's prompts | `-c projects=…` for the session | `codex resume <id>` |
-//! | any other | the harness name | none | none Fleet knows | a fresh start |
+//! - **payload**: the fields of a hook's JSON that `fleet signal` reads.
+//!
+//! A profile is data: one TOML document per harness. Fleet ships the
+//! profiles of Claude Code (`claude`, alias `claude-code`) and Codex
+//! (`codex`); a file under `<config dir>/harnesses/` replaces the bundled
+//! profile of the same name, or adds a harness. Any other harness name is
+//! run as a program, with no hooks, trust or resume Fleet knows
+//! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
 //!
 //! A harness with no prompt hook cannot prove a delivery: its runtime's
 //! answer is all Fleet has.
 
-/// What a profile knows of a harness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Claude,
-    Codex,
-    Other,
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+use serde::Deserialize;
+
+mod bundled;
+
+/// The variable Fleet names a session's harness in at spawn, so that
+/// `fleet signal` reads the payload fields of that harness's profile.
+pub const HARNESS_ENV: &str = "FLEET_HARNESS";
+
+/// The directory under Fleet's config dir that holds the user's profiles.
+pub const USER_DIR: &str = "harnesses";
+
+/// What the agent's hooks report, which decides how far Fleet trusts them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Authority {
+    /// The hooks report working, idle and blocked.
+    Full,
+    /// The hooks report some states (Codex's `notify`: idle and prompts).
+    Partial,
+    /// The hooks report the conversation id only.
+    Session,
+    /// No hooks.
+    None,
 }
 
 /// How a harness is trusted in its workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Trust {
     /// A launch override trusting one directory for the session.
     LaunchOverride,
@@ -37,89 +61,246 @@ pub enum Trust {
     /// reads the agent's dialog to say so.
     Dialog,
     /// Fleet knows none for this harness.
+    #[default]
     Unknown,
 }
 
-/// One harness's profile.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Profile {
-    pub kind: Kind,
-    /// The program the launch argv starts.
-    pub program: String,
+/// The `[launch]` table: what the launch argv adds after the program.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Launch {
+    /// The hooks reporting through `fleet signal`, and any other argument.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Variables the session starts with. The Task's own environment wins.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// The flag naming each other directory the session spans; none when
+    /// the harness takes no such flag.
+    #[serde(default)]
+    pub add_dir: Option<String>,
 }
 
-/// The harnesses with a profile of their own, as `fleet version --json`
-/// lists them. Any other harness name is run as a program, with no hooks,
-/// trust or resume Fleet knows.
-pub const PROFILED: &[&str] = &["claude", "claude-code", "codex"];
+/// The `[resume]` table: the argv that starts the agent again on its
+/// conversation. Each `{program}` and `{conversation}` is replaced, and the
+/// argument `{launch_args}` is the launch argv after its program. Empty: a
+/// resume is a fresh start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resume {
+    #[serde(default)]
+    pub args: Vec<String>,
+}
 
-/// The profile of `harness`.
-pub fn profile(harness: &str) -> Profile {
-    let (kind, program) = match harness {
-        "claude-code" | "claude" => (Kind::Claude, "claude"),
-        "codex" => (Kind::Codex, "codex"),
-        other => (Kind::Other, other),
-    };
-    Profile {
-        kind,
-        program: program.to_string(),
+/// The `[trust]` table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustSpec {
+    #[serde(default)]
+    pub mode: Trust,
+    /// The arguments that trust the session's root at launch; `{root}` is
+    /// replaced with the root, escaped for a double-quoted string.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// The `[payload]` table: the fields of a hook's JSON that `fleet signal`
+/// reads. Each prompt field is a string or a list of strings, and every one
+/// present is a prompt; the first conversation field that is a string is
+/// the conversation. An omitted list is the default one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Payload {
+    #[serde(default = "default_prompt_fields")]
+    pub prompt: Vec<String>,
+    #[serde(default = "default_conversation_fields")]
+    pub conversation: Vec<String>,
+}
+
+fn default_prompt_fields() -> Vec<String> {
+    vec!["prompt".into(), "input-messages".into()]
+}
+
+fn default_conversation_fields() -> Vec<String> {
+    vec!["session_id".into(), "thread-id".into()]
+}
+
+/// The fields a hook is read with when its harness has no profile, or
+/// names none: Claude Code's and Codex's.
+impl Default for Payload {
+    fn default() -> Payload {
+        Payload {
+            prompt: default_prompt_fields(),
+            conversation: default_conversation_fields(),
+        }
     }
 }
 
-/// The command a hook runs: `fleet signal <state>`, never failing the
-/// agent's turn, which a hook's own failure could block.
-fn signal_command(state: &str) -> String {
-    format!("fleet signal {state} 2>/dev/null || true")
+/// One harness's profile: one TOML document.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    pub name: String,
+    /// The program the launch argv starts.
+    pub program: String,
+    /// Other names a Task may give the harness.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    pub authority: Authority,
+    #[serde(default)]
+    pub launch: Launch,
+    #[serde(default)]
+    pub resume: Resume,
+    #[serde(default)]
+    pub trust: TrustSpec,
+    #[serde(default)]
+    pub payload: Payload,
+}
+
+/// Parse one profile.
+pub fn parse(text: &str) -> Result<Profile, String> {
+    let p: Profile = toml::from_str(text).map_err(|e| e.to_string())?;
+    if p.name.trim().is_empty() || p.program.trim().is_empty() {
+        return Err("a profile needs a name and a program".into());
+    }
+    if let Some(bad) = p
+        .resume
+        .args
+        .iter()
+        .find(|a| a.contains("{launch_args}") && *a != "{launch_args}")
+    {
+        return Err(format!(
+            "resume argument {bad:?}: {{launch_args}} stands alone"
+        ));
+    }
+    if p.trust.mode == Trust::LaunchOverride && p.trust.args.is_empty() {
+        return Err("trust mode launch-override needs trust.args".into());
+    }
+    Ok(p)
+}
+
+/// The profile of a harness Fleet has none for: its name is run as a
+/// program, with no hooks, trust or resume Fleet knows.
+pub fn bare(harness: &str) -> Profile {
+    Profile {
+        name: harness.to_string(),
+        program: harness.to_string(),
+        aliases: Vec::new(),
+        authority: Authority::None,
+        launch: Launch::default(),
+        resume: Resume::default(),
+        trust: TrustSpec::default(),
+        payload: Payload::default(),
+    }
+}
+
+/// A set of profiles: the bundled ones, each replaced by a user profile of
+/// the same name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Profiles {
+    list: Vec<Profile>,
+}
+
+impl Profiles {
+    /// The profiles Fleet ships.
+    pub fn bundled() -> Profiles {
+        Profiles {
+            list: bundled::ALL
+                .iter()
+                .map(|text| parse(text).expect("a bundled harness profile parses"))
+                .collect(),
+        }
+    }
+
+    /// These profiles with `user`'s: a user profile replaces the one of the
+    /// same name, the last of several user profiles of one name wins, and a
+    /// user profile is found before a bundled one.
+    pub fn with(self, user: Vec<Profile>) -> Profiles {
+        let mut list: Vec<Profile> = Vec::new();
+        for p in user {
+            list.retain(|q| q.name != p.name);
+            list.push(p);
+        }
+        let shipped: Vec<Profile> = self
+            .list
+            .into_iter()
+            .filter(|b| !list.iter().any(|u| u.name == b.name))
+            .collect();
+        list.extend(shipped);
+        Profiles { list }
+    }
+
+    /// The profile `harness` names, by name and then by alias; a bare one
+    /// for a harness none names.
+    pub fn get(&self, harness: &str) -> Profile {
+        self.list
+            .iter()
+            .find(|p| p.name == harness)
+            .or_else(|| {
+                self.list
+                    .iter()
+                    .find(|p| p.aliases.iter().any(|a| a == harness))
+            })
+            .cloned()
+            .unwrap_or_else(|| bare(harness))
+    }
+
+    /// Every name and alias, in order.
+    pub fn names(&self) -> Vec<String> {
+        self.list
+            .iter()
+            .flat_map(|p| std::iter::once(&p.name).chain(&p.aliases))
+            .cloned()
+            .collect()
+    }
+}
+
+static INSTALLED: OnceLock<Profiles> = OnceLock::new();
+
+/// Make `profiles` the set [`profile`] reads, once per process and before
+/// any profile is read: the CLI installs the bundled profiles with the
+/// user's. `false` when a set was already in force.
+pub fn install(profiles: Profiles) -> bool {
+    INSTALLED.set(profiles).is_ok()
+}
+
+/// The profile of `harness`, from the installed set, else the bundled one.
+pub fn profile(harness: &str) -> Profile {
+    INSTALLED.get_or_init(Profiles::bundled).get(harness)
 }
 
 impl Profile {
     /// Whether the agent's hooks report each prompt it is given, so a
     /// delivery can be proven by the agent rather than by the runtime.
     pub fn prompt_hook(&self) -> bool {
-        matches!(self.kind, Kind::Claude | Kind::Codex)
+        matches!(self.authority, Authority::Full | Authority::Partial)
+            && !self.payload.prompt.is_empty()
     }
 
     pub fn trust(&self) -> Trust {
-        match self.kind {
-            Kind::Claude => Trust::Dialog,
-            Kind::Codex => Trust::LaunchOverride,
-            Kind::Other => Trust::Unknown,
-        }
+        self.trust.mode
     }
 
     /// The arguments that install the hooks reporting through
     /// `fleet signal`.
     pub fn hook_args(&self) -> Vec<String> {
-        match self.kind {
-            Kind::Claude => {
-                let hook = |state: &str| serde_json::json!([{"hooks": [{"type": "command", "command": signal_command(state)}]}]);
-                // Only a permission prompt needs a person: Claude Code also
-                // notifies after 60 s of input idle (`idle_prompt`), which a
-                // matcher-less hook would report as attention.
-                let attention = serde_json::json!([{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": signal_command("blocked")}]}]);
-                let settings = serde_json::json!({"hooks": {
-                    "SessionStart": hook("idle"),
-                    "UserPromptSubmit": hook("prompt"),
-                    "PreToolUse": hook("working"),
-                    "Notification": attention,
-                    "Stop": hook("idle"),
-                }});
-                vec!["--settings".into(), settings.to_string()]
-            }
-            // Codex runs `notify` at each turn's end with the turn as JSON,
-            // its prompts included, as the last argument.
-            Kind::Codex => vec!["-c".into(), r#"notify=["fleet","signal","idle"]"#.into()],
-            Kind::Other => Vec::new(),
-        }
+        self.launch.args.clone()
     }
 
     /// The arguments that trust `root` for this session, when the harness
     /// takes one at launch.
     pub fn trust_args(&self, root: &str) -> Result<Vec<String>, String> {
-        match self.kind {
-            Kind::Codex => Ok(vec!["-c".into(), codex_override(root)?]),
-            Kind::Claude | Kind::Other => Ok(Vec::new()),
+        if self.trust.mode != Trust::LaunchOverride {
+            return Ok(Vec::new());
         }
+        let escaped = escape_root(root)
+            .ok_or_else(|| format!("cannot name {root:?} in a {} trust override", self.name))?;
+        Ok(self
+            .trust
+            .args
+            .iter()
+            .map(|a| a.replace("{root}", &escaped))
+            .collect())
     }
 
     /// The whole argv that starts the agent: the program, its hooks, the
@@ -135,9 +316,9 @@ impl Profile {
         if let Some(root) = trust_root {
             argv.extend(self.trust_args(root)?);
         }
-        if self.kind != Kind::Other {
+        if let Some(flag) = &self.launch.add_dir {
             for d in extra_dirs {
-                argv.extend(["--add-dir".to_string(), d.clone()]);
+                argv.extend([flag.clone(), d.clone()]);
             }
         }
         Ok(argv)
@@ -150,33 +331,38 @@ impl Profile {
         let (Some(id), Some((program, rest))) = (conversation, launch.split_first()) else {
             return launch.to_vec();
         };
-        let mut argv = vec![program.clone()];
-        match self.kind {
-            Kind::Claude => {
+        if self.resume.args.is_empty() {
+            return launch.to_vec();
+        }
+        let mut argv = Vec::new();
+        for a in &self.resume.args {
+            if a == "{launch_args}" {
                 argv.extend(rest.iter().cloned());
-                argv.extend(["--resume".to_string(), id.to_string()]);
+            } else {
+                argv.push(
+                    a.replace("{program}", program)
+                        .replace("{conversation}", id),
+                );
             }
-            Kind::Codex => {
-                argv.extend(["resume".to_string(), id.to_string()]);
-                argv.extend(rest.iter().cloned());
-            }
-            Kind::Other => return launch.to_vec(),
         }
         argv
     }
 }
 
-/// Codex's launch override trusting `root`. One `projects` key with a TOML
-/// inline table: Codex splits a dotted `-c` key on every `.`, and a path has
-/// them.
-pub fn codex_override(root: &str) -> Result<String, String> {
+/// `root` escaped for a double-quoted TOML or JSON string; `None` when it
+/// holds a control character, which no such string may.
+fn escape_root(root: &str) -> Option<String> {
     if root.chars().any(char::is_control) {
-        return Err(format!("cannot name {root:?} in a Codex trust override"));
+        return None;
     }
-    let escaped = root.replace('\\', "\\\\").replace('"', "\\\"");
-    Ok(format!(
-        "projects={{\"{escaped}\"={{trust_level=\"trusted\"}}}}"
-    ))
+    Some(root.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Codex's launch override trusting `root`, as its bundled profile's
+/// `[trust]` gives it.
+pub fn codex_override(root: &str) -> Result<String, String> {
+    let args = Profiles::bundled().get("codex").trust_args(root)?;
+    Ok(args.last().cloned().unwrap_or_default())
 }
 
 /// Claude Code's workspace-trust dialog on a plain screen `output`, current
@@ -341,5 +527,68 @@ mod tests {
             "Trust this folder?\n› 1. Trust and continue"
         ));
         assert!(!codex_trust_dialog("› Ask Codex to do anything"));
+    }
+
+    #[test]
+    fn each_bundled_profile_parses_and_lists_its_names() {
+        let all = Profiles::bundled();
+        assert_eq!(all.names(), ["claude", "claude-code", "codex"]);
+        assert_eq!(all.get("claude-code").name, "claude");
+        assert_eq!(all.get("aider"), bare("aider"));
+        assert!(profile("claude").prompt_hook());
+        assert_eq!(profile("codex").trust(), Trust::LaunchOverride);
+        assert_eq!(profile("claude").trust(), Trust::Dialog);
+        assert_eq!(profile("aider").trust(), Trust::Unknown);
+    }
+
+    #[test]
+    fn a_user_profile_replaces_the_bundled_one_of_its_name_or_adds_a_harness() {
+        let stub = parse(
+            r#"
+name = "stub"
+program = "stub-agent"
+authority = "full"
+[launch]
+args = ["--hooks"]
+env = { STUB_HOOKS = "on" }
+[resume]
+args = ["{program}", "--session={conversation}", "{launch_args}"]
+[payload]
+conversation = ["sessionID"]
+"#,
+        )
+        .unwrap();
+        let codex =
+            parse("name = \"codex\"\nprogram = \"my-codex\"\nauthority = \"none\"\n").unwrap();
+        let all = Profiles::bundled().with(vec![stub, codex]);
+        let stub = all.get("stub");
+        let launch = stub.launch(&["/x".into()], Some("/w")).unwrap();
+        assert_eq!(launch, ["stub-agent", "--hooks"]);
+        assert_eq!(stub.launch.env["STUB_HOOKS"], "on");
+        assert_eq!(
+            stub.resume(&launch, Some("s1")),
+            ["stub-agent", "--session=s1", "--hooks"]
+        );
+        assert_eq!(stub.payload.prompt, Payload::default().prompt);
+        assert_eq!(stub.payload.conversation, ["sessionID"]);
+        let codex = all.get("codex");
+        assert_eq!(codex.program, "my-codex");
+        assert!(!codex.prompt_hook());
+        assert_eq!(codex.resume(&["my-codex".into()], Some("t")), ["my-codex"]);
+        assert_eq!(all.get("claude").program, "claude");
+    }
+
+    #[test]
+    fn a_profile_with_an_unknown_table_or_a_misplaced_launch_args_is_refused() {
+        let base = "name = \"x\"\nprogram = \"x\"\nauthority = \"full\"\n";
+        assert!(parse(base).is_ok());
+        assert!(parse(&format!("{base}[screen]\nmanifest = \"x\"\n")).is_err());
+        assert!(parse(&format!("{base}[resume]\nargs = [\"a{{launch_args}}\"]\n")).is_err());
+        assert!(parse(&format!("{base}[trust]\nmode = \"launch-override\"\n")).is_err());
+        assert!(parse("name = \"\"\nprogram = \"x\"\nauthority = \"full\"\n").is_err());
+        assert!(
+            parse("name = \"x\"\nprogram = \"x\"\n").is_err(),
+            "authority is required"
+        );
     }
 }

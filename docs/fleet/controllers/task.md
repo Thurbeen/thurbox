@@ -344,7 +344,10 @@ nothing when the variable is unset:
 | `blocked` | none | none | the agent waits for a person: not idle |
 
 The hook's JSON (stdin, or the last argument for Codex's `notify`) gives
-the prompt and the conversation id (`session_id`, `thread-id`). The
+the prompt and the conversation id. The harness profile's `[payload]`
+fields name them; `fleet signal` finds the profile by `--harness`, else by
+`FLEET_HARNESS`, which Fleet sets at spawn
+([signal contract](../signal-contract.md)). The
 `Activity` probe reads the file through the port and answers both the
 activity and the whole report. A file never written is a report of nothing;
 a file that cannot be read is Unknown. A session on another host gets no
@@ -368,13 +371,16 @@ controller plans the send it records the text's digest in
   delivery. It is never sent again, whatever the runtime's journal says.
 - A proven key's digest is dropped; its receipt stands.
 
-A harness with no prompt hook (any but Claude Code and Codex) keeps the
-runtime's answer, and its journal for a lost one.
+A harness with no prompt hook keeps the runtime's answer, and its journal
+for a lost one. A profile has a prompt hook when its `authority` is `full`
+or `partial` and its `[payload]` names a prompt field: of the bundled
+profiles, Claude Code's and Codex's.
 
 ### Harness profiles
 
 [Harness profiles](../../../crates/fleet-api/src/harness.rs) own how each
-agent is launched, resumed and trusted, so a runtime only runs an argv:
+agent is launched, resumed and trusted, so a runtime only runs an argv.
+A profile is data: one TOML document per harness. Fleet ships these:
 
 | Harness | Launch argv | Resume argv | Trust |
 | --- | --- | --- | --- |
@@ -393,6 +399,50 @@ welcome screen, with Codex in the foreground, is ready and trusted (its
 launch override trusts the workspace).
 
 The `exec` runtime kind and the fake runtime run the profile's argv.
+
+#### Profile format
+
+A file `<config dir>/harnesses/<any name>.toml` replaces the bundled
+profile of the same `name`, or adds a harness. The
+[bundled profiles](../../../crates/fleet-api/src/harness/bundled.rs) are
+complete examples.
+
+```toml
+name = "stub"                  # the harness name a Task gives
+program = "stub-agent"         # the program the launch argv starts
+aliases = []                   # other names for the same harness
+authority = "full"             # full | partial | session | none
+
+[launch]
+args = []                      # after the program: the hooks, and more
+env = { STUB_HOOKS = "on" }    # under the Task's own environment
+add_dir = "--add-dir"          # one per other directory; omit for none
+
+[resume]                       # omit for a fresh start on each revive
+args = ["{program}", "--resume", "{conversation}", "{launch_args}"]
+
+[trust]
+mode = "unknown"               # launch-override | dialog | unknown
+args = []                      # launch-override only; {root} is replaced
+
+[payload]                      # read by `fleet signal`
+prompt = ["prompt", "input-messages"]
+conversation = ["session_id", "thread-id"]
+```
+
+- `authority` says what the hooks report: `full` reports working, idle and
+  blocked; `partial` reports some states; `session` reports the
+  conversation only; `none` has no hooks.
+- In `[resume]`, `{program}` is the launched program and `{conversation}`
+  the reported conversation. The argument `{launch_args}`, alone, is every
+  launch argument after the program.
+- In `[trust]`, `{root}` is the trust root, escaped for a double-quoted
+  string. A root with a control character fails the spawn.
+- An omitted `[payload]` list is the default one, shown above.
+- An unknown key is an error. Each command that reads the profiles stops,
+  and names the file.
+- A harness that no profile names runs its name as a program, with no
+  hooks, trust or resume.
 
 ### Deletion protocol
 

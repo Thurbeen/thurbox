@@ -245,9 +245,17 @@ workspace section: a file with `[workspaces]` is refused at load.
 
 Every session Fleet starts gets `FLEET_SIGNAL_FILE` in its environment: the
 file under `<data dir>/signals` its hooks append to through `fleet signal`
-([signals](controllers/task.md#signals)). `fleet signal` reads nothing else,
-needs no config, and does nothing without the variable, so a hook installed
-for every session of a harness is harmless outside Fleet.
+([signals](controllers/task.md#signals)), and `FLEET_HARNESS`, the
+session's harness. `fleet signal` needs no config, and does nothing without
+`FLEET_SIGNAL_FILE`, so a hook installed for every session of a harness is
+harmless outside Fleet. It reads the config dir only for the user profile of
+the harness it is named ([signal contract](signal-contract.md)).
+
+The `harnesses/` directory beside the config file holds the user's
+[harness profiles](controllers/task.md#harness-profiles), one `*.toml` file
+each. Every command reads them at start, and a file that does not parse
+stops the command with its path. A user profile replaces the bundled
+profile of the same `name`, or adds a harness.
 
 Runtime-specific fields apply only to that runtime. Keep the store and native
 configuration user-private; they contain literal manifests and private launch

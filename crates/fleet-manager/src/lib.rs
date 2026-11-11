@@ -1902,14 +1902,24 @@ impl Manager<'_> {
                 }
             }
         }
-        // The file the agent's hooks report to, on the host it runs on.
+        // The harness profile's variables, under the Task's own; then the
+        // file the agent's hooks report to, on the host it runs on, and the
+        // harness whose profile reads their payload.
         for effect in &mut plan.effects {
-            if let Some(spawn) = effect.action.launch_mut()
-                && let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key))
-            {
+            let Some(spawn) = effect.action.launch_mut() else {
+                continue;
+            };
+            for (k, v) in fleet_api::harness::profile(&spawn.harness).launch.env {
+                spawn.env.entry(k).or_insert(v);
+            }
+            if let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key)) {
                 spawn
                     .env
                     .insert(fleet_api::signal::SIGNAL_FILE_ENV.to_string(), file);
+                spawn.env.insert(
+                    fleet_api::harness::HARNESS_ENV.to_string(),
+                    spawn.harness.clone(),
+                );
             }
         }
         self.perform_plan(obj, plan, lease, ttl, report)

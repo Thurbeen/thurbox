@@ -225,6 +225,10 @@ enum Command {
     /// outside a session Fleet started.
     Signal {
         state: SignalState,
+        /// The harness whose profile names the payload's fields (else
+        /// FLEET_HARNESS, which Fleet sets at spawn).
+        #[arg(long)]
+        harness: Option<String>,
         /// The hook's JSON, when it passes it as an argument; otherwise it
         /// is read from stdin when stdin is not a terminal.
         payload: Option<String>,
@@ -418,10 +422,20 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), Failure> {
     if let Command::Version { json } = &cli.command {
-        return version(*json);
+        return version(*json, cli.config.clone());
     }
-    if let Command::Signal { state, payload } = &cli.command {
-        return cmd_signal(*state, payload.as_deref());
+    if let Command::Signal {
+        state,
+        harness,
+        payload,
+    } = &cli.command
+    {
+        return cmd_signal(
+            *state,
+            harness.clone(),
+            payload.as_deref(),
+            cli.config.clone(),
+        );
     }
     if let Command::TermBridge { argv } = &cli.command {
         return fleet_runtime::bridge::serve(argv, std::io::stdin(), std::io::stdout())
@@ -465,6 +479,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         None => Config::empty(),
     };
+    let user = user_profiles(config_path.as_deref()).map_err(fail)?;
+    fleet_api::harness::install(fleet_api::harness::Profiles::bundled().with(user));
     if let Command::Runtime {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
@@ -755,9 +771,48 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
 }
 
+/// The user's harness profiles: each `*.toml` under the `harnesses`
+/// directory beside the config file, in file-name order. A missing
+/// directory is none.
+fn user_profiles(config: Option<&Path>) -> Result<Vec<fleet_api::harness::Profile>, String> {
+    let Some(dir) = config
+        .and_then(Path::parent)
+        .map(|d| d.join(fleet_api::harness::USER_DIR))
+    else {
+        return Ok(Vec::new());
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("harness profiles {}: {e}", dir.display())),
+    };
+    let mut paths = entries
+        .map(|e| e.map(|e| e.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("harness profiles {}: {e}", dir.display()))?;
+    paths.retain(|p| p.extension().is_some_and(|x| x == "toml"));
+    paths.sort();
+    paths
+        .iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(p)
+                .map_err(|e| format!("harness profile {}: {e}", p.display()))?;
+            fleet_api::harness::parse(&text)
+                .map_err(|e| format!("harness profile {}: {e}", p.display()))
+        })
+        .collect()
+}
+
 /// `fleet signal`: one line appended to the session's signal file. It needs
-/// no config and no store, so a hook costs one short process.
-fn cmd_signal(state: SignalState, payload: Option<&str>) -> Result<(), Failure> {
+/// no store, and reads the config dir only for a named harness's user
+/// profile, so a hook costs one short process.
+fn cmd_signal(
+    state: SignalState,
+    harness: Option<String>,
+    payload: Option<&str>,
+    config: Option<PathBuf>,
+) -> Result<(), Failure> {
+    use fleet_api::harness::{HARNESS_ENV, Payload, Profiles};
     use fleet_api::signal::{SIGNAL_FILE_ENV, Signal, State};
     use std::io::{IsTerminal, Read};
     let Some(file) = std::env::var_os(SIGNAL_FILE_ENV).filter(|f| !f.is_empty()) else {
@@ -783,7 +838,16 @@ fn cmd_signal(state: SignalState, payload: Option<&str>) -> Result<(), Failure> 
     };
     let payload = serde_json::from_str::<serde_json::Value>(&text).ok();
     let now = fleet_api::store::Clock::now(&SystemClock);
-    let signal = Signal::from_hook(now, state, payload.as_ref());
+    // A user profile that cannot be read never fails the agent's turn: the
+    // bundled profile, or the default fields, read the payload.
+    let fields = harness
+        .or_else(|| std::env::var(HARNESS_ENV).ok())
+        .filter(|h| !h.is_empty())
+        .map_or_else(Payload::default, |h| {
+            let user = user_profiles(config::discover(config).as_deref()).unwrap_or_default();
+            Profiles::bundled().with(user).get(&h).payload
+        });
+    let signal = Signal::from_hook_with(now, state, payload.as_ref(), &fields);
     fleet_runtime::signals::append(std::path::Path::new(&file), &signal)
         .map_err(|e| fail(format!("{}: {e}", Path::new(&file).display())))
 }
@@ -1119,8 +1183,12 @@ fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure
     Ok(())
 }
 
-fn version(json: bool) -> Result<(), Failure> {
+fn version(json: bool, config: Option<PathBuf>) -> Result<(), Failure> {
     if json {
+        // The user's profiles too, so a view offers their harnesses; one
+        // that does not parse is left out here and refused by every
+        // command that runs a Task.
+        let user = user_profiles(config::discover(config).as_deref()).unwrap_or_default();
         print_json(&json!({
             "version": VERSION,
             "apiVersions": [API_VERSION],
@@ -1128,7 +1196,7 @@ fn version(json: bool) -> Result<(), Failure> {
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["exec", "fake"],
-            "harnesses": fleet_api::harness::PROFILED,
+            "harnesses": fleet_api::harness::Profiles::bundled().with(user).names(),
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,

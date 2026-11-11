@@ -32,7 +32,7 @@
 [crates.fleet-api]
 role = "pure"
 deps = []
-external = ["serde", "serde_json", "thiserror"]
+external = ["serde", "serde_json", "thiserror", "toml"]
 probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-telemetry"]
 
 [crates.fleet-controllers]

@@ -12,6 +12,7 @@ reports its status through its harness profiles. thurbox no longer reads
   owns the command, its arguments, the resume argv and the status hooks:
   [Fleet's Task controller](../fleet/controllers/task.md#harness-profiles).
 - **Adding an agent.** A new agent is a new harness profile in Fleet, not a
-  change to thurbox.
+  change to thurbox: a TOML file under `harnesses/` in Fleet's config dir
+  ([profile format](../fleet/controllers/task.md#profile-format)).
 
 An `agents.toml` left from thurbox 2.x is not read, and can be deleted.
