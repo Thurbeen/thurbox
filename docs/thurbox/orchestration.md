@@ -29,13 +29,23 @@ The verbs:
 | follow every change | `fleet watch --json` |
 | delete one | `fleet delete task <name>` |
 
-A session the interface creates on this machine names its repository as a
-`repositories` workspace, so Fleet makes it a git worktree of its own. One on
-another Fleet host names a `dir` workspace and runs in that directory as it
-is: Fleet makes worktrees on its own machine only. A directory that is no git
-repository, such as the installed interface, also runs as it is. That needs the
-repository's URL in Fleet's repository map (`[workspaces.repositories]`). A
-Task you write with a `dir` workspace runs in that directory as it is.
+A Task's workspace is a list of URLs, and the runtime of its host makes them
+([runtime workspaces](../runtime/README.md#workspaces)). The new-session
+flow's workspace step chooses the URL for a git repository on this machine:
+
+| Choice | URL |
+| --- | --- |
+| New worktree, new branch from the default branch | `git+file:///path/to/repo?branch=<session>#<default branch>` |
+| New worktree, new branch from another base | `git+file:///path/to/repo?branch=<session>#<base>` |
+| Worktree on an existing branch | `git+file:///path/to/repo?branch=<branch>` |
+| No worktree | `file:///path/to/repo` |
+
+No mapping is needed: the URL is the whole request. A directory that is no
+git repository, such as the installed interface, skips the step and gets a
+`file://` URL. So does a session on another Fleet host, because the flow
+reads branches on this machine only. A Task you write yourself can name any
+URL its host's runtime lists, several of them too: the first is where the
+agent starts.
 
 ## Read the state, do not infer it
 

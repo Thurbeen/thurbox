@@ -232,7 +232,8 @@ alias and re-export laundering, and test-only edges.
   `stderr` (OpenSSH's advisory kept out of a reported error), `discovery`
   (listings, path classification, child-repo scans), `newrepo` (a directory for
   a repository that does not exist yet) and `diff` (diffs and worktree stats).
-  Fleet creates, syncs and removes worktrees. `git::*` is still one flat
+  The runtime creates, syncs and removes worktrees, from the workspace URLs a
+  Task names. `git::*` is still one flat
   surface; no caller names a submodule.
 - **`coordinator/`** — `main`'s own body. `App` and its state stay in
   `main.rs`; its behaviour is here, grouped by what it is for: the loop and its

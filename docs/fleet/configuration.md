@@ -658,7 +658,7 @@ fails has the error status.
 | Span | `fleet.outcome` values |
 | --- | --- |
 | `reconcile KIND` | `changed`, `unchanged`, `conflict`, `error`, `leaseLost` |
-| `effect …` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `revived`, `paused`, `resumed`, `markedReady`, `moved`, `failed`, `unmapped`, `trustUnmapped`, `unknown` |
+| `effect …` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `revived`, `paused`, `resumed`, `markedReady`, `moved`, `failed`, `trustUnmapped`, `unknown` |
 | `forge poll` | `known`, `absent`, `timeout`, `incomplete`, `throttled`, `unreadable`, `notLoggedIn`, `refused`, `unavailable` |
 
 The `fleet.controller` values are `TaskController`, `ForgeController`,

@@ -17,7 +17,7 @@ host bands, repository separators and indented session rows.
 - [Before you start](#before-you-start)
 - [1. Launch it](#1-launch-it)
 - [2. Add a repository](#2-add-a-repository)
-- [3. Fleet gives it a worktree](#3-fleet-gives-it-a-worktree)
+- [3. Choose its worktree](#3-choose-its-worktree)
 - [4. Name it and pick an agent](#4-name-it-and-pick-an-agent)
 - [5. You have a session](#5-you-have-a-session)
 - [6. The second session is faster](#6-the-second-session-is-faster)
@@ -118,21 +118,22 @@ search, so the list's own keys are ones you cannot type:
 | `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
 | `Tab` / `Shift+Tab` | move between the search and the path field |
 
-## 3. Fleet gives it a worktree
+## 3. Choose its worktree
 
-There is no worktree step. Fleet makes each session on this machine a **git
-worktree of its own**, so the agent never works in your checkout. A session on
-another Fleet host runs in the repository directory there, as it is: Fleet
-makes worktrees on its own machine only. Fleet makes worktrees of the
-repositories in its map only, so map the repository once in Fleet's config:
+For a git repository on this machine, the workspace step asks where the agent
+works:
 
-```toml
-[workspaces.repositories]
-"https://github.com/me/api-server" = "/home/me/code/api-server"
-```
+| Choice | What the session gets |
+|---|---|
+| **New worktree, new branch from** the default branch | a **git worktree of its own**, on a new branch named after the session. This is the default |
+| New worktree, new branch from… another base | the same, branched from the base you pick |
+| Worktree on an existing branch… | a worktree with that branch checked out |
+| No worktree | the repository directory itself |
 
-A repository Fleet does not map is refused, and the refusal names the line to
-add.
+With a worktree, the agent never works in your checkout. No configuration is
+needed: the runtime makes the worktree from the repository's path. A directory
+that is no git repository skips this step and runs as it is, and so does a
+session on another Fleet host.
 
 ## 4. Name it and pick an agent
 
@@ -147,8 +148,8 @@ Then the agent. This is the list of harnesses Fleet offers (`fleet version
 
 ![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp, shell](../../media/tutorial/10-agent-picker.png)
 
-`Enter` creates the session: a Fleet Task, which Fleet starts in its own
-worktree with the agent running inside it.
+`Enter` creates the session: a Fleet Task, which Fleet starts in the
+workspace you chose with the agent running inside it.
 
 ## 5. You have a session
 
@@ -230,7 +231,7 @@ fleet get task docs                        # one Task, its spec and status
 echo '{"apiVersion":"fleet/v1alpha1","kind":"Task",
   "metadata":{"name":"docs","labels":{"thurbox.dev/name":"docs"}},
   "spec":{"harness":"claude-code","host":"local",
-          "workspace":{"dir":"/home/me/code/web-app"},"dispatch":true}}' \
+          "workspace":["file:///home/me/code/web-app"],"dispatch":true}}' \
   | fleet apply --create-only -f -
 
 # Talk to one

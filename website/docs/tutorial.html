@@ -160,19 +160,20 @@ extraCss: ['tutorial.css']
 </table>
 
 <h2 id="worktree">
-  3. It gets a worktree of its own
+  3. Choose its worktree
   <a href="#worktree" class="heading-anchor">#</a>
 </h2>
 <p>
-  There is no worktree step: Fleet makes each session on this machine a git worktree of the
-  repository you picked. A session on another Fleet host runs in the repository directory there,
-  as it is. Fleet makes worktrees of mapped repositories only, so map the repository once in
-  Fleet's config:
+  For a git repository on this machine, the workspace step asks where the agent works. The
+  default, <strong>New worktree, new branch from</strong> the default branch, gives the session a
+  git worktree of its own on a branch named after the session, so the agent never works in your
+  checkout. The other choices start the new branch from another base, check out an existing branch
+  in a worktree, or run in the directory itself with no worktree. No configuration is needed:
+  the runtime makes the worktree from the repository's path.
 </p>
-<pre><code>[workspaces.repositories]
-"https://github.com/you/app" = "/home/you/src/app"</code></pre>
 <p>
-  An unmapped repository is refused with the line to add.
+  A directory that is no git repository skips this step and runs as it is, and so does a session
+  on another Fleet host.
 </p>
 
 <h2 id="name-and-agent">
@@ -354,7 +355,7 @@ fleet get task docs                        # one Task, its spec and status
 echo '{"apiVersion":"fleet/v1alpha1","kind":"Task",
   "metadata":{"name":"docs","labels":{"thurbox.dev/name":"docs"}},
   "spec":{"harness":"claude-code","host":"local",
-          "workspace":{"dir":"/home/me/code/web-app"},"dispatch":true}}' \
+          "workspace":["file:///home/me/code/web-app"],"dispatch":true}}' \
   | fleet apply --create-only -f -
 
 # Talk to one
