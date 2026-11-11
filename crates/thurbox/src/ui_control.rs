@@ -302,14 +302,40 @@ mod unix {
         if socket_fits(records) {
             return records.to_path_buf();
         }
-        use sha2::Digest;
-        let digest = sha2::Sha256::digest(records.as_os_str().as_encoded_bytes());
-        let tag: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-        let name = format!("thurbox-ui-{uid}-{tag}");
+        let name = fallback_name(records, uid);
         runtime
             .map(|base| base.join(&name))
             .filter(|dir| socket_fits(dir))
             .unwrap_or_else(|| Path::new("/tmp").join(name))
+    }
+
+    /// The name of the private directory a records directory too deep to
+    /// bind puts its sockets in: the user and a digest of the records path.
+    fn fallback_name(records: &Path, uid: u32) -> String {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(records.as_os_str().as_encoded_bytes());
+        let tag: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+        format!("thurbox-ui-{uid}-{tag}")
+    }
+
+    /// Whether `endpoint` is the socket the interface `id` of `records`
+    /// would bind: `<id>.sock` beside the records, or in a directory named
+    /// for them ([`fallback_name`]) that this user owns, mode 0700. Where
+    /// that directory sits is not checked: the interface chose it from its
+    /// own `XDG_RUNTIME_DIR`, which a reader started elsewhere need not share.
+    pub(super) fn endpoint_is_ours(records: &Path, endpoint: &Path, id: &str, uid: u32) -> bool {
+        if endpoint.file_name() != Some(std::ffi::OsStr::new(&format!("{id}.sock"))) {
+            return false;
+        }
+        let Some(dir) = endpoint.parent() else {
+            return false;
+        };
+        if dir == records {
+            return true;
+        }
+        dir.file_name() == Some(std::ffi::OsStr::new(&fallback_name(records, uid)))
+            && fs::symlink_metadata(dir)
+                .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o077 == 0)
     }
 
     fn socket_directory() -> Result<PathBuf, String> {
@@ -383,6 +409,43 @@ mod unix {
         let long_runtime = PathBuf::from(format!("/{}", "r".repeat(90)));
         assert!(socket_dir_for(&deep, Some(&long_runtime), 1000).starts_with("/tmp"));
         assert!(socket_dir_for(&deep, None, 1000).starts_with("/tmp"));
+    }
+
+    /// A record whose socket an interface placed under another runtime
+    /// directory than this reader's (the TUI had `XDG_RUNTIME_DIR`, the CLI
+    /// not) is still that interface's: the directory's name, owner and mode
+    /// say so. A directory with another name, or one others can read, is not.
+    #[cfg(test)]
+    #[test]
+    fn a_socket_placed_under_another_runtime_dir_is_still_ours() {
+        use std::os::unix::fs::PermissionsExt;
+        let uid = unsafe { libc::geteuid() };
+        let records = PathBuf::from(format!("/home/u/code/{}/ui-control", "x".repeat(100)));
+        let id = "6f1c2c1e-3a1e-4b7a-9d2e-0c5b1f0e9a11";
+        let base = tempfile::tempdir().unwrap();
+        let placed = socket_dir_for(&records, Some(base.path()), uid);
+        assert!(placed.starts_with(base.path()));
+        fs::DirBuilder::new().mode(0o700).create(&placed).unwrap();
+        let endpoint = placed.join(format!("{id}.sock"));
+        assert!(endpoint_is_ours(&records, &endpoint, id, uid));
+
+        let other = base.path().join("thurbox-ui-somebody-else");
+        fs::DirBuilder::new().mode(0o700).create(&other).unwrap();
+        assert!(!endpoint_is_ours(
+            &records,
+            &other.join(format!("{id}.sock")),
+            id,
+            uid
+        ));
+        assert!(!endpoint_is_ours(
+            &records,
+            &placed.join("another.sock"),
+            id,
+            uid
+        ));
+
+        fs::set_permissions(&placed, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!endpoint_is_ours(&records, &endpoint, id, uid));
     }
 
     #[cfg(test)]
@@ -607,7 +670,7 @@ mod unix {
 
     pub fn instances() -> Result<Vec<Instance>, String> {
         let dir = secure_directory()?;
-        let sockets = socket_directory()?;
+        let uid = unsafe { libc::geteuid() };
         let mut out = Vec::new();
         let entries: Vec<_> = fs::read_dir(&dir)
             .map_err(|e| e.to_string())?
@@ -636,9 +699,15 @@ mod unix {
             };
             if uuid::Uuid::parse_str(&instance.id).is_err()
                 || path != dir.join(format!("{}.json", instance.id))
-                || instance.endpoint != sockets.join(format!("{}.sock", instance.id))
             {
                 let _ = fs::remove_file(&path);
+                continue;
+            }
+            // A socket that is not this interface's is not trusted, but the
+            // record is kept: a reader in another environment may only be
+            // unable to tell, and deleting it would hide a live interface
+            // until it restarts.
+            if !endpoint_is_ours(&dir, &instance.endpoint, &instance.id, uid) {
                 continue;
             }
             if send(&instance, &Request::Ping).is_ok() {

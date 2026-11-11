@@ -180,8 +180,10 @@ end
 --- Insert a repo's existing worktrees as child rows directly under it.
 ---
 --- `expanded` is the repo path whose worktrees are showing, and `published`
---- is `thurbox.worktrees` — used only when it answers for that same repo,
---- so a stale answer for the previous one never draws under the current.
+--- is `{ repo, list }`, the expanded repository's `thurbox.repo_branches`
+--- read with its `worktrees` as `list` — used only when it answers for that
+--- same repo, so a stale answer for the previous one never draws under the
+--- current.
 ---
 --- The children are synthetic rows rather than bookmarks: they carry `branch`
 --- and a `worktree` marker, and `path` is git's own path for the checkout,
@@ -215,8 +217,11 @@ function repo_picker.with_worktrees(entries, expanded, published)
 end
 
 --- Split the chosen repositories the way v1's `partition_selected_repos` does:
---- the ones taking a worktree, then the ones attached as they are.
+--- the ones taking a worktree, then the ones attached as they are. `selected`
+--- and `worktree` may be left out, as an edited pane written before either
+--- existed leaves them: nothing chosen, and nothing taking a worktree.
 function repo_picker.chosen(published, selected, worktree)
+  selected, worktree = selected or {}, worktree or {}
   local worktrees, plain = {}, {}
   for _, row in ipairs(published or {}) do
     if not row.is_parent and selected[row.path] then

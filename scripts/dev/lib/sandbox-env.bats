@@ -81,5 +81,17 @@ teardown() {
   tbx_sandbox_fleet
   [ "$(stat -c %i "$ROOT/fleet/config.toml")" != "$before_fleet" ]
   [ "$(stat -c %i "$ROOT/fleet/runtime-mux.toml")" != "$before_mux" ]
-  run ! ls "$ROOT/fleet/"*.tmp
+  run ! ls "$ROOT/fleet/"*.toml.*
+}
+
+@test "two launches writing the configs at once both finish" {
+  mkdir -p "$ROOT/fleet"
+  for _ in 1 2 3 4 5 6 7 8; do
+    ( tbx_sandbox_fleet ) & a=$!
+    ( tbx_sandbox_fleet ) & b=$!
+    wait "$a"
+    wait "$b"
+  done
+  grep -qx '\[hosts.local\]' "$ROOT/fleet/config.toml"
+  run ! ls "$ROOT/fleet/"*.toml.*
 }

@@ -545,6 +545,18 @@ pub fn row_of(task: &Value) -> SessionRow {
     let cwd = text(&status["workspace"]["dirs"][0])
         .or_else(|| spec["workspace"][0].as_str().and_then(local_dir))
         .map(PathBuf::from);
+    // Every directory the session spans, in order: the runtime's answer, or
+    // before it, the session's own directory.
+    let member_dirs: Vec<PathBuf> = status["workspace"]["dirs"]
+        .as_array()
+        .map(|dirs| {
+            dirs.iter()
+                .filter_map(Value::as_str)
+                .map(PathBuf::from)
+                .collect()
+        })
+        .filter(|dirs: &Vec<PathBuf>| !dirs.is_empty())
+        .unwrap_or_else(|| cwd.iter().cloned().collect());
     let session_state = status["sessionState"].as_str();
     let repo = repo_name(&cwd, None);
     SessionRow {
@@ -566,7 +578,7 @@ pub fn row_of(task: &Value) -> SessionRow {
         },
         repos: repo.iter().cloned().collect(),
         repo,
-        member_dirs: cwd.iter().cloned().collect(),
+        member_dirs,
         cwd,
         branch: None,
         base_branch: None,
@@ -593,6 +605,25 @@ pub fn row_of(task: &Value) -> SessionRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session over several repositories spans every directory the runtime
+    /// made, in order: the editor (`Ctrl+O`) opens them all, not the first.
+    #[test]
+    fn a_row_spans_every_directory_of_its_workspace() {
+        let task = serde_json::json!({
+            "metadata": {"name": "pair"},
+            "spec": {"harness": "claude", "host": "local", "workspace": [
+                "git+file:///src/a?branch=pair", "git+file:///src/b?branch=pair"
+            ]},
+            "status": {"workspace": {"key": "k", "host": "local", "dirs": ["/w/k/a", "/w/k/b"]}},
+        });
+        let row = row_of(&task);
+        assert_eq!(row.cwd, Some(PathBuf::from("/w/k/a")));
+        assert_eq!(
+            row.member_dirs,
+            vec![PathBuf::from("/w/k/a"), PathBuf::from("/w/k/b")]
+        );
+    }
 
     /// The agents a session can run are the harnesses Fleet has profiles
     /// for, read from `fleet version --json`: thurbox keeps no list of its own.

@@ -147,9 +147,11 @@ tbx_sandbox_fleet() {
     FLEET_CONFIG="$fleet_dir/config.toml"
     export FLEET_CONFIG
     mkdir -p "$fleet_dir"
-    # Staged and renamed into place: a manager an earlier run left alive
-    # never reads a half-written file.
-    cat > "$FLEET_CONFIG.tmp" <<'EOF'
+    # Staged in a file of this run's own and renamed into place: a manager an
+    # earlier run left alive never reads a half-written file, and two
+    # launches of one profile never rename each other's staging file away.
+    staged="$(mktemp "$fleet_dir/config.toml.XXXXXX")"
+    cat > "$staged" <<'EOF'
 version = 1
 
 [data]
@@ -163,7 +165,7 @@ keyPrefix = "tbx-sandbox"
 [hosts.local]
 runtime = "mux"
 EOF
-    mv -f "$FLEET_CONFIG.tmp" "$FLEET_CONFIG"
+    mv -f "$staged" "$FLEET_CONFIG"
 }
 
 # tbx_sandbox_runtime — keep runtime-mux's workspaces (the worktrees it makes
@@ -173,9 +175,9 @@ tbx_sandbox_runtime() {
     RUNTIME_MUX_CONFIG="$TBX_SANDBOX_ROOT/fleet/runtime-mux.toml"
     export RUNTIME_MUX_CONFIG
     mkdir -p "$TBX_SANDBOX_ROOT/fleet"
-    printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" \
-        > "$RUNTIME_MUX_CONFIG.tmp"
-    mv -f "$RUNTIME_MUX_CONFIG.tmp" "$RUNTIME_MUX_CONFIG"
+    staged="$(mktemp "$TBX_SANDBOX_ROOT/fleet/runtime-mux.toml.XXXXXX")"
+    printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" > "$staged"
+    mv -f "$staged" "$RUNTIME_MUX_CONFIG"
 }
 
 # tbx_fleet_task_name <name> — the Task name thurbox gives a session called
