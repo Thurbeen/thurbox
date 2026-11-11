@@ -1,9 +1,9 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
-//! constants, not files: a pure crate reads nothing at build time. The
-//! hook files pi's, opencode's, kilo's, omp's and qwen's name are the runtime adapter's
-//! (`fleet_runtime::assets`). A user
-//! file of the same `name` in Fleet's config dir replaces one
-//! (docs/fleet/controllers/task.md, *Harness profiles*).
+//! constants, not files: a pure crate reads nothing at build time. The hook
+//! files pi's, opencode's, kilo's, omp's and qwen's name are the runtime
+//! adapter's (`fleet_runtime::assets`). A user file of the same `name` in
+//! Fleet's config dir replaces one (docs/fleet/controllers/task.md, *Harness
+//! profiles*).
 
 /// Claude Code. Its hooks are one `--settings`: Claude Code keeps the last
 /// of several, so a second would drop Fleet's hooks or the other's. Only a

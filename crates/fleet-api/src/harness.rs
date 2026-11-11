@@ -22,9 +22,9 @@
 //! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
 //!
 //! Fleet ships the profiles of Claude Code, Codex, pi, opencode, kilo, omp and
-//! qwen. pi, opencode, kilo, omp and qwen take their hooks as a file: Fleet writes each under its
-//! own data dir (`fleet_runtime::assets`), and the launch names it, never
-//! the agent's config dir.
+//! qwen. pi, opencode, kilo, omp and qwen take their hooks as a file: Fleet
+//! writes each under its own data dir (`fleet_runtime::assets`), and the
+//! launch names it, never the agent's config dir.
 //!
 //! A harness with no prompt hook cannot prove a delivery: its runtime's
 //! answer is all Fleet has.
