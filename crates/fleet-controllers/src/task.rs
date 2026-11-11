@@ -174,6 +174,7 @@ impl TaskController {
             Phase::Spawned => {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
+                    activity_probe(input, &spec, &st, s, &mut probes);
                     probes.push(Probe::Lost { session: s.clone() });
                     probes.push(Probe::WorkspaceTrust {
                         session: s.clone(),
@@ -1979,19 +1980,18 @@ pub fn watches_activity(obj: &Object) -> bool {
     decode(obj).is_ok_and(|(spec, st)| watched(obj, &spec, &st))
 }
 
-/// The activity probe, asked only of a session that may be paused: what
-/// the agent's own hooks reported through `fleet signal`.
+/// The activity probe: what the agent's own hooks reported through `fleet
+/// signal`. Asked of every live session, not only one that may be paused:
+/// `sessionState` is how a person, and thurbox's status dot, tells an agent
+/// at work from one waiting for input. Reading it is a local file read.
 fn activity_probe(
     input: &TaskInput<'_>,
-    spec: &TaskSpec,
+    _spec: &TaskSpec,
     st: &TaskStatus,
     session: &SessionRef,
     probes: &mut Vec<Probe>,
 ) {
-    if pause_candidate(spec, st)
-        && !input.task.is_deleting()
-        && !st.not_before.is_some_and(|t| t > input.now)
-    {
+    if !input.task.is_deleting() && !st.not_before.is_some_and(|t| t > input.now) {
         probes.push(Probe::Activity {
             session: session.clone(),
         });

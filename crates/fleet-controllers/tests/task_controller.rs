@@ -708,7 +708,8 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
             },
             Probe::Lost { session: session() },
             Probe::Paused { session: session() },
-            Probe::Ready { session: session() }
+            Probe::Ready { session: session() },
+            Probe::Activity { session: session() }
         ]
     );
     let (plan, st) = run(
@@ -1010,14 +1011,18 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
         probes(&concluded(&[])).is_empty(),
         "nothing queued, session just looked up: at rest"
     );
-    // At rest, the session is looked up again once per recheck interval.
+    // At rest, the session is looked up again once per recheck interval,
+    // and what its agent last reported is read with it.
     for checked in [None, Some(NOW - SESSION_RECHECK_MS)] {
         assert_eq!(
             probes(&concluded_checked(&[], checked)),
-            vec![Probe::Find {
-                host: "local".into(),
-                key: "t.u7".into()
-            }],
+            vec![
+                Probe::Find {
+                    host: "local".into(),
+                    key: "t.u7".into()
+                },
+                Probe::Activity { session: session() }
+            ],
             "{checked:?}"
         );
     }
@@ -1031,7 +1036,8 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
             },
             Probe::Lost { session: session() },
             Probe::Paused { session: session() },
-            Probe::Ready { session: session() }
+            Probe::Ready { session: session() },
+            Probe::Activity { session: session() }
         ]
     );
     let (plan, st) = run(
@@ -1576,9 +1582,10 @@ fn only_a_known_idle_lasting_pause_after_ms_pauses() {
         pause_obs(idle(), Observation::unknown("cannot tell")),
     );
     assert!(plan.effects.is_empty(), "{plan:#?}");
-    // Nor is a Task with no pause setting.
+    // Nor is a Task with no pause setting, though its activity is read for
+    // its session state.
     let plain = briefed_with(&[], |st| st.idle_since = Some(0));
-    assert!(!probes(&plain).contains(&Probe::Activity { session: session() }));
+    assert!(probes(&plain).contains(&Probe::Activity { session: session() }));
     let (plan, _) = run(&plain, pause_obs(idle(), Observation::Known(false)));
     assert!(plan.effects.is_empty(), "{plan:#?}");
 }

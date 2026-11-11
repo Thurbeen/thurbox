@@ -989,8 +989,12 @@ JSON from the argument or stdin, stores prompts only as digests, and does
 nothing when the variable is unset. The `FileSignals` adapter keeps the
 files under `<data dir>/signals` for sessions on this machine, and answers
 Unknown for any other host: reading a remote file takes the runtime's
-`exec`. `e2e_signal` covers state and pause, `e2e_delivery_proof` the
-prompt proof, and `e2e_harness` the profiles' argv and resume.
+`exec`. TaskController reads the file for every live session, not only one that
+may be paused: `status.sessionState` is `Idle` once the agent's last report
+is `idle`, and `Running` while it reports `working`, `blocked` or `prompt`.
+`e2e_signal` covers state, an interactive session and pause,
+`e2e_delivery_proof` the prompt proof, and `e2e_harness` the profiles' argv
+and resume.
 
 ## Workspace contract
 

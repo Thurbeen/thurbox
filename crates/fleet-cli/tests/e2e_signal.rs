@@ -138,3 +138,29 @@ fn a_turn_that_ends_with_background_work_is_not_idle_and_never_pauses() {
     env.reconcile().ok();
     assert_eq!(session_state(&env), "Idle");
 }
+
+/// An interactive session (no brief, no pause) shows what its agent's hooks
+/// report: a person reads `sessionState` to know whether it works or waits.
+#[test]
+fn an_interactive_sessions_hooks_drive_its_session_state() {
+    let env = Env::new("signal-interactive");
+    let mut t = support::task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"].as_object_mut().unwrap().remove("outputs");
+    env.apply(json!([t])).ok();
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    assert_eq!(session_state(&env), "Running", "nothing reported yet");
+
+    signal(&env, &file, &["idle"]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Idle", "{:#}", env.get("t1")["status"]);
+
+    signal(&env, &file, &["working"]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Running");
+
+    signal(&env, &file, &["idle"]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Idle");
+}
