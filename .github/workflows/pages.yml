@@ -5,10 +5,6 @@ on:
     branches: [main]
     paths:
       - 'website/**'
-      # Demo media is copied into website/assets/ at deploy time, so a change to
-      # the rendered videos must also redeploy the site (e.g. after re-running
-      # scripts/demo/record.sh). Without this the live site keeps stale mp4s.
-      - 'media/**'
       # The build reads these from the repo root, outside `website/`:
       # `eleventy.config.js` generates the CSS bundle, the TOC rail and the code
       # highlighting, and the two package files decide which versions do it. A
@@ -17,6 +13,8 @@ on:
       - 'eleventy.config.js'
       - 'package.json'
       - 'package-lock.json'
+  # scripts/demo/publish-media.sh dispatches this after it replaces the
+  # recordings on the `media` release, which no push to main announces.
   workflow_dispatch:
 
 permissions:
@@ -43,10 +41,14 @@ jobs:
           node-version: 26
           cache: npm
 
-      # Demo videos are copied into the Eleventy input (website/assets/) before the
-      # build, so the passthrough-copy step picks them up into the built _site/.
-      - name: Copy demo videos into website assets
-        run: cp media/*.mp4 website/assets/
+      # The demo videos live on the `media` release, not in git (see
+      # scripts/demo/publish-media.sh). They go into the Eleventy input
+      # (website/assets/) before the build, so the passthrough copy puts them
+      # in the built _site/.
+      - name: Download demo videos into website assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download media --repo "${{ github.repository }}" --pattern '*.mp4' --dir website/assets
 
       - name: Install dependencies
         run: npm ci

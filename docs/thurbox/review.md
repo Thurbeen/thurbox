@@ -27,8 +27,9 @@ slash matches by basename at any depth.
 - `vendor/**` — a published crate copied as released; the comment on
   `[patch.crates-io]` in Cargo.toml says why. The hunks marked `thurbox patch`
   are the exception: they are this repository's code and stay under review.
-- `media/**` — demo GIFs/MP4s and tutorial stills, produced by
-  `scripts/demo/record*.sh`.
+- `media/**` — tutorial stills and Fleet's images. The demo GIFs/MP4s that
+  `scripts/demo/record*.sh` write there are gitignored and live on the `media`
+  release (`scripts/demo/publish-media.sh`).
 - `website/assets/tutorial/**`, `*-poster.webp` — only the unreviewable part of
   `website/assets`: the tutorial stills that `scripts/demo/record-tutorial.sh`
   copies from `media/tutorial/`, and the committed poster frames, which are

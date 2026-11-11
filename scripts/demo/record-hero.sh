@@ -3,8 +3,10 @@
 # first video:
 #
 #   media/thurbox-demo.gif                    (README)
-#   media/thurbox-demo.mp4                    (copied into website/assets/ at
-#                                              deploy time by pages.yml)
+#   media/thurbox-demo.mp4                    (the website's, via pages.yml)
+#
+# Neither is committed: scripts/demo/publish-media.sh uploads both to the
+# `media` release, which the README and pages.yml read.
 #   website/assets/thurbox-demo-poster.webp   (committed; the poster frame)
 #
 #   scripts/demo/record-hero.sh               # the whole regeneration
@@ -356,3 +358,4 @@ ffmpeg -y -loglevel error -ss "$POSTER_AT" -i "$GIF" -frames:v 1 -c:v libwebp -q
 
 ls -la "$ROOT/media/thurbox-demo.gif" "$ROOT/media/thurbox-demo.mp4" \
     "$ROOT/website/assets/thurbox-demo-poster.webp"
+echo "publish: scripts/demo/publish-media.sh media/thurbox-demo.gif media/thurbox-demo.mp4"

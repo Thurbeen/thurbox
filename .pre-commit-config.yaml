@@ -196,11 +196,4 @@ repos:
     hooks:
       - id: check-added-large-files
         args: ["--maxkb=1024", "--enforce-all"]
-        exclude: |
-          (?x)^(
-            media/doom-easter-egg\.mp4|
-            media/search-demo\.gif|
-            media/thurbox-interface\.gif|
-            media/thurbox-theme\.gif|
-            website/assets/performance-v2-observations\.json
-          )$
+        exclude: ^website/assets/performance-v2-observations\.json$

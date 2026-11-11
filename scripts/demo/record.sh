@@ -519,3 +519,4 @@ for tape in $TAPES; do
         *)           echo "    thurbox-$tape.{gif,mp4}" ;;
     esac
 done
+echo "==> Publish: scripts/demo/publish-media.sh (uploads media/*.gif,*.mp4 to the media release)"
