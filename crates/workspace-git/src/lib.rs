@@ -390,10 +390,17 @@ fn main_checkout(repo: &Path, common: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// `path` without Windows' `\\?\` prefix, which `canonicalize` adds and git
-/// cannot read back.
+/// `path` as git reads it back: without the verbatim prefix Windows'
+/// `canonicalize` adds. A drive path `\\?\C:\x` is `C:\x`; a network share
+/// `\\?\UNC\server\share\x` keeps its UNC form, `\\server\share\x`.
 fn plain(path: PathBuf) -> PathBuf {
-    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{share}"));
+    }
+    match text.strip_prefix(r"\\?\") {
         Some(rest) => PathBuf::from(rest),
         None => path,
     }
@@ -1064,5 +1071,19 @@ mod tests {
         let absolute =
             main_checkout(&repo.join("sub"), &repo.join(".git").display().to_string()).unwrap();
         assert_eq!(absolute, top, "an absolute answer names it the same way");
+    }
+    /// `canonicalize` on Windows adds `\\?\`, and `\\?\UNC\` for a network
+    /// share: a drive path loses the prefix, a share keeps its `\\` form.
+    #[test]
+    fn a_verbatim_path_reads_back_as_git_reads_it() {
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\C:\Users\me\app")),
+            PathBuf::from(r"C:\Users\me\app")
+        );
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\UNC\server\share\app")),
+            PathBuf::from(r"\\server\share\app")
+        );
+        assert_eq!(plain(PathBuf::from("/srv/app")), PathBuf::from("/srv/app"));
     }
 }
