@@ -21,8 +21,8 @@
 //! run as a program, with no hooks, trust or resume Fleet knows
 //! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
 //!
-//! Fleet ships the profiles of Claude Code, Codex, pi and opencode. pi and
-//! opencode take their hooks as a plugin file: Fleet writes each under its
+//! Fleet ships the profiles of Claude Code, Codex, pi, opencode and kilo.
+//! pi, opencode and kilo take their hooks as a plugin file: Fleet writes each under its
 //! own data dir (`fleet_runtime::assets`), and the launch names it, never
 //! the agent's config dir.
 //!
@@ -647,6 +647,29 @@ mod tests {
     }
 
     #[test]
+    fn kilo_names_its_server_and_terminal_plugins_in_its_own_variables() {
+        let all = Profiles::bundled().with_assets("/data/harness-assets".into());
+        let kilo = all.get("kilo");
+        let launch = kilo.launch(&[], None).unwrap();
+        assert_eq!(launch, ["kilo"]);
+        assert_eq!(
+            kilo.launch.env["KILO_CONFIG_CONTENT"],
+            r#"{"plugin":["/data/harness-assets/fleet-kilo/index.js"]}"#
+        );
+        assert_eq!(
+            kilo.launch.env["KILO_TUI_CONFIG"],
+            "/data/harness-assets/fleet-kilo/tui.json"
+        );
+        assert_eq!(kilo.launch.env["KILO_NO_DAEMON"], "1");
+        assert_eq!(
+            kilo.resume(&launch, Some("ses_1")),
+            ["kilo", "--session", "ses_1"]
+        );
+        assert!(kilo.prompt_hook());
+        assert_eq!(kilo.trust(), Trust::Unknown);
+    }
+
+    #[test]
     fn a_codex_trust_override_names_one_directory_as_toml() {
         assert_eq!(
             codex_override("/home/u/.cache/a b").unwrap(),
@@ -678,7 +701,7 @@ mod tests {
         let all = Profiles::bundled();
         assert_eq!(
             all.names(),
-            ["claude", "claude-code", "codex", "pi", "opencode"]
+            ["claude", "claude-code", "codex", "pi", "opencode", "kilo"]
         );
         assert_eq!(all.get("claude-code").name, "claude");
         assert_eq!(all.get("aider"), bare("aider"));

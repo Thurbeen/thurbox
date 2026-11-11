@@ -132,7 +132,15 @@ fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],
-        json!(["vendor", "claude", "claude-code", "codex", "pi", "opencode"])
+        json!([
+            "vendor",
+            "claude",
+            "claude-code",
+            "codex",
+            "pi",
+            "opencode",
+            "kilo"
+        ])
     );
 }
 
@@ -454,6 +462,199 @@ fn the_opencode_plugin_reports_each_change_of_state_with_its_session() {
         .is_empty()
     );
     assert!(run_asset(&env, &node, (OPENCODE_DRIVER, &asset), steps, (false, true)).is_empty());
+}
+
+/// kilo takes its hooks at launch from two files Fleet writes: its server
+/// plugin, named in `KILO_CONFIG_CONTENT`, and the terminal UI's config that
+/// names its TUI plugin, in `KILO_TUI_CONFIG`. kilo merges each with the
+/// user's. `KILO_NO_DAEMON`: a running background service was started with
+/// another environment, and would load neither the plugin nor the signal
+/// file.
+#[test]
+fn kilo_launches_with_the_plugin_files_fleet_writes() {
+    let env = Env::new("harness-launch-kilo");
+    let mut task = support::task("k1", true);
+    task["spec"]["harness"] = json!("kilo");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    let plugin = env.data.join("harness-assets").join("fleet-kilo");
+
+    let kilo = session(&env, "k1");
+    assert_eq!(kilo.argv, ["kilo"]);
+    let content: serde_json::Value = serde_json::from_str(
+        kilo.env
+            .get("KILO_CONFIG_CONTENT")
+            .expect("KILO_CONFIG_CONTENT"),
+    )
+    .unwrap();
+    let server = plugin.join("index.js");
+    assert_eq!(content, json!({"plugin": [server.to_string_lossy()]}));
+    let tui = plugin.join("tui.json");
+    assert_eq!(
+        kilo.env.get("KILO_TUI_CONFIG").map(String::as_str),
+        Some(&*tui.to_string_lossy())
+    );
+    assert_eq!(
+        kilo.env.get("KILO_NO_DAEMON").map(String::as_str),
+        Some("1")
+    );
+    for part in ["index.js", "tui.js", "signal.js", "tui.json"] {
+        assert!(plugin.join(part).is_file(), "{}/{part}", plugin.display());
+    }
+    // The TUI config names its plugin beside it, wherever the data dir is.
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&tui).unwrap()).unwrap();
+    assert_eq!(config, json!({"plugin": ["./tui.js"]}));
+
+    // A revive resumes kilo on the conversation its hooks reported.
+    env.host().reboot().unwrap();
+    env.reconcile().ok();
+    let kilo = session(&env, "k1");
+    let resumed = kilo.restarts.last().expect("revived");
+    assert_eq!(
+        resumed,
+        &[
+            "kilo".to_string(),
+            "--session".into(),
+            format!("conv-{}", kilo.id)
+        ]
+    );
+}
+
+/// The context a kilo plugin's server part gets, after its TUI part's start.
+/// A step `["chat.message", input, output]` runs the prompt hook; a step
+/// `["event", event]` is one event of the bus. As kilo does, each handler
+/// runs without waiting for the one before it.
+#[cfg(unix)]
+const KILO_DRIVER: &str = r#"
+const [asset, steps] = process.argv.slice(1);
+const { default: plugin } = await import(asset + "/index.js");
+const { default: tui } = await import(asset + "/tui.js");
+const hooks = await plugin.server({});
+const running = [tui.tui({})];
+for (const [kind, input, output] of JSON.parse(steps)) {
+  if (kind === "event") running.push(hooks.event?.({ event: input }));
+  else running.push(hooks[kind]?.(input, output));
+}
+await Promise.all(running);
+"#;
+
+/// Fleet's kilo plugin, run on kilo's prompt hook and events: a turn whose
+/// subagent asks a permission, then a question, suggestions and network
+/// requests the agent asks itself, two of them at once. The
+/// agent works until every session is idle, waits on a person while a
+/// request is open, and a subagent's prompt is neither a prompt nor the
+/// conversation.
+#[cfg(unix)]
+#[test]
+fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
+    let Some(node) = node() else { return };
+    let env = Env::new("asset-kilo");
+    let mut task = support::task("k1", true);
+    task["spec"]["harness"] = json!("kilo");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    let asset = env.data.join("harness-assets/fleet-kilo");
+    let event = |kind: &str, properties: serde_json::Value| json!(["event", {"type": kind, "properties": properties}]);
+    let status = |session: &str, kind: &str| {
+        event(
+            "session.status",
+            json!({"sessionID": session, "status": {"type": kind}}),
+        )
+    };
+    let text = |session: &str, text: &str| {
+        json!([
+            "chat.message",
+            {"sessionID": session},
+            {"parts": [
+                {"type": "text", "text": text},
+                {"type": "text", "text": "a reminder kilo adds", "synthetic": true},
+            ]}
+        ])
+    };
+    // A request is opened with its `id` and closed with its `requestID`.
+    let open = |kind: &str, id: &str| event(kind, json!({"id": id, "sessionID": "ses-root"}));
+    let close =
+        |kind: &str, id: &str| event(kind, json!({"requestID": id, "sessionID": "ses-root"}));
+    let steps = json!([
+        event(
+            "session.created",
+            json!({"sessionID": "ses-root", "info": {"id": "ses-root"}})
+        ),
+        text("ses-root", "the brief"),
+        status("ses-root", "busy"),
+        event(
+            "session.created",
+            json!({"sessionID": "ses-sub", "info": {"id": "ses-sub", "parentID": "ses-root"}})
+        ),
+        text("ses-sub", "a subagent's task"),
+        status("ses-sub", "busy"),
+        event(
+            "permission.asked",
+            json!({"id": "per-1", "sessionID": "ses-sub"})
+        ),
+        event(
+            "permission.replied",
+            json!({"requestID": "per-1", "sessionID": "ses-sub", "reply": "once"})
+        ),
+        status("ses-sub", "idle"),
+        event(
+            "question.asked",
+            json!({"id": "que-1", "sessionID": "ses-root"})
+        ),
+        event(
+            "question.rejected",
+            json!({"requestID": "que-1", "sessionID": "ses-root"})
+        ),
+        // Two requests at once: the agent waits until both are closed.
+        open("suggestion.shown", "sug-1"),
+        open("session.network.asked", "net-1"),
+        close("suggestion.dismissed", "sug-1"),
+        close("session.network.replied", "net-1"),
+        open("suggestion.shown", "sug-2"),
+        close("suggestion.accepted", "sug-2"),
+        open("session.network.asked", "net-2"),
+        close("session.network.rejected", "net-2"),
+        event("message.updated", json!({"sessionID": "ses-root"})),
+        status("ses-root", "idle"),
+    ]);
+    let sent = run_asset(
+        &env,
+        &node,
+        (KILO_DRIVER, &asset),
+        steps.clone(),
+        (true, true),
+    );
+    let states: Vec<&str> = sent.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(
+        states,
+        [
+            "idle", "prompt", "working", "working", "blocked", "working", "working", "blocked",
+            "working", "blocked", "blocked", "blocked", "working", "blocked", "working", "blocked",
+            "working", "idle"
+        ],
+        "{sent:?}"
+    );
+    // The TUI part reports the start, before any session.
+    assert_eq!(sent[0].1, json!({}));
+    assert_eq!(
+        sent[1].1,
+        json!({"session_id": "ses-root", "prompt": "the brief"})
+    );
+    for (state, payload) in &sent[2..] {
+        assert_eq!(payload, &json!({"session_id": "ses-root"}), "{state}");
+    }
+    assert!(
+        run_asset(
+            &env,
+            &node,
+            (KILO_DRIVER, &asset),
+            steps.clone(),
+            (true, false)
+        )
+        .is_empty()
+    );
+    assert!(run_asset(&env, &node, (KILO_DRIVER, &asset), steps, (false, true)).is_empty());
 }
 
 /// A plugin file is named inside a JSON string (opencode's config), where a
