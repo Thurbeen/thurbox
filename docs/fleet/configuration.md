@@ -253,8 +253,8 @@ the harness it is named ([signal contract](signal-contract.md)).
 
 The `harnesses/` directory beside the config file holds the user's
 [harness profiles](controllers/task.md#harness-profiles), one `*.toml` file
-each. Every command reads them at start, and a file that does not parse
-stops the command with its path. A user profile replaces the bundled
+each. Every command that loads the config reads them at start, and a file
+that does not parse stops the command with its path. A user profile replaces the bundled
 profile of the same `name`, or adds a harness.
 
 Runtime-specific fields apply only to that runtime. Keep the store and native
