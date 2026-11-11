@@ -333,11 +333,17 @@ fn follow(
             }
             _ => continue,
         }
-        if synced
-            && tx
-                .send(Update::Rows(tasks.values().map(row_of).collect()))
-                .is_err()
-        {
+        if !synced {
+            continue;
+        }
+        // A Task marked for deletion is going: its controller is releasing
+        // the session, and nothing done to it now would last.
+        let rows = tasks
+            .values()
+            .filter(|task| task["metadata"]["deletionTimestamp"].is_null())
+            .map(row_of)
+            .collect();
+        if tx.send(Update::Rows(rows)).is_err() {
             return stop(held);
         }
     }

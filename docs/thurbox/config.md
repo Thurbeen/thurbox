@@ -502,7 +502,10 @@ ever starting (zero overhead) and silently no-ops every transition;
 the session status display itself is unaffected.
 
 A delete is final: a session is a Fleet Task, and `fleet delete task` has no
-undo window.
+undo window. Fleet keeps the Task, marked for deletion, until its controller
+has released the session. The row leaves the list on the keystroke and does
+not come back while Fleet still lists the Task. A delete that Fleet refuses
+keeps the row, and the message band says why.
 
 ### Keys 3.0 no longer reads
 

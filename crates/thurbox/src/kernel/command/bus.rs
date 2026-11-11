@@ -110,6 +110,8 @@ pub struct CommandBus {
     pending: Arc<Mutex<SessionQueues>>,
     /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
+    /// The sessions of deletes that succeeded since [`Self::take_deleted`].
+    deleted: Vec<String>,
     /// What runs each command: Fleet, through its command line.
     executor: Arc<dyn Executor>,
 }
@@ -134,6 +136,7 @@ impl CommandBus {
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed_at: Vec::new(),
+            deleted: Vec::new(),
             executor,
         }
     }
@@ -252,9 +255,15 @@ impl CommandBus {
                 continue;
             };
             match done.error {
-                // Success: the effect is in the database now, so the row has
+                // Success: the effect is in Fleet now, so the entry has
                 // nothing left to say.
                 None => {
+                    if let Some(entry) = list
+                        .iter()
+                        .find(|entry| entry.id == done.id && entry.kind == "delete")
+                    {
+                        self.deleted.push(entry.session.clone());
+                    }
                     list.retain(|entry| entry.id != done.id);
                 }
                 Some(error) => {
@@ -267,6 +276,14 @@ impl CommandBus {
             }
         }
         changed
+    }
+
+    /// The sessions whose delete succeeded since the last call. The entry
+    /// that hid the row leaves the list at once, while Fleet can still list
+    /// the Task: the snapshot takes over hiding it
+    /// ([`crate::kernel::snapshot::SnapshotStore::hide_until_gone`]).
+    pub fn take_deleted(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.deleted)
     }
 
     /// Sweep failures that have been readable long enough.

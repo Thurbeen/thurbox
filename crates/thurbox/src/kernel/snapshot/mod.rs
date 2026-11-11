@@ -347,6 +347,9 @@ pub struct SnapshotStore {
     /// The names of the sessions the last refresh awaits: see
     /// [`Self::request_refresh_awaiting`].
     awaited: Vec<String>,
+    /// Sessions deleted here that the source may still list: see
+    /// [`Self::hide_until_gone`].
+    gone: std::collections::HashSet<String>,
     git: GitStats,
     current: Snapshot,
     last_refresh: Option<Instant>,
@@ -380,7 +383,11 @@ impl SnapshotStore {
             return false;
         };
         self.source_reads += 1;
-        self.current.sessions = read.sessions;
+        let mut sessions = read.sessions;
+        self.gone
+            .retain(|id| sessions.iter().any(|row| &row.id == id));
+        sessions.retain(|row| !self.gone.contains(&row.id));
+        self.current.sessions = sessions;
         self.current.error = read.error;
         if let Some(harnesses) = read.harnesses {
             self.current.agents = Some(
@@ -404,6 +411,7 @@ impl SnapshotStore {
             source_reads: 0,
             source_asked: Instant::now(),
             awaited: Vec::new(),
+            gone: std::collections::HashSet::new(),
             git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             current: Snapshot {
                 // This machine until Fleet lists its hosts, so a Fleet that is
@@ -460,6 +468,18 @@ impl SnapshotStore {
             self.mark_changed();
         }
         applied
+    }
+
+    /// Stop publishing the row of `id`, a session whose delete succeeded,
+    /// until the source no longer lists it. A source reads on a schedule of
+    /// its own, so its next answers can still hold the session as it was.
+    pub fn hide_until_gone(&mut self, id: String) {
+        let before = self.current.sessions.len();
+        self.current.sessions.retain(|row| row.id != id);
+        if self.current.sessions.len() != before {
+            self.mark_changed();
+        }
+        self.gone.insert(id);
     }
 
     /// [`Self::request_refresh`], for commands that created sessions named

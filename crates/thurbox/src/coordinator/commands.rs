@@ -319,6 +319,11 @@ impl App {
         // rather than waiting out the interval — that is what makes a
         // delete feel immediate instead of arriving up to 400ms later.
         if self.commands.poll() {
+            // Before anything is drawn: the entry that hid a deleted row has
+            // just left the list.
+            for id in self.commands.take_deleted() {
+                self.snapshots.hide_until_gone(id);
+            }
             // Wait for the last one: two adds in quick succession would
             // otherwise re-read between them and publish a list missing the
             // second.

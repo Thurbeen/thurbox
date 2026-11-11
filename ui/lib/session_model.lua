@@ -108,9 +108,9 @@ end
 --- whose subject is the row itself. Waiting for it to land left the session
 --- sitting there tagged `delete` for as long as the worker took — so the list
 --- kept showing what you had just removed. Dropping it on the keystroke is what
---- makes the delete read as done, and there is nothing to be lost by it: the
---- effect is already accepted, and Ctrl+Z restores the session rather than the
---- row.
+--- makes the delete read as done. Once the delete succeeds, the kernel stops
+--- publishing the row until Fleet no longer lists the Task, so it does not come
+--- back while Fleet releases the session.
 ---
 --- A FAILED delete is deliberately kept. The session is still there, and the
 --- failed row is the only thing that says the deletion did not happen.

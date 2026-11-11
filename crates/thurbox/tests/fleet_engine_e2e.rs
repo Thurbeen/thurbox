@@ -641,6 +641,33 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
     assert!(store.fresh_since(quiet), "a source that has nothing to say");
 }
 
+/// A session whose delete succeeded stays hidden while the source still
+/// lists it, and a session of the same name the source lists after dropping
+/// it is shown again.
+#[test]
+fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
+    let read = |names: &[&str]| SourceRead {
+        sessions: names
+            .iter()
+            .map(|name| row(name, "fleet", Path::new("/w")))
+            .collect(),
+        ..Default::default()
+    };
+    tx.send(read(&["kept", "gone"])).unwrap();
+    store.refresh_if_due();
+    store.hide_until_gone("gone".into());
+    assert_eq!(names(&mut store), ["kept"]);
+
+    tx.send(read(&["kept", "gone"])).unwrap();
+    assert_eq!(names(&mut store), ["kept"], "a read from before the delete");
+    tx.send(read(&["kept"])).unwrap();
+    assert_eq!(names(&mut store), ["kept"]);
+    tx.send(read(&["kept", "gone"])).unwrap();
+    assert_eq!(names(&mut store), ["gone", "kept"], "made again since");
+}
+
 /// Input a stream refused is said in the interface's own notices, not in
 /// the pane's grid, which an agent's full-screen interface would paint
 /// over. The stream: the real `fleet term-bridge` over a command that never
