@@ -1041,6 +1041,11 @@ disk.
 Every running TUI advertises a random instance ID under its data profile's
 `ui-control/` directory. Run `thurbox-cli ui instances --json` to list reachable
 screens with their PID, local/SSH label and terminal hint.
+The control socket sits beside its record, unless that path is too long to
+bind (a data profile deep in a checkout's `target/`). Then it sits in a private
+`thurbox-ui-<uid>-<digest>` directory under `$XDG_RUNTIME_DIR`, else `/tmp`,
+named after the data profile. The record names it, and a reader refuses a
+record that names any other place.
 `thurbox-cli ui --instance <id> state --json` reports the focused pane,
 selected session ID, arranged slots with rects and visible panes, panel state, kernel modal and its
 selection, open plugin floats, active search query and result selection, and

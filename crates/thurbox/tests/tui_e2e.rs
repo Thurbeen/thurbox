@@ -1074,17 +1074,62 @@ fn a_saved_search_shortcut_opens_from_the_agent_pane() {
     assert!(tui.quit().success());
 }
 
+/// A data directory whose `ui-control` cannot be a directory: the control
+/// socket has nowhere to live.
+fn data_without_ui_control(profile: &Profile) -> std::path::PathBuf {
+    let data = profile.path("data").join("blocked");
+    std::fs::create_dir_all(&data).expect("data path");
+    std::fs::write(data.join("ui-control"), "").expect("ui-control as a file");
+    data
+}
+
 #[test]
 fn an_unavailable_control_socket_does_not_abort_the_tui() {
+    let profile = Profile::new();
+    let blocked = data_without_ui_control(&profile);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_DATA_DIR", &blocked);
+    });
+    tui.wait_for("interface from");
+    tui.wait_for("No sessions yet");
+    tui.wait_for("local UI control unavailable");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_data_dir_too_deep_for_a_socket_still_serves_ui_control() {
     let profile = Profile::new();
     let long_data = profile.path("data").join("x".repeat(100));
     std::fs::create_dir_all(&long_data).expect("long data path");
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_DATA_DIR", &long_data);
     });
-    tui.wait_for("interface from");
     tui.wait_for("No sessions yet");
-    tui.wait_for("local UI control unavailable");
+    let deadline = Instant::now() + WAIT;
+    let listed = loop {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        cmd.env("THURBOX_DATA_DIR", &long_data);
+        let output = cmd
+            .args(["--json", "ui", "instances"])
+            .output()
+            .expect("ui instances");
+        let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+        if listed["instances"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["pid"] == tui.child.id()))
+        {
+            break listed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the TUI never served UI control: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!tui.frame().contains("local UI control unavailable"));
+    drop(listed);
     assert!(tui.quit().success());
 }
 
@@ -1109,10 +1154,9 @@ fn a_queued_startup_notice_waits_for_an_active_error() {
 }"#,
     );
     let profile = Profile::new();
-    let long_data = profile.path("data").join("x".repeat(100));
-    std::fs::create_dir_all(&long_data).expect("long data path");
+    let blocked = data_without_ui_control(&profile);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
-        cmd.env("THURBOX_DATA_DIR", &long_data);
+        cmd.env("THURBOX_DATA_DIR", &blocked);
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("interface from");
