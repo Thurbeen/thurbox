@@ -13,12 +13,16 @@
 //!
 //! - **payload**: the fields of a hook's JSON that `fleet signal` reads.
 //!
-//! A profile is data: one TOML document per harness. Fleet ships the
-//! profiles of Claude Code (`claude`, alias `claude-code`) and Codex
-//! (`codex`); a file under `<config dir>/harnesses/` replaces the bundled
+//! A profile is data: one TOML document per harness. A file under
+//! `<config dir>/harnesses/` replaces the bundled
 //! profile of the same name, or adds a harness. Any other harness name is
 //! run as a program, with no hooks, trust or resume Fleet knows
 //! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
+//!
+//! Fleet ships the profiles of Claude Code, Codex, pi and opencode. pi and
+//! opencode take their hooks as a plugin file: Fleet writes each under its
+//! own data dir (`fleet_runtime::assets`), and the launch names it, never
+//! the agent's config dir.
 //!
 //! A harness with no prompt hook cannot prove a delivery: its runtime's
 //! answer is all Fleet has.
@@ -36,6 +40,11 @@ pub const HARNESS_ENV: &str = "FLEET_HARNESS";
 
 /// The directory under Fleet's config dir that holds the user's profiles.
 pub const USER_DIR: &str = "harnesses";
+
+/// The directory under Fleet's data dir that holds the plugin files Fleet
+/// ships for the harnesses that take their hooks as a file
+/// (`fleet_runtime::assets`).
+pub const ASSET_DIR: &str = "harness-assets";
 
 /// The variable Fleet names that directory in at spawn, so `fleet signal`
 /// reads the profiles the session was launched with, whatever config the
@@ -205,6 +214,7 @@ pub fn bare(harness: &str) -> Profile {
 pub struct Profiles {
     list: Vec<Profile>,
     dir: Option<String>,
+    assets: Option<String>,
 }
 
 impl Profiles {
@@ -216,12 +226,20 @@ impl Profiles {
                 .map(|text| parse(text).expect("a bundled harness profile parses"))
                 .collect(),
             dir: None,
+            assets: None,
         }
     }
 
     /// These profiles, read with the user's from `dir`.
     pub fn from_dir(mut self, dir: String) -> Profiles {
         self.dir = Some(dir);
+        self
+    }
+
+    /// These profiles, with each `{asset:<name>}` naming `<dir>/<name>`:
+    /// the directory Fleet wrote its plugin files to.
+    pub fn with_assets(mut self, dir: String) -> Profiles {
+        self.assets = Some(dir);
         self
     }
 
@@ -248,13 +266,16 @@ impl Profiles {
         Profiles {
             list,
             dir: self.dir,
+            assets: self.assets,
         }
     }
 
     /// The profile `harness` names, by name and then by alias; a bare one
-    /// for a harness none names.
+    /// for a harness none names. Each `{asset:<name>}` in its launch and
+    /// resume names the file in the asset directory, when one is set.
     pub fn get(&self, harness: &str) -> Profile {
-        self.list
+        let mut p = self
+            .list
             .iter()
             .find(|p| p.name == harness)
             .or_else(|| {
@@ -263,7 +284,14 @@ impl Profiles {
                     .find(|p| p.aliases.iter().any(|a| a == harness))
             })
             .cloned()
-            .unwrap_or_else(|| bare(harness))
+            .unwrap_or_else(|| bare(harness));
+        if let Some(dir) = &self.assets {
+            let name = |a: &mut String| *a = name_assets(a, dir);
+            p.launch.args.iter_mut().for_each(name);
+            p.launch.env.values_mut().for_each(name);
+            p.resume.args.iter_mut().for_each(name);
+        }
+        p
     }
 
     /// Every name and alias, in order.
@@ -274,6 +302,25 @@ impl Profiles {
             .cloned()
             .collect()
     }
+}
+
+/// `arg` with each `{asset:<name>}` replaced by `<dir>/<name>`, its
+/// separators `/`: Node reads them on every platform, and a JSON string
+/// (opencode's config) holds them unescaped.
+fn name_assets(arg: &str, dir: &str) -> String {
+    let mut out = String::new();
+    let mut rest = arg;
+    while let Some(at) = rest.find("{asset:") {
+        let Some(end) = rest[at..].find('}') else {
+            break;
+        };
+        out.push_str(&rest[..at]);
+        let name = &rest[at + "{asset:".len()..at + end];
+        out.push_str(&format!("{dir}/{name}").replace('\\', "/"));
+        rest = &rest[at + end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 static INSTALLED: OnceLock<Profiles> = OnceLock::new();
@@ -529,6 +576,48 @@ mod tests {
     }
 
     #[test]
+    fn pi_and_opencode_name_the_plugin_files_fleet_writes() {
+        let all = Profiles::bundled().with_assets("/data/harness-assets".into());
+        let pi = all.get("pi");
+        let launch = pi.launch(&["/w/docs".into()], Some("/w")).unwrap();
+        let extension = "/data/harness-assets/fleet-pi.ts";
+        assert_eq!(launch, ["pi", "-e", extension, "--approve"]);
+        assert_eq!(
+            pi.resume(&launch, Some("s1")),
+            ["pi", "-e", extension, "--approve", "--session", "s1"]
+        );
+        assert_eq!(pi.trust(), Trust::LaunchOverride);
+        let opencode = all.get("opencode");
+        let launch = opencode.launch(&[], None).unwrap();
+        assert_eq!(launch, ["opencode", "--standalone"]);
+        assert_eq!(
+            opencode.launch.env["OPENCODE_CONFIG_CONTENT"],
+            r#"{"plugins":["/data/harness-assets/fleet-opencode"]}"#
+        );
+        assert_eq!(
+            opencode.resume(&launch, Some("ses_1")),
+            ["opencode", "--standalone", "--session", "ses_1"]
+        );
+        assert!(pi.prompt_hook() && opencode.prompt_hook());
+        // Each names a file under the asset directory.
+        for p in [&pi, &opencode] {
+            let named = p
+                .launch
+                .args
+                .iter()
+                .chain(p.launch.env.values())
+                .any(|a| a.contains("/data/harness-assets/"));
+            assert!(named, "{}", p.name);
+        }
+        // Without an asset directory a profile is left as written.
+        assert_eq!(profile("pi").launch.args, ["-e", "{asset:fleet-pi.ts}"]);
+        assert_eq!(
+            name_assets(r"{asset:a} {asset:b/c}{asset:", r"C:\data"),
+            "C:/data/a C:/data/b/c{asset:"
+        );
+    }
+
+    #[test]
     fn a_codex_trust_override_names_one_directory_as_toml() {
         assert_eq!(
             codex_override("/home/u/.cache/a b").unwrap(),
@@ -558,7 +647,10 @@ mod tests {
     #[test]
     fn each_bundled_profile_parses_and_lists_its_names() {
         let all = Profiles::bundled();
-        assert_eq!(all.names(), ["claude", "claude-code", "codex"]);
+        assert_eq!(
+            all.names(),
+            ["claude", "claude-code", "codex", "pi", "opencode"]
+        );
         assert_eq!(all.get("claude-code").name, "claude");
         assert_eq!(all.get("aider"), bare("aider"));
         assert!(profile("claude").prompt_hook());

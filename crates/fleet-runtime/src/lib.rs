@@ -7,7 +7,10 @@
 //!   runs nothing.
 //! - [`FileSignals`]: the signal port's adapter, one file per session on
 //!   this machine.
+//! - [`assets`]: the plugin files Fleet ships for the harnesses that take
+//!   their hooks as a file, written beside the signal files.
 
+pub mod assets;
 pub mod bridge;
 pub mod exec;
 pub mod fake;

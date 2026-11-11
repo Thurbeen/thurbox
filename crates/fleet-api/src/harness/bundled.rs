@@ -1,5 +1,7 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
-//! constants, not files: a pure crate reads nothing at build time. A user
+//! constants, not files: a pure crate reads nothing at build time. The
+//! plugin files pi's and opencode's name are the runtime adapter's
+//! (`fleet_runtime::assets`). A user
 //! file of the same `name` in Fleet's config dir replaces one
 //! (docs/fleet/controllers/task.md, *Harness profiles*).
 
@@ -57,5 +59,53 @@ prompt = ["input-messages"]
 conversation = ["thread-id"]
 "#;
 
+/// pi. Its hooks are an extension file Fleet writes, passed with `-e`,
+/// which loads beside the user's own extensions. pi asks a person nothing of
+/// its own, so its hooks report no blocked state. `--approve` trusts the
+/// project for this run only, as Codex's launch override does: pi otherwise
+/// asks first in a directory with project resources (`.pi`, `.agents`), its
+/// parents' included.
+pub const PI: &str = r#"
+name = "pi"
+program = "pi"
+authority = "full"
+
+[launch]
+args = ["-e", "{asset:fleet-pi.ts}"]
+
+[resume]
+args = ["{program}", "{launch_args}", "--session", "{conversation}"]
+
+[trust]
+mode = "launch-override"
+args = ["--approve"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+"#;
+
+/// opencode (OpenCode 2). Its hooks are a plugin directory Fleet writes,
+/// named in `OPENCODE_CONFIG_CONTENT`, which opencode merges with the
+/// user's and the project's config. It runs its own server: the shared
+/// background service was started with another environment, and loads
+/// neither the plugin nor the session's signal file.
+pub const OPENCODE: &str = r#"
+name = "opencode"
+program = "opencode"
+authority = "full"
+
+[launch]
+args = ["--standalone"]
+env = { OPENCODE_CONFIG_CONTENT = '{"plugins":["{asset:fleet-opencode}"]}' }
+
+[resume]
+args = ["{program}", "{launch_args}", "--session", "{conversation}"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+"#;
+
 /// Every bundled profile, in the order `fleet version --json` lists them.
-pub const ALL: &[&str] = &[CLAUDE, CODEX];
+pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE];
