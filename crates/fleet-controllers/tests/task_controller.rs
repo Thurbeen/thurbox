@@ -1825,6 +1825,53 @@ fn the_status_reports_what_the_runtime_proved_about_the_session() {
     assert_eq!(cond(&after, "SessionLost").status, ConditionStatus::True);
 }
 
+/// A harness with no hooks and no screen rules, such as a shell, has no
+/// agent state to report: it gets no `activity`, so a view draws its session
+/// as it did before screen rules. An agent with neither a report nor a
+/// matching rule is still `none`.
+#[test]
+fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
+    use fleet_api::screen::Source;
+    use fleet_api::signal::Reported;
+    let observe = |harness: &str| {
+        let mut obj = briefed_with(&[], |_| {});
+        obj.spec["harness"] = json!(harness);
+        let (_, st) = run(
+            &obj,
+            Observations {
+                find: live(),
+                signals: Some(Observation::Known(Reported::default())),
+                screen: Some(Observation::Known(None)),
+                ..Observations::default()
+            },
+        );
+        st.activity.map(|a| a.source)
+    };
+    assert_eq!(observe("bash"), None, "a shell");
+    assert_eq!(observe("claude"), Some(Source::None), "an agent");
+    assert_eq!(observe("copilot"), Some(Source::None), "rules, no hooks");
+
+    // A record written before this rule, on a host whose signal file cannot
+    // be read, drops its source too.
+    let mut stale = briefed_with(&[], |st| {
+        st.activity = Some(fleet_api::screen::AgentActivity {
+            source: Source::None,
+            rule: None,
+            at: 1,
+        });
+    });
+    stale.spec["harness"] = json!("bash");
+    let (_, st) = run(
+        &stale,
+        Observations {
+            find: live(),
+            signals: Some(Observation::unknown("no signal file on host remote")),
+            ..Observations::default()
+        },
+    );
+    assert_eq!(st.activity, None);
+}
+
 /// The screen is read for a harness Fleet has rules for, unless the last
 /// pass took the state from hooks whose authority is full; a screen rule's
 /// state then shows, below a full harness's hooks once they report.
