@@ -541,7 +541,10 @@ fn worktree(
             &[],
         )?;
     } else {
-        let start = resolve_base(&source, checkout.is_some(), key, name, base)?;
+        // A checkout with no remote default starts from what the directory
+        // the URL names has checked out: a linked worktree's own HEAD.
+        let named = checkout.as_ref().map(|_| Path::new(remote));
+        let start = resolve_base(&source, named, key, name, base)?;
         let new = if has_ref(&source, &local) {
             free_branch(&source, wanted)?
         } else {
@@ -563,17 +566,19 @@ fn worktree(
 /// The commit a new branch starts from: the fragment, as a branch, a tag or
 /// a ref or commit as given, else the default branch. A checkout reads its
 /// own branches first, then its remote's; a source, its remote's first.
+/// `named` is the directory a checkout's URL names: with no remote default,
+/// its HEAD is the start.
 fn resolve_base(
     source: &Path,
-    is_checkout: bool,
+    named: Option<&Path>,
     key: &str,
     name: &str,
     base: Option<&str>,
 ) -> Result<String, String> {
+    let is_checkout = named.is_some();
     let Some(base) = base else {
         let default = verify(source, "refs/remotes/origin/HEAD");
-        // A checkout with no remote starts from the branch it has out.
-        let default = default.or_else(|| is_checkout.then(|| verify(source, "HEAD")).flatten());
+        let default = default.or_else(|| named.and_then(|dir| verify(dir, "HEAD")));
         return default.ok_or_else(|| "the repository has no default branch".to_string());
     };
     let (first, second) = (

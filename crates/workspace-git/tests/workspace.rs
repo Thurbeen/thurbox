@@ -761,3 +761,35 @@ fn a_discard_waits_on_no_other_keys_repository() {
         .expect("discard");
     assert!(!s.cfg.root.join("t.mine").exists());
 }
+
+/// With no base and no remote default, a new branch starts from the branch
+/// the directory the URL names has checked out: a linked worktree's own,
+/// not its main checkout's.
+#[test]
+fn a_linked_worktree_with_no_base_starts_from_its_own_head() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    let linked = s.base.join("app-side");
+    git(
+        &origin,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            &linked.display().to_string(),
+        ],
+    );
+    fs::write(linked.join("side.txt"), "side\n").unwrap();
+    git(&linked, &["add", "side.txt"]);
+    git(&linked, &["commit", "-q", "-m", "side"]);
+    let (dirs, _) = s.made(
+        "t.side",
+        &[format!("{}?branch=from-side", url("git+file", &linked))],
+    );
+    assert!(
+        Path::new(&dirs[0]).join("side.txt").is_file(),
+        "the new branch starts from the linked worktree's HEAD"
+    );
+}
