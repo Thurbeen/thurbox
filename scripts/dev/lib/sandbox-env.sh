@@ -147,7 +147,9 @@ tbx_sandbox_fleet() {
     FLEET_CONFIG="$fleet_dir/config.toml"
     export FLEET_CONFIG
     mkdir -p "$fleet_dir"
-    cat > "$FLEET_CONFIG" <<'EOF'
+    # Staged and renamed into place: a manager an earlier run left alive
+    # never reads a half-written file.
+    cat > "$FLEET_CONFIG.tmp" <<'EOF'
 version = 1
 
 [data]
@@ -161,6 +163,7 @@ keyPrefix = "tbx-sandbox"
 [hosts.local]
 runtime = "mux"
 EOF
+    mv -f "$FLEET_CONFIG.tmp" "$FLEET_CONFIG"
 }
 
 # tbx_sandbox_runtime — keep runtime-mux's workspaces (the worktrees it makes
@@ -170,7 +173,9 @@ tbx_sandbox_runtime() {
     RUNTIME_MUX_CONFIG="$TBX_SANDBOX_ROOT/fleet/runtime-mux.toml"
     export RUNTIME_MUX_CONFIG
     mkdir -p "$TBX_SANDBOX_ROOT/fleet"
-    printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" > "$RUNTIME_MUX_CONFIG"
+    printf "[workspace]\nroot = '%s'\n" "$TBX_SANDBOX_ROOT/fleet/workspaces" \
+        > "$RUNTIME_MUX_CONFIG.tmp"
+    mv -f "$RUNTIME_MUX_CONFIG.tmp" "$RUNTIME_MUX_CONFIG"
 }
 
 # tbx_fleet_task_name <name> — the Task name thurbox gives a session called

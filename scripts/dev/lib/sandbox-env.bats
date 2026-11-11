@@ -71,3 +71,15 @@ teardown() {
   tbx_sandbox_fleet
   grep -qF "root = '$ROOT/fleet/workspaces'" "$ROOT/fleet/runtime-mux.toml"
 }
+
+@test "a rewrite replaces each config in one step, never truncating it in place" {
+  mkdir -p "$ROOT/fleet"
+  printf 'old\n' > "$ROOT/fleet/config.toml"
+  printf 'old\n' > "$ROOT/fleet/runtime-mux.toml"
+  before_fleet=$(stat -c %i "$ROOT/fleet/config.toml")
+  before_mux=$(stat -c %i "$ROOT/fleet/runtime-mux.toml")
+  tbx_sandbox_fleet
+  [ "$(stat -c %i "$ROOT/fleet/config.toml")" != "$before_fleet" ]
+  [ "$(stat -c %i "$ROOT/fleet/runtime-mux.toml")" != "$before_mux" ]
+  run ! ls "$ROOT/fleet/"*.tmp
+}
