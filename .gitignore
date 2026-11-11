@@ -61,9 +61,12 @@ __pycache__/
 # it describes one directory's state and belongs to nobody else.
 ui/.bundled.json
 
-# Demo videos are copied into website/assets/ from media/ at deploy time
-# (.github/workflows/pages.yml) and for local `npm run dev:website`. They are
-# tracked once, in media/ — never duplicated here.
+# Demo recordings live on the `media` GitHub release, never in git: every
+# re-recording would stay in the history each clone downloads.
+# scripts/demo/record*.sh write them to media/, scripts/demo/publish-media.sh
+# uploads them, and pages.yml downloads the MP4s into website/assets/ at deploy.
+/media/*.gif
+/media/*.mp4
 website/assets/*.mp4
 
 # Lavish review artifacts (`lavish-axi <file>`): HTML the agent generates for a

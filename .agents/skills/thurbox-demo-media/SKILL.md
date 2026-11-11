@@ -43,10 +43,15 @@ scripts/demo/record.sh                 # regenerate ALL demo videos
 scripts/demo/record.sh theme search    # re-record a subset
 ```
 
-Re-recording every clip adds every new file to history for good: the earlier
-`docs/media/` re-records are 405 MiB of this repository's 478 MiB pack. Re-record
-only the clips whose screen changed. The `check-added-large-files` hook fails a
-file over 1 MiB (see "Large files" in `CONTRIBUTING.md`).
+**Recordings are not committed.** The earlier `docs/media/` re-records are 405
+MiB of this repository's 478 MiB pack, because git keeps every version.
+`media/*.gif` and `media/*.mp4` are gitignored. After recording, run
+`scripts/demo/publish-media.sh [FILE...]`. It replaces the assets on the `media`
+GitHub release (a prerelease, so the update check ignores it) and dispatches
+`pages.yml`, which downloads the MP4s into `website/assets/`. The README and
+`docs/thurbox/features.md` link the GIFs at
+`https://github.com/Thurbeen/thurbox/releases/download/media/<file>`. A
+replaced asset has no history: keep a copy if you may want the old take back.
 
 One VHS tape each (`scripts/demo/<feature>.tape`); no args = all, otherwise tape
 stems. Every clip uses **real agent CLIs**, one session per installed CLI, with

@@ -10,7 +10,7 @@
 [![Discord](https://img.shields.io/discord/1542644702984142928?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/fGumcHaxFY)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
-![Thurbox Demo](media/thurbox-demo.gif)
+![Thurbox Demo](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-demo.gif)
 
 - **Several coding agents at once**, side by side in one terminal — Claude Code and Codex
   today, and any agent Fleet gains a harness profile for.
@@ -98,7 +98,7 @@ from what is running; `Ctrl+P` is a command palette over the same actions.
 For the same walkthrough with screenshots, see the
 [tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html).
 
-![Session creation](media/thurbox-session-creation.gif)
+![Session creation](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-session-creation.gif)
 
 ## What else it does
 
@@ -147,7 +147,7 @@ shipped file, `space` turns yours off.
 [Writing a pane →](docs/thurbox/plugins.md) ·
 [Configuration →](https://thurbox.thurbeen.eu/docs/configuration.html)
 
-![Turning a pane off from the Interface tab](media/thurbox-interface.gif)
+![Turning a pane off from the Interface tab](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-interface.gif)
 
 [**Plugins →**](https://thurbox.thurbeen.eu/plugins.html) — official and community
 panes and other add-ons, with install commands and submission details.

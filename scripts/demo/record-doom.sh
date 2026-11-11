@@ -2,8 +2,9 @@
 # Regenerate the website's `iddqd` easter-egg clip: Doom running *inside* a
 # thurbox pane.
 #
-#   media/doom-easter-egg.mp4              (copied into website/assets/ at
-#                                                deploy time by pages.yml)
+#   media/doom-easter-egg.mp4              (not committed: publish-media.sh
+#                                           uploads it to the `media` release,
+#                                           pages.yml downloads it at deploy)
 #   website/assets/doom-easter-egg-poster.webp  (committed; the poster frame)
 #
 # **Doom is a plugin now, not an agent.** This used to be recorded through the
@@ -348,6 +349,7 @@ ls -la "$ROOT/media/doom-easter-egg.mp4" \
 # gitignored — so a local `npm run dev:website` preview 404s without this copy.
 echo
 echo "for a local preview: cp media/doom-easter-egg.mp4 website/assets/"
+echo "publish: scripts/demo/publish-media.sh media/doom-easter-egg.mp4"
 # If the overlay's intrinsic size in website/js/main.js no longer matches, the
 # modal reflows when the first frame decodes.
 echo "if the dimensions above changed, update doomVideo.width/height in website/js/main.js"

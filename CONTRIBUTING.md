@@ -294,7 +294,9 @@ tree is 39 MiB. Deleting a file later does not give that space back.
 - Its `exclude` in `.pre-commit-config.yaml` lists the few files that were over
   the cap when it arrived. Shrink a file and remove it from that list; do not
   add to it.
-- Re-record a demo only when its screen changes, and keep it short and small.
+- Demo recordings are not committed. `scripts/demo/publish-media.sh` uploads
+  them to the `media` release, where the README, the docs and the website read
+  them.
 - Put generated output in `.gitignore` and build it where it is used, or attach
   it to a release.
 
