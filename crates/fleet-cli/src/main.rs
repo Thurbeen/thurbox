@@ -1247,6 +1247,19 @@ fn version(json: bool, config: Option<PathBuf>) -> Result<(), Failure> {
 /// that starts a session opens the signals first.
 fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
     let assets = data_dir.join(fleet_api::harness::ASSET_DIR);
+    // A profile names a plugin file inside a JSON string, as opencode's
+    // config does, where a quote or a control character cannot stand as
+    // it is.
+    if assets
+        .to_string_lossy()
+        .chars()
+        .any(|c| c == '"' || c.is_control())
+    {
+        return Err(fail(format!(
+            "{}: a data directory whose path holds a double quote or a control character cannot be named in a harness's config; move it",
+            assets.display()
+        )));
+    }
     fleet_runtime::assets::write(&assets)
         .map_err(|e| fail(format!("{}: {e}", assets.display())))?;
     let dir = data_dir.join("signals");

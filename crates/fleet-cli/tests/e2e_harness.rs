@@ -137,7 +137,8 @@ fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
 }
 
 /// The `node` on PATH, which runs the plugin files Fleet ships for pi and
-/// opencode; without it a test that runs one says so and skips.
+/// opencode. Without it a test that runs one says so and skips, except in
+/// CI: every runner there has node, so a skip would hide the test.
 #[cfg(unix)]
 fn node() -> Option<std::path::PathBuf> {
     let found = std::env::var_os("PATH").and_then(|path| {
@@ -146,15 +147,20 @@ fn node() -> Option<std::path::PathBuf> {
             .find(|p| p.is_file())
     });
     if found.is_none() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "node is not on PATH in CI, where the plugin files must be run"
+        );
         eprintln!("skipping: node is not installed");
     }
     found
 }
 
 /// A `fleet` that records each signal it is asked for: its arguments, then
-/// the payload on its stdin.
+/// the payload on its stdin. Shell builtins only: its PATH holds nothing
+/// but itself and `node`.
 #[cfg(unix)]
-const STUB_FLEET: &str = "#!/bin/sh\npayload=$(cat)\nprintf '%s\\t%s\\n' \"$*\" \"$payload\" >> \"$FLEET_SIGNAL_FILE\"\n";
+const STUB_FLEET: &str = "#!/bin/sh\nIFS= read -r payload\nprintf '%s\\t%s\\n' \"$*\" \"$payload\" >> \"$FLEET_SIGNAL_FILE\"\n";
 
 /// Run `driver` under `node` on the plugin file `asset`, with `steps`, and
 /// the stub `fleet` first on PATH unless `with_fleet` is false; each signal
@@ -180,10 +186,12 @@ fn run_asset(
     }
     let log = env.root.join("signals.log");
     let _ = std::fs::remove_file(&log);
-    let path = format!("{}:{}", bin.display(), node.parent().unwrap().display());
+    // The plugin finds `fleet` and nothing else, wherever node is installed.
+    let _ = std::fs::remove_file(bin.join("node"));
+    std::os::unix::fs::symlink(node, bin.join("node")).unwrap();
     let mut cmd = std::process::Command::new(node);
     cmd.env_clear()
-        .env("PATH", path)
+        .env("PATH", &bin)
         .args(["--input-type=module", "-e", driver, "--"])
         .arg(asset)
         .arg(steps.to_string());
@@ -446,4 +454,27 @@ fn the_opencode_plugin_reports_each_change_of_state_with_its_session() {
         .is_empty()
     );
     assert!(run_asset(&env, &node, (OPENCODE_DRIVER, &asset), steps, (false, true)).is_empty());
+}
+
+/// A plugin file is named inside a JSON string (opencode's config), where a
+/// double quote cannot stand as it is: a data directory whose path holds one
+/// stops each command that starts sessions, and names the directory.
+#[test]
+fn a_data_directory_with_a_quote_in_its_path_is_refused_before_any_spawn() {
+    let env = Env::new("harness-quoted-data");
+    std::fs::write(
+        &env.config,
+        "version = 1\n\n[data]\ndir = 'da\"ta'\n\n[runtime]\nkind = \"fake\"\ndir = \"fake\"\n",
+    )
+    .unwrap();
+    let mut task = support::task("o1", true);
+    task["spec"]["harness"] = json!("opencode");
+    env.apply(json!([task])).ok();
+    env.fleet(&["reconcile"]).code(1).stderr_has("double quote");
+    assert!(
+        env.host()
+            .session(&env.session_key("o1"))
+            .unwrap()
+            .is_none()
+    );
 }

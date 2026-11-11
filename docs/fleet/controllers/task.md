@@ -468,7 +468,9 @@ conversation = ["session_id", "thread-id"]
   conversation only; `none` has no hooks.
 - In `[launch]` and `[resume]`, `{asset:<name>}` is the path of the file
   or directory `<name>` that Fleet ships, under `harness-assets/` in its
-  data dir, with `/` separators.
+  data dir, with `/` separators. A data dir whose path holds a double
+  quote or a control character stops each command that starts sessions:
+  opencode's config names the file inside a JSON string.
 - In `[resume]`, `{program}` is the launched program and `{conversation}`
   the reported conversation. The argument `{launch_args}`, alone, is every
   launch argument after the program.
