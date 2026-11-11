@@ -397,6 +397,7 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
             worktree: None,
             branch: None,
             base: None,
+            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -468,6 +469,7 @@ fn a_created_session_keeps_the_name_it_was_given() {
             worktree: None,
             branch: None,
             base: None,
+            extras: Vec::new(),
         },
     )
     .expect("create");
@@ -499,6 +501,7 @@ fn a_name_already_taken_is_refused_and_the_task_left_alone() {
         worktree: None,
         branch: None,
         base: None,
+        extras: Vec::new(),
     };
     run_command(&mut bus, create("Review")).expect("the first");
     let refused = run_command(&mut bus, create("review")).expect_err("the same Task");

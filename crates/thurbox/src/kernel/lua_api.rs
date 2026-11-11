@@ -616,6 +616,20 @@ pub static REPO_BRANCHES: Class = Class {
             .opt()
             .doc("The branch a new worktree starts from by default."),
         leaf("names", "string[]"),
+        field("worktrees", Ty::List(&EXISTING_WORKTREE))
+            .doc("The worktrees the repository already has besides its own checkout."),
+    ],
+};
+
+pub static EXISTING_WORKTREE: Class = Class {
+    name: "thurbox.ExistingWorktree",
+    doc: &["A worktree a repository already has, which a session can open as it is."],
+    exact: true,
+    fields: &[
+        leaf("path", "string"),
+        leaf("branch", "string")
+            .opt()
+            .doc("Its branch; absent when its HEAD is detached."),
     ],
 };
 
@@ -917,6 +931,7 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&BOOKMARKS),
     Item::Class(&BROWSE_ENTRY),
     Item::Class(&BROWSE),
+    Item::Class(&EXISTING_WORKTREE),
     Item::Class(&REPO_BRANCHES),
     Item::Class(&SYSTEM_METRICS),
     Item::Class(&AGENT_METRICS),

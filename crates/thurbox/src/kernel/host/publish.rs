@@ -482,7 +482,16 @@ impl LuaHost {
             out.set("error", why.clone()).map_err(|e| e.to_string())?;
         }
         let names = self.lua.create_table().map_err(|e| e.to_string())?;
+        let worktrees = self.lua.create_table().map_err(|e| e.to_string())?;
         if let Some(BranchListing::Ready(found)) = listing {
+            for (index, tree) in found.worktrees.iter().enumerate() {
+                let item = self.lua.create_table().map_err(|e| e.to_string())?;
+                item.set("path", tree.path.clone())
+                    .map_err(|e| e.to_string())?;
+                item.set("branch", opt_lua_string(&self.lua, tree.branch.as_deref())?)
+                    .map_err(|e| e.to_string())?;
+                worktrees.set(index + 1, item).map_err(|e| e.to_string())?;
+            }
             out.set(
                 "default",
                 opt_lua_string(&self.lua, found.default.as_deref())?,
@@ -495,6 +504,7 @@ impl LuaHost {
             }
         }
         out.set("names", names).map_err(|e| e.to_string())?;
+        out.set("worktrees", worktrees).map_err(|e| e.to_string())?;
         Ok(out)
     }
 

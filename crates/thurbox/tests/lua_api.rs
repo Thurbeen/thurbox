@@ -311,6 +311,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         thurbox::kernel::repos::BranchListing::Ready(thurbox::git::Branches {
             default: Some("main".into()),
             names: vec!["dev".into(), "main".into()],
+            worktrees: Vec::new(),
         }),
     );
     let wants = thurbox::kernel::repos::Wants {

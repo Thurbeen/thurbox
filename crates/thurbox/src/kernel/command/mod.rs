@@ -82,6 +82,10 @@ pub enum Command {
         branch: Option<String>,
         /// What a new branch starts from. `None`: the repository's default.
         base: Option<String>,
+        /// The other repositories the session spans, after `repo` and in the
+        /// order chosen. A worktree of each is on the same `branch`, made from
+        /// that repository's own default branch.
+        extras: Vec<ExtraMember>,
     },
     /// Remember, forget, or import a folder of repositories.
     ///
@@ -736,6 +740,7 @@ impl Command {
             worktree: args.worktree,
             branch: args.branch.filter(|b| !b.is_empty()),
             base: args.base.filter(|b| !b.is_empty()),
+            extras: args.extras,
         })
     }
 
@@ -851,6 +856,14 @@ impl Command {
 /// A struct rather than a parameter list because commands want different
 /// fields, and threading six positional `Option`s through was already at the
 /// point where a caller could transpose two of them silently.
+/// A repository a session spans besides its first, and whether it gets a
+/// worktree of its own (`git+file`) or is used as it is (`file`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtraMember {
+    pub path: String,
+    pub worktree: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Args {
     pub session: String,
@@ -872,6 +885,8 @@ pub struct Args {
     pub branch: Option<String>,
     /// `create`: what a new branch starts from.
     pub base: Option<String>,
+    /// `create`: the other repositories the session spans.
+    pub extras: Vec<ExtraMember>,
     /// An ordered list of session ids, for the order command.
     pub list: Vec<String>,
     /// A path within the interface directory, for the plugin command.
@@ -1157,6 +1172,7 @@ mod tests {
                     worktree: None,
                     branch: None,
                     base: None,
+                    extras: Vec::new(),
                 }),
             ),
             (

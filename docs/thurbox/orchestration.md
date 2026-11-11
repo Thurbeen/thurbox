@@ -31,21 +31,23 @@ The verbs:
 
 A Task's workspace is a list of URLs, and the runtime of its host makes them
 ([runtime workspaces](../runtime/README.md#workspaces)). The new-session
-flow's workspace step chooses the URL for a git repository on this machine:
+flow gives each repository it ticks one URL, the first where the agent
+starts:
 
-| Choice | URL |
+| Choice on the repo step | URL |
 | --- | --- |
-| New worktree, new branch from the default branch | `git+file:///path/to/repo?branch=<session>#<default branch>` |
-| New worktree, new branch from another base | `git+file:///path/to/repo?branch=<session>#<base>` |
-| Worktree on an existing branch | `git+file:///path/to/repo?branch=<branch>` |
-| No worktree | `file:///path/to/repo` |
+| A worktree (`Alt+W`), the first one | `git+file:///path/to/repo?branch=<branch>#<base branch>` |
+| A worktree, any other | `git+file:///path/to/repo?branch=<branch>` |
+| Ticked as it is | `file:///path/to/repo` |
+| An existing worktree (`→`, then `Enter`) | `file:///path/to/that/worktree` |
 
-No mapping is needed: the URL is the whole request. A directory that is no
-git repository, such as the installed interface, skips the step and gets a
-`file://` URL. So does a session on another Fleet host, because the flow
-reads branches on this machine only. A Task you write yourself can name any
-URL its host's runtime lists, several of them too: the first is where the
-agent starts.
+Every worktree is on the one branch the flow names. A branch that exists is
+checked out; a new one starts from the base branch for the first repository
+and from its own default for the rest. No mapping is needed: the URL is the
+whole request. A directory that is no git repository, such as the installed
+interface, is refused a worktree and gets a `file://` URL. So does a session
+on another Fleet host, because the flow reads branches on this machine only.
+A Task you write yourself can name any URL its host's runtime lists.
 
 ## Read the state, do not infer it
 

@@ -370,6 +370,8 @@ globals:
     property: read-only
   thurbox.repo_branches.names:
     property: read-only
+  thurbox.repo_branches.worktrees:
+    property: read-only
   thurbox.hosts:
     property: read-only
   thurbox.automations:

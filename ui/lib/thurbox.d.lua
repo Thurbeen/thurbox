@@ -618,6 +618,11 @@
 ---@field error? string
 ---@field entries thurbox.BrowseEntry[]
 
+--- A worktree a repository already has, which a session can open as it is.
+---@class (exact) thurbox.ExistingWorktree
+---@field path string
+---@field branch? string Its branch; absent when its HEAD is detached.
+
 --- A repository's local branches on this machine, served only while `store.want_branches` names it.
 ---@class (exact) thurbox.RepoBranches
 ---@field repo string
@@ -626,6 +631,7 @@
 ---@field error? string Why a git repository's branches could not be read; its worktree choices stay offered.
 ---@field default? string The branch a new worktree starts from by default.
 ---@field names string[]
+---@field worktrees thurbox.ExistingWorktree[] The worktrees the repository already has besides its own checkout.
 
 ---@class (exact) thurbox.SystemMetrics
 ---@field cpu_percent number
@@ -943,14 +949,21 @@ function require(name) end
 ---@field agent? string
 ---@field command? string Create, or edit an exec one: run this command line. Sending it at all, even unchanged, needs the issuing file to hold `run`; refused as `command.failed` otherwise, so an edit that keeps the command leaves it out.
 
---- A Fleet Task whose workspace is `repo`: `git+file://<repo>?branch=…#…`
---- for a worktree, `file://<repo>` for the directory as it is.
+--- A repository a session spans besides its first.
+---@class (exact) thurbox.cmd.CreateExtra
+---@field path string An absolute path on the session's host (`~` only on this machine).
+---@field worktree? boolean A worktree of its own on the session's branch, made from this repository's default branch; else the directory as it is.
+
+--- A Fleet Task whose workspace is `repo`, then each of `extras`:
+--- `git+file://<repo>?branch=…#…` for a worktree, `file://<repo>` for the
+--- directory as it is.
 ---@class (exact) thurbox.cmd.Create
 ---@field repo string An absolute path on the session's host (`~` only on this machine).
 ---@field text? string The session's name.
 ---@field worktree? boolean A worktree of its own, or the directory as it is. Nil: a worktree for a git repository on this machine, the directory otherwise.
 ---@field branch? string The worktree's branch, existing or new. Nil: a new branch named after the session.
 ---@field base? string What a new branch starts from. Nil: the repository's default branch.
+---@field extras? thurbox.cmd.CreateExtra[] The other repositories, in order. Each worktree is on `branch`.
 ---@field agent? string
 ---@field host? string
 

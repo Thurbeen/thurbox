@@ -100,8 +100,8 @@ Two ways to finish from here:
 `↑`/`↓` move, `Enter` on a `●git` row picks it (`Enter` on a plain folder
 descends into it).
 
-Either way the repository lands in memory, with the cursor on it — and stays
-there for next time:
+Either way the repository lands in memory, ticked — and stays there for next
+time:
 
 ![The repository added to the list and selected](../../media/tutorial/05-repo-added.png)
 
@@ -112,7 +112,10 @@ search, so the list's own keys are ones you cannot type:
 |---|---|
 | `↑`/`↓` | move the cursor |
 | `Del` / `Alt+D` | forget a remembered repository (with the caret at the end of the search) |
-| `Enter` | go on with the repository under the cursor |
+| `Space` | tick the repository under the cursor (`[x]`); every ticked one goes into the session |
+| `Alt+W` | give it a **worktree of its own** (`[wt]`) |
+| `→` / `←` | open or close a repository's existing worktrees (`↳`) |
+| `Enter` | go on with the ticked repositories, or the one under the cursor |
 | `Ctrl+Enter` / `Alt+Enter` | the same, from the path field too (`Ctrl+Enter` needs a terminal with the kitty keyboard protocol) |
 | `Esc` | clear the search; a second `Esc` closes the flow |
 | `Alt+P` | import a **folder of repositories** at once — type a parent path, press `Alt+P`, and every git subdirectory is added under one header |
@@ -120,19 +123,20 @@ search, so the list's own keys are ones you cannot type:
 
 ## 3. Choose its worktree
 
-For a git repository on this machine, the workspace step asks where the agent
-works:
+A ticked repository runs as it is unless you press `Alt+W` on it: then it gets
+a **git worktree of its own** (`[wt]`), and the agent never works in your
+checkout. With a worktree, two more questions follow:
 
-| Choice | What the session gets |
+| Step | What it asks |
 |---|---|
-| **New worktree, new branch from** the default branch | a **git worktree of its own**, on a new branch named after the session. This is the default |
-| New worktree, new branch from… another base | the same, branched from the base you pick |
-| Worktree on an existing branch… | a worktree with that branch checked out |
-| No worktree | the repository directory itself |
+| **Base Branch** | what the new branch starts from; the default branch is under the cursor |
+| **Branch Name** | the branch, after the name; prefilled from it (`Fix tooltips` → `fix-tooltips`). A branch that exists is checked out |
 
-With a worktree, the agent never works in your checkout. No configuration is
-needed: the runtime makes the worktree from the repository's path. A directory
-that is no git repository skips this step and runs as it is, and so does a
+Tick several repositories and the session spans them all, one worktree each on
+the same branch. `→` on a repository lists the worktrees it already has, and
+`Enter` on one runs the session in that checkout. No configuration is needed:
+the runtime makes each worktree from the repository's path. A directory that is
+no git repository is refused a worktree and runs as it is, and so does a
 session on another Fleet host.
 
 ## 4. Name it and pick an agent

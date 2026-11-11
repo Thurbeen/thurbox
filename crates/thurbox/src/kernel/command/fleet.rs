@@ -64,12 +64,14 @@ impl super::Executor for Fleet {
                 worktree,
                 branch,
                 base,
+                extras,
             } => {
                 let host = self.host(host.as_deref())?;
                 if let Some(agent) = agent {
                     self.harness(agent)?;
                 }
-                let workspace = json!([workspace_url(
+                let session = task_name(name);
+                let mut urls = vec![workspace_url(
                     &host,
                     repo,
                     Choice {
@@ -77,8 +79,23 @@ impl super::Executor for Fleet {
                         branch: branch.as_deref(),
                         base: base.as_deref(),
                     },
-                    &task_name(name),
-                )?]);
+                    &session,
+                )?];
+                // Every other repository is on the same branch, from its own
+                // default: the base asked for is the first repository's.
+                for extra in extras {
+                    urls.push(workspace_url(
+                        &host,
+                        &extra.path,
+                        Choice {
+                            worktree: Some(extra.worktree),
+                            branch: branch.as_deref(),
+                            base: None,
+                        },
+                        &session,
+                    )?);
+                }
+                let workspace = json!(urls);
                 let mut spec = json!({
                     "host": host,
                     "workspace": workspace,

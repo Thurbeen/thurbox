@@ -40,6 +40,7 @@ return {
       tostring(thurbox.repo_branches.error),
       tostring(thurbox.repo_branches.default),
       tostring(thurbox.repo_branches.names),
+      tostring(thurbox.repo_branches.worktrees),
       tostring(thurbox.hosts),
       tostring(thurbox.automations),
       tostring(thurbox.commands),

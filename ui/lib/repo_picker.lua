@@ -177,22 +177,57 @@ function repo_picker.current(entries, cursor)
   return entries[math.max(1, math.min(cursor or 1, #entries))]
 end
 
---- Kept for an edited pane that still calls it: thurbox 3.0 has no existing
---- worktree rows, so the entries come back as they went in.
-function repo_picker.with_worktrees(entries, _expanded, _published)
-  return entries
-end
-
---- Kept for an edited pane that still calls it: thurbox 3.0 takes no
---- worktree mode, so every chosen repository is a plain one.
-function repo_picker.chosen(published, selected, _worktree)
-  local plain = {}
-  for _, row in ipairs(published or {}) do
-    if not row.is_parent and (selected or {})[row.path] then
-      plain[#plain + 1] = row.path
+--- Insert a repo's existing worktrees as child rows directly under it.
+---
+--- `expanded` is the repo path whose worktrees are showing, and `published`
+--- is `thurbox.worktrees` — used only when it answers for that same repo,
+--- so a stale answer for the previous one never draws under the current.
+---
+--- The children are synthetic rows rather than bookmarks: they carry `branch`
+--- and a `worktree` marker, and `path` is git's own path for the checkout,
+--- because opening one needs exactly that path.
+function repo_picker.with_worktrees(entries, expanded, published)
+  published = published or {}
+  if not expanded or published.repo ~= expanded or #(published.list or {}) == 0 then
+    return entries
+  end
+  local out = {}
+  for _, entry in ipairs(entries) do
+    out[#out + 1] = entry
+    if entry.row.path == expanded and not entry.row.is_parent then
+      for _, wt in ipairs(published.list) do
+        out[#out + 1] = {
+          matched = {},
+          row = {
+            path = wt.path,
+            name = (wt.path:gsub("/+$", ""):match("[^/]+$")) or wt.path,
+            branch = wt.branch,
+            parent = expanded,
+            is_parent = false,
+            is_worktree = true,
+            offered = false,
+          },
+        }
+      end
     end
   end
-  return {}, plain
+  return out
+end
+
+--- Split the chosen repositories the way v1's `partition_selected_repos` does:
+--- the ones taking a worktree, then the ones attached as they are.
+function repo_picker.chosen(published, selected, worktree)
+  local worktrees, plain = {}, {}
+  for _, row in ipairs(published or {}) do
+    if not row.is_parent and selected[row.path] then
+      if worktree[row.path] then
+        worktrees[#worktrees + 1] = row.path
+      else
+        plain[#plain + 1] = row.path
+      end
+    end
+  end
+  return worktrees, plain
 end
 
 return repo_picker

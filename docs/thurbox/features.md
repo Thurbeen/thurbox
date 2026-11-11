@@ -339,9 +339,15 @@ not applicable.
    name. thurbox reads this machine only, so for another host a typed
    path is remembered as typed and must be absolute.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
-   paths. `Space` toggles selection, `Alt+D` (or `Delete`) deletes the
-   bookmark — chords rather than letters, because the step types every
-   letter into its search — and a path-input field
+   paths. `Space` ticks a repository (`[x]`), and every ticked one goes
+   into the session. `Alt+W` gives the repository under the cursor a
+   worktree of its own (`[wt]`, ticking it too); a directory that is no
+   git repository, or a path on another host, is refused one and stays
+   ticked as it is. `→` opens a repository's existing worktrees under it
+   (`↳`), `←` closes them, and `Enter` on one runs the session in that
+   checkout as it is. `Alt+D` (or `Delete`) deletes the bookmark — chords
+   rather than letters, because the step types every letter into its
+   search — and a path-input field
    adds new bookmarks: `Tab` accepts the inline autocomplete
    suggestion, or — with nothing to complete — opens a **path
    browser** dropdown listing the typed directory (git repos marked
@@ -370,29 +376,32 @@ not applicable.
    a mount point goes empty while its drive is unmounted (an unmounted
    mount point is a readable empty directory) and refills when it
    comes back.
-3. **Workspace** — for a git repository on this machine, where the
-   agent works. The choice becomes the Task's workspace URL, which the
-   runtime makes:
-   - **New worktree, new branch from** the default branch (the default):
-     `git+file:///repo?branch=<session>#<default branch>`;
-   - New worktree, new branch from another base: the same with that base
-     after `#`;
-   - Worktree on an existing branch: `git+file:///repo?branch=<branch>`;
-   - No worktree: `file:///repo`.
-
-   A directory that is no git repository, and a session on another host,
-   skip the step and get `file://`. The branch list and the default
-   branch are read with local git on a worker.
+3. **Base branch** — only when a ticked repository has a worktree: the
+   branch the first worktree repository's new branch starts from, with
+   the default branch under the cursor. The list is read with local git
+   on a worker.
 4. **Session name** — free text identifier shown in the sidebar. The
    Task's name is derived from it (lowercase letters, digits, `-` and
    `.`), and the name as typed is the Task's `thurbox.dev/name` label.
-5. **Agent picker** — choose which coding agent runs in this
+5. **Branch name** — only with a worktree: prefilled from the session
+   name (`Fix tooltips` → `fix-tooltips`). A branch that already exists
+   is checked out rather than made.
+6. **Agent picker** — choose which coding agent runs in this
    session, from the harnesses Fleet offers (`fleet version --json`).
    Skipped when Fleet offers one. Until Fleet answers, the list is
    unknown and the step waits for it, so no Task is ever created
    without a harness. Fleet launches the agent from its own harness
    profile, so a harness Fleet does not have is refused at create,
    naming the harnesses Fleet runs.
+
+   Each ticked repository is one URL of the Task's workspace, the first
+   where the agent starts: the worktree repositories first, then the
+   plain ones, in the list's order. A worktree is
+   `git+file:///repo?branch=<branch>#<base>` for the first and
+   `git+file:///repo?branch=<branch>` (its own default branch) for the
+   rest, all on one branch; a repository as it is, an existing worktree
+   and a directory with no repository are `file:///repo`. The runtime
+   makes every worktree.
 
 Creating applies an interactive Task with `fleet apply --create-only`, so two
 names that make one Task name (`Review`, `review`) are refused rather than

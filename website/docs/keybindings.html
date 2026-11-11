@@ -102,12 +102,13 @@ breadcrumb: 'Keybindings'
 </h2>
 <p>
   <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the flow (<code>ui/plugins/70_new_session.lua</code>) &mdash; one
-  float rather than a chain of modals. It walks host &rarr; repository &rarr; workspace &rarr;
-  name &rarr; agent. The host step offers this machine at once and adds Fleet's hosts when Fleet
-  names them. The workspace step, for a git repository on this machine, chooses a new worktree on a
-  new branch (from the default branch or another base), a worktree on an existing branch, or no
-  worktree; a directory with no repository, and a remote host, skip it. The agent step is skipped
-  when Fleet offers one harness.
+  float rather than a chain of modals. It walks host &rarr; repositories &rarr; base branch &rarr;
+  name &rarr; branch name &rarr; agent. The host step offers this machine at once and adds Fleet's
+  hosts when Fleet names them. On the repo step <kbd>Space</kbd> ticks a repository and
+  <kbd>Alt</kbd>+<kbd>W</kbd> gives it a worktree of its own; <kbd>&rarr;</kbd> lists the worktrees
+  a repository already has. The two branch steps appear only with a worktree, and a directory with
+  no repository, or a remote host, is refused one. The agent step is skipped when Fleet offers one
+  harness.
 </p>
 <table>
   <thead>

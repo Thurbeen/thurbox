@@ -255,18 +255,20 @@ breadcrumb: 'Features'
           </h2>
           <p>
             A Task's workspace is a list of URLs, and the runtime of its host makes them. The
-            new-session flow's workspace step chooses, for a git repository on this machine:
+            new-session flow gives each repository it ticks one URL, the first where the agent
+            starts:
           </p>
           <ul>
             <li>
-              A new worktree on a new branch, named after the session, from the default branch or
-              from another base: <code>git+file:///path/to/repo?branch=&lt;branch&gt;#&lt;base&gt;</code>
+              A repository given a worktree with <kbd>Alt</kbd>+<kbd>W</kbd>:
+              <code>git+file:///path/to/repo?branch=&lt;branch&gt;#&lt;base&gt;</code> for the
+              first, from the base branch picked, and without <code>#&lt;base&gt;</code> for the
+              others, from their own default branch. All are on the one branch the flow names; a
+              branch that exists is checked out
             </li>
             <li>
-              A worktree on an existing branch: <code>git+file:///path/to/repo?branch=&lt;branch&gt;</code>
-            </li>
-            <li>
-              No worktree, the directory itself: <code>file:///path/to/repo</code>
+              A repository ticked as it is, or an existing worktree opened with <kbd>&rarr;</kbd>:
+              <code>file:///path/to/repo</code>
             </li>
           </ul>
           <p>
@@ -274,7 +276,7 @@ breadcrumb: 'Features'
             (<code>~/.local/share/runtime-mux/workspaces</code> unless its config says otherwise),
             from a mirror of the repository it keeps there. No mapping is needed: the URL is the
             whole request. A directory that is no git repository, such as the installed interface,
-            skips the step and runs as it is. A session on another Fleet host gets a
+            is refused a worktree and runs as it is. A session on another Fleet host gets a
             <code>file://</code> URL and runs in that directory.
           </p>
           <ul>
