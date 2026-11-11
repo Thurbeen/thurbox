@@ -388,6 +388,7 @@ A profile is data: one TOML document per harness. Fleet ships these:
 | `codex` | `codex -c notify=… -c projects=<root>` and `--add-dir` per extra directory | `codex resume <conversation>` and the launch arguments | the `projects=` launch override, for this session only |
 | `pi` | `pi -e <Fleet's extension> --approve` | the launch argv, then `--session <conversation>` | `--approve`, for this run only |
 | `opencode` | `opencode --standalone`, and `OPENCODE_CONFIG_CONTENT` naming Fleet's plugin | the launch argv, then `--session <conversation>` | none Fleet knows |
+| `kilo` | `kilo`, with `KILO_CONFIG_CONTENT` and `KILO_TUI_CONFIG` naming Fleet's plugins, and `KILO_NO_DAEMON=1` | the launch argv, then `--session <conversation>` | none Fleet knows |
 | any other | the harness name | the launch argv: a fresh start | none Fleet knows |
 
 Claude Code's hooks report its start (`SessionStart`, as `idle`), each
@@ -400,7 +401,7 @@ that report, the `exec` kind reads its screen: the empty composer under its
 welcome screen, with Codex in the foreground, is ready and trusted (its
 launch override trusts the workspace).
 
-pi and opencode take their hooks as a plugin file, not an argument. Fleet
+pi, opencode and kilo take their hooks as a plugin file, not an argument. Fleet
 ships each file and writes it under its data dir, in `harness-assets/`, at
 each command that starts sessions; the launch names it. Fleet never writes
 the agent's config dir, and the agent loads the user's own plugins beside
@@ -412,6 +413,7 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
 | --- | --- | --- |
 | `pi` | [`fleet-pi.ts`](../../../crates/fleet-runtime/src/assets/fleet-pi.ts), passed with `-e` | `session_start` as `idle`, `before_agent_start` as `prompt`, `agent_start` as `working`, `agent_settled` as `idle`, each with pi's session id |
 | `opencode` | [`fleet-opencode/`](../../../crates/fleet-runtime/src/assets/fleet-opencode/index.js), an OpenCode 2 plugin directory named in `OPENCODE_CONFIG_CONTENT` | its terminal UI's start as `idle`; each user prompt as `prompt`; `working` while any session executes; `blocked` while a permission or a question is open; `idle` when every session ends |
+| `kilo` | [`fleet-kilo/`](../../../crates/fleet-runtime/src/assets/fleet-kilo/index.js): a server plugin named in `KILO_CONFIG_CONTENT`, and a terminal UI config named in `KILO_TUI_CONFIG` that names its TUI plugin | its terminal UI's start as `idle`; each user prompt as `prompt`; `working` while any session is busy; `blocked` while a permission, a question, a suggestion or a network request is open; `idle` when every session is idle |
 
 - pi asks a person nothing of its own: its hooks report no `blocked`. pi
   reports `idle` at `agent_settled`, not `agent_end`: after a run ends, pi
@@ -430,6 +432,17 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
   conversation.
 - A Task's own `OPENCODE_CONFIG_CONTENT` replaces Fleet's, as every Task
   variable replaces the profile's: that session reports nothing.
+- kilo merges `KILO_CONFIG_CONTENT` and the file `KILO_TUI_CONFIG` names
+  with the user's and the project's config. kilo runs its server in its own
+  process (`KILO_NO_DAEMON=1`): a running `kilo daemon` was started with
+  another environment, and a terminal UI that attaches to it loads neither
+  Fleet's server plugin nor the session's signal file.
+- kilo's server, as opencode's, loads before its terminal UI takes input.
+  So its TUI plugin reports the start, and a subagent's prompt and session
+  are skipped as opencode's are.
+- kilo runs one event's handler without waiting for the one before it. The
+  plugin sends one signal at a time, in order: two `fleet signal` processes
+  started together may append in either order.
 
 The `exec` runtime kind and the fake runtime run the profile's argv.
 

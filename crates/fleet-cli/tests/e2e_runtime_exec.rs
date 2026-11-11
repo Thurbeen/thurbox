@@ -271,7 +271,7 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],
-        json!(["claude", "claude-code", "codex", "pi", "opencode"])
+        json!(["claude", "claude-code", "codex", "pi", "opencode", "kilo"])
     );
 }
 
@@ -644,7 +644,15 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],
-        json!(["stub", "claude", "claude-code", "codex", "pi", "opencode"]),
+        json!([
+            "stub",
+            "claude",
+            "claude-code",
+            "codex",
+            "pi",
+            "opencode",
+            "kilo"
+        ]),
         "a view offers the user's harness"
     );
     let work = env.root.join("work").join("t1");
@@ -1546,6 +1554,18 @@ fn agent_env(name: &str, program: &Path, sockets: &Sockets) -> Env {
     env
 }
 
+/// The id of the session's pane: the one in `work`.
+fn pane_in(sockets: &Sockets, work: &Path) -> String {
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string()
+}
+
 /// The agent's process under the session's pane, ended as a crash would.
 fn end_agent(sockets: &Sockets, work: &Path) {
     let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_pid} #{pane_current_path}"]);
@@ -1677,15 +1697,7 @@ fn opencode_reports_its_state_through_the_plugin_fleet_names_at_launch() {
         .to_string();
     assert!(conversation.starts_with("ses_"), "{conversation}");
     // Allow once: the default choice.
-    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
-    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
-    let pane = listed
-        .lines()
-        .find(|l| l.ends_with(&*work.to_string_lossy()))
-        .and_then(|l| l.split(' ').next())
-        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
-        .to_string();
-    sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    sockets.tmux(&["send-keys", "-t", &pane_in(&sockets, &work), "Enter"]);
     reconcile_until(&env, "the turn ended", |env| {
         in_order(
             &reported(env, "t1"),
@@ -1711,6 +1723,98 @@ fn opencode_reports_its_state_through_the_plugin_fleet_names_at_launch() {
     assert!(
         snapshot(&config, &[]) == before,
         "opencode's config directory {} changed",
+        config.display()
+    );
+}
+
+/// kilo, as Fleet starts it: its own embedded server, with Fleet's server
+/// plugin named in `KILO_CONFIG_CONTENT` and its TUI plugin in the file
+/// `KILO_TUI_CONFIG` names. The user's config picks a free model, which
+/// needs no sign-in, and asks before each shell command: kilo merges Fleet's
+/// plugins with it, so the agent waits on a person until it is answered.
+/// Its session id is the conversation a revive resumes, and the user's
+/// config directory is left byte for byte as it was.
+///
+/// The user is one this test makes, in a home of its own: kilo needs no
+/// sign-in, and the operator's shell startup files, which may put another
+/// `fleet` first on PATH, are not read.
+#[test]
+fn kilo_reports_its_state_through_the_plugins_fleet_names_at_launch() {
+    let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("kilo")) else {
+        return;
+    };
+    let sockets = Sockets::new("kilo");
+    let env = agent_env("runtime-mux-kilo", &program, &sockets);
+    let config = env.root.join("user-config").join("kilo");
+    fs::create_dir_all(&config).expect("user config");
+    fs::write(
+        config.join("kilo.json"),
+        r#"{"model":"kilo/cohere/north-mini-code:free","permission":{"bash":"ask"}}"#,
+    )
+    .expect("user config");
+    fs::write(config.join("tui.json"), r#"{"scroll_speed":3}"#).expect("user TUI config");
+    // kilo's own first start rewrites the user's config (a `$schema`, a
+    // migration marker, a `.gitignore`): it runs once without Fleet first.
+    let settled = Command::new("kilo")
+        .args(["debug", "config"])
+        .current_dir(&env.root)
+        .env("HOME", &env.root)
+        .env("XDG_CONFIG_HOME", env.root.join("user-config"))
+        .env("KILO_NO_DAEMON", "1")
+        .output()
+        .expect("kilo debug config");
+    assert!(settled.status.success(), "{settled:?}");
+    let before = snapshot(&config, &[]);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("kilo");
+    task["spec"]["env"] = json!({
+        "XDG_CONFIG_HOME": env.root.join("user-config").to_string_lossy(),
+    });
+    task["spec"]["brief"] =
+        json!("Run the shell command `echo fleet` yourself, with your shell tool, then stop.");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on kilo's prompt hook", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    reconcile_until(&env, "waiting on the permission", |env| {
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    let conversation = env.get("t1")["status"]["conversation"]
+        .as_str()
+        .expect("a conversation")
+        .to_string();
+    assert!(conversation.starts_with("ses_"), "{conversation}");
+    // Allow once: the default choice.
+    sockets.tmux(&["send-keys", "-t", &pane_in(&sockets, &work), "Enter"]);
+    reconcile_until(&env, "the turn ended", |env| {
+        in_order(
+            &reported(env, "t1"),
+            &["idle", "prompt", "working", "blocked", "working", "idle"],
+        ) && env.get("t1")["status"]["agentState"] == "idle"
+    });
+
+    // kilo ends: the revive resumes its session, which the next prompt
+    // names again.
+    end_agent(&sockets, &work);
+    reconcile_until(&env, "resumed on its session", |env| {
+        let states = reported(env, "t1");
+        states
+            .iter()
+            .rposition(|(s, _)| s == "started")
+            .is_some_and(|at| {
+                states[at..]
+                    .iter()
+                    .any(|(s, c)| s == "prompt" && c.as_deref() == Some(&*conversation))
+            })
+    });
+    end_agent(&sockets, &work);
+    assert!(
+        snapshot(&config, &[]) == before,
+        "kilo's config directory {} changed",
         config.display()
     );
 }

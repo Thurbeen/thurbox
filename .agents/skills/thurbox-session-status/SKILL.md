@@ -35,8 +35,9 @@ says which (`hook`, `screen`, `none`). `row_of` carries it as the row's
 and `none` as `?`, and the sessions pane names the source after the name.
 Claude Code's `Notification` hook, matched to `permission_prompt`, reports
 `blocked`, which is `attention`; its `idle_prompt` notification is idle.
-opencode's plugin reports `blocked` while a permission or a question is open;
-pi asks a person nothing, so it never reports `attention`. Each hook reports
+opencode's and kilo's plugins report `blocked` while a permission or a
+question is open; pi asks a person nothing, so it never reports `attention`.
+Each hook reports
 through `fleet signal`, and Fleet's harness profiles wire those hooks at launch
 (`crates/fleet-api/src/harness.rs`). thurbox installs nothing into an agent's
 config and derives no state of its own.

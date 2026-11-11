@@ -1,6 +1,6 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
 //! constants, not files: a pure crate reads nothing at build time. The
-//! plugin files pi's and opencode's name are the runtime adapter's
+//! plugin files pi's, opencode's and kilo's name are the runtime adapter's
 //! (`fleet_runtime::assets`). A user
 //! file of the same `name` in Fleet's config dir replaces one
 //! (docs/fleet/controllers/task.md, *Harness profiles*).
@@ -107,5 +107,28 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
+/// kilo, an opencode fork with the first plugin API. Its hooks are two
+/// files Fleet writes: a server plugin named in `KILO_CONFIG_CONTENT`, and a
+/// terminal UI config naming a TUI plugin, in `KILO_TUI_CONFIG`. kilo merges
+/// each with the user's and the project's config. `KILO_NO_DAEMON` keeps the
+/// server in kilo's own process: a running background service was started
+/// with another environment, and would load neither the plugin nor the
+/// session's signal file.
+pub const KILO: &str = r#"
+name = "kilo"
+program = "kilo"
+authority = "full"
+
+[launch]
+env = { KILO_CONFIG_CONTENT = '{"plugin":["{asset:fleet-kilo/index.js}"]}', KILO_TUI_CONFIG = "{asset:fleet-kilo/tui.json}", KILO_NO_DAEMON = "1" }
+
+[resume]
+args = ["{program}", "{launch_args}", "--session", "{conversation}"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+"#;
+
 /// Every bundled profile, in the order `fleet version --json` lists them.
-pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE];
+pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO];
