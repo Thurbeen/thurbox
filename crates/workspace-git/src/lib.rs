@@ -4,12 +4,23 @@
 //! ```text
 //! <root>/<key>/<name>/                  one worktree per git URL
 //! <root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
-//! <root>/.sources/<digest>.git          a bare source per repository, fetched before each make
+//! <root>/<key>/.fleet-sources           the repositories the key's worktrees belong to
+//! <root>/.sources/<digest>.git          a bare source per remote repository, fetched before each make
+//! <root>/.sources/<digest>.lock         one lock per repository a worktree is made from
+//! <root>/.checkouts                     the local checkouts worktrees were made from
 //! ```
 //!
-//! A source fetches its remote's branches into `refs/remotes/origin/*`, so a
-//! fetch never moves a branch a worktree has checked out. Every branch under
-//! `refs/heads/` is one this program made; the preserved work of a release is
+//! A `git+file` URL naming a local checkout (a repository with a working
+//! tree) gets a worktree of that checkout itself: its branches are the
+//! user's own, a commit made in the worktree is in the checkout at once, and
+//! the preserved work of a release is `refs/fleet/preserved/<key>/<name>` in
+//! the checkout. No branch of a checkout is ever deleted.
+//!
+//! Any other git URL, a remote or a bare repository, gets a bare source of
+//! its own. A source fetches its remote's branches into
+//! `refs/remotes/origin/*`, so a fetch never moves a branch a worktree has
+//! checked out. Every branch under its `refs/heads/` is one this program
+//! made; the preserved work of a release is
 //! `refs/fleet/preserved/<key>/<name>`, in the same source.
 
 use std::fs;
@@ -28,6 +39,15 @@ pub const DEFAULT_PRESERVE_DAYS: u64 = 30;
 
 /// The file that marks a workspace whole.
 const RECORD: &str = ".fleet-workspace.json";
+
+/// The file, in the key's directory, naming each repository the key's
+/// worktrees were added to, written before each one: a rollback of a partial
+/// workspace finds a checkout's worktrees through it.
+const KEY_SOURCES: &str = ".fleet-sources";
+
+/// The file, in the root, naming each local checkout a worktree was made
+/// from, so the retention reaches the preserved work kept there.
+const CHECKOUTS: &str = ".checkouts";
 
 /// Where preserved work is kept, per key and repository name.
 const PRESERVED: &str = "refs/fleet/preserved";
@@ -85,12 +105,14 @@ pub enum Answer {
 enum Request {
     /// A directory, used as it is.
     Dir(PathBuf),
-    /// A worktree of `remote`.
+    /// A worktree of `remote`. `local` when the URL names a path on this
+    /// machine (`git+file`).
     Git {
         remote: String,
         name: String,
         branch: Option<String>,
         base: Option<String>,
+        local: bool,
     },
 }
 
@@ -152,7 +174,17 @@ pub fn make(cfg: &Config, key: &str, urls: &[String]) -> Result<Answer, String> 
                 name,
                 branch,
                 base,
-            } => worktree(cfg, key, remote, name, branch.as_deref(), base.as_deref()).map(|tree| {
+                local,
+            } => worktree(
+                cfg,
+                key,
+                remote,
+                *local,
+                name,
+                branch.as_deref(),
+                base.as_deref(),
+            )
+            .map(|tree| {
                 let path = tree.path.clone();
                 trees.push(tree);
                 path
@@ -199,11 +231,14 @@ pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
         return rollback(cfg, key);
     };
     for tree in &record.trees {
+        let source = Path::new(&tree.source);
+        // A make or a retention on the same repository waits for this one.
+        let _lock = lock_repository(cfg, source)?;
         let path = Path::new(&tree.path);
         if path.is_dir() {
-            preserve(Path::new(&tree.source), path, key, &tree.name)?;
+            preserve(path, key, &tree.name)?;
         }
-        remove_worktree(Path::new(&tree.source), path)?;
+        remove_worktree(source, path)?;
     }
     remove_dir(&dir)
 }
@@ -259,7 +294,14 @@ fn rollback(cfg: &Config, key: &str) -> Result<(), String> {
     if !dir.exists() {
         return Ok(());
     }
-    for source in sources(cfg) {
+    let mut repositories = sources(cfg);
+    for checkout in listed_paths(&dir.join(KEY_SOURCES)) {
+        if !repositories.contains(&checkout) {
+            repositories.push(checkout);
+        }
+    }
+    for source in repositories {
+        let _lock = lock_repository(cfg, &source)?;
         let listed = git(&source, &["worktree", "list", "--porcelain"], &[]).unwrap_or_default();
         for line in listed.lines() {
             if let Some(path) = line.strip_prefix("worktree ")
@@ -296,10 +338,52 @@ fn sources(cfg: &Config) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// The paths a list file names, one per line, each once; none when the file
+/// is missing.
+fn listed_paths(file: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for line in fs::read_to_string(file).unwrap_or_default().lines() {
+        let path = PathBuf::from(line);
+        if !line.is_empty() && !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// Add `path` to the list file unless it names it already.
+fn list_path(file: &Path, path: &Path) -> Result<(), String> {
+    use std::io::Write;
+    if listed_paths(file).iter().any(|p| p == path) {
+        return Ok(());
+    }
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    }
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .and_then(|mut f| writeln!(f, "{}", path.display()))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))
+}
+
+/// The local checkout a `git+file` URL names, when it is one: a repository
+/// with a working tree. A bare repository, or a path git cannot read, is
+/// none.
+fn checkout(remote: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(remote);
+    if !path.is_dir() {
+        return None;
+    }
+    let bare = git(&path, &["rev-parse", "--is-bare-repository"], &[]).ok()?;
+    (bare == "false").then_some(path)
+}
+
 /// Commit the worktree's uncommitted work, untracked files included, onto
 /// `refs/fleet/preserved/<key>/<name>` through a temporary index. A clean
 /// worktree preserves nothing: its branch already holds its commits.
-fn preserve(source: &Path, tree: &Path, key: &str, name: &str) -> Result<(), String> {
+fn preserve(tree: &Path, key: &str, name: &str) -> Result<(), String> {
     let status = git(
         tree,
         &["status", "--porcelain", "--untracked-files=all"],
@@ -308,7 +392,12 @@ fn preserve(source: &Path, tree: &Path, key: &str, name: &str) -> Result<(), Str
     if status.is_empty() {
         return Ok(());
     }
-    let index = source.join(format!("fleet-preserve-{key}-{name}.index"));
+    // Beside the worktree, in the key's directory: never in a checkout's
+    // working tree, where it would show as a file of the user's.
+    let index = tree
+        .parent()
+        .unwrap_or(tree)
+        .join(format!(".fleet-preserve-{name}.index"));
     let index_s = index.display().to_string();
     let env = [("GIT_INDEX_FILE", index_s.as_str())];
     let result = (|| {
@@ -344,22 +433,34 @@ fn preserve(source: &Path, tree: &Path, key: &str, name: &str) -> Result<(), Str
     result
 }
 
-/// Make one worktree at `<root>/<key>/<name>` from the remote's source.
+/// Make one worktree at `<root>/<key>/<name>`: of the checkout itself when
+/// a `git+file` URL names one, else of the remote's bare source.
 fn worktree(
     cfg: &Config,
     key: &str,
     remote: &str,
+    local: bool,
     name: &str,
     branch: Option<&str>,
     base: Option<&str>,
 ) -> Result<Tree, String> {
-    // Held until the worktree is added: the source is made, fetched and
+    let checkout = if local { checkout(remote) } else { None };
+    let source = match &checkout {
+        Some(dir) => dir.clone(),
+        None => source_dir(cfg, remote),
+    };
+    // Held until the worktree is added: the repository is made, fetched and
     // given a worktree by one maker at a time.
-    let _lock = lock_source(cfg, remote)?;
-    let source = source(cfg, remote)?;
-    let path = cfg.root.join(key).join(name);
-    fs::create_dir_all(cfg.root.join(key))
-        .map_err(|e| format!("cannot make {}: {e}", cfg.root.join(key).display()))?;
+    let _lock = lock_repository(cfg, &source)?;
+    let key_dir = cfg.root.join(key);
+    fs::create_dir_all(&key_dir).map_err(|e| format!("cannot make {}: {e}", key_dir.display()))?;
+    if checkout.is_some() {
+        list_path(&cfg.root.join(CHECKOUTS), &source)?;
+        list_path(&key_dir.join(KEY_SOURCES), &source)?;
+    } else {
+        fill_source(&source, remote)?;
+    }
+    let path = key_dir.join(name);
     let path_s = path.display().to_string();
     let wanted = branch.unwrap_or(key);
     git(&source, &["check-ref-format", "--branch", wanted], &[])
@@ -392,7 +493,7 @@ fn worktree(
             &[],
         )?;
     } else {
-        let start = resolve_base(&source, key, name, base)?;
+        let start = resolve_base(&source, checkout.is_some(), key, name, base)?;
         let new = if has_ref(&source, &local) {
             free_branch(&source, wanted)?
         } else {
@@ -411,25 +512,32 @@ fn worktree(
     })
 }
 
-/// The commit a new branch starts from: the fragment, as a remote branch, a
-/// tag, a branch of this source or a ref or commit as given, else the
-/// remote's default branch.
+/// The commit a new branch starts from: the fragment, as a branch, a tag or
+/// a ref or commit as given, else the default branch. A checkout reads its
+/// own branches first, then its remote's; a source, its remote's first.
 fn resolve_base(
     source: &Path,
+    is_checkout: bool,
     key: &str,
     name: &str,
     base: Option<&str>,
 ) -> Result<String, String> {
     let Some(base) = base else {
-        return verify(source, "refs/remotes/origin/HEAD")
-            .ok_or_else(|| "the repository has no default branch".to_string());
+        let default = verify(source, "refs/remotes/origin/HEAD");
+        // A checkout with no remote starts from the branch it has out.
+        let default = default.or_else(|| is_checkout.then(|| verify(source, "HEAD")).flatten());
+        return default.ok_or_else(|| "the repository has no default branch".to_string());
     };
-    for candidate in [
+    let (first, second) = (
         format!("refs/remotes/origin/{base}"),
-        format!("refs/tags/{base}"),
         format!("refs/heads/{base}"),
-        base.to_string(),
-    ] {
+    );
+    let (first, second) = if is_checkout {
+        (second, first)
+    } else {
+        (first, second)
+    };
+    for candidate in [first, format!("refs/tags/{base}"), second, base.to_string()] {
         if let Some(commit) = verify(source, &candidate) {
             return Ok(commit);
         }
@@ -482,76 +590,97 @@ fn free_branch(source: &Path, branch: &str) -> Result<String, String> {
         .ok_or_else(|| format!("no free branch name after {branch}"))
 }
 
-/// The name the source for `remote` is kept under in `.sources`.
-fn source_name(remote: &str) -> String {
-    Sha256::digest(remote.as_bytes())
+/// A short digest of `text`, which names a source or a lock in `.sources`.
+fn digest(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
         .iter()
         .take(8)
         .map(|b| format!("{b:02x}"))
         .collect()
 }
 
-/// An exclusive lock on the source for `remote`, released when the file is
-/// dropped or the process ends. Two runtimes that share a root, such as two
-/// on different sockets, take the same lock, so one never removes a source
-/// the other is filling.
-fn lock_source(cfg: &Config, remote: &str) -> Result<fs::File, String> {
+/// Where the bare source for `remote` is kept.
+fn source_dir(cfg: &Config, remote: &str) -> PathBuf {
+    cfg.root
+        .join(".sources")
+        .join(format!("{}.git", digest(remote)))
+}
+
+fn lock_file(cfg: &Config, repository: &Path) -> Result<fs::File, String> {
     let dir = cfg.root.join(".sources");
     fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-    let path = dir.join(format!("{}.lock", source_name(remote)));
-    let file = fs::OpenOptions::new()
+    let path = dir.join(format!(
+        "{}.lock",
+        digest(&repository.display().to_string())
+    ));
+    fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&path)
-        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))
+}
+
+/// An exclusive lock on one repository a worktree is made from, a source
+/// or a checkout, released when the file is dropped or the process ends.
+/// Makes, releases, rollbacks and the retention of one repository take it,
+/// and two runtimes that share a root take the same one, so none removes a
+/// source, a worktree or a ref another is using.
+fn lock_repository(cfg: &Config, repository: &Path) -> Result<fs::File, String> {
+    let file = lock_file(cfg, repository)?;
     file.lock()
-        .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
+        .map_err(|e| format!("cannot lock {}: {e}", repository.display()))?;
     Ok(file)
 }
 
-/// The bare source for `remote`, made on first use and fetched every time.
-/// The caller holds [`lock_source`].
-fn source(cfg: &Config, remote: &str) -> Result<PathBuf, String> {
-    let dir = cfg
-        .root
-        .join(".sources")
-        .join(format!("{}.git", source_name(remote)));
+/// The lock on `repository` when no one holds it; `None` when another
+/// does, or it cannot be taken.
+fn try_lock_repository(cfg: &Config, repository: &Path) -> Option<fs::File> {
+    let file = lock_file(cfg, repository).ok()?;
+    file.try_lock().ok()?;
+    Some(file)
+}
+
+/// Make the bare source at `dir` for `remote` on first use, and fetch it
+/// every time. The caller holds [`lock_repository`] on `dir`.
+fn fill_source(dir: &Path, remote: &str) -> Result<(), String> {
     let fresh = !dir.join("HEAD").is_file();
     let made = (|| {
         if fresh {
-            fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-            git(&dir, &["init", "-q", "--bare"], &[])?;
-            git(&dir, &["remote", "add", "origin", remote], &[])?;
+            fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+            git(dir, &["init", "-q", "--bare"], &[])?;
+            git(dir, &["remote", "add", "origin", remote], &[])?;
         }
-        git(&dir, &["fetch", "-q", "--tags", "origin"], &[])
+        git(dir, &["fetch", "-q", "--tags", "origin"], &[])
             .map_err(|why| format!("cannot fetch {remote}: {why}"))
     })();
     if let Err(why) = made {
         // A source this call made and could not fill is not kept.
         if fresh {
-            let _ = fs::remove_dir_all(&dir);
+            let _ = fs::remove_dir_all(dir);
         }
         return Err(why);
     }
     // A remote with no default branch, such as another source, still serves
     // a URL that names its base.
-    let _ = git(&dir, &["remote", "set-head", "origin", "--auto"], &[]);
-    Ok(dir)
+    let _ = git(dir, &["remote", "set-head", "origin", "--auto"], &[]);
+    Ok(())
 }
 
 /// The retention, run on each make: preserved work older than
-/// `preserve_days`, and branches not checked out whose head the remote
-/// already has.
+/// `preserve_days`, in sources and in checkouts, and a source's branches not
+/// checked out whose head the remote already has. A checkout's branches are
+/// the user's and are never deleted. A repository another call holds is
+/// left for the next make.
 fn prune(cfg: &Config) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let keep = cfg.preserve_days.saturating_mul(86_400);
-    for source in sources(cfg) {
+    let prune_preserved = |repository: &Path| {
         let preserved = git(
-            &source,
+            repository,
             &[
                 "for-each-ref",
                 "--format=%(refname) %(committerdate:unix)",
@@ -566,9 +695,24 @@ fn prune(cfg: &Config) {
             };
             let when: u64 = when.parse().unwrap_or(now);
             if now.saturating_sub(when) >= keep {
-                let _ = git(&source, &["update-ref", "-d", name], &[]);
+                let _ = git(repository, &["update-ref", "-d", name], &[]);
             }
         }
+    };
+    for checkout in listed_paths(&cfg.root.join(CHECKOUTS)) {
+        if !checkout.is_dir() {
+            continue;
+        }
+        let Some(_lock) = try_lock_repository(cfg, &checkout) else {
+            continue;
+        };
+        prune_preserved(&checkout);
+    }
+    for source in sources(cfg) {
+        let Some(_lock) = try_lock_repository(cfg, &source) else {
+            continue;
+        };
+        prune_preserved(&source);
         let Ok(listed) = git(&source, &["worktree", "list", "--porcelain"], &[]) else {
             continue;
         };
@@ -707,6 +851,7 @@ fn parse(url: &str) -> Parsed {
         remote,
         branch,
         base: fragment.filter(|f| !f.is_empty()).map(decode),
+        local: transport == "file",
     })
 }
 
@@ -819,6 +964,7 @@ mod tests {
                 name: "repo".into(),
                 branch: Some("feat-x".into()),
                 base: Some("main".into()),
+                local: false,
             }
         );
         assert!(matches!(parse("s3://bucket/x"), Parsed::Unsupported));
@@ -835,12 +981,14 @@ mod tests {
                 name: "app".into(),
                 branch: None,
                 base: None,
+                local: false,
             },
             Request::Git {
                 remote: "b".into(),
                 name: "app".into(),
                 branch: None,
                 base: None,
+                local: false,
             },
         ];
         dedupe_names(&mut requests);

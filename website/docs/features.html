@@ -274,8 +274,9 @@ breadcrumb: 'Features'
           <p>
             <code>runtime-mux</code> makes each worktree under its workspace root
             (<code>~/.local/share/runtime-mux/workspaces</code> unless its config says otherwise),
-            from a mirror of the repository it keeps there. No mapping is needed: the URL is the
-            whole request. A directory that is no git repository, such as the installed interface,
+            as a worktree of your checkout itself: its branches are your own, and a commit made in
+            the session is in your repository at once (<code>git worktree list</code> shows it).
+            No mapping is needed: the URL is the whole request. A directory that is no git repository, such as the installed interface,
             is refused a worktree and runs as it is. A session on another Fleet host gets a
             <code>file://</code> URL and runs in that directory.
           </p>
@@ -283,7 +284,7 @@ breadcrumb: 'Features'
             <li>
               Deleting such a Task (<code>fleet delete task</code>) removes its worktree. Work that
               exists nowhere else, committed or not, is kept under
-              <code>refs/fleet/preserved/</code> in the runtime's mirror, and a new Task can restore
+              <code>refs/fleet/preserved/</code> in your repository, and a new Task can restore
               it by naming that ref in a <code>git+file</code> URL.
             </li>
             <li>

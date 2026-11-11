@@ -37,16 +37,33 @@ fn main() {
         .unwrap_or_else(|| SOCKET.to_string());
     // A start looks the key up and then makes its window, so two at once
     // could each make one; a stop between them could remove the one the
-    // other just adopted. Both run one at a time per server, and so does a
-    // workspace call, which makes or adopts by key the same way.
-    let mut _turn = None;
-    if matches!(verb.as_str(), "start" | "stop" | "workspace") {
-        match lock(&socket) {
-            Ok(file) => _turn = Some(file),
+    // other just adopted. Both run one at a time per server. A workspace
+    // call makes or adopts by key the same way, but may take minutes (a
+    // first clone, setup steps), so it holds only its key's lock, never the
+    // server's. A stop that releases the workspace takes the key's lock
+    // first, then the server's: no call takes them the other way round.
+    let mut _turns = Vec::new();
+    let key_lock = match verb.as_str() {
+        "workspace" => true,
+        "stop" => released(&request),
+        _ => false,
+    };
+    let mut names = Vec::new();
+    if key_lock {
+        if let Some(key) = request_key(&request) {
+            names.push(format!("runtime-mux-{socket}.key-{key}.lock"));
+        }
+    }
+    if matches!(verb.as_str(), "start" | "stop") {
+        names.push(format!("runtime-mux-{socket}.lock"));
+    }
+    for name in names {
+        match lock(&name) {
+            Ok(file) => _turns.push(file),
             Err(e) => {
                 println!(
                     "{}",
-                    serde_json::json!({ "unknown": { "why": format!("cannot take the start lock: {e}") } })
+                    serde_json::json!({ "unknown": { "why": format!("cannot take the lock {name}: {e}") } })
                 );
                 return;
             }
@@ -65,6 +82,28 @@ fn main() {
     );
     registry.shutdown_all();
     println!("{answer}");
+}
+
+/// The request's key when it names a valid one: the runtime protocol's
+/// key, letters, digits, '.', '-' and '_', which a file name holds as it is.
+fn request_key(request: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(request).ok()?;
+    let key = value.get("key")?.as_str()?;
+    let valid = !key.is_empty()
+        && key.len() <= 128
+        && !key.starts_with('.')
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    valid.then(|| key.to_string())
+}
+
+/// Whether a stop request releases the key's workspace.
+fn released(request: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(request)
+        .ok()
+        .and_then(|v| v.get("release").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
 }
 
 /// How a view reaches this server: this program's `view`, naming the socket
@@ -137,15 +176,15 @@ fn view(args: Vec<String>) -> Result<(), String> {
     served
 }
 
-/// The lock serializing starts and stops on `socket`'s server, held until
-/// the returned file is dropped. It sits in the private directory tmux keeps
+/// The lock file `name`, held until the returned file is dropped: the one
+/// serializing starts and stops on a server, or one key's. It sits in the private directory tmux keeps
 /// its sockets in, `<TMUX_TMPDIR or /tmp>/tmux-<uid>` and never under
 /// `TMPDIR`, so every caller reaching one server takes one lock, a server in
 /// another directory has its own, and no other user can plant a link at its
 /// name. The directory is made `0700` when missing and refused, as tmux
 /// refuses it, when another user owns it or can write to it.
 #[cfg(unix)]
-fn lock(socket: &str) -> std::io::Result<std::fs::File> {
+fn lock(name: &str) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
     let base = std::env::var_os("TMUX_TMPDIR")
         .filter(|d| !d.is_empty())
@@ -172,19 +211,19 @@ fn lock(socket: &str) -> std::io::Result<std::fs::File> {
         .create(true)
         .append(true)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(dir.join(format!("runtime-mux-{socket}.lock")))?;
+        .open(dir.join(name))?;
     file.lock()?;
     Ok(file)
 }
 
 /// The lock on a host without tmux's private socket directory.
 #[cfg(not(unix))]
-fn lock(socket: &str) -> std::io::Result<std::fs::File> {
+fn lock(name: &str) -> std::io::Result<std::fs::File> {
     let user = std::env::var("USERNAME").unwrap_or_default();
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(std::env::temp_dir().join(format!("runtime-mux-{user}-{socket}.lock")))?;
+        .open(std::env::temp_dir().join(format!("{user}-{name}")))?;
     file.lock()?;
     Ok(file)
 }

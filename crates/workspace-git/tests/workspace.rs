@@ -81,6 +81,24 @@ impl Sandbox {
         dir
     }
 
+    /// A bare repository cloned from a new origin: a URL to it gets a
+    /// source of its own, as a remote does.
+    fn bare(&self, name: &str) -> PathBuf {
+        let origin = self.origin(&format!("{name}-work"));
+        let bare = self.base.join(format!("{name}.git"));
+        git(
+            &self.base,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                &origin.display().to_string(),
+                &bare.display().to_string(),
+            ],
+        );
+        bare
+    }
+
     /// A branch of `origin` holding `file`, `main` left checked out.
     fn branch(&self, origin: &Path, branch: &str, file: &str) {
         git(origin, &["checkout", "-q", "-b", branch]);
@@ -263,7 +281,7 @@ fn a_branch_checked_out_elsewhere_gets_a_numbered_one() {
 #[test]
 fn a_dirty_release_is_preserved_and_a_git_file_url_restores_it() {
     let s = Sandbox::new();
-    let origin = s.origin("app");
+    let origin = s.bare("app");
     let (dirs, _) = s.made("t.dirty", &[url("git+file", &origin)]);
     let tree = PathBuf::from(&dirs[0]);
     fs::write(tree.join("README"), "edited\n").unwrap();
@@ -296,7 +314,7 @@ fn a_dirty_release_is_preserved_and_a_git_file_url_restores_it() {
 #[test]
 fn a_clean_release_preserves_nothing_and_keeps_the_branch() {
     let s = Sandbox::new();
-    let origin = s.origin("app");
+    let origin = s.bare("app");
     s.made("t.clean", &[url("git+file", &origin)]);
     release(&s.cfg, "t.clean").expect("release");
     let source = s.source();
@@ -356,7 +374,7 @@ fn a_failing_url_rolls_back_what_was_made() {
         !s.cfg.root.join("t.fails").exists(),
         "nothing of the key is left"
     );
-    let worktrees = git(&s.source(), &["worktree", "list", "--porcelain"]);
+    let worktrees = git(&origin, &["worktree", "list", "--porcelain"]);
     assert!(!worktrees.contains("t.fails"), "{worktrees}");
 }
 
@@ -364,7 +382,7 @@ fn a_failing_url_rolls_back_what_was_made() {
 fn preserved_work_past_its_retention_is_pruned_on_the_next_call() {
     let mut s = Sandbox::new();
     s.cfg.preserve_days = 0;
-    let origin = s.origin("app");
+    let origin = s.bare("app");
     let (dirs, _) = s.made("t.old", &[url("git+file", &origin)]);
     fs::write(Path::new(&dirs[0]).join("w.txt"), "w").unwrap();
     release(&s.cfg, "t.old").expect("release");
@@ -380,7 +398,7 @@ fn preserved_work_past_its_retention_is_pruned_on_the_next_call() {
 #[test]
 fn a_released_branch_origin_already_has_is_pruned() {
     let s = Sandbox::new();
-    let origin = s.origin("app");
+    let origin = s.bare("app");
     s.made("t.merged", &[url("git+file", &origin)]);
     release(&s.cfg, "t.merged").expect("release");
     // The branch's head is origin's main: origin already has it.
@@ -432,7 +450,7 @@ fn the_program_answers_a_make_and_a_release_as_json() {
 #[test]
 fn a_discard_removes_the_workspace_and_preserves_nothing() {
     let s = Sandbox::new();
-    let origin = s.origin("app");
+    let origin = s.bare("app");
     let (dirs, _) = s.made("t.discard", &[url("git+file", &origin)]);
     fs::write(Path::new(&dirs[0]).join("setup.txt"), "made by setup").unwrap();
     workspace_git::discard(&s.cfg, "t.discard").expect("discard");
@@ -492,3 +510,132 @@ fn concurrent_makes_of_one_new_repository_all_succeed() {
         }
     }
 }
+
+/// A `git+file` URL naming a local checkout gets a worktree of the checkout
+/// itself: the checkout lists it, and a commit made in it is in the
+/// checkout at once. No source of its own is made.
+#[test]
+fn a_local_checkout_gets_a_worktree_of_itself() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    let (dirs, _) = s.made(
+        "t.co",
+        &[format!("{}?branch=feature#main", url("git+file", &origin))],
+    );
+    let tree = PathBuf::from(&dirs[0]);
+    let listed = git(&origin, &["worktree", "list", "--porcelain"]);
+    assert!(
+        listed.contains(&format!("worktree {}", tree.display())),
+        "the checkout lists the worktree: {listed}"
+    );
+    fs::write(tree.join("work.txt"), "work\n").unwrap();
+    git(&tree, &["add", "work.txt"]);
+    git(&tree, &["commit", "-q", "-m", "work"]);
+    assert_eq!(
+        git(&origin, &["log", "-1", "--format=%s", "feature"]),
+        "work",
+        "the commit is on the checkout's own branch"
+    );
+    assert!(
+        !s.cfg
+            .root
+            .join(".sources")
+            .read_dir()
+            .map(|mut d| d.any(|e| e.unwrap().path().is_dir()))
+            .unwrap_or(false),
+        "no source of its own"
+    );
+}
+
+/// An existing branch of a checkout is the real one: a commit in the
+/// worktree moves the checkout's branch.
+#[test]
+fn an_existing_branch_of_a_checkout_is_its_real_branch() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    s.branch(&origin, "feat-x", "x.txt");
+    let (dirs, _) = s.made(
+        "t.real",
+        &[format!("{}?branch=feat-x#main", url("git+file", &origin))],
+    );
+    let tree = PathBuf::from(&dirs[0]);
+    assert_eq!(branch_of(&dirs[0]), "feat-x");
+    fs::write(tree.join("more.txt"), "more\n").unwrap();
+    git(&tree, &["add", "more.txt"]);
+    git(&tree, &["commit", "-q", "-m", "more"]);
+    assert_eq!(
+        git(&origin, &["log", "-1", "--format=%s", "feat-x"]),
+        "more"
+    );
+}
+
+/// A release of a checkout's worktree keeps its uncommitted work in the
+/// checkout, removes the worktree and keeps the branch.
+#[test]
+fn a_release_preserves_a_checkouts_dirty_work_in_the_checkout() {
+    let s = Sandbox::new();
+    let origin = s.origin("app");
+    let (dirs, _) = s.made(
+        "t.keep",
+        &[format!("{}?branch=keep#main", url("git+file", &origin))],
+    );
+    let tree = PathBuf::from(&dirs[0]);
+    fs::write(tree.join("draft.txt"), "draft\n").unwrap();
+    release(&s.cfg, "t.keep").expect("release");
+    assert!(!tree.exists(), "the worktree goes");
+    let listed = git(&origin, &["worktree", "list", "--porcelain"]);
+    assert!(!listed.contains("t.keep"), "{listed}");
+    let preserved = "refs/fleet/preserved/t.keep/app";
+    assert_eq!(
+        git(&origin, &["show", &format!("{preserved}:draft.txt")]),
+        "draft"
+    );
+    git(&origin, &["rev-parse", "--verify", "refs/heads/keep"]);
+    assert!(
+        git(&origin, &["status", "--porcelain"]).is_empty(),
+        "nothing is left in the user's working tree"
+    );
+}
+
+/// The lock file workspace-git takes for `repository` under `root`.
+fn repository_lock(root: &Path, repository: &Path) -> fs::File {
+    use sha2::{Digest, Sha256};
+    let digest: String = Sha256::digest(repository.display().to_string().as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    fs::create_dir_all(root.join(".sources")).unwrap();
+    fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join(".sources").join(format!("{digest}.lock")))
+        .unwrap()
+}
+
+/// The retention never touches a repository another call holds: a make that
+/// finds one locked leaves its preserved work for a later make.
+#[test]
+fn the_retention_leaves_a_repository_another_call_holds() {
+    let mut s = Sandbox::new();
+    s.cfg.preserve_days = 0;
+    let remote = s.bare("app");
+    let (dirs, _) = s.made("t.held", &[url("git+file", &remote)]);
+    fs::write(Path::new(&dirs[0]).join("w.txt"), "w").unwrap();
+    release(&s.cfg, "t.held").expect("release");
+    let source = s.source();
+    let preserved = "refs/fleet/preserved/t.held/app";
+    let other = s.origin("other");
+
+    let held = repository_lock(&s.cfg.root, &source);
+    held.lock().unwrap();
+    s.made("t.during", &[url("git+file", &other)]);
+    git(&source, &["rev-parse", "--verify", preserved]);
+    drop(held);
+
+    s.made("t.after", &[url("git+file", &other)]);
+    assert_eq!(git(&source, &["for-each-ref", PRESERVED_PREFIX]), "");
+}
+
+const PRESERVED_PREFIX: &str = "refs/fleet/preserved";

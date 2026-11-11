@@ -93,8 +93,10 @@ not change how the command ends; a child that left the group and holds a
 stream open does not hold the answer past the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
 It makes workspaces by running `workspace-git` on this machine
-([its workspaces](#runtime-muxs-workspaces)); a workspace call takes the
-same lock as a start.
+([its workspaces](#runtime-muxs-workspaces)). A workspace call takes a lock
+of its key only, never the server's lock: a first clone or a long setup step
+does not hold up a start or a stop of another key. A stop that releases a
+workspace takes the key's lock first, then the server's.
 
 thurbox's stream pane (`stream_panes` in its `settings.toml`) is a view: it
 opens a local tmux pane through `runtime-mux view --scrollback <lines> --pane
@@ -352,7 +354,9 @@ The URL is the whole request: Fleet adds nothing to it.
 | `git+https://host/org/repo.git` | a worktree on a new branch from the default branch |
 | `git+https://host/org/repo.git#v2` | the same, from `v2` |
 | `git+ssh://git@host/org/repo.git?branch=feat-x#main` | a worktree on `feat-x`, made from `main` when it does not exist |
-| `git+file:///srv/mirrors/repo.git#refs/fleet/preserved/<key>/repo` | a worktree on work an earlier release preserved |
+| `git+file:///home/me/app?branch=feat-x#main` | a worktree of that checkout itself, on its own `feat-x` |
+| `git+file:///home/me/app#refs/fleet/preserved/<key>/app` | a worktree on work an earlier release preserved in that checkout |
+| `git+file:///srv/mirrors/repo.git#refs/fleet/preserved/<key>/repo` | a worktree on work an earlier release preserved in a bare repository |
 | `file:///home/me/notes` | nothing: the directory, as it is |
 
 Restoring preserved work is therefore a new Task whose URL names the preserved
@@ -376,15 +380,28 @@ program, so it runs where the runtime's files are. Its layout:
 ```text
 <root>/<key>/<name>/                  one real worktree per git URL
 <root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
-<root>/.sources/<digest>.git          a bare source per repository, fetched before each make
+<root>/<key>/.fleet-sources           the checkouts the key's worktrees belong to
+<root>/.sources/<digest>.git          a bare source per remote repository, fetched before each make
+<root>/.sources/<digest>.lock         one lock per repository a worktree is made from
+<root>/.checkouts                     the local checkouts worktrees were made from
 ```
 
-- A source fetches its remote's branches into `refs/remotes/origin/*`, and
-  its tags. A fetch therefore never moves a branch that a worktree has
-  checked out. Every branch in the source's `refs/heads/` is one that
+- A `git+file` URL that names a local checkout, a repository with a working
+  tree, gets a worktree of that checkout itself. Nothing is fetched or
+  copied:
+  - an existing branch is the checkout's own branch;
+  - a new branch is made in the checkout;
+  - a commit made in the worktree is in the checkout at once;
+  - `git -C <checkout> worktree list` lists the worktree.
+- Any other git URL, a remote or a bare repository, gets a bare source of its
+  own. A source fetches its remote's branches into `refs/remotes/origin/*`,
+  and its tags. A fetch therefore never moves a branch that a worktree has
+  checked out. Every branch in a source's `refs/heads/` is one that
   `workspace-git` made.
-- Each worktree belongs to its source, so its branch and its preserved ref are
-  in the source: the source is the mirror.
+- Each worktree belongs to its repository, the checkout or the source, so its
+  branch and its preserved ref are there.
+- One lock per repository orders every make, release, rollback and retention
+  on it, across runtimes that share a root.
 - With one URL the session starts in `<root>/<key>/<name>`; with several the
   first URL's worktree is still the start, and every worktree is a real
   directory, so thurbox's symlink workspace goes. Two URLs with one name get
@@ -392,19 +409,25 @@ program, so it runs where the runtime's files are. Its layout:
 - With no `branch`, the branch is named after the key. An existing branch is
   checked out, and one checked out elsewhere gets `<branch>-<n>`, from 2.
 - A fragment names the base: a remote branch, a tag, a branch of the source,
-  or a ref or commit as given, in that order. A `refs/…` fragment that a fetch
+  or a ref or commit as given, in that order. A checkout reads its own
+  branches before its remote's. A `refs/…` fragment that a fetch
   of branches does not bring, such as preserved work, is fetched by name.
-  With no fragment, the base is the remote's default branch.
+  With no fragment, the base is the remote's default branch; a checkout with
+  no remote starts from the branch it has checked out.
 - A `file://` URL takes no query and no fragment, and names an existing
   absolute directory. A `%XX` in a path is decoded.
 - A key holds one workspace: the same key with other URLs fails.
 - On release, a dirty worktree is committed, untracked files included,
-  through a temporary index onto `refs/fleet/preserved/<key>/<name>`; then
-  the worktree goes. Branches are never deleted on release. The release of a
+  through a temporary index onto `refs/fleet/preserved/<key>/<name>` in its
+  repository; then the worktree goes. The temporary index lives in the key's
+  directory, never in a checkout's working tree. Branches are never deleted
+  on release. The release of a
   key that holds no workspace succeeds.
 - On each make it prunes its own retention: preserved refs older than
-  `preserve.days` (default 30), and branches not checked out whose head the
-  remote already has.
+  `preserve.days` (default 30), in sources and in checkouts, and a source's
+  branches not checked out whose head the remote already has. A checkout's
+  branches are the user's and are never deleted. A repository another call
+  holds is left for the next make.
 - Git never waits for a person: `GIT_TERMINAL_PROMPT=0`, and ssh runs in
   batch mode unless `GIT_SSH_COMMAND` or `GIT_SSH` names another command.
 

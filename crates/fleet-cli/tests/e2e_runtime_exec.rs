@@ -843,33 +843,24 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Every preserved ref in the runtime's sources under `root`.
-fn preserved_refs(root: &Path) -> Vec<String> {
-    let Ok(sources) = fs::read_dir(root.join(".sources")) else {
-        return Vec::new();
-    };
-    sources
-        .flatten()
-        .filter(|s| s.path().is_dir())
-        .flat_map(|s| {
-            git(
-                &s.path(),
-                &[
-                    "for-each-ref",
-                    "--format=%(refname)",
-                    "refs/fleet/preserved",
-                ],
-            )
-            .lines()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-        })
-        .collect()
+/// Every preserved ref in `repository`.
+fn preserved_refs(repository: &Path) -> Vec<String> {
+    git(
+        repository,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/fleet/preserved",
+        ],
+    )
+    .lines()
+    .map(str::to_string)
+    .collect()
 }
 
 /// A Task naming a local repository as a `git+file` URL runs in a worktree
-/// runtime-mux makes under its workspace root, and its release keeps the
-/// work the session left uncommitted.
+/// of that checkout under runtime-mux's workspace root, and its release keeps
+/// the work the session left uncommitted in the checkout.
 #[test]
 fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_work() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
@@ -929,16 +920,11 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
         env.reconcile();
     }
     assert!(!dir.exists(), "the release removed the worktree");
-    let refs = preserved_refs(&root);
+    // The worktree was the checkout's own, so the work is kept there.
+    let refs = preserved_refs(&src);
     assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
-    let source = fs::read_dir(root.join(".sources"))
-        .expect("sources")
-        .flatten()
-        .find(|s| s.path().is_dir())
-        .expect("one source")
-        .path();
     assert_eq!(
-        git(&source, &["show", &format!("{}:notes.txt", refs[0])]),
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
         "kept\n"
     );
 }

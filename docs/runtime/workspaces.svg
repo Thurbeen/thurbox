@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 600" role="img" aria-labelledby="title desc">
 <title id="title">Workspaces: a list of URLs in, directories out</title>
-<desc id="desc">A Task names its workspace as a list of URLs, such as git+https, git+ssh, git+file and file. Fleet checks only that each is an absolute URL, calls the runtime's workspace verb with the Task's key and the URLs before the first start, records the directories it answers, and calls stop with release true after the session is released; a collector does the same for any key whose Task is gone. The runtime makes the workspace its own way: runtime-mux on the host, runtime-container on the docker host or in a volume, runtime-vm inside the guest, using workspace-git for git URLs and configured setup and teardown steps. Its rules: idempotent by key, never removes what it did not make, never loses work on release, never waits for a person. On release workspace-git commits uncommitted work onto a preserved ref and pushes it to a mirror; a new Task restores it by naming that ref in a git+file URL.</desc>
+<desc id="desc">A Task names its workspace as a list of URLs, such as git+https, git+ssh, git+file and file. Fleet checks only that each is an absolute URL, calls the runtime's workspace verb with the Task's key and the URLs before the first start, records the directories it answers, and calls stop with release true after the session is released; a collector does the same for any key whose Task is gone. The runtime makes the workspace its own way: runtime-mux on the host, runtime-container on the docker host or in a volume, runtime-vm inside the guest, using workspace-git for git URLs and configured setup and teardown steps. Its rules: idempotent by key, never removes what it did not make, never loses work on release, never waits for a person. On release workspace-git commits uncommitted work onto a preserved ref in the worktree's repository, the checkout or its source; a new Task restores it by naming that ref in a git+file URL.</desc>
 <style>
   svg { color-scheme:light dark }
   .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
@@ -98,7 +98,7 @@
   <text x="78" y="461" font-size="14" font-weight="650">rules every runtime keeps · fleet runtime check</text>
   <text x="46" y="488" font-size="12">idempotent by key: the same key answers the same dirs</text>
   <text x="46" y="508" font-size="12">never removes what it did not make: file:// survives</text>
-  <text x="46" y="528" font-size="12">never loses work: workspace-git preserves it on a ref, pushed to its mirror</text>
+  <text x="46" y="528" font-size="12">never loses work: workspace-git preserves it on a ref in its repository</text>
   <text x="46" y="548" font-size="12">never waits for a person: release finishes or answers Unknown</text>
   <use href="#i-gear" x="626" y="444" width="24" height="24"/>
   <text x="658" y="461" font-size="14" font-weight="650">customizing</text>

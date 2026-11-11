@@ -662,13 +662,9 @@ fn a_workspace_is_made_and_a_release_takes_it_with_the_process() {
     assert_eq!(stopped["known"], "stopped", "{stopped}");
     assert_eq!(ws.rt.inspect("w.one")["known"], "none");
     assert!(!tree.exists(), "the release removes the worktree");
-    let sources: Vec<_> = std::fs::read_dir(ws.base.join("root/.sources"))
-        .expect("sources")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.is_dir())
-        .collect();
+    // A local checkout's worktree keeps its preserved work in the checkout.
     git(
-        &sources[0],
+        &ws.base.join("app"),
         &["rev-parse", "--verify", "refs/fleet/preserved/w.one/app"],
     );
 }
@@ -710,6 +706,39 @@ fn setup_steps_run_in_a_new_workspace_and_a_failing_one_rolls_it_back() {
         "{failed}"
     );
     assert!(!ws.base.join("root/w.broken").exists(), "rolled back");
+}
+
+/// A slow workspace call, such as a first clone or a long setup, holds only
+/// its own key: a start on another key goes on at once.
+#[test]
+fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let url = ws.origin("app");
+    ws.configure(&format!(
+        "[[workspace.setup]]\nmatch = '{url}'\nrun = ['sleep 6']\n"
+    ));
+    let ws = &ws;
+    std::thread::scope(|scope| {
+        let slow = scope.spawn(|| ws.workspace("w.slow", &[url.as_str()]));
+        // The worktree exists: the workspace call holds its lock and runs
+        // its setup.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ws.base.join("root/w.slow/app").exists() {
+            assert!(Instant::now() < deadline, "the workspace call never began");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let begun = Instant::now();
+        started(&ws.rt.start("w.other", &["sleep", "300"]));
+        let waited = begun.elapsed();
+        assert!(
+            waited < Duration::from_secs(3),
+            "the start waited {waited:?} for another key's workspace"
+        );
+        let made = slow.join().expect("the workspace call");
+        assert!(made["known"]["made"].is_object(), "{made}");
+    });
 }
 
 /// A runtime that stopped after `workspace-git` made the workspace and

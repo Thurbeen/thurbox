@@ -405,7 +405,9 @@ not applicable.
    `git+file:///repo?branch=<branch>` (its own default branch) for the
    rest, all on one branch; a repository as it is, an existing worktree
    and a directory with no repository are `file:///repo`. The runtime
-   makes every worktree.
+   makes every worktree, as a worktree of the checkout itself: an existing
+   branch is the repository's own, and the session's commits are in the
+   repository at once (`git worktree list` there shows the worktree).
 
 Creating applies an interactive Task with `fleet apply --create-only`, so two
 names that make one Task name (`Review`, `review`) are refused rather than
