@@ -235,3 +235,95 @@ fn an_idle_notification_keeps_an_idle_agent_idle() {
     env.reconcile().ok();
     assert_eq!(env.get("t1")["status"]["agentState"], "attention");
 }
+
+/// `fleet signal` reads the payload with the fields of the harness's
+/// profile: `--harness`, else `FLEET_HARNESS`, which Fleet sets at spawn. A
+/// user profile in the config dir names fields no bundled one does.
+#[test]
+fn a_harness_profile_names_the_payload_fields_fleet_signal_reads() {
+    let env = Env::new("signal-harness-fields");
+    let mut t = support::task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"].as_object_mut().unwrap().remove("outputs");
+    env.apply(json!([t])).ok();
+    let harnesses = env.config.parent().unwrap().join("harnesses");
+    std::fs::create_dir_all(&harnesses).unwrap();
+    std::fs::write(
+        harnesses.join("vendor.toml"),
+        "name = \"vendor\"\nprogram = \"vendor\"\nauthority = \"full\"\n\n[payload]\nconversation = [\"sessionID\"]\n",
+    )
+    .unwrap();
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    let conversation = |env: &Env| env.get("t1")["status"]["conversation"].clone();
+
+    signal(
+        &env,
+        &file,
+        &[
+            "idle",
+            "--harness",
+            "vendor",
+            r#"{"sessionID":"v1","session_id":"no"}"#,
+        ],
+    );
+    env.reconcile().ok();
+    assert_eq!(conversation(&env), "v1");
+
+    let mut cmd = env.command(&["signal", "idle", r#"{"sessionID":"v2"}"#]);
+    cmd.env("FLEET_SIGNAL_FILE", &file)
+        .env("FLEET_HARNESS", "vendor");
+    wait(cmd.spawn().expect("fleet signal")).ok();
+    env.reconcile().ok();
+    assert_eq!(conversation(&env), "v2");
+
+    // No harness named: the default fields.
+    signal(
+        &env,
+        &file,
+        &["idle", r#"{"sessionID":"v3","session_id":"c3"}"#],
+    );
+    env.reconcile().ok();
+    assert_eq!(conversation(&env), "c3");
+}
+
+/// Fleet names the session's harness to its hooks.
+#[test]
+fn a_session_is_started_with_its_harness_named() {
+    let env = setup("signal-harness-env");
+    env.reconcile().ok();
+    let session = env
+        .host()
+        .session(&env.session_key("t1"))
+        .unwrap()
+        .expect("a session");
+    assert_eq!(
+        session.env.get("FLEET_HARNESS").map(String::as_str),
+        Some("claude-code")
+    );
+}
+
+/// `fleet signal` reads the profiles from the directory Fleet named at
+/// spawn, not beside the config its own `fleet` would find, and one profile
+/// it cannot parse leaves the others read.
+#[test]
+fn a_hook_reads_the_profiles_fleet_launched_it_with() {
+    let env = setup("signal-harness-dir");
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    let dir = env.root.join("elsewhere");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("vendor.toml"),
+        "name = \"vendor\"\nprogram = \"vendor\"\nauthority = \"full\"\n\n[payload]\nconversation = [\"sessionID\"]\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("broken.toml"), "not toml [").unwrap();
+    let mut cmd = env.command(&["signal", "idle", r#"{"sessionID":"d1"}"#]);
+    cmd.env("FLEET_SIGNAL_FILE", &file)
+        .env("FLEET_HARNESS", "vendor")
+        .env("FLEET_HARNESS_DIR", &dir);
+    wait(cmd.spawn().expect("fleet signal")).ok();
+    env.reconcile().ok();
+    assert_eq!(env.get("t1")["status"]["conversation"], "d1");
+}

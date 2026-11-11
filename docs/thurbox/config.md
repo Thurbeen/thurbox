@@ -640,9 +640,10 @@ database:
   this machine is `local`. A host Fleet's config does not define
   (`fleet runtime hosts`) is refused.
 - The chosen agent is the Task's harness, and only an agent Fleet has a
-  harness profile for (`fleet version --json`'s `harnesses`: `claude`,
-  `claude-code`, `codex`) is taken. Any other, `shell` included, is refused
-  by name: Fleet would run a program named as the agent.
+  harness profile for (`fleet version --json`'s `harnesses`: the bundled
+  `claude`, `claude-code` and `codex`, and each user profile) is taken. Any
+  other, `shell` included, is refused by name: Fleet would run a program
+  named as the agent.
 - A rename sets the Task's `thurbox.dev/name` label (`fleet label`). The
   manual order and each session's companion shell pane are `interface.json`.
   A saved shell is re-adopted on the multiplexer it was opened on; a host's

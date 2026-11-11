@@ -74,7 +74,9 @@ pub(crate) fn resolve(
     };
     let pause_after_ms = spec.pause_after_ms.or(defaults.pause_after_ms);
     validate_execution(Some(&harness), Some(&host), model.as_deref())?;
-    let mut env = std::collections::BTreeMap::new();
+    // The harness profile's variables first, under every source: the
+    // frozen launch keeps them as they were when it was resolved.
+    let mut env = fleet_api::harness::profile(&harness).launch.env;
     for (name, provider) in providers {
         let mut data = provider.data;
         for (index, s) in provider.sources.iter().enumerate() {

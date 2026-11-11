@@ -599,6 +599,73 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }
 
+/// An agent that exists for Fleet only as a harness profile in the user's
+/// config dir. It reports through `fleet signal`, as any harness's hook
+/// would, and then waits.
+const STUB_AGENT: &str = r#"#!/bin/sh
+printf '%s' "$FLEET_HARNESS" > "$PWD/harness"
+fleet signal working
+printf '%s' '{"session_id":"s1"}' | fleet signal idle
+exec sleep 300
+"#;
+
+const STUB_PROFILE: &str = r#"name = "stub"
+program = "stub-agent"
+authority = "full"
+
+[payload]
+conversation = ["session_id"]
+"#;
+
+#[test]
+fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("stub");
+    let mut env = mux_env("runtime-mux-stub", &program, &sockets);
+    let harnesses = env.config.parent().unwrap().join("harnesses");
+    fs::create_dir_all(&harnesses).expect("harnesses dir");
+    fs::write(harnesses.join("stub.toml"), STUB_PROFILE).expect("profile");
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let agent = bin.join("stub-agent");
+    fs::write(&agent, STUB_AGENT).expect("agent");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let version = env.fleet(&["version", "--json"]).ok().json();
+    assert_eq!(
+        version["harnesses"],
+        json!(["stub", "claude", "claude-code", "codex"]),
+        "a view offers the user's harness"
+    );
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("stub");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "idle on conversation s1", |env| {
+        let status = env.get("t1")["status"].clone();
+        status["agentState"] == "idle" && status["conversation"] == "s1"
+    });
+    assert_eq!(
+        fs::read_to_string(work.join("harness")).unwrap_or_default(),
+        "stub",
+        "Fleet names the harness to its hooks"
+    );
+}
+
 /// A PATH holding only what the reference script and the conformance cases
 /// run, without `flock`: the script takes its lock through perl, as on
 /// macOS.

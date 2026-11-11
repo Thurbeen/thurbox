@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::harness::Payload;
 use crate::meta::Millis;
 use crate::observation::Observation;
 use crate::runtime::Activity;
@@ -79,24 +80,37 @@ pub struct Signal {
 
 impl Signal {
     /// The signal a hook's `payload` (its JSON, when it passed one) makes
-    /// for `state`: the prompts it names, by digest, and its conversation.
-    /// Claude Code gives `prompt` and `session_id`; Codex's notify gives
-    /// `input-messages` and `thread-id`.
+    /// for `state`, read with the default fields: Claude Code's `prompt`
+    /// and `session_id`, Codex's `input-messages` and `thread-id`.
     pub fn from_hook(at: Millis, state: State, payload: Option<&serde_json::Value>) -> Signal {
-        let field = |names: &[&str]| {
-            names
-                .iter()
-                .find_map(|n| payload.and_then(|p| p[*n].as_str()).map(str::to_string))
-        };
+        Signal::from_hook_with(at, state, payload, &Payload::default())
+    }
+
+    /// The signal a hook's `payload` makes for `state`, read with `fields`,
+    /// its harness profile's: the prompts it names, by digest, and its
+    /// conversation.
+    pub fn from_hook_with(
+        at: Millis,
+        state: State,
+        payload: Option<&serde_json::Value>,
+        fields: &Payload,
+    ) -> Signal {
         let mut prompts = Vec::new();
         if let Some(p) = payload {
-            if let Some(text) = p["prompt"].as_str() {
-                prompts.push(prompt_digest(text));
-            }
-            if let Some(list) = p["input-messages"].as_array() {
-                prompts.extend(list.iter().filter_map(|m| m.as_str()).map(prompt_digest));
+            for name in &fields.prompt {
+                match &p[name] {
+                    serde_json::Value::String(text) => prompts.push(prompt_digest(text)),
+                    serde_json::Value::Array(list) => {
+                        prompts.extend(list.iter().filter_map(|m| m.as_str()).map(prompt_digest));
+                    }
+                    _ => {}
+                }
             }
         }
+        let conversation = fields
+            .conversation
+            .iter()
+            .find_map(|n| payload.and_then(|p| p[n].as_str()).map(str::to_string));
         // Claude Code's `Stop` lists the work its turn left running: a
         // background shell or subagent, a cron that wakes it later. A stop
         // would end that work, so the agent is not idle.
@@ -123,7 +137,7 @@ impl Signal {
             at,
             state,
             prompts,
-            conversation: field(&["session_id", "thread-id"]).filter(|c| !c.is_empty()),
+            conversation: conversation.filter(|c| !c.is_empty()),
         }
     }
 }
@@ -250,5 +264,21 @@ mod tests {
                 .prompts
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_profiles_payload_fields_name_its_prompts_and_conversation() {
+        let fields = Payload {
+            prompt: vec!["user_message".into()],
+            conversation: vec!["sessionID".into()],
+        };
+        let hook = json!({"user_message": "brief", "sessionID": "o1", "session_id": "no"});
+        let s = Signal::from_hook_with(1, State::Prompt, Some(&hook), &fields);
+        assert_eq!(s.prompts, vec![prompt_digest("brief")]);
+        assert_eq!(s.conversation.as_deref(), Some("o1"));
+        // The default fields are not read for a profile that names others.
+        let claude = json!({"prompt": "brief", "session_id": "abc"});
+        let s = Signal::from_hook_with(1, State::Prompt, Some(&claude), &fields);
+        assert!(s.prompts.is_empty() && s.conversation.is_none());
     }
 }

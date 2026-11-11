@@ -985,8 +985,11 @@ append to, passed as `FLEET_SIGNAL_FILE` in the spawn's environment, and
 when it was last reported, the last conversation id). A file never
 written is Known and empty; a file that cannot be read is Unknown. `fleet signal <working|blocked|idle|prompt>
 [payload]` appends one line of at most 4 KiB in one write, reads the hook's
-JSON from the argument or stdin, stores prompts only as digests, and does
-nothing when the variable is unset. The `FileSignals` adapter keeps the
+JSON from the argument or stdin with the `[payload]` fields of the harness
+that `--harness` or `FLEET_HARNESS` names (the default fields when none
+does), stores prompts only as digests, and does nothing when the variable
+is unset. [signal-contract.md](signal-contract.md) is this contract as an
+agent vendor reads it. The `FileSignals` adapter keeps the
 files under `<data dir>/signals` for sessions on this machine, and answers
 Unknown for any other host: reading a remote file takes the runtime's
 `exec`. TaskController reads the file for every live session, not only one that
