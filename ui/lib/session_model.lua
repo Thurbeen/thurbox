@@ -109,8 +109,8 @@ end
 --- sitting there tagged `delete` for as long as the worker took — so the list
 --- kept showing what you had just removed. Dropping it on the keystroke is what
 --- makes the delete read as done. Once the delete succeeds, the kernel stops
---- publishing the row until Fleet no longer lists the Task, so it does not come
---- back while Fleet releases the session.
+--- publishing the row while Fleet releases the session, and lists it again
+--- only as a stuck deletion (`deleting_since_ms`).
 ---
 --- A FAILED delete is deliberately kept. The session is still there, and the
 --- failed row is the only thing that says the deletion did not happen.

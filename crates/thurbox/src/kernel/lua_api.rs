@@ -299,6 +299,12 @@ pub static SESSION: Class = Class {
         leaf("status_since_ms", "integer")
             .opt()
             .doc("When Fleet first saw this status from this source, in ms since the epoch."),
+        leaf("deleting_since_ms", "integer").opt().doc(
+            "When Fleet marked this session for deletion, in ms since the epoch. Present only on a deletion that has run past the time a teardown takes: one that has not is not listed.",
+        ),
+        leaf("deleting_why", "string")
+            .opt()
+            .doc("Why Fleet has not finished that deletion: its `Released` condition."),
         leaf("backend", "string"),
         leaf("repo", "string").opt(),
         leaf("branch", "string").opt(),

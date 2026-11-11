@@ -109,6 +109,19 @@ local function source_detail(session)
 end
 
 local function agent_status(session)
+  -- A deletion Fleet has not finished in the time a teardown takes: the row
+  -- is listed again only to say so, and why Fleet still holds it.
+  if session.deleting_since_ms then
+    local text = "deletion stuck"
+    local age = ago(session.deleting_since_ms)
+    if age then
+      text = text .. " · " .. age
+    end
+    if session.deleting_why then
+      text = text .. " · " .. session.deleting_why
+    end
+    return text, nil
+  end
   -- Nothing the agent said can be current on a host we cannot reach, so the
   -- row says why instead of showing a last message as if it were live.
   if session.status == "unreachable" then

@@ -41,6 +41,12 @@ through `fleet signal`, and Fleet's harness profiles wire those hooks at launch
 (`crates/fleet-api/src/harness.rs`). thurbox installs nothing into an agent's
 config and derives no state of its own.
 
+A Task marked for deletion (`metadata.deletionTimestamp`) is not listed while
+Fleet releases its session. `FleetWatch::poll` lists it again once
+`DELETION_STUCK_AFTER` (three minutes) has passed since the mark, as the row's
+`deleting`, published as `deleting_since_ms` and `deleting_why` (the Task's
+`Released` condition); the sessions pane reads it as `deletion stuck`.
+
 ## The vocabulary
 
 `SessionState` is the one vocabulary every surface prints. Five words are an

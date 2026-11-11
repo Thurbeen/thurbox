@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{repo_name, SessionRow, SnapshotSource, SourceRead, StatusSource};
+use super::{repo_name, Deleting, SessionRow, SnapshotSource, SourceRead, StatusSource};
 use crate::session::SessionState;
 
 /// How long a watch that ended waits before it is started again, resuming
@@ -28,6 +28,20 @@ const RETRY: Duration = Duration::from_secs(2);
 /// about again: each ask is a `fleet up`, which exits at once while another
 /// holds the lease.
 const MANAGER_CHECK: Duration = Duration::from_secs(10);
+
+/// How long a Task marked for deletion stays off the list while Fleet tears
+/// its session down. Past it, the row comes back marked so a teardown that
+/// does not end can be seen.
+///
+/// Fleet releases a session once it is at rest. A release is one runtime
+/// operation: at most two calls, each bounded by the host's runtime
+/// `callTimeoutMs` (15 s by default, ssh hosts included) plus 4 s of grace,
+/// so 38 s. A failed one is tried again after 30 s, and the third failure
+/// raises NeedsAttention. Three attempts and the two waits between them take
+/// 174 s at most, so three minutes covers every release Fleet still expects
+/// to finish on its own. A session busy when it is deleted is released only
+/// once it is at rest, and can pass the mark that way.
+pub const DELETION_STUCK_AFTER: Duration = Duration::from_secs(180);
 
 /// `fleet up`'s exit code when another manager holds the lease.
 const LEASE_HELD: i32 = 6;
@@ -65,6 +79,10 @@ pub struct FleetWatch {
     tasks: Vec<SessionRow>,
     /// Whether the watch has delivered rows yet.
     rows_seen: bool,
+    /// When the next Task marked for deletion runs past
+    /// [`DELETION_STUCK_AFTER`], in ms since the epoch: the rows change then
+    /// though the watch says nothing.
+    next_stuck_ms: Option<i64>,
     /// `interface.json` as last read, and the generation it was read at.
     interface: Option<(u64, crate::config::interface_state::InterfaceState)>,
     /// The running `fleet watch`, killed when the source goes.
@@ -109,6 +127,7 @@ impl FleetWatch {
             manager_error: None,
             tasks: Vec::new(),
             rows_seen: false,
+            next_stuck_ms: None,
             interface: None,
             child,
         }
@@ -144,13 +163,27 @@ impl SnapshotSource for FleetWatch {
             // Before the first rows there is nothing to lay it over.
             moved |= self.rows_seen;
         }
+        let now = now_ms();
+        moved |= self.next_stuck_ms.is_some_and(|at| at <= now);
         if !moved {
             return None;
         }
+        let stuck_after = DELETION_STUCK_AFTER.as_millis() as i64;
+        let stuck_at = |row: &SessionRow| row.deleting.as_ref().map(|d| d.since_ms + stuck_after);
+        self.next_stuck_ms = self
+            .tasks
+            .iter()
+            .filter_map(stuck_at)
+            .filter(|at| *at > now)
+            .min();
         let state = self.interface.as_ref().map(|(_, state)| state);
         self.read.sessions = self
             .tasks
             .iter()
+            // A Task marked for deletion is going: its controller is
+            // releasing the session. It is shown again only once that has
+            // taken longer than a release does.
+            .filter(|row| stuck_at(row).is_none_or(|at| at <= now))
             .cloned()
             .map(|mut row| {
                 if let Some(state) = state {
@@ -183,6 +216,12 @@ impl Drop for FleetWatch {
             }
         }
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// Ask Fleet which hosts it defines (`fleet runtime hosts --json`), again
@@ -359,13 +398,7 @@ fn follow(
         if !synced {
             continue;
         }
-        // A Task marked for deletion is going: its controller is releasing
-        // the session, and nothing done to it now would last.
-        let rows = tasks
-            .values()
-            .filter(|task| task["metadata"]["deletionTimestamp"].is_null())
-            .map(row_of)
-            .collect();
+        let rows = tasks.values().map(row_of).collect();
         if tx
             .send(Update::Rows(rows, std::mem::take(removed)))
             .is_err()
@@ -644,6 +677,21 @@ pub fn row_of(task: &Value) -> SessionRow {
         detected_agent: None,
         meta: BTreeMap::new(),
         status_source,
+        deleting: task["metadata"]["deletionTimestamp"]
+            .as_i64()
+            .map(|since_ms| Deleting {
+                since_ms,
+                why: status["conditions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|c| c["type"] == "Released")
+                    .and_then(|c| {
+                        text(&c["message"])
+                            .filter(|m| !m.is_empty())
+                            .or_else(|| text(&c["reason"]))
+                    }),
+            }),
     }
 }
 
@@ -792,6 +840,53 @@ mod tests {
         }
         assert_eq!(removed, ["gone"]);
         assert!(ids.iter().any(|id| id == "gone"), "{ids:?}");
+    }
+
+    /// A Task marked for deletion is off the list until its teardown has run
+    /// past [`DELETION_STUCK_AFTER`], then back, marked, though the watch
+    /// said nothing more; one Fleet drops in time is never listed.
+    #[cfg(unix)]
+    #[test]
+    fn a_deletion_is_listed_again_only_once_it_runs_past_the_timeout() {
+        let bin = tempfile::tempdir().expect("bin");
+        let stuck_after = DELETION_STUCK_AFTER.as_millis() as i64;
+        let task = |name: &str, marked: i64| {
+            serde_json::json!({"type": "changed", "revision": 1, "object": {
+                "metadata": {"name": name, "uid": name, "deletionTimestamp": marked}}})
+        };
+        let script = [
+            "[ \"$1\" = watch ] || exit 1".to_string(),
+            format!("echo '{}'", task("stuck", now_ms() - stuck_after + 2_000)),
+            format!("echo '{}'", task("prompt", now_ms())),
+            r#"echo '{"type": "synced", "revision": 1, "names": ["prompt", "stuck"]}'"#.into(),
+            "sleep 1".into(),
+            r#"echo '{"type": "deleted", "revision": 2, "name": "prompt"}'"#.into(),
+            "exec sleep 30".into(),
+        ]
+        .join("\n");
+        let mut source = FleetWatch::spawn(fake_fleet(bin.path(), &script));
+        let started = std::time::Instant::now();
+        let mut seen: Vec<(Duration, Vec<String>)> = Vec::new();
+        while started.elapsed() < Duration::from_secs(5) {
+            if let Some(read) = source.poll() {
+                let ids = read.sessions.iter().map(|row| row.id.clone()).collect();
+                seen.push((started.elapsed(), ids));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            seen.iter()
+                .all(|(_, ids)| !ids.contains(&"prompt".to_string())),
+            "{seen:?}"
+        );
+        let shown = seen
+            .iter()
+            .find(|(_, ids)| ids.contains(&"stuck".to_string()))
+            .unwrap_or_else(|| panic!("never listed as stuck: {seen:?}"));
+        assert!(
+            shown.0 >= Duration::from_millis(1_000),
+            "listed early: {seen:?}"
+        );
     }
 
     #[cfg(unix)]

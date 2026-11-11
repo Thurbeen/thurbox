@@ -163,6 +163,10 @@ pub struct SessionRow {
     /// Where a Fleet row's status came from (the Task's `status.activity`);
     /// `None` for a row whose status Fleet's agent state did not decide.
     pub status_source: Option<StatusSource>,
+    /// A deletion Fleet has not finished: set on a published row only once it
+    /// has run past [`fleet::DELETION_STUCK_AFTER`], since one that has not is
+    /// not published at all.
+    pub deleting: Option<Deleting>,
 }
 
 /// Where a session's agent state came from: the agent's hooks, a screen
@@ -176,6 +180,15 @@ pub struct StatusSource {
     /// When Fleet first saw this state from this source, in ms since the
     /// epoch.
     pub since_ms: Option<i64>,
+}
+
+/// A Task Fleet marked for deletion and still lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleting {
+    /// When Fleet marked it, in ms since the epoch.
+    pub since_ms: i64,
+    /// Why Fleet has not let it go: its `Released` condition's message.
+    pub why: Option<String>,
 }
 
 impl SessionRow {

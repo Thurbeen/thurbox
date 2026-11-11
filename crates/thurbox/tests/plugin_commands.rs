@@ -2028,6 +2028,7 @@ fn file_snapshot(root: &std::path::Path) -> thurbox::kernel::snapshot::Snapshot 
             reports_as: None,
             detected_agent: None,
             meta: Default::default(),
+            deleting: None,
             status_source: None,
         });
     snapshot

@@ -477,6 +477,7 @@ mod tests {
             shell_backend_id: None,
             member_dirs: Vec::new(),
             meta: Default::default(),
+            deleting: None,
             status_source: None,
         }
     }

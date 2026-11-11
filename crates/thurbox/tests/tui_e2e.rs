@@ -6858,6 +6858,39 @@ fn a_delete_fleet_refuses_keeps_the_row_and_says_why() {
     assert!(tui.quit().success());
 }
 
+#[test]
+fn a_deletion_fleet_never_finishes_comes_back_marked_stuck() {
+    // A Task Fleet marked for deletion ten minutes ago and still lists is a
+    // teardown that has run far past the time one takes: its row is shown,
+    // marked, with why Fleet has not let it go, so it can be inspected.
+    let profile = Profile::new();
+    let marked = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64
+        - 600_000;
+    let task = serde_json::json!({"type": "changed", "revision": 1, "object": {
+        "metadata": {"name": "d", "uid": "u1", "deletionTimestamp": marked},
+        "spec": {"harness": "claude-code", "host": "local", "workspace": []},
+        "status": {"conditions": [{"type": "Released", "status": "False",
+            "reason": "SessionBusy", "message": "waiting for the session to be at rest"}]},
+    }});
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["d"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{task}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  *) exit 1 ;;\nesac\n"
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_until("the stuck deletion's row", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains(" d ") && line.contains("deletion stuck"))
+    });
+    assert!(tui.quit().success());
+}
+
 /// The companion shell is the user's `$SHELL`, and a zsh started in the
 /// profile's empty HOME opens its first-run wizard instead of a prompt.
 fn plain_shell(cmd: &mut Command) {
