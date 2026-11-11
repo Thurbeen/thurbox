@@ -507,7 +507,8 @@ has released the session. The row leaves the list on the keystroke and stays
 off it while Fleet tears the session down. A Task still marked for deletion
 three minutes after Fleet marked it comes back, marked `deletion stuck` with
 why Fleet still holds it (its `Released` condition), so it can be inspected
-with `fleet get task`. Three minutes covers a release Fleet still expects to
+with `fleet get task`. Deleting it again leaves it listed, since Fleet has
+nothing more to do for it. Three minutes covers a release Fleet still expects to
 finish on its own: three attempts at the runtime's default 15 s call bound,
 ssh hosts included, with the 30 s wait between attempts. A session still busy
 when it is deleted waits to be at rest first, and can pass the mark that way.
