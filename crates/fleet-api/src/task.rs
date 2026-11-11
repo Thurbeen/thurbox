@@ -277,7 +277,7 @@ impl Workspace {
 
     /// The directory the first URL names when it is `file://`: where the
     /// agent starts, made by nobody. `None` for any other workspace.
-    pub fn dir(&self) -> Option<&str> {
+    pub fn dir(&self) -> Option<String> {
         self.0.first().and_then(|u| file_path(u))
     }
 
@@ -286,23 +286,54 @@ impl Workspace {
     /// separators dropped, `.` segments dropped. Nothing is resolved against
     /// a filesystem, so a symlink or `..` is another spelling.
     pub fn normalised(&self) -> Option<String> {
-        self.dir().map(normalise_dir)
+        self.dir().as_deref().map(normalise_dir)
     }
 }
 
-/// `file://<dir>`: the URL of a directory used as it is.
+/// `file://<dir>`: the URL of a directory used as it is. The bytes a URL
+/// reads apart, `%`, `?`, `#` and whitespace, are percent-encoded, as a
+/// runtime decodes them.
 pub fn file_url(dir: &str) -> String {
-    format!("file://{dir}")
+    let mut url = String::from("file://");
+    for c in dir.chars() {
+        if matches!(c, '%' | '?' | '#') || c.is_whitespace() {
+            let mut buf = [0; 4];
+            for b in c.encode_utf8(&mut buf).bytes() {
+                url.push_str(&format!("%{b:02X}"));
+            }
+        } else {
+            url.push(c);
+        }
+    }
+    url
 }
 
-/// The path a `file://` URL names, as it is written; `None` for any other URL.
-pub fn file_path(url: &str) -> Option<&str> {
-    url.strip_prefix("file://").filter(|p| !p.is_empty())
+/// The path a `file://` URL names, percent-decoded as a runtime reads it;
+/// `None` for any other URL.
+pub fn file_path(url: &str) -> Option<String> {
+    let raw = url.strip_prefix("file://").filter(|p| !p.is_empty())?;
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(hex) = bytes.get(i + 1..i + 3)
+            && let Ok(hex) = std::str::from_utf8(hex)
+            && let Ok(b) = u8::from_str_radix(hex, 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// The directory a stored Task's spec names as its first URL, when that is
 /// `file://`: what a thread's directory is checked against.
-pub fn spec_dir(spec: &serde_json::Value) -> Option<&str> {
+pub fn spec_dir(spec: &serde_json::Value) -> Option<String> {
     spec["workspace"][0].as_str().and_then(file_path)
 }
 
@@ -575,7 +606,7 @@ mod tests {
         for not in ["/w", "C:/w", "C:\\w", "file://", "://x", "1x://y", "w"] {
             assert_eq!(url_scheme(not), None, "{not}");
         }
-        assert_eq!(Workspace::at("/w").dir(), Some("/w"));
+        assert_eq!(Workspace::at("/w").dir().as_deref(), Some("/w"));
         assert_eq!(Workspace::of(["git+https://h/o/r"]).dir(), None);
     }
 
@@ -596,5 +627,22 @@ mod tests {
         assert_eq!(normalise_dir("/"), "/");
         assert_eq!(Workspace::at("/w/").normalised().as_deref(), Some("/w"));
         assert_eq!(Workspace::of(["git+https://h/o/r"]).normalised(), None);
+    }
+
+    /// A directory becomes a URL a runtime reads back to that directory:
+    /// whitespace, `%`, `?` and `#` are escaped, and a path is decoded
+    /// before two spellings of it are compared.
+    #[test]
+    fn a_directory_round_trips_through_its_file_url() {
+        for dir in ["/work/team notes", "/work/a#b?c", "/work/100%"] {
+            let url = file_url(dir);
+            assert!(!url.contains(char::is_whitespace), "{url}");
+            assert!(!url["file://".len()..].contains(['#', '?']), "{url}");
+            assert_eq!(file_path(&url).as_deref(), Some(dir), "{url}");
+        }
+        assert_eq!(
+            file_path("file:///work/conv%2D123").as_deref(),
+            Some("/work/conv-123")
+        );
     }
 }

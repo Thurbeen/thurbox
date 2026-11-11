@@ -92,7 +92,7 @@ done
 agent_for() { echo "${agents[$(($1 % ${#agents[@]}))]}"; }
 
 echo "==> building thurbox (dev)"
-(cd "$ROOT" && cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux) || exit 1
+(cd "$ROOT" && cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux --bin workspace-git) || exit 1
 
 REAL_HOME="$HOME"
 REC_SOCKET="thurbox-hero-rec"

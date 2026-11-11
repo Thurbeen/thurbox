@@ -129,9 +129,16 @@ pub struct Branches {
 ///
 /// Local branches only: a `git+file` workspace is made from a clone of this
 /// checkout, and that clone holds exactly these branches.
-pub fn branches(repo: &str) -> Option<Branches> {
+pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     let repo = paths::expand_tilde(repo);
-    super::run_git_capture(&["rev-parse", "--git-dir"], &repo)?;
+    // Whether there is a repository is read from the filesystem, so a `git`
+    // that cannot run, or refuses the repository, never passes for none.
+    let bare = repo.join("HEAD").is_file() && repo.join("objects").is_dir();
+    if !bare && !repo.ancestors().any(|at| at.join(".git").exists()) {
+        return Err(BranchesUnread::NotGit);
+    }
+    super::run_git_capture(&["rev-parse", "--git-dir"], &repo)
+        .ok_or_else(|| BranchesUnread::Failed(format!("git could not read {}", repo.display())))?;
     let mut names: Vec<String> = super::run_git_capture(
         &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
         &repo,
@@ -156,7 +163,16 @@ pub fn branches(repo: &str) -> Option<Branches> {
     let default = advertised
         .or(checked_out)
         .or_else(|| names.first().cloned());
-    Some(Branches { default, names })
+    Ok(Branches { default, names })
+}
+
+/// Why [`branches`] has no answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchesUnread {
+    /// The directory is no git repository.
+    NotGit,
+    /// It is one, and `git` could not read it: the message says why.
+    Failed(String),
 }
 
 /// Parse repo name from the origin remote URL.

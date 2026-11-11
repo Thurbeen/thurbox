@@ -314,7 +314,15 @@ fn workspace_url(
     } else {
         std::path::PathBuf::from(repo)
     };
-    if !dir.is_absolute() {
+    // Another host's path is read as that host reads it, which need not be
+    // this machine's way: `/srv/app` is absolute on a Linux host even when
+    // thurbox runs on Windows.
+    let absolute = if local {
+        dir.is_absolute()
+    } else {
+        repo.starts_with('/') || has_drive(repo)
+    };
+    if !absolute {
         return Err(if local {
             format!("not an absolute path: {repo}")
         } else {
@@ -354,11 +362,28 @@ fn is_git(dir: &std::path::Path) -> bool {
     bare || dir.ancestors().any(|at| at.join(".git").exists())
 }
 
+/// Whether `path` starts with a Windows drive, `C:\\` or `C:/`.
+fn has_drive(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
+}
+
+/// A path as a URL spells it: `/` separators, and a Windows drive after a
+/// leading `/` (`C:\\x` is `/C:/x`); Windows' `\\?\` prefix dropped.
+fn url_path(path: &str) -> String {
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    if has_drive(path) {
+        format!("/{}", path.replace('\\', "/"))
+    } else {
+        path.to_string()
+    }
+}
+
 /// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
 /// whitespace) percent-encoded, as the runtime decodes them.
 pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
     let mut url = format!("{scheme}://");
-    for c in dir.to_string_lossy().chars() {
+    for c in url_path(&dir.to_string_lossy()).chars() {
         push_char(&mut url, c, |c| {
             c == '%' || c == '?' || c == '#' || c.is_whitespace()
         });
@@ -407,15 +432,15 @@ mod tests {
         };
         assert_eq!(
             workspace_url("local", &dir, new(None, Some("main")), "wt").unwrap(),
-            format!("git+file://{dir}?branch=wt#main")
+            format!("git+file://{}?branch=wt#main", super::url_path(&dir))
         );
         assert_eq!(
             workspace_url("local", &dir, new(Some("feat/a&b"), None), "wt").unwrap(),
-            format!("git+file://{dir}?branch=feat/a%26b")
+            format!("git+file://{}?branch=feat/a%26b", super::url_path(&dir))
         );
         assert_eq!(
             workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
-            format!("git+file://{dir}?branch=wt")
+            format!("git+file://{}?branch=wt", super::url_path(&dir))
         );
         let off = Choice {
             worktree: Some(false),
@@ -423,7 +448,7 @@ mod tests {
         };
         assert_eq!(
             workspace_url("local", &dir, off, "wt").unwrap(),
-            format!("file://{dir}")
+            format!("file://{}", super::url_path(&dir))
         );
     }
 
@@ -442,7 +467,7 @@ mod tests {
             .contains("no git repository"));
         assert_eq!(
             workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
-            format!("file://{dir}")
+            format!("file://{}", super::url_path(&dir))
         );
         assert!(workspace_url("devbox", "~/app", Choice::default(), "wt")
             .unwrap_err()
@@ -451,6 +476,17 @@ mod tests {
             workspace_url("devbox", "/srv/app", Choice::default(), "wt").unwrap(),
             "file:///srv/app"
         );
+    }
+
+    /// A Windows path is spelled as a URL spells one, so a runtime reads it
+    /// back to the same directory.
+    #[test]
+    fn a_windows_path_is_spelled_with_its_drive_after_a_slash() {
+        use super::{has_drive, url_path};
+        assert_eq!(url_path(r"C:\Users\me\app"), "/C:/Users/me/app");
+        assert_eq!(url_path(r"\\?\C:\x"), "/C:/x");
+        assert_eq!(url_path("/srv/app"), "/srv/app");
+        assert!(has_drive("D:/w") && !has_drive("/srv"));
     }
 
     /// Fleet's names forbid `..`, so a folder such as `app..backup` must not

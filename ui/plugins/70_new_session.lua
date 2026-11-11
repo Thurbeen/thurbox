@@ -840,13 +840,19 @@ local function render_workspace(flow)
     labels[index] = workspace_label(flow, choice)
   end
   local height = #labels
+  -- A repository git could not read keeps every choice, and says why.
+  local read = repo_branches(flow.primary)
+  local shown = flow
+  if not flow.message and read and read.error then
+    shown = { message = read.error }
+  end
   return frame("Workspace", height + 4, {
     {
       type = "box",
       len = height,
       children = selector_rows(labels, widgets.clamp(flow.workspace_index, height), height),
     },
-    message_row(flow),
+    message_row(shown),
     modal.footer({ { "↑/↓", "choose" } }, "Select", { cancel = "Back" }),
   }, flow)
 end

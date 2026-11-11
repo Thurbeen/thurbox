@@ -665,6 +665,7 @@ fn a_workspace_is_made_and_a_release_takes_it_with_the_process() {
     let sources: Vec<_> = std::fs::read_dir(ws.base.join("root/.sources"))
         .expect("sources")
         .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
         .collect();
     git(
         &sources[0],
@@ -709,6 +710,72 @@ fn setup_steps_run_in_a_new_workspace_and_a_failing_one_rolls_it_back() {
         "{failed}"
     );
     assert!(!ws.base.join("root/w.broken").exists(), "rolled back");
+}
+
+/// A runtime that stopped after `workspace-git` made the workspace and
+/// before its setup finished leaves a workspace that is whole to
+/// `workspace-git`. The next call runs the setup steps before it answers.
+#[test]
+fn a_workspace_whose_setup_never_finished_runs_it_when_adopted() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let url = ws.origin("app");
+    ws.configure(&format!(
+        "[[workspace.setup]]\nmatch = '{url}'\nrun = ['printf ready > setup.txt']\n"
+    ));
+    // `workspace-git` alone: what a runtime killed during setup leaves.
+    let mut child = Command::new(&ws.program)
+        .arg("make")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("workspace-git");
+    std::io::Write::write_all(
+        child.stdin.as_mut().expect("stdin"),
+        json!({"root": ws.base.join("root"), "key": "w.half", "urls": [url]})
+            .to_string()
+            .as_bytes(),
+    )
+    .expect("request");
+    drop(child.stdin.take());
+    assert!(child.wait().expect("wait").success());
+    let tree = ws.base.join("root/w.half/app");
+    assert!(!tree.join("setup.txt").exists());
+    let made = ws.workspace("w.half", &[&url]);
+    assert!(made["known"]["made"].is_object(), "{made}");
+    assert_eq!(
+        std::fs::read_to_string(tree.join("setup.txt")).unwrap_or_default(),
+        "ready",
+        "setup runs before the workspace is answered: {made}"
+    );
+}
+
+/// A failed setup's discard that `workspace-git` could not finish is no
+/// known failure: what is left may still be adopted.
+#[cfg(unix)]
+#[test]
+fn a_discard_that_does_not_finish_leaves_the_workspace_unknown() {
+    let Some(mut ws) = Workspaces::unconfigured() else {
+        return;
+    };
+    let stub = ws.base.join("stub-workspace-git");
+    let dir = ws.base.join("made");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\ncase \"$1\" in\n  make) printf '{{\"made\":{{\"dirs\":[\"{}\"],\"adopted\":false}}}}' ;;\n  discard) printf '{{\"unknown\":{{\"why\":\"busy\"}}}}' ;;\nesac\n",
+            dir.display()
+        ),
+    )
+    .expect("stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    ws.program = stub;
+    ws.configure("[[workspace.setup]]\nmatch = 'file:///x'\nrun = ['exit 3']\n");
+    let answer = ws.workspace("w.stuck", &["file:///x"]);
+    assert!(answer["unknown"]["why"].is_string(), "{answer}");
 }
 
 #[test]

@@ -427,7 +427,7 @@ impl Runtime for FakeRuntime {
         let dirs: Vec<String> = urls
             .iter()
             .map(|url| match fleet_api::task::file_path(url) {
-                Some(path) => path.to_string(),
+                Some(path) => path,
                 None => root.join(url_name(url)).to_string_lossy().into_owned(),
             })
             .collect();

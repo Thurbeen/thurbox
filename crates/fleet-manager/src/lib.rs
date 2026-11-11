@@ -851,7 +851,7 @@ impl Manager<'_> {
             };
             if let Some(holder) = tasks.iter().find(|t| {
                 fleet_api::task::spec_dir(&t.spec)
-                    .is_some_and(|d| fleet_api::task::normalise_dir(d) == wanted)
+                    .is_some_and(|d| fleet_api::task::normalise_dir(&d) == wanted)
             }) {
                 let busy = EffectOutcome::WorkspaceBusy {
                     task: holder.metadata.name.clone(),
@@ -1013,7 +1013,7 @@ impl Manager<'_> {
         };
         if let Some(holder) = tasks.iter().find(|t| {
             fleet_api::task::spec_dir(&t.spec)
-                .is_some_and(|d| fleet_api::task::normalise_dir(d) == wanted)
+                .is_some_and(|d| fleet_api::task::normalise_dir(&d) == wanted)
         }) {
             return Observation::Known(EffectOutcome::WorkspaceBusy {
                 task: holder.metadata.name.clone(),

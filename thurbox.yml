@@ -364,6 +364,8 @@ globals:
     property: read-only
   thurbox.repo_branches.is_git:
     property: read-only
+  thurbox.repo_branches.error:
+    property: read-only
   thurbox.repo_branches.default:
     property: read-only
   thurbox.repo_branches.names:

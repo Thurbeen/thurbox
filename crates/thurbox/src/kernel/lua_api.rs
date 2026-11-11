@@ -609,6 +609,9 @@ pub static REPO_BRANCHES: Class = Class {
         leaf("repo", "string"),
         leaf("loading", "boolean"),
         leaf("is_git", "boolean").doc("False when the directory is no git repository."),
+        leaf("error", "string")
+            .opt()
+            .doc("Why a git repository's branches could not be read; its worktree choices stay offered."),
         leaf("default", "string")
             .opt()
             .doc("The branch a new worktree starts from by default."),

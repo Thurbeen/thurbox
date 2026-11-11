@@ -137,6 +137,8 @@ pub enum BranchListing {
     Pending,
     /// The directory is no git repository.
     NotGit,
+    /// It is one, and its branches could not be read: why.
+    Failed(String),
     Ready(crate::git::Branches),
 }
 
@@ -294,8 +296,9 @@ impl RepoStore {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let listing = match crate::git::branches(&repo) {
-                Some(found) => BranchListing::Ready(found),
-                None => BranchListing::NotGit,
+                Ok(found) => BranchListing::Ready(found),
+                Err(crate::git::BranchesUnread::NotGit) => BranchListing::NotGit,
+                Err(crate::git::BranchesUnread::Failed(why)) => BranchListing::Failed(why),
             };
             let _ = tx.send(Done::Branches { repo, listing });
         });

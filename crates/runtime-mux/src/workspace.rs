@@ -34,6 +34,11 @@ pub const SCHEMES: &[&str] = &["git+https", "git+ssh", "git+file", "file"];
 /// Names the runtime's config file in place of the default.
 pub const CONFIG_ENV: &str = "RUNTIME_MUX_CONFIG";
 
+/// The file, in the key's directory beside `workspace-git`'s record, that
+/// marks this runtime's setup steps done. `workspace-git` removes it with
+/// the workspace.
+const SETUP_DONE: &str = ".runtime-mux-setup";
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
@@ -122,8 +127,9 @@ impl Workspaces {
     }
 
     /// The `workspace` verb's answer: `workspace-git`'s, then this runtime's
-    /// setup steps in a workspace it just made. A failing step discards the
-    /// workspace and fails the call.
+    /// setup steps, unless a call before this one finished them. A failing
+    /// step discards the workspace and fails the call: no session has
+    /// worked in a workspace whose setup never finished.
     pub fn make(&self, key: &str, urls: &[String]) -> Value {
         let mut request = json!({ "root": self.root, "key": key, "urls": urls });
         if let Some(days) = self.preserve_days {
@@ -140,7 +146,8 @@ impl Workspaces {
                 None => known(answer),
             };
         };
-        if made["adopted"] == true {
+        let done = self.root.join(key).join(SETUP_DONE);
+        if made["adopted"] == true && done.is_file() {
             return known(answer);
         }
         let dirs: Vec<String> = made["dirs"]
@@ -153,12 +160,20 @@ impl Workspaces {
             .unwrap_or_default();
         if let Err(why) = run_steps(&self.setup, urls, &dirs) {
             return match self.call("discard", &json!({ "root": self.root, "key": key })) {
-                Ok(_) => known(json!({ "failed": { "why": why } })),
+                Ok(discarded) if discarded == json!("discarded") => {
+                    known(json!({ "failed": { "why": why } }))
+                }
+                Ok(other) => unknown(format!(
+                    "{why}; and the workspace was not discarded: workspace-git discard answered {other}"
+                )),
                 Err(Call::NotRun(e) | Call::Unanswered(e)) => {
                     unknown(format!("{why}; and the workspace was not discarded: {e}"))
                 }
             };
         }
+        // A marker that cannot be written only costs the steps again on the
+        // next call.
+        let _ = std::fs::write(&done, "");
         known(answer)
     }
 

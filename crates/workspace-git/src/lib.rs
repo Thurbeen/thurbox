@@ -353,6 +353,9 @@ fn worktree(
     branch: Option<&str>,
     base: Option<&str>,
 ) -> Result<Tree, String> {
+    // Held until the worktree is added: the source is made, fetched and
+    // given a worktree by one maker at a time.
+    let _lock = lock_source(cfg, remote)?;
     let source = source(cfg, remote)?;
     let path = cfg.root.join(key).join(name);
     fs::create_dir_all(cfg.root.join(key))
@@ -479,11 +482,41 @@ fn free_branch(source: &Path, branch: &str) -> Result<String, String> {
         .ok_or_else(|| format!("no free branch name after {branch}"))
 }
 
+/// The name the source for `remote` is kept under in `.sources`.
+fn source_name(remote: &str) -> String {
+    Sha256::digest(remote.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// An exclusive lock on the source for `remote`, released when the file is
+/// dropped or the process ends. Two runtimes that share a root, such as two
+/// on different sockets, take the same lock, so one never removes a source
+/// the other is filling.
+fn lock_source(cfg: &Config, remote: &str) -> Result<fs::File, String> {
+    let dir = cfg.root.join(".sources");
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    let path = dir.join(format!("{}.lock", source_name(remote)));
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    file.lock()
+        .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
+    Ok(file)
+}
+
 /// The bare source for `remote`, made on first use and fetched every time.
+/// The caller holds [`lock_source`].
 fn source(cfg: &Config, remote: &str) -> Result<PathBuf, String> {
-    let digest = Sha256::digest(remote.as_bytes());
-    let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    let dir = cfg.root.join(".sources").join(format!("{hex}.git"));
+    let dir = cfg
+        .root
+        .join(".sources")
+        .join(format!("{}.git", source_name(remote)));
     let fresh = !dir.join("HEAD").is_file();
     let made = (|| {
         if fresh {
@@ -644,7 +677,7 @@ fn parse(url: &str) -> Parsed {
         if query.is_some() || fragment.is_some() {
             return Parsed::Bad(format!("{url}: a file:// URL takes no query or fragment"));
         }
-        let path = PathBuf::from(decode(rest));
+        let path = PathBuf::from(local_path(&decode(rest)));
         if !path.is_absolute() {
             return Parsed::Bad(format!("{url} names no absolute path"));
         }
@@ -656,7 +689,7 @@ fn parse(url: &str) -> Parsed {
     let transport = scheme.trim_start_matches("git+");
     let remote = if transport == "file" {
         // A local path, as git reads one: it also clones a non-bare checkout.
-        decode(rest)
+        local_path(&decode(rest))
     } else {
         format!("{transport}://{rest}")
     };
@@ -723,6 +756,25 @@ fn dedupe_names(requests: &mut [Request]) {
 }
 
 /// `%XX` decoded; anything else as it is.
+/// The local path a decoded `file`/`git+file` URL path names here. On
+/// Windows a URL spells `C:\\dir` as `/C:/dir`: the leading `/` goes and the
+/// separators become `\\`.
+fn local_path(path: &str) -> String {
+    if cfg!(windows) {
+        windows_path(path)
+    } else {
+        path.to_string()
+    }
+}
+
+fn windows_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let drive =
+        bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':';
+    let path = if drive { &path[1..] } else { path };
+    path.replace('/', "\\")
+}
+
 fn decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -746,6 +798,14 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A URL spells a Windows path with a leading `/` and `/` separators.
+    #[test]
+    fn a_windows_drive_path_is_read_from_its_url_spelling() {
+        assert_eq!(windows_path("/C:/Users/me/app"), "C:\\Users\\me\\app");
+        assert_eq!(windows_path("C:/x"), "C:\\x");
+        assert_eq!(windows_path("/srv/app"), "\\srv\\app");
+    }
 
     #[test]
     fn a_git_url_names_its_remote_branch_and_base() {

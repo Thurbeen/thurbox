@@ -850,6 +850,7 @@ fn preserved_refs(root: &Path) -> Vec<String> {
     };
     sources
         .flatten()
+        .filter(|s| s.path().is_dir())
         .flat_map(|s| {
             git(
                 &s.path(),
@@ -933,7 +934,7 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     let source = fs::read_dir(root.join(".sources"))
         .expect("sources")
         .flatten()
-        .next()
+        .find(|s| s.path().is_dir())
         .expect("one source")
         .path();
     assert_eq!(

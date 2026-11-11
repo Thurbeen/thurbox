@@ -478,6 +478,9 @@ impl LuaHost {
         .map_err(|e| e.to_string())?;
         out.set("is_git", !matches!(listing, Some(BranchListing::NotGit)))
             .map_err(|e| e.to_string())?;
+        if let Some(BranchListing::Failed(why)) = listing {
+            out.set("error", why.clone()).map_err(|e| e.to_string())?;
+        }
         let names = self.lua.create_table().map_err(|e| e.to_string())?;
         if let Some(BranchListing::Ready(found)) = listing {
             out.set(

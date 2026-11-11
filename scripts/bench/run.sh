@@ -91,7 +91,7 @@ esac
 
 if [ "$build" = 1 ] && [[ ",$hosts," == *,thurbox,* ]]; then
     (cd "$repo" && nice -n 10 cargo build --release --bin thurbox --bin thurbox-cli \
-        --bin fleet --bin runtime-mux)
+        --bin fleet --bin runtime-mux --bin workspace-git)
 fi
 
 command -v tmux >/dev/null || {

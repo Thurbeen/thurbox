@@ -623,6 +623,7 @@
 ---@field repo string
 ---@field loading boolean
 ---@field is_git boolean False when the directory is no git repository.
+---@field error? string Why a git repository's branches could not be read; its worktree choices stay offered.
 ---@field default? string The branch a new worktree starts from by default.
 ---@field names string[]
 

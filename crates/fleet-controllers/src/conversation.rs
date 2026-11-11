@@ -1095,7 +1095,7 @@ impl Pass<'_, '_> {
             exclusive: route
                 .workspace
                 .base_dir()
-                .and(self.workspace(&route).dir().map(str::to_string))
+                .and(self.workspace(&route).dir())
                 .map(|dir| Exclusive { workspace: dir }),
         });
         // The receipt lands in the same manager step; should it not, look
@@ -1149,7 +1149,7 @@ impl Pass<'_, '_> {
                     .defaults
                     .route
                     .as_ref()
-                    .and_then(|r| self.workspace(r).dir().map(str::to_string))
+                    .and_then(|r| self.workspace(r).dir())
                     .unwrap_or_default();
                 self.attention.raise(
                     WORKSPACE_BUSY,

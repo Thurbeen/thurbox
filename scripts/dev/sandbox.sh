@@ -92,9 +92,9 @@ fi
 # Build the dev binaries BEFORE the HOME override (so cargo finds ~/.cargo):
 # the TUI and its CLI, and the Fleet and runtime the sessions run on.
 tui_binary="thurbox"
-log "building $tui_binary, thurbox-cli, fleet and runtime-mux (dev)"
+log "building $tui_binary, thurbox-cli, fleet, runtime-mux and workspace-git (dev)"
 ( cd "$TBX_REPO_ROOT" && cargo build --bin "$tui_binary" --bin thurbox-cli \
-    --bin fleet --bin runtime-mux >&2 )
+    --bin fleet --bin runtime-mux --bin workspace-git >&2 )
 
 if [ "$isolation" = "full" ]; then
     tbx_sandbox_init_full "$mode" "$profile"

@@ -37,6 +37,7 @@ return {
       tostring(thurbox.repo_branches.repo),
       tostring(thurbox.repo_branches.loading),
       tostring(thurbox.repo_branches.is_git),
+      tostring(thurbox.repo_branches.error),
       tostring(thurbox.repo_branches.default),
       tostring(thurbox.repo_branches.names),
       tostring(thurbox.hosts),

@@ -61,7 +61,7 @@ struct Sandbox {
 impl Sandbox {
     fn new() -> Sandbox {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let base = tmp.path().canonicalize().expect("canonical tempdir");
+        let base = plain(tmp.path().canonicalize().expect("canonical tempdir"));
         let cfg = Config::new(base.join("root"));
         Sandbox {
             _tmp: tmp,
@@ -106,14 +106,30 @@ impl Sandbox {
         let mut sources: Vec<PathBuf> = fs::read_dir(self.cfg.root.join(".sources"))
             .expect("sources")
             .map(|e| e.expect("entry").path())
+            .filter(|p| p.is_dir())
             .collect();
         assert_eq!(sources.len(), 1, "one source: {sources:?}");
         sources.remove(0)
     }
 }
 
+/// `<scheme>://<path>`, spelled as a URL spells a Windows path: `/C:/…`.
 fn url(scheme: &str, path: &Path) -> String {
-    format!("{scheme}://{}", path.display())
+    let text = path.display().to_string().replace('\\', "/");
+    if text.starts_with('/') {
+        format!("{scheme}://{text}")
+    } else {
+        format!("{scheme}:///{text}")
+    }
+}
+
+/// `path` without Windows' `\\?\` prefix, which `canonicalize` adds and
+/// a URL cannot spell.
+fn plain(path: PathBuf) -> PathBuf {
+    match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")) {
+        Some(rest) => PathBuf::from(rest),
+        None => path,
+    }
 }
 
 fn branch_of(dir: &str) -> String {
@@ -283,15 +299,9 @@ fn a_file_url_is_used_as_it_is_and_survives_release() {
     let notes = s.base.join("my notes");
     fs::create_dir_all(&notes).unwrap();
     fs::write(notes.join("n.txt"), "keep").unwrap();
-    let (dirs, _) = s.made(
-        "t.file",
-        &[format!("file://{}", s.base.join("my%20notes").display())],
-    );
+    let (dirs, _) = s.made("t.file", &[url("file", &s.base.join("my%20notes"))]);
     assert_eq!(dirs, [notes.display().to_string()]);
-    let (_, adopted) = s.made(
-        "t.file",
-        &[format!("file://{}", s.base.join("my%20notes").display())],
-    );
+    let (_, adopted) = s.made("t.file", &[url("file", &s.base.join("my%20notes"))]);
     assert!(adopted);
     release(&s.cfg, "t.file").expect("release");
     assert_eq!(fs::read_to_string(notes.join("n.txt")).unwrap(), "keep");
@@ -439,4 +449,35 @@ fn inspect_answers_the_urls_and_directories_of_a_whole_workspace() {
             dirs
         })
     );
+}
+
+/// Two runtimes on one root, such as two Fleets on different sockets, may
+/// make workspaces of one new repository at once: neither may remove the
+/// source the other is filling.
+#[test]
+fn concurrent_makes_of_one_new_repository_all_succeed() {
+    for round in 0..4 {
+        let sandbox = Sandbox::new();
+        let origin = sandbox.origin("app");
+        let url = url("git+file", &origin);
+        let answers: Vec<Answer> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..6)
+                .map(|i| {
+                    let cfg = sandbox.cfg.clone();
+                    let url = url.clone();
+                    scope.spawn(move || make(&cfg, &format!("k.{i}"), &[url]).expect("answer"))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("thread"))
+                .collect()
+        });
+        for answer in answers {
+            assert!(
+                matches!(answer, Answer::Made { .. }),
+                "round {round}: {answer:?}"
+            );
+        }
+    }
 }
