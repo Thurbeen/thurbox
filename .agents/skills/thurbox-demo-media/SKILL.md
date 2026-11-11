@@ -52,6 +52,15 @@ GitHub release (a prerelease, so the update check ignores it) and dispatches
 `docs/thurbox/features.md` link the GIFs at
 `https://github.com/Thurbeen/thurbox/releases/download/media/<file>`. A
 replaced asset has no history: keep a copy if you may want the old take back.
+`cd.yml` finds the last release with `git describe --match 'v*'` so the
+`media` tag never stands in for a version.
+
+A fresh checkout has no recordings. For a local website preview
+(`npm run dev:website`), fetch the videos the deploy uses:
+
+```bash
+gh release download media --pattern '*.mp4' --dir website/assets --clobber
+```
 
 One VHS tape each (`scripts/demo/<feature>.tape`); no args = all, otherwise tape
 stems. Every clip uses **real agent CLIs**, one session per installed CLI, with

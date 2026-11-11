@@ -154,7 +154,10 @@ jobs:
           # a pane fix from a website one, so the type gate will not catch it either.
           SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
 
-          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          # Version tags only: the `media` release's tag
+          # (scripts/demo/publish-media.sh) also sits on main, and diffing from
+          # it would hide an unreleased `crates/` change behind a later push.
+          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
 
           if [ -z "$LAST_TAG" ]; then
             # No tag yet: nothing to diff against, so the first release always
