@@ -547,6 +547,7 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
         hosts: None,
         sessions: vec![bridged],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -629,6 +630,7 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
         hosts: None,
         sessions: vec![row("made", "fleet", Path::new("/w"))],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     store.refresh_if_due();
@@ -642,8 +644,8 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
 }
 
 /// A session whose delete succeeded stays hidden while the source still
-/// lists it, and a session of the same name the source lists after dropping
-/// it is shown again.
+/// lists it, and a session of the same name made after the source dropped
+/// it, or reported it removed, is shown again.
 #[test]
 fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -666,6 +668,16 @@ fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
     assert_eq!(names(&mut store), ["kept"]);
     tx.send(read(&["kept", "gone"])).unwrap();
     assert_eq!(names(&mut store), ["gone", "kept"], "made again since");
+
+    // Removed and made again between two answers: the name never leaves the
+    // rows, and the source says it went.
+    store.hide_until_gone("gone".into());
+    tx.send(SourceRead {
+        removed: vec!["gone".into()],
+        ..read(&["kept", "gone"])
+    })
+    .unwrap();
+    assert_eq!(names(&mut store), ["gone", "kept"], "the new one shows");
 }
 
 /// Input a stream refused is said in the interface's own notices, not in
@@ -739,6 +751,7 @@ fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
         hosts: None,
         sessions: vec![made],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     store.refresh_if_due();
@@ -789,6 +802,7 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
         hosts: None,
         sessions: vec![elsewhere, row("local", "tmux", repo.path())],
         error: None,
+        removed: Vec::new(),
     })
     .unwrap();
     until("the local row has its git state", || {

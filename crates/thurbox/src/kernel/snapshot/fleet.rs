@@ -41,7 +41,9 @@ pub const BACKEND: &str = "fleet";
 pub const NAME_LABEL: &str = "thurbox.dev/name";
 
 enum Update {
-    Rows(Vec<SessionRow>),
+    /// Every row, and the Tasks that went since the last rows: see
+    /// [`SourceRead::removed`].
+    Rows(Vec<SessionRow>, Vec<String>),
     /// Why the watch is not running, or `None` once it reads again.
     Watch(Option<String>),
     /// Why no manager runs, or `None` once one does.
@@ -119,9 +121,10 @@ impl SnapshotSource for FleetWatch {
         while let Ok(update) = self.updates.try_recv() {
             moved = true;
             match update {
-                Update::Rows(rows) => {
+                Update::Rows(rows, removed) => {
                     self.tasks = rows;
                     self.rows_seen = true;
+                    self.read.removed.extend(removed);
                 }
                 Update::Watch(error) => self.watch_error = error,
                 Update::Manager(error) => self.manager_error = error,
@@ -166,7 +169,9 @@ impl SnapshotSource for FleetWatch {
             .map(String::as_str)
             .collect();
         self.read.error = (!errors.is_empty()).then(|| errors.join("; "));
-        Some(self.read.clone())
+        let read = self.read.clone();
+        self.read.removed.clear();
+        Some(read)
     }
 }
 
@@ -234,9 +239,10 @@ fn read_harnesses(program: &Path, tx: &Sender<Update>) {
 /// ends.
 fn watch(program: &Path, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
     let mut tasks: BTreeMap<String, Value> = BTreeMap::new();
+    let mut removed = Vec::new();
     let mut since = 0u64;
     loop {
-        let why = match follow(program, &mut tasks, &mut since, tx, held) {
+        let why = match follow(program, &mut tasks, &mut removed, &mut since, tx, held) {
             Ok(()) => return,
             Err(why) => why,
         };
@@ -248,10 +254,13 @@ fn watch(program: &Path, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
 }
 
 /// One `fleet watch`, from `since`. `Ok` when the source went; otherwise why
-/// the watch ended.
+/// the watch ended. `removed` gathers the names of the Tasks that went
+/// (deleted, marked for deletion, or replaced by a Task of another uid) until
+/// rows are sent with them.
 fn follow(
     program: &Path,
     tasks: &mut BTreeMap<String, Value>,
+    removed: &mut Vec<String>,
     since: &mut u64,
     tx: &Sender<Update>,
     held: &Mutex<Option<Child>>,
@@ -307,13 +316,21 @@ fn follow(
         }
         match event["type"].as_str() {
             Some("changed") => {
-                if let Some(name) = event["object"]["metadata"]["name"].as_str() {
-                    tasks.insert(name.to_string(), event["object"].clone());
+                let task = &event["object"];
+                if let Some(name) = task["metadata"]["name"].as_str() {
+                    let replaced = tasks
+                        .get(name)
+                        .is_some_and(|held| held["metadata"]["uid"] != task["metadata"]["uid"]);
+                    if replaced || !task["metadata"]["deletionTimestamp"].is_null() {
+                        removed.push(name.to_string());
+                    }
+                    tasks.insert(name.to_string(), task.clone());
                 }
             }
             Some("deleted") => {
                 if let Some(name) = event["name"].as_str() {
                     tasks.remove(name);
+                    removed.push(name.to_string());
                 }
             }
             // A resumed watch reports only what moved: a Task deleted while
@@ -325,7 +342,13 @@ fn follow(
                     .flatten()
                     .filter_map(Value::as_str)
                     .collect();
-                tasks.retain(|name, _| names.contains(&name.as_str()));
+                tasks.retain(|name, _| {
+                    let kept = names.contains(&name.as_str());
+                    if !kept {
+                        removed.push(name.clone());
+                    }
+                    kept
+                });
                 synced = true;
                 if tx.send(Update::Watch(None)).is_err() {
                     return stop(held);
@@ -343,7 +366,10 @@ fn follow(
             .filter(|task| task["metadata"]["deletionTimestamp"].is_null())
             .map(row_of)
             .collect();
-        if tx.send(Update::Rows(rows)).is_err() {
+        if tx
+            .send(Update::Rows(rows, std::mem::take(removed)))
+            .is_err()
+        {
             return stop(held);
         }
     }
@@ -727,6 +753,45 @@ mod tests {
         std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).expect("fleet");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         program
+    }
+
+    /// A Task deleted and made again under its name between two polls is
+    /// reported removed, though its name is still in the rows: the snapshot
+    /// stops hiding the deleted one on that, not on the name going.
+    #[cfg(unix)]
+    #[test]
+    fn a_task_replaced_between_two_polls_is_reported_removed() {
+        let bin = tempfile::tempdir().expect("bin");
+        let event = |value: Value| format!("echo '{value}'");
+        let task = |name: &str, uid: &str, revision: u64| {
+            event(serde_json::json!({"type": "changed", "revision": revision,
+                "object": {"metadata": {"name": name, "uid": uid}}}))
+        };
+        let script = [
+            "[ \"$1\" = watch ] || exit 1".to_string(),
+            task("gone", "u1", 1),
+            event(serde_json::json!({"type": "synced", "revision": 1, "names": ["gone"]})),
+            "sleep 1".to_string(),
+            event(serde_json::json!({"type": "deleted", "revision": 2, "name": "gone"})),
+            task("gone", "u2", 2),
+            task("kept", "u3", 3),
+            "exec sleep 30".to_string(),
+        ]
+        .join("\n");
+        let mut source = FleetWatch::spawn(fake_fleet(bin.path(), &script));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let (mut removed, mut ids) = (Vec::new(), Vec::new());
+        while !ids.iter().any(|id| id == "kept") {
+            assert!(std::time::Instant::now() < deadline, "no second read");
+            // Slower than the script, so the replacement lands in one poll.
+            std::thread::sleep(Duration::from_millis(1500));
+            if let Some(read) = source.poll() {
+                removed.extend(read.removed);
+                ids = read.sessions.into_iter().map(|row| row.id).collect();
+            }
+        }
+        assert_eq!(removed, ["gone"]);
+        assert!(ids.iter().any(|id| id == "gone"), "{ids:?}");
     }
 
     #[cfg(unix)]

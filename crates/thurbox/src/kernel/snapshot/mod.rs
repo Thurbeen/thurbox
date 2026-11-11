@@ -329,6 +329,10 @@ pub struct SourceRead {
     pub harnesses: Option<Vec<String>>,
     /// The hosts Fleet defines, once it has said.
     pub hosts: Option<Vec<String>>,
+    /// The sessions that went since the source's last answer, though one of
+    /// the same id may be listed again: a Task deleted and made anew between
+    /// two answers.
+    pub removed: Vec<String>,
 }
 
 /// Owns the snapshot and decides when to rebuild it.
@@ -385,7 +389,7 @@ impl SnapshotStore {
         self.source_reads += 1;
         let mut sessions = read.sessions;
         self.gone
-            .retain(|id| sessions.iter().any(|row| &row.id == id));
+            .retain(|id| !read.removed.contains(id) && sessions.iter().any(|row| &row.id == id));
         sessions.retain(|row| !self.gone.contains(&row.id));
         self.current.sessions = sessions;
         self.current.error = read.error;
@@ -471,8 +475,9 @@ impl SnapshotStore {
     }
 
     /// Stop publishing the row of `id`, a session whose delete succeeded,
-    /// until the source no longer lists it. A source reads on a schedule of
-    /// its own, so its next answers can still hold the session as it was.
+    /// until the source reports it removed or no longer lists it. A source
+    /// reads on a schedule of its own, so its next answers can still hold the
+    /// session as it was.
     pub fn hide_until_gone(&mut self, id: String) {
         let before = self.current.sessions.len();
         self.current.sessions.retain(|row| row.id != id);
