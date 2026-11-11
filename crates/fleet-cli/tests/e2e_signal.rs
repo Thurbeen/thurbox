@@ -196,3 +196,42 @@ fn an_interactive_sessions_hooks_drive_its_agent_state() {
         );
     }
 }
+
+/// Claude Code's `Notification` hook fires for a permission prompt, and also
+/// after 60 s of input idle. Only the first needs a person: an idle
+/// notification leaves an idle agent idle, so it still reads idle and can
+/// still be paused.
+#[test]
+fn an_idle_notification_keeps_an_idle_agent_idle() {
+    let env = Env::new("signal-idle-notification");
+    let mut t = support::task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("brief");
+    t["spec"].as_object_mut().unwrap().remove("outputs");
+    env.apply(json!([t])).ok();
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    signal(&env, &file, &["idle"]);
+    signal(
+        &env,
+        &file,
+        &[
+            "blocked",
+            r#"{"hook_event_name":"Notification","notification_type":"idle_prompt"}"#,
+        ],
+    );
+    env.reconcile().ok();
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["sessionState"], "Idle", "{status:#}");
+    assert_eq!(status["agentState"], "idle", "{status:#}");
+
+    signal(
+        &env,
+        &file,
+        &[
+            "blocked",
+            r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#,
+        ],
+    );
+    env.reconcile().ok();
+    assert_eq!(env.get("t1")["status"]["agentState"], "attention");
+}

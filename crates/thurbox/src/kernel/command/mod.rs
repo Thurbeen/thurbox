@@ -851,11 +851,6 @@ impl Command {
     }
 }
 
-/// Options a plugin passed alongside a command name.
-///
-/// A struct rather than a parameter list because commands want different
-/// fields, and threading six positional `Option`s through was already at the
-/// point where a caller could transpose two of them silently.
 /// A repository a session spans besides its first, and whether it gets a
 /// worktree of its own (`git+file`) or is used as it is (`file`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -864,6 +859,11 @@ pub struct ExtraMember {
     pub worktree: bool,
 }
 
+/// Options a plugin passed alongside a command name.
+///
+/// A struct rather than a parameter list because commands want different
+/// fields, and threading six positional `Option`s through was already at the
+/// point where a caller could transpose two of them silently.
 #[derive(Debug, Clone, Default)]
 pub struct Args {
     pub session: String,

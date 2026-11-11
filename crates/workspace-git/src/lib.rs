@@ -755,7 +755,6 @@ fn dedupe_names(requests: &mut [Request]) {
     }
 }
 
-/// `%XX` decoded; anything else as it is.
 /// The local path a decoded `file`/`git+file` URL path names here. On
 /// Windows a URL spells `C:\\dir` as `/C:/dir`: the leading `/` goes and the
 /// separators become `\\`.
@@ -775,6 +774,7 @@ fn windows_path(path: &str) -> String {
     path.replace('/', "\\")
 }
 
+/// `%XX` decoded; anything else as it is.
 fn decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

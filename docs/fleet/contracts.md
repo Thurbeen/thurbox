@@ -993,11 +993,14 @@ Unknown for any other host: reading a remote file takes the runtime's
 may be paused: `status.sessionState` is `Idle` once the agent's last report
 is `idle`, and `Running` while it reports `working`, `blocked` or `prompt`.
 `status.agentState` is the agent's report itself, finer: `working` for
-`working` and `prompt`, `attention` for `blocked` (a permission prompt or a
-wait for input; Claude Code's `Notification` hook), `idle` for `idle`, and
+`working` and `prompt`, `attention` for `blocked` (a permission prompt:
+Claude Code's `Notification` hook, matched to `permission_prompt`), `idle`
+for `idle`, and
 `unknown` while the agent has reported nothing since it last started. An
 unreadable file keeps the last `agentState`. TaskController is its only
-writer.
+writer. A `blocked` report whose hook payload is Claude Code's `idle_prompt`
+notification (60 s of input idle) folds to `idle`: the agent waits for its
+next prompt, which needs no one, and stays pausable.
 `e2e_signal` covers state, an interactive session and pause,
 `e2e_delivery_proof` the prompt proof, and `e2e_harness` the profiles' argv
 and resume.
