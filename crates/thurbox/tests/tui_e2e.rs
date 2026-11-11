@@ -139,11 +139,17 @@ impl Profile {
     /// Put a real Fleet in front of this profile: its own store and config,
     /// the multiplexer runtime on this profile's tmux directory (reaped with
     /// the server guard), and `claude` running `sh`, so a Task's session is a
-    /// shell. `None`, with the reason printed, where the binaries are absent.
+    /// shell. `None`, with the reason printed, where the binaries are absent;
+    /// a panic under `CI`, whose Nextest job builds them.
     fn real_fleet(&self) -> Option<()> {
         let dir = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).parent()?;
         let (fleet, runtime) = (dir.join("fleet"), dir.join("runtime-mux"));
         if !fleet.is_file() || !runtime.is_file() {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "fleet and runtime-mux are not built beside thurbox-cli in CI, where the \
+                 scenarios that drive a real Fleet must run"
+            );
             eprintln!("skipping: build fleet and runtime-mux (`cargo build --workspace`)");
             return None;
         }
