@@ -661,8 +661,8 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
 
 /// omp takes its hooks at launch as an extension file Fleet writes, passed
 /// with `-e`; qwen as a settings file Fleet writes, named in
-/// `QWEN_CODE_SYSTEM_SETTINGS_PATH`, whose hooks qwen merges with the user's
-/// and the project's.
+/// `QWEN_CODE_SYSTEM_DEFAULTS_PATH`, whose hooks qwen merges with the
+/// system's, the user's and the project's. omp skips its first-run setup.
 #[test]
 fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
     let env = Env::new("harness-launch-omp-qwen");
@@ -678,13 +678,19 @@ fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
     let extension = assets.join("fleet-omp.ts");
     assert_eq!(omp.argv, ["omp", "-e", &*extension.to_string_lossy()]);
     assert!(extension.is_file(), "{}", extension.display());
+    assert_eq!(omp.env.get("OMP_SKIP_SETUP").map(String::as_str), Some("1"));
 
     let qwen = session(&env, "q1");
     assert_eq!(qwen.argv, ["qwen"]);
+    assert!(
+        !qwen.env.contains_key("QWEN_CODE_SYSTEM_SETTINGS_PATH"),
+        "the system settings file keeps its path: {:?}",
+        qwen.env
+    );
     let settings = assets.join("fleet-qwen.json");
     assert_eq!(
         qwen.env
-            .get("QWEN_CODE_SYSTEM_SETTINGS_PATH")
+            .get("QWEN_CODE_SYSTEM_DEFAULTS_PATH")
             .map(String::as_str),
         Some(&*settings.to_string_lossy())
     );

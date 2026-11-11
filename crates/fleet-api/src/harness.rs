@@ -676,6 +676,8 @@ mod tests {
         let launch = omp.launch(&["/w/docs".into()], Some("/w")).unwrap();
         let extension = "/data/harness-assets/fleet-omp.ts";
         assert_eq!(launch, ["omp", "-e", extension, "--add-dir", "/w/docs"]);
+        // Fleet never answers omp's first-run setup wizard.
+        assert_eq!(omp.launch.env["OMP_SKIP_SETUP"], "1");
         assert_eq!(
             omp.resume(&launch, Some("01a1")),
             [
@@ -691,10 +693,17 @@ mod tests {
         let qwen = all.get("qwen");
         let launch = qwen.launch(&["/w/docs".into()], Some("/w")).unwrap();
         assert_eq!(launch, ["qwen", "--add-dir", "/w/docs"]);
-        // Merged with the user's and the project's settings, hooks included.
+        // Merged with the system's, the user's and the project's settings,
+        // hooks included. Only the system defaults file is replaced: the
+        // system settings file keeps its own path, and its defaults path
+        // would otherwise follow the one given.
         assert_eq!(
-            qwen.launch.env["QWEN_CODE_SYSTEM_SETTINGS_PATH"],
-            "/data/harness-assets/fleet-qwen.json"
+            qwen.launch.env,
+            [(
+                "QWEN_CODE_SYSTEM_DEFAULTS_PATH".to_string(),
+                "/data/harness-assets/fleet-qwen.json".to_string()
+            )]
+            .into()
         );
         assert_eq!(
             qwen.resume(&launch, Some("8031")),

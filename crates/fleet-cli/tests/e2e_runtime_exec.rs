@@ -1892,13 +1892,12 @@ fn omp_reports_its_state_through_the_extension_fleet_passes_at_launch() {
     task["spec"]["brief"] =
         json!("Run the shell command `echo fleet` yourself, with your bash tool, then stop.");
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
-    // No first-run setup, and this test's transcripts in its own directory.
+    // This test's transcripts in its own directory.
     task["spec"]["env"] = json!({
         "HOME": env.root.to_string_lossy(),
         "PI_CODING_AGENT_DIR": agent_dir.to_string_lossy(),
         "PI_CONFIG_FILES": overlay.to_string_lossy(),
         "PI_CODING_AGENT_SESSION_DIR": sessions.to_string_lossy(),
-        "OMP_SKIP_SETUP": "1",
     });
     env.apply(json!([task])).ok();
 
@@ -2082,7 +2081,7 @@ impl FakeModel {
 }
 
 /// qwen, as Fleet starts it: with Fleet's hooks in the settings file
-/// `QWEN_CODE_SYSTEM_SETTINGS_PATH` names, against a model server the test
+/// `QWEN_CODE_SYSTEM_DEFAULTS_PATH` names, against a model server the test
 /// runs, so it needs no sign-in. The user's settings, in a home of the
 /// test's own, ask before each shell command and hold a hook of the user's:
 /// qwen runs both the user's hooks and Fleet's. The agent waits on a person

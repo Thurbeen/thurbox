@@ -389,8 +389,8 @@ A profile is data: one TOML document per harness. Fleet ships these:
 | `pi` | `pi -e <Fleet's extension> --approve` | the launch argv, then `--session <conversation>` | `--approve`, for this run only |
 | `opencode` | `opencode --standalone`, and `OPENCODE_CONFIG_CONTENT` naming Fleet's plugin | the launch argv, then `--session <conversation>` | none Fleet knows |
 | `kilo` | `kilo`, with `KILO_CONFIG_CONTENT` and `KILO_TUI_CONFIG` naming Fleet's plugins, and `KILO_NO_DAEMON=1` | the launch argv, then `--session <conversation>` | none Fleet knows |
-| `omp` | `omp -e <Fleet's extension>` and `--add-dir` per extra directory | the launch argv, then `--resume <conversation>` | none Fleet knows |
-| `qwen` | `qwen` and `--add-dir` per extra directory, with `QWEN_CODE_SYSTEM_SETTINGS_PATH` naming Fleet's settings | the launch argv, then `--resume <conversation>` | none Fleet knows |
+| `omp` | `omp -e <Fleet's extension>` and `--add-dir` per extra directory, with `OMP_SKIP_SETUP=1` | the launch argv, then `--resume <conversation>` | none Fleet knows |
+| `qwen` | `qwen` and `--add-dir` per extra directory, with `QWEN_CODE_SYSTEM_DEFAULTS_PATH` naming Fleet's settings | the launch argv, then `--resume <conversation>` | none Fleet knows |
 | any other | the harness name | the launch argv: a fresh start | none Fleet knows |
 
 Claude Code's hooks report its start (`SessionStart`, as `idle`), each
@@ -417,7 +417,7 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
 | `opencode` | [`fleet-opencode/`](../../../crates/fleet-runtime/src/assets/fleet-opencode/index.js), an OpenCode 2 plugin directory named in `OPENCODE_CONFIG_CONTENT` | its terminal UI's start as `idle`; each user prompt as `prompt`; `working` while any session executes; `blocked` while a permission or a question is open; `idle` when every session ends |
 | `kilo` | [`fleet-kilo/`](../../../crates/fleet-runtime/src/assets/fleet-kilo/index.js): a server plugin named in `KILO_CONFIG_CONTENT`, and a terminal UI config named in `KILO_TUI_CONFIG` that names its TUI plugin | its terminal UI's start as `idle`; each user prompt as `prompt`; `working` while any session is busy; `blocked` while a permission, a question, a suggestion or a network request is open; `idle` when every session is idle |
 | `omp` | [`fleet-omp.ts`](../../../crates/fleet-runtime/src/assets/fleet-omp.ts), passed with `-e` | `session_start` as `idle`, `before_agent_start` as `prompt`, `agent_start` as `working`, `blocked` while a tool waits on its approval, and an `agent_end` that will not continue as `idle`, each with omp's session id |
-| `qwen` | [`fleet-qwen.json`](../../../crates/fleet-runtime/src/assets/fleet-qwen.json), a settings file named in `QWEN_CODE_SYSTEM_SETTINGS_PATH` | `SessionStart`, `Stop` and `StopFailure` as `idle`, `UserPromptSubmit` as `prompt`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` as `working`, `PermissionRequest` as `blocked`, each with qwen's session id |
+| `qwen` | [`fleet-qwen.json`](../../../crates/fleet-runtime/src/assets/fleet-qwen.json), a settings file named in `QWEN_CODE_SYSTEM_DEFAULTS_PATH` | `SessionStart`, `Stop` and `StopFailure` as `idle`, `UserPromptSubmit` as `prompt`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` as `working`, `PermissionRequest` as `blocked`, each with qwen's session id |
 
 - pi asks a person nothing of its own: its hooks report no `blocked`. pi
   reports `idle` at `agent_settled`, not `agent_end`: after a run ends, pi
@@ -451,12 +451,20 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
 - An omp subagent runs in omp's process and loads the same extensions, in
   a session of its own and with no UI. Its events are skipped: they are not
   the agent's.
-- omp shows a setup wizard at its first interactive start. `OMP_SKIP_SETUP=1`
-  in the Task's environment skips it.
-- qwen merges the hooks of its system settings file with the user's and the
-  project's hooks. `QWEN_CODE_SYSTEM_SETTINGS_PATH` replaces the path of the
-  system settings file (`/etc/qwen-code/settings.json` on Linux): a Fleet
-  session does not read that file.
+- omp shows a setup wizard at its first interactive start. Fleet never
+  answers it, as it never answers pi's trust question: `OMP_SKIP_SETUP=1`
+  skips it.
+- qwen merges the hooks of its system defaults file with the user's, the
+  project's and the system settings file's hooks.
+  `QWEN_CODE_SYSTEM_DEFAULTS_PATH` replaces the path of the system defaults
+  file (`/etc/qwen-code/system-defaults.json` on Linux): a Fleet session does
+  not read the distribution's defaults. For example, Arch's package turns
+  qwen's auto-update off there, and a Fleet session does not get that
+  setting.
+- The system settings file (`/etc/qwen-code/settings.json` on Linux) keeps
+  its path, and an operator's settings there apply. Fleet does not name
+  `QWEN_CODE_SYSTEM_SETTINGS_PATH`: qwen derives the defaults path from that
+  file's directory, so the variable would hide both files.
 - qwen writes a settings file of an older version again, migrated. Fleet's
   file has qwen's current version (`$version` 4).
 - qwen's `Notification` hook is not used: qwen sends `idle_prompt` while its

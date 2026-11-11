@@ -133,7 +133,8 @@ conversation = ["session_id"]
 /// omp, a pi fork. Its hooks are an extension file Fleet writes, passed with
 /// `-e`, which loads beside the user's own extensions. Unlike pi, omp asks
 /// before a tool runs when its approval mode says so, and trusts every
-/// project.
+/// project. `OMP_SKIP_SETUP` skips the setup wizard of omp's first start:
+/// Fleet never answers it, as it never answers pi's trust question.
 pub const OMP: &str = r#"
 name = "omp"
 program = "omp"
@@ -141,6 +142,7 @@ authority = "full"
 
 [launch]
 args = ["-e", "{asset:fleet-omp.ts}"]
+env = { OMP_SKIP_SETUP = "1" }
 add_dir = "--add-dir"
 
 [resume]
@@ -152,16 +154,18 @@ conversation = ["session_id"]
 "#;
 
 /// Qwen Code. Its hooks are a settings file Fleet writes, named in
-/// `QWEN_CODE_SYSTEM_SETTINGS_PATH`: qwen merges the hooks of its system,
-/// user and project settings. That path replaces the system settings file's,
-/// which a Fleet session does not read.
+/// `QWEN_CODE_SYSTEM_DEFAULTS_PATH`: qwen merges the hooks of its system
+/// defaults, user, project and system settings. That path replaces the
+/// system defaults file's, which a Fleet session does not read. The system
+/// settings path is left alone: qwen derives the defaults path from it when
+/// none is given, so naming it would hide both files.
 pub const QWEN: &str = r#"
 name = "qwen"
 program = "qwen"
 authority = "full"
 
 [launch]
-env = { QWEN_CODE_SYSTEM_SETTINGS_PATH = "{asset:fleet-qwen.json}" }
+env = { QWEN_CODE_SYSTEM_DEFAULTS_PATH = "{asset:fleet-qwen.json}" }
 add_dir = "--add-dir"
 
 [resume]
