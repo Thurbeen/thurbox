@@ -21,8 +21,8 @@
 //! run as a program, with no hooks, trust or resume Fleet knows
 //! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
 //!
-//! Fleet ships the profiles of Claude Code, Codex, pi, opencode and kilo.
-//! pi, opencode and kilo take their hooks as a plugin file: Fleet writes each under its
+//! Fleet ships the profiles of Claude Code, Codex, pi, opencode, kilo, omp and
+//! qwen. pi, opencode, kilo, omp and qwen take their hooks as a file: Fleet writes each under its
 //! own data dir (`fleet_runtime::assets`), and the launch names it, never
 //! the agent's config dir.
 //!
@@ -670,6 +670,43 @@ mod tests {
     }
 
     #[test]
+    fn omp_and_qwen_name_the_hook_files_fleet_writes() {
+        let all = Profiles::bundled().with_assets("/data/harness-assets".into());
+        let omp = all.get("omp");
+        let launch = omp.launch(&["/w/docs".into()], Some("/w")).unwrap();
+        let extension = "/data/harness-assets/fleet-omp.ts";
+        assert_eq!(launch, ["omp", "-e", extension, "--add-dir", "/w/docs"]);
+        assert_eq!(
+            omp.resume(&launch, Some("01a1")),
+            [
+                "omp",
+                "-e",
+                extension,
+                "--add-dir",
+                "/w/docs",
+                "--resume",
+                "01a1"
+            ]
+        );
+        let qwen = all.get("qwen");
+        let launch = qwen.launch(&["/w/docs".into()], Some("/w")).unwrap();
+        assert_eq!(launch, ["qwen", "--add-dir", "/w/docs"]);
+        // Merged with the user's and the project's settings, hooks included.
+        assert_eq!(
+            qwen.launch.env["QWEN_CODE_SYSTEM_SETTINGS_PATH"],
+            "/data/harness-assets/fleet-qwen.json"
+        );
+        assert_eq!(
+            qwen.resume(&launch, Some("8031")),
+            ["qwen", "--add-dir", "/w/docs", "--resume", "8031"]
+        );
+        for p in [&omp, &qwen] {
+            assert!(p.prompt_hook(), "{}", p.name);
+            assert_eq!(p.trust(), Trust::Unknown, "{}", p.name);
+        }
+    }
+
+    #[test]
     fn a_codex_trust_override_names_one_directory_as_toml() {
         assert_eq!(
             codex_override("/home/u/.cache/a b").unwrap(),
@@ -701,7 +738,16 @@ mod tests {
         let all = Profiles::bundled();
         assert_eq!(
             all.names(),
-            ["claude", "claude-code", "codex", "pi", "opencode", "kilo"]
+            [
+                "claude",
+                "claude-code",
+                "codex",
+                "pi",
+                "opencode",
+                "kilo",
+                "omp",
+                "qwen"
+            ]
         );
         assert_eq!(all.get("claude-code").name, "claude");
         assert_eq!(all.get("aider"), bare("aider"));

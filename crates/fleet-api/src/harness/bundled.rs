@@ -1,6 +1,6 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
 //! constants, not files: a pure crate reads nothing at build time. The
-//! plugin files pi's, opencode's and kilo's name are the runtime adapter's
+//! hook files pi's, opencode's, kilo's, omp's and qwen's name are the runtime adapter's
 //! (`fleet_runtime::assets`). A user
 //! file of the same `name` in Fleet's config dir replaces one
 //! (docs/fleet/controllers/task.md, *Harness profiles*).
@@ -130,5 +130,47 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
+/// omp, a pi fork. Its hooks are an extension file Fleet writes, passed with
+/// `-e`, which loads beside the user's own extensions. Unlike pi, omp asks
+/// before a tool runs when its approval mode says so, and trusts every
+/// project.
+pub const OMP: &str = r#"
+name = "omp"
+program = "omp"
+authority = "full"
+
+[launch]
+args = ["-e", "{asset:fleet-omp.ts}"]
+add_dir = "--add-dir"
+
+[resume]
+args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+"#;
+
+/// Qwen Code. Its hooks are a settings file Fleet writes, named in
+/// `QWEN_CODE_SYSTEM_SETTINGS_PATH`: qwen merges the hooks of its system,
+/// user and project settings. That path replaces the system settings file's,
+/// which a Fleet session does not read.
+pub const QWEN: &str = r#"
+name = "qwen"
+program = "qwen"
+authority = "full"
+
+[launch]
+env = { QWEN_CODE_SYSTEM_SETTINGS_PATH = "{asset:fleet-qwen.json}" }
+add_dir = "--add-dir"
+
+[resume]
+args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+"#;
+
 /// Every bundled profile, in the order `fleet version --json` lists them.
-pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO];
+pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO, OMP, QWEN];

@@ -271,7 +271,16 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
     let version = env.fleet(&["version", "--json"]).ok().json();
     assert_eq!(
         version["harnesses"],
-        json!(["claude", "claude-code", "codex", "pi", "opencode", "kilo"])
+        json!([
+            "claude",
+            "claude-code",
+            "codex",
+            "pi",
+            "opencode",
+            "kilo",
+            "omp",
+            "qwen"
+        ])
     );
 }
 
@@ -651,7 +660,9 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
             "codex",
             "pi",
             "opencode",
-            "kilo"
+            "kilo",
+            "omp",
+            "qwen"
         ]),
         "a view offers the user's harness"
     );
@@ -1815,6 +1826,351 @@ fn kilo_reports_its_state_through_the_plugins_fleet_names_at_launch() {
     assert!(
         snapshot(&config, &[]) == before,
         "kilo's config directory {} changed",
+        config.display()
+    );
+}
+
+/// Whether a file under `dir` holds `text`.
+fn any_file_holds(dir: &Path, text: &str) -> bool {
+    snapshot(dir, &[])
+        .values()
+        .any(|bytes| String::from_utf8_lossy(bytes).contains(text))
+}
+
+/// omp, as Fleet starts it: its hooks are an extension Fleet wrote under its
+/// own data directory and passed with `-e`. A config overlay of the test's
+/// own picks a cheap model and asks before each tool: the agent waits on a
+/// person until it is answered. Its session id is the conversation a revive
+/// resumes, and what the user writes in omp's agent directory is left byte
+/// for byte as it was.
+///
+/// omp runs in a home of its own, where the operator's shell startup files,
+/// which may put another `fleet` first on PATH, are not read. Its agent
+/// directory, where its sign-in is, is the operator's.
+#[test]
+fn omp_reports_its_state_through_the_extension_fleet_passes_at_launch() {
+    let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("omp")) else {
+        return;
+    };
+    let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
+    let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map_or_else(|| home.join(".omp/agent"), PathBuf::from);
+    // omp's own state: its databases (the sign-in, the models, the history),
+    // which it rewrites at each start, its transcripts and where it keeps
+    // the transcripts of a session directory of its own.
+    let user_files = |dir: &Path| {
+        let skip = [
+            "sessions",
+            "terminal-sessions",
+            "predict",
+            "custom-session-files",
+        ];
+        let mut files = snapshot(dir, &skip);
+        files.retain(|f, _| {
+            let name = f.to_string_lossy();
+            !(name.ends_with(".db")
+                || name.ends_with(".db-wal")
+                || name.ends_with(".db-shm")
+                || name == "last-changelog-version")
+        });
+        files
+    };
+    let before = user_files(&agent_dir);
+    let sockets = Sockets::new("omp");
+    let env = agent_env("runtime-mux-omp", &program, &sockets);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let sessions = env.root.join("omp-sessions");
+    let overlay = env.root.join("omp-overlay.yml");
+    fs::write(
+        &overlay,
+        "modelRoles:\n  default: anthropic/claude-haiku-4-5\ntools:\n  approvalMode: always-ask\n",
+    )
+    .expect("overlay");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("omp");
+    task["spec"]["brief"] =
+        json!("Run the shell command `echo fleet` yourself, with your bash tool, then stop.");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    // No first-run setup, and this test's transcripts in its own directory.
+    task["spec"]["env"] = json!({
+        "HOME": env.root.to_string_lossy(),
+        "PI_CODING_AGENT_DIR": agent_dir.to_string_lossy(),
+        "PI_CONFIG_FILES": overlay.to_string_lossy(),
+        "PI_CODING_AGENT_SESSION_DIR": sessions.to_string_lossy(),
+        "OMP_SKIP_SETUP": "1",
+    });
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on omp's prompt hook", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    reconcile_until(&env, "waiting on the approval", |env| {
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    // Approve each tool the model runs: the default choice. omp reports a
+    // request before it draws its dialog, and takes keys only once the
+    // dialog is drawn, so each is approved when it shows.
+    let pane = pane_in(&sockets, &work);
+    reconcile_until(&env, "the turn ended", |env| {
+        let screen = sockets.tmux(&["capture-pane", "-p", "-t", &pane]).stdout;
+        if env.get("t1")["status"]["agentState"] == "attention"
+            && String::from_utf8_lossy(&screen).contains("Allow tool")
+        {
+            sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+        }
+        in_order(
+            &reported(env, "t1"),
+            &["idle", "prompt", "working", "blocked", "working", "idle"],
+        ) && env.get("t1")["status"]["agentState"] == "idle"
+    });
+    let conversation = env.get("t1")["status"]["conversation"]
+        .as_str()
+        .expect("a conversation")
+        .to_string();
+    let transcript = snapshot(&sessions, &[])
+        .keys()
+        .any(|f| f.to_string_lossy().contains(&conversation));
+    assert!(
+        transcript,
+        "omp's session {conversation} is the conversation"
+    );
+
+    // omp ends: the revive resumes its session, whose start reports it again.
+    end_agent(&sockets, &work);
+    reconcile_until(&env, "resumed on its session", |env| {
+        let states = reported(env, "t1");
+        states
+            .iter()
+            .rposition(|(s, _)| s == "started")
+            .is_some_and(|at| {
+                states[at..]
+                    .iter()
+                    .any(|(s, c)| s == "idle" && c.as_deref() == Some(&*conversation))
+            })
+    });
+    end_agent(&sockets, &work);
+    let after = user_files(&agent_dir);
+    let changed: Vec<&PathBuf> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|f| before.get(*f) != after.get(*f))
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "omp's agent directory {} changed: {changed:?}",
+        agent_dir.display()
+    );
+}
+
+/// A model server on 127.0.0.1 that speaks OpenAI's chat completions, so an
+/// agent runs a turn with no sign-in and no network. A request whose
+/// conversation has a user message holding `FLEET-TOOL`, and no tool result
+/// yet, is answered with one call of the agent's shell tool, which needs a
+/// person's approval; every other request with the text `done`.
+struct FakeModel {
+    url: String,
+}
+
+impl FakeModel {
+    fn start() -> FakeModel {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}/v1", listener.local_addr().expect("address"));
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let _ = FakeModel::answer(stream);
+                });
+            }
+        });
+        FakeModel { url }
+    }
+
+    fn answer(mut stream: std::net::TcpStream) -> std::io::Result<()> {
+        use std::io::{Read, Write};
+        let mut bytes = Vec::new();
+        let mut buf = [0; 8192];
+        let body_at = loop {
+            let n = stream.read(&mut buf)?;
+            if n == 0 {
+                return Ok(());
+            }
+            bytes.extend_from_slice(&buf[..n]);
+            if let Some(at) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&bytes[..body_at]).to_ascii_lowercase();
+        let length: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        while bytes.len() < body_at + length {
+            let n = stream.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buf[..n]);
+        }
+        let request: Value = serde_json::from_slice(&bytes[body_at..]).unwrap_or(Value::Null);
+        let messages = request["messages"].as_array().cloned().unwrap_or_default();
+        let shell = request["tools"].as_array().and_then(|tools| {
+            tools.iter().find_map(|t| {
+                t["function"]["name"]
+                    .as_str()
+                    .filter(|n| n.contains("shell") || n.contains("bash"))
+            })
+        });
+        let asked = messages
+            .iter()
+            .any(|m| m["role"] == "user" && m["content"].to_string().contains("FLEET-TOOL"));
+        let answered = messages.iter().any(|m| m["role"] == "tool");
+        let message = match shell {
+            Some(name) if asked && !answered => json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {
+                    "name": name,
+                    "arguments": json!({"command": "touch made-by-fleet"}).to_string(),
+                }}],
+            }),
+            _ => json!({"role": "assistant", "content": "done"}),
+        };
+        let finish = if message["tool_calls"].is_null() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
+        let usage = json!({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2});
+        let (kind, body) = if request["stream"] == true {
+            let chunk = |choices: Value, extra: Value| {
+                let mut c = json!({"id": "c1", "object": "chat.completion.chunk", "created": 1,
+                    "model": request["model"], "choices": choices});
+                if !extra.is_null() {
+                    c["usage"] = extra;
+                }
+                format!("data: {c}\n\n")
+            };
+            let body = [
+                chunk(
+                    json!([{"index": 0, "delta": message, "finish_reason": null}]),
+                    Value::Null,
+                ),
+                chunk(
+                    json!([{"index": 0, "delta": {}, "finish_reason": finish}]),
+                    Value::Null,
+                ),
+                chunk(json!([]), usage),
+                "data: [DONE]\n\n".to_string(),
+            ]
+            .concat();
+            ("text/event-stream", body)
+        } else {
+            let body = json!({"id": "c1", "object": "chat.completion", "created": 1,
+                "model": request["model"], "usage": usage,
+                "choices": [{"index": 0, "message": message, "finish_reason": finish}]});
+            ("application/json", body.to_string())
+        };
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )?;
+        stream.flush()
+    }
+}
+
+/// qwen, as Fleet starts it: with Fleet's hooks in the settings file
+/// `QWEN_CODE_SYSTEM_SETTINGS_PATH` names, against a model server the test
+/// runs, so it needs no sign-in. The user's settings, in a home of the
+/// test's own, ask before each shell command and hold a hook of the user's:
+/// qwen runs both the user's hooks and Fleet's. The agent waits on a person
+/// until the command is approved. Its session id is the conversation a
+/// revive resumes, and the user's settings are left byte for byte as they
+/// were.
+#[test]
+fn qwen_reports_its_state_through_the_settings_fleet_names_at_launch() {
+    let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("qwen")) else {
+        return;
+    };
+    let model = FakeModel::start();
+    let sockets = Sockets::new("qwen");
+    let env = agent_env("runtime-mux-qwen", &program, &sockets);
+    let config = env.root.join(".qwen");
+    fs::create_dir_all(&config).expect("user config");
+    let marker = env.root.join("user-hook-ran");
+    fs::write(
+        config.join("settings.json"),
+        json!({
+            "$version": 4,
+            "tools": {"approvalMode": "default"},
+            "hooks": {"UserPromptSubmit": [{"hooks": [{
+                "type": "command",
+                "command": format!("touch '{}'", marker.display()),
+            }]}]},
+        })
+        .to_string(),
+    )
+    .expect("user settings");
+    let before = fs::read(config.join("settings.json")).expect("user settings");
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("qwen");
+    task["spec"]["brief"] = json!("Run the FLEET-TOOL command.");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    task["spec"]["env"] = json!({
+        "HOME": env.root.to_string_lossy(),
+        "OPENAI_API_KEY": "fake",
+        "OPENAI_BASE_URL": model.url,
+        "OPENAI_MODEL": "fake-model",
+    });
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on qwen's prompt hook", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    reconcile_until(&env, "waiting on the approval", |env| {
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    // Allow once: the default choice.
+    sockets.tmux(&["send-keys", "-t", &pane_in(&sockets, &work), "Enter"]);
+    reconcile_until(&env, "the turn ended", |env| {
+        in_order(
+            &reported(env, "t1"),
+            &["idle", "prompt", "working", "blocked", "working", "idle"],
+        ) && env.get("t1")["status"]["agentState"] == "idle"
+    });
+    assert!(work.join("made-by-fleet").is_file(), "the command ran");
+    assert!(marker.is_file(), "the user's own hook ran too");
+    let conversation = env.get("t1")["status"]["conversation"]
+        .as_str()
+        .expect("a conversation")
+        .to_string();
+
+    // qwen ends: the revive resumes its session, whose start reports it again.
+    end_agent(&sockets, &work);
+    reconcile_until(&env, "resumed on its session", |env| {
+        let states = reported(env, "t1");
+        states
+            .iter()
+            .rposition(|(s, _)| s == "started")
+            .is_some_and(|at| {
+                states[at..]
+                    .iter()
+                    .any(|(s, c)| s == "idle" && c.as_deref() == Some(&*conversation))
+            })
+    });
+    end_agent(&sockets, &work);
+    assert_eq!(
+        fs::read(config.join("settings.json")).expect("user settings"),
+        before,
+        "the user's settings changed"
+    );
+    assert!(
+        !any_file_holds(&config, "fleet signal"),
+        "Fleet's hooks were written under {}",
         config.display()
     );
 }

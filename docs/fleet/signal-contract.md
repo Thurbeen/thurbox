@@ -102,7 +102,7 @@ file, and the bundled profile or the default names apply.
 
 ## Examples
 
-Fleet's own plugin files for pi, opencode and kilo follow this contract
+Fleet's own hook files for pi, opencode, kilo, omp and qwen follow this contract
 ([harness profiles](controllers/task.md#harness-profiles)).
 
 A hook that reports the end of a turn, with the conversation `s1`:

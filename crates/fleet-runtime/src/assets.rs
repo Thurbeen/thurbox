@@ -7,8 +7,8 @@ use std::io;
 use std::path::Path;
 
 /// Each file, by its path under the asset directory: pi's extension,
-/// opencode's plugin directory, and kilo's plugins with the TUI config that
-/// names one. Each only runs `fleet signal`, and does
+/// opencode's plugin directory, kilo's plugins with the TUI config that
+/// names one, omp's extension and qwen's settings. Each only runs `fleet signal`, and does
 /// nothing where `FLEET_SIGNAL_FILE` is unset.
 pub const FILES: &[(&str, &str)] = &[
     ("fleet-pi.ts", include_str!("assets/fleet-pi.ts")),
@@ -40,6 +40,8 @@ pub const FILES: &[(&str, &str)] = &[
         "fleet-kilo/signal.js",
         include_str!("assets/fleet-kilo/signal.js"),
     ),
+    ("fleet-omp.ts", include_str!("assets/fleet-omp.ts")),
+    ("fleet-qwen.json", include_str!("assets/fleet-qwen.json")),
 ];
 
 /// Write each shipped plugin file under `dir`, unless it already holds the
