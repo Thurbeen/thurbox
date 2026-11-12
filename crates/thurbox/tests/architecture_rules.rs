@@ -16,9 +16,7 @@
 //!
 //! The graph is checked as a whole too: the actual production edges and the
 //! declared allowlist must both be acyclic, and every allowance must be used
-//! by production code. A crossing that is known and scheduled for removal is
-//! listed in [`TRANSITIONAL`], which must equal the violations found — both
-//! ways, so a new crossing fails and so does a stale entry.
+//! by production code.
 //!
 //! This file is the one statement of the layering: AGENTS.md, the
 //! `thurbox-kernel` skill and docs/constitution.md T1 point here rather than
@@ -303,26 +301,6 @@ const EXEMPT: &[&str] = &["bin", "lib", "main"];
 /// that holds it.
 const SUBMODULE_GOVERNED: &[&str] = &["agent", "config", "update"];
 
-/// A crossing that breaks a rule today, is known, and is scheduled to go.
-///
-/// Not an allowance: [`every_module_rule_holds`] fails on any violation this
-/// table does not name, and [`transitional_table_names_only_live_crossings`]
-/// fails on an entry naming one that no longer exists — so the table is
-/// always exactly today's debt, item by item, and deleting an entry is how
-/// the task that removes it proves it did.
-struct Transitional {
-    from: &'static str,
-    to: &'static str,
-    /// Items of `to` that `from` still reaches.
-    items: &'static [&'static str],
-    /// Why it is still there, and what removes it.
-    why: &'static str,
-}
-
-/// Empty. A boundary change that cannot land in one step lists the crossings
-/// it leaves here until the step that removes them.
-const TRANSITIONAL: &[Transitional] = &[];
-
 fn src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
@@ -381,38 +359,6 @@ fn describe(tree: &Tree, rules: &[ModuleRules], edge: &Edge) -> String {
     )
 }
 
-fn transitional_keys(table: &[Transitional]) -> BTreeSet<(String, String, String)> {
-    table
-        .iter()
-        .flat_map(|t| {
-            t.items
-                .iter()
-                .map(|item| (t.from.to_string(), t.to.to_string(), item.to_string()))
-        })
-        .collect()
-}
-
-/// Today's violations checked against a transitional table, both ways: the
-/// violations it does not name, and the entries naming no violation.
-fn reconcile(violations: &[Edge], table: &[Transitional]) -> (Vec<Edge>, Vec<String>) {
-    let listed = transitional_keys(table);
-    let live: BTreeSet<(String, String, String)> = violations
-        .iter()
-        .map(|e| (e.from.clone(), e.to.clone(), e.item.clone()))
-        .collect();
-    let unlisted = violations
-        .iter()
-        .filter(|e| !listed.contains(&(e.from.clone(), e.to.clone(), e.item.clone())))
-        .cloned()
-        .collect();
-    let stale = listed
-        .into_iter()
-        .filter(|key| !live.contains(key))
-        .map(|(from, to, item)| format!("  {from} → {to}::{item} no longer crosses — delete it"))
-        .collect();
-    (unlisted, stale)
-}
-
 /// Where `Multiplexer` is reached, as a resolved path: its variants are the
 /// one kind of item a node may reach *through* a grant and still not name.
 /// `session` re-exports it from the runtime, so a path stops at
@@ -427,14 +373,14 @@ const MULTIPLEXER: &[&[&str]] = &[
 /// which of them work is what the registry says, at runtime.
 const MULTIPLEXER_VARIANTS: &[&str] = &["Tmux", "Psmux", "Rmux", "Herdr"];
 
-/// The nodes that may decide something by naming *one* multiplexer: the route
-/// grammar and its defaults (`session`) and, in a fixture, the factory. The
-/// runtime's factory and adapters are the only other places one is chosen, and
-/// `runtime-mux`'s own architecture test holds them. Anywhere else, a
-/// `Multiplexer::Psmux` is a consumer choosing behaviour — or an OS — by
-/// multiplexer, which is what the route and the registry exist to decide.
+/// The one node that may decide something by naming *one* multiplexer: the
+/// route grammar and its defaults (`session`). The runtime's factory and
+/// adapters are the only other places one is chosen, and `runtime-mux`'s own
+/// architecture test holds them. Anywhere else, a `Multiplexer::Psmux` is a
+/// consumer choosing behaviour — or an OS — by multiplexer, which is what the
+/// route and the registry exist to decide.
 fn may_name_a_multiplexer(node: &str) -> bool {
-    node == "session" || node == FACTORY
+    node == "session"
 }
 
 /// The multiplexer variant a resolved path names, if it names one.
@@ -450,8 +396,7 @@ fn multiplexer_variant(reference: &Reference) -> Option<&str> {
 
 /// Every reference to a specific multiplexer from production code in a node
 /// that may not name one, as an edge to `session` whose item is the variant
-/// (`Multiplexer::Psmux`) — so [`TRANSITIONAL`] can list one exactly, the way
-/// it lists any other crossing.
+/// (`Multiplexer::Psmux`), reported the way any other crossing is.
 ///
 /// Test code is left out: a test names a multiplexer to pin what happens for
 /// it, which is the opposite of deciding behaviour by one.
@@ -482,12 +427,10 @@ fn all_violations(tree: &Tree) -> Vec<Edge> {
     found
 }
 
-/// Every rule holds, except for the crossings [`TRANSITIONAL`] names.
 #[test]
 fn every_module_rule_holds() {
     let tree = src_tree();
-    let (unlisted, _) = reconcile(&all_violations(tree), TRANSITIONAL);
-    let report: String = unlisted
+    let report: String = all_violations(tree)
         .iter()
         .map(|edge| format!("  {}\n", describe(tree, MODULE_RULES, edge)))
         .collect();
@@ -496,44 +439,9 @@ fn every_module_rule_holds() {
         "\narchitecture violation(s), as `from → resolved item @ file:line`:\n{report}\
          Fix the reference, or — if the architecture is changing on purpose — update \
          MODULE_RULES in tests/architecture_rules.rs plus AGENTS.md and \
-         docs/constitution.md. A crossing scheduled for removal belongs in TRANSITIONAL, \
-         naming the task that removes it.\n"
+         docs/constitution.md.\n"
     );
 }
-
-/// The other half of [`TRANSITIONAL`]'s contract: each entry names a crossing
-/// that still exists, says why, and names each item once.
-#[test]
-fn transitional_table_names_only_live_crossings() {
-    let tree = src_tree();
-    let mut seen = BTreeSet::new();
-    for entry in TRANSITIONAL {
-        assert!(
-            !entry.items.is_empty() && !entry.why.is_empty(),
-            "TRANSITIONAL entry {} → {} names no items or no reason",
-            entry.from,
-            entry.to
-        );
-        for item in entry.items {
-            assert!(
-                seen.insert((entry.from, entry.to, *item)),
-                "TRANSITIONAL names {} → {}::{item} twice",
-                entry.from,
-                entry.to
-            );
-        }
-    }
-    let (_, stale) = reconcile(&all_violations(tree), TRANSITIONAL);
-    assert!(
-        stale.is_empty(),
-        "stale TRANSITIONAL entries:\n{}",
-        stale.join("\n")
-    );
-}
-
-/// The factory, as the fixture trees name it: the node that builds the
-/// registry, naming every concrete adapter.
-const FACTORY: &str = "backend::wiring";
 
 /// What of the runtime a consumer must never reach by name: one multiplexer's
 /// adapter, the protocol grammar only some multiplexers speak, or the factory
@@ -547,45 +455,58 @@ const CONCRETE_BACKEND: &[&str] = &["tmux", "psmux", "rmux", "tmux_compat", "wir
 /// sees a different set of backends from the one the process was wired with.
 const COMPOSITION_ROOT: &str = "coordinator";
 
+/// Each reach of a concrete adapter, the protocol helper or the factory
+/// through the `backend` gateway in `tree`, except the composition root's
+/// reach of the factory. References are resolved through `use`, `super::`,
+/// brace groups, re-exports and `type` aliases, test code included.
+fn concrete_backend_reaches(tree: &Tree, rules: &[ModuleRules]) -> Vec<String> {
+    tree.edges(&node_names(rules))
+        .iter()
+        .filter(|e| e.to == "backend" && CONCRETE_BACKEND.contains(&e.item.as_str()))
+        .filter(|e| !(e.from == COMPOSITION_ROOT && e.item == "wiring"))
+        .map(|e| describe(tree, rules, e))
+        .collect()
+}
+
 /// Every verb a consumer needs — lifecycle, pane I/O, status delivery and
 /// polling, the heartbeat — goes through the contract, so no module reaches a
 /// concrete backend at all, and only the composition root reaches the factory.
-///
-/// Checked two ways, because each closes a door the other leaves open:
-/// - **references**, resolved through `use`, `super::`, brace groups,
-///   re-exports and `type` aliases, test code included — what the code does;
-/// - **no grant of a whole parent** that holds files of its own, so a module
-///   added under `agent` is not reachable until someone decides it is.
 #[test]
 fn consumers_reach_no_concrete_backend() {
-    let tree = src_tree();
-    let mut found = Vec::new();
-    for edge in tree.edges(&node_names(MODULE_RULES)) {
-        if edge.to != "backend" || !CONCRETE_BACKEND.contains(&edge.item.as_str()) {
-            continue;
-        }
-        if edge.from == COMPOSITION_ROOT && edge.item == "wiring" {
-            continue;
-        }
-        found.push(describe(tree, MODULE_RULES, &edge));
-    }
-    for rules in MODULE_RULES {
-        for to in rules.allowed.iter().chain(rules.allowed_path_only) {
-            if SUBMODULE_GOVERNED.contains(to) {
-                found.push(format!(
-                    "{} is granted all of `{to}`; name the submodules it uses",
-                    rules.name
-                ));
-            }
-        }
-    }
+    let found = concrete_backend_reaches(src_tree(), MODULE_RULES);
+    assert!(
+        found.is_empty(),
+        "\na module reaches a concrete backend:\n  {}\n",
+        found.join("\n  ")
+    );
+}
+
+/// Each grant in `rules` of a whole parent in `governed`.
+fn whole_parent_grants(rules: &[ModuleRules], governed: &[&str]) -> Vec<String> {
+    rules
+        .iter()
+        .flat_map(|r| {
+            r.allowed
+                .iter()
+                .chain(r.allowed_path_only)
+                .filter(|to| governed.contains(to))
+                .map(|to| format!("{} is granted all of `{to}`", r.name))
+        })
+        .collect()
+}
+
+/// No rule grants a whole [`SUBMODULE_GOVERNED`] parent, so a module added
+/// under `agent` is not reachable until someone decides it is.
+#[test]
+fn no_grant_covers_a_governed_parent() {
     assert!(
         SUBMODULE_GOVERNED.contains(&"agent"),
         "`agent` must stay submodule-governed, so a grant names what it reaches"
     );
+    let found = whole_parent_grants(MODULE_RULES, SUBMODULE_GOVERNED);
     assert!(
         found.is_empty(),
-        "\na module reaches a concrete backend:\n  {}\n",
+        "\nname the submodules each uses:\n  {}\n",
         found.join("\n  ")
     );
 }
@@ -820,14 +741,6 @@ fn every_module_is_governed() {
             );
         }
     }
-    for entry in TRANSITIONAL {
-        for node in [entry.from, entry.to] {
-            assert!(
-                MODULE_RULES.iter().any(|r| r.name == node),
-                "TRANSITIONAL names `{node}`, which is not a node"
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -956,8 +869,8 @@ fn aliases_and_reexports_launder_nothing() {
 /// A specific multiplexer is named only where a multiplexer is decided. The
 /// variant is caught however it is reached — by path, through the parent's
 /// re-export, through an imported name, as a `use` leaf — while the type
-/// itself and its associated items (`Multiplexer::ALL`) stay free to use, the
-/// factory may name what it builds, and a test may name the one it pins.
+/// itself and its associated items (`Multiplexer::ALL`) stay free to use, and
+/// a test may name the one it pins.
 #[test]
 fn a_multiplexer_variant_is_named_only_where_one_is_chosen() {
     let tree = fixture("mux_variants");
@@ -969,11 +882,6 @@ fn a_multiplexer_variant_is_named_only_where_one_is_chosen() {
         },
         ModuleRules {
             name: "kernel",
-            allowed: &["session"],
-            allowed_path_only: &[],
-        },
-        ModuleRules {
-            name: FACTORY,
             allowed: &["session"],
             allowed_path_only: &[],
         },
@@ -1013,46 +921,49 @@ fn test_code_makes_no_production_edge() {
     );
 }
 
-/// The table is checked both ways: a crossing it does not name fails, and so
-/// does an entry naming a crossing that is gone.
+/// A consumer reaching an adapter or the factory through the gateway is found,
+/// and so is a reach through an imported name; the contract and the composition
+/// root's reach of the factory are not.
 #[test]
-fn the_transitional_table_fails_on_a_new_and_on_a_stale_crossing() {
-    let tree = fixture("laundering");
+fn a_reach_of_a_concrete_backend_is_found() {
+    let rules = ["backend", "coordinator", "kernel", "session"].map(|name| ModuleRules {
+        name,
+        allowed: &[],
+        allowed_path_only: &[],
+    });
+    assert_eq!(
+        concrete_backend_reaches(&fixture("runtime_imports"), &rules),
+        [
+            "kernel → backend::psmux @ kernel/mod.rs:16",
+            "kernel → backend::tmux @ kernel/mod.rs:11",
+            "kernel → backend::wiring @ kernel/mod.rs:12",
+            "kernel → backend::psmux @ kernel/mod.rs:17",
+        ]
+    );
+}
+
+/// A grant of a governed parent is found, whether in any form or by path only;
+/// a grant of one of its submodules is not.
+#[test]
+fn a_grant_of_a_governed_parent_is_found() {
     let rules = [
         ModuleRules {
-            name: "agent",
-            allowed: &["agent::tmux"],
-            allowed_path_only: &[],
-        },
-        ModuleRules {
-            name: "agent::tmux",
-            allowed: &[],
+            name: "cli",
+            allowed: &["agent", "agent::fetch"],
             allowed_path_only: &[],
         },
         ModuleRules {
             name: "kernel",
             allowed: &[],
-            allowed_path_only: &["agent"],
+            allowed_path_only: &["config"],
         },
     ];
-    let table = [Transitional {
-        from: "kernel",
-        to: "agent::tmux",
-        items: &["Index", "gone"],
-        why: "fixture",
-    }];
-    let (unlisted, stale) = reconcile(&violations(&tree, &rules), &table);
-    let unlisted: BTreeSet<String> = unlisted.iter().map(Edge::target).collect();
     assert_eq!(
-        unlisted,
-        ["agent::tmux", "agent::tmux::spawn"]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    );
-    assert_eq!(
-        stale,
-        vec!["  kernel → agent::tmux::gone no longer crosses — delete it".to_string()]
+        whole_parent_grants(&rules, &["agent", "config"]),
+        [
+            "cli is granted all of `agent`",
+            "kernel is granted all of `config`"
+        ]
     );
 }
 
@@ -1543,7 +1454,7 @@ fn misplaced_kernel_work(tree: &Tree) -> Vec<String> {
             found.push(format!("{file}:{line} glob import"));
         }
     }
-    for reference in tree.references(&["kernel", "git", "storage"]) {
+    for reference in tree.references(&["kernel", "git"]) {
         if reference.test {
             continue;
         }

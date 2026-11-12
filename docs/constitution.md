@@ -187,10 +187,7 @@ declared there, and a declared rule cannot go unasserted. It judges a
 reference by what it **resolves to** — through `super::`, brace groups,
 re-exports and `type` aliases — so an alias crosses nothing a path could
 not. The graph of actual edges and the graph the rules declare must both
-be acyclic, and a grant nothing uses fails. A crossing that breaks a rule
-today and is scheduled to go is listed item by item, with the task that
-removes it, in the test's `TRANSITIONAL` table; the table must equal the
-crossings the source makes, and it ends empty.
+be acyclic, and a grant nothing uses fails.
 
 #### T2. The interface is a plugin kernel, and its five rules hold
 

@@ -52,8 +52,7 @@ included, since a reference counts where it resolves. Consumers name the
 backend contract; only backend::wiring names an adapter, and only a
 composition root names backend::wiring. A new module fails that test until its
 rules entry is declared, and every entry, coordinator's too, is asserted by one
-loop. A crossing that is still allowed is in its TRANSITIONAL table with the
-task that removes it; adding one is a design decision, not a fix. The runtime
+loop. The runtime
 behind backend is crates/runtime-mux, held to its own tests/architecture_rules.rs:
 the adapters are peers, only its wiring names one, and it reads nothing of
 thurbox - the settings and data directory it needs are passed in.
