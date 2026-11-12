@@ -251,6 +251,12 @@ enum Command {
         #[command(subcommand)]
         command: IntegrationCommand,
     },
+    /// Check this machine: each installed integration, each harness's
+    /// program on PATH, and each host's runtime. Exits 1 only on a fail.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -539,6 +545,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
+    // Before the store opens: a doctor reads and writes nothing.
+    if let Command::Doctor { json } = &cli.command {
+        return cmd_doctor(&config, &profiles, &data_dir, *json);
+    }
     // The plugin files a profile names sit under the data dir, where
     // `open_signals` writes them.
     fleet_api::harness::install(
@@ -816,6 +826,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         | Command::Signal { .. }
         | Command::Runtime { .. }
         | Command::Integration { .. }
+        | Command::Doctor { .. }
         | Command::TermBridge { .. } => unreachable_version(),
     }
 }
@@ -1422,19 +1433,7 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
     if !config.runtimes.is_empty() {
         let mut hosts = BTreeMap::new();
         for (host, h) in &config.hosts {
-            let p = &config.runtimes[&h.runtime];
-            let mut rt = ExecProgram::new(h.runtime.clone(), p.program.clone());
-            rt.args = p.args.clone();
-            rt.call_timeout = std::time::Duration::from_millis(
-                p.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS),
-            );
-            if let Some(ms) = p.workspace_timeout_ms {
-                rt.workspace_timeout = std::time::Duration::from_millis(ms);
-            }
-            if let Some(prefix) = &p.key_prefix {
-                rt.key_prefix = prefix.clone();
-            }
-            hosts.insert(host.clone(), rt);
+            hosts.insert(host.clone(), exec_program(config, &h.runtime));
         }
         let runtime = ExecRuntime::new(hosts).with_signals(signals.clone());
         return Ok(Box::new(runtime));
@@ -1463,6 +1462,83 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
             "unknown runtime kind {other:?}; [runtime] is the fake, and a real runtime is a program under [runtimes]"
         ))),
     }
+}
+
+/// The program `[runtimes.<name>]` names, as every call to it is made.
+fn exec_program(config: &Config, name: &str) -> ExecProgram {
+    let p = &config.runtimes[name];
+    let mut rt = ExecProgram::new(name.to_string(), p.program.clone());
+    rt.args = p.args.clone();
+    rt.call_timeout =
+        std::time::Duration::from_millis(p.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS));
+    if let Some(ms) = p.workspace_timeout_ms {
+        rt.workspace_timeout = std::time::Duration::from_millis(ms);
+    }
+    if let Some(prefix) = &p.key_prefix {
+        rt.key_prefix = prefix.clone();
+    }
+    rt
+}
+
+/// `fleet doctor`: each check's finding, classified by
+/// `fleet_api::doctor`, and a failure when any check failed.
+fn cmd_doctor(
+    config: &Config,
+    profiles: &fleet_api::harness::Profiles,
+    data_dir: &Path,
+    json: bool,
+) -> Result<(), Failure> {
+    use fleet_api::doctor;
+    let env = |v: &str| std::env::var(v).ok();
+    let mut checks = Vec::new();
+    for p in profiles.list().iter().filter(|p| p.install.is_some()) {
+        checks.push(
+            match fleet_runtime::integration::status(p, data_dir, &env) {
+                Ok(report) => doctor::integration(&p.name, report.state),
+                Err(e) => doctor::integration_unknown(&p.name, &e.to_string()),
+            },
+        );
+    }
+    let path = std::env::var_os("PATH");
+    for p in profiles.list() {
+        let found = fleet_runtime::program::find(&p.program, path.as_deref());
+        let found = found.as_ref().map(|f| f.to_string_lossy());
+        checks.push(doctor::harness(&p.name, &p.program, found.as_deref()));
+    }
+    if !config.runtimes.is_empty() {
+        for (host, h) in &config.hosts {
+            let answer = fleet_runtime::exec::reach(&exec_program(config, &h.runtime));
+            checks.push(doctor::runtime(host, &h.runtime, answer));
+        }
+    } else if config.runtime.is_some() {
+        checks.push(doctor::fake_runtime());
+    } else {
+        checks.push(doctor::no_runtime());
+    }
+    let failed = doctor::failed(&checks);
+    if json {
+        print_json(&json!({ "checks": checks, "failed": failed }));
+    } else {
+        for c in &checks {
+            let level = serde_json::to_value(c.level).map_err(|e| fail(e.to_string()))?;
+            let hint = c
+                .hint
+                .as_deref()
+                .map(|h| format!(": {h}"))
+                .unwrap_or_default();
+            println!(
+                "{:<5} {:<12} {:<12} {}{hint}",
+                level.as_str().unwrap_or_default(),
+                c.area,
+                c.name,
+                c.detail
+            );
+        }
+    }
+    if failed > 0 {
+        return Err(fail(format!("{failed} of {} checks failed", checks.len())));
+    }
+    Ok(())
 }
 
 /// The configured forges, one adapter per `[forge.hosts]` entry, or `None`

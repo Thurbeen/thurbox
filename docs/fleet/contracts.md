@@ -1167,7 +1167,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|version`.
+init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|doctor|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -1214,6 +1214,20 @@ refusal. A view creates its Tasks this way.
 serves any host. `fleet version --json` lists the `harnesses` with a profile of
 their own; any other harness name is run as a program. A view checks a
 Task against both before it applies it.
+
+`fleet doctor [--json]` checks this machine. It reads and writes nothing in
+the store. Each check has one level: `ok`, `info`, `warn` or `fail`. A check
+that needs a step names it as a hint.
+
+| Area | What it checks | Levels |
+| --- | --- | --- |
+| `integration` | each harness with an `[install]` table, as `fleet integration status` reports it ([installed integrations](integration.md)) | `warn` for `outdated` and `modified`; `info` for `not-installed`, `agent-missing` and `unsupported-platform` |
+| `harness` | each harness's `program`, found on PATH | `info` when it is not there: a user installs only the agents they run |
+| `runtime` | each host under `[hosts]`: its runtime program answers `manifest` with protocol 1 and the required verbs | `fail` when it does not answer; `fail` when no runtime is configured |
+
+The exit status is 1 only when a check fails. Warnings alone exit 0.
+With `--json`, it prints `{"checks": [...], "failed": N}`. Each check has
+`area`, `name`, `level`, `detail` and `hint`.
 
 `fleet attach TASK --json` prints `{"stream": {"argv": [...]}}`: the command
 that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream),
