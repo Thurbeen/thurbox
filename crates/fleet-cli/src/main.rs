@@ -545,7 +545,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .ok_or_else(|| {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
-    // Before the store opens: a doctor reads and writes nothing.
+    // Before the store opens: a doctor writes nothing.
     if let Command::Doctor { json } = &cli.command {
         return cmd_doctor(&config, &profiles, &data_dir, *json);
     }
@@ -1520,7 +1520,6 @@ fn cmd_doctor(
         print_json(&json!({ "checks": checks, "failed": failed }));
     } else {
         for c in &checks {
-            let level = serde_json::to_value(c.level).map_err(|e| fail(e.to_string()))?;
             let hint = c
                 .hint
                 .as_deref()
@@ -1528,7 +1527,7 @@ fn cmd_doctor(
                 .unwrap_or_default();
             println!(
                 "{:<5} {:<12} {:<12} {}{hint}",
-                level.as_str().unwrap_or_default(),
+                c.level.as_str(),
                 c.area,
                 c.name,
                 c.detail

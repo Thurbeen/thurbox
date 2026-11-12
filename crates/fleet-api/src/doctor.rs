@@ -21,6 +21,17 @@ pub enum Level {
     Fail,
 }
 
+impl Level {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
+            Level::Info => "info",
+            Level::Warn => "warn",
+            Level::Fail => "fail",
+        }
+    }
+}
+
 /// One check's finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Check {
