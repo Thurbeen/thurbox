@@ -1499,6 +1499,10 @@ fn cmd_doctor(
             },
         );
     }
+    // A ledger that cannot be read already failed each profile's row above.
+    if let Ok(ledger) = fleet_runtime::integration::read_ledger(data_dir) {
+        checks.extend(doctor::left_behind(&ledger, profiles));
+    }
     let path = std::env::var_os("PATH");
     for p in profiles.list() {
         let found = fleet_runtime::program::find(&p.program, path.as_deref());

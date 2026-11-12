@@ -1224,7 +1224,7 @@ that needs a step names it as a hint.
 
 | Area | What it checks | Levels |
 | --- | --- | --- |
-| `integration` | each harness with an `[install]` table, as `fleet integration status` reports it ([installed integrations](integration.md)) | `warn` for `outdated` and `modified`; `info` for `not-installed`, `agent-missing` and `unsupported-platform` |
+| `integration` | each harness with an `[install]` table, as `fleet integration status` reports it ([installed integrations](integration.md)); each ledger entry that no harness profile with an `[install]` table names | `warn` for `outdated` and `modified`; `warn` for an entry left behind, with `fleet integration uninstall <agent>` as its hint; `info` for `not-installed`, `agent-missing` and `unsupported-platform` |
 | `harness` | each harness's `program`, found on PATH | `info` when it is not there: a user installs only the agents they run |
 | `runtime` | each host under `[hosts]`: its runtime program answers `manifest` with protocol 1 and the required verbs | `fail` when it does not answer; `fail` when no runtime is configured, or when `[runtime]` is not the fake with its `dir` |
 
