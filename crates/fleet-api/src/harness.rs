@@ -903,8 +903,17 @@ mod tests {
         assert!(!kimi_initial_composer(KIMI_READY, 19, 5));
         let typed = KIMI_READY.replace("│ >  ", "│ > R");
         assert!(!kimi_initial_composer(&typed, 20, 5));
-        let unframed = KIMI_READY.replace(" ╭─", " ──").replace(" ╰─", " ──");
-        assert!(!kimi_initial_composer(&unframed, 20, 5));
+        let no_top = KIMI_READY.replace(" ╭─", " ──");
+        assert!(!kimi_initial_composer(&no_top, 20, 5));
+        let no_bottom: String = KIMI_READY
+            .lines()
+            .enumerate()
+            .map(|(row, l)| match row {
+                21 => format!("{}\n", l.replace('╰', "─")),
+                _ => format!("{l}\n"),
+            })
+            .collect();
+        assert!(!kimi_initial_composer(&no_bottom, 20, 5));
         let no_footer = KIMI_READY.replace("context:", "ctx");
         assert!(!kimi_initial_composer(&no_footer, 20, 5));
         assert!(!kimi_initial_composer(KIMI_TRUST, 11, 5));
