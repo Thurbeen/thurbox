@@ -331,7 +331,7 @@ jobs:
   windows-test:
     name: Windows (tests)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -350,7 +350,13 @@ jobs:
           tool: cargo-nextest
       # --no-fail-fast: surface every native-Windows test failure in one run
       # (the `ci` profile is fail-fast); easier to triage runner-specific issues.
-      - run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci --no-fail-fast
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci --no-fail-fast
+      # Fleet's crates, in a step of their own so each filter runs only its
+      # own suite. Its Windows-only code (the integration write's backup, the
+      # ledger lock through LockFileEx) runs nowhere else.
+      - if: needs.changes.outputs.fleet == 'true'
+        run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast
 
   # No `architecture` job: `tests/architecture_rules.rs` is an ordinary
   # integration test, so `nextest run --all` above already runs it, and the
@@ -726,9 +732,8 @@ jobs:
       - run: nix build -L
       - run: ./result/bin/thurbox-cli version
 
-  # Fleet's crates, on the runners Fleet has always been tested on. Windows is
-  # not one: Fleet does not target it. Its tests run the real cog (the release
-  # tooling) and git.
+  # Fleet's crates, on Linux and macOS. Its tests run the real cog (the
+  # release tooling) and git. Its Windows tests run in `windows-test`.
   fleet:
     name: Fleet (${{ matrix.os }})
     needs: changes

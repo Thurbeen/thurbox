@@ -261,6 +261,30 @@ fn a_block_whose_closing_line_is_gone_is_modified_and_never_extended() {
     );
 }
 
+/// The test process holds the lock through the standard library, which is
+/// `flock` on Unix and `LockFileEx` on Windows, so this runs everywhere,
+/// Windows included, where no `flock` program is.
+#[test]
+fn a_lock_held_by_another_process_stops_install_until_it_is_released() {
+    let (env, home) = setup("integration-lock-std");
+    env.fleet(&["list", "task"]).ok();
+    let held = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(env.data.join("integrations.lock"))
+        .expect("lock file");
+    held.lock().expect("take the lock");
+    let before = tree(&home);
+    env.fleet(&["integration", "install", "stub"])
+        .code(1)
+        .stderr_has("integrations.lock");
+    assert_eq!(tree(&home), before);
+    held.unlock().expect("release the lock");
+    env.fleet(&["integration", "install", "stub"]).ok();
+    assert_eq!(state(&env, "stub"), "current");
+}
+
 /// `flock` on PATH, which holds a lock the way a `fleet` process does; a
 /// system without it skips the test.
 fn flock() -> Option<PathBuf> {
