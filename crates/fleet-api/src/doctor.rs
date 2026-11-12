@@ -6,7 +6,8 @@
 
 use serde::Serialize;
 
-use crate::integration::State;
+use crate::harness::Profiles;
+use crate::integration::{Ledger, State};
 
 /// How much a finding matters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -78,6 +79,32 @@ pub fn integration(agent: &str, state: State) -> Check {
         detail: state.as_str().to_string(),
         hint,
     }
+}
+
+/// Each ledger entry no profile installs any more: the profile was removed,
+/// or lost its `[install]` table. Its files stay on disk until uninstalled,
+/// and the ledger lists exactly what to remove.
+pub fn left_behind(ledger: &Ledger, profiles: &Profiles) -> Vec<Check> {
+    ledger
+        .integrations
+        .iter()
+        .filter(|(agent, _)| {
+            !profiles
+                .list()
+                .iter()
+                .any(|p| &p.name == *agent && p.install.is_some())
+        })
+        .map(|(agent, entry)| Check {
+            area: "integration",
+            name: agent.clone(),
+            level: Level::Warn,
+            detail: format!(
+                "left behind: no harness profile installs it; its files are in {}",
+                entry.dir
+            ),
+            hint: Some(format!("fleet integration uninstall {agent}")),
+        })
+        .collect()
 }
 
 /// A ledger that cannot be read: no integration's state is known.
@@ -196,6 +223,40 @@ mod tests {
         assert!(fake_runtime("other", true).level == Level::Fail);
         assert_eq!(integration("kimi", State::Current).level, Level::Ok);
         assert_eq!(integration("kimi", State::NotInstalled).level, Level::Info);
+    }
+
+    #[test]
+    fn an_entry_no_profile_installs_is_left_behind() {
+        let entry = |dir: &str| crate::integration::Entry {
+            version: 1,
+            dir: dir.into(),
+            files: Vec::new(),
+            blocks: Vec::new(),
+            dirs: Vec::new(),
+        };
+        let mut ledger = Ledger::default();
+        ledger
+            .integrations
+            .insert("gone".into(), entry("/home/u/.gone"));
+        let installs = Profiles::bundled()
+            .list()
+            .iter()
+            .find(|p| p.install.is_some())
+            .expect("a bundled profile with [install]")
+            .name
+            .clone();
+        ledger
+            .integrations
+            .insert(installs, entry("/home/u/.agent"));
+        let checks = left_behind(&ledger, &Profiles::bundled());
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "gone");
+        assert_eq!(checks[0].level, Level::Warn);
+        assert!(checks[0].detail.contains("/home/u/.gone"));
+        assert_eq!(
+            checks[0].hint.as_deref(),
+            Some("fleet integration uninstall gone")
+        );
     }
 
     #[test]
