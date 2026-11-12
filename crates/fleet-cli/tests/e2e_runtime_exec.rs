@@ -1590,6 +1590,66 @@ fn allow_each_request_until(
     });
 }
 
+/// An agent whose one turn opens three requests, as a model that calls its
+/// shell tool three times in one message does. Each Enter answers one.
+const ASKING_AGENT: &str = r#"#!/bin/sh
+printf '%s' '{"session_id":"s1"}' | fleet signal idle
+fleet signal working
+for request in 1 2 3; do
+  fleet signal blocked
+  read -r answer
+done
+fleet signal working
+fleet signal idle
+exec sleep 300
+"#;
+
+#[test]
+fn every_request_of_a_turn_is_allowed_before_it_ends() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("asking");
+    let mut env = mux_env("runtime-mux-asking", &program, &sockets);
+    let harnesses = env.config.parent().unwrap().join("harnesses");
+    fs::create_dir_all(&harnesses).expect("harnesses dir");
+    fs::write(harnesses.join("stub.toml"), STUB_PROFILE).expect("profile");
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let agent = bin.join("stub-agent");
+    fs::write(&agent, ASKING_AGENT).expect("agent");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("stub");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "waiting on the first request", |env| {
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    allow_each_request_until(&env, &sockets, &work, "the turn ended", |env| {
+        in_order(&reported(env, "t1"), &["blocked", "working", "idle"])
+            && env.get("t1")["status"]["agentState"] == "idle"
+    });
+    let blocked = reported(&env, "t1")
+        .iter()
+        .filter(|(s, _)| s == "blocked")
+        .count();
+    assert_eq!(blocked, 3, "{:?}", reported(&env, "t1"));
+}
+
 /// The agent's process under the session's pane, ended as a crash would.
 fn end_agent(sockets: &Sockets, work: &Path) {
     let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_pid} #{pane_current_path}"]);
