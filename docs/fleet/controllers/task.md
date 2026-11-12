@@ -484,8 +484,14 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
   one included. So its hooks report `blocked` only from the notification
   that a person is asked: `permission_prompt` or `elicitation_dialog`.
 - Copilot starts its session at its first message, and reports nothing
-  before it, a resumed session included. So Fleet does not see it ready,
-  and does not send its brief. A person types the first message.
+  before it, a resumed session included. Before that report, the `exec`
+  kind reads its screen: the bare `❯` between two rules, the cursor after
+  it and the `/ commands` footer under it, with Copilot in the foreground,
+  is ready and trusted. Copilot asks its folder trust before it shows the
+  composer, and that dialog is Untrusted. The brief is Copilot's first
+  message.
+- Copilot's npm package runs as `node`, which leads its process group. So
+  `node` in the foreground counts as Copilot, and the screen tells it apart.
 - A turn that Copilot cancels, a denied approval included, ends with no
   hook. So does a turn that fails, for example on a model that cannot be
   reached: Copilot runs only `errorOccurred`, once per retry, and marks each

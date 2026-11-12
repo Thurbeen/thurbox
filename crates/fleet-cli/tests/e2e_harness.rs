@@ -964,7 +964,8 @@ fn copilot_launches_with_the_plugin_fleet_writes() {
 const SH: &[&str] = &["/bin/sh", "-c"];
 
 /// The `pwsh` on PATH, which runs the PowerShell form of Copilot's hooks.
-/// Without it a test says so and runs only the POSIX form.
+/// Without it a test says so and runs only the POSIX form, except in CI:
+/// there a skip would leave the PowerShell form unrun.
 #[cfg(unix)]
 fn pwsh() -> Option<String> {
     let found = std::env::var_os("PATH").and_then(|path| {
@@ -973,6 +974,10 @@ fn pwsh() -> Option<String> {
             .find(|p| p.is_file())
     });
     if found.is_none() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "pwsh is not on PATH in CI, where Copilot's PowerShell hooks must be run"
+        );
         eprintln!("skipping the PowerShell hook commands: pwsh is not installed");
     }
     found.map(|p| p.to_string_lossy().into_owned())

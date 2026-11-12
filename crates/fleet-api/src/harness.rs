@@ -623,6 +623,49 @@ pub fn kimi_process(foreground: &str) -> bool {
     )
 }
 
+/// Whether a plain visible screen `output` is GitHub Copilot CLI's empty
+/// composer, the cursor just after its `❯`: Copilot takes input, and
+/// starts its session, with the first hook, only at the first message. The
+/// composer is a bare `❯` between two full-width rules, with the `/ commands`
+/// footer under it. Copilot asks its folder trust before its composer, in
+/// the dialog [`copilot_trust_dialog`] matches.
+pub fn copilot_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
+    let lines: Vec<&str> = output.lines().collect();
+    let rule = |at: Option<usize>| {
+        at.and_then(|at| lines.get(at))
+            .map(|l| l.trim())
+            .is_some_and(|l| !l.is_empty() && l.chars().all(|c| c == '─'))
+    };
+    cursor_col == 2
+        && lines.get(cursor_row).map(|l| l.trim_end()) == Some("❯")
+        && rule(cursor_row.checked_sub(1))
+        && rule(cursor_row.checked_add(1))
+        && lines[cursor_row..]
+            .iter()
+            .any(|l| l.contains("· / commands"))
+}
+
+/// Whether the screen's foreground process is GitHub Copilot CLI. Its npm
+/// package starts as `node` running its loader, which leads the process
+/// group; the native binary is a child of it.
+pub fn copilot_process(foreground: &str) -> bool {
+    matches!(
+        foreground.rsplit(['/', '\\']).next(),
+        Some("copilot" | "copilot.exe" | "node" | "node.exe")
+    )
+}
+
+/// Whether GitHub Copilot CLI's folder trust dialog is on a plain visible
+/// screen `output`: its question and its choice to remember the folder.
+pub fn copilot_trust_dialog(output: &str) -> bool {
+    output
+        .lines()
+        .any(|l| l.contains("Do you trust the files in this folder?"))
+        && output
+            .lines()
+            .any(|l| l.contains("Yes, and remember this folder"))
+}
+
 /// Whether Codex's trust dialog is on a plain visible screen `output`: its
 /// question and its trusting default. It can follow the composer, so it is
 /// looked for on the whole screen, not only at the cursor. Kimi Code's trust
@@ -951,6 +994,94 @@ mod tests {
         assert!(kimi_process("kimi-code"));
         assert!(kimi_process("/usr/bin/kimi"));
         assert!(!kimi_process("codex"));
+    }
+
+    /// GitHub Copilot CLI 1.0.105's screen in an 80x24 pane once its folder
+    /// is trusted, its cursor at row 21, column 2.
+    const COPILOT_READY: &str = " [Current]  Sessions   Issues   Pull requests   Gists
+
+  ╭─╮╭─╮
+  ╰─╯╰─╯  Copilot v1.0.105 uses AI.
+  █ ▘▝ █  Check for mistakes.
+   ▔▔▔▔
+
+ ● Tip: /app
+   └ Prefer a visual workspace? Try out the GitHub Copilot desktop app
+      https://github.com/features/ai/github-app 
+
+ ! Model \"fake-model\" is not in the built-in catalog. Using defaults for:
+   prompt tokens (COPILOT_PROVIDER_MAX_PROMPT_TOKENS), output tokens
+   (COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). Run  copilot help providers  for
+   configuration details.
+
+ ● MCP Servers reloaded: 0 servers connected
+
+
+ ~/work
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+ ← open sidebar · Interactive · Manual Approval · / commands         fake-model
+";
+
+    /// GitHub Copilot CLI 1.0.105's first screen in a folder it does not
+    /// trust yet, its three-line folder path shortened to one.
+    const COPILOT_TRUST: &str = " [Current]  Sessions   Issues   Pull requests   Gists
+
+                                                                               ┃
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                         │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────╮ │
+│ │ /home/u/work                                                             │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ Copilot can read files in this folder and, with your permission, edit them   │
+│ or run code and shell commands. It will remember your permissions for the    │
+│ rest of this session.                                                        │
+│                                                                              │
+│ Do you trust the files in this folder?                                       │
+│                                                                              │
+│ ❯ 1. Yes                                                                     │
+│   2. Yes, and remember this folder for future sessions                       │
+│   3. No (Esc)                                                                │
+│                                                                              │
+│ ↑/↓ to navigate · enter to select · esc to cancel                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+";
+
+    #[test]
+    fn only_copilots_empty_composer_under_the_cursor_is_its_initial_composer() {
+        assert!(copilot_initial_composer(COPILOT_READY, 21, 2));
+        assert!(!copilot_initial_composer(COPILOT_READY, 21, 3));
+        assert!(!copilot_initial_composer(COPILOT_READY, 20, 2));
+        let typed = COPILOT_READY.replace("\n❯\n", "\n❯ Run it\n");
+        assert!(!copilot_initial_composer(&typed, 21, 2));
+        for rule in [20, 22] {
+            let no_rule: String = COPILOT_READY
+                .lines()
+                .enumerate()
+                .map(|(row, l)| {
+                    if row == rule {
+                        "\n".into()
+                    } else {
+                        format!("{l}\n")
+                    }
+                })
+                .collect();
+            assert!(!copilot_initial_composer(&no_rule, 21, 2), "{rule}");
+        }
+        let no_footer = COPILOT_READY.replace("/ commands", "commands");
+        assert!(!copilot_initial_composer(&no_footer, 21, 2));
+        assert!(!copilot_initial_composer(COPILOT_TRUST, 18, 2));
+        assert!(!copilot_initial_composer("", 0, 2));
+        assert!(copilot_trust_dialog(COPILOT_TRUST));
+        assert!(!copilot_trust_dialog(COPILOT_READY));
+        assert!(!codex_trust_dialog(COPILOT_TRUST));
+        assert!(copilot_process("copilot"));
+        assert!(copilot_process("node"));
+        assert!(copilot_process("/usr/bin/copilot"));
+        assert!(!copilot_process("codex"));
     }
 
     #[test]
