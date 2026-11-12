@@ -6,7 +6,7 @@
 //! Fleet does not link `runtime-mux`: the program is found beside `fleet`
 //! in cargo's target directory (built by a workspace build), or at
 //! `RUNTIME_MUX_BIN`. Without it or without tmux these tests say so and
-//! skip; CI's runtime-protocol job builds it and has tmux.
+//! skip; CI's Nextest job builds it and has tmux.
 
 #![cfg(unix)]
 

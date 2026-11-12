@@ -334,5 +334,5 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | F3. Intent and receipt | Contract tests in `fleet/contracts.md` | Fleet |
 | F4. One writer per field | `fleet-arch` (permitted status writers) | Fleet |
 | R1. A runtime knows no Task | The protocol's schema | Every runtime |
-| R2. Idempotent by key | `fleet runtime check`, in CI's runtime-protocol job | runtime-mux, `examples/runtimes/tmux.sh` |
+| R2. Idempotent by key | `fleet runtime check`, run by `crates/fleet-cli/tests/e2e_runtime_exec.rs` | runtime-mux, `examples/runtimes/tmux.sh` |
 | R3. runtime-mux module isolation | `crates/runtime-mux/tests/architecture_rules.rs` + `crates/architecture.toml` | runtime-mux |

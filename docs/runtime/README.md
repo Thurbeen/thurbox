@@ -175,8 +175,8 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
   directories, the second adopted, and a release leaves a `file://` directory
   in place.
 
-The cases start `sleep` and `sh` in the runtime's place. CI's
-runtime-protocol job runs it against `runtime-mux` and against
+The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
+`crates/fleet-cli/tests/e2e_runtime_exec.rs`, against `runtime-mux` and against
 [`examples/runtimes/tmux.sh`](../../examples/runtimes/tmux.sh), a reference
 runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
 stops with a kernel lock in tmux's private socket directory, taken with
