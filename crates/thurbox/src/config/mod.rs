@@ -1,6 +1,6 @@
 //! thurbox's own config files, the siblings of `config.toml`: settings,
 //! themes, automations, the interface's state and remote hosts. [`file`](mod@file) is the one loader every
-//! one of them (and `agents.toml`) goes through.
+//! one of them goes through.
 
 pub mod automations;
 pub mod file;

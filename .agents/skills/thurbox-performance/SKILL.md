@@ -9,18 +9,10 @@ description: The thurbox render loop's performance contract: demand-driven redra
 
 ## Performance (render loop)
 
-**Nothing on the loop waits on a network** (ADR-P7/P12 for connecting,
-**ADR-P24** for a connection already open). The trap ADR-P24 closes is that an
-open link can go bad without failing: it carries nothing, no ssh keepalive
-fires, and a round trip that is sub-millisecond when healthy becomes
-`COMMAND_TIMEOUT` plus a reconnect plus another `COMMAND_TIMEOUT`. So a command
-issued from the loop is either **detached** (`send_command_detached`, for one
-whose answer no frame reads — the pane resize behind a paint) or **bounded**
-(`ctrl_command_within`, for one the loop must have an answer to — the
-passthrough gate's `is_dead`), and the bound covers the control lock too, not
-just the answer. Reproduced by the wedged-link scenarios in `tests/tui_e2e.rs`;
-see the `thurbox-testing` skill for how the stand-in `ssh` builds the byte relay
-a local tmux does not have.
+**Nothing on the loop waits on a network.** A link can go bad without
+failing, so a command issued from the loop is either **detached** (no frame
+reads its answer — the pane resize behind a paint) or **bounded**, the control
+lock included. `crates/runtime-mux` implements both.
 
 The loop is **demand-driven**: it paints when something changed or when the 250 ms
 forced-redraw floor (`FORCE_REDRAW_INTERVAL`) elapses, never on every iteration.
@@ -62,7 +54,7 @@ cell of the reflowed frame as one the diff must print. It is deliberately **not*
 `Terminal::clear`: erasing flushes a blank screen and leaves the repaint to the
 next flush, so every pane toggle blinked the whole interface.
 
-A frame is more expensive than v1's, structurally: every pane is a Lua call
+A frame is expensive by structure: every pane is a Lua call
 returning a table that is converted to nodes and painted. The **conversion** is
 the surprise in that sentence and the biggest single cost in a frame — bigger
 than running the plugins' Lua. `kernel::convert` therefore reads each node's
@@ -73,12 +65,9 @@ aggressively. `draw` compares each plugin's returned tree against the last one a
 only marks the frame changed when it differs; a float does the same against its own
 last tree and rect, and a **chrome band** compares the *cells* it just painted
 against the ones it painted last frame — it has no tree to diff, and marking it
-changed for having been *drawn* held `dirty` set after every frame, which stopped
-the loop settling at all: an idle interface with no sessions repainted at the frame
-cap forever (~32% of a core, against ~6% once it settles). Neither an open float
-nor a live text selection marks the frame changed by itself — both used to,
-which pinned the loop at the frame cap for as long as the creation wizard was
-open. The perf HUD is the deliberate exception: its
+changed for having been *drawn* would hold `dirty` set after every frame, and the
+loop would never settle. Neither an open float nor a live text selection marks
+the frame changed by itself. The perf HUD is the deliberate exception: its
 counters move every iteration, so it says so.
 
 Everything that touches the world runs on a worker and publishes back (rule 5):
@@ -227,8 +216,7 @@ terminal size and session count, so both pin theirs, and a change is argued with
 a paired before/after rather than two absolute numbers.
 
 **Snapshot source** (ADR-41): sessions are Fleet Tasks, and the snapshot worker
-folds the events `fleet watch` streams; nothing polls. ADR-P6's `data_version`
-gate went with the database.
+folds the events `fleet watch` streams; nothing polls.
 
 **Observability**: `F12` toggles the perf HUD (`[features] perf_hud`); launching with
 `THURBOX_PERF_LOG=1` writes `startup`, `perf_window` and `slow op` lines to

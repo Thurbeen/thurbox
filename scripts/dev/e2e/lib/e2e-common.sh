@@ -9,8 +9,7 @@
 # The three harnesses share one concept — "provision (or point at) a host, create
 # a session on it over the backend, assert it landed there" — so they share this
 # one library: colour logging, the PASS/FAIL result contract, a dependency-free
-# JSON field extractor (no python3), the `[[hosts]]` TOML emitter, and the
-# create -> get -> assert core. Each entrypoint keeps only its own provisioning.
+# JSON field extractor (no python3) and the `[[hosts]]` TOML emitter. Each entrypoint keeps only its own provisioning.
 #
 # Source it (don't execute) AFTER setting REPO_ROOT. Sourced only by the bash
 # e2e scripts, so bashisms (local, arrays) are fine.

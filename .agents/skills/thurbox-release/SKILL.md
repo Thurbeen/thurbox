@@ -21,21 +21,14 @@ Every push to `main` automatically triggers the release workflow:
    - **Commit type** (`check-release`'s `parse` step): commits must include
      `feat`, `fix`, or `perf`. Only docs/chore/ci commits → no release.
    - **Artifact relevance** (`check-release`'s `shipped` step): the diff since
-     the last tag must touch something a user installs (`src/`, `tests/`,
-     `ui/`, `examples/`, `build.rs`, `Cargo.toml`/`Cargo.lock`,
-     `rust-toolchain.toml`, `Cross.toml`, `packaging/`,
-     `scripts/install.{sh,ps1}`, `cd.yml`). `examples/panes/`
-     is there although no binary carries it: a bare-name install resolves
-     against the release *tag*, so a change never tagged is one nobody can
-     install. `ui/` and `examples/lua/` are there more directly still — both are
-     `include_str!`d into the binary, so they are bytes a user installs.
-     Commit type alone over-releases: Renovate labels a GitHub-Actions pin bump
-     `fix(deps)` and the website is versioned `feat(ui)`/`fix(ui)`, so a
-     CSS-only or lint-action-only change used to cut a real release (v1.2.13
-     through v1.3.0 were four website-only releases, one a *minor*) — burning a
-     4-platform build and pushing to the moderated Chocolatey/winget channels
-     for a no-op binary. Such commits stay in history and ride along in the
-     next real release's changelog.
+     the last tag must touch something a user installs: a path the
+     `SHIPPED_PATHS` regex in `cd.yml` matches. `examples/` is there although
+     no binary carries all of it: a bare-name install resolves against the
+     release *tag*, so a change never tagged is one nobody can install. `ui/`
+     and `examples/lua/` are `include_str!`d into the binary. Commit type alone
+     over-releases: Renovate labels a GitHub-Actions pin bump `fix(deps)` and
+     the website is versioned `feat(ui)`/`fix(ui)`. Such commits stay in history
+     and ride along in the next real release's changelog.
    - The gate is evaluated over the **whole span since the last tag**, not the
      single push, so a website-only push landing on an unreleased `src/` commit
      still cuts the release it owes. A forced `workflow_dispatch` version
@@ -139,9 +132,7 @@ ships under names of its own):
   **Attempts every release** (Chocolatey's shape), paced by the queue rather
   than a calendar: winget-pkgs is *manually moderated* — each `submit` opens a PR
   a human must review, and thurbox's per-`feat`/`fix`/`perf` cadence buried the
-  maintainers (30 open PRs at once, flagged in
-  [microsoft/winget-pkgs#405639](https://github.com/microsoft/winget-pkgs/pull/405639)).
-  So the decision step hands our own thurbox PRs (via `gh pr list`, any state) to
+  maintainers. So the decision step hands our own thurbox PRs (via `gh pr list`, any state) to
   `packaging/winget/submit-decision.py decide`, which **skips green** with a
   `::warning::` while one is still **open** — wingetcreate cannot update a
   pending PR, so a second would only lengthen the queue — and also honours
@@ -149,9 +140,8 @@ ships under names of its own):
   monthly window).
   Before `submit`, `gh repo sync <account>/winget-pkgs --source
   microsoft/winget-pkgs` brings the token account's fork up to date, retrying
-  with `--force` (hard reset of its default branch) when it has diverged —
-  wingetcreate's own fast-forward-only auto-sync is what failed v2.19.6 on a
-  fork 48 days behind a repo that merges hundreds of PRs a day. The fork is a
+  with `--force` (hard reset of its default branch) when it has diverged:
+  wingetcreate's own auto-sync is fast-forward only. The fork is a
   submission staging area (each submission gets its own branch), so a reset
   destroys neither work nor an open PR.
   A `submit` rejected *by the channel* (rate limit, version already pending)
@@ -161,8 +151,7 @@ ships under names of its own):
   keyed off the *pre-submit* decision would close the pending PR and leave the
   channel with nothing. Anything else fails
   the job — but **`continue-on-error` is on the job**, so winget can never redden
-  the Release run. (It was on the cleanup step alone before, which is why
-  v2.19.6's failure did.) `bats packaging/winget/winget.bats` covers both
+  the Release run. `bats packaging/winget/winget.bats` covers both
   decisions and the manifest bump. As second-line cleanup for a PR that still
   stacks (e.g. a manual dispatch), a follow-up `gh pr close` closes every older
   still-open `Thurbeen.thurbox` PR from the token account (wingetcreate's
@@ -251,8 +240,7 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
   new one in, because Windows refuses to *delete* a running executable (what
   `Expand-Archive -Force` does) but allows renaming it. A backup still running
   is removed by the next run; one that cannot be moved fails naming the
-  `thurbox` / `thurbox-cli` PIDs to close. `session_ops::host_cli`'s
-  `windows_extract_script` provisions a Windows host's `thurbox-cli` the same way
+  `thurbox` / `thurbox-cli` PIDs to close
 - The helpers (`Get-Target`, `Get-ExpectedChecksum`, `Install-Archive`) are
   guarded by `$env:THURBOX_PS_TEST` so the file can be dot-sourced for testing
   without running the installer

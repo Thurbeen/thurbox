@@ -14,10 +14,7 @@ cargo nextest run --all              # Run all tests (preferred runner)
 cargo nextest run -E 'test(name)'    # Run a single test by name
 cargo nextest run --all --profile ci # Run with CI profile
 bats scripts/install.bats             # Test install script (requires bats-core)
-just test-scripts                     # The four bats suites CI runs: install.bats,
-                                      # scripts/ci/check-pr-title.bats,
-                                      # packaging/winget/winget.bats and
-                                      # scripts/dev/e2e/windows-vm.bats
+just test-scripts                     # Every bats suite (the justfile lists them)
 ```
 
 The Nix development shell includes `bashInteractive`, not merely stdenv's
@@ -60,16 +57,14 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `plugin_switching` also runs the registry persistence path in an isolated child
   process under a Unix file-size limit: the forced mid-write failure must preserve
   every byte of the prior `plugin-state.json` and `ui.json` and leave no staged
-  file behind. `tui_e2e`'s
-  `legacy_trust_and_disabled_choices_move_to_their_own_store_and_still_apply` pins
-  the migration out of a legacy `ui.json` across two starts of the real binary. The native
+  file behind. The native
   interruption probe is Unix-only; on Windows the replacement is `std::fs::rename`.
   The same file pins config-file
   symlink preservation on Unix and paths beyond `MAX_PATH` on Windows.
 - **`tests/edited_interface.rs`** — an edited interface keeps working across an
   upgrade. It holds files frozen from old releases with a user's edit
   (`tests/fixtures/edited_interface/<release>/`: v2.22.4's layout, session
-  list and agent pane, v2.32.0's layout and agent pane), and checks that they are preserved, arrange, render and pass `plugin check`
+  list and agent pane), and checks that they are preserved, arrange, render and pass `plugin check`
   against the current `lib/` and kernel. It also pins every name `lib/` exports
   (`lib_surface.txt`). This is the check behind `lib/`'s compatibility promise
   in `ui/AGENTS.md`. Never refresh the frozen files to follow `ui/`. A new
@@ -93,11 +88,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   code from its `Json2` output and attributes a finding by the file it came
   from, so no assertion depends on message wording. A checked path stops at the
   first `[…]`, so a list has nothing below it to probe, and `runs` is the one map
-  whose keys are the plugin's own literals rather than a session id. Those tables
-  were declared without their fields for as long as nothing read them (issue
-  #1133). Same two runners.
-- **`tests/lua_api.rs`** — the plugin API against `kernel::lua_api` (issue
-  #1476): the generated declaration files equal what it renders
+  whose keys are the plugin's own literals rather than a session id. Same two
+  runners.
+- **`tests/lua_api.rs`** — the plugin API against `kernel::lua_api`: the generated declaration files equal what it renders
   (`THURBOX_REGENERATE=1`, i.e. `just lua-api`, rewrites them), a pane walking
   every key of a fully populated publish finds none undeclared, and
   `thurbox.api`/`requires_api` hold; its `meta` module drives `ui.*` session
@@ -148,16 +141,14 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   leaves behind. Pins that the one-shot `new-window` path believes the pane id
   on stdout rather than the exit status — tmux hands the client the status of
   the last `run-shell` its command list triggered, hooks included, so a window
-  that was created came back as `exit status: 127` and was torn down (#1154).
+  that was created came back as `exit status: 127` and was torn down.
   The second test pins the quieter half: the id kept must still resolve to that
   window and carry its session stamp.
 - **`tests/path_resolution_absolute.rs`** (unix) — its own test binary because it
   moves the process working directory, which a sibling test in the same binary
   would see. Pins that `resolve_on_path` (`docs/thurbox/config.md` → How `command` is
   resolved) skips an empty `PATH` component rather than joining it as "the
-  current directory": that join used to answer with a bare relative name,
-  reintroducing the multiplexer-resolves-it dependence the function exists to
-  remove.
+  current directory", which would answer with a bare relative name.
 
 Tests that shell out to `git` **must scrub the `GIT_*` location variables**
 (`git::GIT_LOCATION_ENV`): git exports them to hook processes, so the suite running
@@ -185,30 +176,25 @@ makes safe) or `TmuxServer::private(SOCKET)` plus `server.scope(&mut cmd)` per
 child command, **hold it**, and it does three things no call site has to
 remember:
 
-1. **Pins the socket** (`backend::instance::SOCKET_OVERRIDE_ENV`), so teardown has a
+1. **Pins the socket** (`runtime_mux::instance::SOCKET_OVERRIDE_ENV`), so teardown has a
    name to kill.
 2. **Clears `SOCKET_OWNER_ENV`.** thurbox injects `THURBOX_SOCKET` *and*
    `THURBOX_SOCKET_FOR` into every pane it spawns, so a suite run inside a
-   thurbox session inherits both. `backend::instance::socket_for` drops an override
+   thurbox session inherits both. `runtime_mux::instance::socket_for` drops an override
    tagged for another instance's data dir — correctly: a harness that isolated
-   its database but not its server would be spawning windows on the operator's
+   its data directory but not its server would be spawning windows on the operator's
    tmux. So a harness that relocates `THURBOX_DATA_DIR` and leaves the tag in
    place lands on a *derived* socket, and its `kill-server` kills a name nothing
    created. One orphan server, agents and all, per run.
 3. **Points `TMUX_TMPDIR` at a directory of its own** — the guard's own, not the
    harness's tempdir. tmux never unlinks a socket, so even a server killed
    correctly leaves a dead socket file behind; and owning the directory is what
-   lets `Drop` kill the server *before* the socket goes, rather than after,
-   which is the ordering the old shape got wrong.
+   lets `Drop` kill the server *before* the socket goes, rather than after.
 
-`Drop` is the point. Teardown used to be a `cleanup()` call written at each exit
-point — eleven of them in `spawn_command_resolution`, more in `create_e2e` — and
-a panic, a failed `.expect()` or a nextest `slow-timeout` termination reached
-none of them. The server survived with its socket file gone, so nothing could
-connect to reap it: one machine held 400 orphans, 1432 processes and 4.4 GiB
-RSS, with 4 sockets between 433 servers (issue #1175). A signal still runs no
-destructor, which is what `just reap-tmux`
-(`scripts/dev/reap-tmux-servers.sh`, Linux) sweeps up.
+`Drop` is the point: a panic or a failed `.expect()` still runs it. A signal
+runs no destructor, so a nextest `slow-timeout` termination leaves the server
+behind; `just reap-tmux` (`scripts/dev/reap-tmux-servers.sh`, Linux) sweeps
+those up.
 
 Two tests hold the line, both in `tests/tmux_server_leak.rs`:
 `the_guard_scopes_every_socket_it_pins` reads (1)–(3) off the guard's own
@@ -229,35 +215,21 @@ cannot have a socket directory of its own — the lib's unit tests share a proce
 and `TMUX_TMPDIR` is process-wide — so it removes the socket file by hand
 instead.
 
-> v1's in-process acceptance harness, its `insta` snapshots, its invariant monkey
-> test and `tests/v1_recordings.rs` were deleted with `src/app`. They are in the
-> history if a behaviour needs archaeology.
-
 ### Session-backend e2e harnesses
 
 One family under `scripts/dev/e2e/` (`linux-container.sh` = ephemeral Podman,
 `windows-vm.sh` = ephemeral dockur Windows VM, `real-host.sh` = a machine you own)
 sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
-(`E2E_JSON=1` for a machine-readable line), an in-shell `json_field` extractor (no
-`python3`), the `[[hosts]]` emitter, and the `session create → get → assert` core.
-`scripts/dev/README.md` is the newcomer index and carries the old→new path map.
+(`E2E_JSON=1` for a machine-readable line) and the `[[hosts]]` emitter.
+`scripts/dev/README.md` is the newcomer index.
 
-`windows-vm.sh test` additionally holds thurbox's psmux hook-status gate
-(`Psmux::HOOK_STATUS`) against psmux itself: it asks the binary which way the
-gate is set (`thurbox-cli runtime status --json` → `hook_status["local:psmux"]`,
-never the source) and **fails** the harness when
-the two disagree — a gate open over a mailbox psmux drops, or a psmux that has
-grown the scope while the gate is still closed. Before that the probe reported
-on its own `ok` branch whichever way the measurement went, which is why psmux
-implementing no pane user options at all sat unseen (issue #1170).
-The verdict is about the **mailbox**, not the whole gate: that also rests on
-claude accepting the forward-slash `--settings` path on Windows, which needs a
-real agent launch and is measured nowhere in the harness, so a holding pair
-prints that condition beside itself and says the gate may be reconsidered
-rather than opened. A half counts as present only when the option comes back on
-the pane it was set on and on **no other** — the poller maps one pane to one session, so an option
-stored at window or server scope would attribute one session's state to
-another, and the probe splits a second pane so that difference is observable.
+`windows-vm.sh test` checks runtime-mux's psmux hook-status gate (the
+`HOOK_STATUS` constant in `crates/runtime-mux/src/psmux.rs`) against psmux
+itself, and **fails** the harness when the two disagree. The verdict is about
+the **mailbox** only: a holding pair says the gate may be reconsidered rather
+than opened. A half counts as present only when the option comes back on the
+pane it was set on and on **no other**, and the probe splits a second pane so
+that difference is observable.
 `scripts/dev/e2e/windows-vm.bats` drives those helpers — the gate read, each
 half's measurement including the leak case, the verdict table and that a failed
 probe reaches the exit status — with no VM to provision, so the failing branch

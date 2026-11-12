@@ -15,7 +15,7 @@ bar already in it, `ui.cursor` is the "which item am I on, and did somebody
 else steer me" state every pane with a list grows, `ui.row` is a span builder that knows
 how wide the row is, and `ui.empty`/`ui.footer` are the one empty state and the
 one footer — with hints resolved from the key registry, so a rebind moves them.
-`10_sessions.lua` and `80_restore.lua` are the worked examples. `lib/widgets.lua`
+`10_sessions.lua` is the worked example. `lib/widgets.lua`
 is the primitive kit underneath; reach past `ui` for the piece it does not cover.
 
 A second habit, for when you do: a highlight is a **node style**, not a loop over

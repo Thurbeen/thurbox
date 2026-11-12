@@ -1,6 +1,6 @@
 ---
 name: thurbox-kernel
-description: The thurbox plugin kernel: the five rules, module dependency rules enforced by tests/architecture_rules.rs, module responsibilities, the event loop, and writing an interface plugin - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the plugin API and its capabilities.
+description: The thurbox plugin kernel: the five rules, where the module dependency rules live (tests/architecture_rules.rs), module responsibilities, the event loop, and writing an interface plugin - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the plugin API and its capabilities.
 ---
 
 # Thurbox plugin kernel and plugin authoring
@@ -71,106 +71,16 @@ dispatch order on one worker per active session. Waiting commands remain
 `Queued`; other sessions, session-less commands and housekeeping run independently.
 Empty session queues retire on the worker, without needing the UI to poll.
 
-### Module Dependency Rules (enforced by tests/architecture_rules.rs)
+### Module dependency rules
 
-```text
-node                 may reference                     [fully-qualified path only]
-session              nothing — pure data, the dependency sink (no
-                     process state, no env reads, no rendering crate;
-                     re-exports runtime-mux's host model and SessionId)
-agent                agent::* (declarations only)
-agent::*             every file a node: fetch → paths; input → nothing
-                     (NEVER git, NEVER backend)
-config               config::* (declarations only)
-config::*            every file a node: config::file (the one loader, over
-                     paths); automations, hosts, interface_state, settings →
-                     session, config::file; themes → theme, config::file
-update               update::* (declarations only)
-update::*            self_update → paths, shell, agent::fetch,
-                     update::version_check; version_check → paths,
-                     agent::fetch
-backend              session, paths, config::hosts     (the gateway to
-                                                        runtime-mux, and what
-                                                        thurbox injects)
-git                  session, paths, shell
-telemetry            session                           (ADR-38 diagnostic logs)
-kernel               session, paths, git,              [agent|config|update::<file>,
-                     notifications, shell, theme        backend]
-cli                  session, paths, notifications,    [agent|config|update::<file>,
-                     ui_control, theme                  backend, kernel]
-notifications        session, paths, shell
-clipboard            session, paths
-workspace            paths
-paths                nothing — leaf utility
-ui_control           paths
-shell                nothing — runtime-mux's launchers and quoting, re-exported
-theme                nothing — the presets, in ratatui colours
-coordinator          agent::input, config::{hosts,     (main's body: the loop,
-                     interface_state},                  the workers, the chrome)
-                     backend, clipboard, kernel,
-                     notifications, paths, session,
-                     shell, telemetry, ui_control
-```
-
-The multiplexer runtime is its own crate, `crates/runtime-mux` (ADR-41), with
-its own allowlist (`crates/runtime-mux/tests/architecture_rules.rs`,
-`docs/constitution.md` R3): the adapters `tmux`, `psmux`, `rmux` are peers
-over the shared `tmux_compat` server, only the factory `wiring` names one, and
-it depends on no other crate of the repository — the settings and data
-directory it needs are injected (`MuxSettings`, `HostsConfig`). Its
-`runtime-mux` program (`src/main.rs`, the composition root, over the
-`protocol` module) answers the runtime protocol on a tmux socket of its own,
-`runtime-mux` (`RUNTIME_MUX_SOCKET` names another), never thurbox's.
-`crates/architecture.toml` declares which crate may depend on which, and
-Fleet's `fleet-arch` (its `architecture` test) holds the workspace to it.
-
-Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
-entry naming what it may reference in *any* form (`use`, `pub use`, brace groups,
-fully-qualified `crate::…` — and `thurbox::…`, the only spelling the binary's own
-modules have for the library), so a new module fails the test until its place is
-declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
-`coordinator/` has an entry of its own listing the layers it wires, because
-"wires everything" was never the same claim as "may reach anything". `kernel` reaches
-`agent` and `backend` by fully-qualified path only — never `use` — so
-every crossing into the side-effect layer is visible at its call site, the rule
-`cli` already follows. A function-local `use crate::agent::…` (or
-`as` alias) breaks it too. One test, `every_module_rule_holds`, loops over every
-entry, so no rule can exist with no test calling it.
-
-A rule names a **node**: a top-level module, or a submodule governed on its own —
-every file module of `agent`, `config` and `update`, at any depth, is one
-(`SUBMODULE_GOVERNED`). A grant covers exactly its node, never the node's children,
-and a reference is judged where it **resolves** (`tests/architecture/resolver.rs`):
-`super::`, `self::`, nested brace groups, `as`, an imported name, a `pub use`
-re-export and a `type` alias are all followed, so no spelling carries a crossing
-past a rule. On top of the allowlist: the production graph and the declared graph
-must both be acyclic (`the_production_graph_is_acyclic`,
-`the_declared_graph_is_acyclic`), every grant must be used by production code
-(`every_allowance_is_used`), and the crossings still to be
-removed are the `TRANSITIONAL` table — each item saying why it is there and
-what removes it, checked both ways so a new crossing fails and so does a stale
-entry. It is **empty**, and
-`consumers_reach_no_concrete_backend` holds every module but `coordinator` to
-reaching no adapter, protocol helper or factory through the `backend` gateway
-— by reference, through aliases and re-exports — and `coordinator` to the
-factory alone. The resolver follows no external crate, so
-`runtime_mux_is_named_only_by_its_gateways` closes the side door: only
-`backend` and the modules that re-export a runtime type as their own
-(`RUNTIME_GATEWAYS`: `shell`, `session`, `paths`, `config::hosts`,
-`config::file`) may name `runtime_mux`, by path or under any alias. `agent` is submodule-governed, so a grant names the agent
-config a node reads.
-
-The runtime behind the gateway is `crates/runtime-mux`, held by its own
-`tests/architecture_rules.rs` over the same resolver: only the factory
-`wiring` may be granted an adapter and no module the factory
-(`only_the_factory_names_an_adapter`), the adapters are peers — none reaches
-another and `tmux_compat` reaches none, test code included
-(`the_adapters_are_peers`) — each adapter's code names exactly its own
-`Multiplexer` variant
-(`each_multiplexer_is_chosen_only_by_its_adapter_and_the_factory`, ADR-31),
-and the route and contract know no launcher, adapter or build OS. Fixture trees under `tests/fixtures/architecture/` pin that the
-resolver sees a three-node backend cycle, the mux/registry cycles,
-alias and re-export laundering, and test-only edges.
+`tests/architecture_rules.rs` holds the module graph: an allowlist over
+resolved edges, one `ModuleRules` entry per module under `src/`, and the only
+copy of that graph. Read the test, not a summary of it. Every file of `agent`,
+`config` and `update` is a node of its own (`SUBMODULE_GOVERNED`), a grant in
+`allowed_path_only` admits fully-qualified paths but never `use`, and only the
+`backend` gateway and `RUNTIME_GATEWAYS` may name `runtime_mux`.
+`crates/runtime-mux` has its own `tests/architecture_rules.rs`, and
+`crates/architecture.toml` is the crate graph.
 
 ### Module Responsibilities
 
@@ -208,18 +118,9 @@ alias and re-export laundering, and test-only edges.
   multiplexer runtime, `crates/runtime-mux` (ADR-41), which it re-exports,
   and what thurbox injects into it (`mux_settings`: `settings.toml`'s
   scrollback and the data directory; `wiring::configured`: the hosts of
-  `hosts.toml`). In the runtime, `contract` is the
-  `SessionBackend` trait every consumer names — the `PaneStream`,
-  `WindowLifecycle`, `PaneIo` and `StatusChannel` roles plus a `Capabilities`
-  value for what an adapter can do; `registry` holds one backend
-  per route and `wiring` is the only factory naming an adapter. `TmuxBackend`
-  and `PsmuxBackend` are peer adapters over `tmux_compat::Server<M>`, reached
-  through a `TmuxTransport` (an optional `HostLauncher` — ssh or WSL — plus the
-  multiplexer binary). `pane::Session` wraps a backend's pane: output is read
-  into `Arc<Mutex<vt100::Parser>>`, input written over an mpsc channel.
+  `hosts.toml`).
 - **`session/`** — plain data: `SessionState` (`hook_status`, the one
-  vocabulary every surface prints), `AgentDef`/`AgentRegistry`, the automation
-  schedule, settings, `PluginSpec`/`PluginLock`/`PackageManifest`
+  vocabulary every surface prints), the automation schedule, settings, `PluginSpec`/`PluginLock`/`PackageManifest`
   (`plugin_spec`, so the kernel and the CLI share one definition) and `review`;
   plus runtime-mux's `SessionId`, host model, routes and `hyperlink` table,
   re-exported. Holds no process state, reads no environment and names no
@@ -253,9 +154,7 @@ alias and re-export laundering, and test-only edges.
   `order` and `session_model` (the session list's model, with its memo),
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
   panes.
-- **`cli/`** — `thurbox-cli` subcommands, including
-  `plugin dir|new|check|list|events|install|sync|update|remove|available`
-  for writing an interface with no TTY.
+- **`cli/`** — `thurbox-cli` subcommands (the `thurbox-cli` skill).
 
 ### Event Loop (`src/main.rs` + `src/coordinator/`)
 

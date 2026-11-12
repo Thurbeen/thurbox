@@ -20,9 +20,9 @@
 //! listed in [`TRANSITIONAL`], which must equal the violations found — both
 //! ways, so a new crossing fails and so does a stale entry.
 //!
-//! The layering mirrors AGENTS.md ("Module Dependency Rules") and
-//! docs/constitution.md T1. If a rule change is intentional, update those
-//! docs in the same PR.
+//! This file is the one statement of the layering: AGENTS.md, the
+//! `thurbox-kernel` skill and docs/constitution.md T1 point here rather than
+//! copy it.
 
 #[path = "architecture/resolver.rs"]
 mod resolver;
@@ -56,8 +56,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
-    // Coding-agent definitions: the agents.toml registry, the downloads plugins
-    // and the updater make, and keyboard input. Never a session backend: the
+    // The downloads plugins and the updater make, and keyboard input. Never a session backend: the
     // multiplexer runtime (`backend`) is reached through its own node.
     //
     // Every file is a node of its own (`SUBMODULE_GOVERNED`), so a grant names
@@ -593,7 +592,7 @@ fn consumers_reach_no_concrete_backend() {
 
 /// The modules that may name `runtime_mux` itself: the `backend` gateway, and
 /// the ones re-exporting a runtime type as their own — the shell grammar
-/// (`shell`, `session::agent_def`), the host model and `SessionId`
+/// (`shell`), the host model and `SessionId`
 /// (`session`), the data directory and binary lookup (`paths`), the hosts
 /// loader (`config::hosts`) and the TOML reader (`config::file`). The resolver
 /// follows only crate-internal paths, so a `runtime_mux::tmux` named anywhere

@@ -7,9 +7,8 @@
 //! names them, and the route and the contract know no launcher, adapter or
 //! build OS (ADR-13, ADR-31).
 //!
-//! The layering mirrors the "Module Dependency Rules" in AGENTS.md and
-//! docs/constitution.md. If a rule change is intentional, update those docs in
-//! the same change.
+//! This file is the one statement of the runtime's layering:
+//! docs/constitution.md R3 points here rather than copy it.
 
 #[allow(dead_code)]
 #[path = "../../thurbox/tests/architecture/resolver.rs"]

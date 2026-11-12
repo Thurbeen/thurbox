@@ -24,8 +24,7 @@ and `fleet runtime check` cover the runtime on a host.
 `e2e/windows-vm.sh test` checks psmux itself on the VM, and decides whether
 runtime-mux's psmux hook-status gate (`HOOK_STATUS` in
 `crates/runtime-mux/src/psmux.rs`) still matches what psmux does. It **fails**
-when the two disagree either way round — see issue #1170, where the probe
-reported on its own `ok` branch whichever way the measurement went.
+when the two disagree either way round.
 `e2e/windows-vm.bats` drives those helpers with no VM, so the failing branch is
 exercised in CI (`just test-scripts`).
 
@@ -41,14 +40,12 @@ scripts/dev/e2e/windows-vm.sh up           # first run installs Windows (~10-20 
 scripts/dev/e2e/real-host.sh devbox check  # readiness probe on a real host
 ```
 
-## The TUI smoke test moved
+## The TUI smoke test
 
 The black-box TUI test is `tests/tui_e2e.rs`: the real `thurbox` binary on a
 real pty, asserting on the reconstructed frames *and* on the byte stream (the
 alternate screen, mouse modes, a reflow without a screen clear). It runs in the
-ordinary `cargo nextest run --all` — `just smoke` runs only it — and replaced
-`smoke/tui-smoke.sh`, which drove a tmux pane and could see neither the bytes
-nor a session's own terminal.
+ordinary `cargo nextest run --all`; `just smoke` runs only it.
 
 ## Performance
 
@@ -82,26 +79,14 @@ than the whole binary; both are explained in `docs/thurbox/performance.md`.
 
 | Script | What it does |
 |---|---|
-| `sandbox.sh` | run the dev TUI/CLI against an isolated sandbox (`just sandbox*`); launched from the sandbox root so the interface directory is isolated too, not just the database |
+| `sandbox.sh` | run the dev TUI/CLI against an isolated sandbox (`just sandbox*`); launched from the sandbox root |
 | `demo-repo.sh` | seed a demo repository + sessions into the sandbox (`sandbox.sh --demo` / `--demo-big`, `just sandbox-demo*`) |
 | `reap-tmux-servers.sh` | reap orphaned *test* tmux servers a signal left behind (`just reap-tmux`, Linux; `--dry-run` lists) |
 | `render-og-image.sh` | rasterize the website OpenGraph card |
-| `lib/sandbox-env.sh` | shared isolation helper sourced by `sandbox.sh` and `scripts/demo/record.sh` |
+| `lib/sandbox-env.sh` | shared isolation helper sourced by `sandbox.sh` and the demo recorders |
 
 ## Result contract
 
 Every e2e harness ends on a single line: `PASS <message>` (green, exit 0) or
 `FAIL <message>` (red, exit 1), from `e2e-common.sh`'s `pass`/`fail`. Set
 `E2E_JSON=1` to also emit a `{"result":…}` line for CI/automation.
-
-## Moved paths
-
-These entrypoints were renamed (the old flat paths no longer exist). Update any
-references:
-
-| Old | New |
-|---|---|
-| `scripts/dev/remote-ssh-test.sh` | `scripts/dev/e2e/linux-container.sh` |
-| `scripts/dev/windows-test.sh` | `scripts/dev/e2e/windows-vm.sh` |
-| `scripts/dev/lab-test.sh` | `scripts/dev/e2e/real-host.sh` |
-| `scripts/dev/tui-smoke-test.sh` | `tests/tui_e2e.rs` (a Rust integration test, not a script) |
