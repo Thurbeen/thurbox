@@ -1,9 +1,9 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
-//! constants, not files: a pure crate reads nothing at build time. The
-//! plugin files pi's, opencode's and kilo's name are the runtime adapter's
-//! (`fleet_runtime::assets`). A user
-//! file of the same `name` in Fleet's config dir replaces one
-//! (docs/fleet/controllers/task.md, *Harness profiles*).
+//! constants, not files: a pure crate reads nothing at build time. The hook
+//! files pi's, opencode's, kilo's, omp's and qwen's name are the runtime
+//! adapter's (`fleet_runtime::assets`). A user file of the same `name` in
+//! Fleet's config dir replaces one (docs/fleet/controllers/task.md, *Harness
+//! profiles*).
 
 /// Claude Code. Its hooks are one `--settings`: Claude Code keeps the last
 /// of several, so a second would drop Fleet's hooks or the other's. Only a
@@ -130,5 +130,51 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
+/// omp, a pi fork. Its hooks are an extension file Fleet writes, passed with
+/// `-e`, which loads beside the user's own extensions. Unlike pi, omp asks
+/// before a tool runs when its approval mode says so, and trusts every
+/// project. `OMP_SKIP_SETUP` skips the setup wizard of omp's first start:
+/// Fleet never answers it, as it never answers pi's trust question.
+pub const OMP: &str = r#"
+name = "omp"
+program = "omp"
+authority = "full"
+
+[launch]
+args = ["-e", "{asset:fleet-omp.ts}"]
+env = { OMP_SKIP_SETUP = "1" }
+add_dir = "--add-dir"
+
+[resume]
+args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+"#;
+
+/// Qwen Code. Its hooks are a settings file Fleet writes, named in
+/// `QWEN_CODE_SYSTEM_DEFAULTS_PATH`: qwen merges the hooks of its system
+/// defaults, user, project and system settings. That path replaces the
+/// system defaults file's, which a Fleet session does not read. The system
+/// settings path is left alone: qwen derives the defaults path from it when
+/// none is given, so naming it would hide both files.
+pub const QWEN: &str = r#"
+name = "qwen"
+program = "qwen"
+authority = "full"
+
+[launch]
+env = { QWEN_CODE_SYSTEM_DEFAULTS_PATH = "{asset:fleet-qwen.json}" }
+add_dir = "--add-dir"
+
+[resume]
+args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+"#;
+
 /// Every bundled profile, in the order `fleet version --json` lists them.
-pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO];
+pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO, OMP, QWEN];

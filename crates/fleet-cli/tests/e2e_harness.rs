@@ -139,7 +139,9 @@ fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
             "codex",
             "pi",
             "opencode",
-            "kilo"
+            "kilo",
+            "omp",
+            "qwen"
         ])
     );
 }
@@ -655,6 +657,250 @@ fn the_kilo_plugin_reports_each_change_of_state_with_its_session() {
         .is_empty()
     );
     assert!(run_asset(&env, &node, (KILO_DRIVER, &asset), steps, (false, true)).is_empty());
+}
+
+/// omp takes its hooks at launch as an extension file Fleet writes, passed
+/// with `-e`; qwen as a settings file Fleet writes, named in
+/// `QWEN_CODE_SYSTEM_DEFAULTS_PATH`, whose hooks qwen merges with the
+/// system's, the user's and the project's. omp skips its first-run setup.
+#[test]
+fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
+    let env = Env::new("harness-launch-omp-qwen");
+    let mut omp = support::task("m1", true);
+    omp["spec"]["harness"] = json!("omp");
+    let mut qwen = support::task("q1", true);
+    qwen["spec"]["harness"] = json!("qwen");
+    env.apply(json!([omp, qwen])).ok();
+    env.reconcile().ok();
+    let assets = env.data.join("harness-assets");
+
+    let omp = session(&env, "m1");
+    let extension = assets.join("fleet-omp.ts");
+    assert_eq!(omp.argv, ["omp", "-e", &*extension.to_string_lossy()]);
+    assert!(extension.is_file(), "{}", extension.display());
+    assert_eq!(omp.env.get("OMP_SKIP_SETUP").map(String::as_str), Some("1"));
+
+    let qwen = session(&env, "q1");
+    assert_eq!(qwen.argv, ["qwen"]);
+    assert!(
+        !qwen.env.contains_key("QWEN_CODE_SYSTEM_SETTINGS_PATH"),
+        "the system settings file keeps its path: {:?}",
+        qwen.env
+    );
+    let settings = assets.join("fleet-qwen.json");
+    assert_eq!(
+        qwen.env
+            .get("QWEN_CODE_SYSTEM_DEFAULTS_PATH")
+            .map(String::as_str),
+        Some(&*settings.to_string_lossy())
+    );
+    assert!(settings.is_file(), "{}", settings.display());
+
+    // A revive resumes each on the conversation its hooks reported.
+    env.host().reboot().unwrap();
+    env.reconcile().ok();
+    for (task, program) in [("m1", "omp"), ("q1", "qwen")] {
+        let s = session(&env, task);
+        let resumed = s.restarts.last().expect("revived");
+        assert_eq!(resumed[0], program);
+        assert_eq!(
+            resumed[resumed.len() - 2..],
+            ["--resume".to_string(), format!("conv-{}", s.id)],
+            "{resumed:?}"
+        );
+    }
+}
+
+/// omp's extension API, as much of it as Fleet's extension uses: each step
+/// is an event and its payload, given to every handler of the event without
+/// waiting for the one before it. A step whose third element is `"sub"`
+/// comes from a subagent, which runs in omp's process with the same
+/// extensions, its own session and no UI.
+#[cfg(unix)]
+const OMP_DRIVER: &str = r#"
+const [asset, steps] = process.argv.slice(1);
+const { default: extension } = await import(asset);
+const handlers = new Map();
+extension({ on: (name, fn) => handlers.set(name, [...(handlers.get(name) ?? []), fn]) });
+const ctx = (id, hasUI) => ({ hasUI, sessionManager: { getSessionId: () => id } });
+const main = ctx("omp-1", true);
+const sub = ctx("omp-sub", false);
+const running = [];
+for (const [name, event, from] of JSON.parse(steps)) {
+  for (const fn of handlers.get(name) ?? []) running.push(fn(event, from === "sub" ? sub : main));
+}
+await Promise.all(running);
+"#;
+
+/// Fleet's omp extension, run on omp's events: a start, a prompt, a run
+/// with two tool calls waiting on a person at once, a subagent, and the
+/// run's end, each reported with the session id. A run that will continue
+/// is not an end, and neither a subagent nor a revive reports anything.
+#[cfg(unix)]
+#[test]
+fn the_omp_extension_reports_each_event_with_its_session() {
+    let Some(node) = node() else { return };
+    let env = Env::new("asset-omp");
+    let mut task = support::task("m1", true);
+    task["spec"]["harness"] = json!("omp");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    // Node runs a module by its extension; the file is plain JavaScript.
+    let asset = env.root.join("fleet-omp.mjs");
+    std::fs::copy(env.data.join("harness-assets/fleet-omp.ts"), &asset).unwrap();
+    let approval = |kind: &str, id: &str| json!([kind, {"toolCallId": id, "toolName": "bash"}]);
+    let steps = json!([
+        ["session_start", {}],
+        ["before_agent_start", {"reason": "prompt", "prompt": "the brief"}],
+        ["agent_start", {}],
+        approval("tool_approval_requested", "call-1"),
+        approval("tool_approval_requested", "call-2"),
+        approval("tool_approval_resolved", "call-1"),
+        approval("tool_approval_resolved", "call-2"),
+        ["session_start", {}, "sub"],
+        ["before_agent_start", {"reason": "prompt", "prompt": "a subagent's task"}, "sub"],
+        ["agent_start", {}, "sub"],
+        ["agent_end", {"messages": []}, "sub"],
+        ["agent_end", {"messages": [], "willContinue": true}],
+        ["agent_end", {"messages": []}],
+        // `--restore` goes on with an unfinished turn: no prompt was given.
+        ["before_agent_start", {"reason": "revive", "prompt": ""}],
+    ]);
+    let sent = run_asset(
+        &env,
+        &node,
+        (OMP_DRIVER, &asset),
+        steps.clone(),
+        (true, true),
+    );
+    let states: Vec<&str> = sent.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(
+        states,
+        [
+            "idle", "prompt", "working", "blocked", "blocked", "blocked", "working", "idle"
+        ],
+        "{sent:?}"
+    );
+    assert_eq!(
+        sent[1].1,
+        json!({"session_id": "omp-1", "prompt": "the brief"})
+    );
+    for (state, payload) in sent.iter().filter(|(s, _)| s != "prompt") {
+        assert_eq!(payload, &json!({"session_id": "omp-1"}), "{state}");
+    }
+    assert!(
+        run_asset(
+            &env,
+            &node,
+            (OMP_DRIVER, &asset),
+            steps.clone(),
+            (true, false)
+        )
+        .is_empty()
+    );
+    assert!(run_asset(&env, &node, (OMP_DRIVER, &asset), steps, (false, true)).is_empty());
+}
+
+/// Each hook command of Fleet's qwen settings, run by `sh` with a qwen hook
+/// payload on stdin: the state it sent and the payload `fleet` read, or
+/// nothing. `with_fleet`: whether the stub `fleet` is on PATH.
+#[cfg(unix)]
+fn run_qwen_hook(env: &Env, command: &str, with_fleet: bool) -> Vec<(String, serde_json::Value)> {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = env.root.join("qwen-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fleet = bin.join("fleet");
+    if with_fleet {
+        std::fs::write(&fleet, STUB_FLEET).unwrap();
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).unwrap();
+    } else {
+        let _ = std::fs::remove_file(&fleet);
+    }
+    let log = env.root.join("qwen-signals.log");
+    let _ = std::fs::remove_file(&log);
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .env_clear()
+        .env("PATH", &bin)
+        .env("FLEET_SIGNAL_FILE", &log)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh");
+    use std::io::Write;
+    // Without `fleet` the shell exits unread, and the write may break its pipe.
+    let _ = child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"session_id":"qwen-1","prompt":"the brief"}"#);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{command}: {status}");
+    std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| {
+            let (args, payload) = l.split_once('\t').unwrap();
+            let state = args.strip_prefix("signal ").unwrap_or(args).to_string();
+            (state, serde_json::from_str(payload).unwrap())
+        })
+        .collect()
+}
+
+/// Fleet's qwen settings: each hook qwen runs reports its state with qwen's
+/// payload, and a missing `fleet` never fails qwen's turn. qwen's own
+/// notifications are not used: it sends `idle_prompt` while its approval
+/// dialog opens, inside a turn.
+#[cfg(unix)]
+#[test]
+fn the_qwen_settings_report_each_event_through_fleet_signal() {
+    let env = Env::new("asset-qwen");
+    let mut task = support::task("q1", true);
+    task["spec"]["harness"] = json!("qwen");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    let text = std::fs::read_to_string(env.data.join("harness-assets/fleet-qwen.json")).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&text).unwrap();
+    // qwen migrates, and so rewrites, a settings file of an older version.
+    assert_eq!(settings["$version"], 4, "{settings:#}");
+    let hooks = settings["hooks"].as_object().expect("hooks");
+    let mut events: Vec<&str> = hooks.keys().map(String::as_str).collect();
+    events.sort_unstable();
+    assert_eq!(
+        events,
+        [
+            "PermissionRequest",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PreToolUse",
+            "SessionStart",
+            "Stop",
+            "StopFailure",
+            "UserPromptSubmit"
+        ]
+    );
+    let payload = json!({"session_id": "qwen-1", "prompt": "the brief"});
+    for (event, state) in [
+        ("SessionStart", "idle"),
+        ("UserPromptSubmit", "prompt"),
+        ("PreToolUse", "working"),
+        ("PermissionRequest", "blocked"),
+        ("PostToolUse", "working"),
+        ("PostToolUseFailure", "working"),
+        ("Stop", "idle"),
+        ("StopFailure", "idle"),
+    ] {
+        let entries = hooks[event].as_array().expect("matchers");
+        assert_eq!(entries.len(), 1, "{event}");
+        assert!(entries[0].get("matcher").is_none(), "{event}");
+        let command = entries[0]["hooks"][0]["command"].as_str().expect(event);
+        assert_eq!(entries[0]["hooks"][0]["type"], "command", "{event}");
+        assert_eq!(
+            run_qwen_hook(&env, command, true),
+            [(state.to_string(), payload.clone())],
+            "{event}"
+        );
+        assert!(run_qwen_hook(&env, command, false).is_empty(), "{event}");
+    }
 }
 
 /// A plugin file is named inside a JSON string (opencode's config), where a

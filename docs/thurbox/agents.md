@@ -12,7 +12,8 @@ reports its status through its harness profiles. thurbox no longer reads
   owns the command, its arguments, the resume argv and the status hooks:
   [Fleet's Task controller](../fleet/controllers/task.md#harness-profiles).
 - **Which agents Fleet ships.** Claude Code (`claude`, `claude-code`),
-  Codex (`codex`), pi (`pi`), opencode (`opencode`) and kilo (`kilo`).
+  Codex (`codex`), pi (`pi`), opencode (`opencode`), kilo (`kilo`), omp
+  (`omp`) and Qwen Code (`qwen`).
   Each one's hooks are set at launch, and no agent's config dir is written
   ([bundled profiles](../fleet/controllers/task.md#harness-profiles)).
 - **How status works.** Each hook runs `fleet signal <state>`, and Fleet
