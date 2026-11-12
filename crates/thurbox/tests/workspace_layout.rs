@@ -135,39 +135,80 @@ fn the_engine_leaves_no_code_behind() {
 #[test]
 fn rusqlite_is_not_in_thurboxs_dependency_tree() {
     let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
-    let lock: toml::Table = std::fs::read_to_string(&lock)
-        .expect("read Cargo.lock")
-        .parse()
-        .expect("Cargo.lock is TOML");
+    let lock = std::fs::read_to_string(lock).expect("read Cargo.lock");
+    if let Some(path) = path_in_lock(&lock, "thurbox", "rusqlite") {
+        panic!("rusqlite is in thurbox's tree: {}", path.join(" -> "));
+    }
+}
+
+/// A registry crate and a Git copy of it can share a name and a version; the
+/// walk follows the copy each entry names.
+#[test]
+fn the_lock_walk_tells_sources_apart() {
+    let lock = r#"
+        [[package]]
+        name = "root"
+        version = "0.1.0"
+        dependencies = ["dep 1.0.0 (git+https://example.invalid/dep#abc)"]
+
+        [[package]]
+        name = "dep"
+        version = "1.0.0"
+        source = "registry+https://github.com/rust-lang/crates.io-index"
+
+        [[package]]
+        name = "dep"
+        version = "1.0.0"
+        source = "git+https://example.invalid/dep#abc"
+        dependencies = ["rusqlite"]
+
+        [[package]]
+        name = "rusqlite"
+        version = "0.37.0"
+    "#;
+    assert_eq!(
+        path_in_lock(lock, "root", "rusqlite"),
+        Some(vec!["root".into(), "dep".into(), "rusqlite".into()])
+    );
+}
+
+/// The names on a path through `lock`'s dependency graph from package `from`
+/// to package `to`, if there is one.
+fn path_in_lock(lock: &str, from: &str, to: &str) -> Option<Vec<String>> {
+    let lock: toml::Table = lock.parse().expect("Cargo.lock is TOML");
     let packages = lock["package"]
         .as_array()
         .expect("Cargo.lock lists packages");
-    let field = |package: &toml::Value, key: &str| package[key].as_str().unwrap().to_owned();
-    // A dependency entry is `name`, or `name version [(source)]` when the lock
-    // holds more than one version of that name.
+    let field = |package: &toml::Value, key: &str| package.get(key)?.as_str().map(str::to_owned);
+    // A dependency entry is `name`, then ` version` when the lock holds more
+    // than one version of that name, then ` (source)` when one version comes
+    // from more than one source.
     let find = |entry: &str| {
-        let mut words = entry.split(' ');
-        let (name, version) = (words.next().unwrap(), words.next());
+        let mut words = entry.splitn(3, ' ');
+        let (name, version) = (words.next(), words.next());
+        let source = words
+            .next()
+            .map(|s| s.trim_start_matches('(').trim_end_matches(')'));
         packages
             .iter()
-            .find(|p| field(p, "name") == name && version.is_none_or(|v| field(p, "version") == v))
+            .position(|p| {
+                field(p, "name").as_deref() == name
+                    && version.is_none_or(|v| field(p, "version").as_deref() == Some(v))
+                    && source.is_none_or(|s| field(p, "source").as_deref() == Some(s))
+            })
             .unwrap_or_else(|| panic!("{entry} is not a package in Cargo.lock"))
     };
 
     let mut seen = std::collections::HashSet::new();
-    let mut stack = vec![(find("thurbox"), vec!["thurbox".to_owned()])];
-    while let Some((package, path)) = stack.pop() {
-        let name = field(package, "name");
-        assert_ne!(
-            name,
-            "rusqlite",
-            "rusqlite is in thurbox's tree: {}",
-            path.join(" -> ")
-        );
-        if !seen.insert((name, field(package, "version"))) {
+    let mut stack = vec![(find(from), vec![from.to_owned()])];
+    while let Some((index, path)) = stack.pop() {
+        if path.last().is_some_and(|name| name == to) {
+            return Some(path);
+        }
+        if !seen.insert(index) {
             continue;
         }
-        for dep in package
+        for dep in packages[index]
             .get("dependencies")
             .and_then(|d| d.as_array())
             .into_iter()
@@ -175,8 +216,9 @@ fn rusqlite_is_not_in_thurboxs_dependency_tree() {
         {
             let dep = find(dep.as_str().unwrap());
             let mut path = path.clone();
-            path.push(field(dep, "name"));
+            path.extend(field(&packages[dep], "name"));
             stack.push((dep, path));
         }
     }
+    None
 }
