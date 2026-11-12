@@ -203,13 +203,14 @@ pub fn install(
     let old = ledger.integrations.get(&profile.name).cloned();
     // Everything that would stop the new install is checked while the old
     // one still works: it is removed only once the new one can be written.
-    let ours = |rel: &str| {
-        old.as_ref()
-            .is_some_and(|o| Path::new(&o.dir) == dir && o.paths().contains(rel))
-    };
+    // Owning a block in a shared file is not owning the file: a whole file
+    // is Fleet's to replace only when the old entry wrote it whole.
+    let same_dir = old.as_ref().filter(|o| Path::new(&o.dir) == dir);
+    let our_file = |rel: &str| same_dir.is_some_and(|o| o.files.iter().any(|f| f.path == rel));
+    let our_block = |rel: &str| same_dir.is_some_and(|o| o.blocks.iter().any(|b| b.path == rel));
     for f in &install.files {
         let path = dir.join(&f.path);
-        if fs::symlink_metadata(&path).is_ok() && !ours(&f.path) {
+        if fs::symlink_metadata(&path).is_ok() && !our_file(&f.path) {
             return Err(format!(
                 "{}: {} is there and not Fleet's: move it, then install again",
                 profile.name,
@@ -226,7 +227,7 @@ pub fn install(
         };
         match api::find_block(&text, &profile.name, &b.comment) {
             Err(e) => return Err(format!("{}: {}: {e}", profile.name, path.display())),
-            Ok(Some(_)) if !ours(&b.path) => {
+            Ok(Some(_)) if !our_block(&b.path) => {
                 return Err(format!(
                     "{}: {} already holds a block naming Fleet that the ledger does not list: remove it, then install again",
                     profile.name,

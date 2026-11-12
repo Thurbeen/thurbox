@@ -273,3 +273,26 @@ fn a_second_command_waits_for_the_ledger_lock_and_names_it() {
         .stderr_has("integrations.lock");
     assert_eq!(tree(&home), before);
 }
+
+#[test]
+fn an_upgrade_never_takes_a_file_whose_block_alone_was_fleets() {
+    let (env, home) = setup("integration-block-to-file");
+    env.fleet(&["integration", "install", "stub"]).ok();
+    let installed = tree(&home);
+    let ledger = fs::read(env.data.join("integrations.json")).expect("ledger");
+    // Version 2 claims the whole of the file whose block alone Fleet owns.
+    let whole = stub_profile(2).replace(
+        "[[install.blocks]]\npath = \"config.toml\"",
+        "[[install.files]]\npath = \"config.toml\"",
+    );
+    fs::write(env.root.join("harnesses/stub.toml"), whole).expect("profile");
+    env.fleet(&["integration", "install", "stub"])
+        .code(1)
+        .stderr_has("not Fleet's");
+    assert_eq!(tree(&home), installed, "the user's settings were touched");
+    assert_eq!(
+        fs::read(env.data.join("integrations.json")).unwrap(),
+        ledger,
+        "the old integration is still the one recorded"
+    );
+}
