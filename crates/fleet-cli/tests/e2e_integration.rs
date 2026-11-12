@@ -261,17 +261,64 @@ fn a_block_whose_closing_line_is_gone_is_modified_and_never_extended() {
     );
 }
 
+/// `flock` on PATH, which holds a lock the way a `fleet` process does; a
+/// system without it skips the test.
+fn flock() -> Option<PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("flock"))
+            .find(|p| p.is_file())
+    });
+    if found.is_none() {
+        eprintln!("skipping: flock is not installed");
+    }
+    found
+}
+
 #[test]
-fn a_second_command_waits_for_the_ledger_lock_and_names_it() {
+fn a_lock_held_by_a_live_command_waits_and_one_left_by_a_killed_command_does_not() {
+    let Some(flock) = flock() else {
+        return;
+    };
     let (env, home) = setup("integration-lock");
-    fs::create_dir_all(&env.data).unwrap();
     env.fleet(&["list", "task"]).ok();
-    fs::write(env.data.join("integrations.lock"), "").unwrap();
+    let lock = env.data.join("integrations.lock");
+    // A holder that keeps the lock, then dies as a killed command does.
+    // One process from lock to death: the shell takes the lock on its fd 9
+    // and becomes `sleep`, which keeps it.
+    let mut holder = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec 9>"$1"; "$2" 9; exec sleep 300"#)
+        .arg("sh")
+        .arg(&lock)
+        .arg(&flock)
+        .spawn()
+        .expect("holder");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock);
+        if file.is_ok_and(|f| f.try_lock().is_err()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "flock never held the lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     let before = tree(&home);
     env.fleet(&["integration", "install", "stub"])
         .code(1)
         .stderr_has("integrations.lock");
     assert_eq!(tree(&home), before);
+    holder.kill().expect("kill");
+    holder.wait().expect("reap");
+    env.fleet(&["integration", "install", "stub"]).ok();
+    assert_eq!(state(&env, "stub"), "current");
 }
 
 #[test]

@@ -13,6 +13,13 @@ use fleet_api::integration::{
     self as api, Entry, LEDGER, Ledger, Observed, State, WrittenBlock, WrittenFile,
 };
 
+/// This machine's platform, for [`api::supported`].
+const PLATFORM: api::Platform = if cfg!(windows) {
+    api::Platform::Windows
+} else {
+    api::Platform::Unix
+};
+
 /// One agent's integration as `status` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -49,35 +56,36 @@ pub fn config_dir(profile: &Profile, env: &dyn Fn(&str) -> Option<String>) -> Op
 }
 
 /// The ledger's lock: one `install` or `uninstall` at a time, so two never
-/// read the same ledger and the last write drops the other's entry.
-struct LedgerLock(PathBuf);
+/// read the same ledger and the last write drops the other's entry. It is
+/// the operating system's advisory lock on a file (`flock`, `LockFileEx`),
+/// so it goes with its holder: a killed command leaves the file, not the
+/// lock. The file stays, and is never what is locked against.
+struct LedgerLock(#[allow(dead_code, reason = "held for its lock")] fs::File);
 
 impl LedgerLock {
     fn take(data_dir: &Path) -> Result<LedgerLock, String> {
         let path = data_dir.join(LOCK);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         for _ in 0..100 {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(LedgerLock(path)),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            match file.try_lock() {
+                Ok(()) => return Ok(LedgerLock(file)),
+                Err(fs::TryLockError::WouldBlock) => {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                Err(e) => return Err(format!("{}: {e}", path.display())),
+                Err(fs::TryLockError::Error(e)) => {
+                    return Err(format!("{}: {e}", path.display()));
+                }
             }
         }
         Err(format!(
-            "{} is held: another `fleet integration` is running; if none is, remove the file",
+            "{} is locked: another `fleet integration` is running; run this again once it ends",
             path.display()
         ))
-    }
-}
-
-impl Drop for LedgerLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -151,7 +159,7 @@ pub fn status(
     let observed = observe(&profile.name, entry, dir.as_deref())?;
     let resolved = dir.as_ref().map(|d| d.to_string_lossy().into_owned());
     Ok(Report {
-        state: api::state(profile, entry, resolved.as_deref(), &observed),
+        state: api::state_on(profile, entry, resolved.as_deref(), &observed, PLATFORM),
         dir,
         installed: entry.map(|e| e.version),
     })
@@ -165,6 +173,9 @@ pub fn install(
     data_dir: &Path,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Installed, String> {
+    if let Some(install) = &profile.install {
+        api::supported(install, PLATFORM).map_err(|e| format!("{}: {e}", profile.name))?;
+    }
     let _lock = LedgerLock::take(data_dir)?;
     let report = status(profile, data_dir, env).map_err(|e| e.to_string())?;
     let Some(install) = &profile.install else {

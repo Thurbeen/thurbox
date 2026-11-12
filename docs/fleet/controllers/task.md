@@ -524,6 +524,7 @@ rules = "codex"                # a bundled rule set; omit for the set named as t
 version = 1                    # a greater one makes an installed integration outdated
 dir_env = ["STUB_AGENT_HOME"]  # the agent's variables for its config dir; the first set wins
 dir = "~/.stub-agent"          # else this; `~/` is the home directory
+windows = false                # true only when the hooks are checked on Windows
 
 [[install.files]]              # a file Fleet owns whole
 path = "hooks/fleet.json"      # inside the config dir

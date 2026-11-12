@@ -37,6 +37,8 @@ pub enum State {
     NotNeeded,
     /// Fleet knows no hooks for the harness.
     Unsupported,
+    /// The integration is not checked on this machine's platform.
+    UnsupportedPlatform,
     /// The agent's config directory is not there.
     AgentMissing,
     NotInstalled,
@@ -52,6 +54,7 @@ impl State {
         match self {
             State::NotNeeded => "not-needed",
             State::Unsupported => "unsupported",
+            State::UnsupportedPlatform => "unsupported-platform",
             State::AgentMissing => "agent-missing",
             State::NotInstalled => "not-installed",
             State::Current => "current",
@@ -144,6 +147,26 @@ pub struct Observed {
     /// For each path the entry wrote, the hash of what is there now: the
     /// whole file, or Fleet's block in it. `None`: absent.
     pub found: BTreeMap<String, Option<String>>,
+}
+
+/// The platform `fleet integration` runs on, given by the adapter so the
+/// rule is tested on every platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Unix,
+    Windows,
+}
+
+/// Whether `install` may be written on `platform`: on Windows only when the
+/// profile says its hooks run there.
+pub fn supported(install: &Install, platform: Platform) -> Result<(), String> {
+    if platform == Platform::Windows && !install.windows {
+        return Err(
+            "not supported on Windows yet: its hooks are POSIX shell commands no Windows run has checked"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// A profile's `[install]` table, checked when the profile is parsed.
@@ -333,14 +356,25 @@ pub fn paths(install: &Install) -> BTreeSet<&str> {
         .collect()
 }
 
-/// The state of `profile`'s integration: what the ledger says Fleet wrote,
-/// against what is on disk and what the agent reads now (`resolved`, its
-/// config directory).
+/// The state of `profile`'s integration on Unix: what the ledger says Fleet
+/// wrote, against what is on disk and what the agent reads now (`resolved`,
+/// its config directory).
 pub fn state(
     profile: &Profile,
     entry: Option<&Entry>,
     resolved: Option<&str>,
     observed: &Observed,
+) -> State {
+    state_on(profile, entry, resolved, observed, Platform::Unix)
+}
+
+/// As [`state`], on `platform`.
+pub fn state_on(
+    profile: &Profile,
+    entry: Option<&Entry>,
+    resolved: Option<&str>,
+    observed: &Observed,
+    platform: Platform,
 ) -> State {
     let Some(install) = &profile.install else {
         return if profile.authority == Authority::None {
@@ -349,6 +383,9 @@ pub fn state(
             State::NotNeeded
         };
     };
+    if supported(install, platform).is_err() {
+        return State::UnsupportedPlatform;
+    }
     let Some(entry) = entry else {
         return if observed.dir_exists {
             State::NotInstalled
@@ -538,6 +575,36 @@ command = "fleet signal idle"
             state(&aider, None, None, &Observed::default()),
             State::Unsupported
         );
+    }
+
+    #[test]
+    fn an_integration_that_does_not_name_windows_is_refused_there() {
+        let p = stub();
+        let seen = Observed {
+            dir_exists: true,
+            ..Observed::default()
+        };
+        assert_eq!(
+            state_on(&p, None, Some("/h/.stub"), &seen, Platform::Windows),
+            State::UnsupportedPlatform
+        );
+        assert_eq!(
+            state_on(&p, None, Some("/h/.stub"), &seen, Platform::Unix),
+            State::NotInstalled
+        );
+        let install = p.install.as_ref().unwrap();
+        let refused = supported(install, Platform::Windows).unwrap_err();
+        assert!(
+            refused.contains("not supported on Windows yet"),
+            "{refused}"
+        );
+        assert!(supported(install, Platform::Unix).is_ok());
+        let windows =
+            parse(&STUB.replace("version = 2\n", "version = 2\nwindows = true\n")).unwrap();
+        assert!(supported(windows.install.as_ref().unwrap(), Platform::Windows).is_ok());
+        // Kimi's hooks are POSIX shell commands: refused on Windows.
+        let kimi = crate::harness::profile("kimi");
+        assert!(supported(kimi.install.as_ref().unwrap(), Platform::Windows).is_err());
     }
 
     #[test]

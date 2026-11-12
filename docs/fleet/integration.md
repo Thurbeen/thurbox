@@ -36,7 +36,7 @@ run `fleet integration install <agent>` on that host.
 
 | Agent | Harness | Config directory | What Fleet writes |
 | --- | --- | --- | --- |
-| Kimi Code | `kimi` | `$KIMI_CODE_HOME`, else `~/.kimi-code` | a block at the end of `config.toml` |
+| Kimi Code | `kimi` | `$KIMI_CODE_HOME`, else `~/.kimi-code` | a block at the end of `config.toml`; not on Windows yet |
 
 Kimi Code reads hooks from its `config.toml` only. `KIMI_CODE_HOME` moves
 its whole home, its sign-in included, so Fleet cannot name another
@@ -79,10 +79,16 @@ Each hook command obeys these rules:
   is already there, `install` stops and writes nothing.
 - `install` checks the new version before it removes the old one. When the
   new version cannot be written, the old one stays.
-- One `install` or `uninstall` runs at a time. Each holds
-  `integrations.lock` in the data directory while it reads and writes the
-  ledger. A lock left by a killed command stops the next one, which names
-  the file to remove.
+- One `install` or `uninstall` runs at a time. Each holds the operating
+  system's advisory lock on `integrations.lock`, in the data directory,
+  while it reads and writes the ledger. A second command waits a few
+  seconds, then stops and names the file. The lock goes with its holder: a
+  killed command does not block the next one.
+- On Windows, Fleet installs an integration only when its profile sets
+  `install.windows = true`. Kimi Code's hooks are POSIX shell commands, and
+  no Windows run has checked them, so on Windows
+  `fleet integration install kimi` stops with "not supported on Windows
+  yet". `status` reports `unsupported-platform`.
 - Each write replaces the whole file:
   1. Fleet refuses a file with more than one hard link.
   2. Fleet follows a symbolic link to its real file. It refuses a file that
@@ -132,6 +138,7 @@ install is thus in the ledger, and `uninstall` removes it.
 | --- | --- | --- |
 | `not-needed` | The agent takes its hooks at launch. | Nothing. |
 | `unsupported` | Fleet knows no hooks for the agent. | Nothing. |
+| `unsupported-platform` | The integration is not checked on this platform (Windows, for Kimi Code). | Nothing. |
 | `agent-missing` | The agent's config directory is not there. | Start the agent once. |
 | `not-installed` | The ledger lists no integration for the agent. | `fleet integration install <agent>` |
 | `current` | The ledger version is the profile's, and each item is as Fleet wrote it. | Nothing. |

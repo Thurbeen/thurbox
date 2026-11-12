@@ -180,6 +180,10 @@ pub struct Install {
     /// The agent's config directory when no variable names one; a leading
     /// `~/` is the user's home.
     pub dir: String,
+    /// The hooks run on Windows as written. Unset, `fleet integration`
+    /// refuses to install there: no Windows run has checked them.
+    #[serde(default)]
+    pub windows: bool,
     /// Whole files Fleet owns, in a directory the agent merges.
     #[serde(default)]
     pub files: Vec<OwnedFile>,
