@@ -25,6 +25,10 @@ fn runtime_mux() -> Option<PathBuf> {
         .and_then(|exe| Some(exe.parent()?.parent()?.join("runtime-mux")))
         .filter(|p| p.is_file());
     if found.is_none() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no runtime-mux binary in CI, where the stream pane must be run"
+        );
         eprintln!("skipping: no runtime-mux binary; build it with `cargo build -p runtime-mux`");
     }
     found

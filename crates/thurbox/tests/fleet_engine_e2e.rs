@@ -28,6 +28,10 @@ fn fleet_bin() -> Option<PathBuf> {
         })
         .filter(|p| p.is_file());
     if found.is_none() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no fleet binary in CI, where the tests that drive Fleet must run"
+        );
         eprintln!("skipping: no fleet binary; build it with `cargo build -p fleet-cli`");
     }
     found
@@ -921,6 +925,10 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let Some(bin) = fleet_bin() else { return };
     let runtime_mux = bin.with_file_name("runtime-mux");
     if !runtime_mux.is_file() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no runtime-mux binary beside fleet in CI, where this test must run"
+        );
         eprintln!("skipping: no runtime-mux binary; build it with `cargo build -p runtime-mux`");
         return;
     }

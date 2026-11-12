@@ -48,7 +48,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   delete and confirmed delete through its command line, and the `fleet up`
   thurbox keeps running; and, on `runtime-mux` with tmux, a Task's pane through
   `fleet attach`. Skips when a binary is not built (`cargo build -p fleet-cli
-  -p runtime-mux`).
+  -p runtime-mux`), except under `CI`, where a missing binary fails the test:
+  the Nextest job builds `fleet` before its run, since it excludes Fleet's
+  crates.
 - **The per-surface files** — one file per surface or contract:
   `session_list`, `search`, `new_session`, `terminal_pane`,
   `keymap`, `focus`, `modals`, `chrome`, `mouse`, `hover`, `decoration`,
@@ -121,9 +123,10 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   a resize storm down to 1×1, a broken pane reported through the Interface tab,
   exit restoring the terminal (alternate screen, mouse, bracketed paste, cursor)
   — and, where tmux and a workspace build of `fleet` and `runtime-mux`
-  exist, a Fleet session attached, painted and typed into. Every profile puts
-  a stand-in `fleet` first on `PATH` (no Tasks, no manager), so no interface
-  under test ever reaches a real Fleet store; `Profile::real_fleet` swaps in
+  exist, a Fleet session attached, painted and typed into. Under `CI` a missing
+  `fleet` or `runtime-mux` fails these scenarios instead of skipping them.
+  Every profile puts a stand-in `fleet` first on `PATH` (no Tasks, no
+  manager), so no interface under test ever reaches a real Fleet store; `Profile::real_fleet` swaps in
   the real binary on a store, config and tmux directory of the profile's own,
   with `claude` running `sh`, and `Profile::fleet_session` applies and
   reconciles an interactive Task. `just smoke` drives the same harness.
