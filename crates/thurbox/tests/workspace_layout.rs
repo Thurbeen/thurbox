@@ -126,28 +126,57 @@ fn the_engine_leaves_no_code_behind() {
 
 /// thurbox keeps no database of its own (ADR-41): SQLite is out of the tree
 /// of every target it builds.
+///
+/// The walk reads `Cargo.lock` rather than asking `cargo tree --target all`:
+/// that needs every target's crates in the local cache, and a cache filled for
+/// one host has only that host's. The lock records each package's resolved
+/// dependencies for all targets and edge kinds, so the walk covers at least as
+/// much and needs no network.
 #[test]
 fn rusqlite_is_not_in_thurboxs_dependency_tree() {
-    let out = Command::new(env!("CARGO"))
-        .args([
-            "tree",
-            "--offline",
-            "--edges",
-            "normal,build,dev",
-            "--target",
-            "all",
-            "-p",
-            "thurbox",
-            "-i",
+    let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+    let lock: toml::Table = std::fs::read_to_string(&lock)
+        .expect("read Cargo.lock")
+        .parse()
+        .expect("Cargo.lock is TOML");
+    let packages = lock["package"]
+        .as_array()
+        .expect("Cargo.lock lists packages");
+    let field = |package: &toml::Value, key: &str| package[key].as_str().unwrap().to_owned();
+    // A dependency entry is `name`, or `name version [(source)]` when the lock
+    // holds more than one version of that name.
+    let find = |entry: &str| {
+        let mut words = entry.split(' ');
+        let (name, version) = (words.next().unwrap(), words.next());
+        packages
+            .iter()
+            .find(|p| field(p, "name") == name && version.is_none_or(|v| field(p, "version") == v))
+            .unwrap_or_else(|| panic!("{entry} is not a package in Cargo.lock"))
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![(find("thurbox"), vec!["thurbox".to_owned()])];
+    while let Some((package, path)) = stack.pop() {
+        let name = field(package, "name");
+        assert_ne!(
+            name,
             "rusqlite",
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-        .expect("run cargo tree");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success() && stderr.contains("did not match any packages"),
-        "rusqlite is still in the tree:\n{}{stderr}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+            "rusqlite is in thurbox's tree: {}",
+            path.join(" -> ")
+        );
+        if !seen.insert((name, field(package, "version"))) {
+            continue;
+        }
+        for dep in package
+            .get("dependencies")
+            .and_then(|d| d.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let dep = find(dep.as_str().unwrap());
+            let mut path = path.clone();
+            path.push(field(dep, "name"));
+            stack.push((dep, path));
+        }
+    }
 }
