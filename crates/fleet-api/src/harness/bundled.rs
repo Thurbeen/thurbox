@@ -1,7 +1,8 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
 //! constants, not files: a pure crate reads nothing at build time. The hook
 //! files pi's, opencode's, kilo's, omp's and qwen's name are the runtime
-//! adapter's (`fleet_runtime::assets`). A user file of the same `name` in
+//! adapter's (`fleet_runtime::assets`); the block Kimi's `[install]` names is
+//! written by `fleet integration`. A user file of the same `name` in
 //! Fleet's config dir replaces one (docs/fleet/controllers/task.md, *Harness
 //! profiles*).
 
@@ -176,5 +177,76 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
+/// Kimi Code (`kimi`). It reads hooks from its own `config.toml` only: no
+/// flag or variable adds any at launch, and `KIMI_CODE_HOME` moves its
+/// whole home, sign-in included. So its hooks are a block `fleet
+/// integration install kimi` appends to that file. Each command is a no-op
+/// outside a Fleet session, and a missing `fleet` never fails a turn. Kimi
+/// starts its session, and reports it, at its first message.
+pub const KIMI: &str = r#"
+name = "kimi"
+program = "kimi"
+authority = "full"
+
+[launch]
+add_dir = "--add-dir"
+
+[resume]
+args = ["{program}", "{launch_args}", "--session", "{conversation}"]
+
+[payload]
+prompt = ["prompt"]
+conversation = ["session_id"]
+
+[install]
+version = 1
+dir_env = ["KIMI_CODE_HOME"]
+dir = "~/.kimi-code"
+
+[[install.blocks]]
+path = "config.toml"
+text = '''
+[[hooks]]
+event = "SessionStart"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal idle --harness kimi 2>/dev/null || true'
+timeout = 10
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal prompt --harness kimi 2>/dev/null || true'
+timeout = 10
+
+[[hooks]]
+event = "PreToolUse"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal working --harness kimi 2>/dev/null || true'
+timeout = 10
+
+[[hooks]]
+event = "PermissionRequest"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal blocked --harness kimi 2>/dev/null || true'
+timeout = 10
+
+[[hooks]]
+event = "PermissionResult"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal working --harness kimi 2>/dev/null || true'
+timeout = 10
+
+[[hooks]]
+event = "Stop"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal idle --harness kimi 2>/dev/null || true'
+timeout = 10
+
+[[hooks]]
+event = "StopFailure"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal idle --harness kimi 2>/dev/null || true'
+timeout = 10
+
+[[hooks]]
+event = "Interrupt"
+command = '[ -z "$FLEET_SIGNAL_FILE" ] || fleet signal idle --harness kimi 2>/dev/null || true'
+timeout = 10
+'''
+"#;
+
 /// Every bundled profile, in the order `fleet version --json` lists them.
-pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO, OMP, QWEN];
+pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO, OMP, QWEN, KIMI];

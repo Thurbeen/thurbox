@@ -58,7 +58,7 @@ it. Each harness profile names the fields in its `[payload]` table
 
 | Field kind | Default names | Value | Fleet uses it to |
 | --- | --- | --- | --- |
-| prompt | `prompt`, `input-messages` | a string, or a list of strings | prove that a prompt reached the agent |
+| prompt | `prompt`, `input-messages` | a string, or a list of strings or of parts with a `text` string | prove that a prompt reached the agent |
 | conversation | `session_id`, `thread-id` | a string | resume the agent on its conversation |
 
 - Fleet stores a prompt only as a digest. It never stores the prompt text.

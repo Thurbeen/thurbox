@@ -21,10 +21,12 @@
 //! run as a program, with no hooks, trust or resume Fleet knows
 //! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
 //!
-//! Fleet ships the profiles of Claude Code, Codex, pi, opencode, kilo, omp and
-//! qwen. pi, opencode, kilo, omp and qwen take their hooks as a file: Fleet
-//! writes each under its own data dir (`fleet_runtime::assets`), and the
-//! launch names it, never the agent's config dir.
+//! Fleet ships the profiles of Claude Code, Codex, pi, opencode, kilo, omp,
+//! qwen and Kimi Code. pi, opencode, kilo, omp and qwen take their hooks as a
+//! file: Fleet writes each under its own data dir (`fleet_runtime::assets`),
+//! and the launch names it, never the agent's config dir. Kimi Code takes
+//! none at launch: its `[install]` table is what `fleet integration` writes
+//! into its config dir ([`crate::integration`]).
 //!
 //! A harness with no prompt hook cannot prove a delivery: its runtime's
 //! answer is all Fleet has.
@@ -162,6 +164,56 @@ pub struct ScreenSpec {
     pub rules: Option<String>,
 }
 
+/// The `[install]` table: the hooks `fleet integration install` writes
+/// into the agent's own config directory, for a harness that takes none at
+/// launch ([`crate::integration`]). Fleet writes only what it lists here.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Install {
+    /// The version of what is written. A greater one makes an installed
+    /// integration outdated.
+    pub version: u32,
+    /// The variables naming the agent's config directory, the first set
+    /// one winning, as the agent itself reads them.
+    #[serde(default)]
+    pub dir_env: Vec<String>,
+    /// The agent's config directory when no variable names one; a leading
+    /// `~/` is the user's home.
+    pub dir: String,
+    /// Whole files Fleet owns, in a directory the agent merges.
+    #[serde(default)]
+    pub files: Vec<OwnedFile>,
+    /// Blocks Fleet appends to a file of the agent's, between two comment
+    /// lines naming Fleet.
+    #[serde(default)]
+    pub blocks: Vec<OwnedBlock>,
+}
+
+/// A file Fleet owns whole. `{version}` in its text is the install version.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedFile {
+    /// Relative to the config directory.
+    pub path: String,
+    pub text: String,
+}
+
+/// A block Fleet owns in a file it shares with the user.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedBlock {
+    /// Relative to the config directory.
+    pub path: String,
+    pub text: String,
+    /// What starts a comment line in that file.
+    #[serde(default = "default_comment")]
+    pub comment: String,
+}
+
+fn default_comment() -> String {
+    "#".into()
+}
+
 /// One harness's profile: one TOML document.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -183,6 +235,9 @@ pub struct Profile {
     pub payload: Payload,
     #[serde(default)]
     pub screen: ScreenSpec,
+    /// Only for a harness that takes no hooks at launch.
+    #[serde(default)]
+    pub install: Option<Install>,
 }
 
 /// Parse one profile.
@@ -211,6 +266,9 @@ pub fn parse(text: &str) -> Result<Profile, String> {
             "screen.rules {name:?} names no rule set Fleet ships"
         ));
     }
+    if let Some(install) = &p.install {
+        crate::integration::check(install)?;
+    }
     Ok(p)
 }
 
@@ -227,6 +285,7 @@ pub fn bare(harness: &str) -> Profile {
         trust: TrustSpec::default(),
         payload: Payload::default(),
         screen: ScreenSpec::default(),
+        install: None,
     }
 }
 
@@ -314,6 +373,11 @@ impl Profiles {
             p.resume.args.iter_mut().for_each(name);
         }
         p
+    }
+
+    /// Every profile, a user's before the bundled ones.
+    pub fn list(&self) -> &[Profile] {
+        &self.list
     }
 
     /// Every name and alias, in order.
@@ -755,7 +819,8 @@ mod tests {
                 "opencode",
                 "kilo",
                 "omp",
-                "qwen"
+                "qwen",
+                "kimi"
             ]
         );
         assert_eq!(all.get("claude-code").name, "claude");
@@ -808,6 +873,18 @@ conversation = ["sessionID"]
         let base = "name = \"x\"\nprogram = \"x\"\nauthority = \"full\"\n";
         assert!(parse(base).is_ok());
         assert!(parse(&format!("{base}[install]\nversion = 1\n")).is_err());
+        assert!(parse(&format!("{base}[install]\nversion = 1\ndir = \"~/.x\"\n")).is_err());
+        let file = "[[install.files]]\npath = \"a\"\ntext = \"t\"\n";
+        let install = |version: u32, path: &str| {
+            format!(
+                "{base}[install]\nversion = {version}\ndir = \"~/.x\"\n{}",
+                file.replace("\"a\"", &format!("{path:?}"))
+            )
+        };
+        assert!(parse(&install(1, "hooks/fleet.json")).is_ok());
+        assert!(parse(&install(0, "a")).is_err(), "a version starts at 1");
+        assert!(parse(&install(1, "../a")).is_err());
+        assert!(parse(&install(1, "/etc/a")).is_err());
         assert!(parse(&format!("{base}[screen]\nmanifest = \"x\"\n")).is_err());
         assert!(parse(&format!("{base}[screen]\nrules = \"no-such-set\"\n")).is_err());
         assert!(parse(&format!("{base}[resume]\nargs = [\"a{{launch_args}}\"]\n")).is_err());

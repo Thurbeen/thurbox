@@ -391,6 +391,7 @@ A profile is data: one TOML document per harness. Fleet ships these:
 | `kilo` | `kilo`, with `KILO_CONFIG_CONTENT` and `KILO_TUI_CONFIG` naming Fleet's plugins, and `KILO_NO_DAEMON=1` | the launch argv, then `--session <conversation>` | none Fleet knows |
 | `omp` | `omp -e <Fleet's extension>` and `--add-dir` per extra directory, with `OMP_SKIP_SETUP=1` | the launch argv, then `--resume <conversation>` | none Fleet knows |
 | `qwen` | `qwen` and `--add-dir` per extra directory, with `QWEN_CODE_SYSTEM_DEFAULTS_PATH` naming Fleet's settings | the launch argv, then `--resume <conversation>` | none Fleet knows |
+| `kimi` | `kimi` and `--add-dir` per extra directory; its hooks are [installed](../integration.md) | the launch argv, then `--session <conversation>` | its dialog, which Fleet never answers |
 | any other | the harness name | the launch argv: a fresh start | none Fleet knows |
 
 Claude Code's hooks report its start (`SessionStart`, as `idle`), each
@@ -472,6 +473,19 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
 - A turn that qwen cancels, a denied approval included, ends with no hook.
   The agent stays `attention` or `working` until its next prompt.
 
+Kimi Code reads hooks from its own `config.toml` only. Its hooks are a
+block that `fleet integration install kimi` appends to that file
+([installed integrations](../integration.md)). They report `SessionStart`,
+`Stop`, `StopFailure` and `Interrupt` as `idle`, `UserPromptSubmit` as
+`prompt`, `PreToolUse` and `PermissionResult` as `working`, and
+`PermissionRequest` as `blocked`, each with Kimi's session id.
+
+- Kimi starts its session at its first message, and reports nothing
+  before it. So Fleet does not see it ready, and does not send its brief.
+  A person types the first message.
+- Kimi's prompt is a list of parts. `fleet signal` reads the text of each
+  part as one prompt.
+
 The `exec` runtime kind and the fake runtime run the profile's argv.
 
 #### Profile format
@@ -505,6 +519,20 @@ conversation = ["session_id", "thread-id"]
 
 [screen]
 rules = "codex"                # a bundled rule set; omit for the set named as the profile
+
+[install]                      # only for an agent that takes no hooks at launch
+version = 1                    # a greater one makes an installed integration outdated
+dir_env = ["STUB_AGENT_HOME"]  # the agent's variables for its config dir; the first set wins
+dir = "~/.stub-agent"          # else this; `~/` is the home directory
+
+[[install.files]]              # a file Fleet owns whole
+path = "hooks/fleet.json"      # inside the config dir
+text = '{"version":{version}}' # `{version}` is install.version
+
+[[install.blocks]]             # a block Fleet appends to a file of the user's
+path = "config.toml"
+text = "..."
+comment = "#"                  # what starts a comment line there
 ```
 
 - `authority` says what the hooks report: `full` reports working, idle and
@@ -527,6 +555,9 @@ rules = "codex"                # a bundled rule set; omit for the set named as t
   hooks, trust or resume.
 - `[screen] rules` names a bundled rule set, which must exist. Omitted, the
   profile uses the set of its own name, when Fleet ships one.
+- `[install]` is what `fleet integration install` writes
+  ([installed integrations](../integration.md)). Each path is inside the
+  config directory, and each is listed once.
 
 #### Screen rules
 

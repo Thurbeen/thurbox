@@ -11,11 +11,25 @@ reports its status through its harness profiles. thurbox no longer reads
 - **How an agent is launched, resumed and watched.** The harness profile
   owns the command, its arguments, the resume argv and the status hooks:
   [Fleet's Task controller](../fleet/controllers/task.md#harness-profiles).
-- **Which agents Fleet ships.** Claude Code (`claude`, `claude-code`),
-  Codex (`codex`), pi (`pi`), opencode (`opencode`), kilo (`kilo`), omp
-  (`omp`) and Qwen Code (`qwen`).
-  Each one's hooks are set at launch, and no agent's config dir is written
-  ([bundled profiles](../fleet/controllers/task.md#harness-profiles)).
+- **Which agents Fleet ships**
+  ([bundled profiles](../fleet/controllers/task.md#harness-profiles)):
+
+  | Agent | Harness | Its hooks |
+  | --- | --- | --- |
+  | Claude Code | `claude`, `claude-code` | set at launch |
+  | Codex | `codex` | set at launch |
+  | pi | `pi` | set at launch |
+  | opencode | `opencode` | set at launch |
+  | kilo | `kilo` | set at launch |
+  | omp | `omp` | set at launch |
+  | Qwen Code | `qwen` | set at launch |
+  | Kimi Code | `kimi` | installed in its `config.toml` by `fleet integration install kimi` |
+
+  An agent whose hooks are set at launch keeps its config dir as it was.
+  Kimi Code reads hooks from its own config file only, so Fleet writes a
+  block there, and `fleet integration uninstall kimi` removes it
+  ([installed integrations](../fleet/integration.md)). The install runs on
+  this machine only.
 - **How status works.** Each hook runs `fleet signal <state>`, and Fleet
   reports the agent's last state as `agentState`: `working`, `attention`
   (it waits on a person), `idle`, or `unknown` before its first report.

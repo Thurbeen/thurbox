@@ -141,7 +141,8 @@ fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
             "opencode",
             "kilo",
             "omp",
-            "qwen"
+            "qwen",
+            "kimi"
         ])
     );
 }

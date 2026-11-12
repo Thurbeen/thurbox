@@ -60,6 +60,7 @@ pub mod forge;
 pub mod gateway;
 pub mod harness;
 pub mod inbox;
+pub mod integration;
 pub mod kinds;
 pub mod listener;
 pub mod meta;

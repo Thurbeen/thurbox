@@ -11,6 +11,7 @@ Fleet fits between thurbox and the runtimes is [the overview](../README.md).
 | [architecture.md](architecture.md) | The components, boundaries, ports and execution flow, and the target: views and workspaces |
 | [contracts.md](contracts.md) | What each part guarantees, and which tests hold it to that |
 | [configuration.md](configuration.md) | `fleet init`, `fleet up`, running VEGA, every `fleet.toml` field, the environment file, OpenTelemetry export |
+| [integration.md](integration.md) | `fleet integration`: the hooks Fleet installs for an agent that takes none at launch, and how they are removed |
 | [signal-contract.md](signal-contract.md) | For an agent vendor: how an agent reports its state to Fleet through `fleet signal` |
 
 ## Controllers
