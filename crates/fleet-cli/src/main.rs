@@ -1499,9 +1499,16 @@ fn cmd_doctor(
             },
         );
     }
-    // A ledger that cannot be read already failed each profile's row above.
-    if let Ok(ledger) = fleet_runtime::integration::read_ledger(data_dir) {
-        checks.extend(doctor::left_behind(&ledger, profiles));
+    match fleet_runtime::integration::read_ledger(data_dir) {
+        Ok(ledger) => checks.extend(doctor::left_behind(&ledger, profiles)),
+        // Each profile with an `[install]` table already failed on it above.
+        Err(e) if !profiles.list().iter().any(|p| p.install.is_some()) => {
+            checks.push(doctor::integration_unknown(
+                fleet_api::integration::LEDGER,
+                &e.to_string(),
+            ));
+        }
+        Err(_) => {}
     }
     let path = std::env::var_os("PATH");
     for p in profiles.list() {

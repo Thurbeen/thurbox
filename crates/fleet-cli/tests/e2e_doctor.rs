@@ -229,3 +229,24 @@ fn an_integration_whose_profile_lost_its_install_table_warns_and_uninstall_all_r
         .stdout_has("stub uninstalled");
     assert_eq!(tree(&home), before, "the agent's tree is as before install");
 }
+
+#[test]
+fn an_unreadable_ledger_fails_even_when_no_profile_installs_anything() {
+    let env = Env::new("doctor-unreadable-ledger");
+    let harnesses = env.root.join("harnesses");
+    fs::create_dir_all(&harnesses).expect("harnesses");
+    // The one bundled profile with an `[install]` table, replaced by one
+    // without it: no profile row reads the ledger.
+    fs::write(
+        harnesses.join("kimi.toml"),
+        "name = \"kimi\"\nprogram = \"kimi\"\nauthority = \"full\"\n",
+    )
+    .expect("profile");
+    fs::create_dir_all(&env.data).expect("data");
+    fs::write(env.data.join("integrations.json"), "not json").expect("ledger");
+    let run = env.fleet(&["doctor", "--json"]);
+    run.code(1);
+    let report = run.json();
+    let row = check(&report, "integration", "integrations.json");
+    assert_eq!(row["level"], "fail", "{report:#}");
+}
