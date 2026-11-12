@@ -356,8 +356,9 @@ jobs:
         run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci --no-fail-fast
       # Fleet's crates, in a step of their own so each filter runs only its
       # own suite. Its Windows-only code (the integration write's backup, the
-      # ledger lock through LockFileEx) runs nowhere else.
-      - if: needs.changes.outputs.fleet == 'true'
+      # ledger lock through LockFileEx) runs nowhere else. `!cancelled()`: a
+      # thurbox failure above must not hide Fleet's results.
+      - if: ${{ !cancelled() && needs.changes.outputs.fleet == 'true' }}
         run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast
 
   # No `architecture` job: `tests/architecture_rules.rs` is an ordinary
