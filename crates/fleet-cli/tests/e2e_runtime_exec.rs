@@ -954,33 +954,7 @@ fn a_codex_task_on_runtime_mux_is_briefed_before_its_first_turn_ends() {
     };
     let sockets = Sockets::new("codex");
     let mut env = mux_env("runtime-mux-codex", &program, &sockets);
-    let bin = env.root.join("bin");
-    fs::create_dir_all(&bin).expect("bin");
-    // Run by a shell named `codex`, so the screen's foreground process is
-    // Codex, as it is for the real one.
-    let shell = env.root.join("shell");
-    fs::create_dir_all(&shell).expect("shell dir");
-    std::os::unix::fs::symlink("/bin/sh", shell.join("codex")).expect("shell");
-    fs::write(env.root.join("codex.sh"), CODEX).expect("harness");
-    let codex = bin.join("codex");
-    fs::write(
-        &codex,
-        format!(
-            "#!/bin/sh\nexec '{}' '{}' \"$@\"\n",
-            shell.join("codex").display(),
-            env.root.join("codex.sh").display()
-        ),
-    )
-    .expect("harness");
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).expect("chmod");
-    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
-    let path = std::env::var("PATH").unwrap_or_default();
-    env.only_on_path(Path::new(&format!(
-        "{}:{}:{path}",
-        bin.display(),
-        fleet_dir.display()
-    )));
+    stand_in(&mut env, "codex", "codex", CODEX);
     let work = env.root.join("work").join("t1");
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
@@ -996,6 +970,84 @@ fn a_codex_task_on_runtime_mux_is_briefed_before_its_first_turn_ends() {
     let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
     assert_eq!(typed, "Do the work for t1.\n");
     assert_eq!(env.get("t1")["status"]["conversation"], "t9");
+}
+
+/// Puts `script` on the PATH as `program`, run by a shell named `argv0`, so
+/// the screen's foreground process is the agent's, as it is for the real
+/// one; `fleet` follows it on the PATH.
+fn stand_in(env: &mut Env, program: &str, argv0: &str, script: &str) {
+    let bin = env.root.join("bin");
+    let shell = env.root.join("shell");
+    fs::create_dir_all(&bin).expect("bin");
+    fs::create_dir_all(&shell).expect("shell dir");
+    std::os::unix::fs::symlink("/bin/sh", shell.join(argv0)).expect("shell");
+    let body = env.root.join(format!("{program}.sh"));
+    fs::write(&body, script).expect("harness");
+    let launcher = bin.join(program);
+    fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\nexec '{}' '{}' \"$@\"\n",
+            shell.join(argv0).display(),
+            body.display()
+        ),
+    )
+    .expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+}
+
+/// Kimi Code as Fleet starts it in a trusted folder, read off Kimi 2.5.1:
+/// its empty composer in a box, the cursor after its `>`, the `context:`
+/// footer under it, and no hook until a message is submitted, when its
+/// prompt hook runs `fleet signal prompt` with the message as a list of
+/// parts. Run as `kimi-code`, the name the real one gives itself.
+const KIMI: &str = r#"#!/bin/sh
+printf ' No session yet \342\200\224 one will be created on your first message.\n\n'
+printf ' \342\225\255\342\224\200\342\224\200\342\225\256\n'
+printf ' \342\224\202 >    \342\224\202\n'
+printf ' \342\225\260\342\224\200\342\224\200\342\225\257\n'
+printf '              context: 0%% (0/256k)'
+printf '\033[2A\r\033[5C'
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$line" >> "$PWD/typed.log"
+  fleet signal prompt --harness kimi "{\"session_id\":\"session_k1\",\"prompt\":[{\"type\":\"text\",\"text\":\"$line\"}]}"
+done
+"#;
+
+/// A Kimi Task reports nothing before its first message: its empty
+/// composer on the screen makes it ready and trusted, and Fleet delivers
+/// the brief. A stand-in, so CI runs it without Kimi; the real agent's run
+/// is `kimi_is_briefed_and_reports_its_state_through_the_hooks_fleet_integration_installs`.
+#[test]
+fn a_kimi_task_on_runtime_mux_is_briefed_before_its_first_report() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("kimi-stand-in");
+    let mut env = mux_env("runtime-mux-kimi-stand-in", &program, &sockets);
+    stand_in(&mut env, "kimi", "kimi-code", KIMI);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("kimi");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on its prompt hook's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    assert_eq!(typed, "Do the work for t1.\n");
+    assert_eq!(env.get("t1")["status"]["conversation"], "session_k1");
 }
 
 /// The variables that point git at a repository other than its `-C`
