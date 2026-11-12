@@ -236,7 +236,7 @@ tests for changes that are not thurbox's:
 | Change | Runs in `Nextest` |
 |--------|-------------------|
 | thurbox, `runtime-mux`, `term-stream`, `workspace-git` (the `rust` filter) | the whole suite except Fleet's crates, then the doctests |
-| Fleet only (the `fleet` filter) | `fleet_engine_e2e` and `tui_e2e`, against the `fleet` and `runtime-mux` it builds |
+| Fleet only (the `fleet` filter) | `fleet_engine_e2e` and `tui_e2e`, against the `fleet`, `runtime-mux` and `workspace-git` it builds |
 | documents or examples only (the `doc_refs` filter) | `doc_references` |
 
 Fleet's own suite runs in the `fleet` job and in `Windows (tests)`, and its
