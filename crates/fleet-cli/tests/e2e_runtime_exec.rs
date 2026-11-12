@@ -1584,10 +1584,16 @@ fn a_message_typed_into_the_agent_is_recorded_as_one_the_route_may_hold() {
     );
 }
 
-/// A coding agent's CLI on the PATH this test runs with. Only a developer's
-/// machine has one, signed in: without it a test that drives it says so and
-/// skips, and CI never runs one.
+/// A coding agent's CLI on the PATH this test runs with, when
+/// `FLEET_REAL_AGENTS=1` asks for the tests that drive a real agent. Such a
+/// test talks to the vendor's model with the developer's account, so its
+/// result depends on that account and the model, not only on this code: it
+/// skips unless asked, even where the CLI is installed. CI never runs one.
 fn agent(name: &str) -> Option<PathBuf> {
+    if std::env::var_os("FLEET_REAL_AGENTS").is_none_or(|v| v != "1") {
+        eprintln!("skipping: drives the real {name}; set FLEET_REAL_AGENTS=1 to run it");
+        return None;
+    }
     let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
             .map(|dir| dir.join(name))

@@ -69,7 +69,7 @@ records version evidence and RMUX platform limits.
 | Task | What it does |
 |------|--------------|
 | `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
-| `just test` | `cargo nextest run --all` |
+| `just test` | `cargo nextest run --all`; the tests that drive a real, signed-in agent CLI run only with `FLEET_REAL_AGENTS=1` |
 | `just test-one NAME` | one test by name (`cargo nextest run -E 'test(NAME)'`) |
 | `just test-scripts` | the four bats suites: `scripts/install.bats`, the pull-request-title checker, `packaging/winget/winget.bats`, `scripts/dev/e2e/windows-vm.bats` (needs `bats`) |
 | `just lint` | fmt-check + clippy + cargo-deny + Windows clippy + rumdl (CI's version) + shellcheck + selene, stylua and lua-language-server |
