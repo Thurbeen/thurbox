@@ -105,3 +105,23 @@ fn warnings_alone_exit_zero() {
     assert_eq!(check(&report, "runtime", "fake")["level"], "ok");
     assert_eq!(report["failed"], 0, "{report:#}");
 }
+
+#[test]
+fn a_runtime_table_fleet_cannot_open_fails() {
+    let env = setup("doctor-bad-runtime");
+    for runtime in ["kind = \"fake\"\n", "kind = \"other\"\ndir = \"fake\"\n"] {
+        fs::write(
+            &env.config,
+            format!("version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\n{runtime}"),
+        )
+        .expect("config");
+        let run = env.fleet(&["doctor", "--json"]);
+        run.code(1);
+        let report = run.json();
+        assert_eq!(
+            check(&report, "runtime", "fake")["level"],
+            "fail",
+            "{report:#}"
+        );
+    }
+}

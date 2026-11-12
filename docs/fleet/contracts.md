@@ -1223,7 +1223,7 @@ that needs a step names it as a hint.
 | --- | --- | --- |
 | `integration` | each harness with an `[install]` table, as `fleet integration status` reports it ([installed integrations](integration.md)) | `warn` for `outdated` and `modified`; `info` for `not-installed`, `agent-missing` and `unsupported-platform` |
 | `harness` | each harness's `program`, found on PATH | `info` when it is not there: a user installs only the agents they run |
-| `runtime` | each host under `[hosts]`: its runtime program answers `manifest` with protocol 1 and the required verbs | `fail` when it does not answer; `fail` when no runtime is configured |
+| `runtime` | each host under `[hosts]`: its runtime program answers `manifest` with protocol 1 and the required verbs | `fail` when it does not answer; `fail` when no runtime is configured, or when `[runtime]` is not the fake with its `dir` |
 
 The exit status is 1 only when a check fails. Warnings alone exit 0.
 With `--json`, it prints `{"checks": [...], "failed": N}`. Each check has

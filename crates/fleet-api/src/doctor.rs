@@ -67,7 +67,7 @@ pub fn integration(agent: &str, state: State) -> Check {
         State::Modified => (
             Level::Warn,
             Some(format!(
-                "fleet integration uninstall {agent}, then fleet integration install {agent}"
+                "fleet integration uninstall {agent}, then fleet integration install {agent}; when uninstall cannot find the block's boundary lines, remove the block by hand first"
             )),
         ),
     };
@@ -135,14 +135,28 @@ pub fn runtime(host: &str, runtime: &str, answer: Result<(), String>) -> Check {
     }
 }
 
-/// The fake runtime: nothing to reach.
-pub fn fake_runtime() -> Check {
+/// The `[runtime]` table: the fake, which Fleet opens only with its `dir`.
+/// Any other kind is refused when a command opens the runtime.
+pub fn fake_runtime(kind: &str, has_dir: bool) -> Check {
+    let (level, detail, hint) = match (kind, has_dir) {
+        ("fake", true) => (Level::Ok, "the fake runtime serves every host".into(), None),
+        ("fake", false) => (
+            Level::Fail,
+            "runtime.dir is required for the fake runtime".into(),
+            Some("set dir in [runtime]".into()),
+        ),
+        (other, _) => (
+            Level::Fail,
+            format!("unknown runtime kind {other:?}"),
+            Some("[runtime] is the fake; a real runtime is a program under [runtimes]".into()),
+        ),
+    };
     Check {
         area: "runtime",
         name: "fake".into(),
-        level: Level::Ok,
-        detail: "the fake runtime serves every host".into(),
-        hint: None,
+        level,
+        detail,
+        hint,
     }
 }
 
@@ -177,6 +191,9 @@ mod tests {
         let modified = integration("kimi", State::Modified);
         assert_eq!(modified.level, Level::Warn);
         assert!(modified.hint.unwrap().contains("uninstall kimi"));
+        assert!(fake_runtime("fake", true).level == Level::Ok);
+        assert!(fake_runtime("fake", false).level == Level::Fail);
+        assert!(fake_runtime("other", true).level == Level::Fail);
         assert_eq!(integration("kimi", State::Current).level, Level::Ok);
         assert_eq!(integration("kimi", State::NotInstalled).level, Level::Info);
     }

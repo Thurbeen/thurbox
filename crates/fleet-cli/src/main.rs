@@ -1510,8 +1510,8 @@ fn cmd_doctor(
             let answer = fleet_runtime::exec::reach(&exec_program(config, &h.runtime));
             checks.push(doctor::runtime(host, &h.runtime, answer));
         }
-    } else if config.runtime.is_some() {
-        checks.push(doctor::fake_runtime());
+    } else if let Some(rt) = &config.runtime {
+        checks.push(doctor::fake_runtime(&rt.kind, rt.dir.is_some()));
     } else {
         checks.push(doctor::no_runtime());
     }
