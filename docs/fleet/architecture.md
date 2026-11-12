@@ -333,9 +333,10 @@ a hierarchy. Registered [controller plugins](controllers/plugin.md) define their
 own kinds and act through admitted plans. Connection details stay with the runtime;
 credentials stay with the agent and host.
 
-V2 does not read or migrate v1 queue records or configuration. Root
-`FLEET_MAJOR=2` is the boundary checked by v1 installations containing the
-freeze guard; unpatched clients need the pinned release first. The
+V2 does not read or migrate v1 queue records or configuration. The v1 freeze
+guard is the `FLEET_MAJOR` file in Fleet's former standalone repository, which
+v1 installations update from. This repository carries none. Unpatched clients
+need the pinned release first. The
 [README](configuration.md) owns frozen v1 installation, explicit v2 installation
 and the deliberate cutover procedure. Release publication requires native tests
 and installed offline bootstrap acceptance.
