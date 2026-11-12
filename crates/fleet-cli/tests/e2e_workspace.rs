@@ -51,11 +51,11 @@ fn fleet_materializes_the_workspace_spawns_into_it_and_cleans_it_after_release()
         .as_str()
         .expect("dir")
         .to_string();
-    assert!(dir.ends_with("/app"), "{st:#}");
+    assert!(std::path::Path::new(&dir).ends_with("app"), "{st:#}");
     assert!(
         st["workspace"]["dirs"][1]
             .as_str()
-            .is_some_and(|d| d.ends_with("/docs")),
+            .is_some_and(|d| std::path::Path::new(d).ends_with("docs")),
         "{st:#}"
     );
 

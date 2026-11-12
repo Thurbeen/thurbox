@@ -23,6 +23,9 @@ authority = "full"
 
 [install]
 version = {version}
+# Its hooks never run, so Windows refuses nothing here, and the
+# Windows write path (the backup, the lock) is exercised.
+windows = true
 dir_env = ["STUB_AGENT_HOME"]
 dir = "~/.stub-agent"
 

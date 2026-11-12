@@ -166,6 +166,8 @@ jobs:
               # bump, and FLEET_MAJOR is the major-version marker.
               - 'cog.toml'
               - 'FLEET_MAJOR'
+              # Decides FLEET_MAJOR's line ending in a Windows checkout.
+              - '.gitattributes'
               - 'rust-toolchain.toml'
               - '.cargo/config.toml'
               - '.config/nextest.toml'

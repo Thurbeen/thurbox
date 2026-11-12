@@ -16,6 +16,12 @@ fn session(env: &Env, task: &str) -> FakeSession {
         .expect("a session")
 }
 
+/// A harness asset's path as Fleet names it in an argument or environment
+/// value: `/` separators on every platform, which Node reads everywhere.
+fn asset(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 #[test]
 fn each_harness_starts_with_its_profiles_argv_and_revives_on_its_conversation() {
     let env = Env::new("harness-profiles");
@@ -303,7 +309,7 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
     // `--approve`: the project is trusted for this run only.
     assert_eq!(
         pi.argv,
-        ["pi", "-e", &*extension.to_string_lossy(), "--approve"],
+        ["pi", "-e", &*asset(&extension), "--approve"],
         "{:?}",
         pi.argv
     );
@@ -321,7 +327,7 @@ fn pi_and_opencode_launch_with_the_plugin_files_fleet_writes() {
     )
     .unwrap();
     let plugin = assets.join("fleet-opencode");
-    assert_eq!(content, json!({"plugins": [plugin.to_string_lossy()]}));
+    assert_eq!(content, json!({"plugins": [asset(&plugin)]}));
     for part in ["index.js", "tui.js", "signal.js"] {
         assert!(plugin.join(part).is_file(), "{}/{part}", plugin.display());
     }
@@ -493,11 +499,11 @@ fn kilo_launches_with_the_plugin_files_fleet_writes() {
     )
     .unwrap();
     let server = plugin.join("index.js");
-    assert_eq!(content, json!({"plugin": [server.to_string_lossy()]}));
+    assert_eq!(content, json!({"plugin": [asset(&server)]}));
     let tui = plugin.join("tui.json");
     assert_eq!(
         kilo.env.get("KILO_TUI_CONFIG").map(String::as_str),
-        Some(&*tui.to_string_lossy())
+        Some(&*asset(&tui))
     );
     assert_eq!(
         kilo.env.get("KILO_NO_DAEMON").map(String::as_str),
@@ -679,7 +685,7 @@ fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
 
     let omp = session(&env, "m1");
     let extension = assets.join("fleet-omp.ts");
-    assert_eq!(omp.argv, ["omp", "-e", &*extension.to_string_lossy()]);
+    assert_eq!(omp.argv, ["omp", "-e", &*asset(&extension)]);
     assert!(extension.is_file(), "{}", extension.display());
     assert_eq!(omp.env.get("OMP_SKIP_SETUP").map(String::as_str), Some("1"));
 
@@ -695,7 +701,7 @@ fn omp_and_qwen_launch_with_the_hook_files_fleet_writes() {
         qwen.env
             .get("QWEN_CODE_SYSTEM_DEFAULTS_PATH")
             .map(String::as_str),
-        Some(&*settings.to_string_lossy())
+        Some(&*asset(&settings))
     );
     assert!(settings.is_file(), "{}", settings.display());
 
@@ -1066,6 +1072,8 @@ fn the_copilot_hooks_report_each_event_through_fleet_signal() {
 /// A plugin file is named inside a JSON string (opencode's config), where a
 /// double quote cannot stand as it is: a data directory whose path holds one
 /// stops each command that starts sessions, and names the directory.
+// Windows refuses a `"` in a file name, so the directory cannot exist there.
+#[cfg(unix)]
 #[test]
 fn a_data_directory_with_a_quote_in_its_path_is_refused_before_any_spawn() {
     let env = Env::new("harness-quoted-data");
