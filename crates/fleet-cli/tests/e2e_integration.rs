@@ -343,3 +343,16 @@ fn an_upgrade_never_takes_a_file_whose_block_alone_was_fleets() {
         "the old integration is still the one recorded"
     );
 }
+
+#[test]
+fn a_block_naming_fleet_that_the_ledger_does_not_list_is_never_extended() {
+    let (env, home) = setup("integration-unlisted-block");
+    // A block of Fleet's shape that no ledger entry records: from another
+    // data directory, or copied by hand.
+    let stray = "# mine\nmodel = \"m\"\n\n# >>> fleet integration stub, version 1: `fleet integration uninstall stub` removes this block\n[[hooks]]\nevent = \"Stop\"\n# <<< fleet integration stub\n";
+    fs::write(home.join("config.toml"), stray).unwrap();
+    env.fleet(&["integration", "install", "stub"])
+        .code(1)
+        .stderr_has("the ledger does not list");
+    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), stray);
+}
