@@ -9,8 +9,8 @@ use std::path::Path;
 /// Each file, by its path under the asset directory: pi's extension,
 /// opencode's plugin directory, kilo's plugins with the TUI config that
 /// names one, omp's extension, qwen's settings and Copilot's plugin
-/// directory. Each only runs
-/// `fleet signal`, and does nothing where `FLEET_SIGNAL_FILE` is unset.
+/// directory. Each only runs `fleet signal`, and does nothing where
+/// `FLEET_SIGNAL_FILE` is unset.
 pub const FILES: &[(&str, &str)] = &[
     ("fleet-pi.ts", include_str!("assets/fleet-pi.ts")),
     (

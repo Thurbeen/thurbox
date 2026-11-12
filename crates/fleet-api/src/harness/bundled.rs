@@ -1,8 +1,8 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
 //! constants, not files: a pure crate reads nothing at build time. The hook
 //! files pi's, opencode's, kilo's, omp's, qwen's and Copilot's name are the
-//! runtime adapter's (`fleet_runtime::assets`); the block Kimi's `[install]` names is
-//! written by `fleet integration`. A user file of the same `name` in
+//! runtime adapter's (`fleet_runtime::assets`); the block Kimi's `[install]`
+//! names is written by `fleet integration`. A user file of the same `name` in
 //! Fleet's config dir replaces one (docs/fleet/controllers/task.md, *Harness
 //! profiles*).
 

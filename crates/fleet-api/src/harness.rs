@@ -23,11 +23,10 @@
 //!
 //! Fleet ships the profiles of Claude Code, Codex, pi, opencode, kilo, omp,
 //! qwen, GitHub Copilot CLI and Kimi Code. pi, opencode, kilo, omp, qwen and
-//! Copilot take their hooks as a
-//! file: Fleet writes each under its own data dir (`fleet_runtime::assets`),
-//! and the launch names it, never the agent's config dir. Kimi Code takes
-//! none at launch: its `[install]` table is what `fleet integration` writes
-//! into its config dir ([`crate::integration`]).
+//! Copilot take their hooks as a file: Fleet writes each under its own data
+//! dir (`fleet_runtime::assets`), and the launch names it, never the agent's
+//! config dir. Kimi Code takes none at launch: its `[install]` table is what
+//! `fleet integration` writes into its config dir ([`crate::integration`]).
 //!
 //! A harness with no prompt hook cannot prove a delivery: its runtime's
 //! answer is all Fleet has.
