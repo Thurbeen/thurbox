@@ -624,8 +624,9 @@ pub fn kimi_process(foreground: &str) -> bool {
 }
 
 /// Whether Codex's trust dialog is on a plain visible screen `output`: its
-/// question and its trusting default. Kimi Code's asks in the same words. It can follow the composer, so it is
-/// looked for on the whole screen, not only at the cursor.
+/// question and its trusting default. It can follow the composer, so it is
+/// looked for on the whole screen, not only at the cursor. Kimi Code's trust
+/// dialog asks in the same words.
 pub fn codex_trust_dialog(output: &str) -> bool {
     let lines: Vec<&str> = output.lines().map(str::trim).collect();
     lines.iter().any(|l| l.starts_with("Trust this folder?"))
@@ -902,6 +903,8 @@ mod tests {
         assert!(!kimi_initial_composer(KIMI_READY, 19, 5));
         let typed = KIMI_READY.replace("│ >  ", "│ > R");
         assert!(!kimi_initial_composer(&typed, 20, 5));
+        let unframed = KIMI_READY.replace(" ╭─", " ──").replace(" ╰─", " ──");
+        assert!(!kimi_initial_composer(&unframed, 20, 5));
         let no_footer = KIMI_READY.replace("context:", "ctx");
         assert!(!kimi_initial_composer(&no_footer, 20, 5));
         assert!(!kimi_initial_composer(KIMI_TRUST, 11, 5));
