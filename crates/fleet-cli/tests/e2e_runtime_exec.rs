@@ -2276,13 +2276,14 @@ fn screen_in(sockets: &Sockets, work: &Path) -> String {
 /// Kimi Code, with the hooks `fleet integration install kimi` appended to
 /// its own `config.toml`: it reads hooks from that file alone. The config
 /// directory is the one `KIMI_CODE_HOME` names, for Fleet as for Kimi, and
-/// the model is a server the test runs, so it needs no sign-in. Kimi starts
-/// its session at its first message, so a person types it here, after
-/// trusting the folder once. The installed hooks drive the session's
-/// state, the user's own hook still runs, and the uninstall leaves the
-/// user's config byte for byte as it was.
+/// the model is a server the test runs, so it needs no sign-in. A person
+/// trusts the folder once. Kimi reports nothing before its first message,
+/// so its empty composer makes it ready, and Fleet delivers the brief. The
+/// installed hooks drive the session's state, the user's own hook still
+/// runs, and the uninstall leaves the user's config byte for byte as it
+/// was.
 #[test]
-fn kimi_reports_its_state_through_the_hooks_fleet_integration_installs() {
+fn kimi_is_briefed_and_reports_its_state_through_the_hooks_fleet_integration_installs() {
     let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("kimi")) else {
         return;
     };
@@ -2310,8 +2311,7 @@ fn kimi_reports_its_state_through_the_hooks_fleet_integration_installs() {
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
     task["spec"]["harness"] = json!("kimi");
-    task["spec"].as_object_mut().unwrap().remove("brief");
-    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["brief"] = json!("Run the FLEET-TOOL command.");
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     task["spec"]["env"] = json!({
         "HOME": env.root.to_string_lossy(),
@@ -2329,24 +2329,10 @@ fn kimi_reports_its_state_through_the_hooks_fleet_integration_installs() {
     });
     let pane = pane_in(&sockets, &work);
     sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
-    reconcile_until(&env, "kimi's composer", |_| {
-        screen_in(&sockets, &work).contains("context:")
+    reconcile_until(&env, "briefed on kimi's prompt hook", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
     });
-    sockets.tmux(&[
-        "send-keys",
-        "-t",
-        &pane,
-        "-l",
-        "Run the FLEET-TOOL command.",
-    ]);
-    // An Enter that arrives with the typed text is taken as part of it:
-    // it is pressed again while the text is still in the composer.
     reconcile_until(&env, "waiting on the approval", |env| {
-        if reported(env, "t1").is_empty()
-            && screen_in(&sockets, &work).contains("> Run the FLEET-TOOL")
-        {
-            sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
-        }
         env.get("t1")["status"]["agentState"] == "attention"
     });
     // Approve once: the default choice.

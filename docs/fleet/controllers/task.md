@@ -481,8 +481,10 @@ block that `fleet integration install kimi` appends to that file
 `PermissionRequest` as `blocked`, each with Kimi's session id.
 
 - Kimi starts its session at its first message, and reports nothing
-  before it. So Fleet does not see it ready, and does not send its brief.
-  A person types the first message.
+  before it. Before that report, the `exec` kind reads its screen: the
+  empty composer, the cursor in it and the `context:` footer under it,
+  with Kimi in the foreground, is ready and trusted (Kimi asks its folder
+  trust before it shows the composer). The brief is Kimi's first message.
 - Kimi's prompt is a list of parts. `fleet signal` reads the text of each
   part as one prompt.
 

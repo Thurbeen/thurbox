@@ -129,9 +129,12 @@ What Fleet's `exec` kind does with the answers:
   an agent that reported anything but `blocked` is ready and past any trust
   dialog. Codex reports nothing until its first turn ends: its empty composer
   on `capture`, Codex in the foreground, makes it ready and, launched with its
-  trust override, trusted, and a running agent is at rest once it last reported `idle`. Before
-  its first report, a trust dialog on its `capture` is Untrusted, and anything
-  else Unknown, so a brief waits;
+  trust override, trusted. Kimi Code reports nothing until its first
+  message: its empty composer on `capture`, Kimi in the foreground, makes it
+  ready and trusted (it asks its folder trust first), and a running agent is
+  at rest once it last reported `idle`. Before its first report, a trust
+  dialog on its `capture` is Untrusted, and anything else Unknown, so a brief
+  waits;
 - delivery is proven by the agent's prompt hook, not by `input`;
 - the agent state of a session whose hooks do not say it now is read off its
   `capture` text and title with the harness's screen rules
