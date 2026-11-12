@@ -363,9 +363,14 @@ fn title_and_suite_validation_are_executable() {
     }
 }
 
+/// The installer runs on Linux and macOS only: the release builds no Windows
+/// target (`windows_is_not_a_release_target_and_no_workflow_runs_on_it`), and
+/// its script refuses one.
+#[cfg(unix)]
 fn installer(e: &Env, args: &[&str]) -> (bool, String) {
     installer_with(e, args, Some("v1.2.3"))
 }
+#[cfg(unix)]
 fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, String) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut s = scratch("sh", Duration::from_secs(30))
@@ -502,6 +507,7 @@ fn installer_selects_native_archives_and_refuses_unsupported_platforms() {
     assert_eq!(before, fs::read(e.0.join("bin/fleet")).unwrap());
 }
 
+#[cfg(unix)]
 #[test]
 fn offline_install_update_tamper_refusal_and_uninstall() {
     let e = Env::new();
@@ -522,6 +528,7 @@ fn offline_install_update_tamper_refusal_and_uninstall() {
     let (ok, out) = installer(&e, &["--uninstall"]);
     assert!(ok && !binary.exists(), "{out}");
 }
+#[cfg(unix)]
 #[test]
 fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     let e = Env::new();
@@ -899,6 +906,7 @@ fn the_gate_never_rebuilds_the_binary_it_runs_from() {
     assert!(alias.contains("--target-dir target/xtask"), "{alias}");
 }
 
+#[cfg(unix)]
 #[test]
 fn v2_installs_only_when_a_version_is_named() {
     // Fleet v1 stays frozen; v2 is installed by explicitly naming
@@ -926,6 +934,7 @@ fn the_tree_declares_fleet_major_2() {
     assert_eq!(text, "2\n", "FLEET_MAJOR must be exactly \"2\\n\"");
 }
 
+#[cfg(unix)]
 #[test]
 fn installed_binary_has_path_guidance() {
     let e = Env::new();
@@ -973,6 +982,7 @@ fn release_checksums_include_the_published_installer() {
     assert!(sums.contains("  install-release.sh\n"), "{sums}");
 }
 
+#[cfg(unix)]
 #[test]
 fn release_fixture_checksum_recipe_installs() {
     let e = Env::new();
@@ -1009,6 +1019,7 @@ fn release_fixture_checksum_recipe_installs() {
     assert!(ok, "native release checksum fixture: {out}");
 }
 
+#[cfg(unix)]
 #[test]
 fn published_installer_installs_its_own_release() {
     // The README's one-liner fetches the latest release's installer with no

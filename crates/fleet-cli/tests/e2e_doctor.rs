@@ -19,6 +19,8 @@ authority = "full"
 
 [install]
 version = {version}
+# Its hooks never run, so Windows has nothing to refuse.
+windows = true
 dir_env = ["STUB_AGENT_HOME"]
 dir = "~/.stub-agent"
 

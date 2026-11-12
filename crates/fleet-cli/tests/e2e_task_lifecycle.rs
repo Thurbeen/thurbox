@@ -820,10 +820,12 @@ fn the_core_runs_with_no_fleet_extension_and_no_tools_on_path() {
 /// The examples in docs/fleet/contracts.md are what the binary accepts.
 #[test]
 fn the_contract_examples_apply_as_written() {
+    // A Windows checkout ends each line with CRLF.
     let doc = fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/fleet/contracts.md"),
     )
-    .unwrap();
+    .unwrap()
+    .replace("\r\n", "\n");
     let block = |lang: &str| -> String {
         let start = doc
             .find(&format!("```{lang}\n"))

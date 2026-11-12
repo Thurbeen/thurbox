@@ -41,11 +41,7 @@ pub enum Installed {
 /// The agent's config directory, as the agent finds it from `env`.
 pub fn config_dir(profile: &Profile, env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let install = profile.install.as_ref()?;
-    let home = if cfg!(windows) {
-        env("USERPROFILE")
-    } else {
-        env("HOME")
-    };
+    let home = env(HOME);
     let dir = PathBuf::from(api::config_dir(install, env, home.as_deref())?);
     // Recorded and compared as an absolute path: a relative one names
     // another directory from each working directory.
@@ -54,6 +50,9 @@ pub fn config_dir(profile: &Profile, env: &dyn Fn(&str) -> Option<String>) -> Op
     }
     Some(dir)
 }
+
+/// The variable the user's home is read from on this platform.
+const HOME: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 
 /// The ledger's lock: one `install` or `uninstall` at a time, so two never
 /// read the same ledger and the last write drops the other's entry. It is
@@ -199,7 +198,7 @@ pub fn install(
     }
     let dir = report.dir.ok_or_else(|| {
         format!(
-            "{}: no config directory: set HOME or one of {:?}",
+            "{}: no config directory: set {HOME} or one of {:?}",
             profile.name, install.dir_env
         )
     })?;

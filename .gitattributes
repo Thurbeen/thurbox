@@ -1,0 +1,3 @@
+# FLEET_MAJOR is read byte for byte: exactly "2" and a newline, also in a
+# Windows checkout.
+FLEET_MAJOR text eol=lf

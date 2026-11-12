@@ -362,7 +362,9 @@ impl Env {
         for (k, v) in &self.vars {
             cmd.env(k, v);
         }
+        // Windows reads the home from USERPROFILE.
         cmd.env("HOME", &self.root)
+            .env("USERPROFILE", &self.root)
             .env("TMPDIR", &self.tmp)
             .env("TMP", &self.tmp)
             .env("TEMP", &self.tmp);
