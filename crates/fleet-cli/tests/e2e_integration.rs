@@ -264,6 +264,19 @@ fn a_block_whose_closing_line_is_gone_is_modified_and_never_extended() {
     );
 }
 
+/// With no home and no override, the refusal names the variable this
+/// platform reads the home from: `USERPROFILE` on Windows, `HOME` elsewhere.
+#[test]
+fn an_install_without_a_home_names_the_variable_to_set() {
+    let (env, _home) = setup("integration-no-home");
+    let mut cmd = env.command(&["integration", "install", "stub"]);
+    cmd.env_remove("HOME").env_remove("USERPROFILE");
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    support::wait(cmd.spawn().expect("spawn fleet"))
+        .code(1)
+        .stderr_has(&format!("set {home} or one of"));
+}
+
 /// The test process holds the lock through the standard library, which is
 /// `flock` on Unix and `LockFileEx` on Windows, so this runs everywhere,
 /// Windows included, where no `flock` program is.
