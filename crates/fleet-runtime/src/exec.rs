@@ -893,6 +893,29 @@ pub struct Case {
     pub result: Result<(), String>,
 }
 
+/// Whether `program` answers its `manifest` as Fleet speaks the protocol:
+/// what `fleet doctor` asks of each host's runtime, and the first case of
+/// [`check`].
+pub fn reach(program: &ExecProgram) -> Result<(), String> {
+    speaks(&program.ask::<Manifest>("manifest", ExecRuntime::request(json!({}))))
+}
+
+fn speaks(manifest: &Observation<Manifest>) -> Result<(), String> {
+    match manifest {
+        Observation::Known(m) if m.protocol != PROTOCOL => {
+            Err(format!("protocol {}; Fleet speaks {PROTOCOL}", m.protocol))
+        }
+        Observation::Known(m) => match REQUIRED_VERBS
+            .iter()
+            .find(|v| !m.verbs.iter().any(|have| have == *v))
+        {
+            Some(missing) => Err(format!("the verbs lack {missing}")),
+            None => Ok(()),
+        },
+        Observation::Unknown { why } => Err(why.clone()),
+    }
+}
+
 /// `fleet runtime check`: the conformance suite, run against `program`.
 /// Each case stands alone; the keys it uses are its own and stopped after.
 pub fn check(program: &ExecProgram) -> Vec<Case> {
@@ -906,19 +929,7 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
     let manifest = program.ask::<Manifest>("manifest", ExecRuntime::request(json!({})));
     cases.push(Case {
         name: "manifest names the protocol version and the required verbs",
-        result: match &manifest {
-            Observation::Known(m) if m.protocol != PROTOCOL => {
-                Err(format!("protocol {}; Fleet speaks {PROTOCOL}", m.protocol))
-            }
-            Observation::Known(m) => match REQUIRED_VERBS
-                .iter()
-                .find(|v| !m.verbs.iter().any(|have| have == *v))
-            {
-                Some(missing) => Err(format!("the verbs lack {missing}")),
-                None => Ok(()),
-            },
-            Observation::Unknown { why } => Err(why.clone()),
-        },
+        result: speaks(&manifest),
     });
     let verbs = match manifest {
         Observation::Known(m) => m.verbs,

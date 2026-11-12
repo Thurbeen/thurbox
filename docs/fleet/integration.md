@@ -27,6 +27,9 @@ fleet integration uninstall <agent>|--all
   integration in the ledger.
 - `fleet version --json` lists each outdated integration under
   `outdatedIntegrations`.
+- `fleet doctor` reports an `outdated` or a `modified` integration as a
+  warning, with the command that fixes it
+  ([the command line](contracts.md#the-command-line)).
 
 The commands work on this machine only. Fleet does not install an
 integration on a remote host. To use an installed agent on a remote host,

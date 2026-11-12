@@ -55,6 +55,7 @@ pub mod change_request;
 pub mod condition;
 pub mod config;
 pub mod conversation;
+pub mod doctor;
 pub mod follow;
 pub mod forge;
 pub mod gateway;
