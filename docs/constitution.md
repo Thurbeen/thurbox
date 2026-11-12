@@ -144,58 +144,11 @@ uses the host's own.
 
 #### T1. Module isolation
 
-Domain dependency flow is one-directional. Every module under `src/` has
-exactly one line here, and each line is the rule `tests/architecture_rules.rs`
-asserts for it (`[path-only: …]` marks the crossings described below):
+Domain dependency flow is one-directional. `tests/architecture_rules.rs`
+holds the rule: every module under `src/` has one entry there naming what it
+may reference, and the test is the one copy of that graph.
 
-```text
-session              (no crate-internal references — the dependency sink;
-                     no process state, env read or rendering crate either;
-                     re-exports runtime-mux's host model and SessionId)
-agent                (declares the modules below — no references)
-agent::agent_config  → session, shell, config::file
-agent::fetch         → paths
-agent::input         (no crate-internal references)
-config               (declares the modules below — no references)
-config::automations  → session, config::file  (thurbox's own schedule)
-config::file         → paths                (the one loader: seed, parse, save)
-config::hosts        → session, config::file  (runtime-mux's loader, bound
-                                                to thurbox's config directory)
-config::interface_state → session, config::file
-config::settings     → session, config::file
-config::themes       → theme, config::file
-update               (declares the modules below — no references)
-update::self_update  → paths, shell, agent::fetch, update::version_check
-update::version_check → paths, agent::fetch
-backend              → session, paths, config::hosts  (the gateway to
-                       runtime-mux, and what thurbox injects into it)
-git                  → session, paths, shell
-telemetry            → session                    (ADR-38 diagnostic logs)
-kernel               → session, paths, git, notifications, theme
-                       [path-only: agent::{agent_config, fetch},
-                        backend, config::{automations, hosts,
-                        interface_state, settings, themes},
-                        update::{self_update, version_check}]
-cli                  → session, paths, notifications, ui_control, theme
-                       [path-only: agent::agent_config, backend,
-                        config::{automations, file, hosts, interface_state,
-                        settings, themes}, update::{self_update,
-                        version_check}, kernel]
-notifications        → session, paths, shell
-clipboard            → session, paths
-workspace            → paths
-paths                (leaf utility — no crate-internal references)
-ui_control           → paths
-shell                (no crate-internal references — runtime-mux's
-                      launchers and quoting, re-exported)
-theme                (no crate-internal references — the presets)
-coordinator          → agent::input, backend, clipboard,
-                       config::interface_state, kernel,
-                       notifications, paths, session, shell, telemetry,
-                       ui_control
-```
-
-`agent` holds coding-agent definitions and never touches `git`, `kernel`
+`agent` holds downloads and keyboard input and never touches `git`, `kernel`
 or `backend`; `config` holds thurbox's own config files, each read
 and written through the one loader `config::file`, and `update` the
 self-update; `session` holds plain data and
@@ -347,47 +300,10 @@ work. `fleet runtime check` holds every runtime to this.
 
 `runtime-mux` depends on no other crate of the repository, and reads nothing
 of the program embedding it: the settings it honours and where that program
-keeps its data are passed in (`MuxSettings`, `HostsConfig`). Inside it, every
-module under `crates/runtime-mux/src/` has one line here, and each line is the
-rule its `tests/architecture_rules.rs` asserts:
-
-```text
-host                 (no crate-internal references — the host model a route
-                     names: host_def, route, multiplexer, platform)
-session_id           (no crate-internal references)
-hyperlink            (no crate-internal references)
-settings             (no crate-internal references — what the embedder injects)
-toml_file            (no crate-internal references)
-path_lookup          (no crate-internal references — PATH, the WSL distro)
-shell                → host
-hosts                → host, path_lookup, shell, toml_file
-host_path            → host, shell
-preflight            → host, path_lookup, shell
-contract             (no crate-internal references)
-identity             → contract
-instance             → host, settings                  (ADR-12 socket naming)
-pane                 → contract, hyperlink, identity, osc8, output_wake,
-                       session_id
-osc8                 → hyperlink
-output_wake          (no crate-internal references)
-registry             → host, contract
-protocol             → contract, identity              (the runtime protocol over
-                                                        one backend it is handed)
-wiring               → host, shell, settings, contract, registry,
-                       tmux, psmux, rmux               (the factory)
-tmux_compat          (declares the modules below — no references)
-  ::control_mode     → shell, contract, tmux_compat::transport
-  ::server           → host, shell, settings, path_lookup, host_path,
-                       preflight, contract, identity, instance, session_id,
-                       tmux_compat::{control_mode, transport}
-  ::transport        → shell, preflight
-tmux                 → host, shell, settings, contract,
-                       tmux_compat::{control_mode, server, transport}
-psmux                → host, shell, settings, contract, instance,
-                       tmux_compat::{control_mode, server, transport}
-rmux                 → host, shell, settings, contract,
-                       tmux_compat::{control_mode, server, transport}
-```
+keeps its data are passed in (`MuxSettings`, `HostsConfig`). Inside it,
+`crates/runtime-mux/tests/architecture_rules.rs` holds the module rules: every
+module under `crates/runtime-mux/src/` has one entry there naming what it may
+reference, and the test is the one copy of that graph.
 
 Only the factory, `wiring`, names an adapter, and no module of the runtime
 reaches the factory: the `runtime-mux` program's `main.rs` calls it, as an

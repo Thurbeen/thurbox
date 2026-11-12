@@ -263,12 +263,10 @@ Comments explain **why**, not **what** — see the Comments section of
 
 ## Architecture
 
-Module dependencies are one-directional (`session ← agent ← kernel ←
-coordinator`) and
-enforced by `tests/architecture_rules.rs`: a new module fails that test until
-its dependencies are declared in the allowlist. The graph is documented in the
-Module Dependency Rules section of [`AGENTS.md`](AGENTS.md) and, with the full
-per-module allowlist, in [`docs/constitution.md`](docs/constitution.md).
+Module dependencies are one-directional and enforced by
+`crates/thurbox/tests/architecture_rules.rs`: a new module fails that test until
+its dependencies are declared in the allowlist. That test is the one copy of
+the graph; [`docs/constitution.md`](docs/constitution.md) T1 states the rule.
 
 ## Pull requests
 

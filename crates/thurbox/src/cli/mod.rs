@@ -223,8 +223,8 @@ pub enum Command {
         #[arg(long)]
         instance: Option<String>,
     },
-    /// Whether this machine has what a session needs: the multiplexer, each
-    /// registered agent's command, and the launcher for every configured host.
+    /// Whether this machine has what a session needs: Fleet, with its harnesses
+    /// and the hosts it defines, and the multiplexer.
     Doctor,
 }
 

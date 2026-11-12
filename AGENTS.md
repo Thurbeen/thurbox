@@ -4,12 +4,10 @@ This file provides guidance to coding agents working in this repository.
 
 ## Project
 
-Thurbox is a multi-session coding-agent TUI orchestrator built
-with Rust. It runs multiple coding-agent CLI instances (Claude
-Code and Codex, through Fleet's harness profiles) inside
-persistent tmux sessions, rendered as terminal
-panels via ratatui + tui-term. Sessions survive crashes/restarts
-because tmux keeps the processes alive.
+Thurbox is a multi-session coding-agent TUI built with Rust. It runs
+coding-agent CLIs in persistent multiplexer sessions and renders them as
+terminal panels with ratatui + tui-term. Sessions survive crashes and restarts
+because the multiplexer keeps the processes alive.
 
 Each session is a Fleet Task (ADR-41), and the agent it runs is the Task's
 harness: one of the harness profiles Fleet has, which launch, resume and watch
@@ -19,15 +17,9 @@ the harnesses `fleet version --json` lists.
 
 ## Repository layout
 
-The repository is one Cargo workspace (ADR-41). Each component is a crate under
-`crates/` — `crates/thurbox`, the interface, `crates/fleet-*`, the engine, and
-`crates/runtime-mux`, the multiplexer runtime — and everything that is not a
-crate stays at the root: `ui/`, `examples/`, `vendor/`, `docs/`, `scripts/`.
-Fleet's own trees sit in a `fleet/` directory there (`examples/fleet/`,
-`scripts/fleet/`, `docs/fleet/`).
-`crates/architecture.toml` is the crate graph `fleet-arch` checks: a component
-other than Fleet is `role = "component"`, and no component depends on another
-(thurbox still links `runtime-mux` until Fleet drives the runtimes).
+The repository is one Cargo workspace (ADR-41). `crates/architecture.toml`
+lists its crates and the dependencies each may have; `fleet-arch` checks it.
+`docs/README.md` describes the components and the contracts between them.
 A bare `src/…` or `tests/…` path in this file, a skill or a document under
 `docs/thurbox/` is the thurbox crate's (`crates/thurbox/src/…`);
 `tests/doc_references.rs` resolves documents' `src/` paths there.
@@ -83,7 +75,7 @@ guide in **`docs/thurbox/development.md`**.
 ```bash
 just build                           # cargo build --bin thurbox --bin thurbox-cli
 just test                            # cargo nextest run --all
-just lint                            # fmt-check + clippy + deny + rumdl + shellcheck + the 3 Lua gates
+just lint                            # everything CI lints
 
 cargo check --all                    # Type check (bare cargo still works)
 cargo build --release                # Release build (LTO, stripped)
@@ -113,41 +105,34 @@ scripts/dev/sandbox.sh --clean       # wipe the persistent profile
 The TUI is launched **from the sandbox root rather than the repo**:
 the sandbox sets `THURBOX_CONFIG_DIR`, so the interface materialises at
 `<sandbox>/thurbox-config/ui/` along with everything else and `--fresh` gives you a
-clean one per run. (This used to matter more: `resolve_ui_dir` preferred a `./ui` in
-the working directory, so a sandbox started from the repo isolated the data but
-not the interface. That rule is gone, and the `cd` is now belt-and-braces.)
+clean one per run.
 
 The isolation lives in one helper, `scripts/dev/lib/sandbox-env.sh`
 (`tbx_sandbox_init` = thurbox-only, `tbx_sandbox_init_full` = full HOME/XDG),
-sourced by the sandbox entrypoint plus `scripts/demo/record.sh` (which uses the
-full flavor). Single source of truth for the `thurbox-dev` sandbox pattern;
-`tests/tui_e2e.rs` isolates the same way in Rust.
+sourced by the sandbox entrypoint and the demo recorders. Single source of truth
+for the `thurbox-dev` sandbox pattern; `tests/tui_e2e.rs` isolates the same way in Rust.
 
 ## Working reference (skills)
 
-The per-subsystem reference that used to live in this file is now **nine
-skills** under `.agents/skills/`, loaded on demand instead of on every turn.
-Every skill's body lives there, agent-neutrally; `.claude/skills/<name>` is a
-relative symlink into it, so Claude Code and opencode read the one copy.
-Each carries its subject verbatim, so a section named elsewhere in the repo
-("the *Agent Definitions* section of AGENTS.md") is now the skill on this list
-that names it. Read the one your change touches:
+The per-subsystem reference lives in the skills under `.agents/skills/`,
+loaded on demand. Every skill's body lives there, agent-neutrally;
+`.claude/skills/<name>` is a relative symlink into it, so Claude Code and
+opencode read the one copy. Read the one your change touches:
 
-| Skill | Owns (the sections that moved) |
+| Skill | Covers |
 |---|---|
 | `thurbox-testing` | Testing · Kernel and interface tests · Session-backend e2e harnesses |
 | `thurbox-performance` | Performance (render loop) |
 | `thurbox-release` | Release Process · Distribution Packages · Installation Script |
 | `thurbox-remote-hosts` | Remote SSH & WSL Sessions |
-| `thurbox-cli` | thurbox-cli · its subcommands · where the session verbs went |
+| `thurbox-cli` | thurbox-cli and its subcommands |
 | `thurbox-session-status` | Session status (from Fleet) · OS notifications |
 | `thurbox-kernel` | Architecture (plugin kernel) · Writing an interface plugin |
 | `thurbox-ui-surfaces` | Keybindings · Themes · Settings panel · Global search · Code review |
 | `thurbox-demo-media` | Demo Video |
 
-The others are unrelated to this split: `ui-review` (screenshot the TUI and
-critique it), `thurbox-session` (inspect or drive one thurbox session) and the
-`fleet-*` skills, which belong to Fleet.
+`ui-review` screenshots the TUI and critiques it. The `fleet-*` skills belong
+to Fleet.
 
 A skill is a working reference, not an owner: the docs under `docs/` still own
 the rationale, and the **Rule** at the bottom of this file applies to a skill
@@ -281,6 +266,12 @@ cargo deny check advisories                               # Advisories
 cargo deny check bans licenses sources                    # Dep policy
 ```
 
+thurbox's module graph is an allowlist over resolved edges in
+`crates/thurbox/tests/architecture_rules.rs`: every module under `src/` has one
+entry there, and that test is the only copy of the graph. `runtime-mux` has its
+own (`crates/runtime-mux/tests/architecture_rules.rs`). The module
+responsibilities and the event loop are in the `thurbox-kernel` skill.
+
 ## Conventional Commits
 
 Pull requests land by **squash merge**, so the commit on `main` is
@@ -302,83 +293,10 @@ because the squash throws them away.
 - Use `cog commit feat "message"`
   or `cog commit fix "message" scope`
 
-## Module Dependency Rules (enforced by tests/architecture_rules.rs)
-
-```text
-node                 may reference                     [fully-qualified path only]
-session              nothing — pure data, the dependency sink (no
-                     process state, no env reads, no rendering crate;
-                     re-exports runtime-mux's host model and SessionId)
-agent                agent::* (declarations only)
-agent::*             every file a node: session, paths, shell, config::file
-                     each declares (NEVER git, NEVER backend)
-config               config::* (declarations only)
-config::*            every file a node: config::file (the one loader, over
-                     paths) plus session (themes: theme instead)
-update               update::* (declarations only)
-update::*            paths, shell, agent::fetch, update::version_check
-backend              session, paths, config::hosts     (the gateway to
-                                                        runtime-mux, and what
-                                                        thurbox injects)
-git                  session, paths, shell
-telemetry            session                           (ADR-38 diagnostic logs)
-kernel               session, paths, git,              [agent|config|update::<file>,
-                     notifications, theme               backend]
-cli                  session, paths, notifications,    [agent|config|update::<file>,
-                     ui_control, theme                  backend, kernel]
-notifications        session, paths, shell
-clipboard            session, paths
-workspace            paths
-paths                nothing — leaf utility
-ui_control           paths
-shell                nothing — runtime-mux's launchers and quoting, re-exported
-theme                nothing — the presets, in ratatui colours
-coordinator          agent::input, config::{hosts,     (main's body: the loop,
-                     interface_state},                  the workers, the chrome)
-                     backend, clipboard, kernel,
-                     notifications, paths, session,
-                     shell, telemetry, ui_control
-```
-
-The multiplexer runtime is its own crate, `crates/runtime-mux` (ADR-41), with
-its own allowlist (`crates/runtime-mux/tests/architecture_rules.rs`,
-`docs/constitution.md` R3): the adapters `tmux`, `psmux`, `rmux` are peers
-over the shared `tmux_compat` server, only the factory `wiring` names one, and
-it depends on no other crate of the repository — the settings and data
-directory it needs are injected (`MuxSettings`, `HostsConfig`). Its
-`runtime-mux` program (`src/main.rs`, the composition root, over the
-`protocol` module) answers the runtime protocol on a tmux socket of its own,
-`runtime-mux` (`RUNTIME_MUX_SOCKET` names another), never thurbox's.
-`crates/architecture.toml` declares which crate may depend on which, and
-Fleet's `fleet-arch` (its `architecture` test) holds the workspace to it.
-
-Enforcement is an **allowlist** over **resolved** edges: every module under
-`src/` needs a `ModuleRules` entry naming what it may reference in *any* form, so
-a new module fails the test until its place is declared, and one loop asserts
-every entry, so no rule can be declared and left unchecked. A node is a top-level
-module or a governed submodule (every file module of `agent`, `config` and
-`update` is one), and a
-reference counts where it resolves — through `super::`, brace groups, re-exports
-and `type` aliases. Both the actual and the declared graph must be acyclic, an
-unused grant fails, and the crossings still scheduled for removal are listed,
-item by item, in the test's `TRANSITIONAL` table, which must equal what the
-source does — empty since status and the heartbeat went behind the contract
-(ADR-32); `consumers_reach_no_concrete_backend` holds every module but
-`coordinator` to reaching no adapter, protocol helper or factory through the
-`backend` gateway, and `coordinator` to the factory alone;
-`runtime_mux_is_named_only_by_its_gateways` keeps the gateway the only way in,
-since the resolver follows no external crate: only `backend` and the modules
-re-exporting a runtime type (`RUNTIME_GATEWAYS`) may name `runtime_mux`.
-Inside `kernel`, `each_kernel_worker_lives_in_a_file_of_its_own` keeps each
-worker of `kernel::snapshot` and `kernel::terminal` in a file of its own.
-`docs/constitution.md` T1 lists the same graph. The full rule, the module
-responsibilities and the event loop are in the `thurbox-kernel` skill.
-
 ## Pre-commit Hooks
 
-19 hooks run automatically via `prek` (Rust-based pre-commit
-framework). Install with `prek install`; a clone that installed the
-hooks before the pre-push stage existed needs it run again. Stages:
+Hooks run automatically via `prek` (Rust-based pre-commit framework).
+Install with `prek install`. Stages:
 
 - **commit-msg**: conventional commit validation (`cog verify`)
 - **pre-commit** (fast): fmt, clippy, large files, bats (the install script, the
@@ -389,12 +307,7 @@ hooks before the pre-push stage existed needs it run again. Stages:
   rules), rustdoc, cargo-deny, Windows clippy (`just clippy-windows`)
 
 The suite runs at push rather than per commit, so committing stays
-cheap. Commit messages are not walked at push, since squash merge
-discards them.
-
-Each bats hook has a CI twin (`install-script`, `markdown-lint`), so
-the suite that guards a script is actually run rather than merely
-present.
+cheap.
 
 **Delegated build agents** follow `.agents/agents/thurbox-builder.md`:
 the repository facts, gate and house rules a brief would otherwise
@@ -403,45 +316,18 @@ repeat. Like the skills, the body is agent-neutral and
 Claude Code offers it as the `thurbox-builder` agent type; brief any
 other coding CLI to read the file first.
 
-**Coordinating multi-PR work.**
-
-- Settle the design first. Before a step's code, write its decision
-  list (features kept or dropped, config files, data model, UI flow)
-  and ask the maintainer all of it in one batch. A decision asked
-  after the code exists means rebuilding it.
-- One concern per pull request, small enough for one agent's turn
-  budget. The release hold (`.github/release-hold`) makes merging a
-  partial step safe.
-
 Shell scripts are linted with **shellcheck** (config in
 `.shellcheckrc`); install it from your package manager (it is not a
 cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 
 ## Key Technical Details
 
-- MSRV: 1.95, Edition 2021 (`rust-version` in `Cargo.toml`)
+- MSRV: 1.95, Edition 2021 (`rust-version` in `crates/thurbox/Cargo.toml`)
 - Async runtime: tokio (multi-threaded)
-- Session backend: Fleet runs every session on `runtime-mux`
-  (`crates/runtime-mux`), a tmux-protocol server per adapter — `tmux`,
-  `psmux` and opt-in `rmux`, peers over the shared `tmux_compat::server`
-  (ADR-31). thurbox reaches its own panes (companion shells, stream panes)
-  through the `backend` gateway to the same crate. Its local socket is
-  `thurbox`/`thurbox-dev` only for an instance on the **default** data dir; one
-  relocated by `THURBOX_DATA_DIR` derives its own (`thurbox-<digest>`) so it
-  never creates windows on the operator's server, and `THURBOX_SOCKET`
-  overrides both. `thurbox-cli version --json` reports the name in force —
-  ADR-12, `docs/thurbox/config.md` → Relocating an instance
-- Output reader runs in `tokio::task::spawn_blocking`
-  (blocking I/O), writer in `tokio::spawn` (async)
-- Terminal state parsed by `vt100::Parser`,
-  rendered by `tui_term::PseudoTerminal`
-- Sessions persist across restarts (tmux keeps them alive)
-- Sessions are Fleet Tasks (ADR-41): thurbox keeps no database. Its own
-  state is plain files: `interface.json` (theme, editor, the session
-  order, each companion shell's pane) beside
-  `settings.toml`, `bookmarks.json` and `perf.json` in the data directory;
-  the agents are Fleet's harness profiles;
-  remote SSH hosts in `~/.config/thurbox/hosts.toml`
+- Sessions are Fleet Tasks (ADR-41) on `runtime-mux`. thurbox keeps no
+  database: its own state is plain files, listed in `docs/thurbox/config.md` →
+  Files at a glance. The tmux socket an instance uses is in the same document
+  → Relocating an instance.
 - Requires tmux >= 3.2, psmux >= 3.3.8, or opt-in RMUX >= 0.10.0;
   version evidence and RMUX host limits are in `docs/thurbox/config.md`
 

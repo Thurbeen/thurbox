@@ -11,7 +11,8 @@ the [Task resource](../../../docs/fleet/resources/task.md); inspect supported ki
 `fleet version --json`. Update desired spec with `fleet apply -f FILE`; only
 `spec.dispatch` and `spec.forge` may change. `fleet amend TASK` adds to the
 brief and reaches the same session; `fleet send TASK TEXT` queues a message
-for it. Deletion uses `fleet delete task NAME`; the finalizer holds the record
+for it. Send only what the requester authorized, and never type into a busy
+worker's session. Deletion uses `fleet delete task NAME`; the finalizer holds the record
 until its session is released.
 
 A Task is one session. Its worker reports through `fleet result TASK` with
