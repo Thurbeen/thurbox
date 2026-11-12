@@ -38,6 +38,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       shell: ${{ steps.filter.outputs.shell }}
       markdown: ${{ steps.filter.outputs.markdown }}
+      doc_refs: ${{ steps.filter.outputs.doc_refs }}
       lua: ${{ steps.filter.outputs.lua }}
       website: ${{ steps.filter.outputs.website }}
       install_sh: ${{ steps.filter.outputs.install_sh }}
@@ -95,6 +96,13 @@ jobs:
               - '**/*.md'
               - '.rumdl.toml'
               - 'scripts/ci/check-rumdl-version.*'
+              - '.github/workflows/ci.yml'
+            # What `crates/thurbox/tests/doc_references.rs` reads beyond the
+            # `rust` filter: every document, and the examples, which cite
+            # documents and are not all thurbox's.
+            doc_refs:
+              - '**/*.md'
+              - 'examples/**'
               - '.github/workflows/ci.yml'
             lua:
               - 'ui/**'
@@ -275,15 +283,15 @@ jobs:
 
   # Also the place a change outside thurbox runs the thurbox tests it can
   # break, against the build cache this job already keeps: a Fleet change runs
-  # the two test binaries that drive the real `fleet`, and a Markdown change
-  # runs `tests/doc_references.rs`, which reads every tracked document.
+  # the two test binaries that drive the real `fleet`, and a document or
+  # example change runs `tests/doc_references.rs`, which reads both.
   nextest:
     name: Nextest
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.fleet == 'true' ||
-      needs.changes.outputs.markdown == 'true'
+      needs.changes.outputs.doc_refs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -326,7 +334,7 @@ jobs:
         run: |
           cargo build -p runtime-mux -p workspace-git --bin runtime-mux --bin workspace-git
           cargo nextest run -p thurbox --test fleet_engine_e2e --test tui_e2e --profile ci
-      - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.markdown == 'true'
+      - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.doc_refs == 'true'
         run: cargo nextest run -p thurbox --test doc_references --profile ci
       # Nextest cannot run doctests. Fleet's crates run theirs in the `fleet`
       # job.
