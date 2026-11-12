@@ -280,6 +280,7 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
             "kilo",
             "omp",
             "qwen",
+            "copilot",
             "kimi"
         ])
     );
@@ -664,6 +665,7 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
             "kilo",
             "omp",
             "qwen",
+            "copilot",
             "kimi"
         ]),
         "a view offers the user's harness"
@@ -2372,4 +2374,99 @@ fn kimi_reports_its_state_through_the_hooks_fleet_integration_installs() {
         user,
         "the user's config changed"
     );
+}
+
+/// GitHub Copilot CLI, as Fleet starts it: its hooks are a plugin directory
+/// Fleet writes, passed with `--plugin-dir`, and the model is a server the
+/// test runs, so it needs no sign-in. The user's own hooks, in a Copilot
+/// home of the test's own, still run, and that home's hooks are left byte
+/// for byte as they were. Copilot starts its session, and reports it, at
+/// its first message, so a person types it here, after trusting the folder
+/// once. Its session id is the conversation.
+#[test]
+fn copilot_reports_its_state_through_the_plugin_fleet_passes_at_launch() {
+    let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("copilot")) else {
+        return;
+    };
+    let model = FakeModel::start();
+    let sockets = Sockets::new("copilot");
+    let env = agent_env("runtime-mux-copilot", &program, &sockets);
+    let home = env.root.join(".copilot");
+    let hooks = home.join("hooks");
+    fs::create_dir_all(&hooks).expect("user hooks");
+    let marker = env.root.join("user-hook-ran");
+    fs::write(
+        hooks.join("user.json"),
+        json!({"version": 1, "hooks": {"userPromptSubmitted": [{
+            "type": "command",
+            "bash": format!("touch '{}'", marker.display()),
+        }]}})
+        .to_string(),
+    )
+    .expect("user hooks");
+    let before = snapshot(&hooks, &[]);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("copilot");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    task["spec"]["env"] = json!({
+        "HOME": env.root.to_string_lossy(),
+        "COPILOT_HOME": home.to_string_lossy(),
+        "COPILOT_AUTO_UPDATE": "false",
+        "COPILOT_OFFLINE": "true",
+        "COPILOT_PROVIDER_BASE_URL": model.url,
+        "COPILOT_PROVIDER_API_KEY": "fake",
+        "COPILOT_MODEL": "fake-model",
+    });
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "copilot asks to trust its folder", |_| {
+        screen_in(&sockets, &work).contains("Do you trust the files in this folder?")
+    });
+    let pane = pane_in(&sockets, &work);
+    // Yes, for this session only: the default choice.
+    sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    reconcile_until(&env, "copilot's composer", |_| {
+        screen_in(&sockets, &work).contains("/ commands")
+    });
+    sockets.tmux(&[
+        "send-keys",
+        "-t",
+        &pane,
+        "-l",
+        "Run the FLEET-TOOL command.",
+    ]);
+    // An Enter that arrives with the typed text is taken as part of it:
+    // it is pressed again while the text is still in the composer.
+    reconcile_until(&env, "waiting on the approval", |env| {
+        if reported(env, "t1").is_empty()
+            && screen_in(&sockets, &work).contains("❯ Run the FLEET-TOOL")
+        {
+            sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+        }
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    // Yes, once: the default choice.
+    sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    reconcile_until(&env, "the turn ended", |env| {
+        in_order(
+            &reported(env, "t1"),
+            &["idle", "prompt", "working", "blocked", "working", "idle"],
+        ) && env.get("t1")["status"]["agentState"] == "idle"
+    });
+    assert!(work.join("made-by-fleet").is_file(), "the command ran");
+    assert!(marker.is_file(), "the user's own hook ran too");
+    let conversation = env.get("t1")["status"]["conversation"]
+        .as_str()
+        .expect("a conversation")
+        .to_string();
+    assert!(
+        home.join("session-state").join(&conversation).is_dir(),
+        "{conversation} is copilot's session id"
+    );
+    end_agent(&sockets, &work);
+    assert_eq!(snapshot(&hooks, &[]), before, "the user's hooks changed");
 }

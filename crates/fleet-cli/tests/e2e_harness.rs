@@ -142,6 +142,7 @@ fn a_broken_profile_stops_a_reconcile_and_leaves_the_others_listed() {
             "kilo",
             "omp",
             "qwen",
+            "copilot",
             "kimi"
         ])
     );
@@ -802,13 +803,18 @@ fn the_omp_extension_reports_each_event_with_its_session() {
     assert!(run_asset(&env, &node, (OMP_DRIVER, &asset), steps, (false, true)).is_empty());
 }
 
-/// Each hook command of Fleet's qwen settings, run by `sh` with a qwen hook
-/// payload on stdin: the state it sent and the payload `fleet` read, or
-/// nothing. `with_fleet`: whether the stub `fleet` is on PATH.
+/// A hook command of Fleet's, run by `sh` with `payload` on stdin: the state
+/// it sent and the payload `fleet` read, or nothing. `with_fleet`: whether
+/// the stub `fleet` is on PATH.
 #[cfg(unix)]
-fn run_qwen_hook(env: &Env, command: &str, with_fleet: bool) -> Vec<(String, serde_json::Value)> {
+fn run_hook(
+    env: &Env,
+    command: &str,
+    with_fleet: bool,
+    payload: &serde_json::Value,
+) -> Vec<(String, serde_json::Value)> {
     use std::os::unix::fs::PermissionsExt;
-    let bin = env.root.join("qwen-bin");
+    let bin = env.root.join("hook-bin");
     std::fs::create_dir_all(&bin).unwrap();
     let fleet = bin.join("fleet");
     if with_fleet {
@@ -817,7 +823,7 @@ fn run_qwen_hook(env: &Env, command: &str, with_fleet: bool) -> Vec<(String, ser
     } else {
         let _ = std::fs::remove_file(&fleet);
     }
-    let log = env.root.join("qwen-signals.log");
+    let log = env.root.join("hook-signals.log");
     let _ = std::fs::remove_file(&log);
     let mut child = std::process::Command::new("/bin/sh")
         .args(["-c", command])
@@ -833,7 +839,7 @@ fn run_qwen_hook(env: &Env, command: &str, with_fleet: bool) -> Vec<(String, ser
         .stdin
         .take()
         .unwrap()
-        .write_all(br#"{"session_id":"qwen-1","prompt":"the brief"}"#);
+        .write_all(payload.to_string().as_bytes());
     let status = child.wait().unwrap();
     assert!(status.success(), "{command}: {status}");
     std::fs::read_to_string(&log)
@@ -896,11 +902,119 @@ fn the_qwen_settings_report_each_event_through_fleet_signal() {
         let command = entries[0]["hooks"][0]["command"].as_str().expect(event);
         assert_eq!(entries[0]["hooks"][0]["type"], "command", "{event}");
         assert_eq!(
-            run_qwen_hook(&env, command, true),
+            run_hook(&env, command, true, &payload),
             [(state.to_string(), payload.clone())],
             "{event}"
         );
-        assert!(run_qwen_hook(&env, command, false).is_empty(), "{event}");
+        assert!(
+            run_hook(&env, command, false, &payload).is_empty(),
+            "{event}"
+        );
+    }
+}
+
+/// Copilot takes its hooks at launch as a plugin directory Fleet writes,
+/// passed with `--plugin-dir`: a manifest and the hooks file Copilot reads
+/// from a plugin. A revive resumes it on the conversation its hooks reported.
+#[test]
+fn copilot_launches_with_the_plugin_fleet_writes() {
+    let env = Env::new("harness-launch-copilot");
+    let mut task = support::task("g1", true);
+    task["spec"]["harness"] = json!("copilot");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    let plugin = env.data.join("harness-assets/fleet-copilot");
+    let copilot = session(&env, "g1");
+    assert_eq!(
+        copilot.argv,
+        ["copilot", "--plugin-dir", &*plugin.to_string_lossy()]
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(plugin.join("plugin.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["name"], "fleet");
+    assert!(plugin.join("hooks/hooks.json").is_file());
+
+    env.host().reboot().unwrap();
+    env.reconcile().ok();
+    let s = session(&env, "g1");
+    let resumed = s.restarts.last().expect("revived");
+    assert_eq!(
+        resumed[..],
+        [
+            "copilot".to_string(),
+            "--plugin-dir".to_string(),
+            plugin.to_string_lossy().into_owned(),
+            "--resume".to_string(),
+            format!("conv-{}", s.id)
+        ]
+    );
+}
+
+/// Fleet's Copilot hooks: each event Copilot runs a hook for reports its
+/// state with Copilot's payload, and a missing `fleet` never fails a turn.
+/// `permissionRequest` is not used: Copilot runs it for every permission
+/// check, an allowed one included. A person is asked only when Copilot
+/// notifies a permission prompt or a question.
+#[cfg(unix)]
+#[test]
+fn the_copilot_hooks_report_each_event_through_fleet_signal() {
+    let env = Env::new("asset-copilot");
+    let mut task = support::task("g1", true);
+    task["spec"]["harness"] = json!("copilot");
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    let text = std::fs::read_to_string(
+        env.data
+            .join("harness-assets/fleet-copilot/hooks/hooks.json"),
+    )
+    .unwrap();
+    let file: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(file["version"], 1, "{file:#}");
+    let hooks = file["hooks"].as_object().expect("hooks");
+    let mut events: Vec<&str> = hooks.keys().map(String::as_str).collect();
+    events.sort_unstable();
+    assert_eq!(
+        events,
+        [
+            "agentStop",
+            "notification",
+            "postToolUse",
+            "postToolUseFailure",
+            "preToolUse",
+            "sessionStart",
+            "userPromptSubmitted"
+        ]
+    );
+    let payload = json!({"sessionId": "copilot-1", "prompt": "the brief"});
+    for (event, state) in [
+        ("sessionStart", "idle"),
+        ("userPromptSubmitted", "prompt"),
+        ("preToolUse", "working"),
+        ("notification", "blocked"),
+        ("postToolUse", "working"),
+        ("postToolUseFailure", "working"),
+        ("agentStop", "idle"),
+    ] {
+        let entries = hooks[event].as_array().expect("entries");
+        assert_eq!(entries.len(), 1, "{event}");
+        let matcher = entries[0].get("matcher").and_then(|m| m.as_str());
+        if event == "notification" {
+            assert_eq!(matcher, Some("permission_prompt|elicitation_dialog"));
+        } else {
+            assert_eq!(matcher, None, "{event}");
+        }
+        assert_eq!(entries[0]["type"], "command", "{event}");
+        let command = entries[0]["bash"].as_str().expect(event);
+        assert_eq!(
+            run_hook(&env, command, true, &payload),
+            [(state.to_string(), payload.clone())],
+            "{event}"
+        );
+        assert!(
+            run_hook(&env, command, false, &payload).is_empty(),
+            "{event}"
+        );
     }
 }
 

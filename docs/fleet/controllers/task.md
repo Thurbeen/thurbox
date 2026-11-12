@@ -391,6 +391,7 @@ A profile is data: one TOML document per harness. Fleet ships these:
 | `kilo` | `kilo`, with `KILO_CONFIG_CONTENT` and `KILO_TUI_CONFIG` naming Fleet's plugins, and `KILO_NO_DAEMON=1` | the launch argv, then `--session <conversation>` | none Fleet knows |
 | `omp` | `omp -e <Fleet's extension>` and `--add-dir` per extra directory, with `OMP_SKIP_SETUP=1` | the launch argv, then `--resume <conversation>` | none Fleet knows |
 | `qwen` | `qwen` and `--add-dir` per extra directory, with `QWEN_CODE_SYSTEM_DEFAULTS_PATH` naming Fleet's settings | the launch argv, then `--resume <conversation>` | none Fleet knows |
+| `copilot` | `copilot --plugin-dir <Fleet's plugin>` and `--add-dir` per extra directory | the launch argv, then `--resume <conversation>` | its dialog, which Fleet never answers |
 | `kimi` | `kimi` and `--add-dir` per extra directory; its hooks are [installed](../integration.md) | the launch argv, then `--session <conversation>` | its dialog, which Fleet never answers |
 | any other | the harness name | the launch argv: a fresh start | none Fleet knows |
 
@@ -404,7 +405,7 @@ that report, the `exec` kind reads its screen: the empty composer under its
 welcome screen, with Codex in the foreground, is ready and trusted (its
 launch override trusts the workspace).
 
-pi, opencode, kilo, omp and qwen take their hooks as a file, not an argument. Fleet
+pi, opencode, kilo, omp, qwen and Copilot take their hooks as a file, not an argument. Fleet
 ships each file and writes it under its data dir, in `harness-assets/`, at
 each command that starts sessions; the launch names it. Fleet never writes
 the agent's config dir, and the agent loads the user's own plugins beside
@@ -419,6 +420,7 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
 | `kilo` | [`fleet-kilo/`](../../../crates/fleet-runtime/src/assets/fleet-kilo/index.js): a server plugin named in `KILO_CONFIG_CONTENT`, and a terminal UI config named in `KILO_TUI_CONFIG` that names its TUI plugin | its terminal UI's start as `idle`; each user prompt as `prompt`; `working` while any session is busy; `blocked` while a permission, a question, a suggestion or a network request is open; `idle` when every session is idle |
 | `omp` | [`fleet-omp.ts`](../../../crates/fleet-runtime/src/assets/fleet-omp.ts), passed with `-e` | `session_start` as `idle`, `before_agent_start` as `prompt`, `agent_start` as `working`, `blocked` while a tool waits on its approval, and an `agent_end` that will not continue as `idle`, each with omp's session id |
 | `qwen` | [`fleet-qwen.json`](../../../crates/fleet-runtime/src/assets/fleet-qwen.json), a settings file named in `QWEN_CODE_SYSTEM_DEFAULTS_PATH` | `SessionStart`, `Stop` and `StopFailure` as `idle`, `UserPromptSubmit` as `prompt`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` as `working`, `PermissionRequest` as `blocked`, each with qwen's session id |
+| `copilot` | [`fleet-copilot/`](../../../crates/fleet-runtime/src/assets/fleet-copilot/hooks/hooks.json), a plugin directory passed with `--plugin-dir` | `sessionStart` and `agentStop` as `idle`, `userPromptSubmitted` as `prompt`, `preToolUse`, `postToolUse` and `postToolUseFailure` as `working`, a `notification` of a permission prompt or a question as `blocked`, each with Copilot's session id |
 
 - pi asks a person nothing of its own: its hooks report no `blocked`. pi
   reports `idle` at `agent_settled`, not `agent_end`: after a run ends, pi
@@ -472,6 +474,19 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
   approval dialog opens, inside a turn.
 - A turn that qwen cancels, a denied approval included, ends with no hook.
   The agent stays `attention` or `working` until its next prompt.
+- Copilot loads a `--plugin-dir` plugin beside the user's plugins and the
+  hooks in its own `hooks/` directory.
+- Copilot runs `permissionRequest` for every permission check, an allowed
+  one included. So its hooks report `blocked` only from the notification
+  that a person is asked: `permission_prompt` or `elicitation_dialog`.
+- Copilot starts its session at its first message, and reports nothing
+  before it, a resumed session included. So Fleet does not see it ready,
+  and does not send its brief. A person types the first message.
+- A turn that Copilot cancels, a denied approval included, ends with no
+  hook. So does a turn that fails, for example on a model that cannot be
+  reached: Copilot runs only `errorOccurred`, once per retry, and marks each
+  one recoverable. The agent stays `attention` or `working` until its next
+  prompt.
 
 Kimi Code reads hooks from its own `config.toml` only. Its hooks are a
 block that `fleet integration install kimi` appends to that file
@@ -568,7 +583,7 @@ the hooks ([agent state](../contracts.md#agent-state)). Fleet ships one rule
 set per agent whose screens it captured: `claude`, `codex`, `copilot`,
 `opencode` and `pi`
 ([bundled rule sets](../../../crates/fleet-api/src/screen/bundled.rs)). A
-harness that no profile names, such as `copilot`, uses the set of its name.
+harness that no profile names uses the set of its name.
 A harness with no hooks and no rule set, such as a shell, has no agent state
 to report: its Task gets no `activity`, so only an agent can be unknown.
 

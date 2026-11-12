@@ -1849,7 +1849,6 @@ fn a_harness_with_no_hooks_and_no_screen_rules_reports_no_source() {
     };
     assert_eq!(observe("bash"), None, "a shell");
     assert_eq!(observe("claude"), Some(Source::None), "an agent");
-    assert_eq!(observe("copilot"), Some(Source::None), "rules, no hooks");
 
     // A record written before this rule, on a host whose signal file cannot
     // be read, drops its source too.
@@ -1900,7 +1899,6 @@ fn the_screen_is_read_only_where_the_hooks_do_not_say_the_state() {
     assert!(asks(&with("claude", Some(Source::Screen))));
     assert!(asks(&with("claude", None)));
     assert!(asks(&with("codex", Some(Source::Hook))), "partial hooks");
-    assert!(asks(&with("copilot", None)), "a bare harness with rules");
     assert!(!asks(&with("aider", None)), "no rules, no capture");
 
     let approval = Screen {

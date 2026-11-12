@@ -1,7 +1,7 @@
 //! The harness profiles Fleet ships, one TOML document per harness. They are
 //! constants, not files: a pure crate reads nothing at build time. The hook
-//! files pi's, opencode's, kilo's, omp's and qwen's name are the runtime
-//! adapter's (`fleet_runtime::assets`); the block Kimi's `[install]` names is
+//! files pi's, opencode's, kilo's, omp's, qwen's and Copilot's name are the
+//! runtime adapter's (`fleet_runtime::assets`); the block Kimi's `[install]` names is
 //! written by `fleet integration`. A user file of the same `name` in
 //! Fleet's config dir replaces one (docs/fleet/controllers/task.md, *Harness
 //! profiles*).
@@ -177,6 +177,32 @@ prompt = ["prompt"]
 conversation = ["session_id"]
 "#;
 
+/// GitHub Copilot CLI. Its hooks are a plugin directory Fleet writes, passed
+/// with `--plugin-dir`, which loads beside the user's plugins and hooks.
+/// Copilot runs `permissionRequest` for every permission check, an allowed
+/// one included, so the plugin reports `blocked` from the notification that
+/// a person is asked. Copilot starts its session, and reports it, at its
+/// first message.
+pub const COPILOT: &str = r#"
+name = "copilot"
+program = "copilot"
+authority = "full"
+
+[launch]
+args = ["--plugin-dir", "{asset:fleet-copilot}"]
+add_dir = "--add-dir"
+
+[resume]
+args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
+
+[trust]
+mode = "dialog"
+
+[payload]
+prompt = ["prompt"]
+conversation = ["sessionId"]
+"#;
+
 /// Kimi Code (`kimi`). It reads hooks from its own `config.toml` only: no
 /// flag or variable adds any at launch, and `KIMI_CODE_HOME` moves its
 /// whole home, sign-in included. So its hooks are a block `fleet
@@ -249,4 +275,4 @@ timeout = 10
 "#;
 
 /// Every bundled profile, in the order `fleet version --json` lists them.
-pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO, OMP, QWEN, KIMI];
+pub const ALL: &[&str] = &[CLAUDE, CODEX, PI, OPENCODE, KILO, OMP, QWEN, COPILOT, KIMI];

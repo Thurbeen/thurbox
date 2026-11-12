@@ -39,8 +39,9 @@ what the runtime proved and no source text.
 Claude Code's `Notification` hook, matched to `permission_prompt`, reports
 `blocked`, which is `attention`; its `idle_prompt` notification is idle.
 opencode's and kilo's plugins report `blocked` while a permission or a
-question is open, omp's while a tool waits on its approval, and qwen's
-`PermissionRequest` hook reports it; pi asks a person nothing, so it never
+question is open, omp's while a tool waits on its approval, qwen's
+`PermissionRequest` hook reports it, and Copilot's notification of a
+permission prompt or a question does; pi asks a person nothing, so it never
 reports `attention`.
 Each hook reports
 through `fleet signal`, and Fleet's harness profiles wire those hooks at launch
