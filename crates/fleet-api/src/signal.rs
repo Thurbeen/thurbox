@@ -100,8 +100,14 @@ impl Signal {
             for name in &fields.prompt {
                 match &p[name] {
                     serde_json::Value::String(text) => prompts.push(prompt_digest(text)),
+                    // Codex's `input-messages` are strings; Kimi's prompt
+                    // is a list of parts, each text one `{"text": ...}`.
                     serde_json::Value::Array(list) => {
-                        prompts.extend(list.iter().filter_map(|m| m.as_str()).map(prompt_digest));
+                        prompts.extend(
+                            list.iter()
+                                .filter_map(|m| m.as_str().or_else(|| m["text"].as_str()))
+                                .map(prompt_digest),
+                        );
                     }
                     _ => {}
                 }
@@ -259,6 +265,10 @@ mod tests {
         let s = Signal::from_hook(1, State::Idle, Some(&codex));
         assert_eq!(s.prompts.len(), 2);
         assert_eq!(s.conversation.as_deref(), Some("t9"));
+        let kimi = json!({"prompt": [{"type": "text", "text": "brief"}, {"type": "image"}],
+                          "session_id": "session_1"});
+        let s = Signal::from_hook(1, State::Prompt, Some(&kimi));
+        assert_eq!(s.prompts, vec![prompt_digest("brief")]);
         assert!(
             Signal::from_hook(1, State::Working, None)
                 .prompts

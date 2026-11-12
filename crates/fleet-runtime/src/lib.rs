@@ -9,11 +9,14 @@
 //!   this machine.
 //! - [`assets`]: the plugin files Fleet ships for the harnesses that take
 //!   their hooks as a file, written beside the signal files.
+//! - [`integration`]: the hooks `fleet integration` installs into an agent's
+//!   own config directory, for a harness that takes none at launch.
 
 pub mod assets;
 pub mod bridge;
 pub mod exec;
 pub mod fake;
+pub mod integration;
 pub mod signals;
 
 pub use exec::{ExecProgram, ExecRuntime};

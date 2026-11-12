@@ -279,7 +279,8 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
             "opencode",
             "kilo",
             "omp",
-            "qwen"
+            "qwen",
+            "kimi"
         ])
     );
 }
@@ -662,7 +663,8 @@ fn a_harness_that_is_only_a_user_profile_runs_and_reports_on_runtime_mux() {
             "opencode",
             "kilo",
             "omp",
-            "qwen"
+            "qwen",
+            "kimi"
         ]),
         "a view offers the user's harness"
     );
@@ -2045,7 +2047,8 @@ fn omp_reports_its_state_through_the_extension_fleet_passes_at_launch() {
 /// A model server on 127.0.0.1 that speaks OpenAI's chat completions, so an
 /// agent runs a turn with no sign-in and no network. A request whose
 /// conversation has a user message holding `FLEET-TOOL`, and no tool result
-/// yet, is answered with one call of the agent's shell tool, which needs a
+/// yet, is answered with one call of the agent's shell tool (qwen's
+/// `run_shell_command`, Kimi's `Bash`), which needs a
 /// person's approval; every other request with the text `done`.
 struct FakeModel {
     url: String,
@@ -2096,9 +2099,10 @@ impl FakeModel {
         let messages = request["messages"].as_array().cloned().unwrap_or_default();
         let shell = request["tools"].as_array().and_then(|tools| {
             tools.iter().find_map(|t| {
-                t["function"]["name"]
-                    .as_str()
-                    .filter(|n| n.contains("shell") || n.contains("bash"))
+                t["function"]["name"].as_str().filter(|n| {
+                    let n = n.to_ascii_lowercase();
+                    n.contains("shell") || n.contains("bash")
+                })
             })
         });
         let asked = messages
@@ -2251,5 +2255,121 @@ fn qwen_reports_its_state_through_the_settings_fleet_names_at_launch() {
         !any_file_holds(&config, "fleet signal"),
         "Fleet's hooks were written under {}",
         config.display()
+    );
+}
+
+/// The visible screen of the pane in `work`; empty before there is one.
+fn screen_in(sockets: &Sockets, work: &Path) -> String {
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let Some(pane) = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+    else {
+        return String::new();
+    };
+    let out = sockets.tmux(&["capture-pane", "-p", "-t", pane]);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Kimi Code, with the hooks `fleet integration install kimi` appended to
+/// its own `config.toml`: it reads hooks from that file alone. The config
+/// directory is the one `KIMI_CODE_HOME` names, for Fleet as for Kimi, and
+/// the model is a server the test runs, so it needs no sign-in. Kimi starts
+/// its session at its first message, so a person types it here, after
+/// trusting the folder once. The installed hooks drive the session's
+/// state, the user's own hook still runs, and the uninstall leaves the
+/// user's config byte for byte as it was.
+#[test]
+fn kimi_reports_its_state_through_the_hooks_fleet_integration_installs() {
+    let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("kimi")) else {
+        return;
+    };
+    let model = FakeModel::start();
+    let sockets = Sockets::new("kimi");
+    let mut env = agent_env("runtime-mux-kimi", &program, &sockets);
+    let home = env.root.join("kimi-home");
+    fs::create_dir_all(&home).expect("kimi home");
+    let marker = env.root.join("user-hook-ran");
+    let user = format!(
+        "# the user's own\n[[hooks]]\nevent = \"UserPromptSubmit\"\ncommand = \"touch '{}'\"\n",
+        marker.display()
+    );
+    fs::write(home.join("config.toml"), &user).expect("user config");
+    env.set_var("KIMI_CODE_HOME", &home.to_string_lossy());
+    env.fleet(&["integration", "install", "kimi"]).ok();
+    let rows = env
+        .fleet(&["integration", "status", "kimi", "--json"])
+        .ok()
+        .json();
+    assert_eq!(rows[0]["state"], "current", "{rows:#}");
+    assert_eq!(rows[0]["dir"], json!(home.to_string_lossy()), "{rows:#}");
+
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("kimi");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    task["spec"]["env"] = json!({
+        "HOME": env.root.to_string_lossy(),
+        "KIMI_CODE_HOME": home.to_string_lossy(),
+        "KIMI_CODE_NO_AUTO_UPDATE": "1",
+        "KIMI_MODEL_NAME": "fake-model",
+        "KIMI_MODEL_API_KEY": "fake",
+        "KIMI_MODEL_BASE_URL": model.url,
+        "KIMI_MODEL_PROVIDER_TYPE": "openai",
+    });
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "kimi asks to trust its folder", |_| {
+        screen_in(&sockets, &work).contains("Trust and continue")
+    });
+    let pane = pane_in(&sockets, &work);
+    sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    reconcile_until(&env, "kimi's composer", |_| {
+        screen_in(&sockets, &work).contains("context:")
+    });
+    sockets.tmux(&[
+        "send-keys",
+        "-t",
+        &pane,
+        "-l",
+        "Run the FLEET-TOOL command.",
+    ]);
+    // An Enter that arrives with the typed text is taken as part of it:
+    // it is pressed again while the text is still in the composer.
+    reconcile_until(&env, "waiting on the approval", |env| {
+        if reported(env, "t1").is_empty()
+            && screen_in(&sockets, &work).contains("> Run the FLEET-TOOL")
+        {
+            sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+        }
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    // Approve once: the default choice.
+    sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+    reconcile_until(&env, "the turn ended", |env| {
+        in_order(
+            &reported(env, "t1"),
+            &["idle", "prompt", "working", "blocked", "working", "idle"],
+        ) && env.get("t1")["status"]["agentState"] == "idle"
+    });
+    assert!(work.join("made-by-fleet").is_file(), "the command ran");
+    assert!(marker.is_file(), "the user's own hook ran too");
+    let conversation = env.get("t1")["status"]["conversation"]
+        .as_str()
+        .expect("a conversation")
+        .to_string();
+    assert!(conversation.starts_with("session_"), "{conversation}");
+    end_agent(&sockets, &work);
+
+    env.fleet(&["integration", "uninstall", "kimi"]).ok();
+    assert_eq!(
+        fs::read_to_string(home.join("config.toml")).expect("user config"),
+        user,
+        "the user's config changed"
     );
 }

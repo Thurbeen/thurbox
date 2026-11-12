@@ -245,6 +245,35 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    /// The hooks Fleet installs into an agent's own config directory, on
+    /// this machine, for an agent that takes none at launch.
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum IntegrationCommand {
+    /// Each agent's integration: not-needed, not-installed, current,
+    /// outdated, modified or agent-missing. Every agent without one.
+    Status {
+        agent: Option<String>,
+        #[arg(long, conflicts_with = "agent")]
+        all: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write the agent's hooks into its config directory, replacing an
+    /// older version Fleet wrote.
+    Install { agent: String },
+    /// Remove exactly what Fleet wrote for the agent, or for every agent.
+    Uninstall {
+        #[arg(required_unless_present = "all")]
+        agent: Option<String>,
+        #[arg(long, conflicts_with = "agent")]
+        all: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -422,7 +451,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), Failure> {
     if let Command::Version { json } = &cli.command {
-        return version(*json, cli.config.clone());
+        return version(*json, cli.config.clone(), cli.data_dir.clone());
     }
     if let Command::Signal {
         state,
@@ -561,6 +590,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
         return Ok(());
     }
     let file_store = FileStore::open(&data_dir)?.with_plugins(&registrations)?;
+    // The ledger sits in the store's directory, which the store must hold
+    // first: it refuses a directory that holds anything else.
+    if let Command::Integration { command } = &cli.command {
+        return cmd_integration(command, &data_dir);
+    }
     let store: &dyn Store = &file_store;
     match cli.command {
         Command::Up {
@@ -781,6 +815,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Version { .. }
         | Command::Signal { .. }
         | Command::Runtime { .. }
+        | Command::Integration { .. }
         | Command::TermBridge { .. } => unreachable_version(),
     }
 }
@@ -1214,16 +1249,16 @@ fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure
     Ok(())
 }
 
-fn version(json: bool, config: Option<PathBuf>) -> Result<(), Failure> {
+fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Result<(), Failure> {
     if json {
+        let config = config::discover(config);
         // The user's profiles too, so a view offers their harnesses; one
         // that does not parse is left out here and refused by every
         // command that loads the config.
-        let user = user_profiles(
-            harness_dir(config::discover(config).as_deref()).as_deref(),
-            false,
-        )
-        .unwrap_or_default();
+        let user =
+            user_profiles(harness_dir(config.as_deref()).as_deref(), false).unwrap_or_default();
+        let profiles = fleet_api::harness::Profiles::bundled().with(user);
+        let outdated = outdated_integrations(&profiles, config.as_deref(), data_dir);
         print_json(&json!({
             "version": VERSION,
             "apiVersions": [API_VERSION],
@@ -1231,7 +1266,8 @@ fn version(json: bool, config: Option<PathBuf>) -> Result<(), Failure> {
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["exec", "fake"],
-            "harnesses": fleet_api::harness::Profiles::bundled().with(user).names(),
+            "harnesses": profiles.names(),
+            "outdatedIntegrations": outdated,
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,
@@ -1240,6 +1276,121 @@ fn version(json: bool, config: Option<PathBuf>) -> Result<(), Failure> {
         println!("fleet {VERSION}");
     }
     Ok(())
+}
+
+/// The integrations installed on this machine that are outdated, by agent:
+/// what `fleet integration install <agent>` brings up to date. A config or
+/// a ledger that cannot be read lists none: a version never fails.
+fn outdated_integrations(
+    profiles: &fleet_api::harness::Profiles,
+    config: Option<&Path>,
+    data_dir: Option<PathBuf>,
+) -> Vec<String> {
+    let data_dir = data_dir
+        .or_else(|| {
+            config
+                .and_then(|p| Config::load(p).ok())
+                .and_then(|c| c.data.dir)
+        })
+        .or_else(default_data_dir);
+    let Some(data_dir) = data_dir else {
+        return Vec::new();
+    };
+    let env = |v: &str| std::env::var(v).ok();
+    fleet_runtime::integration::installed(&data_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| {
+            fleet_runtime::integration::status(&profiles.get(name), &data_dir, &env)
+                .is_ok_and(|r| r.state == fleet_api::integration::State::Outdated)
+        })
+        .collect()
+}
+
+/// `fleet integration`: each verb on this machine, with the profiles the
+/// config installed and the ledger under the data directory.
+fn cmd_integration(command: &IntegrationCommand, data_dir: &Path) -> Result<(), Failure> {
+    use fleet_runtime::integration as io;
+    let profiles = fleet_api::harness::installed();
+    let env = |v: &str| std::env::var(v).ok();
+    let known = |agent: &str| {
+        if profiles.names().iter().any(|n| n == agent) {
+            Ok(profiles.get(agent))
+        } else {
+            Err(fail(format!(
+                "no harness profile names {agent:?}; `fleet version --json` lists them"
+            )))
+        }
+    };
+    match command {
+        IntegrationCommand::Status { agent, json, .. } => {
+            let chosen = match agent {
+                Some(a) => vec![known(a)?],
+                None => profiles.list().to_vec(),
+            };
+            let mut rows = Vec::new();
+            for p in &chosen {
+                let report = io::status(p, data_dir, &env).map_err(|e| fail(e.to_string()))?;
+                rows.push(json!({
+                    "agent": p.name,
+                    "state": report.state.as_str(),
+                    "dir": report.dir.map(|d| d.to_string_lossy().into_owned()),
+                    "installed": report.installed,
+                    "version": p.install.as_ref().map(|i| i.version),
+                }));
+            }
+            if *json {
+                print_json(&json!(rows));
+            } else {
+                for r in &rows {
+                    let detail = match r["state"].as_str() {
+                        Some("not-needed") => "launch-time hooks".to_string(),
+                        Some("unsupported") => "no hooks Fleet knows".to_string(),
+                        _ => format!(
+                            "{} (version {})",
+                            r["dir"].as_str().unwrap_or("no config directory"),
+                            r["version"]
+                        ),
+                    };
+                    println!(
+                        "{:<12} {:<14} {detail}",
+                        r["agent"].as_str().unwrap_or_default(),
+                        r["state"].as_str().unwrap_or_default()
+                    );
+                }
+            }
+            Ok(())
+        }
+        IntegrationCommand::Install { agent } => {
+            let p = known(agent)?;
+            match io::install(&p, data_dir, &env).map_err(fail)? {
+                io::Installed::Written => println!("{} installed", p.name),
+                io::Installed::Unchanged => println!("{} current", p.name),
+            }
+            Ok(())
+        }
+        IntegrationCommand::Uninstall { agent, all } => {
+            let installed = io::installed(data_dir).map_err(|e| fail(e.to_string()))?;
+            let agent = agent.as_deref().unwrap_or_default();
+            // The ledger's own name first: an integration outlives a user
+            // profile removed since.
+            let names = if *all {
+                installed
+            } else if installed.iter().any(|n| n == agent) {
+                vec![agent.to_string()]
+            } else {
+                vec![known(agent)?.name]
+            };
+            for name in names {
+                if io::uninstall(&name, data_dir).map_err(fail)? {
+                    println!("{name} uninstalled");
+                } else {
+                    println!("{name} not installed");
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 /// The signal files, one per session on this machine, under the store, and
