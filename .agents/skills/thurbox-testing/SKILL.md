@@ -191,9 +191,10 @@ remember:
    correctly leaves a dead socket file behind; and owning the directory is what
    lets `Drop` kill the server *before* the socket goes, rather than after.
 
-`Drop` is the point: a panic, a failed `.expect()` or a nextest
-`slow-timeout` termination still runs it. A signal runs no destructor, which is
-what `just reap-tmux` (`scripts/dev/reap-tmux-servers.sh`, Linux) sweeps up.
+`Drop` is the point: a panic or a failed `.expect()` still runs it. A signal
+runs no destructor, so a nextest `slow-timeout` termination leaves the server
+behind; `just reap-tmux` (`scripts/dev/reap-tmux-servers.sh`, Linux) sweeps
+those up.
 
 Two tests hold the line, both in `tests/tmux_server_leak.rs`:
 `the_guard_scopes_every_socket_it_pins` reads (1)–(3) off the guard's own
