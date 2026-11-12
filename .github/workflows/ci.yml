@@ -320,10 +320,11 @@ jobs:
       # just built. Most `tui_e2e` scenarios start a real Fleet (every live
       # session is a Fleet session), so it runs whole rather than by a list
       # of names that a new scenario would miss. They also need `runtime-mux`
-      # beside `fleet`, which a `-p thurbox` run does not build.
+      # beside `fleet`, and the `workspace-git` it runs to prepare a Task's
+      # workspace, which a `-p thurbox` run does not build.
       - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.fleet == 'true'
         run: |
-          cargo build -p runtime-mux --bin runtime-mux
+          cargo build -p runtime-mux -p workspace-git --bin runtime-mux --bin workspace-git
           cargo nextest run -p thurbox --test fleet_engine_e2e --test tui_e2e --profile ci
       - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.markdown == 'true'
         run: cargo nextest run -p thurbox --test doc_references --profile ci

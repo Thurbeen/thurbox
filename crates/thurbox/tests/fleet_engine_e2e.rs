@@ -924,12 +924,16 @@ impl Drop for Sockets {
 fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let Some(bin) = fleet_bin() else { return };
     let runtime_mux = bin.with_file_name("runtime-mux");
-    if !runtime_mux.is_file() {
+    // runtime-mux prepares the Task's `file://` workspace with the
+    // workspace-git beside it.
+    if !runtime_mux.is_file() || !bin.with_file_name("workspace-git").is_file() {
         assert!(
             std::env::var_os("CI").is_none(),
-            "no runtime-mux binary beside fleet in CI, where this test must run"
+            "no runtime-mux or workspace-git binary beside fleet in CI, where this test must run"
         );
-        eprintln!("skipping: no runtime-mux binary; build it with `cargo build -p runtime-mux`");
+        eprintln!(
+            "skipping: build runtime-mux and workspace-git (`cargo build -p runtime-mux -p workspace-git`)"
+        );
         return;
     }
     if thurbox::paths::resolve_on_path("tmux").is_none() {

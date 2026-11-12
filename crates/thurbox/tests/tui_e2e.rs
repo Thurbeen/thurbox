@@ -140,17 +140,21 @@ impl Profile {
     /// the multiplexer runtime on this profile's tmux directory (reaped with
     /// the server guard), and `claude` running `sh`, so a Task's session is a
     /// shell. `None`, with the reason printed, where the binaries are absent;
-    /// a panic under `CI`, whose Nextest job builds them.
+    /// a panic under `CI`, whose Nextest job builds them. `workspace-git` is
+    /// one of them: runtime-mux runs it beside itself to prepare a Task's
+    /// `file://` workspace, and without it the session never starts.
     fn real_fleet(&self) -> Option<()> {
         let dir = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).parent()?;
         let (fleet, runtime) = (dir.join("fleet"), dir.join("runtime-mux"));
-        if !fleet.is_file() || !runtime.is_file() {
+        if !fleet.is_file() || !runtime.is_file() || !dir.join("workspace-git").is_file() {
             assert!(
                 std::env::var_os("CI").is_none(),
-                "fleet and runtime-mux are not built beside thurbox-cli in CI, where the \
-                 scenarios that drive a real Fleet must run"
+                "fleet, runtime-mux and workspace-git are not built beside thurbox-cli in \
+                 CI, where the scenarios that drive a real Fleet must run"
             );
-            eprintln!("skipping: build fleet and runtime-mux (`cargo build --workspace`)");
+            eprintln!(
+                "skipping: build fleet, runtime-mux and workspace-git (`cargo build --workspace`)"
+            );
             return None;
         }
         let root = self.root.path();
