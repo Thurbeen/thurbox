@@ -476,6 +476,10 @@ and registers nothing where `FLEET_SIGNAL_FILE` is unset
   The agent stays `attention` or `working` until its next prompt.
 - Copilot loads a `--plugin-dir` plugin beside the user's plugins and the
   hooks in its own `hooks/` directory.
+- Each Copilot hook has two forms: a POSIX shell command (`bash`) and a
+  PowerShell command (`powershell`), which Copilot runs on Windows. Each
+  form does nothing where `FLEET_SIGNAL_FILE` is unset, and exits 0 when
+  `fleet` is missing. No Windows run has checked the PowerShell form yet.
 - Copilot runs `permissionRequest` for every permission check, an allowed
   one included. So its hooks report `blocked` only from the notification
   that a person is asked: `permission_prompt` or `elicitation_dialog`.

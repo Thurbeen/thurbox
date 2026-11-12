@@ -23,7 +23,7 @@ reports its status through its harness profiles. thurbox no longer reads
   | kilo | `kilo` | set at launch |
   | omp | `omp` | set at launch |
   | Qwen Code | `qwen` | set at launch |
-  | GitHub Copilot CLI | `copilot` | set at launch |
+  | GitHub Copilot CLI | `copilot` | set at launch; not tested on Windows yet |
   | Kimi Code | `kimi` | installed in its `config.toml` by `fleet integration install kimi`; not on Windows yet |
 
   An agent whose hooks are set at launch keeps its config dir as it was.
