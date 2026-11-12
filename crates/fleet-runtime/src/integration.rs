@@ -39,8 +39,50 @@ pub fn config_dir(profile: &Profile, env: &dyn Fn(&str) -> Option<String>) -> Op
     } else {
         env("HOME")
     };
-    api::config_dir(install, env, home.as_deref()).map(PathBuf::from)
+    let dir = PathBuf::from(api::config_dir(install, env, home.as_deref())?);
+    // Recorded and compared as an absolute path: a relative one names
+    // another directory from each working directory.
+    if dir.is_relative() {
+        return std::env::current_dir().ok().map(|cwd| cwd.join(dir));
+    }
+    Some(dir)
 }
+
+/// The ledger's lock: one `install` or `uninstall` at a time, so two never
+/// read the same ledger and the last write drops the other's entry.
+struct LedgerLock(PathBuf);
+
+impl LedgerLock {
+    fn take(data_dir: &Path) -> Result<LedgerLock, String> {
+        let path = data_dir.join(LOCK);
+        for _ in 0..100 {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(LedgerLock(path)),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        Err(format!(
+            "{} is held: another `fleet integration` is running; if none is, remove the file",
+            path.display()
+        ))
+    }
+}
+
+impl Drop for LedgerLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// The ledger lock's file name, beside the ledger.
+pub const LOCK: &str = "integrations.lock";
 
 /// The ledger under `data_dir`; none written is an empty one.
 pub fn read_ledger(data_dir: &Path) -> io::Result<Ledger> {
@@ -80,9 +122,12 @@ fn observe(name: &str, entry: Option<&Entry>, dir: Option<&Path>) -> io::Result<
     }
     for b in &entry.blocks {
         let now = match fs::read_to_string(root.join(&b.path)) {
-            Ok(text) => {
-                api::find_block(&text, name, &b.comment).map(|r| api::hash(text[r].as_bytes()))
-            }
+            // A block that lost a comment line is no longer as Fleet wrote
+            // it: modified.
+            Ok(text) => match api::find_block(&text, name, &b.comment) {
+                Ok(range) => range.map(|r| api::hash(text[r].as_bytes())),
+                Err(_) => Some("broken".into()),
+            },
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => return Err(e),
         };
@@ -120,6 +165,7 @@ pub fn install(
     data_dir: &Path,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Installed, String> {
+    let _lock = LedgerLock::take(data_dir)?;
     let report = status(profile, data_dir, env).map_err(|e| e.to_string())?;
     let Some(install) = &profile.install else {
         return Err(match report.state {
@@ -146,12 +192,6 @@ pub fn install(
             profile.name, install.dir_env
         )
     })?;
-    let mut ledger = read_ledger(data_dir).map_err(|e| e.to_string())?;
-    if let Some(old) = ledger.integrations.get(&profile.name).cloned() {
-        remove(&profile.name, &old).map_err(|e| format!("{}: {e}", old.dir))?;
-        ledger.integrations.remove(&profile.name);
-        write_ledger(data_dir, &ledger).map_err(|e| e.to_string())?;
-    }
     if !dir.is_dir() {
         return Err(format!(
             "{}: agent-missing: {} is not there, and Fleet never creates an agent's config directory; start the agent once",
@@ -159,9 +199,50 @@ pub fn install(
             dir.display()
         ));
     }
+    let mut ledger = read_ledger(data_dir).map_err(|e| e.to_string())?;
+    let old = ledger.integrations.get(&profile.name).cloned();
+    // Everything that would stop the new install is checked while the old
+    // one still works: it is removed only once the new one can be written.
+    let ours = |rel: &str| {
+        old.as_ref()
+            .is_some_and(|o| Path::new(&o.dir) == dir && o.paths().contains(rel))
+    };
+    for f in &install.files {
+        let path = dir.join(&f.path);
+        if fs::symlink_metadata(&path).is_ok() && !ours(&f.path) {
+            return Err(format!(
+                "{}: {} is there and not Fleet's: move it, then install again",
+                profile.name,
+                path.display()
+            ));
+        }
+    }
+    for b in &install.blocks {
+        let path = dir.join(&b.path);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        match api::find_block(&text, &profile.name, &b.comment) {
+            Err(e) => return Err(format!("{}: {}: {e}", profile.name, path.display())),
+            Ok(Some(_)) if !ours(&b.path) => {
+                return Err(format!(
+                    "{}: {} already holds a block naming Fleet that the ledger does not list: remove it, then install again",
+                    profile.name,
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    if let Some(old) = &old {
+        remove(&profile.name, old).map_err(|e| format!("{}: {e}", old.dir))?;
+        ledger.integrations.remove(&profile.name);
+        write_ledger(data_dir, &ledger).map_err(|e| e.to_string())?;
+    }
 
-    // What will be written, refused before anything is when a file Fleet
-    // would own is someone else's.
+    // What will be written, recorded before any of it is.
     let version = install.version;
     let mut entry = Entry {
         version,
@@ -173,13 +254,6 @@ pub fn install(
     let mut files = Vec::new();
     for f in &install.files {
         let path = dir.join(&f.path);
-        if fs::symlink_metadata(&path).is_ok() {
-            return Err(format!(
-                "{}: {} is there and not Fleet's: move it, then install again",
-                profile.name,
-                path.display()
-            ));
-        }
         let text = api::file_text(&f.text, version);
         entry.files.push(WrittenFile {
             path: f.path.clone(),
@@ -201,13 +275,6 @@ pub fn install(
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let user = current.as_deref().unwrap_or_default();
-        if api::find_block(user, &profile.name, &b.comment).is_some() {
-            return Err(format!(
-                "{}: {} already holds a block naming Fleet that the ledger does not list: remove it, then install again",
-                profile.name,
-                path.display()
-            ));
-        }
         let block = api::block_text(&profile.name, b, version);
         let (text, prefix) = api::append_block(user, &block);
         entry.blocks.push(WrittenBlock {
@@ -268,6 +335,7 @@ fn missing_dirs(dir: &Path, path: &Path) -> Vec<String> {
 /// Remove `name`'s integration: exactly what the ledger lists. `false` when
 /// none is installed.
 pub fn uninstall(name: &str, data_dir: &Path) -> Result<bool, String> {
+    let _lock = LedgerLock::take(data_dir)?;
     let mut ledger = read_ledger(data_dir).map_err(|e| e.to_string())?;
     let Some(entry) = ledger.integrations.get(name).cloned() else {
         return Ok(false);
@@ -301,7 +369,13 @@ fn remove(name: &str, entry: &Entry) -> io::Result<()> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e),
         };
-        let Some(range) = api::find_block(&text, name, &b.comment) else {
+        let range = api::find_block(&text, name, &b.comment).map_err(|e| {
+            io::Error::other(format!(
+                "{}: {e}: remove the block by hand, then uninstall again",
+                path.display()
+            ))
+        })?;
+        let Some(range) = range else {
             continue;
         };
         let rest = api::remove_block(&text, range, &b.prefix);
@@ -325,7 +399,8 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Write `bytes` to `path` whole: through a symlink to its real target,
 /// never over a file with other hard links or one that is not a regular
-/// file, and keeping an existing file's permissions. Elsewhere than
+/// file, and keeping an existing file's permissions; a new file, and the
+/// temporary one before it gets them, is its owner's alone. Elsewhere than
 /// Windows a file in the same directory is renamed over the target, so a
 /// reader sees the old bytes or the new. On Windows a rename can lose the
 /// target's ACL, so the file is written in place with a backup kept until
@@ -364,7 +439,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    let written = fs::write(&tmp, bytes)
+    let written = create_private(&tmp)
+        .and_then(|mut file| io::Write::write_all(&mut file, bytes))
         .and_then(|()| match &existing {
             Some(m) => fs::set_permissions(&tmp, m.permissions()),
             None => Ok(()),
@@ -374,6 +450,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     written
+}
+
+/// A new file only its owner can read until its permissions are set: the
+/// bytes it receives are a config's, which may be private.
+fn create_private(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
 }
 
 #[cfg(unix)]
@@ -460,6 +546,11 @@ mod tests {
         assert_eq!(fs::read(&real).unwrap(), b"new");
         let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+
+        let new = dir.join("new");
+        write_atomic(&new, b"x").unwrap();
+        let mode = fs::metadata(&new).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "a new file is its owner's alone");
 
         let hard = dir.join("hard");
         fs::hard_link(&real, &hard).unwrap();

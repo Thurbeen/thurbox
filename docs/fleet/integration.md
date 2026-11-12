@@ -77,12 +77,19 @@ Each hook command obeys these rules:
   default directory under the home directory.
 - Fleet does not take over a file that it did not write. When an own file
   is already there, `install` stops and writes nothing.
+- `install` checks the new version before it removes the old one. When the
+  new version cannot be written, the old one stays.
+- One `install` or `uninstall` runs at a time. Each holds
+  `integrations.lock` in the data directory while it reads and writes the
+  ledger. A lock left by a killed command stops the next one, which names
+  the file to remove.
 - Each write replaces the whole file:
   1. Fleet refuses a file with more than one hard link.
   2. Fleet follows a symbolic link to its real file. It refuses a file that
      is not a regular file.
-  3. Fleet writes a temporary file in the same directory, with the
-     permissions of the file it replaces.
+  3. Fleet writes a temporary file in the same directory. Only its owner
+     can read it while Fleet writes it. Then it gets the permissions of the
+     file it replaces. A new file stays readable by its owner only.
   4. Fleet renames the temporary file over the file.
 - On Windows, a rename can lose the file's access control list. So Fleet
   writes an existing file in place, and keeps a backup until the write is
@@ -133,3 +140,7 @@ install is thus in the ledger, and `uninstall` removes it.
 
 `install` refuses a `modified` integration: it does not overwrite a
 person's edit. `uninstall` removes the modified file or block.
+
+A block that lost its first or its last comment line is `modified` too.
+Fleet cannot tell where it ends, so neither `install` nor `uninstall`
+changes the file. Remove the block by hand, then run `uninstall` again.

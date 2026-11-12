@@ -244,23 +244,44 @@ pub fn block_text(harness: &str, block: &OwnedBlock, version: u32) -> String {
 }
 
 /// Where Fleet's block for `harness` is in `text`: from the start of its
-/// first comment line to the end of its last, newline included.
-pub fn find_block(text: &str, harness: &str, comment: &str) -> Option<Range<usize>> {
+/// first comment line to the end of its last, newline included. A first line
+/// with no last one after it, or a second block, is an error: removing from
+/// one first line to a later last line would take the user's lines between.
+pub fn find_block(
+    text: &str,
+    harness: &str,
+    comment: &str,
+) -> Result<Option<Range<usize>>, String> {
     let open = open_marker(harness, comment);
     let close = close_marker(harness, comment);
+    let broken = || {
+        format!(
+            "Fleet's block for {harness} lost its first or last comment line, or is there twice"
+        )
+    };
     let mut at = 0;
     let mut start = None;
+    let mut found = None;
     for line in text.split_inclusive('\n') {
         let end = at + line.len();
         let bare = line.trim_end_matches(['\n', '\r']);
-        match start {
-            None if bare.starts_with(&open) => start = Some(at),
-            Some(s) if bare == close => return Some(s..end),
-            _ => {}
+        if bare.starts_with(&open) {
+            if start.is_some() || found.is_some() {
+                return Err(broken());
+            }
+            start = Some(at);
+        } else if bare == close {
+            match start.take() {
+                Some(s) => found = Some(s..end),
+                None => return Err(broken()),
+            }
         }
         at = end;
     }
-    None
+    if start.is_some() {
+        return Err(broken());
+    }
+    Ok(found)
 }
 
 /// `current` with `block` appended after a blank line, and what was put
@@ -282,7 +303,14 @@ pub fn remove_block(text: &str, range: Range<usize>, prefix: &str) -> String {
     } else {
         range.start
     };
-    format!("{}{}", &text[..start], &text[range.end..])
+    let (before, after) = (&text[..start], &text[range.end..]);
+    // A line the user added after the block keeps a line of its own.
+    let joint = if !before.is_empty() && !before.ends_with('\n') && !after.is_empty() {
+        "\n"
+    } else {
+        ""
+    };
+    format!("{before}{joint}{after}")
 }
 
 /// A short, stable hash of what Fleet wrote (FNV-1a, 64 bits).
@@ -390,18 +418,27 @@ command = "fleet signal idle"
         for user in ["", "a = 1", "a = 1\n", "a = 1\n\n"] {
             let (text, prefix) = append_block(user, &block);
             assert!(text.starts_with(user));
-            let range = find_block(&text, "stub", "#").expect("found");
+            let range = find_block(&text, "stub", "#").unwrap().expect("found");
             assert_eq!(&text[range.clone()], block);
             assert_eq!(remove_block(&text, range, &prefix), user, "{user:?}");
         }
         // Another agent's block, or one cut short, is not Fleet's for stub.
-        assert!(find_block(&block.replace("stub", "kimi"), "stub", "#").is_none());
-        assert!(find_block(&block[..block.len() - 30], "stub", "#").is_none());
+        assert_eq!(
+            find_block(&block.replace("stub", "kimi"), "stub", "#"),
+            Ok(None)
+        );
+        assert!(find_block(&block[..block.len() - 30], "stub", "#").is_err());
         // A user's line after the block stays where it is.
         let (text, prefix) = append_block("a = 1", &block);
         let text = format!("{text}b = 2\n");
-        let range = find_block(&text, "stub", "#").unwrap();
-        assert_eq!(remove_block(&text, range, &prefix), "a = 1b = 2\n");
+        let range = find_block(&text, "stub", "#").unwrap().unwrap();
+        assert_eq!(remove_block(&text, range, &prefix), "a = 1\nb = 2\n");
+        // A first line with no last one, or two first lines, is no block
+        // Fleet can remove: it would take the user's lines between them.
+        let cut = block.replace("# <<< fleet integration stub\n", "");
+        assert!(find_block(&cut, "stub", "#").is_err());
+        assert!(find_block(&format!("{cut}{block}"), "stub", "#").is_err());
+        assert!(find_block("a = 1\n", "stub", "#").unwrap().is_none());
     }
 
     #[test]

@@ -227,3 +227,49 @@ fn an_integration_is_removed_after_its_profile_is_gone() {
         .stdout_has("stub uninstalled");
     assert_eq!(tree(&home), before);
 }
+
+#[test]
+fn a_reinstall_that_cannot_complete_keeps_the_working_integration() {
+    let (mut env, home) = setup("integration-keep");
+    env.fleet(&["integration", "install", "stub"]).ok();
+    let installed = tree(&home);
+    fs::write(env.root.join("harnesses/stub.toml"), stub_profile(2)).expect("profile");
+    // The agent now reads a directory that is not there: nothing is removed.
+    let absent = env.root.join("absent");
+    env.set_var("STUB_AGENT_HOME", &absent.to_string_lossy());
+    env.fleet(&["integration", "install", "stub"])
+        .code(1)
+        .stderr_has("agent-missing");
+    assert_eq!(tree(&home), installed, "the working hooks were removed");
+}
+
+#[test]
+fn a_block_whose_closing_line_is_gone_is_modified_and_never_extended() {
+    let (env, home) = setup("integration-broken-fence");
+    env.fleet(&["integration", "install", "stub"]).ok();
+    let config = fs::read_to_string(home.join("config.toml")).unwrap();
+    let broken = config.replace("# <<< fleet integration stub\n", "");
+    let broken = format!("{broken}user = 1\n");
+    fs::write(home.join("config.toml"), &broken).unwrap();
+    assert_eq!(state(&env, "stub"), "modified");
+    env.fleet(&["integration", "install", "stub"]).code(1);
+    env.fleet(&["integration", "uninstall", "stub"]).code(1);
+    assert_eq!(
+        fs::read_to_string(home.join("config.toml")).unwrap(),
+        broken,
+        "a broken block is left for a person"
+    );
+}
+
+#[test]
+fn a_second_command_waits_for_the_ledger_lock_and_names_it() {
+    let (env, home) = setup("integration-lock");
+    fs::create_dir_all(&env.data).unwrap();
+    env.fleet(&["list", "task"]).ok();
+    fs::write(env.data.join("integrations.lock"), "").unwrap();
+    let before = tree(&home);
+    env.fleet(&["integration", "install", "stub"])
+        .code(1)
+        .stderr_has("integrations.lock");
+    assert_eq!(tree(&home), before);
+}
