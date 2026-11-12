@@ -624,7 +624,7 @@ pub fn kimi_process(foreground: &str) -> bool {
 }
 
 /// Whether Codex's trust dialog is on a plain visible screen `output`: its
-/// question and its trusting default. It can follow the composer, so it is
+/// question and its trusting default. Kimi Code's asks in the same words. It can follow the composer, so it is
 /// looked for on the whole screen, not only at the cursor.
 pub fn codex_trust_dialog(output: &str) -> bool {
     let lines: Vec<&str> = output.lines().map(str::trim).collect();
@@ -874,7 +874,7 @@ mod tests {
  ╭────────────────────────────────────────────────────────────────────────────╮
  │ >                                                                          │
  ╰────────────────────────────────────────────────────────────────────────────╯
- fake-model thinking  …/thurbox-v3/kimi-capture/work
+ fake-model thinking  /home/u/work
                                                            context: 0% (0/256k)
 ";
 
