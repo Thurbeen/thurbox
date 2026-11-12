@@ -1566,6 +1566,90 @@ fn pane_in(sockets: &Sockets, work: &Path) -> String {
         .to_string()
 }
 
+/// Allows, once, each request the agent waits on until `done`. A model may
+/// call its shell tool several times in one message, and each call opens a
+/// request of its own: the agent waits on a person until the last one is
+/// answered. Enter picks "allow once", the default choice, on the request
+/// shown first.
+fn allow_each_request_until(
+    env: &Env,
+    sockets: &Sockets,
+    work: &Path,
+    what: &str,
+    done: impl Fn(&Env) -> bool,
+) {
+    let pane = pane_in(sockets, work);
+    reconcile_until(env, what, |env| {
+        if reported(env, "t1")
+            .last()
+            .is_some_and(|(s, _)| s == "blocked")
+        {
+            sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
+        }
+        done(env)
+    });
+}
+
+/// An agent whose one turn opens three requests, as a model that calls its
+/// shell tool three times in one message does. Each Enter answers one.
+const ASKING_AGENT: &str = r#"#!/bin/sh
+printf '%s' '{"session_id":"s1"}' | fleet signal idle
+fleet signal working
+for request in 1 2 3; do
+  fleet signal blocked
+  read -r answer
+done
+fleet signal working
+fleet signal idle
+exec sleep 300
+"#;
+
+#[test]
+fn every_request_of_a_turn_is_allowed_before_it_ends() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("asking");
+    let mut env = mux_env("runtime-mux-asking", &program, &sockets);
+    let harnesses = env.config.parent().unwrap().join("harnesses");
+    fs::create_dir_all(&harnesses).expect("harnesses dir");
+    fs::write(harnesses.join("stub.toml"), STUB_PROFILE).expect("profile");
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let agent = bin.join("stub-agent");
+    fs::write(&agent, ASKING_AGENT).expect("agent");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("stub");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"].as_object_mut().unwrap().remove("outputs");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "waiting on the first request", |env| {
+        env.get("t1")["status"]["agentState"] == "attention"
+    });
+    allow_each_request_until(&env, &sockets, &work, "the turn ended", |env| {
+        in_order(&reported(env, "t1"), &["blocked", "working", "idle"])
+            && env.get("t1")["status"]["agentState"] == "idle"
+    });
+    let blocked = reported(&env, "t1")
+        .iter()
+        .filter(|(s, _)| s == "blocked")
+        .count();
+    assert_eq!(blocked, 3, "{:?}", reported(&env, "t1"));
+}
+
 /// The agent's process under the session's pane, ended as a crash would.
 fn end_agent(sockets: &Sockets, work: &Path) {
     let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_pid} #{pane_current_path}"]);
@@ -1655,7 +1739,7 @@ fn pi_reports_its_state_through_the_extension_fleet_passes_at_launch() {
 /// opencode, as Fleet starts it: its own server, with Fleet's plugin named
 /// in `OPENCODE_CONFIG_CONTENT`, which opencode merges with the user's and
 /// the project's config. The project asks before each shell command: the
-/// agent waits on a person until it is answered. Its session id is the
+/// agent waits on a person until each is answered. Its session id is the
 /// conversation a revive resumes, and opencode's config directory is left
 /// byte for byte as it was.
 #[test]
@@ -1696,9 +1780,7 @@ fn opencode_reports_its_state_through_the_plugin_fleet_names_at_launch() {
         .expect("a conversation")
         .to_string();
     assert!(conversation.starts_with("ses_"), "{conversation}");
-    // Allow once: the default choice.
-    sockets.tmux(&["send-keys", "-t", &pane_in(&sockets, &work), "Enter"]);
-    reconcile_until(&env, "the turn ended", |env| {
+    allow_each_request_until(&env, &sockets, &work, "the turn ended", |env| {
         in_order(
             &reported(env, "t1"),
             &["idle", "prompt", "working", "blocked", "working", "idle"],
@@ -1731,7 +1813,7 @@ fn opencode_reports_its_state_through_the_plugin_fleet_names_at_launch() {
 /// plugin named in `KILO_CONFIG_CONTENT` and its TUI plugin in the file
 /// `KILO_TUI_CONFIG` names. The user's config picks a free model, which
 /// needs no sign-in, and asks before each shell command: kilo merges Fleet's
-/// plugins with it, so the agent waits on a person until it is answered.
+/// plugins with it, so the agent waits on a person until each is answered.
 /// Its session id is the conversation a revive resumes, and the user's
 /// config directory is left byte for byte as it was.
 ///
@@ -1788,9 +1870,7 @@ fn kilo_reports_its_state_through_the_plugins_fleet_names_at_launch() {
         .expect("a conversation")
         .to_string();
     assert!(conversation.starts_with("ses_"), "{conversation}");
-    // Allow once: the default choice.
-    sockets.tmux(&["send-keys", "-t", &pane_in(&sockets, &work), "Enter"]);
-    reconcile_until(&env, "the turn ended", |env| {
+    allow_each_request_until(&env, &sockets, &work, "the turn ended", |env| {
         in_order(
             &reported(env, "t1"),
             &["idle", "prompt", "working", "blocked", "working", "idle"],
