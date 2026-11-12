@@ -939,10 +939,7 @@ fn copilot_launches_with_the_plugin_fleet_writes() {
     env.reconcile().ok();
     let plugin = env.data.join("harness-assets/fleet-copilot");
     let copilot = session(&env, "g1");
-    assert_eq!(
-        copilot.argv,
-        ["copilot", "--plugin-dir", &*plugin.to_string_lossy()]
-    );
+    assert_eq!(copilot.argv, ["copilot", "--plugin-dir", &*asset(&plugin)]);
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(plugin.join("plugin.json")).unwrap())
             .unwrap();
@@ -958,7 +955,7 @@ fn copilot_launches_with_the_plugin_fleet_writes() {
         [
             "copilot".to_string(),
             "--plugin-dir".to_string(),
-            plugin.to_string_lossy().into_owned(),
+            asset(&plugin),
             "--resume".to_string(),
             format!("conv-{}", s.id)
         ]
