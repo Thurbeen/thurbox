@@ -1585,9 +1585,10 @@ fn a_message_typed_into_the_agent_is_recorded_as_one_the_route_may_hold() {
 }
 
 /// A coding agent's CLI on the PATH this test runs with, when
-/// `FLEET_REAL_AGENTS=1` asks for the tests that drive a real agent. Such a
-/// test talks to the vendor's model with the developer's account, so its
-/// result depends on that account and the model, not only on this code: it
+/// `FLEET_REAL_AGENTS=1` asks for the tests that drive a real agent. Each such
+/// test depends on the installed CLI's version, and pi, opencode, kilo and omp
+/// also on the developer's account and the vendor's model (qwen, kimi and
+/// copilot answer to `FakeModel`). So the result is not only this code's: it
 /// skips unless asked, even where the CLI is installed. CI never runs one.
 fn agent(name: &str) -> Option<PathBuf> {
     if std::env::var_os("FLEET_REAL_AGENTS").is_none_or(|v| v != "1") {
