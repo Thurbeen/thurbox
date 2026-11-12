@@ -38,7 +38,7 @@
 //!   on length alone is what announced a phantom "pasted 2 characters" mid-type.
 //!
 //! The outbound half of the journey is `backend::psmux`'s `PsmuxPaste`,
-//! which carries the reassembled paste to a psmux pane in one piece (ADR-13);
+//! which carries the reassembled paste to a psmux pane in one piece (docs/runtime/runtime-mux.md);
 //! the rationale for both halves is ADR-4.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};

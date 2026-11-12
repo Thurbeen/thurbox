@@ -126,7 +126,7 @@ pub struct HostDef {
     #[serde(default)]
     pub path_prepend: Vec<String>,
     /// The OTLP endpoint a session on this host exports to while
-    /// `[telemetry]` configures agents (ADR-36), as the host reaches it.
+    /// `[telemetry]` configures agents, as the host reaches it.
     /// Unset, the session gets only its resource attributes: the local
     /// `endpoint` names this machine, which on the host is the host itself.
     /// On a shared host the agent's pane is launched by the host's own CLI,
@@ -200,7 +200,7 @@ impl HostDef {
     /// the same tmux server, the same worktrees, the same thurbox database — so
     /// such a host is not off-local at all, and registering one made every
     /// LOCAL session on this machine remote. A shareable host's own database is
-    /// the record of the sessions on it (ADR-24), and here that database *is*
+    /// the record of the sessions on it, and here that database *is*
     /// ours: the mirror pass read our own rows back and rewrote each one's
     /// `backend_type` to `wsl:<us>`, after which every attach, diff and delete
     /// went out through `wsl.exe` and failed against the machine it started on.

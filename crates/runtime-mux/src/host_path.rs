@@ -6,7 +6,7 @@
 //! and sshd runs a command with its own compiled-in `PATH`. Neither reads
 //! `~/.profile`, `~/.zprofile` or — for `wsl.exe -e` — even `~/.zshenv`, which
 //! is where `~/.local/bin`, `~/.cargo/bin`, `~/.bun/bin` and the nvm/fnm shims
-//! go. A delegated `thurbox-cli session create` (ADR-24) inherited exactly that
+//! go. A delegated `thurbox-cli session create` inherited exactly that
 //! environment and pinned it on the pane (`tmux_compat::server::path_prefix_args`), so
 //! an agent installed under `~/.local/bin` died with `env: 'claude': No such
 //! file or directory`.

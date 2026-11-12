@@ -145,7 +145,7 @@ copy of that graph. Read the test, not a summary of it. Every file of `agent`,
   `Ctrl+O` command resolution), `control` (applying `thurbox-cli ui` requests on
   the loop, ADR-33) and `paste` (rebuilding a paste from the key stream the
   Windows console delivers). Still one model and one loop — splitting `App`
-  itself is what ADR-22 rejected, and the invariants that matter hold *across*
+  itself is what ADR-23 rejects, and the invariants that matter hold *across*
   these groups.
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
   widgets, theme roles, fuzzy match, text input, trees — plus the extracted

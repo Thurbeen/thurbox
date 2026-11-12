@@ -281,7 +281,8 @@ checks its `rmux -V` banner instead: its `#{version}` is the tmux
 compatibility version, not the RMUX release.
 
 Recorded integration evidence is tmux 3.2/3.2a and 3.5a/3.7c (ADR-12),
-psmux 3.3.8 on Windows 11 (ADR-13), and RMUX 0.10.0 on Linux
+psmux 3.3.8 on Windows 11
+([runtime-mux](../runtime/runtime-mux.md#psmux-338-is-the-floor)), and RMUX 0.10.0 on Linux
 ([#1322](https://github.com/Thurbeen/thurbox/pull/1322)). This is historical
 evidence, not a claim that every platform was retested for this doc change.
 The latest upstream stable releases checked on 2026-10-03 were tmux 3.7c,

@@ -6,6 +6,8 @@ Fleet reaches every session through it, and neither Fleet nor thurbox links
 any runtime's code. `runtime-mux` (`crates/runtime-mux`), extracted from thurbox, is
 the first runtime and the default one. How the runtime fits between thurbox
 and Fleet is the [overview](../README.md).
+How `runtime-mux` reaches hosts, where psmux differs from tmux, and its
+status channel are [runtime-mux.md](runtime-mux.md).
 
 This page owns two contracts and one verb:
 

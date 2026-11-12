@@ -1,6 +1,6 @@
 //! The interface's own `tracing` events over OTLP, opt-in (ADR-38):
 //! [`diagnostic`]. Session metrics and event logs are Fleet's
-//! (`fleet-telemetry`); the agents' own telemetry is configured by ADR-36.
+//! (`fleet-telemetry`).
 
 pub mod diagnostic;
 

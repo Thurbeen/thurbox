@@ -5,7 +5,7 @@
 //! in any form. On top of the allowlist, the shape the boundary depends on:
 //! the adapters are peers, each is exactly one multiplexer, only the factory
 //! names them, and the route and the contract know no launcher, adapter or
-//! build OS (ADR-13, ADR-31).
+//! build OS (docs/runtime/runtime-mux.md, ADR-31).
 //!
 //! This file is the one statement of the runtime's layering:
 //! docs/constitution.md R3 points here rather than copy it.
@@ -540,7 +540,7 @@ const HOST_OR_MUX_SPECIFIC: &[&str] = &[
 ];
 
 /// The route and the contract are the same for every host OS, launcher and
-/// multiplexer (ADR-13): they reach no launcher and no adapter, and decide
+/// multiplexer (docs/runtime/runtime-mux.md): they reach no launcher and no adapter, and decide
 /// nothing by the OS this build was compiled for.
 #[test]
 fn the_route_and_the_contract_know_no_launcher_adapter_or_build_os() {

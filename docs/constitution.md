@@ -161,8 +161,7 @@ directory thurbox injects into it. Consumers name its contract
 `rmux`), the protocol they speak (`backend::tmux_compat`) or the factory
 (`backend::wiring`); only the composition root, `coordinator`, reaches the
 factory. `cli` and `kernel` reach none of those at all — not
-by reference, alias or re-export — status and the heartbeat included
-(ADR-32). Every file of `agent`, `config` and `update` is a node of its own,
+by reference, alias or re-export. Every file of `agent`, `config` and `update` is a node of its own,
 so a grant names the file it reads.
 
 The runtime's own modules are held to the same kind of allowlist by
@@ -195,9 +194,7 @@ crossings the source makes, and it ends empty.
 
 #### T2. The interface is a plugin kernel, and its five rules hold
 
-The interface is Lua on a Rust kernel (ADR-23). v1's TEA loop — a single
-`App` model with `update()`/`view()` — was the sanctioned pattern until
-`src/app` and `src/ui` were deleted; what replaced it is five rules, each
+The interface is Lua on a Rust kernel (ADR-23). Five rules carry it, each
 with a mechanism rather than a review habit:
 
 1. **Four node kinds, forever** — `text`, `box`, `input`, `surface`.
@@ -235,7 +232,8 @@ in the registry (ADR-29). The default is the platform's multiplexer run
 locally (`tmux -L thurbox`; `psmux` on native Windows). Each adapter —
 `TmuxBackend`, `PsmuxBackend`, `RmuxBackend`, peers over one tmux-protocol server (ADR-31) —
 runs over a transport, local, SSH or WSL, so a session can live on another
-host with no adapter of its own for that (ADR-13). The multiplexer provides
+host with no adapter of its own for that
+([runtime-mux](runtime/runtime-mux.md#hosts-and-transports)). The multiplexer provides
 truly persistent sessions that survive crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
 
@@ -310,7 +308,7 @@ reaches the factory: the `runtime-mux` program's `main.rs` calls it, as an
 embedder's composition root does. A specific multiplexer is named only by
 `host` (the route grammar and its defaults), `preflight`, the factory and the
 one adapter that is it. `host/route.rs` and `contract.rs` reach no launcher, adapter or
-build OS (ADR-13).
+build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 
 ## Enforcement map
 

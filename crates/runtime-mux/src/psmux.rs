@@ -1,7 +1,7 @@
 //! The psmux adapter: psmux's answers to [`TmuxCompatible`].
 //!
 //! psmux is a native-Windows clone of tmux that speaks its command and
-//! control-mode protocol — with the divergences measured against it (ADR-13)
+//! control-mode protocol — with the divergences measured against it (docs/runtime/runtime-mux.md)
 //! and kept here: its keystrokes go as key-names and `-l` literals (compatible
 //! with versions before `send-keys -H`), a paste through its own `send-paste`, a window's command and
 //! environment as one PowerShell token, and its server option scope, version
@@ -59,7 +59,7 @@ impl TmuxCompatible for Psmux {
 
     /// `set-option -w -t <pane> @k v` stores one option for the whole server
     /// and `#{@k}` expands to it on every window (measured against psmux 3.3.6
-    /// — ADR-13), so a stamp read back from psmux identifies nothing.
+    /// — docs/runtime/runtime-mux.md), so a stamp read back from psmux identifies nothing.
     const WINDOW_OPTIONS: bool = false;
 
     /// psmux has neither `remain-on-exit` nor `window-size`, so an agent that
@@ -117,8 +117,9 @@ impl TmuxCompatible for Psmux {
     const SESSION_PROBE_COMMAND: &str = "list-windows";
 
     /// psmux's `new-window -P -F` support is unverified against the documented
-    /// divergences (ADR-13), and `{end}` is tmux's shorthand: the one-shot path
-    /// targets the session and finds the window by its name.
+    /// divergences (docs/runtime/runtime-mux.md), and `{end}` is tmux's
+    /// shorthand: the one-shot path targets the session and finds the window by
+    /// its name.
     const ONE_SHOT_SPAWN_ANSWERS: bool = false;
 
     /// psmux has no `remain-on-exit`. Long enough for a Windows PowerShell
@@ -263,8 +264,9 @@ impl TmuxCompatible for Psmux {
     ///
     /// tmux answers the `attach-session` carried on argv with a `%begin`/`%end`
     /// block of its own. **psmux does not** (measured against psmux
-    /// 3.3.6 — ADR-13): its command counter starts at 1 for the *client's* first
-    /// command, so the attach is never numbered at all.
+    /// 3.3.6 — docs/runtime/runtime-mux.md): its command counter starts at 1
+    /// for the *client's* first command, so the attach is never numbered at
+    /// all.
     ///
     /// ```text
     /// $ printf 'display-message -p first\ndisplay-message -p second\n' \
@@ -2354,7 +2356,7 @@ mod tests {
     /// tmux answers the `attach-session` carried on argv with a `%begin`/`%end`
     /// block of its own; psmux does not, and its command counter proves it —
     /// the client's first command is numbered 1, so the attach was never
-    /// numbered (ADR-13, issue #1168). Draining a block psmux will never send
+    /// numbered (docs/runtime/runtime-mux.md). Draining a block psmux will never send
     /// is a blocking read that returns only when psmux closes the pipe. Nor
     /// does psmux subscribe, frame its blocks with tags, or have a producer for
     /// a status poll while the hook rewrite is gated off.
@@ -2475,7 +2477,7 @@ mod tests {
         }
     }
 
-    /// One stamp read back from psmux is every window's (ADR-13), so nothing
+    /// One stamp read back from psmux is every window's (docs/runtime/runtime-mux.md), so nothing
     /// is read as a stamp, written as one, or retained by window option.
     #[test]
     fn psmux_is_never_read_as_stamping_its_windows() {

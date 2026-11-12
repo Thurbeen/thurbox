@@ -119,7 +119,7 @@ to a repository of its own with nothing to untangle.
 - A schedule kind in Fleet to replace thurbox's `automations.json`.
 - Fork and `restart --fresh`: a conversation field on the Task, or dropped.
 - `hooks.toml` beyond `pre_launch`: harness settings or a Fleet plugin.
-- Shared hosts (ADR-24): one Fleet store per operator is assumed.
+- Shared hosts: one Fleet store per operator is assumed.
 - Latency of the `view` bridge against today's in-process control mode, to
   measure against [performance](thurbox/performance.md)'s frame floors.
   `stream_panes` in thurbox's `settings.toml` opens local tmux panes through
@@ -136,7 +136,7 @@ docs/
 ├── components.svg
 ├── thurbox/                   the interface
 │   ├── README.md              its index
-│   ├── architecture.md        decisions, ADR-1 … ADR-41
+│   ├── architecture.md        decisions
 │   ├── features.md · performance.md · kernel.md · plugins.md
 │   ├── agents.md · config.md · orchestration.md · releasing.md · review.md
 │   ├── development.md · tutorial.md
