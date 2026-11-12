@@ -84,7 +84,7 @@ clippy-windows:
         echo "clippy-windows: install it with: rustup target add x86_64-pc-windows-gnu" >&2
         exit 0
     fi
-    cargo clippy --target x86_64-pc-windows-gnu --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
+    cargo clippy --target x86_64-pc-windows-gnu --workspace --all-targets --all-features -- -D warnings
 
 # Format the Lua interface in place (the counterpart to `cargo fmt`).
 fmt-lua:
