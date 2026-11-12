@@ -1052,6 +1052,52 @@ fn a_kimi_task_on_runtime_mux_is_briefed_before_its_first_report() {
     assert_eq!(env.get("t1")["status"]["conversation"], "session_k1");
 }
 
+/// GitHub Copilot CLI as Fleet starts it in a trusted folder, read off
+/// Copilot 1.0.105: its empty composer, a bare `❯` between two rules with
+/// the cursor after it, the `/ commands` footer under it, and no hook until
+/// a message is submitted, when its prompt hook pipes the message and the
+/// session id to `fleet signal prompt`. Run as `copilot`.
+const COPILOT: &str = r#"#!/bin/sh
+printf ' ~/work\n'
+printf '\342\224\200\342\224\200\342\224\200\342\224\200\n'
+printf '\342\235\257\n'
+printf '\342\224\200\342\224\200\342\224\200\342\224\200\n'
+printf ' Interactive \302\267 / commands'
+printf '\033[2A\r\033[2C'
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$line" >> "$PWD/typed.log"
+  printf '{"sessionId":"s9","prompt":"%s"}' "$line" | fleet signal prompt
+done
+"#;
+
+/// A Copilot Task reports nothing before its first message: its empty
+/// composer on the screen makes it ready and trusted, and Fleet delivers
+/// the brief. A stand-in, so CI runs it without Copilot; the real agent's
+/// run is `copilot_reports_its_state_through_the_plugin_fleet_passes_at_launch`.
+#[test]
+fn a_copilot_task_on_runtime_mux_is_briefed_before_its_first_report() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("copilot-stand-in");
+    let mut env = mux_env("runtime-mux-copilot-stand-in", &program, &sockets);
+    stand_in(&mut env, "copilot", "copilot", COPILOT);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("copilot");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on its prompt hook's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    assert_eq!(typed, "Do the work for t1.\n");
+    assert_eq!(env.get("t1")["status"]["conversation"], "s9");
+}
+
 /// The variables that point git at a repository other than its `-C`
 /// directory: a hook that runs these tests exports some of them.
 const GIT_LOCATION: &[&str] = &[
@@ -2418,9 +2464,9 @@ fn kimi_is_briefed_and_reports_its_state_through_the_hooks_fleet_integration_ins
 /// Fleet writes, passed with `--plugin-dir`, and the model is a server the
 /// test runs, so it needs no sign-in. The user's own hooks, in a Copilot
 /// home of the test's own, still run, and that home's hooks are left byte
-/// for byte as they were. Copilot starts its session, and reports it, at
-/// its first message, so a person types it here, after trusting the folder
-/// once. Its session id is the conversation.
+/// for byte as they were. A person trusts the folder once. Copilot reports
+/// nothing before its first message, so its empty composer makes it ready,
+/// and Fleet delivers the brief. Its session id is the conversation.
 #[test]
 fn copilot_reports_its_state_through_the_plugin_fleet_passes_at_launch() {
     let (Some(program), Some(_), Some(_)) = (runtime_mux(), tmux(), agent("copilot")) else {
@@ -2447,7 +2493,7 @@ fn copilot_reports_its_state_through_the_plugin_fleet_passes_at_launch() {
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
     task["spec"]["harness"] = json!("copilot");
-    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"]["brief"] = json!("Run the FLEET-TOOL command.");
     task["spec"].as_object_mut().unwrap().remove("outputs");
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
     task["spec"]["env"] = json!({
@@ -2467,24 +2513,10 @@ fn copilot_reports_its_state_through_the_plugin_fleet_passes_at_launch() {
     let pane = pane_in(&sockets, &work);
     // Yes, for this session only: the default choice.
     sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
-    reconcile_until(&env, "copilot's composer", |_| {
-        screen_in(&sockets, &work).contains("/ commands")
+    reconcile_until(&env, "briefed on copilot's prompt hook", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
     });
-    sockets.tmux(&[
-        "send-keys",
-        "-t",
-        &pane,
-        "-l",
-        "Run the FLEET-TOOL command.",
-    ]);
-    // An Enter that arrives with the typed text is taken as part of it:
-    // it is pressed again while the text is still in the composer.
     reconcile_until(&env, "waiting on the approval", |env| {
-        if reported(env, "t1").is_empty()
-            && screen_in(&sockets, &work).contains("❯ Run the FLEET-TOOL")
-        {
-            sockets.tmux(&["send-keys", "-t", &pane, "Enter"]);
-        }
         env.get("t1")["status"]["agentState"] == "attention"
     });
     // Yes, once: the default choice.
