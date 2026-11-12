@@ -22,11 +22,11 @@
 //! ([`bare`]). The format is in docs/fleet/controllers/task.md, *Harness profiles*.
 //!
 //! Fleet ships the profiles of Claude Code, Codex, pi, opencode, kilo, omp,
-//! qwen and Kimi Code. pi, opencode, kilo, omp and qwen take their hooks as a
-//! file: Fleet writes each under its own data dir (`fleet_runtime::assets`),
-//! and the launch names it, never the agent's config dir. Kimi Code takes
-//! none at launch: its `[install]` table is what `fleet integration` writes
-//! into its config dir ([`crate::integration`]).
+//! qwen, GitHub Copilot CLI and Kimi Code. pi, opencode, kilo, omp, qwen and
+//! Copilot take their hooks as a file: Fleet writes each under its own data
+//! dir (`fleet_runtime::assets`), and the launch names it, never the agent's
+//! config dir. Kimi Code takes none at launch: its `[install]` table is what
+//! `fleet integration` writes into its config dir ([`crate::integration`]).
 //!
 //! A harness with no prompt hook cannot prove a delivery: its runtime's
 //! answer is all Fleet has.
@@ -823,6 +823,34 @@ mod tests {
     }
 
     #[test]
+    fn copilot_names_the_plugin_directory_fleet_writes() {
+        let all = Profiles::bundled().with_assets("/data/harness-assets".into());
+        let copilot = all.get("copilot");
+        let launch = copilot.launch(&["/w/docs".into()], Some("/w")).unwrap();
+        let plugin = "/data/harness-assets/fleet-copilot";
+        assert_eq!(
+            launch,
+            ["copilot", "--plugin-dir", plugin, "--add-dir", "/w/docs"]
+        );
+        assert!(copilot.launch.env.is_empty());
+        assert_eq!(
+            copilot.resume(&launch, Some("8f1c")),
+            [
+                "copilot",
+                "--plugin-dir",
+                plugin,
+                "--add-dir",
+                "/w/docs",
+                "--resume",
+                "8f1c"
+            ]
+        );
+        assert!(copilot.prompt_hook());
+        assert_eq!(copilot.payload.conversation, ["sessionId"]);
+        assert_eq!(copilot.trust(), Trust::Dialog);
+    }
+
+    #[test]
     fn a_codex_trust_override_names_one_directory_as_toml() {
         assert_eq!(
             codex_override("/home/u/.cache/a b").unwrap(),
@@ -939,6 +967,7 @@ mod tests {
                 "kilo",
                 "omp",
                 "qwen",
+                "copilot",
                 "kimi"
             ]
         );

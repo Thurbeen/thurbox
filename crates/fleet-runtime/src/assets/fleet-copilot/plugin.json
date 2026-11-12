@@ -1,0 +1,4 @@
+{
+  "name": "fleet",
+  "description": "Reports the agent's state to Fleet through fleet signal, in a session Fleet started."
+}

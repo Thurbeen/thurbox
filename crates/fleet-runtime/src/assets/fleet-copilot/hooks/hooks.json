@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "[ -z \"$FLEET_SIGNAL_FILE\" ] || fleet signal idle 2>/dev/null || true",
+        "powershell": "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal idle 2>$null } } catch { }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "[ -z \"$FLEET_SIGNAL_FILE\" ] || fleet signal prompt 2>/dev/null || true",
+        "powershell": "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal prompt 2>$null } } catch { }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "[ -z \"$FLEET_SIGNAL_FILE\" ] || fleet signal working 2>/dev/null || true",
+        "powershell": "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal working 2>$null } } catch { }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "matcher": "permission_prompt|elicitation_dialog",
+        "bash": "[ -z \"$FLEET_SIGNAL_FILE\" ] || fleet signal blocked 2>/dev/null || true",
+        "powershell": "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal blocked 2>$null } } catch { }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "[ -z \"$FLEET_SIGNAL_FILE\" ] || fleet signal working 2>/dev/null || true",
+        "powershell": "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal working 2>$null } } catch { }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "[ -z \"$FLEET_SIGNAL_FILE\" ] || fleet signal working 2>/dev/null || true",
+        "powershell": "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal working 2>$null } } catch { }; exit 0",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "[ -z \"$FLEET_SIGNAL_FILE\" ] || fleet signal idle 2>/dev/null || true",
+        "powershell": "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal idle 2>$null } } catch { }; exit 0",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
