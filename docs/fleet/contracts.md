@@ -949,12 +949,14 @@ screen, in this order:
    run only in a trusted workspace.
 2. Signals that cannot be read are Unknown.
 3. Before the first report, the runtime reads the screen through `capture`.
-   A Codex or Claude Code trust dialog is `Untrusted` with the gap
+   A Codex, Kimi Code or Claude Code trust dialog is `Untrusted` with the gap
    `Unsupported`. Its message asks a person to trust the directory once in
    the session.
 4. Codex's initial empty composer, with Codex in the foreground, is
    `Trusted`: the launch override trusts the workspace.
-5. Any other screen, or a screen that cannot be read, is Unknown.
+5. Kimi Code's empty composer, with Kimi in the foreground, is `Trusted`:
+   Kimi asks its folder trust before it shows the composer.
+6. Any other screen, or a screen that cannot be read, is Unknown.
 
 The fake runtime answers from each session's `trusted` flag and its
 `workspaceTrust` fault. The port also defines the gap `Mismatch`, for a
@@ -979,7 +981,8 @@ These rules hold for every harness:
 
 `e2e_workspace_trust` covers an agent that waits for trust and trust that
 cannot be read, on the fake runtime. `e2e_runtime_exec` covers a Codex Task
-on `runtime-mux` that is briefed before its first turn ends.
+on `runtime-mux` that is briefed before its first turn ends, and a Kimi Code
+Task that is briefed before its first report.
 
 ## Agent state
 

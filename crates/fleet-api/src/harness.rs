@@ -585,9 +585,48 @@ pub fn codex_process(foreground: &str) -> bool {
     )
 }
 
+/// Whether a plain visible screen `output` is Kimi Code's empty composer,
+/// the cursor just after its `>`: Kimi takes input, and starts its session,
+/// with the first hook, only at the first message. The welcome box above
+/// scrolls off a short pane, so only the composer's box and the `context:`
+/// footer under it are read. Kimi asks its folder trust before its
+/// composer, in a dialog [`codex_trust_dialog`] also matches.
+pub fn kimi_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
+    let lines: Vec<&str> = output.lines().collect();
+    let Some(line) = lines.get(cursor_row) else {
+        return false;
+    };
+    let framed = |at: Option<usize>, corner: char| {
+        at.and_then(|at| lines.get(at))
+            .is_some_and(|l| l.trim_start().starts_with(corner))
+    };
+    let empty = line
+        .trim()
+        .strip_prefix('│')
+        .and_then(|l| l.strip_suffix('│'))
+        .is_some_and(|l| l.trim() == ">");
+    empty
+        && line.chars().position(|c| c == '>').map(|at| at + 2) == Some(cursor_col)
+        && framed(cursor_row.checked_sub(1), '╭')
+        && framed(cursor_row.checked_add(1), '╰')
+        && lines[cursor_row..]
+            .iter()
+            .any(|l| l.trim_start().starts_with("context: "))
+}
+
+/// Whether the screen's foreground process is Kimi Code, which names
+/// itself `kimi-code` once it runs.
+pub fn kimi_process(foreground: &str) -> bool {
+    matches!(
+        foreground.rsplit(['/', '\\']).next(),
+        Some("kimi" | "kimi.exe" | "kimi-code" | "kimi-code.exe")
+    )
+}
+
 /// Whether Codex's trust dialog is on a plain visible screen `output`: its
 /// question and its trusting default. It can follow the composer, so it is
-/// looked for on the whole screen, not only at the cursor.
+/// looked for on the whole screen, not only at the cursor. Kimi Code's trust
+/// dialog asks in the same words.
 pub fn codex_trust_dialog(output: &str) -> bool {
     let lines: Vec<&str> = output.lines().map(str::trim).collect();
     lines.iter().any(|l| l.starts_with("Trust this folder?"))
@@ -808,6 +847,82 @@ mod tests {
             "Trust this folder?\n› 1. Trust and continue"
         ));
         assert!(!codex_trust_dialog("› Ask Codex to do anything"));
+    }
+
+    /// Kimi Code 2.5.1's screen in an 80x24 pane once its folder is
+    /// trusted, its cursor at row 20, column 5; the welcome box's top has
+    /// scrolled off.
+    const KIMI_READY: &str =
+        " │                                                                            │
+ │  ▐█▛█▛█▌  Welcome to Kimi Code!                                            │
+ │  ▐█████▌  Send /help for help information.                                 │
+ │                                                                            │
+ │  Directory: /home/u/work                                                   │
+ │  Session:                                                                  │
+ │  Model:     fake-model                                                     │
+ │  Version:   2.5.1                                                          │
+ │                                                                            │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+
+ ✦ Kimi K3.1 Pro is ready - use the model in a fresh session for the best
+                          results
+   Standard: Plus/Moderato and above; Highspeed: Pro/Allegretto and above
+
+   No session yet — one will be created on your first message.
+   tmux extended-keys is off. Modified Enter keys may not work. Add `set -g
+ extended-keys on` to ~/.tmux.conf and restart tmux.
+
+ ╭────────────────────────────────────────────────────────────────────────────╮
+ │ >                                                                          │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+ fake-model thinking  /home/u/work
+                                                           context: 0% (0/256k)
+";
+
+    /// Kimi Code 2.5.1's first screen in a folder it does not trust yet.
+    const KIMI_TRUST: &str = " ──────────────────────────────────────────────────
+  Trust this folder?
+  ↑↓ navigate · Enter select · Esc exit
+
+  /home/u/work
+
+  No project integrations or instructions to activate.
+
+  Trust is remembered for this folder, including future project config changes.
+  Tool approvals follow your permission settings.
+
+   ❯ Trust and continue
+     Exit
+ ──────────────────────────────────────────────────
+";
+
+    #[test]
+    fn only_kimis_empty_composer_under_the_cursor_is_its_initial_composer() {
+        assert!(kimi_initial_composer(KIMI_READY, 20, 5));
+        assert!(!kimi_initial_composer(KIMI_READY, 20, 4));
+        assert!(!kimi_initial_composer(KIMI_READY, 19, 5));
+        let typed = KIMI_READY.replace("│ >  ", "│ > R");
+        assert!(!kimi_initial_composer(&typed, 20, 5));
+        let no_top = KIMI_READY.replace(" ╭─", " ──");
+        assert!(!kimi_initial_composer(&no_top, 20, 5));
+        let no_bottom: String = KIMI_READY
+            .lines()
+            .enumerate()
+            .map(|(row, l)| match row {
+                21 => format!("{}\n", l.replace('╰', "─")),
+                _ => format!("{l}\n"),
+            })
+            .collect();
+        assert!(!kimi_initial_composer(&no_bottom, 20, 5));
+        let no_footer = KIMI_READY.replace("context:", "ctx");
+        assert!(!kimi_initial_composer(&no_footer, 20, 5));
+        assert!(!kimi_initial_composer(KIMI_TRUST, 11, 5));
+        assert!(!kimi_initial_composer("", 0, 5));
+        assert!(codex_trust_dialog(KIMI_TRUST));
+        assert!(!codex_trust_dialog(KIMI_READY));
+        assert!(kimi_process("kimi-code"));
+        assert!(kimi_process("/usr/bin/kimi"));
+        assert!(!kimi_process("codex"));
     }
 
     #[test]

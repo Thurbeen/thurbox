@@ -44,7 +44,9 @@ in step 2 only saves one process.
 Use these rules:
 
 - Send `idle` at session start. Fleet then knows the agent is ready for its
-  brief.
+  brief. An agent that sends nothing before its first prompt waits for a
+  person to type it, unless Fleet knows its ready screen (Codex and Kimi
+  Code).
 - Send `blocked` only when a person must act. Do not send it when the agent
   only waits for its next prompt.
 - Until the agent sends a state, Fleet shows `unknown`. Fleet never guesses

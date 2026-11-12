@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 
 use fleet_api::Observation;
 use fleet_api::harness::{
-    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog, profile,
+    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog,
+    kimi_initial_composer, kimi_process, profile,
 };
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Attach, Runtime, TrustGap, WorkspaceTrust};
@@ -298,6 +299,9 @@ enum FirstScreen {
     /// Codex's empty composer: it takes input, and reports nothing until
     /// its first turn ends.
     CodexComposer,
+    /// Kimi Code's empty composer: it takes input, and reports nothing
+    /// until its first message starts its session.
+    KimiComposer,
     Other,
 }
 
@@ -482,6 +486,12 @@ impl ExecRuntime {
                     .is_some_and(|(r, c)| codex_initial_composer(&text, r, c))
             {
                 FirstScreen::CodexComposer
+            } else if foreground.as_deref().is_some_and(kimi_process)
+                && row
+                    .zip(col)
+                    .is_some_and(|(r, c)| kimi_initial_composer(&text, r, c))
+            {
+                FirstScreen::KimiComposer
             } else {
                 FirstScreen::Other
             }
@@ -659,12 +669,16 @@ impl Runtime for ExecRuntime {
     }
 
     /// Ready once the agent reported anything but a wait for a person: its
-    /// start hook reports it before any prompt.
+    /// start hook reports it before any prompt. Codex and Kimi Code report
+    /// nothing before their first message, so before that their empty
+    /// composer makes them ready.
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
         bind(self.reported(session), |r| match r.state {
             Some(State::Blocked) => Observation::Known(false),
             Some(State::Started) | None => match self.first_screen(session) {
-                Observation::Known(FirstScreen::CodexComposer) => Observation::Known(true),
+                Observation::Known(FirstScreen::CodexComposer | FirstScreen::KimiComposer) => {
+                    Observation::Known(true)
+                }
                 Observation::Known(_) => {
                     Observation::unknown("the agent reported no state since it started")
                 }
@@ -707,6 +721,12 @@ impl Runtime for ExecRuntime {
             Observation::Known(FirstScreen::CodexComposer) => {
                 Observation::Known(WorkspaceTrust::Trusted {
                     how: "Codex runs with its launch override trusting the workspace".into(),
+                })
+            }
+            // Kimi asks its folder trust before it shows its composer.
+            Observation::Known(FirstScreen::KimiComposer) => {
+                Observation::Known(WorkspaceTrust::Trusted {
+                    how: "Kimi Code shows its composer only in a folder it trusts".into(),
                 })
             }
             Observation::Known(FirstScreen::Other) => Observation::unknown(
