@@ -33,11 +33,13 @@
 //!   forbidden glob is judged as if it did, unless the name is read as a
 //!   module (a path's prefix, a glob's base) and the module declares a `mod`
 //!   of that name, which shadows every glob.
-//! - `cfg` is ignored: code behind any `cfg` is judged too, and a module
-//!   behind one shadows no glob.
+//! - `cfg` is ignored: code behind any `cfg` is judged too. So a module
+//!   behind one shadows no glob, and an import behind one, like an import in
+//!   a function body, adds a meaning to its name without removing the others.
 //! - Each target (the library, `main.rs`, each `src/bin/` binary) is its own
-//!   module tree, found by following `mod` declarations; a `#[path]` module
-//!   is placed by where its file is instead.
+//!   module tree, found by following `mod` declarations, `#[path]` included;
+//!   a file two targets declare is a module of each. A file no target
+//!   declares is placed by where it is.
 //! - Tests and examples (`tests/`, `benches/`, `#[cfg(test)]` modules inside
 //!   `src/` excepted) are not under the source rules; their manifests are.
 //!
@@ -517,7 +519,7 @@ struct Ref {
 #[derive(Debug, Clone, Default)]
 struct Scope {
     /// Local name -> the use path it stands for, unresolved, in this module.
-    aliases: BTreeMap<String, (Vec<String>, bool)>,
+    aliases: BTreeMap<String, Vec<Alias>>,
     /// Glob imports, unresolved.
     globs: Vec<(Vec<String>, bool)>,
     /// The modules this module declares (`mod x`). A declared module
@@ -525,6 +527,18 @@ struct Scope {
     /// path's prefix or as a glob's base. Other items are not recorded, so
     /// they shadow nothing, and a glob stays a possible source.
     modules_declared: BTreeSet<String>,
+}
+
+/// One import of a name. A module may hold several for one name (under
+/// different `cfg`s), and each is a possible meaning.
+#[derive(Debug, Clone)]
+struct Alias {
+    target: Vec<String>,
+    global: bool,
+    /// The import may not be in force where the name is read: it is inside a
+    /// block (a function body) or behind a `cfg`. The name may then also mean
+    /// what it would without the import.
+    weak: bool,
 }
 
 /// One crate's sources, indexed for resolution.
@@ -596,21 +610,26 @@ impl CrateIndex {
             parsed_files.push((file, rel, parsed));
         }
         let modules = module_paths(&src, &parsed_files);
-        for (file, rel, parsed) in parsed_files {
-            let module = modules
-                .get(&file)
+        for (file, rel, parsed) in &parsed_files {
+            // A file no target declares is placed by where it is.
+            let paths = modules
+                .get(file)
                 .cloned()
-                .unwrap_or_else(|| module_of(&src, &file));
-            if module.is_empty() && file.file_name().is_some_and(|n| n == "lib.rs") {
-                idx.lib_doc = doc_text(&parsed.attrs);
+                .unwrap_or_else(|| vec![module_of(&src, file)]);
+            for module in paths {
+                if module.is_empty() && file.file_name().is_some_and(|n| n == "lib.rs") {
+                    idx.lib_doc = doc_text(&parsed.attrs);
+                }
+                let mut walker = Walker {
+                    idx: &mut idx,
+                    module,
+                    file: rel.clone(),
+                    blocks: 0,
+                    cfg_use: false,
+                };
+                walker.scope();
+                walker.items(&parsed.items);
             }
-            let mut walker = Walker {
-                idx: &mut idx,
-                module,
-                file: rel,
-            };
-            walker.scope();
-            walker.items(&parsed.items);
         }
         idx
     }
@@ -630,15 +649,15 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Each file's module path, found by following `mod` declarations from every
-/// target's root, so a binary's modules never share a scope with the
-/// library's: the library's root is the empty path, a binary's is one segment
-/// no Rust name can spell (`#main`, `#bin:<name>`). The library is followed
-/// first, so a file both reach is the library's. `#[path]` is not followed.
+/// Each file's module paths, found by following `mod` declarations, `#[path]`
+/// included, from every target's root: the library's root is the empty path,
+/// a binary's one segment no Rust name can spell (`#main`, `#bin:<name>`). A
+/// file two targets declare is a module of each, so a binary's modules never
+/// share a scope with the library's.
 fn module_paths(
     src: &Path,
     files: &[(PathBuf, String, syn::File)],
-) -> BTreeMap<PathBuf, Vec<String>> {
+) -> BTreeMap<PathBuf, Vec<Vec<String>>> {
     let parsed: BTreeMap<&Path, &syn::File> =
         files.iter().map(|(f, _, p)| (f.as_path(), p)).collect();
     let bin = src.join("bin");
@@ -663,60 +682,84 @@ fn module_paths(
             ));
         }
     }
-    let root_files: BTreeSet<PathBuf> = roots.iter().map(|(f, _)| f.clone()).collect();
-    let mut out = BTreeMap::new();
+    let mut out: BTreeMap<PathBuf, Vec<Vec<String>>> = BTreeMap::new();
     let mut queue = std::collections::VecDeque::new();
     for (file, module) in roots {
-        if parsed.contains_key(file.as_path()) && !out.contains_key(&file) {
-            out.insert(file.clone(), module);
-            queue.push_back(file);
-        }
+        // A root declares its children beside it.
+        let children_dir = file.parent().map(Path::to_path_buf);
+        queue.push_back((file, module, children_dir));
     }
-    while let Some(file) = queue.pop_front() {
-        let module = out[&file].clone();
-        // A root or a `mod.rs` declares its children beside it; any other
-        // file in a directory of its own name.
-        let dir = match file.parent() {
-            Some(parent)
-                if root_files.contains(&file)
-                    || file.file_name().is_some_and(|n| n == "mod.rs") =>
-            {
-                parent.to_path_buf()
-            }
-            Some(parent) => parent.join(file.file_stem().unwrap_or_default()),
-            None => continue,
+    while let Some((file, module, children_dir)) = queue.pop_front() {
+        let Some(ast) = parsed.get(file.as_path()) else {
+            continue;
+        };
+        let seen = out.entry(file.clone()).or_default();
+        if seen.contains(&module) {
+            continue;
+        }
+        seen.push(module.clone());
+        let (Some(file_dir), Some(dir)) = (file.parent(), children_dir) else {
+            continue;
         };
         let mut children = Vec::new();
-        declared_files(&parsed[file.as_path()].items, &dir, &module, &mut children);
-        for (child, path) in children {
-            if parsed.contains_key(child.as_path()) && !out.contains_key(&child) {
-                out.insert(child.clone(), path);
-                queue.push_back(child);
-            }
-        }
+        declared_files(&ast.items, file_dir, &dir, true, &module, &mut children);
+        queue.extend(children);
     }
     out
 }
 
-/// The files `mod x;` declarations in `items` may name, with their module
-/// paths; an inline `mod x { .. }` is followed into `dir/x/`.
+/// The files the `mod x;` declarations in `items` may name, each with its
+/// module path and the directory its own children live in. `dir` is where a
+/// child without `#[path]` lives; `file_dir`, the declaring file's directory,
+/// is what a top-level `#[path]` is relative to.
 fn declared_files(
     items: &[Item],
+    file_dir: &Path,
     dir: &Path,
+    top: bool,
     module: &[String],
-    out: &mut Vec<(PathBuf, Vec<String>)>,
+    out: &mut Vec<(PathBuf, Vec<String>, Option<PathBuf>)>,
 ) {
     for item in items {
-        if let Item::Mod(m) = item {
-            let name = m.ident.to_string();
-            let mut child = module.to_vec();
-            child.push(name.clone());
-            match &m.content {
-                Some((_, inner)) => declared_files(inner, &dir.join(&name), &child, out),
-                None => {
-                    out.push((dir.join(format!("{name}.rs")), child.clone()));
-                    out.push((dir.join(&name).join("mod.rs"), child));
-                }
+        let Item::Mod(m) = item else {
+            continue;
+        };
+        let name = m.ident.to_string();
+        let mut child = module.to_vec();
+        child.push(name.clone());
+        let path_attr = m.attrs.iter().find_map(|a| match &a.meta {
+            syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match &nv.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) => Some(s.value()),
+                _ => None,
+            },
+            _ => None,
+        });
+        match (&m.content, path_attr) {
+            (Some((_, inner)), Some(p)) => {
+                let base = if top { file_dir } else { dir };
+                declared_files(inner, file_dir, &base.join(p), false, &child, out);
+            }
+            (Some((_, inner)), None) => {
+                declared_files(inner, file_dir, &dir.join(&name), false, &child, out);
+            }
+            (None, Some(p)) => {
+                let file = if top { file_dir } else { dir }.join(p);
+                // A `#[path]` file declares its children beside it, like a
+                // `mod.rs`.
+                let children = file.parent().map(Path::to_path_buf);
+                out.push((file, child, children));
+            }
+            (None, None) => {
+                out.push((
+                    dir.join(format!("{name}.rs")),
+                    child.clone(),
+                    Some(dir.join(&name)),
+                ));
+                let mod_rs = dir.join(&name).join("mod.rs");
+                out.push((mod_rs, child, Some(dir.join(&name))));
             }
         }
     }
@@ -763,6 +806,11 @@ struct Walker<'a> {
     idx: &'a mut CrateIndex,
     module: Vec<String>,
     file: String,
+    /// How many blocks (function bodies and the like) enclose the walk: what
+    /// is declared in one is local to it, so it hides nothing outside.
+    blocks: u32,
+    /// The `use` being walked is behind a `cfg`.
+    cfg_use: bool,
 }
 
 impl Walker<'_> {
@@ -775,7 +823,8 @@ impl Walker<'_> {
             // The checker ignores `cfg`, so a module `cfg` can remove must
             // not shadow anything.
             if let Item::Mod(m) = item
-                && !m.attrs.iter().any(|a| a.path().is_ident("cfg"))
+                && !has_cfg(&m.attrs)
+                && self.blocks == 0
             {
                 self.scope().modules_declared.insert(m.ident.to_string());
             }
@@ -855,7 +904,12 @@ impl Walker<'_> {
             location: loc,
         });
         if local != "_" {
-            self.scope().aliases.insert(local, (target, global));
+            let weak = self.blocks > 0 || self.cfg_use;
+            self.scope().aliases.entry(local).or_default().push(Alias {
+                target,
+                global,
+                weak,
+            });
         }
     }
 }
@@ -863,7 +917,15 @@ impl Walker<'_> {
 impl<'ast> Visit<'ast> for Walker<'_> {
     fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
         let span = u.use_token.span;
+        self.cfg_use = has_cfg(&u.attrs);
         self.use_tree(&u.tree, &mut Vec::new(), u.leading_colon.is_some(), span);
+        self.cfg_use = false;
+    }
+
+    fn visit_block(&mut self, b: &'ast syn::Block) {
+        self.blocks += 1;
+        visit::visit_block(self, b);
+        self.blocks -= 1;
     }
 
     fn visit_item_extern_crate(&mut self, e: &'ast syn::ItemExternCrate) {
@@ -872,7 +934,9 @@ impl<'ast> Visit<'ast> for Walker<'_> {
             .rename
             .as_ref()
             .map_or(name.clone(), |(_, r)| r.to_string());
+        self.cfg_use = has_cfg(&e.attrs);
         self.import(local, vec![name], true, e.ident.span());
+        self.cfg_use = false;
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
@@ -1114,24 +1178,36 @@ impl<'a> Resolver<'a> {
                 "Self" => Vec::new(),
                 _ => {
                     let scope = idx.modules.get(module);
-                    if let Some((target, g)) = scope.and_then(|s| s.aliases.get(first)) {
-                        if target.len() == 1 && target[0] == first && !g {
+                    let aliases = scope.and_then(|s| s.aliases.get(first));
+                    let mut out = Vec::new();
+                    for a in aliases.into_iter().flatten() {
+                        if a.target.len() == 1 && a.target[0] == first && !a.global {
                             // `use x;` of an extern crate: it names itself.
-                            vec![segments.to_vec()]
+                            out.push(segments.to_vec());
                         } else {
-                            let base =
-                                self.resolve(idx, module, target, *g, false, globs, depth + 1);
-                            base.into_iter().map(join).collect()
+                            let base = self.resolve(
+                                idx,
+                                module,
+                                &a.target,
+                                a.global,
+                                false,
+                                globs,
+                                depth + 1,
+                            );
+                            out.extend(base.into_iter().map(join));
                         }
+                    }
+                    let unaliased = aliases.is_none_or(|list| list.iter().any(|a| a.weak));
+                    if !unaliased {
                     } else if idx.externs.contains(first) || self.index(first).is_some() {
-                        vec![segments.to_vec()]
+                        out.push(segments.to_vec());
                     } else {
-                        let mut out = vec![
+                        out.push(
                             std::iter::once(idx.lib.clone())
                                 .chain(module.iter().cloned())
                                 .chain(segments.iter().cloned())
                                 .collect(),
-                        ];
+                        );
                         let shadowed = segments.len() > 1
                             && scope.is_some_and(|s| s.modules_declared.contains(first));
                         let module_globs = if globs && !shadowed {
@@ -1149,8 +1225,8 @@ impl<'a> Resolver<'a> {
                         if macro_call && segments.len() == 1 {
                             out.push(vec!["std".to_string(), first.to_string()]);
                         }
-                        out
                     }
+                    out
                 }
             }
         };
@@ -1209,21 +1285,28 @@ impl<'a> Resolver<'a> {
             if !self.spend() {
                 return vec![path];
             }
-            if let Some((target, g)) = scope.aliases.get(name) {
-                let mut out = Vec::new();
-                for base in self.resolve(idx, &module, target, *g, false, true, depth + 1) {
-                    out.push(base.into_iter().chain(tail.iter().cloned()).collect());
+            let aliases = scope
+                .aliases
+                .get(name)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let mut via_alias: Vec<Vec<String>> = Vec::new();
+            for a in aliases {
+                for base in self.resolve(idx, &module, &a.target, a.global, false, true, depth + 1)
+                {
+                    via_alias.push(base.into_iter().chain(tail.iter().cloned()).collect());
                 }
-                if !out.is_empty() {
-                    return out;
-                }
+            }
+            if !via_alias.is_empty() && !aliases.iter().any(|a| a.weak) {
+                return via_alias;
             }
             let read_as_module = names_type || k < path.len();
             let shadowed = read_as_module && scope.modules_declared.contains(name);
             if !scope.globs.is_empty() && !shadowed {
                 // The name may be the module's own item or come through any
                 // of its globs: judge every possibility.
-                let mut out = vec![path.clone()];
+                let mut out = via_alias;
+                out.push(path.clone());
                 for (g, gg) in &scope.globs {
                     for base in self.resolve(idx, &module, g, *gg, false, false, depth + 1) {
                         let through: Vec<String> = base
@@ -1236,7 +1319,8 @@ impl<'a> Resolver<'a> {
                 }
                 return out;
             }
-            return vec![path];
+            via_alias.push(path);
+            return via_alias;
         }
         vec![path]
     }
@@ -1253,6 +1337,14 @@ impl<'a> Resolver<'a> {
         self.budget.set(left - 1);
         true
     }
+}
+
+/// Whether `attrs` hold a `cfg` or a `cfg_attr`: something the checker,
+/// which ignores `cfg`, cannot rely on being in force.
+fn has_cfg(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
 }
 
 /// The root of the target `module` belongs to: empty for the library, a

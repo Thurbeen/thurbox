@@ -585,6 +585,81 @@ fn a_cfg_gated_module_does_not_shadow_a_glob() {
     expect("cfg-shadow", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
+/// A file both the library and a binary declare is a module of each: the
+/// binary's reads through it are judged in the binary's tree too.
+#[test]
+fn a_file_two_targets_declare_is_indexed_in_each() {
+    expect(
+        "shared-file",
+        &[
+            (CTL, &ctl("pub mod cli;\n")),
+            ("crates/fx-ctl/src/cli.rs", "pub use std::*;\n"),
+            (
+                "crates/fx-ctl/src/main.rs",
+                "mod cli;\nfn main() { let _ = cli::fs::read(\"p\"); }\n",
+            ),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// A `#[path]` module is the file the attribute names, in the tree that
+/// declares it.
+#[test]
+fn a_path_attribute_module_is_followed() {
+    expect(
+        "path-attr",
+        &[
+            ("crates/fx-ctl/src/other/x.rs", "pub use std::*;\n"),
+            (
+                "crates/fx-ctl/src/main.rs",
+                "#[path = \"other/x.rs\"]\nmod cli;\nfn main() { let _ = cli::fs::read(\"p\"); }\n",
+            ),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// A `use` inside a function names something only there: it does not hide
+/// what the same name is in the rest of the module.
+#[test]
+fn a_function_local_import_does_not_hide_a_module_read() {
+    let src = ctl(
+        "use std::*;\npub mod m { pub fn read(_: &str) {} }\nfn a() { use crate::m as fs; }\npub fn b() { let _ = fs::read(\"p\"); }\n",
+    );
+    expect("fn-local-use", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// Two imports of one name under different `cfg`s are both possible: the
+/// later one does not hide the earlier.
+#[test]
+fn cfg_alternative_imports_are_both_judged() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+    );
+    expect(
+        "cfg-alternatives",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-store/src/lib.rs",
+                "pub mod m { pub fn danger() {} }\n#[cfg(unix)]\nuse fx_api as sys;\n#[cfg(not(unix))]\nuse crate::m as sys;\npub fn b() { sys::danger(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
+}
+
+/// A module declared inside a function is not the module of the same name
+/// outside it: its `mod fs` does not shadow that module's glob.
+#[test]
+fn a_function_local_module_does_not_shadow_a_module_of_the_same_name() {
+    let src = ctl(
+        "pub mod x {\n    use std::*;\n    pub fn r() { let _ = fs::read(\"p\"); }\n}\nfn f() { mod x { mod fs {} } }\n",
+    );
+    expect("fn-local-mod", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
 /// Macros are a namespace of their own: a struct of the same name does not
 /// shadow a glob-imported macro.
 #[test]
