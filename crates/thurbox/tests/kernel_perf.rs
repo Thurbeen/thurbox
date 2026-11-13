@@ -1,9 +1,7 @@
 //! Performance behaviour, asserted on counters rather than on the clock.
 //!
-//! v1 learned this the hard way: a test that says "idle should be fast" is
-//! flaky on shared hardware, while one that says "an idle loop painted no
-//! frames" is exact. These re-derive what ADR-P6 and ADR-P12 gave v1, against
-//! the v2 render path.
+//! A test that says "idle should be fast" is flaky on shared hardware, while
+//! one that says "an idle loop painted no frames" is exact.
 
 use std::time::{Duration, Instant};
 
@@ -111,10 +109,8 @@ fn counters_distinguish_painted_frames_from_skipped_ones() {
 
 #[test]
 fn a_snapshot_read_never_touches_the_database() {
-    // ADR-P6 re-derived: v1 cached hook state behind a `data_version` check to
-    // keep an idle tick off the sessions table. Here the shape makes it
-    // structural — reads come from the snapshot, and refresh is the only thing
-    // that queries.
+    // Reads come from the snapshot, and refresh is the only thing that
+    // queries.
     let store = SnapshotStore::without_sessions(&Default::default());
 
     let started = std::time::Instant::now();
@@ -130,9 +126,7 @@ fn a_snapshot_read_never_touches_the_database() {
 
 #[test]
 fn dispatching_a_command_never_blocks_the_caller() {
-    // ADR-P12 re-derived: v1 moved the whole new-session flow off the UI thread
-    // deliberately. Here it falls out of the bus — there is no blocking form to
-    // accidentally use.
+    // The bus has no blocking form to accidentally use.
     let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
     let started = std::time::Instant::now();
 

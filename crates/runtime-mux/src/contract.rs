@@ -598,7 +598,7 @@ pub trait PaneStream: Send + Sync {
     /// Reconnect to an existing session. `seed` is the pre-captured pane state
     /// to prepend to the live stream (see [`Self::capture_history`]);
     /// `None` makes the backend capture it itself — the two paths produce the
-    /// same bytes, `Some` just lets restore overlap the captures (ADR-P9).
+    /// same bytes, `Some` just lets a caller overlap the captures.
     /// Errs when the backend reports the pane gone, rather than connecting to
     /// nothing.
     fn adopt(

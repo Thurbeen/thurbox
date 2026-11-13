@@ -1,15 +1,5 @@
 # Performance
 
-> **Two eras in one file.** ADR-P1 through ADR-P12 were measured against v1's Rust
-> interface and cite `src/app/*` / `src/ui/*`, both deleted when the plugin kernel
-> took the binary name (ADR-23). They are kept because the *findings* are what the
-> kernel was built against, and several are load-bearing in it today — the
-> demand-driven loop, the 250 ms floor and output-driven dirty marking all carried
-> across, in `src/main.rs` and `src/kernel/` rather than `src/app/`.
->
-> **ADR-P13 below is the current shape**, and the one to read first if you are
-> changing the loop.
-
 How thurbox stays responsive and light, and how to measure it. The focus areas
 are **input latency**, **runtime CPU / render cost**, **startup time**, and
 **memory / binary size**. Decisions below follow the mini-ADR format
@@ -24,79 +14,55 @@ fails if the optimization regresses.
 
 ## ADR-P1: Demand-driven rendering (redraw throttling)
 
-**Choice**: The render loop (`run_loop` in `src/main.rs`) paints a frame only
-when the UI is *dirty* or a forced-redraw floor elapsed — not on every loop
-iteration. State drives the paint:
+**Choice**: The render loop (`App::run` in `src/coordinator/mod.rs`) paints a
+frame only when the screen is *dirty* or the `FORCE_REDRAW_INTERVAL` floor
+(250 ms) elapsed, not on every iteration. ADR-P13 lists what marks the screen
+dirty. The loop still polls input, output and workers every iteration, but
+layout, the plugin renders and the paint are skipped when nothing changed.
 
-- **Input** marks the UI dirty: `App::update` calls `App::request_redraw`, so a
-  keypress paints on the very next iteration (latency unchanged).
-- **Agent output** marks the UI dirty: `App::detect_output_redraw` sums each
-  session's monotonic `last_output_at` atomic into a rolling signature
-  (`Session::last_output_at`, no vt100 lock); a change means new output, so the
-  terminal repaints immediately.
-- **Status transitions** mark the UI dirty: `refresh_session_statuses` requests
-  a redraw when a session's status/activity/notification actually changes
-  (a quiet `Busy → Waiting` produces no output, so the output detector can't
-  catch it).
-- **Everything else time-driven** — the live clock/metrics, cursor blink, an
-  expiring status toast — is covered by `FORCE_REDRAW_INTERVAL` (250 ms): if
-  nothing flagged the UI dirty, `App::should_redraw` still paints once the floor
-  elapses.
-
-The loop still spins every ≤10 ms (poll input, check output, `tick`), but the
-*expensive* work — layout, the vt100 `PseudoTerminal` render, panel rebuilds —
-is skipped when idle.
-
-**Why**: The previous loop called `terminal.draw` unconditionally, ~100 fps,
-even on a completely idle screen. That is the single largest idle-CPU cost in a
-TUI that may sit untouched for long stretches with several sessions open.
-Demand-driven rendering drops idle paints from ~100 fps to ~4 fps (the floor)
-while keeping input and output repaints immediate — so responsiveness is
-unchanged and idle CPU drops by ~25×.
+**Why**: a loop that draws unconditionally paints ~100 frames a second on an
+idle screen, which is the largest idle-CPU cost of a TUI that sits untouched
+with several sessions open. The floor keeps time-driven content (the clock, an
+expiring toast) at most 250 ms stale, while input and output still repaint at
+once.
 
 **Rejected**:
 
 - *Per-widget dirty tracking* — far more invasive and bug-prone (every state
-  mutation must flag the right widget); the coarse app-level flag plus a time
-  floor captures the same win with a fraction of the surface.
+  mutation must flag the right widget); the coarse flag plus a time floor
+  captures the same win with a fraction of the surface.
 - *Lower fixed frame rate (e.g. 20 fps always)* — still wastes CPU when idle and
   adds latency to input/output; the floor only fires when nothing else did.
 
-**Correctness net**: dirtiness is deliberately over-approximated (any input, any
-status change → repaint) and the 250 ms floor guarantees nothing time-driven
-stays stale longer than a blink. The black-box test (`tests/tui_e2e.rs`) still
-asserts the first frame, every post-keystroke frame, and that a reflow repaints
-without clearing the screen.
+**Correctness net**: dirtiness is deliberately over-approximated (any input →
+repaint) and the 250 ms floor guarantees nothing time-driven stays stale longer
+than a blink. The black-box test (`tests/tui_e2e.rs`) asserts the first frame,
+every post-keystroke frame, and that a reflow repaints without clearing the
+screen.
 
 **One pass rides along after each paint**:
 `App::paint_outer_hyperlinks` re-emits the frame's links — the agent's OSC 8
 runs and the plain-text URLs alike — so the outer terminal can offer its own
-open-link gesture (see the Clickable URLs section of `docs/thurbox/features.md`). It is
-bound to the *painted* frames — ratatui rewrites the cells, so the escapes must
-follow each draw — and is gated on `HyperlinkTable::is_empty()` **and** an empty
-scanned-URL list **before** it computes layout or extracts screen rows, so a
-session showing no link of either kind pays a single emptiness check per frame.
-The plain-text leg adds no scan of its own: it is handed the list
-`refresh_links` already keeps for `thurbox.links`, and only validates each
-position against the cells the frame drew — the URL's own cells plus the one
-past its end. It carries its own cap (`SCANNED_LINK_LIMIT`, 128) for the reason
-the run scan does, but on the output rather than the input: every accepted
-position is re-printed over the ssh link this pass exists to serve.
+open-link gesture (see the Clickable URLs section of `docs/thurbox/features.md`).
+It is bound to the *painted* frames — ratatui rewrites the cells, so the escapes
+must follow each draw. The plain-text leg adds no scan of its own: it is handed
+the list `refresh_links` already keeps for `thurbox.links`, and only validates
+each position against the cells the frame drew — the URL's own cells plus the
+one past its end. It carries its own cap (`SCANNED_LINK_LIMIT`, 128) for the
+reason the run scan does, but on the output rather than the input: every
+accepted position is re-printed over the ssh link this pass exists to serve.
 
 The escapes go out **once per change**, not once per painted frame
 (`App::last_link_paints`). OSC 8 binds a URL to the *cells*, so an unchanged
 frame owes the terminal nothing — the links are still attached to the cells it
 was told about. Sending them per frame regardless is a cost that scales with
-what is on screen rather than with what moved, and on a real pty it measured
+what is on screen rather than with what moved: on a real pty it measured
 **65kB/s indefinitely** for twenty bare URLs on a settled screen, against 100
 bytes a second for the same screen with no URL on it. With the comparison in,
-the two are equal: 100 bytes a second, the URLs costing nothing once drawn.
-(The waste predates the plain-text leg — the runs and `url:` nodes paid it too
-— but that leg is what makes a screen full of links the ordinary case.) The one
-frame that must re-send identical paints is the **reflow**: it reprints every
-cell, and a reprinted cell loses its hyperlink, so `App::draw` drops the memo
-there — as does `open_requested_editor`, since returning from an external editor
-clears the screen and reprints it whole.
+the two are equal. The one frame that must re-send identical paints is the
+**reflow**: it reprints every cell, and a reprinted cell loses its hyperlink, so
+`App::draw` drops the memo there — as does `open_requested_editor`, since
+returning from an external editor clears the screen and reprints it whole.
 
 The pane half (a `url:` node, `ClickVerb::Url`) walks the
 hitboxes the paint just recorded, which costs one `split_once` per target — no
@@ -111,97 +77,22 @@ back rather than left wherever the last run ended.
 ## ADR-P2: Deterministic perf counters as the regression gate
 
 **Choice**: Performance regressions are caught by **counting**, not timing.
-`MetricsState::perf` (`PerfCounters` in `src/app/metrics_state.rs`) holds
-wall-clock-free `u64` counters bumped at the render/tick hot paths:
-
-| Counter | Meaning |
-| --- | --- |
-| `frames_rendered` | `App::view` ran (a frame painted) |
-| `redraws_requested` / `redraws_skipped` | loop iterations that painted vs. skipped |
-| `status_refreshes` | `refresh_session_statuses` passes (one per tick) |
-| `ordered_sessions_rebuilds` | session-list order rebuilt vs. served from cache |
-| `parser_locks_render` | central pane locked a vt100 parser to render (one per terminal frame) |
-| `automation_entries_built` | automations-pane entry list built |
-| `review_builds_dispatched` / `review_builds_applied` | code-review diff builds handed to the background worker / applied back on the UI thread (ADR-P8) |
-| `agent_meta_syncs` | a session's OSC title/notification actually re-read (gated on the reader thread's meta generation, ADR-P10) |
-
-Tick-driven counters are asserted in the `#[test]` units in `super::tests`, not
-the render-path acceptance harness (which skips `tick`).
-
-The acceptance harness (`src/app/acceptance.rs`) asserts on
-`App::perf_counters()` — e.g. *idle iterations skip the paint*, *the session
-order is rebuilt exactly once across three idle frames*, *a session-set change
-invalidates the cache exactly once*. These run in the normal `cargo nextest run
---all` and gate CI.
+`kernel::perf::Counters` holds wall-clock-free `u64` counters bumped on the
+loop's hot paths: iterations, frames painted and skipped, plugin renders and
+failures, VM reloads, pure-pane renders served from cache, published groups
+reused, and keystroke echoes (ADR-P28). Tests assert on them
+(`tests/kernel_perf.rs`, `tests/tui_e2e.rs`) — e.g. *an idle loop paints no
+frames*. These run in the normal `cargo nextest run --all` and gate CI.
 
 **Why**: Wall-clock benchmarks are flaky on shared CI runners — a GC pause or a
-noisy neighbour turns a green build red. A counter assertion (`redraws_skipped
-== 4`) is exact and reproducible, and it proves the *mechanism* (work was
-skipped) rather than a wobbly proxy (it was fast today).
+noisy neighbour turns a green build red. A counter assertion is exact and
+reproducible, and it proves the *mechanism* (work was skipped) rather than a
+wobbly proxy (it was fast today).
 
 **Rejected**:
 
-- *Timing assertions in CI* (`assert!(elapsed < X)`) — flaky; deleted before
-  they were written.
+- *Timing assertions in CI* (`assert!(elapsed < X)`) — flaky.
 - *criterion / divan micro-benches in the gate* — see ADR-P5.
-
----
-
-## ADR-P3: Cache the session-list ordering, keyed by a content signature
-
-**Choice**: `compute_session_order` (`src/ui/project_list.rs`) groups, sorts,
-and nests the session list. Its output is a pure function of exactly four
-per-session fields — `repo_display_names` (grouping), `display_order` (sort),
-`id` and `parent_session_id` (nesting) — plus the session count/order, and
-**never** of status. `App` caches the computed `SessionOrder` keyed by
-`App::session_order_signature` (a hash of just those fields). On a frame where
-the signature is unchanged, the cache is reused via
-`OrderedSessions::from_order`, skipping the grouping HashMap, the two sort
-passes, the nest recursion, and the group-label allocations. The cheap O(n)
-remap of refs / match positions / `active_index` still runs each frame (those
-vary independently).
-
-**Why**: While an agent streams output the screen repaints every frame, and the
-left panel was rebuilding the full ordering on each one even though sessions
-rarely change. The signature is strictly cheaper than the order it guards (a
-hash vs. HashMap construction + sorts + recursion + allocations), and being
-content-derived it is **self-invalidating**: any change that alters the order
-alters the hash, so there is no manual "mark dirty" call site to forget.
-
-**Rejected**:
-
-- *An explicit generation counter bumped at every mutation site* — correctness
-  depends on instrumenting every add/remove/reorder/reparent/external-sync path;
-  one miss is a stale-list bug. The content hash can't miss.
-- *No cache* — measurable waste during active output for larger session lists.
-
----
-
-## ADR-P4: What was deliberately *not* optimized
-
-Measuring first also means **not** adding complexity where the data says it
-won't pay off.
-
-- **Scrollback round-trip** (`src/ui/terminal_view.rs`): reading the total
-  scrollback via `set_scrollback(MAX)` → read → restore looks like a per-frame
-  double-write, but in vt100 0.16 `set_scrollback`/`scrollback` are **O(1)**
-  (a clamped field assignment). With ADR-P1 throttling it now runs ~4×/s when
-  idle. Caching it would add interior-mutability/borrow complexity for no
-  measurable gain. With vt100 0.18, `set_scrollback` also visits the visible
-  history rows to grow them to the current width; the O(1) observation above
-  applies to the earlier version. This still rides along with `parser_locks_render`.
-- **Automations-pane entries** (`src/app/view.rs`): rebuilt each render
-  (`automation_entries_built`). The only repeated parse is `humanize_cron`, and
-  the countdown portion *must* stay live, so a cache would only memoize the
-  schedule string. Automations are typically a handful, and ADR-P1 bounds the
-  frequency — not worth the split. Left as-is.
-- **vt100 parser lock contention** (`src/app/view.rs` render vs.
-  `crates/runtime-mux/src/pane.rs` reader thread): the reader locks the parser per output
-  chunk; the UI locked it per frame. ADR-P1 collapses idle-frame UI locks to
-  near zero (`parser_locks_render`), so the contention window shrinks for free.
-  Cloning the vt100 screen for lock-free rendering was rejected — the screen is
-  large and the copy would cost more than the brief lock it removes. The UI
-  already scopes the lock tightly (lock → render widget → release).
 
 ---
 
@@ -240,10 +131,9 @@ won't pay off.
 
 **Why**: criterion/divan pull a large transitive dependency tree, and
 `cargo deny check licenses` (a **gating** CI job with a strict allowlist) would
-have to vet all of it. For micro-benchmarks of two pure functions
-(`compute_session_order`, `compute_layout`) that the analysis shows are not
-bottlenecks, that cost isn't justified — the counter tests already gate
-regressions without flakiness or new dependencies.
+have to vet all of it. That cost isn't justified — the counter tests already
+gate regressions without flakiness or new dependencies, and `frame_cost` needs
+no harness crate.
 
 **Rejected**:
 
@@ -255,383 +145,88 @@ regressions without flakiness or new dependencies.
 
 ---
 
-## ADR-P6: Reload the session-status hooks only on a `data_version` change
+## ADR-P10: Read an agent's title and notification only when they changed
 
-> **Superseded in v3 (ADR-41).** thurbox has no database. A session is a Fleet
-> Task, read through `fleet watch`, and its state is Fleet's
-> `status.sessionState`. Plugins still read a snapshot and never drive it.
+**Choice**: the reader thread bumps a generation counter
+(`TermSignals::meta_gen`) **after** each OSC title or notification write, and
+`Session::sync_agent_meta` (in `runtime-mux`) re-reads the two mutexes only when
+the generation moved. `Terminals::sync_meta` calls it for every live session, so
+an unchanged session costs one atomic load rather than two mutex locks and two
+`String` clones. A generation observed mid-write only delays the text by one
+tick, because the counter moves after the value lands.
 
----
-
-## ADR-P7: Restore remote-backed sessions in the background
-
-> **Superseded in v3 (ADR-41).** thurbox restores no sessions: a session is a
-> Fleet Task, and Fleet keeps it. Attaching a pane, which is the step that
-> connects to a host, runs on a worker (`kernel::terminal::attach`, ADR-P24).
-
----
-
-## ADR-P8: Build code-review diffs off the UI thread
-
-**Choice**: Opening the code-review view (`Ctrl+X`/`F7`) and switching its
-target used to run the whole git pipeline **synchronously in the key
-handler** — per repo: base resolution (`branch_exists` + `list_branches` +
-`default_branch`), the target-picker commit listing, and the diff itself,
-each a `git` subprocess and **each an ssh round-trip for a remote session**.
-Measured via the `code_review_build` slow op (ADR-P11): seconds of frozen UI
-on a remote host. Now `toggle_code_review` does only the cheap gather
-(session id, host, worktree list, label dedup), installs the review in a
-`loading` state — the pane opens instantly with a "Building diff…"
-placeholder — and hands the git work to a `spawn_blocking` worker
-(`build_review_open` / `build_review_retarget` in `src/app/code_review.rs`,
-via the shared `BackgroundTask` fire-and-poll shape). `App::poll_review_build`
-(a `tick` step) applies the result **by session id** into `App::code_reviews`,
-so a review closed (or switched away from) mid-build simply drops the result.
-One build runs at a time; a second open/retarget while one is in flight is
-refused with a toast.
-
-Gate: `review_builds_dispatched` / `review_builds_applied` +
-`perf_review_open_never_builds_on_ui_thread`,
-`perf_review_build_result_applied_via_poll`,
-`review_build_for_closed_review_is_dropped` (`src/app/mod.rs` tests).
-
-**Why**: this was the largest *interactive* stall in the app, and the inputs
-are all owned/cloneable data (`ReviewRepo`, `HostDef`, the target), so the
-work moves off-thread wholesale with the same pattern the codebase already
-uses for git stats and worktree creation.
-
-**Rejected**:
-
-- *Queueing a second build behind the in-flight one* — a rapid open→retarget
-  would apply two results in sequence for no benefit; the refuse-with-toast
-  is simpler and the loading state makes it obvious.
-- *An async-aware diff stream (progressive per-repo fill-in)* — more moving
-  parts for a build that is fast locally; revisit only if multi-repo remote
-  reviews prove slow *after* this change.
-
-**Superseded by `kernel::diff`.** Everything named above (`toggle_code_review`,
-`App::code_reviews`, `build_review_open`, and all four gate tests) went with
-`src/app`; the reasoning survives because the successor is the same shape. The
-kernel's `DiffStore` computes on a worker and publishes into the snapshot, which a
-plugin reads as `thurbox.diffs[<session>]` — `pending` / `failed` / `ready`, with
-`files`, `body`, `truncated`, `raw_bytes` and `untracked_omitted`. Five things
-about it are worth stating because each was wrong once:
-
-- **The base is the row's `base_branch`, never the session's own branch.** The loop
-  passed `SessionRow.branch` — a session's *own* worktree branch — so the range was
-  `<own-branch>..HEAD`, which is empty. Every worktree-backed session published a
-  `ready` diff with no files: a confident wrong answer, and the inversion of the
-  intent, since the sessions that *have* a base were the ones showing nothing. The
-  snapshot carries `base_branch` beside `branch`, and `None` means "diff the
-  uncommitted changes".
-- **The request follows the selection, not the focused pane.** It was driven by
-  `focused_session`, re-derived each frame from the focused plugin's *session
-  surface* — so only a pane drawing a terminal ever asked for a diff, and a pane
-  whose job is showing one could never be handed it.
-- **The file list is not capped; only the body is.** `files` was derived from the
-  capped text, so it listed only what fit — 310 of 433 files on this repository's own
-  diff, with totals to match, and `truncated` (which is about *bytes*) gave a reviewer
-  no way to know the navigation aid ended early. It now comes from `git diff --numstat
-  -M -z` plus `--name-status -M -z`: two cheap commands, ~12 KB for four hundred files
-  against a 4 MiB body, joined on the new path. A failure to list fails the diff rather
-  than reporting a partial list as complete.
-- **The uncommitted diff has to include untracked files.** `git diff HEAD` cannot
-  show a file git has never been told about, and a new file is the most common thing
-  a coding agent produces — so a session with **no** base branch, which is exactly
-  the scratch worktree someone watches an agent work in, reported "no changes" after
-  three files had been written. v1 had the same gap; the consequence is worse here
-  because that is the default target. `git::working_diff` now folds each
-  untracked file in as `git diff --no-index -- /dev/null <path>`, which emits an
-  ordinary `new file mode` patch and needed nothing downstream to change: the
-  numstat record arrives in the *rename* shape (empty path, `/dev/null`, real name),
-  which `parse_changed_files` already handled. The body, the counts and the statuses
-  come back from **one** call so they cannot disagree about which files they covered.
-  The rejected alternative is the instructive one: a temporary index
-  (`GIT_INDEX_FILE` + `git add -A` + `git diff --cached`) gets everything in one
-  process and **writes loose objects into the repository being reviewed** — for a
-  pane refreshing every few seconds against a worktree an agent is editing, a reader
-  mutating what it reads. Bounded at `git::UNTRACKED_FILE_CAP` (200) since each file
-  costs a process, and what was left out is reported as `untracked_omitted` rather
-  than folded into `truncated`: a short *list* and a cut *body* are different
-  failures and read differently.
-- **A cached diff can be discarded.** `command("diff", { session })` invalidates,
-  and the next frame recomputes. Without it a diff was computed once per session per
-  process and never again — a diff frozen at first sight while the agent kept
-  writing, which is exactly the "cached answer with no age" mistake this document
-  warns about two sections down.
-- **Over ssh a diff is fetched only while it is shown, and re-read only when it
-  moved.** The selection alone asked for one, so the selected remote session's whole
-  working diff crossed the link every `DIFF_TTL` with no pane drawing it — no bundled
-  pane reads `thurbox.diffs`. Now the published `thurbox` table notes a read of
-  `diffs` the way it notes `metrics` (a cached pure tree counts with the flags of the
-  render that built it), the frame records whether any pane it drew read it, and an
-  ssh session's diff is requested only while one did. While shown, an expired answer
-  first reads `git::diff_fingerprint_on` — `status --porcelain=v2` plus `hash-object`
-  of every path that differs in the worktree, or the range's two commits — and keeps
-  the held diff when that has not moved. The status alone is not enough: a file
-  already modified keeps the same status entry however often it is edited again. Local and WSL sessions
-  keep the plain TTL; their diff costs no network. Pinned by `tui_e2e`'s
-  `a_remote_diff_nothing_shows_is_never_fetched` and
-  `a_shown_remote_diff_is_fetched_again_only_when_the_worktree_changes`.
-
-  Measured on one ssh session to the same machine (`ssh localhost`), a 200×50 terminal,
-  a ~100 KB uncommitted diff, `sh` as the agent, idle: bytes the ssh ControlMaster
-  received over 60 s, read from `ss -tinpH` with a sandboxed config and data dir, its
-  own tmux sockets and its own `ControlPath`.
-
-  | build | no pane shows the diff | a pane shows it, unchanged |
-  | --- | --- | --- |
-  | before | 1,298,760 | 1,298,168 |
-  | after | 10,028 | 19,640 |
-
----
-
-## ADR-P9: Prefetch restore's history captures in parallel
-
-> **Superseded in v3 (ADR-41).** thurbox restores no sessions, so there is no
-> startup batch of captures to prefetch. `PaneStream::adopt` still takes an
-> optional seed; `None` captures inline.
-
----
-
-## ADR-P10: Cut the idle tick's per-session churn
-
-**Choice**: a reduction in `refresh_session_statuses`' ~100 Hz work, gated by a
-counter:
-
-- **Agent meta generation gate.** `apply_session_status_fields` called
-  `session.agent_title()` + `session.notification()` for every session every
-  tick — 2·N mutex locks and up to 2·N `String` clones at ~100 Hz, almost
-  always re-reading unchanged values. The reader thread's `TermSignals` now
-  bumps a shared `meta_gen` atomic **after** each title/notification write,
-  and `Session::sync_agent_meta` re-reads the mutexes only when the
-  generation moved (one relaxed/acquire atomic load per session per tick
-  otherwise). Status derivation itself still runs every tick, so
-  blocked/working/done latency is unchanged; a generation observed mid-write
-  only delays the text by one ~10 ms tick (the counter is bumped after the
-  value lands). Gate: `agent_meta_syncs` +
-  `perf_agent_meta_cached_across_idle_ticks` /
-  `perf_agent_meta_resyncs_on_change`.
-
-**Why**: with the render loop demand-driven (ADR-P1), this was among the
-largest remaining per-tick costs, and it scales with session count. It changes
-no user-visible latency budget.
-
-**Rejected**:
-
-- *Deferred follow-up* (measure first via the new observability): an adaptive
-  idle poll interval for the 100 Hz loop itself (idle CPU was not a reported
-  pain point; the tick is now cheap).
+**Why**: the read runs on every loop iteration and scales with session count,
+and the values almost never change between two reads.
 
 ---
 
 ## ADR-P11: Runtime observability — timing histograms, slow ops, perf window
 
-**Choice**: The deterministic counters (ADR-P2) now have a **runtime
-observability layer** on top — wall-clock stats that are **display/logging
-only** and never CI-asserted (the counters remain the sole regression gate):
+**Choice**: The deterministic counters (ADR-P2) have a **runtime observability
+layer** on top — wall-clock stats that are **display/logging only** and never
+CI-asserted (the counters remain the sole regression gate):
 
-- `App::perf_counters()` is a runtime accessor (previously `#[cfg(test)]`).
-- `MetricsState.timings` (`src/app/metrics_state.rs`) holds two hand-rolled
-  fixed-bucket `DurationHistogram`s — `terminal.draw` duration per painted
-  frame and `App::tick` duration per iteration — plus a 16-slot `SlowOps`
-  ring of named synchronous UI-thread operations (`SlowOp { name, ms, tick }`).
-  No new dependencies: the histogram is ~40 lines with power-of-two µs buckets
-  (250 µs → 1 s + overflow), good enough to answer "is a frame 1 ms or 30 ms".
-- **Gating**: the hot-loop `Instant` reads run only while
-  `App::perf_timing_active()` — `THURBOX_PERF_LOG` set (cached at
-  construction) or the perf HUD open — so a normal run pays a single cached
-  bool check per loop iteration, keeping ADR-P5's zero-overhead promise.
-- **Slow ops**: `App::time_op(name, f)` wraps rare, user-triggered synchronous
-  operations (the code-review build/retarget/reload, and `App::update` outliers
-  as `input_dispatch`). Always measured (call sites are not the hot path):
-  ≥ 5 ms lands in the ring, ≥ 100 ms also logs a `slow op` warning — so an
-  interactive stall is attributable even when nobody was watching.
-- **Steady-state reporting**: under `THURBOX_PERF_LOG`, every 1000 ticks
-  (~10 s) `App::tick_perf_window` logs one `perf_window` line — counter
-  **deltas** for the window (`PerfCounters::delta`), frame/tick p50/p95/max,
-  and the window's slow ops — then resets the per-window timing state. The
-  one-shot `startup` line is unchanged.
-- **The perf HUD** (`render_hud` in `src/coordinator/chrome.rs`, F12,
-  `[features] perf_hud`): a floating, non-modal overlay with the same
-  counters/percentiles/slow-ops, refreshed by the existing 250 ms forced-redraw floor.
-- **External inspection**: while timing is active the TUI also publishes a
-  JSON snapshot (counters + percentiles + slow ops + the startup phases) to
-  `perf.json` in the data directory, written atomically, read by
-  **`thurbox-cli perf`** (`--json` for machine output). Publishing is gated on
-  timing being active.
-
-**The v2 implementation** (the bullets above name v1 modules that went with
-`src/app`; the design carried over, the file names did not):
-
-- `kernel::perf` owns the whole layer — `DurationHistogram` (same fixed µs
-  buckets), `SlowOps` (same 16-slot ring), `Timings`, `Startup`, and
+- `kernel::perf` owns the whole layer — `DurationHistogram` (fixed
+  power-of-two µs buckets, 250 µs → 1 s + overflow), `SlowOps` (a 16-slot ring
+  of named synchronous UI-thread operations), `Timings`, `Startup`, and
   `snapshot_json`, which is the single owner of the published JSON shape.
-  `cli::perf` only renders whatever that produces, and
-  `tests/kernel_perf.rs` pairs the two so a key renamed on one side fails
-  rather than printing a silent zero.
-- **Three histograms, not two.** `frame` (the `terminal.draw` call) and `tick`
-  (one iteration's non-blocking work) are joined by **`republish`** — the
-  per-frame rebuild of every `thurbox.*` table. They are recorded so they
-  *decompose* rather than nest: `tick` is taken before the paint, so an
-  iteration is roughly tick + republish + frame + the input wait. Telling the
-  table rebuild apart from the painting is the difference between "frames are
-  expensive" and knowing why, and it is the number ADR-P14 should be read
-  against.
+  `cli::perf` only renders whatever that produces, and `tests/kernel_perf.rs`
+  pairs the two so a key renamed on one side fails rather than printing a
+  silent zero.
+- **Three histograms.** `frame` (the `terminal.draw` call), `tick` (one
+  iteration's non-blocking work) and **`republish`** — the per-frame rebuild of
+  every `thurbox.*` table. They are recorded so they *decompose* rather than
+  nest: `tick` is taken before the paint, so an iteration is roughly tick +
+  republish + frame + the input wait. Telling the table rebuild apart from the
+  painting is the difference between "frames are expensive" and knowing why,
+  and it is the number ADR-P14 should be read against.
 - **Gating** is `App::perf_timing_active` — `perf_log` (cached from
   `THURBOX_PERF_LOG` at construction) or the HUD being open — checked once per
-  iteration, so a default run pays one bool.
+  iteration, so a default run pays one bool, keeping ADR-P5's zero-overhead
+  promise.
 - **Slow ops** wrap `interface_reload` (the whole reload: rebuild, sources,
   declarations) and `input_dispatch` (a keypress, which runs plugin Lua and so
-  is where a slow plugin is felt). ≥5 ms rings, ≥100 ms also warns.
+  is where a slow plugin is felt). ≥5 ms rings, ≥100 ms also logs a `slow op`
+  warning, so an interactive stall is attributable even when nobody was
+  watching.
+- **Steady-state reporting**: under `THURBOX_PERF_LOG`, every
+  `PERF_WINDOW_TICKS` iterations the loop logs one `perf_window` line to the
+  daily rolling `thurbox.log` — counter **deltas** for the window,
+  frame/tick p50/p95/max, and the window's slow ops — then resets the
+  per-window timing state.
 - **Startup phases** are config, starting the Fleet watch (`snapshot_open_ms`),
   theme activate, **`ui_build_ms`** (building the Lua interface) and
   `first_frame_ms`.
-- **The subscriber had to be restored.** v2's TUI shipped without one at all,
-  so every `tracing` call in the process — the panic hook's included — was
-  dropped rather than written. `main` now installs the daily rolling
-  `thurbox.log` appender v1 had, which is what makes the lines below exist.
+- **The perf HUD** (`render_hud` in `src/coordinator/chrome.rs`, F12,
+  `[features] perf_hud`): a floating, non-modal overlay with the same
+  counters/percentiles/slow-ops, refreshed by the 250 ms forced-redraw floor.
+- **External inspection**: while timing is active the TUI also publishes a
+  JSON snapshot (counters + percentiles + slow ops + the startup phases) to
+  `perf.json` in the data directory, written atomically, read by
+  **`thurbox-cli perf`** (`--json` for machine output).
 
-**Why**: the counters gate regressions in CI but were invisible in a live
+**Why**: the counters gate regressions in CI but are invisible in a live
 build, and they deliberately count rather than time — so a user-perceived
-stall ("opening review froze for 3 s") had no signal at all. The histograms
-and slow-op ring answer *how long*, the `perf_window` line answers *what is
-the app doing while idle*, and both stay out of CI so ADR-P2's no-flaky-timing
-rule holds.
+stall had no signal at all. The histograms and slow-op ring answer *how long*,
+the `perf_window` line answers *what is the app doing while idle*, and both
+stay out of CI so ADR-P2's no-flaky-timing rule holds.
 
 **Rejected**:
 
-- *Always-on timing* — two `Instant::now()` calls per ≤10 ms loop iteration is
-  cheap but not free, and observability nobody asked for shouldn't tax every
-  run; the opt-in gate costs one bool.
+- *Always-on timing* — two `Instant::now()` calls per loop iteration is cheap
+  but not free, and observability nobody asked for shouldn't tax every run; the
+  opt-in gate costs one bool.
 - *A timing dependency (hdrhistogram etc.)* — same licensing/vetting cost
   ADR-P5 rejected for criterion; the fixed-bucket histogram is sufficient.
 - *CI assertions on the new timings* — explicitly ruled out; ADR-P2 stands.
 
 ---
 
-## ADR-P12: Make the whole new-session flow non-blocking, and show it working
-
-**Choice**: `Ctrl+N` had one phase left on the UI thread and one with no
-feedback; both are fixed, and the flow now reports itself for its full
-duration.
-
-*Off-thread* (the R1 recommendation from the 2026-07-09 investigation):
-
-- **Branch listing.** `start_branch_selection` ran `fetch_pending_repos`
-  (`git fetch` — a network round-trip **per repo**, ssh-wrapped for a remote
-  host), `list_branches_on`, and `ordered_branch_list` inline in the key
-  handler. Since the repo picker closes *before* it runs, the freeze happened
-  with **no modal, no toast and no repaint** on screen — measured at ~2 s
-  locally, unbounded on a slow network, ~5 s per unreachable host. It now
-  dispatches a `BackgroundTask` (`App::branch_list`) and the selector opens in
-  `App::poll_branch_list`, mirroring `worktree_create`/`poll_worktree_create`.
-- **Backend ready-up.** `build_spawn_inputs` called `backend_for`, whose
-  `ensure_ready()` is an ssh connect + remote tmux bring-up (15–30 s on a slow
-  host, per ADR-P7) — and it sat in the *prelude* of `do_spawn_session_async`,
-  so a remote spawn blocked the loop before the worker was ever dispatched.
-  Split into `App::select_backend` (registry lookup, cheap, UI thread) and the
-  free `ensure_backend_ready` (blocking), which the async path now calls
-  **inside** its `spawn_blocking` closure. The synchronous `do_spawn_session`
-  (automations, which need the id back immediately) calls it on its own thread
-  by contract.
-
-*Feedback* — `App::pending_spawn` (`PendingSpawn` + `SpawnPhase`), which lives
-for the **whole wizard**: from the repo being chosen until the session is live,
-across both the background phases *and* the modals between them. It is cleared
-only when the session lands, the flow errors, or the user Escs out (every wizard
-modal's cancel path calls `abandon_pending_spawn`, or a cancelled flow would
-strand a placeholder row forever).
-
-- A **placeholder row** in the session list (`ui::project_list`), so the session
-  appears the moment the wizard is confirmed rather than after a slow shell-out.
-  It carries no `SessionInfo` and records **no hitbox** — so selection indices
-  stay a valid range over the real sessions and the monkey test's invariants are
-  untouched. Its label upgrades as the wizard learns it: the repo, then the
-  session name. It renders **inside the repo group it will land in**
-  (`pending_spawn_slot`), at the end of that group — where the real row will
-  appear, since a new session has no `display_order` and sorts after its ordered
-  siblings. A repo with no rows yet brings its own header rather than floating
-  loose at the bottom. `PendingSpawn.repo_display_names` (resolved once when the
-  repo is chosen — `git::repo_display_name` can shell out on a cache miss, so it
-  must not run per frame) mirrors what `SessionInfo::repo_display_names` will
-  carry, so the pending row and the real one group identically. Because the row
-  is inserted rather than appended, the widget's item indices are offset past it
-  when mapping back to session indices (hitboxes and the selected item).
-- An **animated badge** in the status row (`⠹ NEW  Creating worktree(s)… feat/x
-  · 14s`), with an elapsed counter
-  so a long wait reads as progressing rather than hung.
-- `SpawnPhase::is_working()` splits the three shell-out phases from
-  `Configuring` (a wizard modal is open). A `Configuring` spawn keeps its row and
-  badge — the session is still on its way — but shows a **static `◌`**, no
-  elapsed counter, and does not drive `advance_spinner_frame`: spinning a spinner
-  while the app waits on the *user*, and timing how long they take to answer,
-  would both be lies. A working phase animates at ~8 fps instead of resting on
-  the 250 ms redraw floor.
-
-*Extension (repo-picker path entry).* The picker itself later gained the same
-treatment: its three remote round trips — the path-browser directory listing
-(Tab), the Enter-commit path check (exists + git-ness, one trip), and the
-`Alt+P` parent scan — each run on a `BackgroundTask` worker drained by
-`App::poll_repo_picker` in `tick_core` (`src/app/repo_picker.rs`), replacing
-the synchronous `list_dir_on` probes that ran in the key handler. The modal
-stays fully interactive while a fetch is in flight (spinner rows/labels);
-supersession is handled by restarting the task (the orphaned worker's send
-fails harmlessly) plus a per-picker-instance `repo_picker_gen` stamp so a
-result that outlives its modal (Esc + reopen) is dropped. Local targets compute
-inline (`std::fs` is instant, and the acceptance harness runs without a Tokio
-runtime). Listings are cached per `(picker instance, dir)`; an in-browser Tab
-bypasses the cache as an explicit refresh. Gates: `poll_repo_dir_listing_*`, `poll_repo_path_check_*`,
-`poll_repo_parent_import_*` (`src/app/mod.rs` tests);
-`repo_picker_browser_*` (`src/app/acceptance.rs`).
-
-*Re-entrancy.* Unfreezing the flow makes its window **interactive**, which is a
-new hazard: `branch_list` and `worktree_create` carry `new_session` state across
-a thread boundary, so a second `Ctrl+N` in that window would overwrite the repo
-the in-flight job is resolving — repo A's branch list would land on repo B's
-config, cutting a worktree from a branch B may not have. `start_new_session`
-therefore refuses re-entry while `new_session_in_flight()`.
-
-**Why**: the phases were *already* mostly backgrounded (ADR-P8's shape), but the
-progress was announced with a `status_message` — and those expire after
-`STATUS_MESSAGE_TIMEOUT` (5 s). A `git worktree add` on a large repo runs well
-past that, so the toast vanished mid-job and the app looked idle: the user's
-report was "creating takes time and I have no info on screen that creation is in
-progress". Progress that outlives a 5 s timer cannot *be* a status message, hence
-a separate piece of state that lives exactly as long as the work.
-
-Gate: `spawn_progress_outlives_the_status_message_timeout`,
-`spawn_progress_reports_elapsed_time`, `spawn_placeholder_row_is_not_selectable`,
-`spawn_placeholder_replaces_the_empty_state` (`src/app/acceptance.rs`);
-`poll_branch_list_*`, `indicator_survives_every_wizard_modal`,
-`escaping_a_wizard_modal_drops_the_indicator`,
-`new_session_is_refused_while_the_branch_list_is_in_flight`
-(`src/app/mod.rs` tests).
-
-**Rejected**:
-
-- *Keeping the repo picker open in a `loading` state instead of a placeholder
-  row* — the row doubles as the answer to "where did my session go", and the
-  modal would block the rest of the TUI for no gain.
-- *Exempting `status_message` from expiry while a spawn is in flight* — the
-  smaller diff, but it overloads a transient-toast slot with durable state, and
-  a frozen string still reads as hung. The elapsed counter is what proves
-  liveness.
-- *Making the placeholder selectable* — it has no `SessionId` to select, and a
-  clickable row that resolves to nothing is worse than an inert one.
-- *Clearing the indicator whenever a wizard modal opens* (the first cut) — it
-  made the session blink in and out of the list between phases, which reads as
-  "it disappeared". A session being created exists from the moment you commit to
-  it; the phase only changes what it's waiting on.
-
----
-
 ## ADR-P13: A frame is a Lua call per pane, so the loop settles hard
 
-**Choice**: Keep v1's demand-driven loop (ADR-P1) and make it stricter, because a
-frame now costs more. Every visible pane is a Lua call returning a table, which is
-converted to nodes (`kernel::convert`) and painted (`kernel::paint`); v1's frame was
-a Rust function writing into a buffer.
+**Choice**: Keep the demand-driven loop (ADR-P1) strict, because a frame is
+costly. Every visible pane is a Lua call returning a table, which is converted to
+nodes (`kernel::convert`) and painted (`kernel::paint`).
 
 So the loop paints only when something changed, or when `FORCE_REDRAW_INTERVAL`
 (250 ms) elapses, with `MIN_FRAME_INTERVAL` as the floor between two paints. What
@@ -691,8 +286,8 @@ relaunched — killing the agent its own spawn had just started. `GitStats::know
 never expired, so a diffstat froze at its first reading. A `run` marked only
 `Pending` started a process per frame once its answer went stale. A failed branch
 fetch stuck for the process lifetime. Each is now a TTL, an in-flight marker, or a
-generation counter. **If you add a cache to the loop, give it an age**; the review
-that found these is in the history, and they were one field each.
+generation counter. **If you add a cache to the loop, give it an age**; each of those fixes was one
+field.
 
 An age can be a **generation key** rather than a clock, and then *which* key you
 pick is the whole of the correctness. `GitStats::known` caches `merged` — is this
@@ -703,16 +298,10 @@ un-lands") and latched: `merged` is a fact about HEAD, HEAD moves when the sessi
 keeps working after its PR lands, and the first `true` fed itself back through
 `drain` forever — so the delete confirmation stopped warning about commits that
 existed nowhere else. A 5 s TTL does not save a key like that; it re-ran the
-worker without re-opening the question. Only `true` was cached, because only one
-direction of staleness is safe without a clock: a stale `true` hides work, a
-stale `false` costs one needless question.
-
-> **Revised by ADR-P25.** The `false` is cached too now, on the same commit key
-> and aged by the caller (`snapshot`'s `MERGE_RECHECK`). The direction of
-> staleness is unchanged and still the reason this works — what changed is the
-> price of the needless question: recomputing it is seven subprocesses, per
-> session, per poll, and an open pull request is where a worktree spends most of
-> its life.
+worker without re-opening the question. Both answers are cached on the commit
+key, and a `false` is also aged by the caller (`snapshot`'s `MERGE_RECHECK`,
+ADR-P25), because only one direction of staleness is safe without a clock: a
+stale `true` hides work, a stale `false` costs one needless question.
 
 **Bounds belong to the kernel, not the plugin.** A plugin may ask for a program
 (`kernel::runs`) every frame — that is the documented pattern, because a fresh answer
@@ -758,21 +347,19 @@ The 256 MiB default bounds the Lua heap, not process RSS or Rust-side caches.
 
 ---
 
-## ADR-P15: What a v2 frame actually costs, and the three cuts taken
+## ADR-P15: What a frame costs, and the three cuts taken
 
-**Context**: v2 was measured against v1.8.7 under identical synthetic load
-(three agents each printing 30 lines/s, both binaries running *simultaneously*
-so machine noise hits them equally). v2 painted **fewer** frames than v1 and
-still used 2.5x the CPU, so the gap was never frame *rate* — it was the price
-of one frame. Attribution, release builds, with the observability of ADR-P11:
+**Context**: under synthetic load (three agents each printing 30 lines/s) the
+cost was never frame *rate* — it was the price of one frame. Attribution,
+release builds, with the observability of ADR-P11:
 
-| | v1.8.7 | v2 before | v2 after |
-|---|---|---|---|
-| CPU | 14.6% | 36.5% | 30.7% |
-| frames/s | 47 | 37 | 40 |
-| **CPU per frame** | **3.1ms** | **9.9ms** | **7.7ms** |
+| | before | after |
+|---|---|---|
+| CPU | 36.5% | 30.7% |
+| frames/s | 37 | 40 |
+| **CPU per frame** | **9.9ms** | **7.7ms** |
 
-Inside a v2 frame the draw was ~75% and `republish` ~25%; inside the draw, the
+Inside a frame the draw was ~75% and `republish` ~25%; inside the draw, the
 Lua->node **conversion** cost more than running every plugin's Lua put together
 (session list: 897us of Lua, 3006us of conversion, for 187 nodes — ~14us *per
 node*). ratatui's own flush was never the problem (~0.6ms).
@@ -789,18 +376,13 @@ node*). ratatui's own flush was never the problem (~0.6ms).
   conversion).
 - **Link extraction only for surfaces on screen** (ADR-P14's stamp still
   applies on top). Scanning every live pane's whole grid cost ~1.2ms a frame
-  with three sessions, for answers nothing could use; **1152us -> 320us**. This
-  restores v1's rule, which asked only the active session.
+  with three sessions, for answers nothing could use; **1152us -> 320us**.
 
 `publish` also moved to `raw_set` on tables it created moments earlier and
 pre-sizes the ~30-field session row, which is worth ~5%.
 
-**Since closed** by ADR-P16, which added the change-signals this names as the
-prerequisite and then gated both the published groups and the pane renders on
-them.
-
-**Rejected**: *throttling the repaint rate* — v2 already paints fewer frames
-than v1; capping it further trades responsiveness for a number. Note the
+**Rejected**: *throttling the repaint rate* — the loop already paints only on
+change; capping it further trades responsiveness for a number. Note the
 converse, which the measurements make plain: because repaints are
 **output-driven**, a cheaper frame becomes *more frames* rather than less CPU
 (the conversion cut took 25% off the frame but only 9% off CPU). Per-frame work
@@ -811,9 +393,9 @@ but the CPU it returns is bounded by `MIN_FRAME_INTERVAL`.
 
 ## ADR-P16: Make a frame cost what changed, not what exists
 
-**Context**: ADR-P15 left v2 at 2.4x v1's CPU and 2.5x its cost per frame, with
-the gap identified as the Lua boundary — running each pane, converting the table
-it returns, and rebuilding every `thurbox.*` group, all once per painted frame.
+**Context**: ADR-P15 identified the remaining cost as the Lua boundary — running
+each pane, converting the table it returns, and rebuilding every `thurbox.*`
+group, all once per painted frame.
 Instrumenting the tree diff showed why that was avoidable: under load the session
 list produced a **byte-identical tree on 200 of 200 renders**, and the agent pane
 repainted because its *surface* moved rather than its tree. The loop was proving
@@ -872,11 +454,10 @@ the work wasted only after paying for it.
   (the search strip does) or animate, and neither is visible from outside the
   VM; an undeclared pane behaves exactly as before.
 
-| | v1.8.7 | before P15 | after P15 | now |
-|---|---|---|---|---|
-| CPU | 15.6% | 36.5% | 31.0% | **23.1%** |
-| CPU per frame | 3.1ms | 9.9ms | 9.1ms | **5.2ms** |
-| gap to v1 (CPU) | — | 2.5x | 2.0x | **1.5x** |
+| | before P15 | after P15 | after P16 |
+|---|---|---|---|
+| CPU | 36.5% | 31.0% | **23.1%** |
+| CPU per frame | 9.9ms | 9.1ms | **5.2ms** |
 
 **Four things the implementation taught, each caught by a test rather than by
 review:**
@@ -914,7 +495,7 @@ review:**
   either and is a far larger change. Opt-in purity composes with adding it later.
 - *Per-pane dependency sets* — the measured waste is frames where *nothing*
   moved, so a coarse epoch captures it.
-- *Throttling the repaint rate* — v2 already paints fewer frames than v1.
+- *Throttling the repaint rate* — see ADR-P15.
 
 **Follow-up, measured after the above landed.** The counters it added showed the
 gate barely working at rest: `renders skipped` was **3 of 284** on an idle
@@ -936,11 +517,11 @@ interface. Three fixes:
   well inside the 250ms redraw floor.
 - **`platform` is constant** and was rebuilt 33 times a second.
 
-| | v1.8.7 | after P16 | now |
-|---|---|---|---|
-| CPU (loaded) | 15.6% | 21.2% | **19.4%** |
-| CPU per frame | 3.1ms | 5.4ms | **4.2ms** |
-| CPU (idle) | 2.33% | 4.83% | **3.57%** |
+| | before | after |
+|---|---|---|
+| CPU (loaded) | 21.2% | **19.4%** |
+| CPU per frame | 5.4ms | **4.2ms** |
+| CPU (idle) | 4.83% | **3.57%** |
 
 A fourth followed: at rest the snapshot's generation moved every
 `REFRESH_INTERVAL` (400ms) purely because `taken_at_ms` was re-stamped, which
@@ -1153,16 +734,6 @@ exactly as the Lua path does, the bug the focus request used to hit.
 
 ---
 
-## ADR-P19: A remote round trip is not a local one, and neither is unpaced (2026-08-28)
-
-> **Superseded in v3 (ADR-41).** thurbox discovers no windows and mirrors no
-> host: a session is a Fleet Task, and its pane is the one Fleet names. The rule
-> stays: anything issued on a timer against a host needs an interval sized to the
-> round trip, and a failure needs an interval of its own
-> (`ATTACH_RETRY_INTERVAL`).
-
----
-
 ## ADR-P20: A link on a scrolling screen must not un-gate the frame (2026-08-29)
 
 **Context**: ADR-P16 made a frame cost what changed, and ADR-P18 closed the last
@@ -1358,13 +929,6 @@ not at the top of a render that usually draws nothing moving.
 
 ---
 
-## ADR-P22: Background housekeeping is invisible to the interface (2026-09-04)
-
-> **Superseded in v3 (ADR-41).** thurbox dispatches no background sweep: a
-> deleted session is a deleted Fleet Task, and Fleet releases it.
-
----
-
 ## ADR-P23: Per-plugin cost, from one report (2026-09-15)
 
 **Context**: ADR-P11's layer is aggregate. It says a frame is 12ms, that renders
@@ -1435,10 +999,9 @@ window did not move.
 
 ## ADR-P24: A wedged link is not a slow one, and the loop waits for neither (2026-09-17)
 
-**Context**: ADR-P7 and ADR-P12 moved everything that *connects* to an off-local
-host off the loop — readying a backend, spawning, restoring. What stayed on it
-were two questions asked of a connection already open, on the assumption that an
-open connection answers promptly:
+**Context**: everything that *connects* to an off-local host runs off the
+loop. What stayed on it were two questions asked of a connection already open,
+on the assumption that an open connection answers promptly:
 
 - `render_session` matches a pane to the rect it is painting into, and
   `Session::resize` did that by asking the backend — a control-mode round trip
@@ -1802,11 +1365,8 @@ held, 50ms per keystroke or 50ms per rescan — by hand, never in CI (ADR-P5).
 **Context**: every session's pane is parsed twice. tmux parses it and keeps
 its screen and history. The interface parses it again into a `vt100` grid of
 32 bytes a cell, sized to the whole terminal, with `scrollback_lines` rows of
-history, for every attached session whether or not it was ever shown. The
-multiplexer benchmark read that as about 1 MiB a session attached, where
-headless thurbox, which is tmux, holds all 50 in 9 MiB. It is more than that:
-the benchmark's sessions had barely scrolled. Measured on the interface
-process alone, 50 sessions attached at 200x50, once every session had printed
+history, for every attached session whether or not it was ever shown.
+Measured on the interface process alone, 50 sessions attached at 200x50, once every session had printed
 6,000 lines:
 
 | `scrollback_lines` | idle, nothing scrolled | history full |
@@ -1896,11 +1456,6 @@ rebuilds, since both are built from the same capture layout.
 above): 50 sessions attached and idle, 42.5 → 27.1 MiB; with every history
 full, 350 → 32.6 MiB. One session, 17.8 → 17.5 MiB. What is left per session
 is its reader thread (its stack and malloc arena, ~135 KiB), not its grid.
-On the benchmark harness, same machine before and after, 50 sessions
-attached and idle went from 104 to 48.3 MiB for the whole host, under Herdr's
-57.4, with CPU and keystroke latency unchanged and the stale first view
-gone: see the section revisiting it in
-[benchmark-multiplexers.md](benchmark-multiplexers.md).
 
 **Costs**, measured on 20 sessions of 1,000 history rows at 200x50, release
 build:
@@ -1932,10 +1487,9 @@ which could not be read back is tried again rather than cached empty; and
 
 ## ADR-P28: A keystroke's echo is painted at once (2026-09-23)
 
-**Context**: the multiplexer benchmark (`docs/thurbox/benchmark-multiplexers.md`) put a
-keystroke's round trip at 25 ms (p95 48) and 42 ms while another session was
-busy, against 1–2 ms for tmux and Herdr, with the samples clustered rather than
-spread. Timestamping each hop of one keystroke inside the binary showed where the
+**Context**: a keystroke's round trip measured 25 ms (p95 48) and 42 ms while
+another session was busy, with the samples clustered rather than spread.
+Timestamping each hop of one keystroke inside the binary showed where the
 time went, and none of it was work:
 
 1. The keystroke's own frame painted at once (it had the 16 ms input floor), but
@@ -1992,8 +1546,7 @@ the absolute numbers):
 | … waiting for the output floor | 0–33 ms | 0 |
 | the frame | 1.34 ms | 0.55 ms |
 
-The same hops after the change on the benchmark's own machine (a 4-core i5-6500T
-at the `powersave` governor, idle, the harness's 200x50 client), 109 keys:
+The same hops after the change, idle, on a 200x50 client, 109 keys:
 
 | hop | ms |
 |---|---|
@@ -2006,9 +1559,8 @@ at the `powersave` governor, idle, the harness's 200x50 client), 109 keys:
 | the echo frame: kept frame in, 0.27 · surface render, 0.66 · width/theme passes, 0.09 · diff and flush, 0.59 · kept frame out, 0.19 | 1.69 |
 | **total** | **3.6** |
 
-That is the floor this architecture has on that machine, and it is above Herdr's
-2.2 ms there. None of it is waiting any more; it is three kinds of work, each
-structural:
+That is the floor this architecture has. None of it is waiting any more; it is
+three kinds of work, each structural:
 
 - **The frame (~1.4 ms).** thurbox is a second terminal emulator: the echo is
   re-rendered from its vt100 grid into a ratatui buffer and diffed over the whole
@@ -2027,11 +1579,7 @@ structural:
   let no plugin claim a key it had not declared — a plugin API change, not a
   pacing one.
 
-**Result** in the multiplexer benchmark, before and after on that machine
-(`docs/thurbox/benchmark-multiplexers.md`, the 2026-09-24 revisit): keystroke to echo
-24.7 → 3.4 ms idle (Herdr 2.1) and 42.1 → 1.6 ms with another session busy
-(Herdr 0.45); `session create` 95 → 36 ms (Herdr 52); attached CPU unchanged
-within the run-to-run spread. The kept frame
+The kept frame
 costs a screen's worth of cells (~0.4 MiB at 200x50), so it is held only for
 `KEEP_FRAME_WHILE_TYPING` after a keystroke: at rest the interface carries
 neither it nor the copy each full frame would make into it.
@@ -2177,8 +1725,7 @@ what separates "the session list costs 435us" from "a visible row costs 9us".
 tmux panes, a real vt100 grid per session, the real loop, in a fully isolated
 sandbox with `sh` printing on a timer as the agent. It reports CPU from `/proc`
 plus the loop's own `perf_window` line, and keeps the log at
-`target/perf-run.log`. The documented instruction before it was "launch it and
-leave it idle", which measures the one regime nobody complains about.
+`target/perf-run.log`.
 
 ```sh
 scripts/dev/perf-run.sh                        # 8 sessions, 1 printing, 30s
@@ -2203,12 +1750,6 @@ matches `thurbox-cli`.)
 A reading from either is only comparable with another at the same terminal size
 and session count, so both pin theirs.
 
-A third instrument answers a different question — how thurbox compares with
-the alternatives, not with itself: `just bench-multiplexers` runs raw tmux,
-Herdr and thurbox through the same scenarios with the same stand-in agent.
-Its method is in [benchmark-multiplexers.md](benchmark-multiplexers.md); it keeps no
-results, so run it to measure a build.
-
 **And on a busy machine, trust the counters over the CPU.** A percentage from
 `/proc` is a real measurement of a shared machine: taken while something else was
 compiling, the same build measured 5.96% and 7.53% on two runs half an hour
@@ -2220,172 +1761,6 @@ output are deterministic and do not care what else is running: for the two fixes
 above, cached trees over the same workload went from 154 to 3070 against an
 unchanged frame count, which is the claim that holds however loaded the machine
 was. `uptime` before believing a percentage.
-
----
-
-## Investigation 2026-07-09: where the time actually goes
-
-A measurement pass over the render loop, the tick, the draw path and startup.
-Ranked by **measured** impact. Anything not
-measured is called out under [Honest gaps](#honest-gaps) rather than guessed at.
-
-### Method
-
-- **Machine**: Intel i7-8700K (6C/12T, 3.70 GHz), 31 GiB RAM, Linux
-  7.0.14-arch1-1, tmux 3.7, rustc 1.97.0 stable.
-- **Build**: `cargo build --release` (LTO, stripped). No number below comes
-  from a debug build.
-- **Isolation**: every binary ran with `HOME`, `THURBOX_CONFIG_DIR`,
-  `THURBOX_DATA_DIR`, `THURBOX_SOCKET` and `TMUX_TMPDIR` redirected to
-  throwaway directories, so no measurement touched real config, real data, or
-  the real tmux socket.
-- **Loop timing**: the built-in instrumentation, not a new dependency —
-  `THURBOX_PERF_LOG=1 thurbox` inside a scratch tmux pane, reading the
-  `startup` and `perf_window` lines (ADR-P11) from
-  `$THURBOX_DATA_DIR/thurbox.log.<date>`.
-- **Load generator**: a synthetic agent declared in a scratch `agents.toml` —
-  a throttled producer (100 lines/s/session) and an unthrottled one (`yes`) —
-  driven at 0, 4 sessions.
-- **Subprocess costs**: `git worktree add`, `git fetch`, and `ssh` timed
-  directly with a monotonic clock, five/three runs each.
-
-Reproduce: build release, export the five env vars above to temp dirs, run
-`THURBOX_PERF_LOG=1 thurbox` in a tmux pane, read the log.
-
-### Findings
-
-#### 1. `git fetch` blocks the UI thread for ~2 s on the new-session path
-
-> **Fixed by ADR-P12.** `start_branch_selection` now dispatches to a worker and
-> the selector opens in `poll_branch_list`. The measurement below is what
-> motivated it.
-
-`App::start_branch_selection` (`src/app/key_handlers.rs:1448`) calls
-`fetch_pending_repos` (`src/app/key_handlers.rs:1486`), which runs
-`git::git_fetch_on` (`src/app/key_handlers.rs:1491`) synchronously on the UI
-thread, once per repo.
-
-Measured against this repository's `origin`: **1776 ms, 1954 ms, 2018 ms**
-(three runs). The cost is network-bound and therefore unbounded — for a repo
-on a remote host the call is ssh-wrapped, and a single ssh connect to an
-unroutable address takes exactly **5014 ms** (`ConnectTimeout=5`,
-`crates/runtime-mux/src/shell.rs`).
-
-Symptom: the TUI stops painting and stops accepting input for ~2 s after a repo
-is chosen in the new-session flow, longer on a slow network, and ~5 s per
-unreachable host. This is the only multi-second freeze on the ordinary
-interactive path. The sibling calls on the same path (`list_branches_on`,
-`default_branch_on`, `branch_exists_on`, `list_dir_on`) are local `git` and
-cost single-digit ms.
-
-#### 2. A `Spawn` automation creates worktrees and a tmux window inline
-
-`process_automations` runs on the tick. Its `Spawn` arm reaches
-`spawn_and_prompt` (`src/app/mod.rs:6156`), which calls
-`git::create_or_attach_worktree` at `src/app/mod.rs:6183` (primary repo) and
-`src/app/mod.rs:6206` (each extra repo), then the **synchronous**
-`do_spawn_session` (`src/app/mod.rs:3660`).
-
-Measured `git worktree add` on this repository: **84, 88, 93, 97, 100 ms**
-(median ~93 ms) — roughly six dropped frames at 60 Hz, multiplied by the number
-of repos in a multi-repo spawn, before the tmux window spawn is even counted.
-
-The contrast is the point: the **interactive** `Ctrl+N` spawn was already moved
-off-thread (`do_spawn_session_async` at `src/app/mod.rs:3733`, drained by
-`poll_worktree_create`/`poll_session_spawn` in `tick_core`). The automation
-spawn path never received the same treatment.
-
-#### 3. Output-driven repaint runs at the full loop rate (~100 fps)
-
-ADR-P1's demand-driven paint holds while idle, but any agent output marks the
-UI dirty, so during a streaming turn the loop paints on essentially every
-iteration.
-
-| Load | frames / ~10 s window | frame p50 | p95 | max | tick max |
-| --- | --- | --- | --- | --- | --- |
-| idle, 0 sessions | 40 (~4 fps floor) | 0.50 ms | 0.79 ms | 0.79 ms | 0.39 ms |
-| 4 sessions, 100 lines/s each | 987 (~99 fps) | 1.00 ms | 4.00 ms | 7.81 ms | 0.49 ms |
-| 4 sessions, unthrottled | 1000 (~100 fps) | 1.00 ms | 1.00 ms | 1.51 ms | 0.79 ms |
-
-Under the unthrottled load thurbox held a steady **65.6 % of one core** (RSS 34
-MB) and the tmux server **98.7 %**. No frame came close to the 16 ms budget and
-**zero slow ops** were logged in any run.
-
-This is a throughput cost, not a freeze. Related but smaller: a `Working`
-session forces a repaint every `SPINNER_TICKS_PER_FRAME = 12` ticks (~8 fps,
-`src/app/mod.rs:4560`) even when nothing visible changed — dominated by the
-output-driven rate above whenever the agent is actually producing output.
-
-### What is fine
-
-Checked, measured, and acceptable — listed so the absence of a finding here
-means "looked at", not "not looked at".
-
-- **The tick.** `tick_core` p50 **250 µs**; worst observed max **790 µs**
-  (idle), **490 µs** (4 throttled sessions), **786 µs** (flood). Never within
-  20x of a dropped frame.
-- **The draw.** Diffed, not full: `terminal.draw` double-buffers and flushes
-  changed cells only; there is no per-frame `terminal.clear()`, and the `Clear`
-  widget is scoped to modals, the perf HUD, and the review pane. Frame p50
-  0.5–1.0 ms, worst max 7.81 ms.
-- **Startup.** `first_frame_ms` = **46 ms** (no sessions), **67 ms** (4
-  sessions), **152 ms** (4 sessions including adopt). Nothing is
-  enumerated eagerly that need not be.
-- **The session-order cache (ADR-P3).** Signature is an O(sessions) hash with
-  no allocation and is status-independent, so streaming output and spinner
-  ticks reuse the cached order.
-- **The vt100 lock.** Taken once per painted frame, for the visible pane only,
-  for an O(rows x cols) copy. Background sessions' parsers are never locked
-  during render.
-- **Remote SSH.** Both configured hosts were **up** during this pass
-  (the Linux host 317 ms rc=0; the Windows host connects, returns `ALIVE`) — ssh
-  returns 255 on connect failure, and neither did. No **active** session is
-  remote: all 3 live sessions are `local-tmux`. Backends are registered lazily
-  (`App::select_backend`) and readied on background threads (ADR-P12), so a
-  down host cannot block
-  `tick_core`. For
-  the paths reachable here, "keep the TUI usable when remote SSH hosts fail"
-  holds.
-
-### Recommendations
-
-| # | Change | Benefit | Cost | Safe independently? |
-| --- | --- | --- | --- | --- |
-| R1 | Move the new-session `git fetch` off the UI thread, mirroring `poll_worktree_create` | Removes the only multi-second freeze on the normal interactive path (~2 s, unbounded) | Medium: needs a loading state + a `poll_*` drain | Yes — **done**, ADR-P12 |
-| R2 | Route the automation `Spawn` through the existing `do_spawn_session_async` | Removes a ~93 ms x repos + tmux-spawn freeze per fire | Low–medium: the async path already exists | **No** — must edit `src/app/automation.rs`, reserved by `fix/automation-exec-nonblocking` |
-| R3 | Clamp output-driven repaint to ~30 fps | ~3x less TUI CPU while agents stream (65.6 % -> ~20 % of a core) | Low (one clamp) but needs an input-latency measurement first | Yes — **not done**, see gaps |
-| R4 | Skip the spinner repaint when the spinner cell is off-screen | Minor; subsumed by R3 whenever output is flowing | Low | Yes |
-
-R2 is the one that overlaps the in-flight `Exec` fix. Both arms live in
-`fire_automation`, so landing them separately would conflict; the
-worktree/spawn offload should ride with that branch or follow it.
-
-### Honest gaps
-
-- **The chronic freeze was not reproduced.** Under worst-case synthetic output
-  nothing on the UI thread exceeded 16 ms and zero slow ops were logged. If a
-  continuous freeze is real, the evidence points *away* from the render/tick
-  loop; the tmux server pegging ~99 % of a core (finding 3) and the host
-  terminal emulator are the untested candidates.
-- **No real agent CLI was exercised.** `HOME` was isolated, so no authenticated
-  `claude`/`codex` ran. A real agent's output — full-screen TUI repaints, wide
-  ANSI runs — has a different vt100 shape than the synthetic producers used
-  here, so finding 3's frame times are a lower bound.
-- **No CPU profile by symbol.** `perf`, `cargo-flamegraph` and `valgrind` are
-  all absent on this machine and `perf_event_paranoid = 2`; `criterion` is not
-  a dependency and there is no `benches/`. Per ADR-P5 none were added just to
-  measure. All attribution above is from the built-in counters plus direct
-  subprocess timing.
-- **The `Exec` automation path was not measured** — reserved for
-  `fix/automation-exec-nonblocking`.
-- **Remote-session render and status cost is unmeasured**: no active remote
-  session existed and both hosts were up, so the `Unreachable` placeholder path
-  never engaged. *Partly closed by ADR-P24*, which reproduces the case this
-  audit could not — a link that stays open and carries nothing — and takes the
-  two round trips it froze on off the loop.
-- **Per-frame allocation counts are static reads**, not an allocation profile;
-  no allocator instrumentation was added. The O(sessions) left-panel rebuild is
-  described by code inspection, not by a measured allocation count.
 
 ---
 
@@ -2407,7 +1782,7 @@ worktree/spawn offload should ride with that branch or follow it.
 | Verify no perf regression | `cargo nextest run -E 'test(kernel::perf)'` for the counters; the loop's settling is asserted per surface in `tests/*.rs` |
 | Confirm idle CPU is low | `scripts/dev/perf-run.sh --idle` — or launch and leave it idle, where `idle skips` climbs while `frames` stays flat |
 | See why `git` keeps running | It is the per-session worktree poll — `git_poll_secs` in `settings.toml` sets its cadence and `0` turns it off (ADR-P25) |
-| Measure CPU under a real load | `scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62` (see **Measuring**, below) |
+| Measure CPU under a real load | `scripts/dev/perf-run.sh -n 19 -p 3 -s 255x62` (see **Measuring**, above) |
 | See where the time in a frame goes | `cargo bench --bench frame_cost` |
 | Measure the content search | `cargo bench --bench search_cost` (`THURBOX_BENCH_SESSIONS`, `THURBOX_BENCH_SCROLLBACK`, `THURBOX_BENCH_CHECK=1` to fail over budget); `scripts/dev/perf-run.sh --search Q [--typing]` for the whole binary — ADR-P26 |
 | Attribute a change | Run one of the two above before and after — a paired reading at the same size and session count, never two absolute numbers from different days |

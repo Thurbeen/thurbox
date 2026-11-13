@@ -81,7 +81,6 @@ records version evidence and RMUX platform limits.
 | `just smoke` | black-box TUI test: the real binary on a pty (`tests/tui_e2e.rs`) |
 | `just reap-tmux` | reap orphaned *test* tmux servers a signal left behind (below) |
 | `just bench` | what a frame costs, piece by piece (`benches/frame_cost.rs`) |
-| `just bench-multiplexers` | thurbox against raw tmux and Herdr (`docs/thurbox/benchmark-multiplexers.md`) |
 | `just perf` | what the whole binary costs under load (`scripts/dev/perf-run.sh`) |
 | `just lab HOST` | drive the e2e tests against a real SSH host (`scripts/dev/e2e/real-host.sh`) |
 | `just tui-ui` | run the dev TUI against this checkout's `ui/` (`THURBOX_UI_DIR`) |

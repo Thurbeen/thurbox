@@ -5,7 +5,7 @@
 //! show a file git has never been told about, which made the default review
 //! target report "no changes" after an agent wrote new ones. There is
 //! deliberately no body-only `git diff HEAD` helper — having one is how that
-//! omission happened in the first place (ADR-P6).
+//! omission happened in the first place.
 
 use std::path::Path;
 use std::process::Stdio;

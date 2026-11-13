@@ -190,10 +190,8 @@ repos:
   # tree is 39 MiB. prek's Rust-native copy of pre-commit-hooks'
   # check-added-large-files, so nothing is fetched. `--enforce-all` weighs a
   # modified file too, not only an added one, which is what CI's `--all-files`
-  # run (the `Large Files` job) checks. The exclusions are the files already
-  # over the cap when it arrived: shrink one and drop it, never add to them.
+  # run (the `Large Files` job) checks.
   - repo: builtin
     hooks:
       - id: check-added-large-files
         args: ["--maxkb=1024", "--enforce-all"]
-        exclude: ^website/assets/performance-v2-observations\.json$

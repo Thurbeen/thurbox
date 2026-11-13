@@ -147,18 +147,13 @@ breadcrumb: 'Comparison'
               Agents survive closing or crashing the Thurbox interface; reattach from a terminal
               with <code>tmux -L thurbox attach</code> for the default POSIX backend.
               Native Windows defaults to psmux;
-              <a href="installation.html#rmux">RMUX</a> is opt-in. In the
-              <a href="performance.html">stand-in benchmark</a>, all three hosts kept agents
-              running after a client crash. After a full shutdown and restart, only Thurbox reran
-              the recorded stand-in commands. Herdr can resume agents it recognizes, which that
-              stand-in did not test. (Of the tools above, Claude Squad also uses real tmux.)
+              <a href="installation.html#rmux">RMUX</a> is opt-in. (Of the tools above, Claude
+              Squad also uses real tmux.)
             </li>
             <li>
               <strong>A TUI in a plain terminal.</strong>
               It runs over SSH and on a headless server without a desktop. The cost depends on
-              whether the interface is attached and how many sessions it shows; see the
-              <a href="performance.html">measured comparison with Herdr and tmux</a> for CPU,
-              memory, creation time, and typing latency.
+              whether the interface is attached and how many sessions it shows.
             </li>
             <li>
               <strong>Launches the unmodified vendor CLI.</strong>

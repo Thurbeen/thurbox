@@ -61,6 +61,9 @@ const MSRV_CLAIM: &str = r"(?:MSRV(?: is)?:? |Rust )(1\.\d+)[+,.](?:\D|$)";
 /// `ADR-8b`. The performance decisions (`ADR-P6`) are another document's.
 const DECISION: &str = r"\b(ADR-\d+[a-z]?)\b";
 
+/// A decision of `docs/thurbox/performance.md` as text cites one: `ADR-P16`.
+const PERF_DECISION: &str = r"\b(ADR-P\d+)\b";
+
 /// Tracked paths never read: fixtures that are deliberately old or broken,
 /// and `.claude/skills`, whose entries are links into `.agents/skills` (read
 /// under that name).
@@ -290,6 +293,42 @@ fn every_cited_decision_is_in_architecture_md() {
     assert!(
         dangling.is_empty(),
         "decisions cited that docs/thurbox/architecture.md does not have:\n  {}",
+        dangling.join("\n  ")
+    );
+}
+
+/// A performance decision is cited by its number (`ADR-P16`), which is a
+/// heading of `docs/thurbox/performance.md`. One deleted from there leaves its
+/// number behind exactly as an architecture decision does.
+#[test]
+fn every_cited_performance_decision_is_in_performance_md() {
+    let performance = std::fs::read_to_string(root().join("docs/thurbox/performance.md"))
+        .expect("read performance.md");
+    let decisions: Vec<String> = Regex::new(r"(?m)^## (ADR-P\d+):")
+        .unwrap()
+        .captures_iter(&performance)
+        .map(|m| m[1].to_string())
+        .collect();
+    let cited = Regex::new(PERF_DECISION).unwrap();
+    assert_eq!(
+        cited
+            .captures_iter("ADR-8b, ADR-P16 and ADR-P2x")
+            .map(|m| m[1].to_string())
+            .collect::<Vec<_>>(),
+        ["ADR-P16"]
+    );
+    let mut dangling = Vec::new();
+    for (rel, text) in texts() {
+        for m in cited.captures_iter(&text).map(|m| m.get(1).unwrap()) {
+            if !decisions.iter().any(|d| d == m.as_str()) {
+                let at = line_of(&text, m.start());
+                dangling.push(format!("{rel}:{at}: {}", m.as_str()));
+            }
+        }
+    }
+    assert!(
+        dangling.is_empty(),
+        "performance decisions cited that docs/thurbox/performance.md does not have:\n  {}",
         dangling.join("\n  ")
     );
 }

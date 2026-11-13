@@ -290,9 +290,7 @@ Bash is the norm here - judge a script by the line at the top of it rather than
 by a repo-wide default.
 
 Not everything under this path is shell. scripts/demo/*.tape are VHS tapes
-driving the real TUI, scripts/demo/trim-cast.mjs is Node, scripts/bench/ is
-standard-library Python (the multiplexer benchmark, which needs a pty and
-/proc, and must not grow a dependency to install), and the installers have
+driving the real TUI, scripts/demo/trim-cast.mjs is Node, and the installers have
 their own block.
 
 ### `scripts/install.*`
@@ -344,9 +342,7 @@ kernel's shape and its five rules, and docs/thurbox/plugins.md owns interface-pl
 authoring. docs/thurbox/development.md owns the dev environment and the runtime
 sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/thurbox/releasing.md owns the release process and
-docs/thurbox/orchestration.md what thurbox adds to Fleet's orchestration. docs/thurbox/benchmark-multiplexers.md
-owns how thurbox compares with raw tmux and Herdr as a host for agent sessions,
-and the method of the harness under scripts/bench/ that measures it. docs/README.md owns the
+docs/thurbox/orchestration.md what thurbox adds to Fleet's orchestration. docs/README.md owns the
 system: the split between thurbox, Fleet and the runtimes, which page owns
 and each contract between them. docs/fleet/ is Fleet's
 documentation and docs/runtime/ the runtimes', each with a README.md index
