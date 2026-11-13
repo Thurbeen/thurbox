@@ -172,7 +172,8 @@ jobs:
             # builds from.
             fleet:
               - 'crates/fleet-*/**'
-              # The architecture checker runs with Fleet's crates.
+              # Fleet's job lints and documents the architecture checker; its
+              # test runs once, in the Nextest job.
               - 'crates/arch-rules/**'
               # fleet-runtime and fleet-cli build on the terminal stream's
               # frames.
@@ -280,7 +281,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --exclude 'fleet-*' --exclude arch-rules --all-targets --all-features -- -D warnings
 
   # The release ships an aarch64 Linux tarball, and `checksums` needs every
   # build leg, so an arch-only break (a `c_char` that is `u8` here but `i8` on
@@ -298,7 +299,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --exclude 'fleet-*' --exclude arch-rules --all-targets --all-features -- -D warnings
 
   # Also the place a change outside thurbox runs the thurbox tests it can
   # break, against the build cache this job already keeps: a Fleet change runs
@@ -342,7 +343,7 @@ jobs:
       - if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
         run: cargo build -p fleet-cli --bin fleet
       - if: needs.changes.outputs.rust == 'true'
-        run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci
+        run: cargo nextest run --workspace --exclude 'fleet-*' --exclude arch-rules --profile ci
       # A Fleet change without a thurbox one: the run above is skipped, so
       # these two binaries are the thurbox tests that run against the `fleet`
       # just built. Most `tui_e2e` scenarios start a real Fleet (every live
@@ -361,12 +362,16 @@ jobs:
       # change to thurbox alone cannot affect it.
       - if: needs.changes.outputs.fleet == 'true' || needs.changes.outputs.runtime == 'true'
         run: cargo nextest run --locked -p fleet-cli --test e2e_runtime_exec --profile ci
+      # The architecture checker reads every crate, so a change to any of them
+      # runs it, here and nowhere else: every other run excludes it.
+      - if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
+        run: cargo nextest run --locked -p arch-rules --profile ci
       - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.doc_refs == 'true'
         run: cargo nextest run -p thurbox --test doc_references --profile ci
       # Nextest cannot run doctests. Fleet's crates run theirs in the `fleet`
       # job.
       - if: needs.changes.outputs.rust == 'true'
-        run: cargo test --doc --workspace --exclude 'fleet-*' --locked
+        run: cargo test --doc --workspace --exclude 'fleet-*' --exclude arch-rules --locked
       # The crossterm patch's parser tests live in the vendored crate, which
       # `--all` does not reach: the workspace excludes it, so it builds from its
       # own manifest and lockfile.
@@ -403,11 +408,11 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - if: needs.changes.outputs.rust == 'true'
-        run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --exclude 'fleet-*' --exclude arch-rules --all-targets --all-features -- -D warnings
       # Fleet's crates, split by filter as in `windows-test`: their
       # `cfg(windows)` code is linted nowhere else.
       - if: ${{ !cancelled() && needs.changes.outputs.fleet == 'true' }}
-        run: cargo clippy -p 'fleet-*' -p arch-rules --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy -p 'fleet-*' --locked --all-targets --all-features -- -D warnings
 
   windows-test:
     name: Windows (tests)
@@ -432,13 +437,13 @@ jobs:
       # --no-fail-fast: surface every native-Windows test failure in one run
       # (the `ci` profile is fail-fast); easier to triage runner-specific issues.
       - if: needs.changes.outputs.rust == 'true'
-        run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci --no-fail-fast
+        run: cargo nextest run --workspace --exclude 'fleet-*' --exclude arch-rules --profile ci --no-fail-fast
       # Fleet's crates, in a step of their own so each filter runs only its
       # own suite. Its Windows-only code (the integration write's backup, the
       # ledger lock through LockFileEx) runs nowhere else. `!cancelled()`: a
       # thurbox failure above must not hide Fleet's results.
       - if: ${{ !cancelled() && needs.changes.outputs.fleet == 'true' }}
-        run: cargo nextest run -p 'fleet-*' -p arch-rules --locked --all-features --profile ci --no-fail-fast
+        run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast
 
   # No `architecture` job: `tests/architecture_rules.rs` is an ordinary
   # integration test, so `nextest run --all` above already runs it, and the
@@ -485,7 +490,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo doc --workspace --exclude 'fleet-*' --no-deps --all-features
+      - run: cargo doc --workspace --exclude 'fleet-*' --exclude arch-rules --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
 
@@ -847,7 +852,7 @@ jobs:
       - run: cargo clippy -p 'fleet-*' -p arch-rules --locked --all-targets --all-features -- -D warnings
       # `e2e_runtime_exec` runs in the Nextest job, which has the tmux,
       # runtime-mux and jq it needs; under `CI` it fails without them.
-      - run: cargo nextest run -p 'fleet-*' -p arch-rules --locked --all-features --profile ci --no-fail-fast -E 'not binary(e2e_runtime_exec)'
+      - run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast -E 'not binary(e2e_runtime_exec)'
       - run: cargo test -p 'fleet-*' -p arch-rules --locked --all-features --doc
       - run: cargo doc -p 'fleet-*' -p arch-rules --locked --all-features --no-deps
         env:
