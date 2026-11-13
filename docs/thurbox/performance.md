@@ -131,10 +131,9 @@ wobbly proxy (it was fast today).
 
 **Why**: criterion/divan pull a large transitive dependency tree, and
 `cargo deny check licenses` (a **gating** CI job with a strict allowlist) would
-have to vet all of it. For micro-benchmarks of two pure functions
-(`compute_session_order`, `compute_layout`) that the analysis shows are not
-bottlenecks, that cost isn't justified — the counter tests already gate
-regressions without flakiness or new dependencies.
+have to vet all of it. That cost isn't justified — the counter tests already
+gate regressions without flakiness or new dependencies, and `frame_cost` needs
+no harness crate.
 
 **Rejected**:
 
