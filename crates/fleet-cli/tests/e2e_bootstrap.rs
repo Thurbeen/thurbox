@@ -654,14 +654,14 @@ fn separate_configurations_get_separate_sessions_and_stores() {
 }
 
 /// A config written for the starter is refused by name, not as an unknown
-/// field.
+/// field, and the refusal names no page: the docs keep no starter section.
 #[test]
 fn a_starter_section_is_refused_at_load() {
     let env = Env::new("starter-refused");
     let mut text = fs::read_to_string(&env.config).unwrap();
     text.push_str("\n[starter]\nworkspace = \"vega\"\n");
     fs::write(&env.config, text).unwrap();
-    env.fleet(&["list", "task"])
-        .code(1)
-        .stderr_has("[starter] is no longer read");
+    let run = env.fleet(&["list", "task"]);
+    run.code(1).stderr_has("[starter] is no longer read");
+    assert!(!run.stderr.contains("configuration page"), "{}", run.stderr);
 }

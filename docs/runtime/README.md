@@ -1,10 +1,9 @@
 # Runtimes
 
 A runtime is any program that runs one keyed process at a place and tells
-Fleet about it: a multiplexer window, a container, a VM, a plain process.
-Fleet reaches every session through it, and neither Fleet nor thurbox links
-any runtime's code. `runtime-mux` (`crates/runtime-mux`), extracted from thurbox, is
-the first runtime and the default one. How the runtime fits between thurbox
+Fleet about it.
+Fleet reaches every session through it and links no runtime's code.
+`runtime-mux` (`crates/runtime-mux`) is the default runtime. How the runtime fits between thurbox
 and Fleet is the [overview](../README.md).
 How `runtime-mux` reaches hosts, where psmux differs from tmux, and its
 status channel are [runtime-mux.md](runtime-mux.md).
@@ -48,16 +47,12 @@ each host in `[hosts.<name>]`, the runtime serving it, so a Task's
 
 ### Protocol version 1
 
-Built: `runtime-mux` and the reference script answer it, Fleet's `exec`
-runtime kind speaks it, and `fleet runtime check` holds both to it in CI.
-`workspace` is built: `runtime-mux` declares it, `fleet runtime check` tests
-it, and Fleet calls it before a Task's first start, bounded by the
-runtime's `workspaceTimeoutMs`. Fleet reads the manifest's
-`workspace.schemes` first and refuses a URL whose scheme is not listed,
-without a call.
-`attach` is built: Fleet asks it in `fleet attach`, once the
-runtime's `manifest` declares it, and `runtime-mux` and the reference script
-answer it.
+`runtime-mux` and the reference script answer it, Fleet's `exec` runtime
+kind speaks it, and `fleet runtime check` holds both to it in CI. Fleet calls
+`workspace` before a Task's first start, bounded by the runtime's
+`workspaceTimeoutMs`. It reads the manifest's `workspace.schemes` first and
+refuses a URL whose scheme is not listed, without a call. `fleet attach` asks
+`attach` once the runtime's `manifest` declares it.
 
 Every request is a JSON object carrying `"protocol": 1`; `manifest` answers
 whatever the request says. A runtime that does not speak the version asked
@@ -93,9 +88,10 @@ can write to it), opened without truncating or following a link. `exec` runs `in
 machine, and kills the command's process group at the deadline. It reads
 each stream to its end and keeps `outputCap` bytes, so a long output does
 not change how the command ends; a child that left the group and holds a
-stream open does not hold the answer past the deadline. `runtime-mux` runs on this
-machine only for now: its ssh and WSL places come with the hosts it reads.
-It makes workspaces by running `workspace-git` on this machine
+stream open does not hold the answer past the deadline. The `runtime-mux`
+program serves this machine only; the crate's ssh and WSL hosts
+([runtime-mux.md](runtime-mux.md)) serve thurbox, which links it. It makes
+workspaces by running `workspace-git` on this machine
 ([its workspaces](#runtime-muxs-workspaces)). A workspace call takes a lock
 of its key only, never the server's lock: a first clone or a long setup step
 does not hold up a start or a stop of another key. A stop that releases a
@@ -129,12 +125,10 @@ What Fleet's `exec` kind does with the answers:
 - a session's id is its key, so it outlives each process started under it;
 - readiness, workspace trust and an idle agent come from the agent's signals:
   an agent that reported anything but `blocked` is ready and past any trust
-  dialog. Codex reports nothing until its first turn ends: its empty composer
-  on `capture`, Codex in the foreground, makes it ready and, launched with its
-  trust override, trusted. Kimi Code and GitHub Copilot CLI report nothing
-  until their first message: an empty composer on `capture`, the agent in
-  the foreground, makes it ready and trusted (each asks its folder trust
-  first), and a running agent is at rest once it last reported `idle`.
+  dialog, and a running agent is at rest once it last reported `idle`. An
+  agent that reports nothing before its first turn is read off its
+  `capture` screen as its harness profile says
+  ([harness profiles](../fleet/controllers/task.md#harness-profiles)).
   Before its first report, a trust dialog on its `capture` is Untrusted, and
   anything else Unknown, so a brief waits;
 - delivery is proven by the agent's prompt hook, not by `input`;
@@ -153,7 +147,7 @@ What Fleet's `exec` kind does with the answers:
 Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`.
 Fleet reads it directly on a local host, so a local runtime needs nothing for
 signals. A session on another host gets no file: reading one back through the
-runtime's `exec` is not built yet, so what Fleet would learn from it, such as
+runtime's `exec` is not implemented, so what Fleet would learn from it, such as
 an idle agent or a delivered prompt, stays Unknown, and Unknown never
 concludes.
 
@@ -180,9 +174,7 @@ The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
 [`examples/runtimes/tmux.sh`](../../examples/runtimes/tmux.sh), a reference
 runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
 stops with a kernel lock in tmux's private socket directory, taken with
-`flock(1)` or else `perl`, which a killed holder releases. A template repository
-for runtimes written elsewhere ships a skeleton, the protocol version it
-targets and that CI.
+`flock(1)` or else `perl`, which a killed holder releases.
 
 ### What a runtime is
 
@@ -190,17 +182,10 @@ A runtime answers one question: run this command, under this key, in this
 directory, at this place, and tell me about it. Where and how is its own
 business.
 
-| Runtime | Place | What keeps the terminal | Today |
-| --- | --- | --- | --- |
-| `runtime-mux` | this machine; ssh hosts and WSL to come | tmux, psmux, rmux (ADR-31) | `crates/runtime-mux`, the `runtime-mux` program |
-| `runtime-container` | docker or podman, local or remote | the container's pty, or a holder inside it | to write |
-| `runtime-vm` | a VM or microVM | a holder inside the guest | to write |
-| `runtime-process` | this machine, no terminal | none | the reference script's sibling |
-
-A new multiplexer of the tmux family is a module in `runtime-mux`, not a
-runtime. A new kind of place is a runtime. A runtime may reuse another inside
-its place (a container running tmux to keep its screen), but no `runtime-*`
-crate depends on another; shared code is a crates.io dependency.
+`runtime-mux` (`crates/runtime-mux`) runs its processes on this machine, in
+tmux, psmux or rmux (ADR-31). A new multiplexer of the tmux family is a
+module in `runtime-mux`, not a runtime. A new kind of place is a runtime. No
+`runtime-*` crate depends on another; shared code is a crates.io dependency.
 
 Fleet must run a Task on the four required verbs alone, so a runtime without a
 terminal is a full runtime:
@@ -215,19 +200,16 @@ terminal is a full runtime:
 
 The default install configures `runtime-mux` and nothing else. With no
 multiplexer on the machine, Fleet does not fall back to another runtime: the
-first `start` answers the missing dependency by name, as `preflight` does
-today, and other runtimes are opt-in in `[runtimes.<name>]`.
+first `start` answers the missing dependency by name, and other runtimes are opt-in in `[runtimes.<name>]`.
 
 ## The terminal stream
 
-![The terminal stream: fleet attach answers a stream or a bridged tty command, the view exchanges frames with it, and runtime-mux view, term-holder or fleet term-bridge keeps the screen](terminal-stream.svg)
+![The terminal stream: fleet attach answers a stream or a bridged tty command, the view exchanges frames with it, and runtime-mux view or fleet term-bridge serves it](terminal-stream.svg)
 
-Attaching to a tmux window is the easy case: the server keeps the screen,
-accepts several clients and arbitrates their sizes. A container or a VM has
-none of that. `docker attach` replays nothing and shares one size between
-every client; `docker exec -it` starts a new process instead of reaching the
-agent; a VM offers a serial console or ssh. "Run this command in a pty" is
-therefore not an interface: what a view gets would depend on the runtime.
+A tmux server keeps the screen, accepts several clients and arbitrates their
+sizes; a raw interactive command such as `docker attach` does none of that.
+"Run this command in a pty" is therefore not an interface: what a view gets
+would depend on the runtime.
 
 What a view needs from a live session, whatever runs it:
 
@@ -243,8 +225,8 @@ A stream is a process. The view starts it and speaks over its stdin and
 stdout; it ends when either side closes. A frame is a type byte, the
 payload's length as a big-endian 32-bit number, then the payload: `output`,
 `state` and `input` are raw bytes, `paste` is UTF-8 text, and every other
-payload is a JSON object. The vocabulary is thurbox's own `PaneChunk` (`crates/runtime-mux/src/contract.rs`),
-which already carries every item in the output's order on one channel:
+payload is a JSON object. The vocabulary is `PaneChunk` (`crates/runtime-mux/src/contract.rs`),
+which carries every item in the output's order on one channel:
 
 | Direction | Type | Frame | Payload |
 | --- | --- | --- | --- |
@@ -297,20 +279,8 @@ command closed its terminal.
 
 | Runtime | Screen keeper | `attach` answers |
 | --- | --- | --- |
-| `runtime-mux` | tmux, psmux, rmux | `stream`: `runtime-mux view <key>`, control mode encoded as frames (built) |
-| `runtime-container`, `runtime-vm` | `term-holder` inside the place | `stream`: `docker exec -i <ctr> term-holder connect <key>`, or the same over ssh or vsock |
-| any runtime, minimal | none | `tty`: bridged by Fleet, no history (built; the reference script answers it) |
-
-`term-holder` is a small static binary a runtime puts in its place and runs
-the agent under: `term-holder serve <key> -- <argv>`. It owns the pty, keeps
-the screen and its scrollback, accepts several clients on a local socket and
-arbitrates their sizes. `connect` relays one client over stdin and stdout, so
-any byte pipe reaches it: `docker exec -i` without `-t`, ssh, vsock,
-`kubectl exec -i`. The same binary answers `capture` and `input`
-(`term-holder capture <key>`, `term-holder send <key>`), so those verbs are one
-`exec` each in a container or a VM. It plays the part tmux plays for
-`runtime-mux`, for places with no multiplexer. A runtime may still run tmux in
-its place instead.
+| `runtime-mux` | tmux, psmux, rmux | `stream`: `runtime-mux view <key>`, control mode encoded as frames |
+| any runtime, minimal | none | `tty`: bridged by Fleet, no history; the reference script answers it |
 
 ## Workspaces
 
@@ -375,20 +345,11 @@ The URL is the whole request: Fleet adds nothing to it.
 Restoring preserved work is therefore a new Task whose URL names the preserved
 ref; Fleet needs no verb for it.
 
-### How each runtime makes one
-
-| Runtime | Where the files are | How the process sees them |
-| --- | --- | --- |
-| `runtime-mux` | on the host (this machine, ssh, WSL) | the same paths |
-| `runtime-container` | on the docker host, or in a volume per key | bind mounts at the same paths, or the volume at `/workspace` |
-| `runtime-vm` | inside the guest, or on the host for a shared folder | the guest's disk, or virtiofs |
-| `runtime-process` | this machine | the same paths |
-
 ### workspace-git, the default for git URLs
 
-`workspace-git` is a small program a runtime runs where its files belong: on
-the host, against a volume, inside a guest. No runtime links it: each runs the
-program, so it runs where the runtime's files are. Its layout:
+`workspace-git` is a small program a runtime runs where its files belong. No
+runtime links it: each runs the program, so it runs where the runtime's files
+are. Its layout:
 
 ```text
 <root>/<key>/<name>/                  one real worktree per git URL
@@ -417,7 +378,7 @@ program, so it runs where the runtime's files are. Its layout:
   on it, across runtimes that share a root.
 - With one URL the session starts in `<root>/<key>/<name>`; with several the
   first URL's worktree is still the start, and every worktree is a real
-  directory, so thurbox's symlink workspace goes. Two URLs with one name get
+  directory. Two URLs with one name get
   `<name>-2`.
 - With no `branch`, the branch is named after the key. An existing branch is
   checked out, and one checked out elsewhere gets `<branch>-<n>`, from 2.
@@ -459,24 +420,10 @@ path.
 
 ### Customizing a workspace
 
-Each runtime offers what fits its places. `runtime-mux` and
-`runtime-process` take steps to run in the workspace once it is whole, and
-before release, matched by URL:
-
-```toml
-[[workspace.setup]]
-match = "git+https://github.com/acme/app.git"
-run = ["cp ~/.config/app/.env .env", "npm ci"]
-
-[[workspace.teardown]]
-match = "git+https://github.com/acme/app.git"
-run = ["docker compose down"]
-```
-
-A failing setup step fails the whole `workspace` call, which rolls back. A
-need no configuration covers is a runtime of one's own: a script that answers
-the protocol, starting from the runtime template, held to the same rules by
-`fleet runtime check`.
+Each runtime offers what fits its places: `runtime-mux` runs setup and
+teardown steps ([its workspaces](#runtime-muxs-workspaces)). A need no
+configuration covers is a runtime of one's own: a script that answers
+the protocol, held to the same rules by `fleet runtime check`.
 
 ### runtime-mux's workspaces
 

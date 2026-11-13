@@ -345,9 +345,7 @@ nothing when the variable is unset:
 
 The hook's JSON (stdin, or the last argument for Codex's `notify`) gives
 the prompt and the conversation id. The harness profile's `[payload]`
-fields name them; `fleet signal` finds the profile by `--harness`, else by
-`FLEET_HARNESS`, which Fleet sets at spawn
-([signal contract](../signal-contract.md)). The
+fields name them ([signal contract](../signal-contract.md)). The
 `Activity` probe reads the file through the port and answers both the
 activity and the whole report. A file never written is a report of nothing;
 a file that cannot be read is Unknown. A session on another host gets no

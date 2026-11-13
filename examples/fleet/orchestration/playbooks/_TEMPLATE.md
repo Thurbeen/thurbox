@@ -17,4 +17,4 @@ shape, not its truth.
 
 Name the observed behavior, failure cases and evidence that establish the
 outcome. Report native platform gaps explicitly. A run does not authorize
-publication or live cutover beyond its brief.
+publication beyond its brief.

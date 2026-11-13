@@ -2,15 +2,15 @@
 
 Fleet is the engine behind thurbox: it persists Tasks and the other resource
 kinds and drives their controllers, one agent session per Task. Its crates are
-`crates/fleet-*` in this repository, imported from `Thurbeen/fleet` with their
-history, and `crates/architecture.toml` is their dependency graph. How
+`crates/fleet-*` in this repository, and `crates/architecture.toml` is their
+dependency graph. How
 Fleet fits between thurbox and the runtimes is [the overview](../README.md).
 
 | Page | Answers |
 | --- | --- |
-| [architecture.md](architecture.md) | The components, boundaries, ports and execution flow, and the target: views and workspaces |
+| [architecture.md](architecture.md) | The components, boundaries, ports and execution flow, views and workspaces |
 | [contracts.md](contracts.md) | What each part guarantees, and which tests hold it to that |
-| [configuration.md](configuration.md) | `fleet init`, `fleet up`, running VEGA, every `fleet.toml` field, the environment file, OpenTelemetry export |
+| [configuration.md](configuration.md) | `fleet init`, `fleet up`, every `fleet.toml` field, the environment file, OpenTelemetry export |
 | [integration.md](integration.md) | `fleet integration`: the hooks Fleet installs for an agent that takes none at launch, and how they are removed |
 | [signal-contract.md](signal-contract.md) | For an agent vendor: how an agent reports its state to Fleet through `fleet signal` |
 
@@ -48,7 +48,5 @@ One page per kind, because each is a reference read on its own.
 
 ## Diagrams
 
-[architecture.svg](architecture.svg) is today's execution flow,
-[architecture-target.svg](architecture-target.svg) the target with views and
-runtimes, and
+[architecture.svg](architecture.svg) is the execution flow, and
 `controllers/<name>.svg` each controller's state machine.

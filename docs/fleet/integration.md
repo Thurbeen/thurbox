@@ -28,14 +28,8 @@ fleet integration uninstall <agent>|--all
   works for an agent that has no profile now.
 - `fleet version --json` lists each outdated integration under
   `outdatedIntegrations`.
-- `fleet doctor` reports an `outdated` or a `modified` integration as a
-  warning, with the command that fixes it
-  ([the command line](contracts.md#the-command-line)).
-- `fleet doctor` also reports an integration that is left behind as a
-  warning. An integration is left behind when the ledger lists it, but no
-  harness profile with an `[install]` table has its name. This occurs when
-  a profile is removed, or when a profile loses its `[install]` table. The
-  files stay on disk. The hint is `fleet integration uninstall <agent>`.
+- `fleet doctor` checks each integration
+  ([its checks](contracts.md#the-command-line)).
 
 The commands work on this machine only. Fleet does not install an
 integration on a remote host. To use an installed agent on a remote host,

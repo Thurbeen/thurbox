@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 600" role="img" aria-labelledby="title desc">
 <title id="title">The terminal stream: how a view attaches to a session on any runtime</title>
-<desc id="desc">A view asks fleet attach for a Task. Fleet asks the runtime's attach verb, which answers either a stream command that speaks the terminal stream protocol, or a raw tty command. Fleet passes a stream command through and wraps a tty command in fleet term-bridge, so the view always gets a stream. The view runs the command and exchanges length-prefixed frames over its stdin and stdout: downstream hello, snapshot, output, resized, sized_elsewhere, resync, state and exit; upstream input, paste, resize and detach. For runtime-mux the stream command is runtime-mux view, its control-mode client encoded as frames. For a container or a VM it is term-holder connect over docker exec, ssh or vsock, where term-holder keeps the screen and scrollback inside the place. In thurbox the stream pane decodes frames into the PaneChunks WiredPane already consumes.</desc>
+<desc id="desc">A view asks fleet attach for a Task. Fleet asks the runtime's attach verb, which answers either a stream command that speaks the terminal stream protocol, or a raw tty command. Fleet passes a stream command through and wraps a tty command in fleet term-bridge, so the view always gets a stream. The view runs the command and exchanges length-prefixed frames over its stdin and stdout: downstream hello, snapshot, output, resized, sized_elsewhere, resync, state and exit; upstream input, paste, resize and detach. For runtime-mux the stream command is runtime-mux view, its control-mode client encoded as frames. In thurbox the stream pane decodes frames into the PaneChunks WiredPane already consumes.</desc>
 <style>
   svg { color-scheme:light dark }
   .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
@@ -22,7 +22,6 @@
   <symbol id="i-terminal" viewBox="0 0 24 24"><rect class="icon" x="2" y="4" width="20" height="16" rx="2"/><path class="icon" d="M6 9l3 3-3 3M12 15h6"/></symbol>
   <symbol id="i-engine" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="12" r="3"/><path class="icon" d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
   <symbol id="i-mux" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="18" rx="2"/><path class="icon" d="M2 9h20M9 9v12M15 9v12"/></symbol>
-  <symbol id="i-container" viewBox="0 0 24 24"><path class="icon" d="M3 8l9-4 9 4v8l-9 4-9-4z"/><path class="icon" d="M3 8l9 4 9-4M12 12v8"/></symbol>
   <symbol id="i-bridge" viewBox="0 0 24 24"><path class="icon" d="M3 17h18M5 17V9M19 17V9M5 9c3-4 11-4 14 0M9 17v-6M15 17v-6M12 17v-7"/></symbol>
   <symbol id="i-screen" viewBox="0 0 24 24"><rect class="icon" x="3" y="3" width="18" height="18" rx="2"/><path class="icon" d="M7 8h10M7 12h7M7 16h4"/></symbol>
 </defs>
@@ -85,28 +84,21 @@
 
   <!-- screen keepers -->
   <g class="box">
-    <rect class="runtime" x="30" y="450" width="320" height="120" rx="8"/>
-    <rect class="runtime" x="380" y="450" width="340" height="120" rx="8"/>
-    <rect class="runtime" x="750" y="450" width="300" height="120" rx="8"/>
+    <rect class="runtime" x="30" y="450" width="490" height="120" rx="8"/>
+    <rect class="runtime" x="560" y="450" width="490" height="120" rx="8"/>
   </g>
   <use href="#i-mux" x="48" y="466" width="26" height="26"/>
   <text x="84" y="484" font-size="15" font-weight="650">runtime-mux view &lt;key&gt;</text>
   <text x="48" y="510" font-size="12">tmux · psmux · rmux keep the screen</text>
   <text x="48" y="528" font-size="12">control mode encoded as frames</text>
-  <text x="48" y="552" font-size="12" class="muted">scrollback · resize · reconnection over ssh, WSL</text>
+  <text x="48" y="552" font-size="12" class="muted">scrollback · resize · reconnection</text>
 
-  <use href="#i-container" x="398" y="466" width="26" height="26"/>
-  <text x="434" y="484" font-size="15" font-weight="650">term-holder connect &lt;key&gt;</text>
-  <text x="398" y="510" font-size="12">over docker exec -i · ssh · vsock · kubectl exec -i</text>
-  <text x="398" y="528" font-size="12">term-holder serve owns the pty inside the place</text>
-  <text x="398" y="552" font-size="12" class="muted">screen · scrollback · viewers · capture · send</text>
+  <use href="#i-bridge" x="578" y="466" width="26" height="26"/>
+  <text x="614" y="484" font-size="15" font-weight="650">fleet term-bridge -- argv</text>
+  <text x="578" y="510" font-size="12">local pty + a vt100 screen of it</text>
+  <text x="578" y="528" font-size="12">for a runtime with nothing better</text>
+  <text x="578" y="552" font-size="12" class="muted">history starts now, and hello says so</text>
 
-  <use href="#i-bridge" x="768" y="466" width="26" height="26"/>
-  <text x="804" y="484" font-size="15" font-weight="650">fleet term-bridge -- argv</text>
-  <text x="768" y="510" font-size="12">local pty + a vt100 screen of it</text>
-  <text x="768" y="528" font-size="12">for a runtime with nothing better</text>
-  <text x="768" y="552" font-size="12" class="muted">history starts now, and hello says so</text>
-
-  <g class="arrow"><path d="M190 448 V410"/><path d="M550 448 V410"/><path d="M900 448 V410"/></g>
+  <g class="arrow"><path d="M275 448 V410"/><path d="M805 448 V410"/></g>
 </g>
 </svg>

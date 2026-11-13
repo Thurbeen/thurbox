@@ -33,8 +33,8 @@ pub struct Config {
     /// may name.
     #[serde(default)]
     pub hosts: BTreeMap<String, HostConfig>,
-    /// A `[starter]` section from a release that bundled VEGA, read only
-    /// to refuse it by name: `fleet up` needs no starter Task.
+    /// A `[starter]` section, read only to refuse it by name: `fleet up`
+    /// needs no starter Task.
     #[serde(default)]
     starter: Option<toml::Value>,
     #[serde(default)]
@@ -175,7 +175,7 @@ impl Config {
             .map_err(|e| format!("config {}: {e}", path.display()))?;
         if config.starter.is_some() {
             return Err(format!(
-                "config {}: [starter] is no longer read: fleet up needs no starter Task. Remove the section; to run VEGA, apply its Task from its own repository (see the configuration page)",
+                "config {}: [starter] is no longer read: fleet up needs no starter Task. Remove the section",
                 path.display()
             ));
         }

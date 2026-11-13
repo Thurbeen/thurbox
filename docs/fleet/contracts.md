@@ -1,6 +1,6 @@
-# Fleet v2: the contracts of the Task core
+# Fleet: the contracts of the Task core
 
-Fleet v2 runs agent sessions through Task resources and their controller. A
+Fleet runs agent sessions through Task resources and their controller. A
 Task is one agent session doing one brief. This file says what each part
 guarantees
 and which tests hold it to that. The [overall
@@ -8,11 +8,6 @@ architecture](architecture.md)
 explains the component boundaries. The
 [Task controller guide](controllers/task.md) defines the
 resource fields, state machine and controller interface.
-
-Fleet v2 is a clean break from the Python v1 control plane. It reads none of
-v1's queue records, extension or operator configuration. The v1 freeze guard
-is the `FLEET_MAJOR` file in Fleet's former standalone repository, which v1
-checkouts update from. This repository carries none.
 
 ## What is served
 
@@ -47,7 +42,7 @@ controllers. The store serves their schema-validated
 `probes` and `reconcile` calls and bounded `observe` and `perform` calls through
 the `Plugins` port's one `call`. A pure gate admits plans before leased status
 writes and atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the
-host. SDKs and issue-specific plugins remain separate projects.
+host.
 
 The [Gateway controller](controllers/gateway.md) is built
 in four steps. The first: the `Gateway` port in
@@ -1020,27 +1015,19 @@ rule, pure:
 append to, passed as `FLEET_SIGNAL_FILE` in the spawn's environment, and
 `read` folds it (`Reported`: the last state, every prompt digest with
 when it was last reported, the last conversation id). A file never
-written is Known and empty; a file that cannot be read is Unknown. `fleet signal <working|blocked|idle|prompt>
-[payload]` appends one line of at most 4 KiB in one write, reads the hook's
-JSON from the argument or stdin with the `[payload]` fields of the harness
-that `--harness` or `FLEET_HARNESS` names (the default fields when none
-does), stores prompts only as digests, and does nothing when the variable
-is unset. [signal-contract.md](signal-contract.md) is this contract as an
-agent vendor reads it. The `FileSignals` adapter keeps the
+written is Known and empty; a file that cannot be read is Unknown.
+[signal-contract.md](signal-contract.md) owns what `fleet signal` writes and
+reads. The `FileSignals` adapter keeps the
 files under `<data dir>/signals` for sessions on this machine, and answers
 Unknown for any other host: reading a remote file takes the runtime's
 `exec`. TaskController reads the file for every live session, not only one that
 may be paused: `status.sessionState` is `Idle` once the agent's last report
 is `idle`, and `Running` while it reports `working`, `blocked` or `prompt`.
 `status.agentState` is the agent's report itself, finer: `working` for
-`working` and `prompt`, `attention` for `blocked` (a permission prompt:
-Claude Code's `Notification` hook, matched to `permission_prompt`), `idle`
-for `idle`, and
+`working` and `prompt`, `attention` for `blocked`, `idle` for `idle`, and
 `unknown` while the agent has reported nothing since it last started. An
 unreadable file keeps the last `agentState`. TaskController is its only
-writer. A `blocked` report whose hook payload is Claude Code's `idle_prompt`
-notification (60 s of input idle) folds to `idle`: the agent waits for its
-next prompt, which needs no one, and stays pausable.
+writer.
 `status.activity.source` says which source set `agentState`
 ([agent state](#agent-state)).
 `e2e_signal` covers state, an interactive session and pause,
@@ -1173,7 +1160,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|doctor|version`.
+init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|signal|runtime|integration|doctor|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -1247,8 +1234,10 @@ Without `--json` the argv is printed one argument per line.
 its own through `fleet-exec` and relays it as the terminal stream on its stdin
 and stdout, until the view detaches or the command exits.
 
-The config file is versioned TOML; relative paths are relative to it. This
-one runs the fake runtime:
+The config file is versioned TOML; relative paths are relative to it, and
+[configuration](configuration.md#native-fleet-configuration-fleettoml) owns its
+fields. This one runs the fake runtime, and the test
+`the_contract_examples_apply_as_written` applies it with the Task below:
 
 ```toml
 version = 1
@@ -1310,7 +1299,7 @@ plugin port.
 `fleet init` creates the native per-user config offline. A config that
 exists is kept, never replaced. The
 [initialization guide](configuration.md#configuration-and-customization)
-specifies precedence and paths. Bootstrap does not read v1 data.
+specifies precedence and paths.
 
 `fleet up` creates no Task. It retains the manager lease across periodic
 sweeps for all due Tasks. The poll interval

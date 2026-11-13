@@ -1,6 +1,6 @@
 # Fleet architecture
 
-Fleet v2 is a Rust command-line program that persists Tasks, ChangeRequests
+Fleet is a Rust command-line program that persists Tasks, ChangeRequests
 and the other resource kinds, and drives their controllers. A Task contains
 the execution inputs for one agent session: harness, host, workspace, brief
 and expected outputs; the worker reports its own result. A ChangeRequest
@@ -122,9 +122,7 @@ lease expiry and observes deterministic session/effect keys.
 
 The CLI's `init` writes a local config without Git or network, separate from
 resource writes. `up` runs the ordinary Task controller for every due Task
-and creates no Task of its own. VEGA, the Mission Control content in its own
-repository, is an ordinary Task applied like any other: it has no extra
-resource kind, controller or privileges. The
+and creates no Task of its own. The
 [initialization guide](configuration.md#configuration-and-customization) owns
 config precedence and startup and recovery instructions.
 
@@ -171,9 +169,6 @@ runtime owns the agent process, its window and its conversation, and
 answers what it can prove. Fleet makes the workspace through the workspace
 port; the runtime runs the session in it.
 
-This split is the first step toward the
-[target architecture](architecture-target.svg), where Thurbox
-is one view among others and Fleet runs Sessions behind the runtime port.
 Fleet owns when workspaces are made and released, the agent's lifecycle hooks
 (`fleet signal`), proven delivery and the harness profiles. Every real
 runtime is the `exec` runtime kind:
@@ -315,17 +310,13 @@ an idle thread with its Task and that directory; GatewayController, a third
 controller over the Task, owns `status.gateway`, relays new messages into the
 inbox under a cursor through `record_relay`, and posts what the Task declares
 as keyed effects through a `Gateway` port, with adapters in the
-`fleet-gateway` crate, for Slack and Discord. The port, the crate with its
-fake, Slack and Discord adapters, the `[gateway]` section, the two kinds, the
-receive verb, ConversationController, ListenerController, and
-GatewayController's tie, join and relay, with `status.answered` and the parent
-labels, and GatewayController's posting, are built. ListenerController reports
+`fleet-gateway` crate, for Slack and Discord. ListenerController reports
 each account's inbound health from the listener's own beats, on a
 [Listener](resources/listener.md). The purity and process rules above are
 unchanged: the Gateway runs no model, every adapter call is bounded, and no
 platform name appears above the port.
 
-## Scope and compatibility
+## Scope
 
 The Task controller runs sessions and records worker claims. It does not
 verify that an artifact merged, conduct reviews, manage a forge or dispatch
@@ -333,42 +324,27 @@ a hierarchy. Registered [controller plugins](controllers/plugin.md) define their
 own kinds and act through admitted plans. Connection details stay with the runtime;
 credentials stay with the agent and host.
 
-V2 does not read or migrate v1 queue records or configuration. The v1 freeze
-guard is the `FLEET_MAJOR` file in Fleet's former standalone repository, which
-v1 installations update from. This repository carries none. Unpatched clients
-need the pinned release first. The
-[README](configuration.md) owns frozen v1 installation, explicit v2 installation
-and the deliberate cutover procedure. Release publication requires native tests
-and installed offline bootstrap acceptance.
+## Views
 
-## Toward thurbox's engine
-
-The sections above describe Fleet as it runs today. Fleet is becoming the
-engine behind thurbox ([the overview](../README.md)); these sections are the
-target. The
+thurbox is a Fleet client and reads nothing of Fleet's store directly. The
 runtime side, the protocol and the terminal stream, is
 [Runtimes](../runtime/README.md).
 
-### Views
-
-thurbox is a Fleet client and reads nothing of Fleet's store directly.
-
 - `fleet watch --json`: a long-running NDJSON stream, one event per changed
-  Task, resumable by the store's write counter (`--since`). Built; its events
+  Task, resumable by the store's write counter (`--since`). Its events
   are in [the command line](contracts.md#the-command-line). It feeds
   thurbox's snapshot behind the `SnapshotSource` trait: `FleetWatch`
-  (`src/kernel/snapshot/fleet.rs`) publishes each Task as a session row.
+  (`crates/thurbox/src/kernel/snapshot/fleet.rs`) publishes each Task as a session row.
 - `fleet apply`, `delete`, `send`: the interface's commands, behind the
-  `Executor` trait. `src/kernel/command/fleet.rs` runs them; thurbox's own
-  engine (`src/kernel/command/execute.rs`, which calls `session_ops`) is the
-  other implementation. No interface command maps to `amend` yet.
+  `Executor` trait. `crates/thurbox/src/kernel/command/fleet.rs` runs them.
+  No interface command maps to `amend`.
 - `fleet attach <task> --json`: the command that opens the Task's terminal
   stream ([the terminal stream](../runtime/README.md#the-terminal-stream)).
-  Built: it asks the runtime's `attach` and wraps a `tty` answer in
+  It asks the runtime's `attach` and wraps a `tty` answer in
   `fleet term-bridge`. thurbox opens the stream it names as a stream pane
-  (`src/kernel/terminal/fleet.rs`), whose backend is the stream itself.
-- thurbox starts `fleet up` when no manager holds the lease. Built: it
-  starts one, and starts it again when it exits. A `fleet up` that exits with
+  (`crates/thurbox/src/kernel/terminal/fleet.rs`), whose backend is the stream itself.
+- thurbox starts `fleet up` when no manager holds the lease, and starts it
+  again when it exits. A `fleet up` that exits with
   6 found the lease held, which is no error.
 
 Fleet is thurbox's only engine: `[fleet] program` in thurbox's
@@ -376,10 +352,10 @@ Fleet is thurbox's only engine: `[fleet] program` in thurbox's
 ([thurbox's configuration](../thurbox/config.md#fleet--the-session-engine)).
 
 An interactive session is a Task with no brief: it spawns and waits for its
-user. Built: it stays Spawned with `Briefed=False/Interactive`, and its inbox
+user. It stays Spawned with `Briefed=False/Interactive`, and its inbox
 is delivered as any other.
 
-### Workspaces
+## Workspace URLs
 
 A Task names its workspace as a list of URLs. Fleet passes the list to the
 runtime and gets directories back. Everything between, how files come to
@@ -427,7 +403,7 @@ A `workspace` call has its own bound, `workspaceTimeoutMs` (600000 when
 absent), because a first clone can take minutes. Every other call keeps
 `callTimeoutMs`.
 
-#### The collector
+### The collector
 
 A deletion releases the session and its workspace once. Whatever that could
 not finish (an unreachable host, an Unknown answer, a crash between two
@@ -439,9 +415,3 @@ The store proves the Task is absent and the runtime proves the leftover
 exists, both Known; Unknown on either side waits for the next sweep. The key
 carries the Task's uid, so a recreated Task with the same name is never
 mistaken for the old one.
-
-#### Reading a workspace from the interface
-
-The diff and review views need the files. thurbox asks
-`fleet workspace exec <task> -- git …`, which Fleet runs through the
-runtime's `exec` with `in: workspace`.

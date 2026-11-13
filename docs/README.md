@@ -2,9 +2,8 @@
 
 thurbox, Fleet and the runtimes are three components that talk only by
 running each other's programs. Each has its own directory here, and this page
-is the whole system: what each owns and how they meet. The direction is recorded as
-[ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes);
-it is accepted and partly implemented.
+is the whole system: what each owns and how they meet. The decision is
+[ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes).
 
 | Component | Directory | Start at |
 | --- | --- | --- |
@@ -17,11 +16,9 @@ then each component's own.
 
 ## Decision
 
-1. **This repository becomes the one repository** for thurbox, Fleet and the
-   multiplexer runtime. Fleet is imported here with its history. The stars,
-   the issue tracker and the release channels (Homebrew, AUR, Chocolatey,
-   winget) stay with `Thurbeen/thurbox`. Breaking Fleet's current install
-   path is accepted: its use is small.
+1. **This repository is the one repository** for thurbox, Fleet and the
+   multiplexer runtime. The issue tracker and the release channels
+   (Homebrew, AUR, Chocolatey, winget) are `Thurbeen/thurbox`'s.
 2. **thurbox requires Fleet.** Fleet is thurbox's orchestration core: every
    session is a Fleet Task. thurbox keeps no session state and no SQLite
    database.
@@ -29,29 +26,27 @@ then each component's own.
    process protocol that any runtime can implement, down to a shell script.
 4. **A runtime is the abstraction**, not a multiplexer. Fleet and thurbox
    know only "a runtime": a program that runs one keyed process somewhere.
-   A multiplexer is one way to do that, a container or a VM another.
-   `runtime-mux` (`crates/runtime-mux`), extracted from thurbox, is the first runtime and the
-   one thurbox ships by default; it is not special.
+   A multiplexer is one way to do that. `runtime-mux` (`crates/runtime-mux`)
+   is the runtime thurbox ships by default; it is not special.
 
 ## Components
 
-![Three components, two process contracts: thurbox is a Fleet client, Fleet reaches sessions through the runtime protocol, and runtime-mux, runtime-container, runtime-vm or any program serve it](components.svg)
+![Three components, two process contracts: thurbox is a Fleet client, Fleet reaches sessions through the runtime protocol, and runtime-mux or any program serves it](components.svg)
 
 ```text
 thurbox (interface) ──process: fleet watch / apply / send / delete / attach──▶ Fleet (engine)
    │                                                                             │
    │ starts the stream fleet attach names                                        │ process: runtime protocol
    ▼                                                                             ▼
- stream pane ◀──── terminal stream frames, whatever the runtime ──── a runtime: runtime-mux,
-                                                                      runtime-container, runtime-vm, …
+ stream pane ◀──── terminal stream frames, whatever the runtime ──── a runtime: runtime-mux, …
  coding agent ── fleet signal / fleet result ──▶ Fleet
 ```
 
 | Component | Owns | Never owns |
 | --- | --- | --- |
 | Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, the workspace URLs, and when to make and release them, the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
-| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, the workspaces they work in (made from URLs, kept, released), its own place config (hosts, images, VM definitions), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
-| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime code, any Rust dependency on `fleet-*` or `runtime-*` |
+| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, the workspaces they work in (made from URLs, kept, released), its own place config (hosts), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
+| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any Rust dependency on `fleet-*`, any runtime code but `runtime-mux`, which it links until Fleet drives the runtimes |
 
 Where a fact belongs:
 
@@ -63,22 +58,19 @@ Where a fact belongs:
 ### Enforcement
 
 One `architecture.toml` covers the whole workspace and `arch-rules` checks it
-on every build, the way it checks Fleet's crates today:
+on every build:
 
 | Crate | May depend on | Must not depend on |
 | --- | --- | --- |
 | `fleet-*` | `fleet-*`, `term-stream`, crates.io | `runtime-*`, `thurbox` |
 | each `runtime-*` | `term-stream`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
 | `term-stream` | crates.io | everything else |
-| `term-holder` | `term-stream`, crates.io | everything else |
 | `workspace-git` (makes git workspaces; runtimes run it, never link it) | crates.io | everything else |
-| `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
+| `thurbox` | `term-stream`, crates.io, and `runtime-mux` until Fleet drives the runtimes | `fleet-*`, every other `runtime-*` |
 
 The file is `crates/architecture.toml`, and the `architecture` test of
 `arch-rules` checks it. Every crate that is not Fleet's is `role = "component"`: held
-to the crate graph from its manifest, but not to Fleet's own source rules. It
-records the one dependency the table above does not allow yet: `thurbox`
-links `runtime-mux` until Fleet drives the runtimes.
+to the crate graph from its manifest, but not to Fleet's own source rules.
 
 Components talk only through processes; `term-stream` is a wire format, not
 a component. A component can therefore later move
@@ -92,40 +84,6 @@ to a repository of its own with nothing to untangle.
 | The runtime protocol | Fleet → a runtime: `start`, `inspect`, `stop` and the optional verbs | [Runtimes](runtime/README.md#the-runtime-protocol) |
 | The terminal stream | a view ↔ the process `fleet attach` names | [Runtimes](runtime/README.md#the-terminal-stream) |
 | Workspaces | Fleet → a runtime: a list of URLs in, one directory per URL out | [Runtimes](runtime/README.md#workspaces) |
-
-## Where the SQLite tables go
-
-| Table | Destination |
-| --- | --- |
-| `sessions`: identity, `backend_id`, `backend_type`, `key` | Task `status.session` |
-| `sessions`: `launch_*`, `agent_args`, `agent_session_id` | Fleet harness profiles |
-| `sessions`: `hook_state`, `hook_state_at` | `fleet signal`, then `status.sessionState` |
-| `sessions`: `stopped_at`, `lost_at`, `teardown_owed`, `relaunch_held_at` | Task conditions, receipts, finalizers |
-| `sessions`: `parent_session_id` | a parent label on the Task |
-| `sessions`: `display_order`, `seen_at` | thurbox interface file |
-| `worktrees` | the runtime's workspaces ([workspace-git](runtime/README.md#workspace-git-the-default-for-git-urls)) |
-| `session_meta`, `session_events`, `session_relaunches`, `session_intents`, `session_loss_suspects`, `session_lifecycle_clock` | dropped: Fleet's receipts and Known/Unknown observation |
-| `session_messages` | `status.inbox`, `fleet send` |
-| `tasks` | Tasks with `dispatch: false` |
-| `automations`, `automation_runs`, `automation_suspensions` | `automations.json` beside thurbox's `settings.toml`, fired by thurbox; a Fleet schedule kind, to design, would replace it |
-| `event_cursors`, `snapshot_versions` | `fleet watch --since` |
-| `audit_log`, `telemetry_export` | Fleet's store history and `fleet-telemetry` |
-| `repo_bookmarks`, `review_comments`, `review_marks`, settings, keybindings | thurbox interface files |
-
-`rusqlite` then leaves the dependency tree.
-
-## Open
-
-- A schedule kind in Fleet to replace thurbox's `automations.json`.
-- Fork and `restart --fresh`: a conversation field on the Task, or dropped.
-- `hooks.toml` beyond `pre_launch`: harness settings or a Fleet plugin.
-- Shared hosts: one Fleet store per operator is assumed.
-- Latency of the `view` bridge against today's in-process control mode, to
-  measure against [performance](thurbox/performance.md)'s frame floors.
-  `stream_panes` in thurbox's `settings.toml` opens local tmux panes through
-  `runtime-mux view` for that measurement.
-- Windows (psmux) at the cutover, or after Linux and macOS.
-- VEGA is content in its own repository, applied as an ordinary Task; Fleet bundles none.
 
 ## Layout
 
@@ -142,13 +100,14 @@ docs/
 │   └── development.md · tutorial.md
 ├── fleet/                     the engine
 │   ├── README.md              its index
-│   ├── architecture.md        components, ports, flow, and the target (+ .svg)
+│   ├── architecture.md        components, ports, flow, views (+ .svg)
 │   ├── contracts.md           guarantees and their tests
 │   ├── configuration.md       init, fleet.toml, environment, telemetry
 │   ├── controllers/           one page per controller (+ its state-machine .svg)
 │   └── resources/             one page per resource kind
 └── runtime/                   the runtimes
-    └── README.md              protocol, terminal stream, workspaces (+ .svg)
+    ├── README.md              protocol, terminal stream, workspaces (+ .svg)
+    └── runtime-mux.md         hosts, psmux, the status channel
 ```
 
 Naming: one directory per component, each with a `README.md` index. Pages are

@@ -386,7 +386,7 @@ Chat differs from a forge in three ways:
 
 The Gateway reads the declarations of every Task, keeps a cursor on each
 Task in the same write as the inbox append, and must wake when a Task
-declares something. A plugin can do none of these today. A plugin also
+declares something. A plugin can do none of these. A plugin also
 cannot hold a resident connection, and the platforms need one either way.
 
 A plugin that keeps its own records, works on its own Tasks and polls stays
@@ -452,56 +452,26 @@ Out of scope, deliberately:
   interactive components,
 - the listener programs themselves.
 
-## Open questions and recommendations
+## Implementation and evidence
 
-| Question | Recommendation |
-| --- | --- |
-| Where does the earlier history go when a mention lands partway through a thread? | In the first inbox entry, not in the brief. The brief stays the route's brief, the same for every conversation Task. |
-| What brief and workspace does a conversation Task get? | The route's. TaskConfig holds execution defaults only. So a route names a TaskConfig, and carries the brief and the workspace itself. |
-| How can a route run several conversations at once? | Every route can. A `{base}` route gives each thread its own directory below the route's base directory. A URL list route has the runtime make a workspace for each Task, a worktree for a `git+` URL, and release it after the session. |
-| Who deletes a thread's directory? | Fleet, when the thread retires, and only a directory that the manager created. The Conversation records that the manager created it. A directory that existed before stays, as do a route's base directory and anything else in it. |
-| Who deletes a conversation Task? | ConversationController, when its thread retires: only a Concluded Task, idle for `gateway.retainMs`. A person or a conductor can also delete it at any time, as for any Task. The thread then becomes Orphaned. |
-| How long is a Conversation kept? | Until its thread retires: `gateway.retainMs`, seven days by default, after the later of its last message and its orphaning, once its Task is Concluded or gone. A thread with a running Task, or one that waits for its own directory, is kept. |
-| How large can a conversation Task's declarations grow? | `status.declared` has no cap today. Recommendation: a store cap per Task, past which the store refuses with `NeedsAttention/DeclaredFull`. |
-| Why does a Comment carry an `id`? | `fleet declare` treats an identical object as a no-op. So two Comments that say "Done." need two ids to be two posts. |
-| How is the questions route chosen per Task? | By the label `gateway.fleet.dev/route`, else the `[gateway]` default. Plugins already mark Tasks with labels. |
-| How is an answer recognised? | The first allowlisted message written after the Question, by the platform's clock. The Gateway does not judge whether it really answers. A worker that needs more asks a new Question. |
-| Does a child's result also go to the log channel? | Yes. The log channel is the record of every Task, a Task that another Task started included. The parent's inbox entry is input for the parent's work, not a record, and the parent does not log it again. |
-| Why is the log channel no route's channel? | So a reply under a log post is never admitted, relayed or answered. The receive verb ignores a channel that no route covers. A wildcard route skips the log channel for the same reason. |
-| How does a route cover every channel? | With `channels = ["*"]`. The wildcard is an entry of the existing list, so a route keeps one key for what it covers, and an explicit list stays as it is. No platform's channel id is `*`. |
-| Which route wins when a channel id is listed and a wildcard exists? | The route that lists the id. A wildcard is the fallback for its account. An account has one wildcard route at most, so the fallback is never ambiguous. |
-| Where does a wildcard route open a thread for a Question? | In the first channel id it lists. A route with only `"*"` has none, so `gateway.questions` refuses it. A Task whose route label names such a route raises `NeedsAttention/RouteUnknown`. No separate setting is needed. |
-| How can every allowlisted person DM the bot? | With `"dm:*"` in a route's `channels`. Like `"*"`, it is an entry of the existing list, so a route keeps one key for what it covers. No DM id is listed, so a new person needs only an `allow` entry. No platform's channel id holds `:`. |
-| Why does a DM need no mention? | A one-to-one DM already addresses the bot, and people rarely type a mention there. The admission rule is the same: only `allow` and `allowBots` start a Task. |
-| Why is a group DM no DM? | A group DM includes other people, as a channel does. So the wildcard covers it, and a request there needs a mention. |
-| Why does the Conversation record `direct`? | Admission reads the rule from the Conversation, not from each event. A history read does not say whether its chat is a DM, and some edit events do not either. |
-| Can a wildcard route use `mention = "top-level"`? | No. On every channel, it would make every top-level post of an allowlisted person a Task. |
-| Does a wildcard route change the listener digest or the Listener conditions? | No. The digest covers the account's own settings, not its routes. `Accepted` asks only whether some route uses the account, and a wildcard route does. |
-| Where does a mark live before the Task exists? | On the Conversation, under `status.reactions`. ConversationController owns admission, so it owns the queued mark and the first working mark. GatewayController owns every mark from the join on. |
-| Why are reactions best effort? | A reaction only shows progress. The relay and the post are what matter to the person, so a reaction never holds them back. A reaction is set, not counted, so a repeat is harmless and needs no marker. |
-| What if a platform cannot find Fleet's posts again? | Fleet never repeats a post whose outcome is unknown there. It raises `NeedsAttention/PostUnconfirmed`, and later posts to that thread wait for a person. |
+Each part, where it lives, and the suites that hold it, against the built
+CLI, a fake gateway and a stub `curl`. `crates/architecture.toml` holds their
+crate edges, field managers and negative fixtures.
 
-## Implementation steps
-
-Each step is its own change. Each has its own E2E suite against the built
-CLI, a fake gateway and a stub `curl`. Each keeps `cargo xtask check` green
-and adds its crate edges, field managers and negative fixtures to
-`crates/architecture.toml`.
-
-| Step | What | Where | Evidence |
-| --- | --- | --- | --- |
-| 1 | The Gateway port; `fleet-gateway` with the fake adapter; the Conversation and Listener kinds; ConversationController with numbering and retention; ListenerController; `fleet gateway receive` and `--beat`; `fleet gateway account` and `status`; `[gateway]` config | `fleet-api/src/gateway.rs`, `crates/fleet-gateway`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-cli` | `conversation_controller`, `e2e_gateway`, `store_contract`, `architecture` |
-| 2 | Admission; routes; Task creation with the workspace precondition; the refusal post | `fleet-controllers/src/conversation.rs`, `fleet-api/src/gateway.rs` | `conversation_controller`, `e2e_gateway` |
-| 3 | GatewayController: the tie, the join and the relay; `status.answered` and the `answers` inbox field; the parent labels | `fleet-controllers/src/gateway.rs`, `fleet-store` | `gateway_controller`, `e2e_gateway_controller`, `store_contract` |
-| 4 | Posting declarations, results and change news; opening a thread for a Question; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` | `gateway_controller`, `e2e_gateway_post` |
-| 5 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests; recorded Socket Mode payloads; `e2e_gateway` against the stub `curl` |
-| 6 | The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
-| 7 | The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
-| 8 | One directory per thread, and one end of life: a route's `{base}` is a base directory; each thread's Tasks get `<base>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
-| 9 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
-| 10 | Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
-| 11 | The wildcard route: `"*"` in `channels`; an explicit channel id wins; the log channel stays uncovered; one wildcard route per account, with `mention = "required"`; a questions route needs a channel id | `fleet-api/src/gateway.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `e2e_gateway_wildcard` |
-| 12 | The DM route: `"dm:*"` in `channels`; the port's `direct` on a delivery, Slack's `channel_type` `im`; the Conversation's `spec.direct`; a top-level DM starts a Task without a mention, and a stranger's earns the refusal; an explicit channel id wins; one DM route per account; never on Discord | `fleet-api/src/gateway.rs`, `fleet-api/src/conversation.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `crates/fleet-gateway` | `fleet-api` unit tests, Slack truth tables, `conversation_controller`, `e2e_gateway_dm` |
+| What | Where | Evidence |
+| --- | --- | --- |
+| The Gateway port; `fleet-gateway` with the fake adapter; the Conversation and Listener kinds; ConversationController with numbering and retention; ListenerController; `fleet gateway receive` and `--beat`; `fleet gateway account` and `status`; `[gateway]` config | `fleet-api/src/gateway.rs`, `crates/fleet-gateway`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-cli` | `conversation_controller`, `e2e_gateway`, `store_contract`, `architecture` |
+| Admission; routes; Task creation with the workspace precondition; the refusal post | `fleet-controllers/src/conversation.rs`, `fleet-api/src/gateway.rs` | `conversation_controller`, `e2e_gateway` |
+| GatewayController: the tie, the join and the relay; `status.answered` and the `answers` inbox field; the parent labels | `fleet-controllers/src/gateway.rs`, `fleet-store` | `gateway_controller`, `e2e_gateway_controller`, `store_contract` |
+| Posting declarations, results and change news; opening a thread for a Question; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` | `gateway_controller`, `e2e_gateway_post` |
+| The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests; recorded Socket Mode payloads; `e2e_gateway` against the stub `curl` |
+| The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
+| The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
+| One directory per thread, and one end of life: a route's `{base}` is a base directory; each thread's Tasks get `<base>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
+| Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
+| Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
+| The wildcard route: `"*"` in `channels`; an explicit channel id wins; the log channel stays uncovered; one wildcard route per account, with `mention = "required"`; a questions route needs a channel id | `fleet-api/src/gateway.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `e2e_gateway_wildcard` |
+| The DM route: `"dm:*"` in `channels`; the port's `direct` on a delivery, Slack's `channel_type` `im`; the Conversation's `spec.direct`; a top-level DM starts a Task without a mention, and a stranger's earns the refusal; an explicit channel id wins; one DM route per account; never on Discord | `fleet-api/src/gateway.rs`, `fleet-api/src/conversation.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `crates/fleet-gateway` | `fleet-api` unit tests, Slack truth tables, `conversation_controller`, `e2e_gateway_dm` |
 
 ## Gateway controller state machine
 
@@ -1245,45 +1215,44 @@ it.
 nothing outside the store. `Log` has no `Receive`: a log post creates no
 Conversation.
 
-#### Changes to Plan and Probe
+#### Plan and Probe
 
-`Plan` and `Probe` in `fleet_api::plan` change as follows, each with its
-architecture rule:
+What the Gateway's controllers use of `Plan` and `Probe` in
+`fleet_api::plan`, each with its architecture rule:
 
-- `Plan.creates`, today only in the plugin protocol, is carried by
+- `Plan.creates`, also in the plugin protocol, is carried by
   ConversationController's plans. The manager's create verb performs it.
-- `Plan.appends`, today ForgeController's, is also GatewayController's.
-- `Plan.delete`, today ChangeRequestController's, is also
-  ConversationController's.
+- `Plan.appends` is ForgeController's and GatewayController's.
+- `Plan.delete` is ChangeRequestController's and ConversationController's.
 - A create may carry an `exclusive: {workspace}` precondition. See
   [workspaces](#workspaces).
-- New runtime calls, `Runtime::create_dir(host, dir)`, which says whether
+- Runtime calls, `Runtime::create_dir(host, dir)`, which says whether
   it made the directory, and `Runtime::remove_dir(host, dir)`. The manager
   calls the first before a conversation Task's create, after the
   precondition, and the second as a thread retires. See
   [workspaces](#workspaces).
-- New actions, `DeleteTask { name, uid }` and `RemoveDir { host, path }`.
+- Actions `DeleteTask { name, uid }` and `RemoveDir { host, path }`.
   Only ConversationController plans them, as steps of a thread's
   retirement. The manager performs `DeleteTask` through the store's
   `retire_conversation_task`, which refuses a Task that is not Concluded
   or not this thread's. It performs `RemoveDir` through the runtime, after
   it checks that `path` is the directory `status.dir` records and that no
   Task names it.
-- New probes: `Probe::List { kind, labels }`, answered by the store;
+- Probes: `Probe::List { kind, labels }`, answered by the store;
   `Probe::History`, `Probe::Capabilities` and
-  `Probe::GatewayWhoami { account }`, answered by the Gateway port. The
-  existing `Whoami { host }` stays the Forge port's.
-- New actions: `Open`, `Post` and `Receive`, above.
-- A new action, `React`, above. Only GatewayController plans it. The
+  `Probe::GatewayWhoami { account }`, answered by the Gateway port.
+  `Whoami { host }` is the Forge port's.
+- Actions `Open`, `Post` and `Receive`, above.
+- The action `React`, above. Only GatewayController plans it. The
   manager performs it through `Gateway::react`, after the intent and under
   the lease.
-- A new action, `Log`, above. Only GatewayController plans it. The
+- The action `Log`, above. Only GatewayController plans it. The
   architecture rule that keeps the Gateway port in the manager covers it:
   the manager performs it through `Gateway::post`, after the intent and
   under the lease, and no controller holds the port.
 
-The kind names `Conversation` and `Listener` are reserved. Once they are
-built in, a plugin manifest that claims either kind is refused.
+The kind names `Conversation` and `Listener` are reserved: a plugin manifest
+that claims either kind is refused.
 
 ### Declarations the Gateway reads
 
@@ -1295,8 +1264,8 @@ A Task talks by declaring items in `status.declared` with
 | `Question` | `id`, `text` | Posted once. | Opens a thread, then is tied to it. | Sent to the parent's inbox. |
 | `Comment` | `id`, `text` | Posted once. | Skipped. | Sent to the parent's inbox. |
 | `Draft` | `id`, `title`, `text` or `url` | Logged once, as awaiting review. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
-| `ChangeRequest` | `url`, `name`, as today | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, and no other news. | Logged the same way. | Sent to the parent's inbox, and logged. |
-| `status.result` | As today | Logged once per generation. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
+| `ChangeRequest` | `url`, `name` | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, and no other news. | Logged the same way. | Sent to the parent's inbox, and logged. |
+| `status.result` | The worker's result | Logged once per generation. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
 
 "Logged" means a top-level post in the `gateway.logs` channel. Without
 `gateway.logs`, nothing is logged.

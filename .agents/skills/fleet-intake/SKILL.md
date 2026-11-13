@@ -5,7 +5,8 @@ description: Use when handing authorized work to Fleet.
 
 # Create Fleet resources
 
-Read README.md and the current resource contracts before creating work.
+Read [Fleet's index](../../../docs/fleet/README.md) and the current resource
+contracts before creating work.
 Inspect the installed binary with `fleet version --json` and `fleet --help`.
 Use the config and data directory the requester supplies; never probe a live
 queue or create a fresh operational deployment by guessing a path.
