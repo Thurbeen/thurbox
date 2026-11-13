@@ -38,6 +38,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       shell: ${{ steps.filter.outputs.shell }}
       markdown: ${{ steps.filter.outputs.markdown }}
+      doc_refs: ${{ steps.filter.outputs.doc_refs }}
       lua: ${{ steps.filter.outputs.lua }}
       website: ${{ steps.filter.outputs.website }}
       install_sh: ${{ steps.filter.outputs.install_sh }}
@@ -45,7 +46,7 @@ jobs:
       winget: ${{ steps.filter.outputs.winget }}
       pr_title: ${{ steps.filter.outputs.pr_title }}
       release_line: ${{ steps.filter.outputs.release_line }}
-      windows_e2e_probes: ${{ steps.filter.outputs.windows_e2e_probes }}
+      dev_scripts: ${{ steps.filter.outputs.dev_scripts }}
       nix: ${{ steps.filter.outputs.nix }}
       fleet: ${{ steps.filter.outputs.fleet }}
     steps:
@@ -61,6 +62,10 @@ jobs:
             rust:
               - 'crates/thurbox/**'
               - 'crates/runtime-*/**'
+              # The two crates thurbox and runtime-mux build on: a change to
+              # either can break them, and their own tests run in these jobs.
+              - 'crates/term-stream/**'
+              - 'crates/workspace-git/**'
               # The Lua trees are Rust inputs, not merely neighbours: they are
               # `include_str!`d into the binary, and the suite asserts on their
               # CONTENT — `crates/thurbox/tests/new_session.rs` checks a string that exists
@@ -91,6 +96,13 @@ jobs:
               - '**/*.md'
               - '.rumdl.toml'
               - 'scripts/ci/check-rumdl-version.*'
+              - '.github/workflows/ci.yml'
+            # What `crates/thurbox/tests/doc_references.rs` reads beyond the
+            # `rust` filter: every document, and the examples, which cite
+            # documents and are not all thurbox's.
+            doc_refs:
+              - '**/*.md'
+              - 'examples/**'
               - '.github/workflows/ci.yml'
             lua:
               - 'ui/**'
@@ -130,11 +142,12 @@ jobs:
               # submit/skip + deferrable decisions the release job asks for.
               - 'packaging/winget/**'
               - '.github/workflows/ci.yml'
-            # The Windows harness needs a VM, but its psmux hook-status gate
-            # probes do not: they check what the VM measured against the gate
-            # runtime-mux's psmux adapter declares, and that comparison runs
-            # here against a stand-in source.
-            windows_e2e_probes:
+            # The development scripts' bats suites. The Windows harness needs
+            # a VM, but its psmux hook-status gate probes do not: they check
+            # what the VM measured against the gate runtime-mux's psmux
+            # adapter declares, and that comparison runs here against a
+            # stand-in source.
+            dev_scripts:
               - 'scripts/dev/e2e/windows-vm.sh'
               - 'scripts/dev/e2e/windows-vm.bats'
               # `bad`'s counter and `fail`'s exit status live here, and the
@@ -143,6 +156,9 @@ jobs:
               - 'scripts/dev/e2e/lib/e2e-common.sh'
               # What the probes compare against: the psmux gate.
               - 'crates/runtime-mux/src/psmux.rs'
+              # The sandbox's teardown, which stops the `fleet up` it started.
+              - 'scripts/dev/lib/sandbox-env.sh'
+              - 'scripts/dev/lib/sandbox-env.bats'
               - '.github/workflows/ci.yml'
             # Fleet, the engine: its crates, the dependency graph fleet-arch
             # checks, the trees its tests read (its examples, its installer,
@@ -151,6 +167,9 @@ jobs:
             # builds from.
             fleet:
               - 'crates/fleet-*/**'
+              # fleet-runtime and fleet-cli build on the terminal stream's
+              # frames.
+              - 'crates/term-stream/**'
               - 'crates/architecture.toml'
               # fleet-arch's architecture test is the only crate-graph check,
               # so every member's manifest is its input.
@@ -262,10 +281,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
 
+  # Also the place a change outside thurbox runs the thurbox tests it can
+  # break, against the build cache this job already keeps: a Fleet change runs
+  # the two test binaries that drive the real `fleet`, and a document or
+  # example change runs `tests/doc_references.rs`, which reads both.
   nextest:
     name: Nextest
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: >-
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.fleet == 'true' ||
+      needs.changes.outputs.doc_refs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -285,6 +311,7 @@ jobs:
       # xvfb: `tui_e2e`'s native-clipboard paste runs against a private X server.
       # dbus: `notify_send_e2e` delivers to a private session bus.
       - name: Install tmux, Xvfb and dbus
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
         run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus
       # The `fleet` binary, beside `thurbox-cli` in target/debug, for the
       # tests that drive a real Fleet: `tests/fleet_engine_e2e.rs` and the
@@ -292,12 +319,32 @@ jobs:
       # excludes Fleet's crates, so it never builds it, and under `CI` those
       # tests fail rather than skip without it. `runtime-mux` and
       # `workspace-git` are workspace members the run builds itself.
-      - run: cargo build -p fleet-cli --bin fleet
-      - run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci
+      - if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
+        run: cargo build -p fleet-cli --bin fleet
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci
+      # A Fleet change without a thurbox one: the run above is skipped, so
+      # these two binaries are the thurbox tests that run against the `fleet`
+      # just built. Most `tui_e2e` scenarios start a real Fleet (every live
+      # session is a Fleet session), so it runs whole rather than by a list
+      # of names that a new scenario would miss. They also need `runtime-mux`
+      # beside `fleet`, and the `workspace-git` it runs to prepare a Task's
+      # workspace, which a `-p thurbox` run does not build.
+      - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.fleet == 'true'
+        run: |
+          cargo build -p runtime-mux -p workspace-git --bin runtime-mux --bin workspace-git
+          cargo nextest run -p thurbox --test fleet_engine_e2e --test tui_e2e --profile ci
+      - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.doc_refs == 'true'
+        run: cargo nextest run -p thurbox --test doc_references --profile ci
+      # Nextest cannot run doctests. Fleet's crates run theirs in the `fleet`
+      # job.
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo test --doc --workspace --exclude 'fleet-*' --locked
       # The crossterm patch's parser tests live in the vendored crate, which
       # `--all` does not reach: the workspace excludes it, so it builds from its
       # own manifest and lockfile.
-      - run: cargo test --locked --manifest-path vendor/crossterm/Cargo.toml --target-dir target --lib thurbox_patch
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo test --locked --manifest-path vendor/crossterm/Cargo.toml --target-dir target --lib thurbox_patch
 
   # Native-Windows gate (psmux backend selection, known-folder paths, toast
   # notifications, junction workspaces), split into two parallel jobs so the heavy
@@ -312,7 +359,7 @@ jobs:
   windows-clippy:
     name: Windows (clippy)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -328,7 +375,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
+      # Fleet's crates, split by filter as in `windows-test`: their
+      # `cfg(windows)` code is linted nowhere else.
+      - if: ${{ !cancelled() && needs.changes.outputs.fleet == 'true' }}
+        run: cargo clippy -p 'fleet-*' --locked --all-targets --all-features -- -D warnings
 
   windows-test:
     name: Windows (tests)
@@ -526,10 +578,10 @@ jobs:
       - name: Run winget packaging tests
         run: bats packaging/winget/winget.bats
 
-  windows-e2e-probes:
-    name: Windows Harness Probe Tests
+  dev-scripts:
+    name: Dev Script Tests
     needs: changes
-    if: needs.changes.outputs.windows_e2e_probes == 'true'
+    if: needs.changes.outputs.dev_scripts == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -540,6 +592,8 @@ jobs:
       # change to either side of the comparison (issue #1170).
       - name: Run the psmux hook-status gate probe tests
         run: bats scripts/dev/e2e/windows-vm.bats
+      - name: Run the sandbox environment tests
+        run: bats scripts/dev/lib/sandbox-env.bats
 
   shellcheck:
     name: ShellCheck
@@ -827,7 +881,7 @@ jobs:
       - install-script
       - install-script-ps
       - winget-packaging
-      - windows-e2e-probes
+      - dev-scripts
       - nix
       - fleet
       - runtime-protocol

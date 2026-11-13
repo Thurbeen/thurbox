@@ -71,7 +71,7 @@ records version evidence and RMUX platform limits.
 | `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
 | `just test` | `cargo nextest run --all`; the tests that drive an installed agent CLI run only with `FLEET_REAL_AGENTS=1` |
 | `just test-one NAME` | one test by name (`cargo nextest run -E 'test(NAME)'`) |
-| `just test-scripts` | the four bats suites: `scripts/install.bats`, the pull-request-title checker, `packaging/winget/winget.bats`, `scripts/dev/e2e/windows-vm.bats` (needs `bats`) |
+| `just test-scripts` | the bats suites CI runs: `scripts/install.bats`, the pull-request-title checker, the release-line gate, `packaging/winget/winget.bats`, `scripts/dev/e2e/windows-vm.bats`, `scripts/dev/lib/sandbox-env.bats` and the rumdl version check (needs `bats`) |
 | `just lint` | fmt-check + clippy + cargo-deny + Windows clippy + rumdl (CI's version) + shellcheck + selene, stylua and lua-language-server |
 | `just clippy-windows` | the `Windows (clippy)` CI job, cross-checked from Linux (`--target x86_64-pc-windows-gnu`) |
 | `just fmt` / `just fmt-lua` | format Rust + website / format the Lua interface |
@@ -225,6 +225,22 @@ and that run used to finish by waiting on it alone. With the priorities both
 start first. On four threads locally, the full suite went from 545 s to
 384–402 s over three runs, without changing which tests run, their group or
 their timeouts.
+
+### Which tests a change runs
+
+The `changes` job in `.github/workflows/ci.yml` sorts a pull request's paths
+into filters, and each job runs only for its own. A change can break a test
+in another component's tree, so the `Nextest` job also runs a few thurbox
+tests for changes that are not thurbox's:
+
+| Change | Runs in `Nextest` |
+|--------|-------------------|
+| thurbox, `runtime-mux`, `term-stream`, `workspace-git` (the `rust` filter) | the whole suite except Fleet's crates, then the doctests |
+| Fleet only (the `fleet` filter) | `fleet_engine_e2e` and `tui_e2e`, against the `fleet`, `runtime-mux` and `workspace-git` it builds |
+| documents or examples only (the `doc_refs` filter) | `doc_references` |
+
+Fleet's own suite runs in the `fleet` job and in `Windows (tests)`, and its
+clippy in `fleet` and `Windows (clippy)`.
 
 ### Debug information and disk usage
 
