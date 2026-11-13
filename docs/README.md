@@ -55,6 +55,11 @@ Where a fact belongs:
 - It is how to reach a terminal or a host: **the runtime**.
 - It is how this user looks at things: **thurbox**, in a file.
 
+A host is a place of a runtime
+([ADR-42](thurbox/architecture.md#adr-42-hosts-belong-to-runtimes), planned):
+its id is `<runtime>/<place>`, and its config is a table of the runtime's in
+Fleet's config, passed to the runtime with each request.
+
 ### Enforcement
 
 One `architecture.toml` covers the whole workspace and `arch-rules` checks it

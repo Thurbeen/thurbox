@@ -1257,3 +1257,47 @@ One repository keeps a change across components in one change and one CI.
   every change across components would span repositories. Still open later, since
   nothing links across.
 - *Sessions of thurbox's own beside Fleet's*: a second engine.
+
+## ADR-42: Hosts belong to runtimes
+
+**Status**: planned. The code lands in steps. Until each step lands, Fleet's
+`[hosts]` table and thurbox's `hosts.toml` work as documented today.
+
+**Choice**: a host is a place of a runtime.
+
+- A host's id is `<runtime>/<place>`, such as `mux/devbox`. `local` is the
+  short form of `<runtime>/local` on the default runtime: the one marked
+  `default = true`, or the only runtime. Fleet refuses a config with several
+  runtimes and no single default.
+- Fleet's config declares each place inline, in
+  `[runtimes.<name>.places.<place>]`. Fleet passes the place's table to the
+  runtime in every request. Fleet does not read the table. The runtime
+  trusts it, so it lives only in the operator's Fleet config.
+- Fleet's `[hosts]` table goes. A runtime's `manifest` reports its places and
+  whether each one is ready.
+- thurbox reads hosts only from Fleet. thurbox stops reading `hosts.toml`.
+  Its companion shell on a remote place comes from the runtime, through Fleet.
+- Nothing installs silently. `fleet doctor` reports what each place is
+  missing and the command that fixes it.
+
+The protocol additions are in
+[the runtime protocol](../runtime/README.md#proposed-places-protocol-version-2),
+and the config shape is in
+[Fleet's configuration](../fleet/configuration.md#planned-places-of-a-runtime).
+
+**Why**: how to reach a place is a fact of the runtime (ADR-41). A host table
+in Fleet and another in thurbox are two copies of one fact. One Fleet config
+keeps all of a user's settings in one file. A place config passed with each
+request lets a runtime keep no config file. A runtime for ephemeral VMs then
+needs no new verb: its place is dynamic, and a key gets one VM.
+
+**Rejected alternatives**:
+
+- *A place file of the runtime's own* (`places.toml`): a second file to edit,
+  and Fleet cannot validate or show it.
+- *Bare place names, unique across runtimes*: two runtimes with a `local`
+  place collide.
+- *Keep `[hosts]` as aliases*: two names for one place.
+- *One `[runtimes.<name>]` per host*: one program configured many times.
+- *Install the multiplexer or harness on first use*: a silent change on a
+  machine the user did not ask to change.
