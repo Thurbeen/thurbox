@@ -48,80 +48,28 @@ binary to anyone.** A user acquires one by re-running an installer or their
 package manager. That is a feature for an opt-in interface and a trap if you
 expect a new tool to reach the existing population.
 
-## v1 is a branch, not a binary
+## Maintenance releases
 
-`thurbox` runs the plugin kernel; `src/app` and `src/ui` are gone. v1 is
-unsupported and its code stays on the **`v1.x`** branch. Its last patches were
-released by dispatching `cd.yml` from that ref with an explicit `version` (e.g. `1.8.7`) — `cog bump
---auto` computes from tags and would try to move the 2.x line instead.
+An older line is released from its own branch (`v1.x`, `v2.x`) by dispatching
+`cd.yml` from that ref with an explicit `version` — `cog bump --auto` computes
+from tags and would move the newest line instead. `cog.toml`'s
+`branch_whitelist` carries `v*.x` beside `main`, without which `cog bump`
+refuses on the branch. The tag is pushed by refspec: a push action that
+defaults to the repository's default branch would push the maintenance tip onto
+`main`, be rejected, and the tag would never leave the runner.
 
-The archive still contains exactly `thurbox` and `thurbox-cli`, which is what the
-rule at the top of this file requires. The kernel inherited the *name*; nothing was
-added or removed, so no installed updater notices anything but a new version.
-
-2.x asked a profile with v1 history once, on its first launch, before the
-interface took the terminal: declining turned `auto_update` off and printed how
-to reinstall 1.x. That gate is what made replacing an interface under an
-unchanged binary name defensible. 3.0 removed it with the database it read.
-
-### Auto-update does not cross a major, and that has to be shipped to v1
-
-From v2.2.3, `update::version_check::crosses_major` stopped `perform_update`
-installing a release whose major is higher than the running binary's; it was
-reported instead (`UpdateOutcome::SkippedMajor`, `thurbox-cli update --force` to
-take it anyway). It has since become the stricter line rule in "v2 and v3"
-below, which no flag crosses. Either way, this is what makes "stay on 1.x" a
-property of the binary rather than a setting the user has to remember.
-
-**It only protects a binary that carries it.** Every release up to v1.8.7 predates
-this commit, so those installs still resolve `releases/latest` to a 2.x tag and
-take it. Closing that needs a **1.x maintenance cut carrying this change**,
-released the way this section describes — dispatch `cd.yml` from `v1.x` with an
-explicit `version`, which publishes with `make_latest: false` and skips the
-package channels. Until such a cut exists, the only reliable hold for an existing
-1.x install is `auto_update = false`, which is what 2.x's first-launch question
-wrote when it was declined.
-
-Note the ordering trap when you do cut it: the guard reads the running binary's
-own major, so it is the *1.x* build that must contain it. Landing it on `main`
-alone protects 2.x from a future 3.x and nobody else.
-
-The other way to protect those installs was to move GitHub's `releases/latest`
-pointer back to the newest 1.x tag, which every pre-guard binary and every
-installer resolves. **That was considered and rejected: 2.x stays `latest`.** It
-would have frozen auto-update for the whole 2.x population — a 2.x binary
-resolving a 1.x tag sees nothing newer and stops updating — and made the
-unpinned one-liner install 1.x, which is a different claim than "1.x is
-recommended". The cost is that the guard reaches existing 1.x installs only via
-the maintenance cut above, and until then `auto_update = false` is what holds
-them.
-
-Such a cut is a **maintenance release**, and `cd.yml` treats it as one: it
-compares the version being cut against every existing tag and, when it is behind
-the highest, publishes the GitHub Release with `make_latest: false` and skips
-Homebrew, AUR, Chocolatey and winget. The tag, the five-target build and the
-release assets are unchanged — what is withheld is every pointer that means "the
-current thurbox" rather than a version. Without it a 1.8.x cut would take the
-`releases/latest` pointer the installers resolve and rewrite the tap and the
-PKGBUILDs to it, walking 2.x users backwards. The test is the version, not the
-ref, so a hotfix from any branch that really is the newest still ships
+`cd.yml` compares the version being cut against every existing tag. When it is
+behind the highest, it publishes the GitHub Release with `make_latest: false`
+and skips Homebrew, AUR, Chocolatey and winget. The tag, the five-target build
+and the release assets are unchanged — what is withheld is every pointer that
+means "the current thurbox" rather than a version. The test is the version, not
+the ref, so a hotfix from any branch that really is the newest still ships
 everywhere.
-
-Two things had to be repaired before that dispatch could reach a tag at all, and
-both are worth knowing because neither is reachable from a `main` release — they
-were broken from the moment 2.x took `main` and nothing noticed, since v1.8.6 was
-cut while v1 still *was* `main`. `cog.toml`'s `branch_whitelist` carries `v*.x`
-beside `main`, without which `cog bump` refuses on the maintenance branch ("No
-patterns matched in [main] for branch 'v1.x'") before creating anything. And the
-tag is pushed by refspec rather than by `ad-m/github-push-action`, which defaults
-its `branch` to the repository's default: harmless from `main`, where that is the
-ref already checked out, but from `v1.x` it tries to push that branch's tip onto
-`main`, is rejected as a non-fast-forward, and the tag never leaves the runner.
 
 ## v2 and v3
 
-3.x (issue #1688: Fleet as thurbox's engine, one repository) is a different
-program under the same binary names, as 2.x was to 1.x. **No 2.x install moves
+3.x (Fleet as thurbox's engine, one repository) is a different program under
+the same binary names. **No 2.x install moves
 to 3.x unless its user reinstalls on purpose.** Everything below exists to keep
 that true for installs whose update code can no longer change.
 
@@ -180,11 +128,9 @@ exists**: the more installs carry it, the fewer depend on the asset rule below.
 5. **State**: 3.x must not write anything a 2.x install reads, so both can sit on
    one machine and 2.x keeps working. Give 3.x its own config directory, data
    directory and tmux socket, and have it import 2.x state read-only. 2.x
-   already refuses rather than corrupts a database whose `min_reader_version` is
-   above its schema (`storage::schema::MIN_READER_VERSION`), but refusing is not
-   working: sharing `~/.local/share/thurbox/thurbox.db` would end 2.x the day 3.x
-   raised it. The same applies to the `thurbox` tmux socket and the agent hook
-   entries that call `thurbox-cli`.
+   refuses a database written by a newer schema, so sharing 2.x's
+   `thurbox.db` would end 2.x. The same applies to the `thurbox` tmux socket
+   and the agent hook entries that call `thurbox-cli`.
 
 ### Cutting the major, and 2.x after it
 

@@ -1,7 +1,9 @@
 # thurbox
 
 This directory holds the **rationale** behind thurbox's design decisions:
-the interface, its kernel and plugins, and today's session engine. For
+the interface, its kernel and plugins, and how sessions map to Fleet
+Tasks. The whole system, Fleet and the runtimes included, is in
+[the overview](../README.md). For
 operational guidance (build commands, module layout, event loop), see
 [`AGENTS.md`](../../AGENTS.md) and the skills it indexes under
 [`.agents/skills/`](../../.agents/skills/).
@@ -16,7 +18,7 @@ operational guidance (build commands, module layout, event loop), see
 | [kernel.md](kernel.md) | The plugin kernel: its shape, rules and traps | Changing the kernel's contract with Lua |
 | [plugins.md](plugins.md) | Writing an interface plugin | Changing the plugin API or the `thurbox.*` shape |
 | [orchestration.md](orchestration.md) | What thurbox adds to Fleet's orchestration: Tasks as sessions, the `fleet` verbs | Changing how sessions map to Fleet Tasks |
-| [agents.md](agents.md) | Agents are Fleet's harnesses; `agents.toml` is not read | Adding or changing an agent |
+| [agents.md](agents.md) | Which agents a session can run: Fleet's harnesses | Adding or changing an agent |
 | [config.md](config.md) | Thurbox's own config files and env vars in one place | Adding/changing a config file or env var |
 | [releasing.md](releasing.md) | What a release may and may not change about the artifacts | Changing the release workflow or a published artifact |
 | [review.md](review.md) | The per-path house rules a change is reviewed against, and which document owns which class of fact | Encoding a new house rule, or moving what a document owns |
@@ -27,37 +29,6 @@ walkthrough (its screenshots are generated — see
 dev-environment guide, and
 [benchmark-multiplexers.md](benchmark-multiplexers.md), the method of
 `just bench-multiplexers`.
-
-## On Fleet
-
-thurbox is becoming an interface over [Fleet](../fleet/README.md), with sessions on
-[runtimes](../runtime/README.md); [the overview](../README.md) is the whole design.
-This is what it changes in thurbox.
-
-Less than it looks: the grid, `vt100`, rendering, size arbitration and the
-performance gates already consume `PaneChunk`s, today from control mode
-through `WiredPane`. They stay. What changes is the source:
-
-- **One pane kind for every session**: a stream pane. It runs the argv from
-  `fleet attach`, decodes frames into the `PaneChunk`s `WiredPane` already
-  takes, and encodes keys, pastes and resizes as frames. Program panes stay
-  as they are.
-- **Gone from thurbox**: the control-mode client, the transports, the
-  multiplexer dialects, discovery and pane location, all now
-  `runtime-mux view`'s.
-- **Disconnects** become one case: the stream ends, the pane shows it is
-  detached, and thurbox asks `fleet attach` again with backoff. Today that is
-  a different path per transport.
-- **Capabilities** the interface reads from `hello`: no `scrollback` hides
-  copy-mode history, no `viewers` warns before a second view, a bridged stream
-  shows that its history starts now.
-- **Cost**: one extra process and pipe between the multiplexer and the grid.
-  Output frames are raw bytes, never base64; a snapshot is sent only on
-  connect and resync. It is measured against [performance.md](performance.md)'s
-  frame floors before the control-mode pane is deleted.
-
-A plain terminal uses the same stream: `fleet attach <task>` without `--json`
-draws the snapshot, then passes output through and input back.
 
 ## Keeping docs current
 

@@ -50,9 +50,9 @@ misread, and both are worth knowing before you conclude a path is wrong:
   resolves against **that session's** config dir, not the dev default — a dev
   binary invoked there will correctly report the release `ui` directory.
 - **Standing in a checkout changes nothing.** A `./ui` beside the working directory
-  used to win automatically, which is what made the interface the one config that
-  ignored the dev/release split. To work on a checkout's interface, ask for it:
-  `THURBOX_UI_DIR=ui`, or `just tui-ui` in the repository.
+  is not read, so the interface keeps the dev/release split. To work on a
+  checkout's interface, ask for it: `THURBOX_UI_DIR=ui`, or `just tui-ui` in the
+  repository.
 
 `thurbox-cli config show` prints the resolved `ui_dir` and `ui_json` alongside
 every other config path, which is the quickest way to see which set is in play.
@@ -573,11 +573,10 @@ arrangement is two columns:
 A pane that only ever floats — the new-session flow is the bundled example —
 names a slot nothing places, so it never competes for the centre.
 
-A slot exists because a plugin fills it, not the other way round: v1's `info`,
-`tasks` and `files` columns and its header/footer bands were removed with their
-plugins, and their slots went too — a slot nothing can fill would reserve a rect
-for nothing. **Adding a pane means adding its slot to `layout.lua`**, which is a
-file you edit rather than a layout compiled into the binary.
+A slot exists because a plugin fills it, not the other way round: a slot nothing
+can fill would reserve a rect for nothing. **Adding a pane means adding its slot
+to `layout.lua`**, which is a file you edit rather than a layout compiled into
+the binary.
 
 Several plugins may name the same slot. `center` is a **switch** slot — one
 occupant is visible at a time and focusing one brings it forward. The `ctrl+h` /
@@ -617,9 +616,8 @@ panels.toggle("sessions")  -- flip it, returns the new state
 
 A pane that wants a full-width row of its own — an indicator, a ticker — sits
 in a slot nothing else names, and a slot needs the arrangement to place it.
-`plugin install` never writes `layout.lua`, so that used to mean an install
-that loaded and drew nothing until you found the line to add. Declare it a
-strip instead:
+`plugin install` never writes `layout.lua`, so such an install would load and
+draw nothing until you added the line. Declare it a strip instead:
 
 ```lua
 return {
@@ -820,8 +818,7 @@ on_event = function(name, payload)
 end,
 ```
 
-A pane used to learn that the world changed only by being rendered and diffing
-the snapshot itself. Declare what you listen for and the kernel calls you **once
+Declare what you listen for and the kernel calls you **once
 per change**, off the render path, with the tables current: a session appeared,
 disappeared, changed status, name or branch; the selection or the focused pane
 moved; a command a plugin issued finished or failed; a program you started
@@ -1215,10 +1212,10 @@ command("theme",   { text = "tokyo-night" })
 
 Sessions are Fleet Tasks, so a session verb is one call of Fleet's command line:
 `create` applies a Task, `send` queues a message in its inbox, `rename` labels
-it and `delete` deletes it. Fleet makes a Task's workspace, so a `create` that
-names a branch, a base branch, an existing worktree or further repositories is
-refused. `fork`, `restart`, `restore`, `sync`, `reorder`, `dispatch`, `task` and
-`automation` no longer exist: each is an `unknown command`. A refusal is
+it and `delete` deletes it. A `create` names the repository and may name
+further ones (`extras`), whether each gets a worktree (`worktree`), its
+`branch` and the `base` a new branch starts from; the runtime makes each
+worktree. A refusal is
 `command.failed`, whose `subject` names what was asked, so a pane can show it
 where it was made.
 
@@ -1279,7 +1276,7 @@ height in rows — sized by percentage its frame drifts away from its content as
 the terminal grows.
 
 ```lua
-{ float = { width = 60, rows = 18 }, ... }   -- v1's modals: 60% wide, height to fit
+{ float = { width = 60, rows = 18 }, ... }   -- 60% wide, height to fit
 ```
 
 A modal is *open* on the frames it returns a `float` node, and closed on the
@@ -1384,14 +1381,10 @@ run("quota:devbox", "quota-axi --json --no-credential-refresh", {
 })
 ```
 
-**Account quotas are yours to fetch.** Plugin API 3 removed
-`thurbox.metrics.sessions[id].usage`: thurbox no longer reads agent credentials
-or calls a provider's API for every session while the interface is open. A pane
-that drew those windows asks the account-owning tool itself, with a `run` like
-the two above; on API 3 the old field is simply absent, so a pane still reading
-it draws nothing. [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
-already does this with `quota-axi`, locally and on every configured host;
-installing it is the migration for its quota readout.
+**Account quotas are yours to fetch.** thurbox reads no agent credentials and
+calls no provider's API. A pane that draws quota windows asks the
+account-owning tool itself, with a `run` like the two above. [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
+does this with `quota-axi`, locally and on every configured host.
 
 This works with zero sessions and `share_sessions = false`. The command runs
 in the target user's home, with the environment supplied by its transport,
@@ -1864,7 +1857,7 @@ easier to believe from a pane you added yourself than from prose.
 **They are examples, not a catalogue.** They are here to be read and copied from,
 not a set thurbox maintains on your behalf — installing one is a convenience over
 `cp`, and it becomes yours the moment you edit it. For panes meant to be *used*
-rather than read, see [Panes that give a v1 surface back](#panes-that-give-a-v1-surface-back)
+rather than read, see [Panes kept in their own repositories](#panes-kept-in-their-own-repositories)
 below.
 
 | Example | What it is |
@@ -1996,17 +1989,15 @@ takes `F1` is reported against `kernel` rather than against a file. A chord clai
 in two *plugin* scopes is not a conflict at all: focus decides, which is why three
 bundled panes can each bind `j`.
 
-## Panes that give a v1 surface back
+## Panes kept in their own repositories
 
-Two of the surfaces v2 dropped are maintained as panes, each in its own repository
-rather than in the interface directory thurbox ships. They are not examples: they are
-what a plugin looks like when it has to carry v1's behaviour, and they are the answer
-to "code review is gone" and "the info panel is gone".
+Two panes are maintained in repositories of their own rather than in the
+interface directory thurbox ships:
 
-| Pane | What it gives back |
+| Pane | What it draws |
 |---|---|
-| [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) | v1's diff reviewer — the branch, a commit or the working changes, a changed-files tree, notes you send back to the agent. Reclaims `Ctrl+X` / `F7` |
-| [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) | v1's info panel — session, git, agent, usage and system readouts in a column beside the terminal. Reclaims `F2` |
+| [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) | a diff reviewer — the branch, a commit or the working changes, a changed-files tree, notes you send back to the agent. Claims `Ctrl+X` / `F7` |
+| [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) | session, git, agent, usage and system readouts in a column beside the terminal. Claims `F2` |
 
 Both carry more than one file, so both install by **cloning** the repository
 ([A plugin that carries more than Lua](#a-plugin-that-carries-more-than-lua)):
@@ -2032,16 +2023,8 @@ reading:
   kernel's `thurbox.diffs`, and the target picker names the choices it cannot serve
   rather than hiding them. That is the shape to copy for an optional capability.
 
-[`thurbox-automations`](https://github.com/Thurbeen/thurbox-automations) gives back v1's
-automations pane the same way the review pane is placed — the `center` switch slot,
-a pill and a toggle chord (`Alt+A`). The list, the definitions and the run history
-are in the snapshot and every change is an `automation` command; it asks for `run`
-only because writing an exec automation's command requires it, and untrusted it
-manages everything else.
-
-The file viewer, the remaining missing surface, has no pane — by nobody having written
-one rather than by anything withheld: `files.list/read` is published, rooted at a
-session's directory, to a pane granted `files`.
+No pane ships a file viewer, though nothing withholds one: `files.list/read` is
+published, rooted at a session's directory, to a pane granted `files`.
 
 ## Managing panes
 

@@ -9,9 +9,6 @@ exact sequence (`scripts/demo/record-tutorial.sh`). The paths in them
 (`/tmp/tutorial-home/code/…`) come from the throwaway sandbox the capture runs
 in; yours will be your own `~/code`, `~/src`, or wherever you keep repositories.
 
-These captures show the earlier session-list layout. The current list uses
-host bands, repository separators and indented session rows.
-
 **Contents**
 
 - [Before you start](#before-you-start)
@@ -43,15 +40,15 @@ as well; see [Fleet's documentation](../fleet/README.md).
 
 You also need:
 
-- **tmux ≥ 3.2** (or [psmux ≥ 3.3.8](https://github.com/psmux/psmux) on native Windows, or
-  opt-in [RMUX ≥ 0.10.0](config.md#multiplexer-requirements-and-rmux-setup)) —
-  it is what keeps your agents alive when thurbox is closed
+- **tmux ≥ 3.2** (or [psmux ≥ 3.3.8](https://github.com/psmux/psmux) on native
+  Windows) — Fleet's runtime runs your agents in it, so they stay alive when
+  thurbox is closed
 - **git**
-- **at least one coding-agent CLI** that Fleet has a harness profile for —
-  `claude` or `codex`
+- **at least one coding-agent CLI** that Fleet has a harness profile for
+  ([agents.md](agents.md))
 
 Nothing to configure. On first launch thurbox seeds `~/.config/thurbox/` with
-the agents it knows, the themes, and the interface itself.
+the themes and the interface itself.
 
 ## 1. Launch it
 
@@ -67,7 +64,8 @@ sessions yet, so the list says so.
 
 ## 2. Add a repository
 
-Press **`Ctrl+N`**. The creation flow opens on the repo step, with its search
+Press **`Ctrl+N`**. The creation flow asks for the host first — this machine,
+or a host Fleet's config names — then opens the repo step, with its search
 focused: type any part of a repository's path and the list narrows to the
 fuzzy matches, best first.
 
@@ -150,7 +148,7 @@ repository's own), so you can press straight through.
 Then the agent. This is the list of harnesses Fleet offers (`fleet version
 --json` lists them). With only one harness, this step is skipped.
 
-![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp, shell](../../media/tutorial/10-agent-picker.png)
+![The agent picker](../../media/tutorial/10-agent-picker.png)
 
 `Enter` creates the session: a Fleet Task, which Fleet starts in the
 workspace you chose with the agent running inside it.
@@ -166,12 +164,13 @@ What you are looking at:
 - the **agent terminal** on the right — a real terminal. Everything you type
   goes to the agent; `Ctrl+O` opens the worktree in your editor, and
   `Ctrl+T`/`F8` gives you a shell in the same directory
-- the status dot tracks the agent through **working / blocked / done / idle**,
+- the status dot tracks the agent through **working / blocked / idle**,
   reported by the agent's own hooks through Fleet rather than guessed
 
-Press **`Ctrl+Q`** whenever you like: it detaches. tmux keeps every agent
+Press **`Ctrl+Q`** whenever you like: it detaches. Fleet keeps every agent
 running, and relaunching `thurbox` puts you back where you were — after a crash,
-a reboot, or a week away.
+or a week away. After a reboot, Fleet revives the sessions of unfinished Tasks
+once `fleet up` runs again.
 
 ## 6. The second session is faster
 
@@ -260,9 +259,9 @@ directory, and `thurbox-cli --help` lists the rest (`automation`, `editor`,
   one off; `F10` reloads.
 - **Run a fleet** — [Recipe: a session per package of a monorepo](https://thurbox.thurbeen.eu/docs/recipes.html#monorepo)
   and [docs/thurbox/orchestration.md](orchestration.md).
-- **Work on another machine** — declare an SSH host or a WSL distro in
-  `~/.config/thurbox/hosts.toml` and sessions run there while the TUI stays
-  local ([docs/thurbox/config.md](config.md)).
+- **Work on another machine** — a host Fleet's config names is offered at the
+  host step, and its sessions run there while the TUI stays local
+  ([docs/thurbox/config.md](config.md)).
 - **Configure it** — [docs/thurbox/config.md](config.md) is every config file, env var
   and setting in one place; [docs/thurbox/features.md](features.md) is why each one
   behaves the way it does.

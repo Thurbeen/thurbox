@@ -258,8 +258,7 @@ can be dead, and a behavior-preserving refactor changes it.
 ### `docs/**`
 
 Documentation prose. Do not request test coverage for it. The worked Lua
-examples that used to sit here now live under examples/lua/ and carry their own
-block below.
+examples live under examples/lua/ and carry their own block below.
 
 ### `examples/lua/**`
 
@@ -333,13 +332,13 @@ measurement that produced it - the harness invocation, the terminal size, the
 session count and a paired before/after - so the number can be reproduced
 rather than remembered. docs/thurbox/features.md owns feature-level design choices.
 docs/thurbox/config.md owns thurbox's own configuration - every config file,
-environment variable and database setting it reads - while CONTRIBUTING.md owns
+environment variable and setting it reads - while CONTRIBUTING.md owns
 the contribution process itself (how to propose a change, commit conventions,
 staging discipline, the review gate) and the configuration of external tooling
 such as .publish.yaml, so a root-level config file is not automatically
 docs/thurbox/config.md's. docs/thurbox/review.md owns the house rules a change is reviewed
 against - the per-path blocks above, the trees excluded from review, and this
-ownership map. docs/thurbox/agents.md says where an agent is defined now:
+ownership map. docs/thurbox/agents.md says where an agent is defined:
 Fleet's harness profiles. docs/thurbox/kernel.md owns the
 kernel's shape and its five rules, and docs/thurbox/plugins.md owns interface-plugin
 authoring. docs/thurbox/development.md owns the dev environment and the runtime

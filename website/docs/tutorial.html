@@ -17,8 +17,6 @@ extraCss: ['tutorial.css']
   (<code>/tmp/tutorial-home/code/&hellip;</code>) come from the throwaway sandbox the capture runs
   in; yours will be your own <code>~/code</code>, <code>~/src</code>, or wherever you keep
   repositories.
-  These captures show the earlier session-list layout. The current list uses host bands,
-  repository separators and indented session rows.
 </p>
 
 <h2 id="before-you-start">
@@ -35,17 +33,17 @@ extraCss: ['tutorial.css']
 <ul>
   <li>
     <strong>tmux &ge; 3.2</strong> (or <a href="https://github.com/psmux/psmux">psmux &ge; 3.3.8</a> on native
-    Windows, or opt-in <a href="installation.html#rmux">RMUX &ge; 0.10.0</a>) &mdash; it is what keeps your agents alive when Thurbox is closed
+    Windows) &mdash; Fleet's runtime runs your agents in it, so they stay alive when Thurbox is closed
   </li>
   <li><strong>git</strong></li>
   <li>
-    <strong>at least one coding-agent CLI</strong> that Fleet has a harness profile for &mdash;
-    <code>claude</code> or <code>codex</code>
+    <strong>at least one coding-agent CLI</strong> that Fleet has a harness profile for
+    (<a href="agents.html">Agents</a>)
   </li>
 </ul>
 <p>
-  Nothing to configure. On first launch Thurbox seeds <code>~/.config/thurbox/</code> with the agents
-  it knows, the themes, and the interface itself.
+  Nothing to configure. On first launch Thurbox seeds <code>~/.config/thurbox/</code> with the themes
+  and the interface itself.
 </p>
 
 <h2 id="launch">
@@ -79,6 +77,10 @@ extraCss: ['tutorial.css']
   />
   <figcaption>The repo step. On a fresh install, memory holds one row you did not add.</figcaption>
 </figure>
+<p>
+  The flow asks for the host first &mdash; this machine, or a host Fleet's config names &mdash;
+  then opens the repo step.
+</p>
 <p>
   The list is Thurbox's <strong>repo memory</strong> &mdash; the repositories you have used before.
   The one row already there is your own interface directory, offered because editing the panes is a
@@ -213,7 +215,7 @@ extraCss: ['tutorial.css']
   <img
     loading="lazy"
     src="../assets/tutorial/10-agent-picker.png"
-    alt="The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi and omp"
+    alt="The agent picker"
   />
   <figcaption>
     <kbd>Enter</kbd> creates the session: a Fleet Task, which Fleet starts in that repository with
@@ -243,14 +245,15 @@ extraCss: ['tutorial.css']
     <kbd>Ctrl</kbd>+<kbd>T</kbd> gives you a shell in the same directory
   </li>
   <li>
-    the status dot tracks the agent through <strong>working / blocked / done / idle</strong>,
+    the status dot tracks the agent through <strong>working / blocked / idle</strong>,
     reported by the agent's own hooks through Fleet rather than guessed
   </li>
 </ul>
 <p>
-  Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> whenever you like: it detaches. tmux keeps every agent running,
-  and relaunching <code>thurbox</code> puts you back where you were &mdash; after a crash, a reboot,
-  or a week away.
+  Press <kbd>Ctrl</kbd>+<kbd>Q</kbd> whenever you like: it detaches. Fleet keeps every agent running,
+  and relaunching <code>thurbox</code> puts you back where you were &mdash; after a crash or a week
+  away. After a reboot, Fleet revives the sessions of unfinished Tasks once <code>fleet up</code> runs
+  again.
 </p>
 
 <h2 id="second-session">
@@ -406,8 +409,8 @@ fleet delete task docs</code></pre>
     <a href="recipes.html">Recipes</a>.
   </li>
   <li>
-    <strong>Work on another machine</strong> &mdash; declare an SSH host or a WSL distro in
-    <code>hosts.toml</code> and sessions run there while the TUI stays local
+    <strong>Work on another machine</strong> &mdash; a host Fleet's config names is offered at
+    the host step, and its sessions run there while the TUI stays local
     (<a href="configuration.html">Configuration</a>).
   </li>
   <li>

@@ -1,40 +1,26 @@
 # The plugin kernel
 
-thurbox is the interface to Fleet's sessions, with a Lua-driven renderer. The kernel owns no
-pane: the session list, the terminal and every other surface that shows *your
-work* is a plugin under `ui/`. The bundled set is currently **three** — the
-session list, the agent pane and the search strip — plus four floats that fill
-no slot: the new-session flow, the confirmation, the rename field and the context
-menu;
-the interface was cut back to its core, and v1's other surfaces are not
-bundled. It does own the **system modals** — help, settings, the theme picker
-and the interface's own file list — which are chrome about thurbox itself
-rather than panes (see below). The file list was a pane and is deliberately no
-longer one: it is how a broken interface is recovered, so it must not be a file
-the interface loads. Written for someone about to change the kernel; if you
-want to *write* a plugin, read `docs/thurbox/plugins.md`.
+thurbox is the interface to Fleet's sessions, with a Lua-driven renderer. The
+kernel owns no pane: the session list, the terminal and every other surface that
+shows *your work* is a plugin under `ui/`. The bundled set is currently
+**three** — the session list, the agent pane and the search strip — plus four
+floats that fill no slot: the new-session flow, the confirmation, the rename
+field and the context menu. It does own the **system modals** — help, settings,
+the theme picker and the interface's own file list — which are chrome about
+thurbox itself rather than panes (see below). The file list is not a pane: it is
+how a broken interface is recovered, so it must not be a file the interface
+loads. Written for someone about to change the kernel; if you want to *write* a
+plugin, read `docs/thurbox/plugins.md`.
 
 Writing a plugin starts at `docs/thurbox/plugins.md` — **Start here**, which is four
 `thurbox-cli plugin` commands and needs no terminal.
 
-Runs as `thurbox`. It **is** the interface now: `src/app/` and `src/ui/` were
-deleted when the kernel took the binary name, so there is no second interface to
-fall back to inside the process. v1 is unsupported; its code stays on the
-`v1.x` branch.
-
-The name matters more than it looks. The updater in an already-installed binary
-hard-fails on a known binary missing from a release archive and swallows the
-error, so an archive that dropped the name `thurbox` would end auto-update for
-every install already out there, silently and unfixably. Inheriting the name was
-the only safe direction — see `docs/thurbox/releasing.md`.
-
-Two of v1's surfaces that are gone are answered by panes rather than by the kernel, which is
-the mechanism working as designed:
-[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) (v1's diff
-reviewer, the first consumer of `thurbox.diffs`) and
-[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) (v1's info
-panel, drawn entirely from the snapshot). Each is its own repository, installed by
-clone — `docs/thurbox/plugins.md` has the commands and what the two demonstrate.
+Code review and an info panel are panes rather than kernel features:
+[`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) (the
+first consumer of `thurbox.diffs`) and
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) (drawn
+entirely from the snapshot). Each is its own repository, installed by clone —
+`docs/thurbox/plugins.md` has the commands.
 
 ## Shape
 
@@ -233,13 +219,12 @@ A plugin can declare `events = { … }` and an `on_event(name, payload)`, and th
 loop calls it once per change (`kernel::events`, `coordinator::events`). The
 kernel's own events come from **diffing published state** — the snapshot's rows
 between two versions, the focus ring between two iterations, the command bus's
-completions — never from the code that mutates it. Raising them from
-`session_ops` was the obvious design and the wrong one: it misses every other
-process (`thurbox-cli`, the cron tick, a second interface), it puts a kernel
-concern inside a layer the kernel may not `use`, and it is the model where one
-mutation site forgets to fire. The four `session.post_*` names are the only ones
-raised rather than derived — from a *tracked* command finishing — which is why
-they carry the operation's facts and fire only for this interface's own work.
+completions — never from the code that mutates it. Raising them from the code
+that mutates would miss every other process (`thurbox-cli`, the cron tick, a
+second interface, Fleet itself), and is the model where one mutation site
+forgets to fire. The four `session.post_*` names are the only ones raised rather
+than derived — from a *tracked* command finishing — which is why they carry the
+operation's facts and fire only for this interface's own work.
 
 One dispatch point per iteration, after the stores and the bus have published
 and before the paint, so a handler's writes land in the frame about to be
@@ -312,15 +297,13 @@ restart-only change lands in the file and is deliberately withheld from what is
 running, so seeding an edit from what is running silently proposes undoing it —
 the next save of any row reverted it.
 
-There is no process-wide copy of the settings: `session` holds no state
-(#1477). The live half lives in `kernel::config`; the restart-only half is handed,
-as loaded, to whatever is built with it — the backends (history depth), the
-terminals (scrollback, how long a hidden grid stays), the snapshot store (git
-cadence, configured multiplexer), the command bus (deleted retention) — and the
-binary runs the audit-log prune itself (`Database::prune_history`). Loading
-first is load-bearing rather than tidy. (v2 once shipped with a process-wide copy
-its `main` never filled, so the whole file was silently ignored while every
-switch looked honoured, because every default matched.)
+There is no process-wide copy of the settings: `session` holds no state. The
+live half lives in `kernel::config`; the restart-only half is handed, as loaded,
+to whatever is built with it — the backends (history depth), the terminals
+(scrollback, how long a hidden grid stays), the snapshot store (git cadence).
+Loading first is load-bearing rather than tidy: a process-wide copy that `main`
+never filled would ignore the whole file while every switch looked honoured,
+because every default matches.
 
 ## System chrome is not a pane
 
@@ -372,8 +355,7 @@ walk records a hitbox for every node carrying `id`/`class`/`role`, parents befor
 children, and the loop scans that list *backwards* — so the innermost node under
 a point wins, and a pane's own rect wins only when nothing inside it matched.
 Change the recording order and the collapse chevron on a pane's border silently
-starts focusing the pane instead. v1 spells the same rule the other way round
-(specific targets recorded first, first match wins).
+starts focusing the pane instead.
 
 **A pane cannot emit an escape, so a link has to be re-printed for it.** A
 plugin returns cells; the kernel paints them. Nothing in that path can put an
@@ -397,11 +379,8 @@ were found by running it, not by reading the spec.
 
 ## Where the boundary sits
 
-`kernel` may reference `session`, `storage`, `paths`, `session_ops`,
-`git`, `notifications`, `shell` and `theme`, plus `agent` and the backend contract by
-fully-qualified path only — enforced by
-`tests/architecture_rules.rs`. It may never reference `ui` or `app`: it is their
-replacement, not their peer.
+What `kernel` may reference is declared in `tests/architecture_rules.rs`, which
+fails on any other edge.
 
 ## Testing
 
@@ -409,75 +388,29 @@ replacement, not their peer.
   fails if either breaks.
 - `tests/kernel_limits.rs` — the instruction and memory bounds, in their own
   file because they mutate process-wide limits.
-- `tests/v1_recordings.rs` — *removed with v1*. It held golden recordings of what
-  v1 drew, recorded to files rather than compared against a live v1 builder
-  because a differential oracle cannot license a deletion. It served its purpose:
-  the deletion happened, and the recordings had nothing left to be the contract
-  for. `git log -- tests/v1_recordings.rs` is where they went.
 
 ## What a frame costs
 
-v2's frame is far more expensive than v1's, and the reason is structural rather
-than a hot spot: every visible pane is rebuilt in Lua and converted back into
-nodes on each paint. Measured on an 8-session snapshot (`opt-level = 1`):
-
-These figures were measured against the **fifteen-plugin** interface, and the
-bundled set is now three — so the totals no longer apply, while the per-pane costs
-and the shape of the finding do:
-
-| | cost |
-|---|---|
-| `publish` (all readable state) | ~1.1 ms |
-| session list | ~1.5 ms (~1.2 ms of it with **zero** sessions) |
-| help (measured while it was still a plugin) | ~1.2 ms |
-| agent pane | ~0.5 ms |
-| footer (since removed) | ~0.2 ms |
-| float probes (5 modals, all closed; all since removed) | ~1.3 ms |
-| **visible set, 150x30** | **~5.2 ms** |
-| **visible set, 250x60** | **~9.3 ms** |
-
-The shape of that is worth internalising: **cost tracks NODE COUNT, not data.**
-A synthetic plugin emitting 30 trivial rows costs the same ~1.2 ms as the real
-session list, and pre-building its tree in Lua saves only 17% — the rest is the
-Rust-side conversion, at roughly 9 us per node. Micro-optimising that conversion
-does not work; removing the per-span `HashMap`, switching to `raw_get`, and
-dropping the per-node path `format!` each moved it by under 5%.
-
-So the levers that actually pay are the ones that produce fewer nodes or run the
-conversion less often:
+Every visible pane is rebuilt in Lua and converted back into nodes on each
+paint, and **cost tracks node count, not data**: a synthetic plugin emitting 30
+trivial rows costs the same as the real session list, and the Rust-side
+conversion runs at roughly 9 us per node. Micro-optimising that conversion does
+not pay; the levers that do produce fewer nodes or run the conversion less
+often:
 
 - **Paint less.** `publish` runs only before a paint or before dispatching input
   — the two moments Lua actually runs — and paints are capped at 60fps
-  (`MIN_FRAME_INTERVAL`). Input is still polled every 10ms, matching v1.
-  A **surface** used to defeat this outright: its cells live outside the tree, so
-  a pane showing one was treated as changed every frame and the whole
-  demand-driven scheme collapsed to a steady 60fps whenever a terminal was
-  visible. It is now gated on the pane's own output stamp
-  (`Terminals::output_stamp`), the same atomic v1 reads in
-  `detect_output_redraw`, so a quiet agent settles at the redraw floor.
-- **Read less.** The snapshot rebuild is gated on `PRAGMA data_version`, so an
-  idle thurbox stops re-reading five tables (plus one query per automation)
-  every 400ms. Git stats are folded in either way — they arrive from workers,
-  about which the pragma says nothing. v1's ADR-P6, same mechanism.
+  (`MIN_FRAME_INTERVAL`). A pane showing a terminal surface is gated on the
+  pane's own output stamp (`Terminals::output_stamp`), so a quiet agent settles
+  at the redraw floor.
 - **Emit fewer nodes.** The session list spends 4 nodes per row (a box plus a
   border node either side). Drawing the borders as two full-height *columns*, as
   `20_agent.lua`'s `chrome()` already does, would take a 30-row list from ~90
   nodes to ~32.
 - **Stop probing closed modals.** Every floating plugin is rendered full-screen
-  each frame purely to discover it is not floating. Four bundled plugins float
-  now (the creation flow, the confirmation, the rename field and the context
-  menu), so the probe is paid on every frame unless the float
-  declares `pure = true` — which is the lever ADR-P16 added for it.
+  each frame purely to discover it is not floating, unless the float declares
+  `pure = true` (ADR-P16).
 
 Dependencies are built with `opt-level = 3` even in dev builds
 (`[profile.dev.package."*"]`), because `cargo run` is the documented way to run
 thurbox from a checkout and an unoptimised Lua VM is felt in the UI.
-
-## The gap to v1
-
-Nothing measures it. v1's parity test went with v1, so no test compares the
-two: `tests/frames.rs` pins what v2 draws, but against itself rather than
-against what v1 drew. The behavioural gaps — the longer and more serious list —
-are not inventoried anywhere. What exists is prose: `docs/thurbox/features.md` says per surface what
-replaced it. Of v1's three paneless surfaces, code review and the
-info panel are out-of-tree panes; the file viewer has no replacement.
