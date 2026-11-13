@@ -519,6 +519,30 @@ fn a_module_shadows_a_glob_imported_module() {
     expect("type-shadow", &[(CTL, &src)], &[]);
 }
 
+/// A resolution cut short by the depth limit is never remembered: `m29`
+/// re-exports `m28` and so on down to `m0`, which globs `std`, so the first
+/// reference gives up partway down the chain. The references after it, each
+/// within the limit on its own, must still each find `std::fs::read`, as
+/// resolving them afresh does.
+#[test]
+fn a_resolution_cut_short_is_not_remembered() {
+    let mut body = String::from("pub mod m0 { pub use std::*; }\n");
+    for level in 1..30 {
+        body.push_str(&format!(
+            "pub mod m{level} {{ pub use super::m{}::*; }}\n",
+            level - 1
+        ));
+    }
+    body.push_str("pub fn deep() { let _ = crate::m29::fs::read(\"p\"); }\n");
+    for level in 0..=22 {
+        body.push_str(&format!(
+            "pub fn at{level}() {{ let _ = crate::m{level}::fs::read(\"p\"); }}\n"
+        ));
+    }
+    let src = ctl(&body);
+    expect("cut-short", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
 #[test]
 fn io_inside_a_macro_argument_is_caught() {
     let src = ctl("pub fn x() -> String { format!(\"{:?}\", std::fs::remove_file(\"x\")) }\n");
