@@ -263,10 +263,10 @@ Comments explain **why**, not **what** — see the Comments section of
 
 ## Architecture
 
-Module dependencies are one-directional and enforced by
-`crates/thurbox/tests/architecture_rules.rs`: a new module fails that test until
-its dependencies are declared in the allowlist. That test is the one copy of
-the graph; [`docs/constitution.md`](docs/constitution.md) T1 states the rule.
+Module dependencies are one-directional and enforced by `arch-rules` over the
+module rules in `crates/architecture.toml`: a new module fails its check until
+its dependencies are declared there. That file is the one copy of the graph;
+[`docs/constitution.md`](docs/constitution.md) T1 states the rule.
 
 ## Pull requests
 

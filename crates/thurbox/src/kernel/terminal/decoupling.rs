@@ -33,7 +33,7 @@ use ratatui::Terminal;
 
 // Nothing from `crate::agent` is imported here, by rule rather than by
 // accident: the kernel reaches it by fully-qualified path only, never by `use`
-// (`tests/architecture_rules.rs`), and a test is not an exception to it.
+// (`crates/architecture.toml`), and a test is not an exception to it.
 use super::{shell_surface, Live, Painted, Terminals};
 use crate::kernel::layout::{resolve, Region};
 use crate::kernel::node::{Axis, Node, Size, SurfaceSource};

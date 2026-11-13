@@ -1,6 +1,6 @@
 ---
 name: thurbox-kernel
-description: The thurbox plugin kernel: the five rules, where the module dependency rules live (tests/architecture_rules.rs), module responsibilities, the event loop, and writing an interface plugin - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the plugin API and its capabilities.
+description: The thurbox plugin kernel: the five rules, where the module dependency rules live (crates/architecture.toml), module responsibilities, the event loop, and writing an interface plugin - the bundled panes, delivery vs decision vs composition, installable panes and plugins.toml, capabilities (run, program, events, commands) and trust. Use when working on src/kernel, src/coordinator, module boundaries, or the plugin API and its capabilities.
 ---
 
 # Thurbox plugin kernel and plugin authoring
@@ -73,14 +73,15 @@ Empty session queues retire on the worker, without needing the UI to poll.
 
 ### Module dependency rules
 
-`tests/architecture_rules.rs` holds the module graph: an allowlist over
-resolved edges, one `ModuleRules` entry per module under `src/`, and the only
-copy of that graph. Read the test, not a summary of it. Every file of `agent`,
-`config` and `update` is a node of its own (`SUBMODULE_GOVERNED`), a grant in
-`allowed_path_only` admits fully-qualified paths but never `use`, and only the
-`backend` gateway and `RUNTIME_GATEWAYS` may name `runtime_mux`.
-`crates/architecture.toml` is the crate graph and holds `runtime-mux`'s module
-rules, which `arch-rules` checks.
+`crates/architecture.toml` holds the module graph: an allowlist over resolved
+edges, one `[crates.thurbox.modules]` entry per module under `src/`, and the
+only copy of that graph, which `arch-rules` checks. Read the file, not a
+summary of it. Every file of `agent`, `config` and `update` is a module of its
+own (`governed`), and a `path_only` grant admits fully-qualified paths but
+never `use`. `tests/architecture_rules.rs` keeps thurbox's own checks: only
+the `backend` gateway and `RUNTIME_GATEWAYS` may name `runtime_mux`, and no
+consumer reaches a concrete backend. `crates/architecture.toml` also holds the
+crate graph and `runtime-mux`'s module rules.
 
 ### Module Responsibilities
 

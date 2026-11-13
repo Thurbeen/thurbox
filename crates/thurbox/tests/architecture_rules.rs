@@ -1,305 +1,70 @@
-//! Architecture rules enforced as tests (allowlist model over resolved edges).
-//!
-//! Every module under `src/` must appear in [`MODULE_RULES`] (or in
-//! [`EXEMPT`]) and may only reference the nodes its entry allows —
-//! `every_module_is_governed` fails when a new module is added without a rule,
-//! so the architecture is an explicit decision per module.
-//!
-//! A rule's name is a **node**: a top-level module (`kernel`) or a governed
-//! submodule (`agent::fetch`). A file belongs to the deepest node containing it,
-//! and a reference is judged by the node it *resolves to* (see `resolver`):
-//! `super::`, `self::`, bare child-module paths, nested brace groups, `as`
-//! renames, imported names, `pub use` re-exports and `type` aliases are all
-//! followed, so no import shape and no alias carries a crossing past a rule. A
-//! grant names exactly one node and never its children: allowing `agent`
-//! admits nothing in a governed `agent::fetch`.
-//!
-//! The graph is checked as a whole too: the actual production edges and the
-//! declared allowlist must both be acyclic, and every allowance must be used
-//! by production code.
-//!
-//! This file is the one statement of the layering: AGENTS.md, the
-//! `thurbox-kernel` skill and docs/constitution.md T1 point here rather than
-//! copy it.
+//! thurbox's own architecture checks, over the module rules in
+//! `crates/architecture.toml`. `arch-rules` holds every module to those rules:
+//! each has one, every reference keeps to it, no cycle, no unused grant. What
+//! stays here is particular to thurbox: no consumer reaches a concrete
+//! backend, the runtime is named only through its gateways, one multiplexer
+//! is named only where one is chosen, `session` stays pure data, files thurbox
+//! reads back are written atomically, and each kernel worker lives in a file
+//! of its own.
 
+#[allow(dead_code)]
 #[path = "architecture/resolver.rs"]
 mod resolver;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use resolver::{cycles, strip_comments_and_strings, Edge, Reference, Tree};
+use resolver::{strip_comments_and_strings, Edge, Reference, Tree};
 
-/// Per-node dependency allowlist.
-struct ModuleRules {
-    /// A top-level module (`src/<name>/` or `src/<name>.rs`) or a governed
-    /// submodule path (`agent::fetch`).
-    name: &'static str,
-    /// Nodes this node may reference in any form.
-    allowed: &'static [&'static str],
-    /// Nodes additionally reachable via fully-qualified paths
-    /// (`crate::module::item(…)`) but **not** importable with `use` —
-    /// keeps the dependency visible at every call site.
-    allowed_path_only: &'static [&'static str],
+/// thurbox's module rules as `crates/architecture.toml` declares them.
+struct Rules {
+    /// Each module and every module it is granted, in any form or by path
+    /// only.
+    grants: BTreeMap<String, Vec<String>>,
+    /// The modules whose every file module has a rule of its own.
+    governed: Vec<String>,
 }
 
-/// Which nodes each node may touch.
-const MODULE_RULES: &[ModuleRules] = &[
-    // Pure data: the dependency sink. No crate-internal references at all.
-    ModuleRules {
-        name: "session",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    // The downloads plugins and the updater make, and keyboard input. Never a session backend: the
-    // multiplexer runtime (`backend`) is reached through its own node.
-    //
-    // Every file is a node of its own (`SUBMODULE_GOVERNED`), so a grant names
-    // what it reads and a file added here is reachable by nobody until that is
-    // decided. The root only declares them.
-    ModuleRules {
-        name: "agent",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::fetch",
-        allowed: &["paths"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::input",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    // thurbox's own config files beside config.toml. `config::file` is the one
-    // loader: where a file lives, seeding it, parsing it with unknown keys
-    // reported, and writing it back atomically. Each file is a node of its own
-    // so a consumer names the config it reads; none reaches another, so a
-    // file's degradation is its own.
-    ModuleRules {
-        name: "config",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    // automations.json beside settings.toml: the schedule thurbox keeps
-    // while Fleet has no schedule kind. The schedule math is `session`'s.
-    ModuleRules {
-        name: "config::automations",
-        allowed: &["session", "config::file"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "config::file",
-        allowed: &["paths"],
-        allowed_path_only: &[],
-    },
-    // hosts.toml in thurbox's config directory: the runtime's loader bound to
-    // `config::file`. Its own node so that reading global host config is a
-    // visible decision.
-    // What the interface remembers between runs (`interface.json`): data in,
-    // the editor mode's type from `session`.
-    ModuleRules {
-        name: "config::interface_state",
-        allowed: &["session", "config::file"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "config::hosts",
-        allowed: &["session", "config::file"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "config::settings",
-        allowed: &["session", "config::file"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "config::themes",
-        allowed: &["theme", "config::file"],
-        allowed_path_only: &[],
-    },
-    // Self-update: whether a newer release exists, and installing it.
-    ModuleRules {
-        name: "update",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "update::self_update",
-        allowed: &["paths", "shell", "agent::fetch", "update::version_check"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "update::version_check",
-        allowed: &["paths", "agent::fetch"],
-        allowed_path_only: &[],
-    },
-    // The gateway to the multiplexer runtime (`runtime_mux`, ADR-41): its
-    // re-exports, and what thurbox injects into it — `session` for the settings
-    // type, `paths` for the data directory, `config::hosts` for the hosts the
-    // factory registers. Every crossing into the runtime is an edge to this
-    // node, judged by the item it names (see `CONCRETE_BACKEND`).
-    ModuleRules {
-        name: "backend",
-        allowed: &["session", "paths", "config::hosts"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "git",
-        allowed: &["session", "paths", "shell"],
-        allowed_path_only: &[],
-    },
-    // The interface's diagnostic-log bridge (ADR-38), built by
-    // `coordinator`, which hands it the identity it exports under. The
-    // settings come from `session`.
-    // The theme presets and the user's overrides, in `ratatui` colours: data,
-    // but rendering data, which `session_is_pure_data` keeps out of the sink.
-    ModuleRules {
-        name: "theme",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "telemetry",
-        allowed: &["session"],
-        allowed_path_only: &[],
-    },
-    // Thin headless dispatch — must not depend on TUI or the live backend.
-    ModuleRules {
-        name: "cli",
-        allowed: &["session", "paths", "notifications", "ui_control", "theme"],
-        // `kernel` for the two subcommands that drive the *interface's* own
-        // files — `plugin` (`check` loads the real host: the failures worth
-        // reporting are declaration-shaped — no `render`, an unplaced slot, a
-        // clashing key — and a syntax check passes all of them) and `config`
-        // (the interface directory and its `ui.json` overrides). Both are
-        // kernel-owned surfaces asked about from outside. Path-only, so the crossing stays visible at each call
-        // site.
-        allowed_path_only: &[
-            "kernel",
-            "backend",
-            "config::file",
-            "config::hosts",
-            "config::automations",
-            "config::interface_state",
-            "config::settings",
-            "config::themes",
-            "update::self_update",
-            "update::version_check",
-        ],
-    },
-    // The plugin kernel: hosts the Lua VM the whole UI is written in. Builds
-    // the snapshot plugins render from Fleet's rows (`session` for the types,
-    // `paths` for the interface's files and plugin directories).
-    //
-    // `git` IS allowed, and the rule is about *where*: the worker-backed stores
-    // (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
-    // is rule 5 rather than an exception to it. What must not happen is a `git`
-    // call from a render path — that is enforced by the loop's shape (a plugin
-    // returns a tree; it cannot call Rust), not by this allowlist.
-    ModuleRules {
-        name: "kernel",
-        allowed: &["session", "paths", "git", "notifications", "theme"],
-        // Live agent terminals: `kernel::terminal` adopts a session's real pane
-        // through the backend contract and paints its vt100 screen. All are
-        // reachable by fully-qualified path only (never `use`), the same rule
-        // `cli` follows, so every crossing into the
-        // side-effect layer is visible at its call site.
-        allowed_path_only: &[
-            "agent::fetch",
-            "backend",
-            "config::hosts",
-            "config::automations",
-            "config::interface_state",
-            "config::settings",
-            "config::themes",
-            "update::self_update",
-            "update::version_check",
-        ],
-    },
-    // Leaf utilities.
-    ModuleRules {
-        name: "paths",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "ui_control",
-        allowed: &["paths"],
-        allowed_path_only: &[],
-    },
-    // The runtime's launchers and quoting rules, re-exported: a node of its
-    // own so a grant still says which modules may launch anything.
-    ModuleRules {
-        name: "shell",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "workspace",
-        allowed: &["paths"],
-        allowed_path_only: &[],
-    },
-    // `main`'s own body, split across files: the loop, the workers and the
-    // chrome. It is the one module whose job *is* to wire the layers together,
-    // so its list is the widest — but it is a list, and a new layer reached
-    // from the loop is a decision recorded here rather than an exemption.
-    // Reaches the library by its crate name (`thurbox::`), which is the only
-    // spelling available from inside the binary.
-    ModuleRules {
-        name: "coordinator",
-        allowed: &[
-            "clipboard",
-            "kernel",
-            "notifications",
-            "paths",
-            "session",
-            "shell",
-            "telemetry",
-            "ui_control",
-            "agent::input",
-            "backend",
-            "config::interface_state",
-        ],
-        allowed_path_only: &[],
-    },
-    // Leaf side-effect module: OS desktop notifications. Knows about
-    // `session` (for `SessionId`), `paths` (for `PATH` lookups) and `shell`
-    // (the shared quoting rules — it grew a third copy of the PowerShell one
-    // before this was allowed).
-    ModuleRules {
-        name: "notifications",
-        allowed: &["session", "paths", "shell"],
-        allowed_path_only: &[],
-    },
-    // Leaf side-effect module: clipboard writes (native + OSC 52). Knows
-    // `session` only for the `ClipboardProvider` setting; writes to the tty
-    // and never reaches into agent / ui / app.
-    ModuleRules {
-        name: "clipboard",
-        allowed: &["paths", "session"],
-        allowed_path_only: &[],
-    },
-];
+fn rules() -> &'static Rules {
+    static RULES: OnceLock<Rules> = OnceLock::new();
+    RULES.get_or_init(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../architecture.toml");
+        let file: toml::Table = fs::read_to_string(&path)
+            .expect("read crates/architecture.toml")
+            .parse()
+            .expect("parse crates/architecture.toml");
+        let thurbox = &file["crates"]["thurbox"];
+        let names = |v: &toml::Value| -> Vec<String> {
+            v.as_array()
+                .expect("a list of module names")
+                .iter()
+                .map(|n| n.as_str().expect("a module name").to_string())
+                .collect()
+        };
+        let grants = thurbox["modules"]
+            .as_table()
+            .expect("thurbox declares its modules")
+            .iter()
+            .map(|(name, rule)| {
+                let mut all = names(&rule["use"]);
+                if let Some(path_only) = rule.get("path_only") {
+                    all.extend(names(path_only));
+                }
+                (name.clone(), all)
+            })
+            .collect();
+        Rules {
+            grants,
+            governed: names(&thurbox["governed"]),
+        }
+    })
+}
 
-/// Modules exempt from the allowlist: `bin`, `lib`, and `main` are crate roots,
-/// not architecture modules.
-///
-/// `coordinator` is **not** exempt. It is `main`'s own body split across
-/// files, and it does wire every layer together — but "wires everything" was
-/// never the same claim as "may reach anything". It has an entry above listing
-/// what it actually reaches today.
-const EXEMPT: &[&str] = &["bin", "lib", "main"];
-
-/// Nodes whose every file module, at any depth, must be a governed node of
-/// its own, so a new file there is a decision rather than something its
-/// parent's rule silently covers. An inline `mod x { … }` belongs to the file
-/// that holds it.
-const SUBMODULE_GOVERNED: &[&str] = &["agent", "config", "update"];
+fn node_names() -> Vec<&'static str> {
+    rules().grants.keys().map(String::as_str).collect()
+}
 
 fn src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -311,47 +76,9 @@ fn src_tree() -> &'static Tree {
     TREE.get_or_init(|| Tree::load(&src_root()))
 }
 
-fn node_names(rules: &[ModuleRules]) -> Vec<&'static str> {
-    rules.iter().map(|r| r.name).collect()
-}
-
-fn rules_for<'a>(rules: &'a [ModuleRules], node: &str) -> &'a ModuleRules {
-    rules
-        .iter()
-        .find(|r| r.name == node)
-        .unwrap_or_else(|| panic!("no rule for node `{node}`"))
-}
-
-/// Whether an edge is one its source node's rule forbids.
-fn breaks_rules(rules: &ModuleRules, edge: &Edge) -> bool {
-    let to = edge.to.as_str();
-    if rules.allowed.contains(&to) {
-        return false;
-    }
-    edge.in_use || !rules.allowed_path_only.contains(&to)
-}
-
-/// Every edge any rule forbids — test code included: a test may not reach
-/// what its module may not.
-fn violations(tree: &Tree, rules: &[ModuleRules]) -> Vec<Edge> {
-    tree.edges(&node_names(rules))
-        .into_iter()
-        .filter(|e| breaks_rules(rules_for(rules, &e.from), e))
-        .collect()
-}
-
-fn describe(tree: &Tree, rules: &[ModuleRules], edge: &Edge) -> String {
-    let note = if edge.in_use
-        && rules_for(rules, &edge.from)
-            .allowed_path_only
-            .contains(&edge.to.as_str())
-    {
-        " (allowed via fully-qualified path only, not `use`)"
-    } else {
-        ""
-    };
+fn describe(tree: &Tree, edge: &Edge) -> String {
     format!(
-        "{} → {} @ {}{}{note}",
+        "{} → {} @ {}{}",
         edge.from,
         edge.target(),
         edge.site(&tree.root),
@@ -396,12 +123,12 @@ fn multiplexer_variant(reference: &Reference) -> Option<&str> {
 
 /// Every reference to a specific multiplexer from production code in a node
 /// that may not name one, as an edge to `session` whose item is the variant
-/// (`Multiplexer::Psmux`), reported the way any other crossing is.
+/// (`Multiplexer::Psmux`).
 ///
 /// Test code is left out: a test names a multiplexer to pin what happens for
 /// it, which is the opposite of deciding behaviour by one.
-fn variant_violations(tree: &Tree, rules: &[ModuleRules]) -> Vec<Edge> {
-    tree.references(&node_names(rules))
+fn variant_violations(tree: &Tree, nodes: &[&str]) -> Vec<Edge> {
+    tree.references(nodes)
         .into_iter()
         .filter(|r| !r.test && !may_name_a_multiplexer(&r.from))
         .filter_map(|r| {
@@ -419,27 +146,20 @@ fn variant_violations(tree: &Tree, rules: &[ModuleRules]) -> Vec<Edge> {
         .collect()
 }
 
-/// Everything the real tree is checked for: the node rules and the
-/// multiplexer-variant rule.
-fn all_violations(tree: &Tree) -> Vec<Edge> {
-    let mut found = violations(tree, MODULE_RULES);
-    found.extend(variant_violations(tree, MODULE_RULES));
-    found
-}
-
+/// A specific multiplexer is named only in `session`, where a route is
+/// decided: production code anywhere else naming one is choosing behaviour by
+/// multiplexer.
 #[test]
-fn every_module_rule_holds() {
+fn a_multiplexer_variant_is_named_only_in_session() {
     let tree = src_tree();
-    let report: String = all_violations(tree)
+    let found: Vec<String> = variant_violations(tree, &node_names())
         .iter()
-        .map(|edge| format!("  {}\n", describe(tree, MODULE_RULES, edge)))
+        .map(|e| describe(tree, e))
         .collect();
     assert!(
-        report.is_empty(),
-        "\narchitecture violation(s), as `from → resolved item @ file:line`:\n{report}\
-         Fix the reference, or — if the architecture is changing on purpose — update \
-         MODULE_RULES in tests/architecture_rules.rs plus AGENTS.md and \
-         docs/constitution.md.\n"
+        found.is_empty(),
+        "\nname no multiplexer outside `session`:\n  {}\n",
+        found.join("\n  ")
     );
 }
 
@@ -459,12 +179,12 @@ const COMPOSITION_ROOT: &str = "coordinator";
 /// through the `backend` gateway in `tree`, except the composition root's
 /// reach of the factory. References are resolved through `use`, `super::`,
 /// brace groups, re-exports and `type` aliases, test code included.
-fn concrete_backend_reaches(tree: &Tree, rules: &[ModuleRules]) -> Vec<String> {
-    tree.edges(&node_names(rules))
+fn concrete_backend_reaches(tree: &Tree, nodes: &[&str]) -> Vec<String> {
+    tree.edges(nodes)
         .iter()
         .filter(|e| e.to == "backend" && CONCRETE_BACKEND.contains(&e.item.as_str()))
         .filter(|e| !(e.from == COMPOSITION_ROOT && e.item == "wiring"))
-        .map(|e| describe(tree, rules, e))
+        .map(|e| describe(tree, e))
         .collect()
 }
 
@@ -473,7 +193,7 @@ fn concrete_backend_reaches(tree: &Tree, rules: &[ModuleRules]) -> Vec<String> {
 /// concrete backend at all, and only the composition root reaches the factory.
 #[test]
 fn consumers_reach_no_concrete_backend() {
-    let found = concrete_backend_reaches(src_tree(), MODULE_RULES);
+    let found = concrete_backend_reaches(src_tree(), &node_names());
     assert!(
         found.is_empty(),
         "\na module reaches a concrete backend:\n  {}\n",
@@ -481,29 +201,32 @@ fn consumers_reach_no_concrete_backend() {
     );
 }
 
-/// Each grant in `rules` of a whole parent in `governed`.
-fn whole_parent_grants(rules: &[ModuleRules], governed: &[&str]) -> Vec<String> {
-    rules
+/// Each grant in `modules` of a whole parent in `governed`.
+fn whole_parent_grants(
+    modules: &BTreeMap<String, Vec<String>>,
+    governed: &[String],
+) -> Vec<String> {
+    modules
         .iter()
-        .flat_map(|r| {
-            r.allowed
+        .flat_map(|(name, grants)| {
+            grants
                 .iter()
-                .chain(r.allowed_path_only)
                 .filter(|to| governed.contains(to))
-                .map(|to| format!("{} is granted all of `{to}`", r.name))
+                .map(move |to| format!("{name} is granted all of `{to}`"))
         })
         .collect()
 }
 
-/// No rule grants a whole [`SUBMODULE_GOVERNED`] parent, so a module added
-/// under `agent` is not reachable until someone decides it is.
+/// No rule grants a whole `governed` parent, so a module added under `agent`
+/// is not reachable until someone decides it is.
 #[test]
 fn no_grant_covers_a_governed_parent() {
+    let rules = rules();
     assert!(
-        SUBMODULE_GOVERNED.contains(&"agent"),
-        "`agent` must stay submodule-governed, so a grant names what it reaches"
+        rules.governed.iter().any(|g| g == "agent"),
+        "`agent` must stay governed, so a grant names what it reaches"
     );
-    let found = whole_parent_grants(MODULE_RULES, SUBMODULE_GOVERNED);
+    let found = whole_parent_grants(&rules.grants, &rules.governed);
     assert!(
         found.is_empty(),
         "\nname the submodules each uses:\n  {}\n",
@@ -571,89 +294,6 @@ fn runtime_mux_is_named_only_by_its_gateways() {
     );
 }
 
-/// Production edges between distinct nodes, one representative site each.
-fn production_graph(tree: &Tree, rules: &[ModuleRules]) -> BTreeMap<(String, String), String> {
-    let mut graph = BTreeMap::new();
-    for edge in tree.edges(&node_names(rules)) {
-        if !edge.test {
-            let site = format!("{} @ {}", edge.target(), edge.site(&tree.root));
-            graph.entry((edge.from, edge.to)).or_insert(site);
-        }
-    }
-    graph
-}
-
-fn format_cycles(cycles: &[Vec<String>], graph: &BTreeMap<(String, String), String>) -> String {
-    let mut msg = String::new();
-    for component in cycles {
-        writeln!(msg, "  cycle {{{}}}:", component.join(", ")).unwrap();
-        for ((from, to), site) in graph {
-            if component.contains(from) && component.contains(to) {
-                writeln!(msg, "    {from} → {site}").unwrap();
-            }
-        }
-    }
-    msg
-}
-
-/// The nodes as production code actually uses them form no cycle: a module
-/// that reaches another and is reached back by it is one module in two files.
-/// `#[cfg(test)]` code is left out — a test may exercise its caller.
-#[test]
-fn the_production_graph_is_acyclic() {
-    let tree = src_tree();
-    let graph = production_graph(tree, MODULE_RULES);
-    let edges: BTreeSet<(String, String)> = graph.keys().cloned().collect();
-    let found = cycles(&edges);
-    assert!(
-        found.is_empty(),
-        "\ndependency cycle(s) between nodes:\n{}",
-        format_cycles(&found, &graph)
-    );
-}
-
-/// The declared allowlist forms no cycle either: two nodes allowed to reach
-/// each other are a cycle waiting for its first reference.
-#[test]
-fn the_declared_graph_is_acyclic() {
-    let found = cycles(&declared_edges(MODULE_RULES));
-    assert!(
-        found.is_empty(),
-        "\nMODULE_RULES allow a cycle: {found:?} — drop one direction"
-    );
-}
-
-fn declared_edges(rules: &[ModuleRules]) -> BTreeSet<(String, String)> {
-    rules
-        .iter()
-        .flat_map(|r| {
-            r.allowed
-                .iter()
-                .chain(r.allowed_path_only)
-                .map(|to| (r.name.to_string(), to.to_string()))
-        })
-        .collect()
-}
-
-/// Every allowance is used by production code. An unused grant is a door
-/// nobody decided to open, and test code alone does not keep one open.
-#[test]
-fn every_allowance_is_used() {
-    let tree = src_tree();
-    let used: BTreeSet<(String, String)> =
-        production_graph(tree, MODULE_RULES).into_keys().collect();
-    let unused: Vec<String> = declared_edges(MODULE_RULES)
-        .into_iter()
-        .filter(|edge| !used.contains(edge))
-        .map(|(from, to)| format!("  {from} → {to}"))
-        .collect();
-    assert!(
-        unused.is_empty(),
-        "\nallowances no production code uses — delete them:\n{}",
-        unused.join("\n")
-    );
-}
-
 /// Stripping keeps every newline of every source file, which is what lets a
 /// violation's byte offset name its line. A `\` line continuation inside a
 /// string once swallowed one, and every report below it pointed a line early.
@@ -684,69 +324,10 @@ fn stripping_keeps_every_line() {
     }
 }
 
-/// Every module under `src/` must be governed: either a MODULE_RULES entry
-/// or an explicit EXEMPT listing, and every module under a
-/// [`SUBMODULE_GOVERNED`] node a rule of its own. Adding a module without
-/// deciding its place in the architecture fails here. Also catches stale rule
-/// entries.
-#[test]
-fn every_module_is_governed() {
-    let tree = src_tree();
-    let root = src_root();
-    let entries =
-        fs::read_dir(&root).unwrap_or_else(|e| panic!("cannot read {}: {e}", root.display()));
-    for entry in entries {
-        let path = entry.expect("readable directory entry").path();
-        let name = if path.is_dir() {
-            path.file_name()
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            path.file_stem()
-        } else {
-            continue;
-        };
-        let name = name
-            .and_then(|n| n.to_str())
-            .unwrap_or_else(|| panic!("non-UTF-8 path under src/: {}", path.display()))
-            .to_string();
-        let governed =
-            MODULE_RULES.iter().any(|r| r.name == name) || EXEMPT.contains(&name.as_str());
-        assert!(
-            governed,
-            "src/{name} has no architecture rules — add a MODULE_RULES entry \
-             (or EXEMPT it) in tests/architecture_rules.rs"
-        );
-    }
-    for parent in SUBMODULE_GOVERNED {
-        for child in tree.file_descendants(parent) {
-            assert!(
-                MODULE_RULES.iter().any(|r| r.name == child),
-                "`{child}` has no architecture rule — every module of `{parent}` is a \
-                 node of its own; add a MODULE_RULES entry"
-            );
-        }
-    }
-
-    // Stale-entry checks: every rule and allowlist target must still exist.
-    for rules in MODULE_RULES {
-        assert!(
-            tree.has_module(rules.name),
-            "MODULE_RULES entry `{}` matches nothing under src/ — remove or rename it",
-            rules.name
-        );
-        for target in rules.allowed.iter().chain(rules.allowed_path_only) {
-            assert!(
-                tree.has_module(target),
-                "MODULE_RULES entry `{}` allows nonexistent module `{target}`",
-                rules.name
-            );
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The resolver on fixture trees: each is a tiny `src/` under
 // `tests/fixtures/architecture/`, never compiled, holding one shape the
-// resolver must see through.
+// checks below must see through.
 // ---------------------------------------------------------------------------
 
 fn fixture(name: &str) -> Tree {
@@ -765,86 +346,17 @@ fn edge_set(tree: &Tree, nodes: &[&str], production_only: bool) -> BTreeSet<(Str
         .collect()
 }
 
-/// The cycle this suite was written for: the contract names the tmux adapter's
-/// role type, the adapter implements the contract, and the protocol helper
-/// takes the contract's pane size while the contract takes the helper's
-/// snapshot — reached through `super::`, a nested brace group with `self`, a
-/// re-export and a bare child path, none of which the old first-segment check
-/// followed.
-#[test]
-fn the_resolver_sees_the_three_node_backend_cycle() {
-    let tree = fixture("backend_cycle");
-    let nodes = [
-        "agent",
-        "agent::backend",
-        "agent::tmux",
-        "agent::control_mode",
-    ];
-    let edges = edge_set(&tree, &nodes, true);
-    assert_eq!(
-        cycles(&edges),
-        vec![vec![
-            "agent::backend".to_string(),
-            "agent::control_mode".to_string(),
-            "agent::tmux".to_string(),
-        ]],
-        "edges found: {edges:?}"
-    );
-}
-
-/// PR #1272's shape: a `mux` core importing the registry's transport while the
-/// registry builds every adapter, and the core and control mode importing each
-/// other. Two cycles in one component.
-#[test]
-fn the_resolver_sees_the_mux_registry_cycles() {
-    let tree = fixture("mux_registry_cycle");
-    let nodes = [
-        "agent",
-        "agent::mux",
-        "agent::registry",
-        "agent::tmux",
-        "agent::psmux",
-        "agent::control_mode",
-    ];
-    let found = cycles(&edge_set(&tree, &nodes, true));
-    assert_eq!(
-        found,
-        vec![vec![
-            "agent::control_mode".to_string(),
-            "agent::mux".to_string(),
-            "agent::psmux".to_string(),
-            "agent::registry".to_string(),
-            "agent::tmux".to_string(),
-        ]]
-    );
-}
-
 /// Aliases and re-exports are edges: a `type` alias of an adapter's type is a
 /// crossing where it is declared, a use of that alias from elsewhere resolves
-/// to the adapter, and so does a `pub use` re-export read through its parent.
-/// A grant of the parent (`agent`) admits none of it.
+/// to the adapter, and so does a `pub use` re-export read through its parent:
+/// what the concrete-backend check relies on.
 #[test]
 fn aliases_and_reexports_launder_nothing() {
     let tree = fixture("laundering");
-    let rules = [
-        ModuleRules {
-            name: "agent",
-            allowed: &["agent::tmux"],
-            allowed_path_only: &[],
-        },
-        ModuleRules {
-            name: "agent::tmux",
-            allowed: &[],
-            allowed_path_only: &[],
-        },
-        ModuleRules {
-            name: "kernel",
-            allowed: &[],
-            allowed_path_only: &["agent"],
-        },
-    ];
-    let found: BTreeSet<String> = violations(&tree, &rules)
+    let found: BTreeSet<String> = tree
+        .edges(&["agent", "agent::tmux", "kernel"])
         .iter()
+        .filter(|e| e.from == "kernel" && e.to == "agent::tmux")
         .map(|e| format!("{} → {} @ {}", e.from, e.target(), e.site(&tree.root)))
         .collect();
     let expected: BTreeSet<String> = [
@@ -874,19 +386,7 @@ fn aliases_and_reexports_launder_nothing() {
 #[test]
 fn a_multiplexer_variant_is_named_only_where_one_is_chosen() {
     let tree = fixture("mux_variants");
-    let rules = [
-        ModuleRules {
-            name: "session",
-            allowed: &[],
-            allowed_path_only: &[],
-        },
-        ModuleRules {
-            name: "kernel",
-            allowed: &["session"],
-            allowed_path_only: &[],
-        },
-    ];
-    let found: BTreeSet<String> = variant_violations(&tree, &rules)
+    let found: BTreeSet<String> = variant_violations(&tree, &["session", "kernel"])
         .iter()
         .map(|e| format!("{} → {} @ {}", e.from, e.target(), e.site(&tree.root)))
         .collect();
@@ -903,8 +403,8 @@ fn a_multiplexer_variant_is_named_only_where_one_is_chosen() {
 }
 
 /// `#[cfg(test)]` code is marked — an item, an inline module and a file
-/// declared under `#[cfg(test)] mod x;` — so it cannot make a production cycle
-/// (while still being checked against the rules, see [`violations`]).
+/// declared under `#[cfg(test)] mod x;` — so the multiplexer-variant check can
+/// leave a test's own pinning out.
 #[test]
 fn test_code_makes_no_production_edge() {
     let tree = fixture("test_edges");
@@ -926,13 +426,11 @@ fn test_code_makes_no_production_edge() {
 /// root's reach of the factory are not.
 #[test]
 fn a_reach_of_a_concrete_backend_is_found() {
-    let rules = ["backend", "coordinator", "kernel", "session"].map(|name| ModuleRules {
-        name,
-        allowed: &[],
-        allowed_path_only: &[],
-    });
     assert_eq!(
-        concrete_backend_reaches(&fixture("runtime_imports"), &rules),
+        concrete_backend_reaches(
+            &fixture("runtime_imports"),
+            &["backend", "coordinator", "kernel", "session"]
+        ),
         [
             "kernel → backend::psmux @ kernel/mod.rs:16",
             "kernel → backend::tmux @ kernel/mod.rs:11",
@@ -946,46 +444,19 @@ fn a_reach_of_a_concrete_backend_is_found() {
 /// a grant of one of its submodules is not.
 #[test]
 fn a_grant_of_a_governed_parent_is_found() {
-    let rules = [
-        ModuleRules {
-            name: "cli",
-            allowed: &["agent", "agent::fetch"],
-            allowed_path_only: &[],
-        },
-        ModuleRules {
-            name: "kernel",
-            allowed: &[],
-            allowed_path_only: &["config"],
-        },
-    ];
+    let grants = BTreeMap::from([
+        (
+            "cli".to_string(),
+            vec!["agent".to_string(), "agent::fetch".to_string()],
+        ),
+        ("kernel".to_string(), vec!["config".to_string()]),
+    ]);
     assert_eq!(
-        whole_parent_grants(&rules, &["agent", "config"]),
+        whole_parent_grants(&grants, &["agent".to_string(), "config".to_string()]),
         [
             "cli is granted all of `agent`",
             "kernel is granted all of `config`"
         ]
-    );
-}
-
-/// The declared graph is checked for what it permits, not what is used:
-/// `storage` and `telemetry` allowed to reach each other are a cycle.
-#[test]
-fn the_declared_check_sees_a_mutual_allowance() {
-    let rules = [
-        ModuleRules {
-            name: "storage",
-            allowed: &["telemetry"],
-            allowed_path_only: &[],
-        },
-        ModuleRules {
-            name: "telemetry",
-            allowed: &[],
-            allowed_path_only: &["storage"],
-        },
-    ];
-    assert_eq!(
-        cycles(&declared_edges(&rules)),
-        vec![vec!["storage".to_string(), "telemetry".to_string()]]
     );
 }
 

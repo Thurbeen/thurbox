@@ -196,12 +196,127 @@ deps = []
 role = "component"
 deps = []
 
-# The interface. Its own module rules are crates/thurbox/tests/architecture_rules.rs.
+# The interface. Its module rules follow; checks particular to thurbox (the
+# runtime gateways, session purity, atomic writes, the kernel's workers) are
+# crates/thurbox/tests/architecture_rules.rs.
 # Transitional: thurbox links the runtime directly until Fleet drives the
 # runtimes (step 5 of the v3 migration), when this edge goes.
 [crates.thurbox]
 role = "component"
 deps = ["runtime-mux", "term-stream"]
+# The crate roots: the library, `main` and the `thurbox-cli` binary.
+# `coordinator` is not exempt: it is `main`'s own body split across files, and
+# "wires everything" was never the same claim as "may reach anything".
+exempt = ["lib", "main", "thurbox-cli"]
+# Every file module of these, at any depth, is a module of its own, so a new
+# file there is a decision rather than something its parent's rule covers.
+governed = ["agent", "config", "update"]
+
+# `use` grants a module in any form; `path_only` only by a fully-qualified
+# path, never an import, so the crossing stays visible at each call site.
+[crates.thurbox.modules]
+# Pure data: the dependency sink. No crate-internal references at all.
+session = { use = [] }
+# The downloads plugins and the updater make, and keyboard input. Never a
+# session backend: the multiplexer runtime (`backend`) is reached through its
+# own module. Every file is a module of its own, so a grant names what it
+# reads and a file added here is reachable by nobody until that is decided.
+# The root only declares them.
+agent = { use = [] }
+"agent::fetch" = { use = ["paths"] }
+"agent::input" = { use = [] }
+# thurbox's own config files beside config.toml. `config::file` is the one
+# loader: where a file lives, seeding it, parsing it with unknown keys
+# reported, and writing it back atomically. Each file is a module of its own
+# so a consumer names the config it reads; none reaches another, so a file's
+# degradation is its own.
+config = { use = [] }
+# automations.json beside settings.toml: the schedule thurbox keeps while
+# Fleet has no schedule kind. The schedule math is `session`'s.
+"config::automations" = { use = ["session", "config::file"] }
+"config::file" = { use = ["paths"] }
+# What the interface remembers between runs (`interface.json`): data in, the
+# editor mode's type from `session`.
+"config::interface_state" = { use = ["session", "config::file"] }
+# hosts.toml in thurbox's config directory: the runtime's loader bound to
+# `config::file`. A module of its own so that reading global host config is a
+# visible decision.
+"config::hosts" = { use = ["session", "config::file"] }
+"config::settings" = { use = ["session", "config::file"] }
+"config::themes" = { use = ["theme", "config::file"] }
+# Self-update: whether a newer release exists, and installing it.
+update = { use = [] }
+"update::self_update" = { use = ["paths", "shell", "agent::fetch", "update::version_check"] }
+"update::version_check" = { use = ["paths", "agent::fetch"] }
+# The gateway to the multiplexer runtime (`runtime_mux`, ADR-41): its
+# re-exports, and what thurbox injects into it: `session` for the settings
+# type, `paths` for the data directory, `config::hosts` for the hosts the
+# factory registers. Every crossing into the runtime is an edge to this
+# module, judged by the item it names (the concrete-backend check).
+backend = { use = ["session", "paths", "config::hosts"] }
+git = { use = ["session", "paths", "shell"] }
+# The theme presets and the user's overrides, in `ratatui` colours: data, but
+# rendering data, which `session_is_pure_data` keeps out of the sink.
+theme = { use = [] }
+# The interface's diagnostic-log bridge (ADR-38), built by `coordinator`,
+# which hands it the identity it exports under. The settings come from
+# `session`.
+telemetry = { use = ["session"] }
+# Thin headless dispatch: must not depend on the TUI or the live backend.
+# `kernel` for the two subcommands that drive the interface's own files:
+# `plugin` (`check` loads the real host: the failures worth reporting are
+# declaration-shaped, no `render`, an unplaced slot, a clashing key, and a
+# syntax check passes all of them) and `config` (the interface directory and
+# its `ui.json` overrides). Both are kernel-owned surfaces asked about from
+# outside.
+cli = { use = ["session", "paths", "notifications", "ui_control", "theme"], path_only = [
+  "kernel", "backend", "config::file", "config::hosts", "config::automations",
+  "config::interface_state", "config::settings", "config::themes",
+  "update::self_update", "update::version_check",
+] }
+# The plugin kernel: hosts the Lua VM the whole UI is written in. Builds the
+# snapshot plugins render from Fleet's rows (`session` for the types, `paths`
+# for the interface's files and plugin directories).
+#
+# `git` IS allowed, and the rule is about where: the worker-backed stores
+# (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
+# is rule 5 rather than an exception to it. What must not happen is a `git`
+# call from a render path; the loop's shape enforces that (a plugin returns a
+# tree; it cannot call Rust), not this allowlist.
+#
+# Live agent terminals: `kernel::terminal` adopts a session's real pane
+# through the backend contract and paints its vt100 screen. Those crossings
+# are path-only, as `cli`'s are, so every one into the side-effect layer is
+# visible at its call site.
+kernel = { use = ["session", "paths", "git", "notifications", "theme"], path_only = [
+  "agent::fetch", "backend", "config::hosts", "config::automations",
+  "config::interface_state", "config::settings", "config::themes",
+  "update::self_update", "update::version_check",
+] }
+# Leaf utilities.
+paths = { use = [] }
+ui_control = { use = ["paths"] }
+# The runtime's launchers and quoting rules, re-exported: a module of its own
+# so a grant still says which modules may launch anything.
+shell = { use = [] }
+workspace = { use = ["paths"] }
+# `main`'s own body, split across files: the loop, the workers and the
+# chrome. It is the one module whose job is to wire the layers together, so
+# its list is the widest; but it is a list, and a new layer reached from the
+# loop is a decision recorded here rather than an exemption. It reaches the
+# library by its crate name (`thurbox::`), the only spelling a binary has.
+coordinator = { use = [
+  "clipboard", "kernel", "notifications", "paths", "session", "shell", "telemetry",
+  "ui_control", "agent::input", "backend", "config::interface_state",
+] }
+# Leaf side-effect module: OS desktop notifications. Knows `session` (for
+# `SessionId`), `paths` (for `PATH` lookups) and `shell` (the shared quoting
+# rules; it grew a third copy of the PowerShell one before this was allowed).
+notifications = { use = ["session", "paths", "shell"] }
+# Leaf side-effect module: clipboard writes (native and OSC 52). Knows
+# `session` only for the `ClipboardProvider` setting; writes to the tty and
+# never reaches into agent or the interface.
+clipboard = { use = ["paths", "session"] }
 
 [crates.arch-rules]
 role = "tooling"

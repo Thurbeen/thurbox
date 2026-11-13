@@ -2117,6 +2117,70 @@ fn module_rules_allow_no_cycle_and_no_unused_grant() {
     );
 }
 
+/// A module re-exporting another crate's item is what a path through it
+/// reaches: `a` naming `crate::b::read`, which `b` re-exports from `std`,
+/// reaches `b`.
+#[test]
+fn a_reexport_of_another_crates_item_is_its_module() {
+    let rules = format!(
+        "{RULES}{}",
+        MODULES.replace("a = { use = [\"b\"] }", "a = { use = [] }")
+    );
+    modules(
+        "local-reexport",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { let _ = crate::b::read; }\n",
+            ),
+            (
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub use std::fs::read;\n",
+            ),
+        ],
+        &[("module-edge", "fx-mod")],
+    );
+}
+
+/// A path-only grant admits a fully-qualified path and never an import, a
+/// function-local one included, so the crossing stays visible at each site.
+#[test]
+fn a_path_only_grant_admits_paths_but_no_import() {
+    let rules = format!(
+        "{RULES}{}",
+        MODULES.replace(
+            "a = { use = [\"b\"] }",
+            "a = { use = [], path_only = [\"b\"] }"
+        )
+    );
+    let arch = ("architecture.toml", rules.as_str());
+    modules("path-only-clean", &[arch], &[]);
+    let edge = [("module-edge", "fx-mod")];
+    modules(
+        "path-only-use",
+        &[
+            arch,
+            (
+                "crates/fx-mod/src/a.rs",
+                "use crate::b;\npub fn a() { b::b(); }\n",
+            ),
+        ],
+        &edge,
+    );
+    modules(
+        "path-only-local-use",
+        &[
+            arch,
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { use crate::b::b; b(); }\n",
+            ),
+        ],
+        &edge,
+    );
+}
+
 /// A top-level inline module needs a rule as a file module does; an inline
 /// `#[cfg(test)]` one is test code of the root that declares it.
 #[test]
