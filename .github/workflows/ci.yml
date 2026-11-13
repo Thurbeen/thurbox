@@ -847,7 +847,9 @@ jobs:
         with:
           install-only: true
       - run: cargo clippy -p 'fleet-*' --locked --all-targets --all-features -- -D warnings
-      - run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast
+      # `e2e_runtime_exec` runs in the Nextest job, which has the tmux,
+      # runtime-mux and jq it needs; under `CI` it fails without them.
+      - run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast -E 'not binary(e2e_runtime_exec)'
       - run: cargo test -p 'fleet-*' --locked --all-features --doc
       - run: cargo doc -p 'fleet-*' --locked --all-features --no-deps
         env:

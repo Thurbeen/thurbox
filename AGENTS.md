@@ -53,7 +53,8 @@ and the `fleet-*` skills own the detail):
   which drives the real `runtime-mux` binary on a private tmux socket
   directory, hold both sides to one protocol. Those tests skip without tmux or
   without a built `runtime-mux` (`cargo build -p runtime-mux`, or
-  `RUNTIME_MUX_BIN`); CI's Nextest job has both. The `exec` kind starts the
+  `RUNTIME_MUX_BIN`), except under `CI`, where they fail; CI's Nextest job
+  has both and the Fleet job excludes them. The `exec` kind starts the
   harness profile's argv (`fleet_api::harness`) and learns what only the
   agent knows from its `fleet signal` reports, never from the runtime.
 - A test that runs `git` in a scratch directory removes git's location
