@@ -257,10 +257,10 @@ print(f"trusting {pane} at {grant['pin']}")
 PYTRUST
 
 # --- The session list beside Doom: one session per installed agent CLI --------
-# Real CLIs, because the rows are the real thing or
-# they are a mock-up. No agent pane is ever in the kept window — that starts half a
-# minute after `f7`, with Doom on screen throughout — so nothing an agent prints,
-# account name or past conversation or a trust prompt, can reach the clip.
+# Real CLIs, because the rows are the real thing or they are a mock-up. No agent
+# pane is ever in the kept window — that starts half a minute after `f7`, with
+# Doom on screen throughout — so nothing an agent prints, account name or past
+# conversation or a trust prompt, can reach the clip.
 agents=()
 for a in claude codex opencode agy; do
     command -v "$a" >/dev/null 2>&1 && agents+=("$a")
