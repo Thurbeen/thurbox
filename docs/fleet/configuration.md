@@ -202,8 +202,10 @@ version = 1
 
 [runtimes.mux]
 program = "runtime-mux"
+default = true
 
 # this machine; spec.host = "local" or "mux/local"
+# (the default runtime: the only one, or the one with default = true)
 [runtimes.mux.places.local]
 
 # an ssh host; spec.host = "mux/devbox"
@@ -228,7 +230,12 @@ image = "agent-base"
 - Fleet passes a place's table to the runtime in each request and does not
   read it. The keys are the runtime's own: the `runtime-mux` keys above are
   today's `hosts.toml` fields.
-- A runtime with no `places` table has one place, `default`.
+- A runtime with no `places` table has one place, `local`.
+- `local` is the short form of `<runtime>/local` on the default runtime: the
+  one with `default = true`, or the only runtime. Fleet refuses a config with
+  several runtimes and no single default at load.
+- A place's table comes only from this file. Fleet does not read it, and the
+  runtime trusts it.
 - `fleet doctor` asks each runtime about each place and prints what is
   missing, with the command that fixes it. Nothing installs silently.
 

@@ -1266,10 +1266,13 @@ One repository keeps a change across components in one change and one CI.
 **Choice**: a host is a place of a runtime.
 
 - A host's id is `<runtime>/<place>`, such as `mux/devbox`. `local` is the
-  short form of `mux/local`.
+  short form of `<runtime>/local` on the default runtime: the one marked
+  `default = true`, or the only runtime. Fleet refuses a config with several
+  runtimes and no single default.
 - Fleet's config declares each place inline, in
   `[runtimes.<name>.places.<place>]`. Fleet passes the place's table to the
-  runtime in every request. Fleet does not read the table.
+  runtime in every request. Fleet does not read the table. The runtime
+  trusts it, so it lives only in the operator's Fleet config.
 - Fleet's `[hosts]` table goes. A runtime's `manifest` reports its places and
   whether each one is ready.
 - thurbox reads hosts only from Fleet. thurbox stops reading `hosts.toml`.

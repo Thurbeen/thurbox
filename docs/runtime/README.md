@@ -186,7 +186,8 @@ above, is the protocol in force. The decision is
 
 A place is where a runtime runs a process: this machine, an ssh host, a WSL
 distro, a VM. A host's id is `<runtime>/<place>`. `local` is the short form of
-`mux/local`.
+`<runtime>/local` on the default runtime
+([configuration](../fleet/configuration.md#planned-places-of-a-runtime)).
 
 ```text
 Fleet config                        Fleet                 runtime
@@ -204,7 +205,8 @@ Changes from version 1:
 
 - **`place` on every request.** Every request but `manifest` carries
   `place: {name, config}`, so `list` answers for one place. `config` is the
-  place's table from Fleet's config, as JSON. Fleet does not read it. A
+  place's table from Fleet's config, as JSON. Fleet does not read it. The
+  runtime trusts it: it comes only from the operator's Fleet config. A
   runtime that gets a config it cannot use answers Unknown with why. The
   runtime keeps no place config of its own.
 - **`manifest` reports places.** The request carries `places`, every
@@ -218,7 +220,7 @@ Changes from version 1:
     empty config.
 
   A runtime with no `[runtimes.<name>.places]` table has one place,
-  `default`, with an empty config. An unreachable runtime makes its places
+  `local`, with an empty config. An unreachable runtime makes its places
   Unknown, never absent.
 
 New optional verbs:
@@ -233,6 +235,12 @@ New optional verbs:
   and reads it back for Fleet. Fleet asks from the last `next` it got. A
   place without the verb keeps today's rule: what the file would say stays
   Unknown.
+- **A restart on a remote place.** Fleet cannot append its restart marker to
+  a file on the place. Before it starts a new process under a key, it asks
+  `signals` and records the `next` offset with the restart. Only lines after
+  that offset describe the new process, so readiness and trust wait for its
+  own report. An Unknown answer starts nothing. The runtime writes no signal
+  line and stays ignorant of their format.
 - **`shell`.** thurbox's companion shell on a remote place opens through
   Fleet with this answer. thurbox keeps no ssh launcher of its own.
 - **`browse`.** The new-session modal browses a place's folders through it,
