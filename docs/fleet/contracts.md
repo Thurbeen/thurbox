@@ -10,8 +10,9 @@ explains the component boundaries. The
 resource fields, state machine and controller interface.
 
 Fleet v2 is a clean break from the Python v1 control plane. It reads none of
-v1's queue records, extension or operator configuration, and the root
-`FLEET_MAJOR` file (`2`) keeps a v1 checkout from updating onto it.
+v1's queue records, extension or operator configuration. The v1 freeze guard
+is the `FLEET_MAJOR` file in Fleet's former standalone repository, which v1
+checkouts update from. This repository carries none.
 
 ## What is served
 

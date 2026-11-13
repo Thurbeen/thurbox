@@ -924,16 +924,6 @@ fn v2_installs_only_when_a_version_is_named() {
     assert!(ok, "{out}");
 }
 
-#[test]
-fn the_tree_declares_fleet_major_2() {
-    // Python v1 clones read this file from a fetched ref before they update,
-    // and refuse anything that is not their own major version. This tree is
-    // v2: it must say so exactly, and never inherit v1's `1`.
-    let marker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../FLEET_MAJOR");
-    let text = fs::read_to_string(&marker).expect("a root FLEET_MAJOR file");
-    assert_eq!(text, "2\n", "FLEET_MAJOR must be exactly \"2\\n\"");
-}
-
 #[cfg(unix)]
 #[test]
 fn installed_binary_has_path_guidance() {
