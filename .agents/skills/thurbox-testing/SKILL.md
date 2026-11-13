@@ -17,6 +17,13 @@ bats scripts/install.bats             # Test install script (requires bats-core)
 just test-scripts                     # Every bats suite (the justfile lists them)
 ```
 
+The tests that drive an installed agent CLI (opencode, kilo, pi, omp, qwen,
+kimi, copilot in `crates/fleet-cli/tests/e2e_runtime_exec.rs`) skip unless
+`FLEET_REAL_AGENTS=1` is set: each depends on the CLI's installed version, and
+opencode, kilo, pi and omp also reach the vendor's model with your account
+(qwen, kimi and copilot answer to a local fake model). `just test` and CI never
+run them.
+
 The Nix development shell includes `bashInteractive`, not merely stdenv's
 non-interactive Bash. Real-tmux fixtures exercise Readline's bracketed-paste
 mode, including its `bind` setting, so substituting the stdenv shell changes
