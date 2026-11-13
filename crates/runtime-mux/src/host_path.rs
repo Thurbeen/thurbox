@@ -6,10 +6,9 @@
 //! and sshd runs a command with its own compiled-in `PATH`. Neither reads
 //! `~/.profile`, `~/.zprofile` or — for `wsl.exe -e` — even `~/.zshenv`, which
 //! is where `~/.local/bin`, `~/.cargo/bin`, `~/.bun/bin` and the nvm/fnm shims
-//! go. A delegated `thurbox-cli session create` inherited exactly that
-//! environment and pinned it on the pane (`tmux_compat::server::path_prefix_args`), so
-//! an agent installed under `~/.local/bin` died with `env: 'claude': No such
-//! file or directory`.
+//! go. A pane spawned with that environment pins it
+//! (`tmux_compat::server::path_prefix_args`), so an agent installed under
+//! `~/.local/bin` dies with `env: 'claude': No such file or directory`.
 //!
 //! So the host's own login `PATH` is read once per host — the user's `$SHELL
 //! -l` and `/bin/sh -l`, stdin closed, each under `timeout` — cached for the

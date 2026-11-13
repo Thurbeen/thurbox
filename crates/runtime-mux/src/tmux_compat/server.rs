@@ -5273,15 +5273,10 @@ pub(crate) fn push_posix_window_program(
 /// A pane runs with the `PATH` of the thurbox that spawned it — tmux replaces
 /// the session environment's from an **unattached** client, which both local
 /// spawn paths are. Usually that is the right answer and there is nothing to
-/// do. It is not the right answer when the spawning thurbox is a `thurbox-cli`
-/// invoked over ssh by a TUI delegating `session create` to this host: sshd
-/// hands a non-interactive command its own `PATH`
+/// do. It is not when the spawning process was started over ssh: sshd hands a
+/// non-interactive command its own `PATH`
 /// (`/usr/local/bin:/usr/bin:/bin:/usr/games`), which has no `~/.local/bin` on
-/// it — where `thurbox-cli` installs. The status hooks are a **bare** name
-/// (`thurbox-cli session signal --state <s> || true`), so on such a host every
-/// one of them resolved nothing and the `|| true` swallowed it: the host's own
-/// rows never gained a `hook_state`, and every session on it read as
-/// statusless on the TUI mirroring them.
+/// it, so a hook that names a sibling binary bare resolves nothing.
 ///
 /// So the CLI's own directory goes in front ([`crate::instance::resolve_cli_binary`] — the
 /// process running knows where its sibling is even when `PATH` does not).

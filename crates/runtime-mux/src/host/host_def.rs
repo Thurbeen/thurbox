@@ -111,12 +111,10 @@ pub struct HostDef {
     /// leaves it unset.
     #[serde(default)]
     pub platform: Option<Platform>,
-    /// Whether the host's own thurbox database is the record of the sessions
-    /// on it (`true`, the default): a remote thurbox mirrors that database and
-    /// delegates create/delete/restart/restore to `thurbox-cli` on the host,
-    /// provisioning that CLI when the host has none. `false` uses the host
-    /// exactly as before sharing existed — worktrees and hooks driven from
-    /// here, nothing mirrored, nothing installed on the host.
+    /// Whether the host may run a thurbox of its own (`true`, the default). It
+    /// matters only when `socket` is unset: `false` lets this build's default
+    /// socket name the host's server (`instance::known_host_socket`), and
+    /// `true` needs the socket set or learned.
     #[serde(default = "default_share_sessions")]
     pub share_sessions: bool,
     /// Directories put in front of the agent's `PATH` on the host, ahead of
@@ -125,13 +123,8 @@ pub struct HostDef {
     /// `~`-rooted; anything else is ignored.
     #[serde(default)]
     pub path_prepend: Vec<String>,
-    /// The OTLP endpoint a session on this host exports to while
-    /// `[telemetry]` configures agents, as the host reaches it.
-    /// Unset, the session gets only its resource attributes: the local
-    /// `endpoint` names this machine, which on the host is the host itself.
-    /// On a shared host the agent's pane is launched by the host's own CLI,
-    /// from the host's own `[telemetry]`; `session exec` and
-    /// `agent launch-args` run from here still read this.
+    /// Parsed so an existing `hosts.toml` still loads; nothing reads it.
+    /// Fleet's harness profiles configure an agent's telemetry.
     #[serde(default)]
     pub otel_endpoint: Option<String>,
 }
@@ -176,7 +169,7 @@ impl HostDef {
         }
     }
 
-    /// Whether sessions on this host are shared through its own database
+    /// Whether the host may run a thurbox of its own
     /// ([`share_sessions`](Self::share_sessions)).
     pub fn shareable(&self) -> bool {
         self.share_sessions
@@ -197,13 +190,9 @@ impl HostDef {
     /// running inside.
     ///
     /// `wsl.exe -d <us>` from inside `<us>` lands back on this same machine —
-    /// the same tmux server, the same worktrees, the same thurbox database — so
-    /// such a host is not off-local at all, and registering one made every
-    /// LOCAL session on this machine remote. A shareable host's own database is
-    /// the record of the sessions on it, and here that database *is*
-    /// ours: the mirror pass read our own rows back and rewrote each one's
-    /// `backend_type` to `wsl:<us>`, after which every attach, diff and delete
-    /// went out through `wsl.exe` and failed against the machine it started on.
+    /// the same tmux server and the same worktrees — so such a host is not
+    /// off-local at all: driving this machine's own sessions through
+    /// `wsl.exe` would send every attach and kill back to where it started.
     ///
     /// So a loopback is dropped at the registry — the one chokepoint every
     /// caller shares — rather than guarded for at each use. A *sibling* distro
