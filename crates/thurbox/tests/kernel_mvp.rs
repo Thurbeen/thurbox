@@ -667,11 +667,11 @@ fn the_agent_pane_says_so_when_nothing_is_selected() {
     let screen = paint(&host, index_of(&host, "agent"), 50, 8).join("\n");
     // v1 `ui::terminal_view` renders this exact phrase in the empty state.
     assert!(screen.contains("No active sessions"), "{screen}");
-    // And offers nothing it cannot honour: the new-session chord went with its
-    // plugin, so the box must not still advertise it.
+    // The new-session chord is the session list's to name, read from the
+    // registry; a hard-coded copy here would go stale on a rebind.
     assert!(
         !screen.contains("Ctrl+N"),
-        "the empty state advertises a chord that is unbound:\n{screen}"
+        "the empty state hard-codes the new-session chord:\n{screen}"
     );
 }
 

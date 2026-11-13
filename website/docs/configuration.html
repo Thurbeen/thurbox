@@ -429,7 +429,6 @@ auto_update   = true           # downloads + replaces binaries
 
 [notifications]
 backend             = "auto"   # auto / dbus / windows / off
-also_on_waiting     = false    # also fire on Busy &rarr; Waiting (no bell)
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications</code></pre>
@@ -591,11 +590,6 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
                 </td>
               </tr>
               <tr>
-                <td><code>also_on_waiting</code></td>
-                <td><code>false</code></td>
-                <td>also fire on <code>Busy &rarr; Waiting</code> (no explicit bell from the agent)</td>
-              </tr>
-              <tr>
                 <td><code>suppress_for_active</code></td>
                 <td><code>true</code></td>
                 <td>skip the notification for the session you're currently viewing</td>
@@ -615,9 +609,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
           <p>
             The default-on <code>Attention</code> trigger is the right knob for any agent that
             respects the terminal bell / OSC&nbsp;9 / OSC&nbsp;777 conventions (Claude Code out of
-            the box, for example). For agents that only go quiet without ringing a bell, set
-            <code>also_on_waiting = true</code> &mdash; note this fires once each time the agent goes
-            idle after activity, so it can be chatty.
+            the box, for example).
           </p>
 
           <h2 id="themes-toml">

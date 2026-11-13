@@ -1,8 +1,7 @@
 //! OS desktop notifications for the "agent needs you" event.
 //!
 //! Sends a notification when a session transitions into an attention-needing
-//! state (`Blocked` always, plus the finished `Done` edge when opted in via
-//! `also_on_waiting`). Delivery picks a
+//! state (`Blocked`). Delivery picks a
 //! **backend** at startup ([`detect_backend`]):
 //!
 //! - **dbus** (`org.freedesktop.Notifications`) on a normal Linux desktop.

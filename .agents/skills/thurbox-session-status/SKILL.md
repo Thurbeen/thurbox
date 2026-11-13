@@ -118,9 +118,10 @@ something animates, so an idle frame invalidates no `pure` pane (ADR-P16).
 `kernel::notify::Notifier` watches each snapshot for state edges.
 `src/notifications.rs` is the delivery layer, a leaf over `session` and `paths`.
 
-- **Edges.** A session that moves into `blocked` raises a notification. With
-  `also_on_waiting`, a move into `done` does too, unless the previous state was
-  `blocked`. The first sight of a session is not an edge.
+- **Edges.** A session that moves into `blocked` raises a notification. No
+  other edge does: Fleet never reports `done`, so the opt-in for it
+  (`also_on_waiting`) is a retired key. The first sight of a session is not an
+  edge.
 - **Settings** (`[notifications]`): `min_interval_secs` is a per-session floor
   between two notifications. `suppress_for_active` skips the focused session.
   `sound` plays the OS sound. `backend` picks the delivery path.

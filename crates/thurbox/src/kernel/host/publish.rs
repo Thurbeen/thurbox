@@ -366,11 +366,7 @@ impl LuaHost {
         let flags = &settings.features;
         for (name, value) in [
             ("automations", flags.automations),
-            ("file_viewer", flags.file_viewer),
-            ("global_search", flags.global_search),
-            ("info_panel", flags.info_panel),
             ("shell_pane", flags.shell_pane),
-            ("code_review", flags.code_review),
             ("perf_hud", flags.perf_hud),
             ("mouse", flags.mouse),
             ("notifications", flags.notifications),

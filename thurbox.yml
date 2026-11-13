@@ -318,15 +318,7 @@ globals:
     property: read-only
   thurbox.settings.features.automations:
     property: read-only
-  thurbox.settings.features.file_viewer:
-    property: read-only
-  thurbox.settings.features.global_search:
-    property: read-only
-  thurbox.settings.features.info_panel:
-    property: read-only
   thurbox.settings.features.shell_pane:
-    property: read-only
-  thurbox.settings.features.code_review:
     property: read-only
   thurbox.settings.features.perf_hud:
     property: read-only

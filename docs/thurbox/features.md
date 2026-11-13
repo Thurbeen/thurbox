@@ -1019,7 +1019,8 @@ them would take `Ctrl+N` from new-session everywhere. Recorded in
 
 Whole features can be switched off declaratively: `automations`,
 `shell_pane`, `perf_hud`, `mouse`, `notifications` — all default `true`.
-`file_viewer`, `global_search`, `info_panel` and `code_review` gate nothing
+`file_viewer`, `global_search`, `info_panel` and `code_review` are retired:
+nothing read them, and a file that sets one loads with a notice
 (`docs/thurbox/config.md`). Two flags reach the network and
 both default on:
 `version_check` (the "update available" badge +
@@ -1360,7 +1361,7 @@ Status messages are in-app and transient; OS notifications are the
 out-of-app analog for the one event a user must not miss — a session
 that **needs them**. When a session's state turns `blocked`, thurbox fires
 an OS desktop notification. A row built from a Fleet Task is never `done`
-(see *Live status*), so `also_on_waiting` adds nothing;
+(see *Live status*), so a finished turn raises nothing;
 `thurbox-cli notify send` is the scripted path.
 
 ### Why the transition is observed in one place
@@ -1411,7 +1412,7 @@ processes; see
 The dispatcher thread (`crate::notifications::start`) starts only when
 `[features] notifications = true`, so the feature is zero-overhead when
 disabled. Knobs live in the `[notifications]` block of `settings.toml`
-(`also_on_waiting` / `suppress_for_active` / `sound` /
+(`suppress_for_active` / `sound` /
 `min_interval_secs` / `backend`) — see [config.md](config.md). `backend`
 forces the delivery path (`auto` / `dbus` / `windows`;
 `session::settings::NotificationBackend` has no `macos` value — `auto` is
