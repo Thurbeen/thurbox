@@ -1013,16 +1013,74 @@ pub struct Case {
 }
 
 /// Whether `program` answers its `manifest` as Fleet speaks the protocol,
-/// and can serve its place: what `fleet doctor` asks of each place's
-/// runtime. [`check`]'s first case is the protocol half.
+/// and its place is ready as the manifest reports it: what `fleet doctor`
+/// asks of each place's runtime. [`check`]'s first case is the protocol half.
 pub fn reach(program: &ExecProgram) -> Result<(), String> {
     let manifest = program.manifest();
     speaks(&manifest)?;
-    match &manifest {
-        Observation::Known(m) => program
-            .unplaced(m.protocol, &program.place)
-            .map_or(Ok(()), Err),
-        Observation::Unknown { .. } => Ok(()),
+    match readiness(program, &program.place, &manifest) {
+        Readiness {
+            ready: Some(true), ..
+        } => Ok(()),
+        Readiness { why, .. } => {
+            Err(why.unwrap_or_else(|| format!("place {} is not ready", program.place.name)))
+        }
+    }
+}
+
+/// What `manifest` says of `place`, one of `program`'s places: the one rule
+/// `fleet doctor` and `fleet runtime places` read readiness by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Readiness {
+    /// `None` when it is unknown: the runtime did not answer, or did not
+    /// report the place.
+    pub ready: Option<bool>,
+    pub why: Option<String>,
+    /// The runtime's own report, from protocol version 2.
+    pub report: Option<PlaceReport>,
+}
+
+/// [`Readiness`] of `place` by `manifest`. A runtime of protocol version 1
+/// reports no place: it is ready at `local`, with no config, and serves no
+/// other.
+pub fn readiness(
+    program: &ExecProgram,
+    place: &Place,
+    manifest: &Observation<Manifest>,
+) -> Readiness {
+    let unknown = |why: String| Readiness {
+        ready: None,
+        why: Some(why),
+        report: None,
+    };
+    let m = match manifest {
+        Observation::Known(m) => m,
+        Observation::Unknown { why } => return unknown(why.clone()),
+    };
+    if let Some(why) = program.unplaced(m.protocol, place) {
+        return Readiness {
+            ready: Some(false),
+            why: Some(why),
+            report: None,
+        };
+    }
+    if m.protocol < 2 {
+        return Readiness {
+            ready: Some(true),
+            why: None,
+            report: None,
+        };
+    }
+    match m.places.iter().find(|r| r.name == place.name) {
+        Some(r) => Readiness {
+            ready: Some(r.ready),
+            why: r.why.clone(),
+            report: Some(r.clone()),
+        },
+        None => unknown(format!(
+            "runtime {} did not report its place {}",
+            program.name, place.name
+        )),
     }
 }
 

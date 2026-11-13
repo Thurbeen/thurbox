@@ -214,11 +214,15 @@ image = "agent-base"
   fields as their keys.
 - `local` is the short form of `<runtime>/local` on the default runtime: the
   one with `default = true`, or the only runtime. Fleet refuses a config with
-  several runtimes and no single default at load.
+  several runtimes and no single default at load, and one whose default
+  runtime has a `places` table without `local`.
 - A runtime or place name is 1 to 253 lowercase letters, digits, `-` or `.`.
 - A place's table comes only from this file. The runtime trusts it.
 - A runtime of protocol version 1 serves only `local`, with no config: a
   Task on another of its places waits, unknown.
+- `fleet doctor` fails a place its runtime reports not ready, with the
+  runtime's why. It reads readiness by the same rule as `fleet runtime
+  places`.
 - `fleet runtime places --json` lists every place with what its runtime's
   manifest says of it: `{"places": [{host, runtime, place, alias, platform,
   dynamic, ready, why}]}`. `alias` is `"local"` on the place `local` names.

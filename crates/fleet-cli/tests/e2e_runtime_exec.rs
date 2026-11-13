@@ -437,6 +437,11 @@ fn a_config_whose_hosts_are_ambiguous_is_refused_at_load() {
             "runtimes.mux.places.Dev_Box",
         ),
         (
+            "default-without-local",
+            "[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\n",
+            "the default runtime mux has no `local` place",
+        ),
+        (
             "bad-runtime",
             "[runtimes.Mux]\nprogram = \"runtime-mux\"\n",
             "runtimes.Mux",
@@ -519,7 +524,7 @@ fn a_task_on_a_place_passes_its_config_to_the_runtime() {
     fs::write(
         &env.config,
         format!(
-            "{cfg}\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@devbox\"\n"
+            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@devbox\"\n"
         ),
     )
     .expect("config");

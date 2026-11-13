@@ -305,6 +305,18 @@ impl Config {
                 ));
             }
         }
+        // `local` names the default runtime's `local` place, and a Task
+        // with no host of its own runs there: a default without one would
+        // leave `local` naming nothing.
+        if let Some(default) = self.default_runtime()
+            && let Some(rt) = self.runtimes.get(default)
+            && !rt.places.is_empty()
+            && !rt.places.contains_key(LOCAL)
+        {
+            return Err(format!(
+                "the default runtime {default} has no `local` place, which the host `local` names: add [runtimes.{default}.places.local], or mark a runtime that has one `default = true`"
+            ));
+        }
         Ok(())
     }
 

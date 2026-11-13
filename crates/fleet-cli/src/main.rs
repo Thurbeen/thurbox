@@ -1548,37 +1548,17 @@ fn runtime_places(config: &Config) -> Vec<Value> {
         let program = exec_program(config, runtime);
         let manifest = program.manifest();
         for place in places.iter().filter(|p| &p.runtime == runtime) {
-            let mut row = json!({
+            let r = fleet_runtime::exec::readiness(&program, &place.place, &manifest);
+            let row = json!({
                 "host": place.id,
                 "runtime": runtime,
                 "place": place.place.name,
                 "alias": place.local.then_some(config::LOCAL),
-                "platform": null,
-                "dynamic": null,
-                "ready": null,
-                "why": null,
+                "platform": r.report.as_ref().map(|r| r.platform),
+                "dynamic": r.report.as_ref().map(|r| r.dynamic),
+                "ready": r.ready,
+                "why": r.why,
             });
-            match &manifest {
-                Observation::Unknown { why } => row["why"] = json!(why),
-                Observation::Known(m) => {
-                    if let Some(why) = program.unplaced(m.protocol, &place.place) {
-                        row["ready"] = json!(false);
-                        row["why"] = json!(why);
-                    } else if m.protocol < 2 {
-                        row["ready"] = json!(true);
-                    } else if let Some(r) = m.places.iter().find(|r| r.name == place.place.name) {
-                        row["platform"] = json!(r.platform);
-                        row["dynamic"] = json!(r.dynamic);
-                        row["ready"] = json!(r.ready);
-                        row["why"] = json!(r.why);
-                    } else {
-                        row["why"] = json!(format!(
-                            "runtime {runtime} did not report its place {}",
-                            place.place.name
-                        ));
-                    }
-                }
-            }
             rows.push(row);
         }
     }
