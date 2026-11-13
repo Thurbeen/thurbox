@@ -73,7 +73,8 @@ pub struct Rules {
     /// Field-manager path -> the crates whose sources may name it.
     #[serde(default)]
     pub status_writers: BTreeMap<String, Vec<String>>,
-    /// Paths no crate may reach except the ones listed, whatever its role.
+    /// Paths the crates a rule applies to may not reach, except the ones it
+    /// allows.
     #[serde(default)]
     pub restricted: Vec<Restricted>,
 }
@@ -81,6 +82,10 @@ pub struct Rules {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Restricted {
+    /// The roles and crates the rule binds, by name. Required, and checked
+    /// against the roles and the crates of the rules file: a scope naming
+    /// nothing would bind nothing.
+    pub applies_to: Vec<String>,
     pub path: String,
     #[serde(default)]
     pub allowed: Vec<String>,
@@ -119,6 +124,38 @@ pub enum Role {
     /// the crate graph from its manifest, since components meet only through
     /// processes, and never to Fleet's own source rules.
     Component,
+}
+
+impl Role {
+    /// The role as `architecture.toml` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Pure => "pure",
+            Role::Adapter => "adapter",
+            Role::Orchestration => "orchestration",
+            Role::Edge => "edge",
+            Role::Tooling => "tooling",
+            Role::Component => "component",
+        }
+    }
+
+    const ALL: [Role; 6] = [
+        Role::Pure,
+        Role::Adapter,
+        Role::Orchestration,
+        Role::Edge,
+        Role::Tooling,
+        Role::Component,
+    ];
+}
+
+impl Restricted {
+    /// Whether the rule binds `krate`, whose role is `role`.
+    fn binds(&self, krate: &str, role: Role) -> bool {
+        self.applies_to
+            .iter()
+            .any(|s| s == krate || s == role.name())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -364,6 +401,25 @@ fn violation(
 }
 
 fn check_governance(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
+    for x in &rules.restricted {
+        let unknown: Vec<&str> = x
+            .applies_to
+            .iter()
+            .map(String::as_str)
+            .filter(|s| !rules.crates.contains_key(*s) && !Role::ALL.iter().any(|r| r.name() == *s))
+            .collect();
+        if x.applies_to.is_empty() || !unknown.is_empty() {
+            v.push(violation(
+                "restricted-scope",
+                &x.path,
+                "architecture.toml",
+                format!(
+                    "applies_to must name roles or crates; unknown: {:?}",
+                    unknown
+                ),
+            ));
+        }
+    }
     for c in &ws.crates {
         if !rules.crates.contains_key(&c.name) {
             v.push(violation(
@@ -1505,7 +1561,7 @@ fn check_sources(
             for x in rules
                 .restricted
                 .iter()
-                .filter(|x| !x.allowed.contains(&idx.name))
+                .filter(|x| x.binds(&idx.name, rule.role) && !x.allowed.contains(&idx.name))
             {
                 if starts_with(&path, &x.path) {
                     v.push(violation(

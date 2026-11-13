@@ -175,24 +175,32 @@ clippy_guards = [
 "fleet_api::store::FieldManager::Cli" = ["fleet-api", "fleet-manager", "fleet-store"]
 "fleet_api::store::FieldManager::Listener" = ["fleet-api", "fleet-manager", "fleet-store"]
 
+# A restricted path binds the roles and crates its rule names in
+# `applies_to`, except the crates it allows. Fleet's rules name every role but
+# `component`: they are Fleet's, and another component keeps its own.
+
 # One crate starts processes, so every program fleet runs (a runtime, the
 # gate's tools) is bounded and has its tree killed the same way.
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "std::process::Command"
 allowed = ["fleet-exec"]
 why = "every external program goes through fleet-exec: bounded and tree-killed"
 
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "std::os::unix::process"
 allowed = ["fleet-exec"]
 why = "process groups and signals belong to fleet-exec"
 
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "std::os::windows::process"
 allowed = ["fleet-exec"]
 why = "creation flags and job objects belong to fleet-exec"
 
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "process_wrap"
 allowed = ["fleet-exec"]
 why = "a second way to start a process would bypass fleet-exec's bounds"
@@ -200,11 +208,13 @@ why = "a second way to start a process would bypass fleet-exec's bounds"
 # Telemetry leaves the process through one crate, so what is exported, its
 # batching and its shutdown bound are decided in one place.
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "opentelemetry_sdk"
 allowed = ["fleet-telemetry"]
 why = "the SDK's providers, batching and shutdown belong to fleet-telemetry"
 
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "opentelemetry_otlp"
 allowed = ["fleet-telemetry"]
 why = "the OTLP exporter, the one network client telemetry has, belongs to fleet-telemetry"
@@ -215,6 +225,7 @@ why = "the OTLP exporter, the one network client telemetry has, belongs to fleet
 # renewed: no other adapter and no controller holds a handle that could
 # mutate a change.
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "fleet_api::forge::Forge"
 allowed = ["fleet-api", "fleet-manager", "fleet-forge", "fleet-cli"]
 why = "only the manager performs the mark-ready effect, through the port the CLI wired"
@@ -225,11 +236,13 @@ why = "only the manager performs the mark-ready effect, through the port the CLI
 # and the lease renewed: no other adapter and no controller holds a handle
 # that could post in a thread.
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "fleet_api::gateway::Gateway"
 allowed = ["fleet-api", "fleet-manager", "fleet-gateway", "fleet-cli"]
 why = "only the manager performs the open, post and react effects, through the port the CLI wired"
 
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge", "tooling"]
 path = "fleet_api::plugin::Plugins"
 allowed = ["fleet-api", "fleet-plugin", "fleet-manager", "fleet-cli"]
 why = "only the manager may invoke plugin observer and effect calls"
