@@ -660,6 +660,37 @@ fn a_function_local_module_does_not_shadow_a_module_of_the_same_name() {
     expect("fn-local-mod", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
+/// A `#[path]` module that names a file already on its own chain of
+/// declarations (here the root itself) is not followed again, so the walk
+/// ends and the file is checked once per place it really sits.
+#[test]
+fn a_path_attribute_cycle_terminates() {
+    let src = ctl("#[cfg(any())]\n#[path = \"lib.rs\"]\nmod disabled;\npub fn x() {}\n");
+    expect("path-cycle", &[(CTL, &src)], &[]);
+}
+
+/// A weak import (in a function body, or behind a `cfg`) reopens a name's
+/// other meanings only when every import of it is weak: an unconditional
+/// import still shadows the glob.
+#[test]
+fn an_unconditional_import_still_shadows_a_glob_beside_a_weak_one() {
+    let src = ctl(
+        "use std::*;\npub mod safe { pub fn read() {} }\nuse crate::safe as fs;\nfn a() { use crate::safe as fs; }\npub fn b() { fs::read(); }\n",
+    );
+    expect("weak-beside-strong", &[(CTL, &src)], &[]);
+}
+
+/// When every import of a name is weak, the name keeps its other meanings:
+/// `m::fs` still comes through `m`'s glob of `std`, whatever the function in
+/// `m` imports under that name.
+#[test]
+fn a_weak_import_alone_keeps_the_glob_meaning() {
+    let src = ctl(
+        "pub mod n { pub fn read(_: &str) {} }\npub mod m {\n    pub use std::*;\n    fn f() { use crate::n as fs; }\n}\npub fn x() { let _ = m::fs::read(\"p\"); }\n",
+    );
+    expect("weak-alone", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
 /// Macros are a namespace of their own: a struct of the same name does not
 /// shadow a glob-imported macro.
 #[test]

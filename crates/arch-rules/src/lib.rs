@@ -687,12 +687,18 @@ fn module_paths(
     for (file, module) in roots {
         // A root declares its children beside it.
         let children_dir = file.parent().map(Path::to_path_buf);
-        queue.push_back((file, module, children_dir));
+        queue.push_back((file, module, children_dir, Vec::new()));
     }
-    while let Some((file, module, children_dir)) = queue.pop_front() {
+    // `chain` is the files that declared this one, root first: a `#[path]`
+    // back to one of them is a cycle, which would otherwise grow the module
+    // path forever.
+    while let Some((file, module, children_dir, chain)) = queue.pop_front() {
         let Some(ast) = parsed.get(file.as_path()) else {
             continue;
         };
+        if chain.contains(&file) {
+            continue;
+        }
         let seen = out.entry(file.clone()).or_default();
         if seen.contains(&module) {
             continue;
@@ -703,7 +709,13 @@ fn module_paths(
         };
         let mut children = Vec::new();
         declared_files(&ast.items, file_dir, &dir, true, &module, &mut children);
-        queue.extend(children);
+        let mut chain = chain;
+        chain.push(file.clone());
+        queue.extend(
+            children
+                .into_iter()
+                .map(|(child, path, dir)| (child, path, dir, chain.clone())),
+        );
     }
     out
 }
@@ -1197,7 +1209,9 @@ impl<'a> Resolver<'a> {
                             out.extend(base.into_iter().map(join));
                         }
                     }
-                    let unaliased = aliases.is_none_or(|list| list.iter().any(|a| a.weak));
+                    // Only when every import of the name may be out of force
+                    // does it keep the meaning it has without one.
+                    let unaliased = aliases.is_none_or(|list| list.iter().all(|a| a.weak));
                     if !unaliased {
                     } else if idx.externs.contains(first) || self.index(first).is_some() {
                         out.push(segments.to_vec());
@@ -1297,7 +1311,7 @@ impl<'a> Resolver<'a> {
                     via_alias.push(base.into_iter().chain(tail.iter().cloned()).collect());
                 }
             }
-            if !via_alias.is_empty() && !aliases.iter().any(|a| a.weak) {
+            if !via_alias.is_empty() && !aliases.iter().all(|a| a.weak) {
                 return via_alias;
             }
             let read_as_module = names_type || k < path.len();
