@@ -691,6 +691,16 @@ fn a_weak_import_alone_keeps_the_glob_meaning() {
     expect("weak-alone", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
+/// The same through a re-export: `m` imports `fs` unconditionally, so a weak
+/// import of it in a function does not reopen `m`'s glob of `std`.
+#[test]
+fn an_unconditional_reexport_still_shadows_a_glob_beside_a_weak_one() {
+    let src = ctl(
+        "pub mod safe { pub fn read() {} }\npub mod m {\n    pub use std::*;\n    pub use crate::safe as fs;\n    fn f() { use crate::safe as fs; }\n}\npub fn x() { m::fs::read(); }\n",
+    );
+    expect("weak-beside-strong-reexport", &[(CTL, &src)], &[]);
+}
+
 /// Macros are a namespace of their own: a struct of the same name does not
 /// shadow a glob-imported macro.
 #[test]
