@@ -439,8 +439,10 @@ are. Its layout:
 ```
 
 - A `git+file` URL that names a local checkout, a repository with a working
-  tree, gets a worktree of that checkout itself. Nothing is fetched or
-  copied:
+  tree, gets a worktree of that checkout itself. Nothing is copied, and the
+  checkout's `origin` is fetched first, so its `refs/remotes/origin/*` and
+  `origin/HEAD` are the upstream's as they are now. A fetch that fails or stalls for 30
+  seconds leaves the refs as they were:
   - an existing branch is the checkout's own branch;
   - a new branch is made in the checkout;
   - a commit made in the worktree is in the checkout at once;
@@ -462,10 +464,12 @@ are. Its layout:
   checked out, and one checked out elsewhere gets `<branch>-<n>`, from 2.
 - A fragment names the base: a remote branch, a tag, a branch of the source,
   or a ref or commit as given, in that order. A checkout reads its own
-  branches before its remote's. A `refs/…` fragment that a fetch
+  branches before its remote's, except that `origin/<branch>` always names
+  the remote's. A `refs/…` fragment that a fetch
   of branches does not bring, such as preserved work, is fetched by name.
-  With no fragment, the base is the remote's default branch; a checkout with
-  no remote starts from the branch it has checked out.
+  With no fragment, the base is the remote's default branch (`origin/HEAD`,
+  else `origin/main`, else `origin/master`); a checkout with no remote starts
+  from the branch it has checked out.
 - A `file://` URL takes no query and no fragment, and names an existing
   absolute directory. A `%XX` in a path is decoded.
 - A key holds one workspace: the same key with other URLs fails.

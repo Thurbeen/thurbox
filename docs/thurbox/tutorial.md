@@ -127,7 +127,7 @@ checkout. With a worktree, two more questions follow:
 
 | Step | What it asks |
 |---|---|
-| **Base Branch** | what the new branch starts from; the default branch is under the cursor |
+| **Base Branch** | what the new branch starts from; `origin` is fetched first, and the upstream's default branch (`origin/main`) is under the cursor |
 | **Branch Name** | the branch, after the name; prefilled from it (`Fix tooltips` → `fix-tooltips`). A branch that exists is checked out |
 
 Tick several repositories and the session spans them all, one worktree each on

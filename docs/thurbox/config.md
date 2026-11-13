@@ -587,7 +587,9 @@ database:
   create is `fleet apply --create-only`, whose exclusive create gives two
   interfaces racing for one name one Task and one refusal.
 - The creation flow asks for what a Task takes: the host, the repositories,
-  a base branch and a branch name when a repository gets a worktree, the
+  a base branch and a branch name when a repository gets a worktree (the
+  base picker fetches `origin` once when it opens, notes a fetch that fails
+  or stalls for 10 seconds, and preselects `origin/<default>`), the
   name and the agent. A worktree is the URL
   `git+file://<repo>?branch=<branch>#<base>`, and the runtime makes it; a
   repository without one is `file://<repo>`. A confirmed delete is checked

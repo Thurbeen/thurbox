@@ -358,6 +358,8 @@ globals:
     property: read-only
   thurbox.repo_branches.error:
     property: read-only
+  thurbox.repo_branches.fetch_error:
+    property: read-only
   thurbox.repo_branches.default:
     property: read-only
   thurbox.repo_branches.names:

@@ -14,7 +14,9 @@
 //! tree) gets a worktree of that checkout itself: its branches are the
 //! user's own, a commit made in the worktree is in the checkout at once, and
 //! the preserved work of a release is `refs/fleet/preserved/<key>/<name>` in
-//! the checkout. No branch of a checkout is ever deleted.
+//! the checkout. No branch of a checkout is ever deleted. The checkout's
+//! `origin` is fetched before each make, so a new branch with no base starts
+//! from the upstream's default branch as it is now.
 //!
 //! Any other git URL, a remote or a bare repository, gets a bare source of
 //! its own. A source fetches its remote's branches into
@@ -51,6 +53,10 @@ const CHECKOUTS: &str = ".checkouts";
 
 /// Where preserved work is kept, per key and repository name.
 const PRESERVED: &str = "refs/fleet/preserved";
+
+/// How long a make waits on a fetch of a checkout's `origin` before it uses
+/// the refs already there.
+const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The longest key: what the runtime protocol accepts.
 const MAX_KEY: usize = 128;
@@ -508,6 +514,7 @@ fn worktree(
     fs::create_dir_all(&key_dir).map_err(|e| format!("cannot make {}: {e}", key_dir.display()))?;
     if checkout.is_some() {
         list_path(&cfg.root.join(CHECKOUTS), &source)?;
+        fetch_upstream(&source, FETCH_DEADLINE);
     } else {
         fill_source(&source, remote)?;
     }
@@ -570,9 +577,39 @@ fn worktree(
     })
 }
 
+/// Fetch a checkout's `origin`, so a base read from `refs/remotes/origin/*`,
+/// `origin/HEAD` included (`followRemoteHEAD=always`, git 2.48+), is the
+/// upstream as it is now, not as the user last fetched it. A checkout
+/// with no `origin`, or one that cannot be reached, is made from what it
+/// already holds: an offline machine still gets its worktree.
+///
+/// Bounded by `deadline`: an http `origin` gives up when it has moved no
+/// bytes for that long, and [`git`]'s default ssh (used when the user
+/// configured none) has a connect timeout and keepalives, so an `origin`
+/// that never answers cannot hold the make.
+fn fetch_upstream(checkout: &Path, deadline: std::time::Duration) {
+    let secs = deadline.as_secs().max(1).to_string();
+    let _ = git(
+        checkout,
+        &[
+            "-c",
+            "remote.origin.followRemoteHEAD=always",
+            "fetch",
+            "-q",
+            "origin",
+        ],
+        &[
+            ("GIT_HTTP_LOW_SPEED_LIMIT", "1"),
+            ("GIT_HTTP_LOW_SPEED_TIME", &secs),
+        ],
+    );
+}
+
 /// The commit a new branch starts from: the fragment, as a branch, a tag or
-/// a ref or commit as given, else the default branch. A checkout reads its
-/// own branches first, then its remote's; a source, its remote's first.
+/// a ref or commit as given, else the default branch (`origin/HEAD`, else
+/// `origin/main`, else `origin/master`). A checkout reads its own branches
+/// first, then its remote's; a source, its remote's first; `origin/<b>`
+/// is always the remote's.
 /// `named` is the directory a checkout's URL names: with no remote default,
 /// its HEAD is the start.
 fn resolve_base(
@@ -584,20 +621,27 @@ fn resolve_base(
 ) -> Result<String, String> {
     let is_checkout = named.is_some();
     let Some(base) = base else {
-        let default = verify(source, "refs/remotes/origin/HEAD");
+        let default = ["HEAD", "main", "master"]
+            .iter()
+            .find_map(|branch| verify(source, &format!("refs/remotes/origin/{branch}")));
         let default = default.or_else(|| named.and_then(|dir| verify(dir, "HEAD")));
         return default.ok_or_else(|| "the repository has no default branch".to_string());
     };
-    let (first, second) = (
-        format!("refs/remotes/origin/{base}"),
-        format!("refs/heads/{base}"),
-    );
-    let (first, second) = if is_checkout {
-        (second, first)
+    let remote = format!("refs/remotes/origin/{base}");
+    let local = format!("refs/heads/{base}");
+    let tag = format!("refs/tags/{base}");
+    let mut candidates = if is_checkout {
+        vec![local, tag, remote]
     } else {
-        (first, second)
+        vec![remote, tag, local]
     };
-    for candidate in [first, format!("refs/tags/{base}"), second, base.to_string()] {
+    // `origin/<b>` is the remote-tracking branch the new-session flow offers,
+    // ahead of a local branch or tag spelled the same.
+    if base.starts_with("origin/") {
+        candidates.insert(0, format!("refs/remotes/{base}"));
+    }
+    candidates.push(base.to_string());
+    for candidate in candidates {
         if let Some(commit) = verify(source, &candidate) {
             return Ok(commit);
         }
@@ -816,8 +860,20 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
         cmd.env_remove(var);
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
-        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    if reaches_remote(args) && !own_ssh_command(dir) {
+        cmd.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3",
+        );
+    }
+    // Every call that reaches a remote (a source's fetch, `set-head --auto`,
+    // a base fetched by name) gives up on an http remote that stalls, as
+    // the ssh default above gives up on an ssh one.
+    if std::env::var_os("GIT_HTTP_LOW_SPEED_TIME").is_none() {
+        cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", "1").env(
+            "GIT_HTTP_LOW_SPEED_TIME",
+            FETCH_DEADLINE.as_secs().to_string(),
+        );
     }
     for (k, v) in env {
         cmd.env(k, v);
@@ -836,6 +892,30 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
             String::from_utf8_lossy(&out.stderr).trim()
         ))
     }
+}
+
+/// Whether a call can reach a remote: the calls the default ssh command and
+/// its check in [`own_ssh_command`] are for.
+fn reaches_remote(args: &[&str]) -> bool {
+    args.iter()
+        .any(|arg| matches!(*arg, "fetch" | "set-head" | "clone" | "ls-remote"))
+}
+
+/// Whether the user configured how git runs ssh (`GIT_SSH_COMMAND`, `GIT_SSH`
+/// or `core.sshCommand` for `dir`): a wrapper, a key or a proxy git must keep,
+/// so the default ssh command is not set over it.
+fn own_ssh_command(dir: &Path) -> bool {
+    if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+        return true;
+    }
+    let mut cmd = Command::new("git");
+    for var in GIT_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+    cmd.current_dir(dir)
+        .args(["config", "--get", "core.sshCommand"])
+        .output()
+        .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
 }
 
 /// A key this program accepts: the runtime protocol's.
@@ -1003,6 +1083,68 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A checkout's own `core.sshCommand` is the one its fetch runs: the
+    /// default ssh options never replace it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fetch_keeps_the_checkouts_own_ssh_command() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).expect("mkdir");
+        git(&repo, &["init", "-q"], &[]).expect("init");
+        let marker = dir.path().join("used");
+        let wrapper = dir.path().join("ssh-wrapper");
+        fs::write(
+            &wrapper,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .expect("wrapper");
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("chmod");
+        git(
+            &repo,
+            &["remote", "add", "origin", "ssh://example.invalid/repo.git"],
+            &[],
+        )
+        .expect("origin");
+        git(
+            &repo,
+            &[
+                "config",
+                "core.sshCommand",
+                wrapper.to_str().expect("utf-8"),
+            ],
+            &[],
+        )
+        .expect("sshCommand");
+
+        fetch_upstream(&repo, std::time::Duration::from_secs(1));
+
+        assert!(marker.exists(), "the configured ssh command was not run");
+    }
+
+    /// An `origin` that accepts the connection and never answers costs the
+    /// make the deadline, not forever: the checkout's refs are used as they are.
+    #[test]
+    fn a_fetch_from_an_origin_that_never_answers_gives_up() {
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let dir = tempfile::tempdir().expect("tempdir");
+        git(dir.path(), &["init", "-q"], &[]).expect("init");
+        let url = format!("http://127.0.0.1:{port}/repo.git");
+        git(dir.path(), &["remote", "add", "origin", &url], &[]).expect("origin");
+
+        let started = std::time::Instant::now();
+        fetch_upstream(dir.path(), std::time::Duration::from_secs(1));
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "gave up after {:?}",
+            started.elapsed()
+        );
+        drop(silent);
+    }
 
     /// A URL spells a Windows path with a leading `/` and `/` separators.
     #[test]

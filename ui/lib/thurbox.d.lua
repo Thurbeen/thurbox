@@ -632,14 +632,15 @@
 ---@field path string
 ---@field branch? string Its branch; absent when its HEAD is detached.
 
---- A repository's local branches on this machine, served only while `store.want_branches` names it.
+--- A repository's branches on this machine, its `origin` fetched first, served only while `store.want_branches` names it.
 ---@class (exact) thurbox.RepoBranches
 ---@field repo string
 ---@field loading boolean
 ---@field is_git boolean False when the directory is no git repository.
 ---@field error? string Why a git repository's branches could not be read; its worktree choices stay offered.
----@field default? string The branch a new worktree starts from by default.
----@field names string[]
+---@field fetch_error? string Why fetching `origin` failed: the branches are the refs already there.
+---@field default? string The branch a new worktree starts from by default: the upstream's, `origin/<default>`, when there is an `origin`.
+---@field names string[] The local branches, then the `origin/*` ones.
 ---@field worktrees thurbox.ExistingWorktree[] The worktrees the repository already has besides its own checkout.
 
 ---@class (exact) thurbox.SystemMetrics

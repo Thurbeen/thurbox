@@ -180,7 +180,8 @@ extraCss: ['tutorial.css']
   A ticked repository runs as it is unless you press <kbd>Alt</kbd>+<kbd>W</kbd> on it: then it
   gets a <strong>git worktree of its own</strong> (<code>[wt]</code>), so the agent never works in
   your checkout. Two more steps follow: <strong>Base Branch</strong>, what the new branch starts
-  from (the default branch is under the cursor), and, after the name, <strong>Branch Name</strong>,
+  from (<code>origin</code> is fetched first, and the upstream's default branch,
+  <code>origin/main</code>, is under the cursor), and, after the name, <strong>Branch Name</strong>,
   prefilled from it. A branch that exists is checked out. Tick several repositories and the session
   spans them all, one worktree each on the same branch. No configuration is needed: the runtime
   makes each worktree from the repository's path.
