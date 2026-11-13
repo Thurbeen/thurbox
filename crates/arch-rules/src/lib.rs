@@ -708,6 +708,10 @@ impl CrateIndex {
                     idx.lib_doc = doc_text(&parsed.attrs);
                 }
                 idx.file_modules.insert(module.clone());
+                // `#![cfg(test)]`: the whole file is test code.
+                if parsed.attrs.iter().any(is_cfg_test) {
+                    idx.test_modules.insert(module.clone());
+                }
                 let mut walker = Walker {
                     idx: &mut idx,
                     module,
@@ -939,6 +943,15 @@ impl Walker<'_> {
         }
     }
 
+    /// Walk with `attrs` in force: what a `#[cfg(test)]` among them holds is
+    /// test code.
+    fn under_attrs(&mut self, attrs: &[syn::Attribute], walk: impl FnOnce(&mut Self)) {
+        let test = u32::from(attrs.iter().any(is_cfg_test));
+        self.tests += test;
+        walk(self);
+        self.tests -= test;
+    }
+
     fn scope(&mut self) -> &mut Scope {
         self.idx.modules.entry(self.module.clone()).or_default()
     }
@@ -1062,9 +1075,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     fn visit_item(&mut self, i: &'ast Item) {
         let test = item_attrs(i).iter().any(is_cfg_test);
         if test {
-            if let Item::Mod(m) = i
-                && m.content.is_none()
-            {
+            if let Item::Mod(m) = i {
                 let mut path = self.module.clone();
                 path.push(m.ident.to_string());
                 self.idx.test_modules.insert(path);
@@ -1100,11 +1111,50 @@ impl<'ast> Visit<'ast> for Walker<'_> {
         }
     }
 
-    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
-        let test = f.attrs.iter().any(is_cfg_test);
-        self.tests += u32::from(test);
-        visit::visit_impl_item_fn(self, f);
-        self.tests -= u32::from(test);
+    fn visit_impl_item(&mut self, i: &'ast syn::ImplItem) {
+        let attrs: &[syn::Attribute] = match i {
+            syn::ImplItem::Const(x) => &x.attrs,
+            syn::ImplItem::Fn(x) => &x.attrs,
+            syn::ImplItem::Type(x) => &x.attrs,
+            syn::ImplItem::Macro(x) => &x.attrs,
+            _ => &[],
+        };
+        self.under_attrs(attrs, |w| visit::visit_impl_item(w, i));
+    }
+
+    fn visit_trait_item(&mut self, i: &'ast syn::TraitItem) {
+        let attrs: &[syn::Attribute] = match i {
+            syn::TraitItem::Const(x) => &x.attrs,
+            syn::TraitItem::Fn(x) => &x.attrs,
+            syn::TraitItem::Type(x) => &x.attrs,
+            syn::TraitItem::Macro(x) => &x.attrs,
+            _ => &[],
+        };
+        self.under_attrs(attrs, |w| visit::visit_trait_item(w, i));
+    }
+
+    fn visit_local(&mut self, l: &'ast syn::Local) {
+        self.under_attrs(&l.attrs, |w| visit::visit_local(w, l));
+    }
+
+    fn visit_stmt_macro(&mut self, m: &'ast syn::StmtMacro) {
+        self.under_attrs(&m.attrs, |w| visit::visit_stmt_macro(w, m));
+    }
+
+    fn visit_expr(&mut self, e: &'ast syn::Expr) {
+        self.under_attrs(expr_attrs(e), |w| visit::visit_expr(w, e));
+    }
+
+    fn visit_arm(&mut self, a: &'ast syn::Arm) {
+        self.under_attrs(&a.attrs, |w| visit::visit_arm(w, a));
+    }
+
+    fn visit_field(&mut self, f: &'ast syn::Field) {
+        self.under_attrs(&f.attrs, |w| visit::visit_field(w, f));
+    }
+
+    fn visit_variant(&mut self, v: &'ast syn::Variant) {
+        self.under_attrs(&v.attrs, |w| visit::visit_variant(w, v));
     }
 
     fn visit_path(&mut self, p: &'ast syn::Path) {
@@ -1561,6 +1611,53 @@ fn item_attrs(i: &Item) -> &[syn::Attribute] {
     }
 }
 
+/// The attributes of an expression.
+fn expr_attrs(e: &syn::Expr) -> &[syn::Attribute] {
+    use syn::Expr as E;
+    match e {
+        E::Array(x) => &x.attrs,
+        E::Assign(x) => &x.attrs,
+        E::Async(x) => &x.attrs,
+        E::Await(x) => &x.attrs,
+        E::Binary(x) => &x.attrs,
+        E::Block(x) => &x.attrs,
+        E::Break(x) => &x.attrs,
+        E::Call(x) => &x.attrs,
+        E::Cast(x) => &x.attrs,
+        E::Closure(x) => &x.attrs,
+        E::Const(x) => &x.attrs,
+        E::Continue(x) => &x.attrs,
+        E::Field(x) => &x.attrs,
+        E::ForLoop(x) => &x.attrs,
+        E::Group(x) => &x.attrs,
+        E::If(x) => &x.attrs,
+        E::Index(x) => &x.attrs,
+        E::Infer(x) => &x.attrs,
+        E::Let(x) => &x.attrs,
+        E::Lit(x) => &x.attrs,
+        E::Loop(x) => &x.attrs,
+        E::Macro(x) => &x.attrs,
+        E::Match(x) => &x.attrs,
+        E::MethodCall(x) => &x.attrs,
+        E::Paren(x) => &x.attrs,
+        E::Path(x) => &x.attrs,
+        E::Range(x) => &x.attrs,
+        E::RawAddr(x) => &x.attrs,
+        E::Reference(x) => &x.attrs,
+        E::Repeat(x) => &x.attrs,
+        E::Return(x) => &x.attrs,
+        E::Struct(x) => &x.attrs,
+        E::Try(x) => &x.attrs,
+        E::TryBlock(x) => &x.attrs,
+        E::Tuple(x) => &x.attrs,
+        E::Unary(x) => &x.attrs,
+        E::Unsafe(x) => &x.attrs,
+        E::While(x) => &x.attrs,
+        E::Yield(x) => &x.attrs,
+        _ => &[],
+    }
+}
+
 /// Whether an attribute is a `cfg` only ever true under test: `test`, or an
 /// `all(..)` with `test` among its operands. `any(windows, test)` builds into
 /// a Windows release and `not(test)` into every release, so neither is.
@@ -1902,6 +1999,22 @@ impl<'r> ModuleGraph<'r> {
             .iter()
             .map(|g| g.split("::").map(str::to_string).collect())
             .collect();
+        // Every top-level module, inline ones included, needs a rule.
+        for module in idx.modules.keys() {
+            let test = (0..=module.len()).any(|n| idx.test_modules.contains(&module[..n]));
+            if let [top] = without_target(module)
+                && !test
+                && !self.nodes.contains_key(without_target(module))
+                && !rule.exempt.contains(top)
+            {
+                v.push(violation(
+                    "module-ungoverned",
+                    &idx.name,
+                    "architecture.toml",
+                    format!("{} has no module rule", module_label(module)),
+                ));
+            }
+        }
         for file in &idx.file_modules {
             let test = (0..=file.len()).any(|n| idx.test_modules.contains(&file[..n]));
             let module = without_target(file);

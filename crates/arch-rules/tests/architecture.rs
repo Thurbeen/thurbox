@@ -2117,6 +2117,105 @@ fn module_rules_allow_no_cycle_and_no_unused_grant() {
     );
 }
 
+/// A top-level inline module needs a rule as a file module does; an inline
+/// `#[cfg(test)]` one is test code of the root that declares it.
+#[test]
+fn an_inline_module_is_governed_too() {
+    modules(
+        "modules-inline",
+        &[(
+            "crates/fx-mod/src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\npub mod extra { pub fn e() { crate::b::b(); } }\n",
+        )],
+        &[("module-ungoverned", "fx-mod")],
+    );
+    modules(
+        "modules-inline-test",
+        &[(
+            "crates/fx-mod/src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\n#[cfg(test)]\nmod tests { fn t() { crate::b::b(); } }\n",
+        )],
+        &[],
+    );
+}
+
+/// Every place `#[cfg(test)]` can stand marks test code, and so does
+/// `cfg(all(.., test))`: an associated constant or method, a trait constant, a
+/// `let`, a statement, a statement macro, a match arm, a field, a variant, and
+/// a whole file by its inner attribute.
+/// A grant only such code uses is unused.
+#[test]
+fn test_code_anywhere_keeps_no_grant_in_use() {
+    let unused = [("module-unused", "fx-mod")];
+    for (case, a, extra) in [
+        (
+            "test-assoc-const",
+            "pub struct A;\nimpl A {\n    #[cfg(test)]\n    const CHECK: fn() = crate::b::b;\n}\npub fn a() {}\n",
+            None,
+        ),
+        (
+            "test-let",
+            "pub fn a() {\n    #[cfg(test)]\n    let _ = crate::b::b;\n}\n",
+            None,
+        ),
+        (
+            "test-stmt",
+            "pub fn a() {\n    #[cfg(test)]\n    crate::b::b();\n}\n",
+            None,
+        ),
+        (
+            "test-file-attr",
+            "pub fn a() {}\nmod helper;\n",
+            Some((
+                "crates/fx-mod/src/a/helper.rs",
+                "#![cfg(test)]\nfn t() { crate::b::b(); }\n",
+            )),
+        ),
+        (
+            "test-impl-fn",
+            "pub struct A;\nimpl A {\n    #[cfg(test)]\n    fn t() { crate::b::b(); }\n}\npub fn a() {}\n",
+            None,
+        ),
+        (
+            "test-cfg-all",
+            "pub fn a() {}\n#[cfg(all(unix, test))]\nfn t() { crate::b::b(); }\n",
+            None,
+        ),
+        (
+            "test-trait-item",
+            "pub trait T {\n    #[cfg(test)]\n    const CHECK: fn() = crate::b::b;\n}\npub fn a() {}\n",
+            None,
+        ),
+        (
+            "test-arm",
+            "pub fn a(x: u8) {\n    match x {\n        #[cfg(test)]\n        0 => crate::b::b(),\n        _ => {}\n    }\n}\n",
+            None,
+        ),
+        (
+            "test-stmt-macro",
+            "pub fn a() {\n    #[cfg(test)]\n    assert!(crate::b::b() == ());\n}\n",
+            None,
+        ),
+        (
+            "test-field",
+            "pub struct A {\n    #[cfg(test)]\n    pub f: crate::b::B,\n}\npub fn a() {}\n",
+            Some(("crates/fx-mod/src/b.rs", "pub fn b() {}\npub struct B;\n")),
+        ),
+        (
+            "test-variant",
+            "pub enum A {\n    #[cfg(test)]\n    V = crate::b::N,\n}\npub fn a() {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub const N: isize = 0;\n",
+            )),
+        ),
+    ] {
+        let mut changes = vec![("crates/fx-mod/src/a.rs", a)];
+        changes.extend(extra);
+        modules(case, &changes, &unused);
+    }
+}
+
 /// A dependency inherited from `[workspace.dependencies]` under another name
 /// is still the workspace crate it names: `mux.workspace = true`, where the
 /// root declares `mux = { package = "fx-store" }`, is an edge to fx-store.
