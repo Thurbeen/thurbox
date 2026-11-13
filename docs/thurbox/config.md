@@ -5,12 +5,6 @@ per audience/lifecycle: hand-edited registries are TOML, and what the
 interface writes for itself is JSON. thurbox keeps no database: every
 session is a Fleet Task ([`[fleet]`](#fleet--the-session-engine)).
 
-`ui/plugins.toml` and `ui/plugins.lock` are the one pair that share a
-format and split on lifecycle instead: the spec is composition you
-maintain, the lock is a record nothing hand-edits. It is the same split
-`.bundled.json` and `ui.json` already make, and the reason is the same —
-a merge conflict in the record must not dirty the half a person wrote.
-
 Dev builds (version `0.0.0-dev`) use `thurbox-dev` in place of
 `thurbox` in every path below, plus a `thurbox-dev` tmux socket, so a
 development checkout never touches your real setup.
@@ -27,7 +21,6 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli plugin` | on each `plugin` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
 | `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugin settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring plugin chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
 | `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. One that exists but cannot be read or parsed is never replaced, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
-| `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. Not read: rebindings live in `ui.json` |
 | `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order, the companion shell) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens, the manual session order and one record per companion shell (its multiplexer's route, its pane, its window's stamp). Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
@@ -61,7 +54,7 @@ via the live mtime poll.
 
 Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
 `ui.json`, `plugin-state.json` (and the other seeded config files),
-the keybindings JSON, the interface's plugin
+the interface's plugin
 lock, spec and bundled files — is written through
 one writer, `paths::write_atomically`. It stages a complete file beside the
 destination and replaces it with one native same-directory rename, so a reader
@@ -113,16 +106,14 @@ fall back to built-in defaults.
 Config problems are **not silent**: parse errors, unknown fields,
 invalid chords, and chord conflicts surface as a status-bar toast on
 startup (and in the log file). Unknown TOML keys are tolerated —
-stale keys from older versions or typos are *reported by name* but
+a stale key or a typo is *reported by name* but
 your file still loads — while syntax/type errors fall back to
 zero hosts, or defaults (settings).
 
 ## Agents
 
-thurbox keeps no agent registry and reads no `agents.toml`: the agents a
-session can run are the harnesses Fleet has profiles for, and Fleet launches,
-resumes and watches them ([agents.md](agents.md)). An `agents.toml` left from
-thurbox 2.x is not read.
+The agents a session can run are the harnesses Fleet has profiles for, and
+Fleet launches, resumes and watches them ([agents.md](agents.md)).
 
 ### What happens when it is *not* installed
 
@@ -155,7 +146,6 @@ configured hosts, error shown.
 | `ssh_opts` | no | `[]` | extra ssh flags, one token per element (ssh only) |
 | `socket` | no | `thurbox` | host `tmux -L` socket name. The socket file lives under the host's thurbox data dir, `~/.local/share/thurbox/tmux/tmux-<uid>/<socket>` — see [Where the tmux socket lives](#where-the-tmux-socket-lives) |
 | `session` | no | `thurbox` | host tmux session name |
-| `worktrees_dir` | no | — | accepted and has no effect since 3.0: Fleet makes worktrees on this machine only |
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
 | `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands and the panes they open on a POSIX host — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
@@ -201,8 +191,8 @@ semantics — PowerShell, `%USERPROFILE%` and no `/bin/sh` on Windows; `sh -c`,
 thurbox driving a WSL distro pins `/bin/sh` there, and a Windows host on a
 multiplexer other than psmux still gets PowerShell.
 
-An entry that does not set `platform` keeps the meaning it always had:
-`multiplexer = "psmux"` is Windows, anything else POSIX. A WSL distro is POSIX
+An entry that does not set `platform` is Windows when `multiplexer =
+"psmux"`, and POSIX otherwise. A WSL distro is POSIX
 whatever its entry says. What a multiplexer can do is not the platform's to
 say either: whether thurbox polls a backend for dead panes is whether that
 multiplexer reports a closed window (tmux does; psmux and RMUX need polling).
@@ -211,11 +201,9 @@ multiplexer reports a closed window (tmux does; psmux and RMUX need polling).
 
 A Fleet session's terminal is its runtime's: `runtime-mux` starts it on this
 platform's default multiplexer (`tmux` on POSIX, `psmux` on native Windows).
-Nothing in thurbox chooses another one for a session. The top-level
-`multiplexer` key in `settings.toml` is accepted and ignored since 3.0, with a
-notice at load. A `hosts.toml` entry's `multiplexer` names that host's
-preference for the companion shell (`Ctrl+T`) opened there.
-Names are `tmux`, `psmux`, `rmux`, and `herdr`.
+Nothing in thurbox chooses another one for a session. A `hosts.toml` entry's
+`multiplexer` names that host's preference for the companion shell (`Ctrl+T`)
+opened there. Names are `tmux`, `psmux`, `rmux`, and `herdr`.
 
 The resolved choice is a session's **route**. One parser (`session::Route`)
 reads it, and every route names its multiplexer:
@@ -280,43 +268,21 @@ thurbox will use it; an old binary only needs replacing. RMUX
 checks its `rmux -V` banner instead: its `#{version}` is the tmux
 compatibility version, not the RMUX release.
 
-Recorded integration evidence is tmux 3.2/3.2a and 3.5a/3.7c (ADR-12),
-psmux 3.3.8 on Windows 11
-([runtime-mux](../runtime/runtime-mux.md#psmux-338-is-the-floor)), and RMUX 0.10.0 on Linux
-([#1322](https://github.com/Thurbeen/thurbox/pull/1322)). This is historical
-evidence, not a claim that every platform was retested for this doc change.
-The latest upstream stable releases checked on 2026-10-03 were tmux 3.7c,
-psmux 3.3.8, and RMUX 0.10.0; psmux 3.4.0 followed on 2026-10-13, and v2's
-pane-routing probe passed against 3.3.8 and 3.4.0 on Windows 11.
-
 RMUX is a Rust terminal multiplexer with a tmux-compatible command interface.
-It is opt-in and never changes the platform defaults. Install it separately
-on the machine running the sessions, following its
+It never changes the platform defaults: a host's `multiplexer = "rmux"` opens
+that host's companion shells on it. Install it separately on that machine,
+following its
 [installation guide](https://github.com/Helvesec/rmux/tree/v0.10.0#installation).
 For example, `cargo install rmux --locked` installs the latest published
 crate; check `rmux -V` afterwards. Release archives need their complete
 package layout: on Unix run the archive's `./install.sh --prefix ~/.local`,
 and keep its `bin/` and `libexec/`; do not copy just the executable.
 
-Since 3.0 no setting starts a session on RMUX: `runtime-mux` starts every
-session on the platform default (see *Multiplexer choice and existing
-sessions*). The top-level `multiplexer = "rmux"` that 2.x read from
-`settings.toml` is accepted and ignored.
-
-| RMUX placement | Thurbox integration evidence |
-| --- | --- |
-| Local Linux | Live creation, TUI attachment, input and pane-deletion/relaunch ([#1322](https://github.com/Thurbeen/thurbox/pull/1322)) |
-| Local macOS | Upstream ships macOS binaries; thurbox integration unverified |
-| SSH host | Adapter and route construction covered; real-host execution unverified |
-| WSL distro | Picker and route construction covered; distro execution unverified |
-| Native Windows | Upstream ships Windows binaries; thurbox integration unverified, so keep the psmux default |
-
 RMUX 0.10.0 rejects `pause-after`, `refresh-client -A`, and subscriptions
 (`refresh-client -B`). Thurbox omits those commands, uses one reply block for
 command lists, and polls pane liveness and remote hook options. Output buffering
 therefore relies on RMUX rather than tmux's pause/resume mechanism. See
-[ADR-31](architecture.md#adr-31-tmux-and-psmux-are-peer-adapters-over-one-tmux-protocol-server)
-and [#1320](https://github.com/Thurbeen/thurbox/pull/1320).
+[ADR-31](architecture.md#adr-31-tmux-and-psmux-are-peer-adapters-over-one-tmux-protocol-server).
 
 If RMUX is not found, check `rmux -V` in the environment that launches
 thurbox. For a host, check it on that host or inside the WSL
@@ -336,12 +302,6 @@ are read this way, and what it costs, is ADR-28 in `docs/thurbox/architecture.md
 > whatever plugins declared, `⟳` marks the ones that wait for the next
 > launch, and `Ctrl+S` saves — written back through `toml_edit`, so the
 > comments below survive.
->
-> Four flags gate nothing: `code_review`, `file_viewer`, `info_panel` and
-> `tasks`. They are accepted and preserved untouched so an existing file does
-> not fail `thurbox-cli config validate`, and not listed in the panel, since a
-> row that gates nothing reads as broken. `automations` switches the
-> interface's own automation ticks.
 
 Scalar tuning knobs plus the `[features]` switches, seeded fully
 commented-out (defaults apply when absent). Only knobs a user plausibly
@@ -354,9 +314,8 @@ all commented so defaults still apply out of the box.
 |-----|---------|---------|
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
-| `stream_panes` | `false` | open each local tmux session's pane through `runtime-mux view`, a [terminal stream](../runtime/README.md#the-terminal-stream), instead of thurbox's own control-mode connection; restart to apply. A stream pane keeps its grid while hidden, so `hidden_terminal_secs` does not apply. Off until it measures as fast as control mode ([performance](performance.md)) |
+| `stream_panes` | `false` | open each local tmux session's pane through `runtime-mux view`, a [terminal stream](../runtime/README.md#the-terminal-stream), instead of thurbox's own control-mode connection; restart to apply. A stream pane keeps its grid while hidden, so `hidden_terminal_secs` does not apply |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
-| `three_panel_min_cols` | `120` | accepted and ignored (v1's third column) |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
 | `[fleet] program` | `fleet` | the Fleet that runs every session; see [`[fleet]`](#fleet--the-session-engine) |
 
@@ -371,7 +330,6 @@ scrollback_lines      = 1000   # terminal scrollback kept per session
 hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
 stream_panes          = false  # local tmux panes through runtime-mux view, a terminal stream
 two_panel_min_cols    = 80     # width below which only the terminal renders
-three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
@@ -384,7 +342,7 @@ version_check = true           # on by default (1.0): makes a network call
 auto_update   = true           # on by default (1.0): downloads + replaces binaries
 
 [notifications]
-also_on_waiting     = false    # also fire when a session finishes (Working → Done)
+also_on_waiting     = false    # accepted; no Fleet session reports done
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
@@ -459,8 +417,8 @@ startup, so a change applies on the next launch.
 ### `[features]` — whole-feature switches
 
 Switch off behaviour that reaches outside the interface. All default to
-`true` — as of 1.0 that includes `version_check` and `auto_update`, which
-both reach the network (they were opt-in before 1.0). `shell_pane`,
+`true`, `version_check` and `auto_update` included, which both reach the
+network. `shell_pane`,
 and `perf_hud` apply **live** on save; `automations`,
 `mouse`, `notifications`, `version_check` and `auto_update` take effect on
 the next launch. Data is never touched, so re-enabling a flag is lossless.
@@ -470,15 +428,13 @@ is `space` on its row in the Interface tab (`Ctrl+,` then `]`), recorded
 in `plugin-state.json`. That does strictly more than a flag could: it works for a
 plugin *you* wrote, which no compiled-in flag could know about.
 
-Five keys are **accepted and ignored**: `tasks`, `file_viewer`,
-`info_panel`, `code_review` and `global_search`. Nothing reads them. The
-plugins that give `code_review` and `info_panel`
+`file_viewer`, `info_panel`, `code_review` and `global_search` gate
+nothing, and neither does the top-level `three_panel_min_cols`: they are
+parsed so a file that sets them still loads. The panes for code review and
+the info panel are plugins
 ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review),
-[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel))
-are switched on and off from the Interface tab like any other pane.
-They are still parsed rather than rejected, so an existing `settings.toml`
-keeps loading instead of failing on an unknown key. Same for
-`three_panel_min_cols` above.
+[`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)),
+switched on and off from the Interface tab like any other pane.
 
 | Key | Default | Controls |
 |-----|---------|----------|
@@ -515,20 +471,7 @@ ssh hosts included, with the 30 s wait between attempts. A session still busy
 when it is deleted waits to be at rest first, and can pass the mark that way.
 A delete that Fleet refuses keeps the row, and the message band says why.
 
-### Keys 3.0 no longer reads
-
-A `settings.toml` written for 2.x keeps loading. Each key below is named on
-startup as no longer read, and `thurbox-cli config validate` passes the file:
-
-| Key | Why |
-|-----|-----|
-| `multiplexer` | Fleet's runtime runs every session's terminal |
-| `[remote]` (`transitive_sessions`) | thurbox lists no sessions through other hosts |
-| `[features] soft_delete` | Fleet deletes a session at once |
-| `[telemetry] configure_agents` | Fleet's harness profiles configure the agents |
-| `[telemetry] export_thurbox_metrics`, `export_session_events`, `per_session` | thurbox exports no session metrics or events |
-
-`version_check` (on by default for 1.0) enables the update check — it
+`version_check` enables the update check — it
 makes a network call. On launch the TUI reads a cached result
 (`~/.local/share/thurbox/version-check.json`) and, if it is older than
 24 h, fires a single best-effort background fetch of GitHub's release list
@@ -543,11 +486,11 @@ current vs. latest, plus any newer major with a link to the migration notes
 (`thurbox-cli version` with no flag always prints the current version,
 regardless of the flag).
 
-`auto_update` (on by default for 1.0) goes a step further than
+`auto_update` goes a step further than
 `version_check`: instead of just showing a badge, the TUI **silently
 updates itself** on startup. On every
-launch (it does **not** reuse the `version_check` badge's 24 h cache — sharing
-that gate let the badge keep the cache "fresh" and starve the updater) it
+launch (it does **not** reuse the `version_check` badge's 24 h cache, which
+the badge keeps fresh) it
 fetches the release list; if a newer release exists on the same major line it
 downloads that
 release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
@@ -587,16 +530,12 @@ fails with an error saying it may be partial. Re-running `install.ps1` over a
 running thurbox works the same way: it renames each installed binary to `.<name>.old` rather
 than deleting it, and names the process to close when even that is refused.
 
-**Auto-update never crosses a major version.** A 2.x install only ever looks at
-2.x releases: it keeps updating along 2.x — including a 2.x maintenance release
-cut after 3.0.0, which GitHub does not mark "Latest" and so is found in the
-release list rather than at `releases/latest` — and is never moved onto 3.x.
-`thurbox-cli version --check` and `thurbox-cli update` say a newer major exists
-and link the migration notes; the header badge only offers the same line. This
-is not conservatism about version numbers — 2.x replaced v1's compiled-in
-interface with the Lua plugin kernel, and 3.x replaces its engine, so a silent
-crossing would hand someone a different program under the same binary name.
-**No flag crosses**, `--force` included: moving to a new major is a reinstall
+**Auto-update never crosses a major version.** An install only ever looks at
+releases on its own major line, maintenance releases GitHub does not mark
+"Latest" included. `thurbox-cli version --check` and `thurbox-cli update` say a
+newer major exists and link the migration notes; the header badge only offers
+the same line. A new major can be a different program under the same binary
+name. **No flag crosses**, `--force` included: moving to a new major is a reinstall
 (`scripts/install.sh` or the new major's package). The line is
 `update::version_check::RELEASE_LINE`, and the release workflow refuses to cut a
 version off it — `docs/thurbox/releasing.md`, "v2 and v3".
@@ -616,7 +555,7 @@ database:
 | The interface | Fleet's command |
 | --- | --- |
 | reads the sessions | `fleet watch --json`: each Task is a session row named as the Task |
-| creates a session | `fleet apply`: an interactive Task (no brief, dispatched) over the chosen directory, with the chosen agent as its harness and the chosen host |
+| creates a session | `fleet apply`: an interactive Task (no brief, dispatched) over the chosen repositories, with the chosen agent as its harness and the chosen host |
 | sends to a session | `fleet send` |
 | deletes a session | `fleet delete task`; Fleet has no undo window |
 | shows a session's terminal | `fleet attach --json`: the stream it names, as a stream pane |
@@ -645,25 +584,25 @@ database:
   `Review`) is refused, and the Task already there is left as it was: the
   create is `fleet apply --create-only`, whose exclusive create gives two
   interfaces racing for one name one Task and one refusal.
-- The creation flow asks for what a Task takes: the host, the repository
-  directory, the name and the agent. Fleet makes the Task's workspace, so
-  there is no branch, base or worktree to choose. A confirmed delete is
-  checked against the Task as it is then.
+- The creation flow asks for what a Task takes: the host, the repositories,
+  a base branch and a branch name when a repository gets a worktree, the
+  name and the agent. A worktree is the URL
+  `git+file://<repo>?branch=<branch>#<base>`, and the runtime makes it; a
+  repository without one is `file://<repo>`. A confirmed delete is checked
+  against the Task as it is then.
 - The host picker's route names the Fleet host: `ssh:devbox` is `devbox`,
   this machine is `local`. A host Fleet's config does not define
   (`fleet runtime hosts`) is refused.
 - The chosen agent is the Task's harness, and only an agent Fleet has a
-  harness profile for (`fleet version --json`'s `harnesses`: the bundled
-  `claude`, `claude-code` and `codex`, and each user profile) is taken. Any
+  harness profile for (`fleet version --json`'s `harnesses`: the
+  [bundled ones](agents.md) and each user profile) is taken. Any
   other, `shell` included, is refused by name: Fleet would run a program
   named as the agent.
 - A rename sets the Task's `thurbox.dev/name` label (`fleet label`). The
   manual order and each session's companion shell pane are `interface.json`.
   A saved shell is re-adopted on the multiplexer it was opened on; a host's
   `multiplexer` in `hosts.toml` applies to the shells opened after it.
-- There is no restore, restart, fork, sync, task list or task dispatch: Fleet
-  runs none of them, and the interface no longer offers them. Fleet revives a
-  session whose terminal is lost. An automation is `thurbox-cli automation`'s,
+- Fleet revives a session whose terminal is lost. An automation is `thurbox-cli automation`'s,
   in `automations.json`. A todo is a Fleet Task that is not dispatched
   (`fleet apply`). Settings are `settings.toml`; the
   repositories and folders the creation flow remembers are `bookmarks.json`.
@@ -713,8 +652,7 @@ headers = {}                 # e.g. { authorization = "Bearer …" }
 export_diagnostic_logs = false
 ```
 
-The agents' own telemetry is Fleet's to configure. The keys thurbox 2.x read
-for it are listed under [Keys 3.0 no longer reads](#keys-30-no-longer-reads).
+The agents' own telemetry is Fleet's to configure.
 
 #### thurbox's own diagnostic logs
 
@@ -776,7 +714,7 @@ thurbox-cli notify --test   # fire a sample notification to confirm it works
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `also_on_waiting` | `false` | also fire when a session finishes (`Working → Done`); the field name is historical |
+| `also_on_waiting` | `false` | also fire when a session finishes. A Fleet session never reports done, so this fires nothing |
 | `suppress_for_active` | `true` | skip the notification for the session you're currently viewing |
 | `sound` | `true` | play the OS default notification sound |
 | `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
@@ -838,9 +776,7 @@ first match wins:
 | anything else, or absent | unreported |
 
 thurbox installs no hooks into an agent's own config: Fleet's
-[harness profiles](../fleet/controllers/task.md#harness-profiles) do. To delete the hook
-entries an earlier thurbox wrote there, see
-[Removing old hook entries](https://thurbox.thurbeen.eu/docs/extensions.html).
+[harness profiles](../fleet/controllers/task.md#harness-profiles) do.
 
 The status colours are tunable theme keys (`status_working` /
 `status_blocked` / `status_done` / `status_idle` / `status_unreachable` /
@@ -879,10 +815,9 @@ overridable key — including the code-review diff colours `diff_added` /
 collisions degrade to startup warnings (the base colour / the built-in stays in
 effect).
 
-## keybindings.json
+## Key bindings
 
-v1's chord overrides (`{ "QuitApp": ["ctrl+a"] }`). thurbox does not read
-it: rebindings live in `ui.json`'s `bindings` (action id → one chord), which
+Rebindings live in `ui.json`'s `bindings` (action id → one chord), which
 `thurbox-cli config validate` checks.
 
 - Preferred editing path is the **F1 panel** (live capture, conflict
@@ -923,9 +858,11 @@ User-set (read by thurbox):
 | `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `interface.json` names none |
 | `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`). For a remote/WSL session the pane uses the **host's** `$SHELL` as an interactive login shell (the SSH-login environment), not the local one. |
 | `RUST_LOG` | log filter for `thurbox.log` |
-| `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/thurbox/performance.md`. |
+| `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/thurbox/performance.md`. |
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
 | `TMUX_TMPDIR` | tmux's own: the directory its `tmux-<uid>/<socket>` goes under. When set, thurbox leaves it alone (test and sandbox tooling scope their servers with it); unset, thurbox sets it to `<data dir>/tmux` for every tmux command it runs — see [Where the tmux socket lives](#where-the-tmux-socket-lives). Empty = unset. |
+| `THURBOX_CONFIG_DIR`, `THURBOX_DATA_DIR` | move thurbox's config and data dirs — see [Relocating an instance](#relocating-an-instance-thurbox_data_dir) |
+| `THURBOX_UI_DIR` | the interface directory to load instead of `<config dir>/ui`, e.g. a checkout's `ui/` ([plugins.md](plugins.md)) |
 | `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
 | `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside. That distro is *this machine*, so it is never offered as a host and a `hosts.toml` entry pointing at it is ignored — see [hosts.toml](#hoststoml) |
 

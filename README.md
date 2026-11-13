@@ -12,14 +12,15 @@
 
 ![Thurbox Demo](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-demo.gif)
 
-- **Several coding agents at once**, side by side in one terminal — Claude Code and Codex
-  today, and any agent Fleet gains a harness profile for.
+- **Several coding agents at once**, side by side in one terminal — Claude Code, Codex, pi,
+  opencode, kilo, omp, Qwen Code, Copilot CLI and Kimi Code, and any agent Fleet gains a
+  harness profile for.
 - **A persistent multiplexer session behind every agent** — they survive crashes, restarts
   and reboots, so quit thurbox and every agent keeps working.
 - **Agents on other machines too** — a session on another Fleet host sits in the same
   list under its own host, beside the ones running here.
-- **A worktree per session** — Fleet gives each session on this machine a git worktree of its
-  own, so agents never fight over your checkout. The repository is mapped once in Fleet's config.
+- **A worktree per session** — a session on this machine can run in a git worktree of its
+  own (`Alt+W` in the new-session flow), so agents never fight over your checkout.
 - **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
   model, prompts or tools, so new agent features arrive the day that CLI ships them.
 - **An interface that is not compiled in** — every pane, the session list included, is a Lua
@@ -44,12 +45,9 @@ That installs both binaries — `thurbox` (the TUI) and `thurbox-cli` (the
 headless one) — with checksum verification and platform auto-detection.
 
 You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) ≥ 3.3.8
-on native Windows), **git**, and at least one coding-agent CLI.
-[RMUX](https://github.com/Helvesec/rmux) **≥ 0.10.0** is an opt-in alternative,
-tested with thurbox on Linux. Install it separately, then select **RMUX**
-after tmux in the new-session picker (**Ctrl+N**); it appears locally when
-`rmux` is on `PATH`. See [multiplexer requirements and setup](docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup)
-for verified versions, config defaults, host support, and limits.
+on native Windows), **git**, `fleet` and `runtime-mux` on `PATH`, and at least one
+coding-agent CLI. See [multiplexer requirements](docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup)
+for verified versions and host support.
 
 **Nix / NixOS:**
 
@@ -81,9 +79,9 @@ First launch seeds `~/.config/thurbox/` — the themes and the interface itself 
 and starts Fleet, which runs every session. It then draws a session list on the left and an agent
 terminal on the right.
 
-1. **`Ctrl+N`** opens the new-session flow. Pick a repository, name the
-   session, then pick an agent from the harnesses Fleet offers. Fleet gives the
-   session a worktree of its own.
+1. **`Ctrl+N`** opens the new-session flow. Pick a host and a repository, a base
+   branch, a name and a branch, then an agent from the harnesses Fleet offers. Each
+   repository can get a worktree of its own.
 2. **Talk to it.** The right pane is a live agent CLI; every key goes to it.
 3. **`Ctrl+N` again** for a second agent, on the same repository or another. `Ctrl+J` / `Ctrl+K`
    move between sessions — the one you are not looking at keeps working.

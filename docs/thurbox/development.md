@@ -205,26 +205,17 @@ PTY measurements.
 
 ### CI cache scope and test scheduling
 
-A cache saved by a `pull_request` run is scoped to that PR's merge ref. No
-other PR can restore it, and before the change below there was no cache on
-`main` at all, so every PR's first run built its dependencies from scratch.
-Over the 39 successful runs from 1 to 5 November 2026, 22 Nextest jobs and 19
-Windows test jobs started with no cache. The median build took 8.7 min cold
-against 3.8 min warm for Nextest, and 13.9 min against 6.9 min for the Windows
-tests. CI now also runs on push
-to `main`, which is the only scope every PR can read, and only `main` saves the
-Rust caches. Pull-request saves could not be shared, and they kept the
+A cache saved by a `pull_request` run is scoped to that PR's merge ref, so no
+other PR can restore it. CI also runs on push to `main`, which is the only
+scope every PR can read, and only `main` saves the Rust caches. A cold build
+takes about twice as long as a warm one, and pull-request saves would keep the
 repository over its 10 GB cache quota.
 
-The CI nextest profile gives two binaries a priority. `tui_e2e` runs on one
-thread (the `e2e-pty` group), so its roughly 370 s of tests form the longest
-chain in the run. Before the priority it started only after the rest of the
-suite, and finished as a single-threaded tail: a 510 s test phase for 934
-test-seconds on four cores. `host_probe_deadline` takes about 135 s on Windows,
-and that run used to finish by waiting on it alone. With the priorities both
-start first. On four threads locally, the full suite went from 545 s to
-384–402 s over three runs, without changing which tests run, their group or
-their timeouts.
+The CI nextest profile gives two binaries a priority, so both start first.
+`tui_e2e` runs on one thread (the `e2e-pty` group), so its roughly 370 s of
+tests form the longest chain in the run; started last, it would finish as a
+single-threaded tail. `host_probe_deadline` takes about 135 s on Windows, and
+the run would otherwise end waiting on it alone.
 
 ### Which tests a change runs
 
@@ -294,9 +285,9 @@ The sandbox runs the dev build (`0.0.0-dev` → `dev_build` cfg, which uses a
 `thurbox-dev` tmux socket) with **thurbox's own config/data redirected** into the
 sandbox (via `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`), so it never touches your
 real `~/.config/thurbox` or sessions. It **keeps your real `HOME`**, so your
-authenticated agent CLIs (`claude`/`codex`/`antigravity`/…) work normally — and it puts
-the dev `target/debug` first on `PATH`, so an agent's status hook calls *this*
-`thurbox-cli` and writes to the sandbox DB the TUI reads. The tmux socket is
+authenticated agent CLIs work normally — and it puts the dev `target/debug`
+first on `PATH`, so `fleet` and `runtime-mux` are this checkout's, and the
+sandbox gets a Fleet of its own. The tmux socket is
 scoped twice over: a private `TMUX_TMPDIR`, and `THURBOX_SOCKET` naming the
 server outright — a relocated `THURBOX_DATA_DIR` derives a socket of its own
 (`docs/thurbox/config.md` → Relocating an instance), and teardown kills the socket by
@@ -310,7 +301,7 @@ scripts/dev/sandbox.sh --isolate-home  # full hermetic isolation (fresh HOME; ag
 scripts/dev/sandbox.sh --demo          # seed a demo repo + sessions (scripts/dev/demo-repo.sh), then launch
 scripts/dev/sandbox.sh --demo-big      # …and a 400-file repo whose diff is past the 4 MiB cap
 scripts/dev/sandbox.sh --shell         # a shell with the sandbox env (run thurbox-cli by hand)
-scripts/dev/sandbox.sh -- session list # run a thurbox-cli command in the sandbox
+scripts/dev/sandbox.sh -- config show  # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile
 ```
 
@@ -323,8 +314,7 @@ state. `--fresh` is therefore a clean first-run interface every time — which i
 how the plugin lifecycle (delivery, removal, restore) is exercised without touching
 your real one.
 
-The TUI is launched **from the sandbox root rather than the repo**. Where you
-stand no longer decides which interface loads, so this is belt-and-braces.
+The TUI is launched **from the sandbox root rather than the repo**.
 
 To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for it:
 `just tui-ui` (which sets `THURBOX_UI_DIR`).
