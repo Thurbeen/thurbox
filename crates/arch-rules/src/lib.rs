@@ -1157,6 +1157,59 @@ impl<'ast> Visit<'ast> for Walker<'_> {
         self.under_attrs(&v.attrs, |w| visit::visit_variant(w, v));
     }
 
+    fn visit_pat(&mut self, p: &'ast syn::Pat) {
+        self.under_attrs(pat_attrs(p), |w| visit::visit_pat(w, p));
+    }
+
+    fn visit_pat_type(&mut self, p: &'ast syn::PatType) {
+        self.under_attrs(&p.attrs, |w| visit::visit_pat_type(w, p));
+    }
+
+    fn visit_receiver(&mut self, r: &'ast syn::Receiver) {
+        self.under_attrs(&r.attrs, |w| visit::visit_receiver(w, r));
+    }
+
+    fn visit_generic_param(&mut self, g: &'ast syn::GenericParam) {
+        let attrs: &[syn::Attribute] = match g {
+            syn::GenericParam::Type(x) => &x.attrs,
+            syn::GenericParam::Const(x) => &x.attrs,
+            syn::GenericParam::Lifetime(x) => &x.attrs,
+        };
+        self.under_attrs(attrs, |w| visit::visit_generic_param(w, g));
+    }
+
+    fn visit_field_value(&mut self, f: &'ast syn::FieldValue) {
+        self.under_attrs(&f.attrs, |w| visit::visit_field_value(w, f));
+    }
+
+    fn visit_field_pat(&mut self, f: &'ast syn::FieldPat) {
+        self.under_attrs(&f.attrs, |w| visit::visit_field_pat(w, f));
+    }
+
+    fn visit_named_arg(&mut self, a: &'ast syn::NamedArg) {
+        self.under_attrs(&a.attrs, |w| visit::visit_named_arg(w, a));
+    }
+
+    fn visit_where_predicate(&mut self, p: &'ast syn::WherePredicate) {
+        let attrs: &[syn::Attribute] = match p {
+            syn::WherePredicate::Type(x) => &x.attrs,
+            syn::WherePredicate::Lifetime(x) => &x.attrs,
+            _ => &[],
+        };
+        self.under_attrs(attrs, |w| visit::visit_where_predicate(w, p));
+    }
+
+    fn visit_foreign_item(&mut self, i: &'ast syn::ForeignItem) {
+        let attrs: &[syn::Attribute] = match i {
+            syn::ForeignItem::Fn(x) => &x.attrs,
+            syn::ForeignItem::Static(x) => &x.attrs,
+            syn::ForeignItem::Type(x) => &x.attrs,
+            syn::ForeignItem::Macro(x) => &x.attrs,
+            _ => &[],
+        };
+        self.under_attrs(attrs, |w| visit::visit_foreign_item(w, i));
+    }
+
     fn visit_path(&mut self, p: &'ast syn::Path) {
         let segments: Vec<String> = p.segments.iter().map(|s| s.ident.to_string()).collect();
         if let Some(first) = p.segments.first() {
@@ -1607,6 +1660,31 @@ fn item_attrs(i: &Item) -> &[syn::Attribute] {
         Item::Type(x) => &x.attrs,
         Item::Union(x) => &x.attrs,
         Item::Use(x) => &x.attrs,
+        _ => &[],
+    }
+}
+
+/// The attributes of a pattern.
+fn pat_attrs(p: &syn::Pat) -> &[syn::Attribute] {
+    use syn::Pat as P;
+    match p {
+        P::Const(x) => &x.attrs,
+        P::Guard(x) => &x.attrs,
+        P::Ident(x) => &x.attrs,
+        P::Lit(x) => &x.attrs,
+        P::Macro(x) => &x.attrs,
+        P::Or(x) => &x.attrs,
+        P::Paren(x) => &x.attrs,
+        P::Path(x) => &x.attrs,
+        P::Range(x) => &x.attrs,
+        P::Reference(x) => &x.attrs,
+        P::Rest(x) => &x.attrs,
+        P::Slice(x) => &x.attrs,
+        P::Struct(x) => &x.attrs,
+        P::Tuple(x) => &x.attrs,
+        P::TupleStruct(x) => &x.attrs,
+        P::Type(x) => &x.attrs,
+        P::Wild(x) => &x.attrs,
         _ => &[],
     }
 }

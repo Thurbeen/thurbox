@@ -2141,8 +2141,11 @@ fn an_inline_module_is_governed_too() {
 
 /// Every place `#[cfg(test)]` can stand marks test code, and so does
 /// `cfg(all(.., test))`: an associated constant or method, a trait constant, a
-/// `let`, a statement, a statement macro, a match arm, a field, a variant, and
-/// a whole file by its inner attribute.
+/// `let`, a statement, a statement macro, a match arm, a field, a variant, a
+/// function or closure parameter, `self`, a generic parameter, a field of a
+/// struct expression or pattern, a pattern, a bare `fn` type's argument, a
+/// `where` predicate, a foreign item, and a
+/// whole file by its inner attribute.
 /// A grant only such code uses is unused.
 #[test]
 fn test_code_anywhere_keeps_no_grant_in_use() {
@@ -2207,6 +2210,83 @@ fn test_code_anywhere_keeps_no_grant_in_use() {
             Some((
                 "crates/fx-mod/src/b.rs",
                 "pub fn b() {}\npub const N: isize = 0;\n",
+            )),
+        ),
+        (
+            "test-fn-param",
+            "pub fn a() {}\nfn t(#[cfg(test)] _x: crate::b::B) {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-closure-param",
+            "pub fn a() {\n    let _f = |#[cfg(test)] _x: crate::b::B| {};\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-receiver",
+            "pub struct A;\nimpl A {\n    fn t(#[cfg(test)] self: std::rc::Rc<crate::b::B>) {}\n}\npub fn a() {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-generic-param",
+            "pub fn a() {}\nfn t<#[cfg(test)] T: crate::b::Tr>() {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-struct-expr-field",
+            "pub struct S {\n    pub f: (),\n}\npub fn a() {\n    let _ = S { #[cfg(test)] f: crate::b::b() };\n}\n",
+            None,
+        ),
+        (
+            "test-field-pattern",
+            "pub struct S {\n    pub f: (),\n}\npub fn a(s: S) {\n    let S { #[cfg(test)] f: crate::b::C, .. } = s;\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-pattern",
+            "pub fn a() {\n    let _f = |#[cfg(test)] crate::b::C| {};\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-foreign-item",
+            "pub fn a() {}\nunsafe extern \"C\" {\n    #[cfg(test)]\n    fn ext(x: crate::b::B);\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-where-predicate",
+            "pub fn a() {}\nfn t<T>()\nwhere\n    #[cfg(test)]\n    T: crate::b::Tr,\n{\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-bare-fn-arg",
+            "pub fn a() {}\nfn t(_f: fn(#[cfg(test)] crate::b::B)) {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
             )),
         ),
     ] {
