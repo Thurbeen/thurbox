@@ -5,18 +5,15 @@ description: Use when explicitly asked to set up a fresh Fleet deployment.
 
 # Install and configure Fleet
 
-Read docs/fleet/configuration.md (initialization and cutover) first.
-Fleet v2 is the native binary; Fleet v1 is the frozen Python v1.0.0 that
-existing v1 users stay on. Install v2 only when the user asks for it. Check
-the release's supported target and checksum. The README's one-line setup
-pipes the latest release's installer into a shell; as an agent, download that
-release's `install-release.sh` into a new directory, inspect it, then run it
-with `FLEET_VERSION` set to the tag the user chose. The repository's
-`scripts/fleet/install-release.sh` has no default release and refuses to run
-without `FLEET_VERSION`. Windows is not a release target. `FLEET_RELEASE_BASE`
-supports an offline release base.
+Read [the configuration page](../../../docs/fleet/configuration.md) first.
+Install Fleet only when the user asks for it. Check the release's supported
+target and checksum. Download that release's `install-release.sh` into a new
+directory, inspect it, then run it with `FLEET_VERSION` set to the tag the
+user chose. The repository's `scripts/fleet/install-release.sh` has no
+default release and refuses to run without `FLEET_VERSION`.
+`FLEET_RELEASE_BASE` supports an offline release base.
 
-For a fresh v2 deployment, run `fleet init` to create the native per-user
+For a fresh deployment, run `fleet init` to create the native per-user
 config without Git or network. Read
 [Initialization and `fleet up`](../../../docs/fleet/configuration.md#initialization-and-fleet-up)
 for config selection and paths. Put `runtime-mux` on PATH, install tmux, and
@@ -37,7 +34,6 @@ Workers must use the same config as the Task that dispatches them; persist its d
 `up --data-dir` override. `fleet reconcile` is a bounded diagnostic command
 for use while the resident manager is stopped.
 
-Installation never starts a manager or performs a live migration. Preserve
-existing deployments and active sessions. A separate, explicit no-child
-cutover is required before changing an operational manager. Never configure
+Installation never starts a manager. Preserve existing deployments and
+active sessions. Never configure
 credentials by copying secret values into manifests or argv.

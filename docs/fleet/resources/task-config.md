@@ -146,7 +146,5 @@ references before running a provider command. Passive status reports current
 spec generation and no lifecycle phase. Deletion removes the config
 immediately; unresolved Tasks then block, while frozen Tasks continue.
 
-API/store versions remain `fleet/v1alpha1` and format 1. Older binaries reject
-the new kinds/fields. Use the updated binary for stores containing them;
-this feature performs no live migration. `fleet version --json` advertises
+API/store versions are `fleet/v1alpha1` and format 1. `fleet version --json` advertises
 served kinds and configuration versions.

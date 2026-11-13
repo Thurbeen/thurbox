@@ -96,19 +96,18 @@ the ChangeRequest for a person or a conductor; Fleet never merges.
 
 ## Implementation and evidence
 
-Four steps, each its own change with its own E2E suite against the built CLI
+Each part, where it lives, and the suites that hold it, against the built CLI
 and the fake or stub forges:
 
-| Step | What | Where | Evidence |
-| --- | --- | --- | --- |
-| 1 | `fleet-forge` and the [ChangeRequest controller](change-request.md), with retention | `crates/fleet-forge`, `fleet-controllers/src/change_request.rs` | `change_request_controller`, `e2e_forge` |
-| 2 | The Task inbox, `fleet send`, and inbox delivery in TaskController | `fleet-api/src/inbox.rs`, `fleet-store` typed mutations, `fleet-controllers/src/task.rs` | `store_contract`, `task_controller`, `e2e_inbox` |
-| 3 | `fleet declare`, `spec.forge`, `status.declared`, `status.forge`, and ForgeController with the join message and the relay | `fleet-api/src/follow.rs`, `fleet-controllers/src/forge.rs`, `fleet-manager` (`declare`, the second controller's sweep), `fleet-store` (`record_relay`) | `forge_controller`, `e2e_forge_controller`, `store_contract`, `architecture` |
-| 4 | The mark-ready effect and the shipped ready policies | `fleet-api/src/follow.rs` (the policies and the key), `fleet-forge` (`mark_ready` in each adapter), `fleet-controllers/src/forge.rs` (the decision), `fleet-manager` (the effect and its receipt), `fleet-cli` (the `[forge]` keys, `fleet init`, the apply check) | `forge_controller`, `e2e_mark_ready`, `architecture` |
+| What | Where | Evidence |
+| --- | --- | --- |
+| `fleet-forge` and the [ChangeRequest controller](change-request.md), with retention | `crates/fleet-forge`, `fleet-controllers/src/change_request.rs` | `change_request_controller`, `e2e_forge` |
+| The Task inbox, `fleet send`, and inbox delivery in TaskController | `fleet-api/src/inbox.rs`, `fleet-store` typed mutations, `fleet-controllers/src/task.rs` | `store_contract`, `task_controller`, `e2e_inbox` |
+| `fleet declare`, `spec.forge`, `status.declared`, `status.forge`, and ForgeController with the join message and the relay | `fleet-api/src/follow.rs`, `fleet-controllers/src/forge.rs`, `fleet-manager` (`declare`, the second controller's sweep), `fleet-store` (`record_relay`) | `forge_controller`, `e2e_forge_controller`, `store_contract`, `architecture` |
+| The mark-ready effect and the shipped ready policies | `fleet-api/src/follow.rs` (the policies and the key), `fleet-forge` (`mark_ready` in each adapter), `fleet-controllers/src/forge.rs` (the decision), `fleet-manager` (the effect and its receipt), `fleet-cli` (the `[forge]` keys, `fleet init`, the apply check) | `forge_controller`, `e2e_mark_ready`, `architecture` |
 
-Each step keeps `cargo xtask check` green and adds its crate edges, status
-writers and restricted capabilities to `crates/architecture.toml` with
-negative fixtures. All four are served by the installed binary.
+`crates/architecture.toml` holds their crate edges, status writers and
+restricted capabilities, with negative fixtures.
 
 ## Forge controller state machine
 
@@ -525,7 +524,7 @@ inherits it. `"draft": {"policy": null}` disables mark-ready for this Task
 even when the config names a default. The block is mutable like `dispatch`
 and takes effect on the next pass; turning relay back on relays only what
 comes after, because the cursor advanced meanwhile. A spec change increments
-the Task's generation as today, and a worker result still names the
+the Task's generation, and a worker result still names the
 generation of the brief it received, so a running worker is never asked for
 a generation it has not seen.
 

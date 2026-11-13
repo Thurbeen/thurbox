@@ -84,9 +84,6 @@ it as it is; a malformed config is an error, never replaced. A symlink at or
 above the config's path is refused. Initializers serialize with an OS lock,
 so two concurrent `init` runs write one config.
 
-A `[starter]` section is refused at load: earlier releases bundled the VEGA
-workspace and made `fleet up` create `Task/vega` from it. Remove the section.
-
 ### Running VEGA
 
 VEGA, the dispatch-only Mission Control, is content in its own repository,
@@ -228,7 +225,6 @@ refused. See the [offline fake-runtime example](#offline-fake-runtime-example).
 | `hosts.<name>.runtime` | Required for each host | The `[runtimes.<name>]` serving the host. A host naming no runtime, and a runtime no host names, are refused at load. A Task whose `spec.host` is not listed fails its spawn. |
 | `runtime.kind` | Required when configuring `[runtime]` | `fake`; excludes `[runtimes]` and `[hosts]`. |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
-| `starter` | Refused | Earlier releases' VEGA starter; refused at load with a message that names it. |
 
 `--data-dir` is for explicit store operations. `fleet up` rejects a differing
 override because its workers must share the store selected by the persisted
@@ -240,17 +236,11 @@ the next start: a running process never switches its store, lease holder,
 runtime or key prefix.
 
 Each runtime makes the workspaces of the hosts it serves, from the URLs a
-Task names ([workspaces](../runtime/README.md#workspaces)). Fleet keeps no
-workspace section: a file with `[workspaces]` is refused at load.
+Task names ([workspaces](../runtime/README.md#workspaces)).
 
-Every session Fleet starts gets `FLEET_SIGNAL_FILE` in its environment: the
-file under `<data dir>/signals` its hooks append to through `fleet signal`
-([signals](controllers/task.md#signals)), and `FLEET_HARNESS`, the
-session's harness, with `FLEET_HARNESS_DIR`, the directory below.
-`fleet signal` needs no config, and does nothing without
-`FLEET_SIGNAL_FILE`, so a hook installed for every session of a harness is
-harmless outside Fleet. It reads the config dir only for the user profile of
-the harness it is named ([signal contract](signal-contract.md)).
+Every session Fleet starts gets `FLEET_SIGNAL_FILE`, a file under
+`<data dir>/signals`, `FLEET_HARNESS` and `FLEET_HARNESS_DIR`, the directory
+below ([signal contract](signal-contract.md)).
 
 The `harnesses/` directory beside the config file holds the user's
 [harness profiles](controllers/task.md#harness-profiles), one `*.toml` file
@@ -286,9 +276,9 @@ commands still execute locally. Do not treat the fake runtime as a sandbox
 for untrusted helpers.
 
 ```sh
-fleet --config examples/fleet.toml apply -f examples/resources.json
-fleet --config examples/fleet.toml list tasks --json
-fleet --config examples/fleet.toml reconcile
+fleet --config examples/fleet/fleet.toml apply -f examples/fleet/resources.json
+fleet --config examples/fleet/fleet.toml list tasks --json
+fleet --config examples/fleet/fleet.toml reconcile
 ```
 
 For the new resources, save the manifests in their individual references,
@@ -305,8 +295,7 @@ Apply uses JSON resources. File/command provider output uses a third format:
 [environment JSON maps](#environment-json-file-and-command-output). Keep source credentials out of
 resource manifests. Config schema `1`, resource API `fleet/v1alpha1` and store
 format `1` are separate version contracts; `fleet version --json` reports
-them. No live store/config migration or service restart occurs through this
-feature. A repeated `fleet init` keeps the user-owned native config.
+them. A repeated `fleet init` keeps the user-owned native config.
 
 ### The `[forge]` section
 
@@ -491,7 +480,7 @@ workspace = { base = "/work/anywhere" }
 | `gateway.questions` | Absent | The route whose first channel id takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. Refused when the route lists no channel id, as a route with only `"*"` or `"dm:*"` does. |
 | `gateway.logs` | Absent | The log destination: `account`, a name under `[gateway.accounts]`, and `channel`, one channel id on it. Fleet posts every Task's Drafts, result and change news there, as top-level posts. Absent: Fleet posts them nowhere; a tied thread's ready notice is posted either way. Refused when the account is not configured, when the account's adapter cannot read the channel id, or when a route of that account lists the channel. A wildcard route never covers the log channel. |
 | `gateway.reactions` | On: `queued = "hourglass_flowing_sand"`, `working = "eyes"`, `replied = "white_check_mark"` | The reactions that mark a person's message: `queued` while admission holds the request for its Task, `working` once the Task exists or Fleet relayed the message to it, when `queued` is removed, and `replied` once Fleet posted in the thread, when `working` is removed. Each is a platform emoji name, which each adapter maps as its [adapter page](controllers/gateway-adapters.md#capabilities) says. A name left out keeps its default. `false` turns reactions off, and `true` keeps the defaults. Refused when a name is empty or holds whitespace, when two name one emoji, or for another key. |
-| `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, `discord`, or `fake` with a `dir`, in this build, and later `telegram` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity (Slack: the team or enterprise id, optional; Discord: the guild id, required); `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart (Discord: a snowflake, as is `team`); `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; Discord: `discord-gateway`, an authenticated connection; `fake`: `connection`), and an envelope claiming another is refused; `messageContent`, Discord only, default `false`, whether the application holds the privileged message content intent, which sets the `intents` that `fleet gateway account` prints; `cli`, default `curl`, and the platform's credential reference, here `curlConfig`, required for Slack and Discord, an absolute path Fleet passes to `curl -K` and never reads. The [Slack](controllers/gateway-adapters.md#configuration) and [Discord](controllers/gateway-adapters.md#configuration-1) adapter pages list each platform's keys and errors. |
+| `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, `discord`, or `fake` with a `dir`; any other platform is refused when the manager runs; `team` the platform's workspace identity (Slack: the team or enterprise id, optional; Discord: the guild id, required); `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart (Discord: a snowflake, as is `team`); `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; Discord: `discord-gateway`, an authenticated connection; `fake`: `connection`), and an envelope claiming another is refused; `messageContent`, Discord only, default `false`, whether the application holds the privileged message content intent, which sets the `intents` that `fleet gateway account` prints; `cli`, default `curl`, and the platform's credential reference, here `curlConfig`, required for Slack and Discord, an absolute path Fleet passes to `curl -K` and never reads. The [Slack](controllers/gateway-adapters.md#configuration) and [Discord](controllers/gateway-adapters.md#configuration-1) adapter pages list each platform's keys and errors. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
 | `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, `"*"`, the wildcard, or `"dm:*"`, the DM entry (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace: `{base}`, an absolute base directory, below which each thread's Tasks get `["file://<base>/<conversation name>"]`, the directory created by the manager with the Task on the TaskConfig's host, recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or a list of absolute URLs, which each Task gets as it is and its runtime makes for it, so a route's Tasks share nothing (a `git+` URL gives each Task its own worktree); `refusal`, the one polite refusal. A channel id belongs to at most one route. A route lists at least one channel and names at least one person in `allow` or one bot in `allowBots`. |
 
@@ -642,7 +631,7 @@ protocol, or an exporter other than `otlp` or `none`, turns export off.
 Fleet then prints one `warning: telemetry is off:` line on stderr and runs
 the command without telemetry.
 
-This release has no TLS client. Send to a collector on `http://`, such as a
+Fleet has no TLS client. Send to a collector on `http://`, such as a
 local OpenTelemetry Collector that forwards to a remote backend.
 
 ### Traces

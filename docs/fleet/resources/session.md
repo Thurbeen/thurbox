@@ -112,16 +112,5 @@ generation 1 observed 1 (current)
 session fake-1 on local Running
 ```
 
-A view that lists sessions, such as a TUI, reads every Task's `session`
-and `sessionState` through `fleet list task` and `fleet status`.
-
-## Next steps
-
-This definition is the first step toward the
-[target architecture](../architecture-target.svg), where
-Thurbox is one view and Fleet runs Sessions behind the runtime port. The
-second step added a Workspace that the runtime makes from the Task's URLs;
-see [Workspaces](../architecture.md#workspaces).
-The runtime port's `attach` gives a view a live terminal, and `runtime-mux`
-is the default runtime.
-See [Sessions and the runtime port](../architecture.md#sessions-and-the-runtime-port).
+A view that lists sessions, such as thurbox, reads every Task's `session`
+and `sessionState` through `fleet watch`, `fleet list task` or `fleet status`.

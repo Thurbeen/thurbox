@@ -92,7 +92,7 @@ fields the host writes under the same owner:
 A plan that names a reserved field is refused. `fleet apply` refuses a
 supplied status on every kind.
 
-Conventions the SDKs follow and `fleet status` understands: `phase`, a
+Conventions `fleet status` understands: `phase`, a
 string; `conditions`, in Fleet's shape; `observedGeneration`. None is
 required.
 

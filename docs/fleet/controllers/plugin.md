@@ -5,7 +5,7 @@ The CLI acceptance suite exercises registered kinds, reconciliation, Task
 operations, environment separation and effects across process restarts.
 
 A plugin is a controller written outside this repository, in a language a
-person can read in one sitting, such as a TypeScript or Python script. It
+person can read in one sitting, such as a script. It
 defines its own resource kinds, decides what to do with each object of those
 kinds, and may create and steer Tasks. Fleet hosts it the way it hosts its
 own controllers: the manager owns every read, every write and every process,
@@ -134,15 +134,6 @@ left for a later step; a plugin creating objects of another plugin's kinds;
 and a persistent plugin process, which would trade the bounded call for a
 service Fleet would have to supervise.
 
-## Decisions deferred to the implementation steps
-
-- The exact JSON Schema dialect and the crate that validates it, chosen
-  against the dependency rules in `~/.agent-rules/OPINIONS.md` when present.
-- Whether the `list` probe takes a label selector only, or also a field of
-  spec, once the first plugin shows which it needs.
-- The size caps in the [interface](#bounds), set generously here
-  and tightened on evidence.
-
 ## Implementation and evidence
 
 The protocol types live in `fleet-api/src/plugin.rs`, pure admission in
@@ -155,8 +146,7 @@ process and accepts plugin kind names and plurals.
 `e2e_plugin_controller` drives the built CLI and a Rust protocol stub across
 process restarts. `plugin_gate` covers admission rules; `store_contract`
 covers fencing, creator ownership and the amend precondition;
-`architecture` enforces the crate and writer boundaries. TypeScript/Python
-SDKs and issue-specific plugins remain outside this repository.
+`architecture` enforces the crate and writer boundaries.
 
 ## Plugin controller state machine
 
@@ -281,7 +271,7 @@ plugin: it is an answer.
 The host writes none. A plugin writes its own `status.conditions`, in
 Fleet's shape, `{type, status, reason, message, lastTransitionTime}`, and
 should keep `lastTransitionTime` unless the status changes, so a quiet pass
-writes nothing. The SDKs provide this. The host's `host.error` and
+writes nothing. The host's `host.error` and
 `host.verbs` are facts for the plugin to turn into a condition, typically
 `NeedsAttention`, which `fleet status` prints for every kind.
 
@@ -495,8 +485,7 @@ planned, and nothing else of the object:
 adapters follow: an answer is complete or it is Unknown, and Unknown never
 means absent, closed or empty. `perform` acts once under `intentKey`, which it
 may embed in what it writes, a hidden marker in a comment, so a later
-`observe` can tell whether an attempt landed. The SDKs say this on the
-function's doorstep: Fleet never repeats a key, so a `perform` that acted
+`observe` can tell whether an attempt landed. Fleet never repeats a key, so a `perform` that acted
 and then lost its answer has acted.
 
 #### Environment
@@ -547,35 +536,14 @@ every kind: a mirror's Task outlives the mirror unless the plugin deletes it.
 | --- | --- | --- |
 | `Plugins` port: `operation_bound`, `available`, and `call` (manifest, probes, reconcile, observe, perform) | `fleet-api` | Pure types; the port the manager calls. The plan it returns is untyped JSON until admitted. |
 | `PluginGate`: a pure function from an untrusted plan, the plugin's rights and the object to typed writes or a refusal | `fleet-controllers` | The only code that names `FieldManager::Plugin`. One test per rule. |
-| The stdio host: batching, environment scrubbing, JSON Lines, bounds | `fleet-plugin` (new), depending on `fleet-api` and `fleet-exec` | The only crate that knows a plugin is a process. |
+| The stdio host: batching, environment scrubbing, JSON Lines, bounds | `fleet-plugin`, depending on `fleet-api` and `fleet-exec` | The only crate that knows a plugin is a process. |
 | Dynamic kinds, schema validation, the creator label, the plugin appender | `fleet-store` | Kinds are a value the store is configured with, built from the config and the manifests. |
 | The sweep after ForgeController; the verbs on a plugin's behalf | `fleet-manager` | Renews the lease before every plugin process. |
 | `[plugins]`, `fleet list plugins`, the kinds on the command line | `fleet-cli` | `apply` of a plugin kind reaches the manifest through the port, cached per process. |
 
-`crates/architecture.toml` gains the crate, its edges, the
-`FieldManager::Plugin` writer and the new forbidden methods for the CLI
+`crates/architecture.toml` declares the crate, its edges, the
+`FieldManager::Plugin` writer and the forbidden methods for the CLI
 (`call`, `admit`, `plugin_mutate`), each with a negative fixture.
 The purity rules are unchanged: no plugin process is started outside
 `fleet-exec`, and no plugin's name appears above the port except in the
 config.
-
-### An SDK's view
-
-The TypeScript SDK, outside this repository, turns the protocol into four
-functions and a manifest, and runs the batching loop:
-
-```ts
-import { plugin, type Input, type Plan, type Probe } from "@fleet/plugin";
-
-export default plugin({
-  manifest: { protocol: 1, name: "github-issues", kinds: [IssueSource, Issue] },
-  probes(input: Input): Probe[] { /* pure */ },
-  reconcile(input: Input): Plan { /* pure */ },
-  async observe(request): Promise<Known | Unknown> { /* gh, fetch */ },
-  async perform(request, intentKey): Promise<Outcome> { /* once per key */ },
-});
-```
-
-The Python SDK is the same five names. Neither SDK is required: a plugin is
-anything that speaks the protocol, and the test stub in this repository is a
-small Rust binary that does.

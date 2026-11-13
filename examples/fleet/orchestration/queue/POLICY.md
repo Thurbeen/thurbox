@@ -5,8 +5,8 @@ be active concurrently: preserve their source, processes and build output.
 Work in an isolated worktree and keep temporary and build output private.
 
 For defects, reproduce the behavior in an end-to-end test before fixing it.
-Validate focused changes locally, then run the canonical `cargo xtask check`
-on the combined candidate before publication. Never weaken a test or skip a
+Validate focused changes locally, then run the repository's gate on the
+combined candidate before publication. Never weaken a test or skip a
 required gate to report success. Native platform claims require native tests.
 
 Publishing uses the installed publish skill, normal signed hooks and
