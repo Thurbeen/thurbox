@@ -33,7 +33,11 @@
 //!   forbidden glob is judged as if it did, unless the name is read as a
 //!   module (a path's prefix, a glob's base) and the module declares a `mod`
 //!   of that name, which shadows every glob.
-//! - `cfg` is ignored: code behind any `cfg` is judged too.
+//! - `cfg` is ignored: code behind any `cfg` is judged too, and a module
+//!   behind one shadows no glob.
+//! - Each target (the library, `main.rs`, each `src/bin/` binary) is its own
+//!   module tree, found by following `mod` declarations; a `#[path]` module
+//!   is placed by where its file is instead.
 //! - Tests and examples (`tests/`, `benches/`, `#[cfg(test)]` modules inside
 //!   `src/` excepted) are not under the source rules; their manifests are.
 //!
@@ -568,6 +572,7 @@ impl CrateIndex {
         let mut files = Vec::new();
         rs_files(&src, &mut files);
         files.sort();
+        let mut parsed_files = Vec::new();
         for file in files {
             let rel = file
                 .strip_prefix(&ws.root)
@@ -588,7 +593,14 @@ impl CrateIndex {
                     continue;
                 }
             };
-            let module = module_of(&src, &file);
+            parsed_files.push((file, rel, parsed));
+        }
+        let modules = module_paths(&src, &parsed_files);
+        for (file, rel, parsed) in parsed_files {
+            let module = modules
+                .get(&file)
+                .cloned()
+                .unwrap_or_else(|| module_of(&src, &file));
             if module.is_empty() && file.file_name().is_some_and(|n| n == "lib.rs") {
                 idx.lib_doc = doc_text(&parsed.attrs);
             }
@@ -614,6 +626,98 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
             rs_files(&p, out);
         } else if p.extension().is_some_and(|x| x == "rs") {
             out.push(p);
+        }
+    }
+}
+
+/// Each file's module path, found by following `mod` declarations from every
+/// target's root, so a binary's modules never share a scope with the
+/// library's: the library's root is the empty path, a binary's is one segment
+/// no Rust name can spell (`#main`, `#bin:<name>`). The library is followed
+/// first, so a file both reach is the library's. `#[path]` is not followed.
+fn module_paths(
+    src: &Path,
+    files: &[(PathBuf, String, syn::File)],
+) -> BTreeMap<PathBuf, Vec<String>> {
+    let parsed: BTreeMap<&Path, &syn::File> =
+        files.iter().map(|(f, _, p)| (f.as_path(), p)).collect();
+    let bin = src.join("bin");
+    let mut roots = vec![
+        (src.join("lib.rs"), Vec::new()),
+        (src.join("main.rs"), vec!["#main".to_string()]),
+    ];
+    for (file, _, _) in files {
+        let target = if file.parent() == Some(bin.as_path()) {
+            file.file_stem()
+        } else if file.parent().and_then(Path::parent) == Some(bin.as_path())
+            && file.file_name().is_some_and(|n| n == "main.rs")
+        {
+            file.parent().and_then(Path::file_name)
+        } else {
+            None
+        };
+        if let Some(name) = target {
+            roots.push((
+                file.clone(),
+                vec![format!("#bin:{}", name.to_string_lossy())],
+            ));
+        }
+    }
+    let root_files: BTreeSet<PathBuf> = roots.iter().map(|(f, _)| f.clone()).collect();
+    let mut out = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    for (file, module) in roots {
+        if parsed.contains_key(file.as_path()) && !out.contains_key(&file) {
+            out.insert(file.clone(), module);
+            queue.push_back(file);
+        }
+    }
+    while let Some(file) = queue.pop_front() {
+        let module = out[&file].clone();
+        // A root or a `mod.rs` declares its children beside it; any other
+        // file in a directory of its own name.
+        let dir = match file.parent() {
+            Some(parent)
+                if root_files.contains(&file)
+                    || file.file_name().is_some_and(|n| n == "mod.rs") =>
+            {
+                parent.to_path_buf()
+            }
+            Some(parent) => parent.join(file.file_stem().unwrap_or_default()),
+            None => continue,
+        };
+        let mut children = Vec::new();
+        declared_files(&parsed[file.as_path()].items, &dir, &module, &mut children);
+        for (child, path) in children {
+            if parsed.contains_key(child.as_path()) && !out.contains_key(&child) {
+                out.insert(child.clone(), path);
+                queue.push_back(child);
+            }
+        }
+    }
+    out
+}
+
+/// The files `mod x;` declarations in `items` may name, with their module
+/// paths; an inline `mod x { .. }` is followed into `dir/x/`.
+fn declared_files(
+    items: &[Item],
+    dir: &Path,
+    module: &[String],
+    out: &mut Vec<(PathBuf, Vec<String>)>,
+) {
+    for item in items {
+        if let Item::Mod(m) = item {
+            let name = m.ident.to_string();
+            let mut child = module.to_vec();
+            child.push(name.clone());
+            match &m.content {
+                Some((_, inner)) => declared_files(inner, &dir.join(&name), &child, out),
+                None => {
+                    out.push((dir.join(format!("{name}.rs")), child.clone()));
+                    out.push((dir.join(&name).join("mod.rs"), child));
+                }
+            }
         }
     }
 }
@@ -668,20 +772,15 @@ impl Walker<'_> {
 
     fn items(&mut self, items: &[Item]) {
         for item in items {
+            // The checker ignores `cfg`, so a module `cfg` can remove must
+            // not shadow anything.
             if let Item::Mod(m) = item
-                && !self.bin_root()
+                && !m.attrs.iter().any(|a| a.path().is_ident("cfg"))
             {
                 self.scope().modules_declared.insert(m.ident.to_string());
             }
             self.visit_item(item);
         }
-    }
-
-    /// Whether the walk is at the root of a binary target (`main.rs`, a file
-    /// of `src/bin/`), whose root module is not the library's: what it
-    /// declares there must not shadow anything in the library.
-    fn bin_root(&self) -> bool {
-        self.module.is_empty() && !self.file.ends_with("src/lib.rs")
     }
 
     fn scope(&mut self) -> &mut Scope {
@@ -988,7 +1087,11 @@ impl<'a> Resolver<'a> {
             vec![segments.to_vec()]
         } else {
             match first {
-                "crate" => vec![join(vec![idx.lib.clone()])],
+                "crate" => vec![join(
+                    std::iter::once(idx.lib.clone())
+                        .chain(target_root(module).iter().cloned())
+                        .collect(),
+                )],
                 "self" => vec![join(
                     std::iter::once(idx.lib.clone())
                         .chain(module.iter().cloned())
@@ -1149,6 +1252,15 @@ impl<'a> Resolver<'a> {
         }
         self.budget.set(left - 1);
         true
+    }
+}
+
+/// The root of the target `module` belongs to: empty for the library, a
+/// binary's own first segment otherwise.
+fn target_root(module: &[String]) -> &[String] {
+    match module.first() {
+        Some(first) if first.starts_with('#') => &module[..1],
+        _ => &[],
     }
 }
 

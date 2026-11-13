@@ -558,6 +558,33 @@ fn a_binary_module_does_not_shadow_a_library_glob() {
     );
 }
 
+/// A binary's modules are not the library's, even at the same path: the
+/// binary's `net` module (`src/net.rs`) declaring `mod fs` does not shadow
+/// the library's inline `net` module's glob-imported `std::fs`.
+#[test]
+fn a_binary_submodule_does_not_shadow_a_library_submodule() {
+    let lib =
+        ctl("pub mod net {\n    use std::*;\n    pub fn x() { let _ = fs::read(\"p\"); }\n}\n");
+    expect(
+        "bin-submodule-shadow",
+        &[
+            (CTL, &lib),
+            ("crates/fx-ctl/src/main.rs", "mod net;\nfn main() {}\n"),
+            ("crates/fx-ctl/src/net.rs", "mod fs {}\n"),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// The checker ignores `cfg`, so a module `cfg` can remove does not shadow:
+/// outside tests, `fs::read` is still `std::fs::read`.
+#[test]
+fn a_cfg_gated_module_does_not_shadow_a_glob() {
+    let src =
+        ctl("use std::*;\n#[cfg(test)]\nmod fs {}\npub fn x() { let _ = fs::read(\"p\"); }\n");
+    expect("cfg-shadow", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
 /// Macros are a namespace of their own: a struct of the same name does not
 /// shadow a glob-imported macro.
 #[test]
@@ -572,6 +599,26 @@ fn a_struct_does_not_shadow_a_glob_imported_macro() {
             (
                 "crates/fx-store/src/lib.rs",
                 "use fx_api::*;\npub struct danger;\npub fn x() { danger!(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
+}
+
+/// A macro call is not a module read: even a module of the same name does
+/// not shadow a glob-imported macro.
+#[test]
+fn a_module_does_not_shadow_a_glob_imported_macro() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+    );
+    expect(
+        "macro-module-shadow",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-store/src/lib.rs",
+                "use fx_api::*;\npub mod danger {}\npub fn x() { danger!(); }\n",
             ),
         ],
         &[("restricted", "fx-store")],
