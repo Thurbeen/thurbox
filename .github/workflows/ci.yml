@@ -49,6 +49,7 @@ jobs:
       dev_scripts: ${{ steps.filter.outputs.dev_scripts }}
       nix: ${{ steps.filter.outputs.nix }}
       fleet: ${{ steps.filter.outputs.fleet }}
+      runtime: ${{ steps.filter.outputs.runtime }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -74,7 +75,11 @@ jobs:
               # red-build main while its own PR is
               # green. The `lua` filter below lists the same two roots.
               - 'ui/**'
-              - 'examples/**'
+              # The two example trees thurbox embeds or tests. Fleet's
+              # examples are inputs of the `fleet` filter, and
+              # `doc_references` reads them all through `doc_refs`.
+              - 'examples/lua/**'
+              - 'examples/panes/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -175,6 +180,8 @@ jobs:
               # so every member's manifest is its input.
               - 'crates/*/Cargo.toml'
               - 'examples/fleet/**'
+              # The reference runtime `e2e_runtime_exec` checks.
+              - 'examples/runtimes/**'
               - 'scripts/fleet/**'
               - 'docs/fleet/**'
               - '.agents/skills/**'
@@ -190,16 +197,30 @@ jobs:
               - 'clippy.toml'
               - '.rustfmt.toml'
               - '.github/workflows/ci.yml'
-            # The package builds the crate, so every Rust input is a Nix input
-            # too: a new `include_str!` outside the package's source set, or a
-            # dependency that needs a system library, breaks only this job.
+            # What `e2e_runtime_exec` runs besides `fleet`: runtime-mux and
+            # the `workspace-git` it starts. Every other input of that test is
+            # in the `fleet` filter, so a change to thurbox alone skips it.
+            runtime:
+              - 'crates/runtime-mux/**'
+              - 'crates/term-stream/**'
+              - 'crates/workspace-git/**'
+              - '.github/workflows/ci.yml'
+            # The package builds thurbox, so every input of that build is a Nix
+            # input too: a new `include_str!` outside the package's source set,
+            # or a dependency that needs a system library, breaks only this job.
+            # It builds only thurbox's two binaries, so Fleet's sources are not
+            # inputs; Fleet's manifests are, as cargo loads every member's.
             nix:
               - 'flake.nix'
               - 'flake.lock'
               - 'nix/**'
-              - 'crates/**'
+              - 'crates/thurbox/**'
+              - 'crates/runtime-mux/**'
+              - 'crates/term-stream/**'
+              - 'crates/*/Cargo.toml'
               - 'ui/**'
-              - 'examples/**'
+              - 'examples/lua/**'
+              - 'examples/panes/**'
               - 'vendor/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -306,9 +327,10 @@ jobs:
       # private `TMUX_TMPDIR`.
       # xvfb: `tui_e2e`'s native-clipboard paste runs against a private X server.
       # dbus: `notify_send_e2e` delivers to a private session bus.
-      - name: Install tmux, Xvfb and dbus
+      # jq: the reference runtime `e2e_runtime_exec` checks is a jq script.
+      - name: Install tmux, Xvfb, dbus and jq
         if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
-        run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus
+        run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus jq
       # The `fleet` binary, beside `thurbox-cli` in target/debug, for the
       # tests that drive a real Fleet: `tests/fleet_engine_e2e.rs` and the
       # `Profile::real_fleet` scenarios of `tests/tui_e2e.rs`. The run below
@@ -330,6 +352,13 @@ jobs:
         run: |
           cargo build -p runtime-mux -p workspace-git --bin runtime-mux --bin workspace-git
           cargo nextest run -p thurbox --test fleet_engine_e2e --test tui_e2e --profile ci
+      # The runtime protocol from Fleet's side: the real `fleet` against the
+      # real `runtime-mux` and `workspace-git`, all three built above, so this
+      # compiles only the test. Here rather than in the Fleet job, which
+      # would build `fleet` again and has neither tmux nor `runtime-mux`. A
+      # change to thurbox alone cannot affect it.
+      - if: needs.changes.outputs.fleet == 'true' || needs.changes.outputs.runtime == 'true'
+        run: cargo nextest run --locked -p fleet-cli --test e2e_runtime_exec --profile ci
       - if: needs.changes.outputs.rust != 'true' && needs.changes.outputs.doc_refs == 'true'
         run: cargo nextest run -p thurbox --test doc_references --profile ci
       # Nextest cannot run doctests. Fleet's crates run theirs in the `fleet`
@@ -814,49 +843,13 @@ jobs:
         with:
           install-only: true
       - run: cargo clippy -p 'fleet-*' --locked --all-targets --all-features -- -D warnings
-      - run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast
+      # `e2e_runtime_exec` runs in the Nextest job, which has the tmux,
+      # runtime-mux and jq it needs; under `CI` it fails without them.
+      - run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast -E 'not binary(e2e_runtime_exec)'
       - run: cargo test -p 'fleet-*' --locked --all-features --doc
       - run: cargo doc -p 'fleet-*' --locked --all-features --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
-
-  # The runtime protocol between two components that share no Rust type:
-  # `fleet runtime check` against runtime-mux and the reference script, and
-  # Fleet driving the real runtime-mux binary. Each tmux server runs under a
-  # private socket directory.
-  runtime-protocol:
-    name: Runtime protocol
-    needs: changes
-    if: needs.changes.outputs.fleet == 'true' || needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install the pinned toolchain
-        shell: bash
-        run: |
-          rustup toolchain install
-          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
-        with:
-          tool: cargo-nextest
-      - name: Install tmux and jq
-        run: sudo apt-get update && sudo apt-get install -y tmux jq
-      - run: cargo build --locked -p fleet-cli -p runtime-mux -p workspace-git --bin fleet --bin runtime-mux --bin workspace-git
-      - name: Check runtime-mux
-        run: |
-          export TMUX_TMPDIR="$RUNNER_TEMP/runtime-mux"
-          mkdir -p "$TMUX_TMPDIR"
-          target/debug/fleet runtime check -- target/debug/runtime-mux
-      - name: Check the reference script
-        run: |
-          export TMUX_TMPDIR="$RUNNER_TEMP/runtime-tmux-sh"
-          mkdir -p "$TMUX_TMPDIR"
-          target/debug/fleet runtime check -- examples/runtimes/tmux.sh
-      - run: cargo nextest run --locked -p fleet-cli -p runtime-mux --profile ci -E 'binary(e2e_runtime_exec) | binary(runtime_protocol)'
 
   all-checks:
     name: All Checks
@@ -880,7 +873,6 @@ jobs:
       - dev-scripts
       - nix
       - fleet
-      - runtime-protocol
       - shellcheck
       - large-files
       - lua

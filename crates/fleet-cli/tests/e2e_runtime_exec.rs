@@ -5,8 +5,9 @@
 //!
 //! Fleet does not link `runtime-mux`: the program is found beside `fleet`
 //! in cargo's target directory (built by a workspace build), or at
-//! `RUNTIME_MUX_BIN`. Without it or without tmux these tests say so and
-//! skip; CI's runtime-protocol job builds it and has tmux.
+//! `RUNTIME_MUX_BIN`. Without it, tmux or jq these tests say so and skip,
+//! except under `CI`, where they fail: CI's Nextest job provides all three,
+//! and the Fleet job, which does not, excludes this binary.
 
 #![cfg(unix)]
 
@@ -21,6 +22,18 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use support::Env;
 
+/// Says why a test skips, outside CI. Under `CI` a missing runtime-mux, tmux,
+/// jq, perl or flock is a failure instead: CI's Nextest job provides them, and this
+/// file is the only check of the runtime protocol there, so a skip would pass
+/// it green. The Fleet job, which has none of them, excludes this binary.
+fn missing(what: &str) {
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "{what} under CI, where the runtime protocol tests must run"
+    );
+    eprintln!("skipping: {what}");
+}
+
 fn runtime_mux() -> Option<PathBuf> {
     let found = std::env::var_os("RUNTIME_MUX_BIN")
         .map(PathBuf::from)
@@ -31,7 +44,7 @@ fn runtime_mux() -> Option<PathBuf> {
         })
         .filter(|p| p.is_file());
     if found.is_none() {
-        eprintln!("skipping: no runtime-mux binary; build it with `cargo build -p runtime-mux`");
+        missing("no runtime-mux binary; build it with `cargo build -p runtime-mux`");
     }
     found
 }
@@ -43,7 +56,7 @@ fn tmux() -> Option<PathBuf> {
             .find(|p| p.is_file())
     });
     if found.is_none() {
-        eprintln!("skipping: tmux is not installed");
+        missing("tmux is not installed");
     }
     found
 }
@@ -92,7 +105,7 @@ fn the_reference_script_passes_the_conformance_suite() {
         return;
     }
     if Command::new("jq").arg("--version").output().is_err() {
-        eprintln!("skipping: jq is not installed");
+        missing("jq is not installed");
         return;
     }
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
@@ -812,7 +825,7 @@ fn reference_script_runs() -> bool {
     }
     for tool in ["jq", "perl"] {
         if Command::new(tool).arg("--version").output().is_err() {
-            eprintln!("skipping: {tool} is not installed");
+            missing(&format!("{tool} is not installed"));
             return false;
         }
     }
@@ -919,7 +932,7 @@ fn a_reference_script_killed_holding_its_flock_does_not_block_the_next_starts() 
         return;
     }
     if Command::new("flock").arg("--version").output().is_err() {
-        eprintln!("skipping: flock is not installed");
+        missing("flock is not installed");
         return;
     }
     a_killed_holder_releases_the_lock("killed-flock", &std::env::var("PATH").unwrap_or_default());
@@ -1317,7 +1330,7 @@ fn fleet_attach_wraps_a_tty_answer_in_its_bridge() {
         return;
     }
     if Command::new("jq").arg("--version").output().is_err() {
-        eprintln!("skipping: jq is not installed");
+        missing("jq is not installed");
         return;
     }
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
@@ -1466,7 +1479,7 @@ fn a_tty_attach_runs_through_the_bridge_end_to_end() {
         return;
     }
     if Command::new("jq").arg("--version").output().is_err() {
-        eprintln!("skipping: jq is not installed");
+        missing("jq is not installed");
         return;
     }
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
