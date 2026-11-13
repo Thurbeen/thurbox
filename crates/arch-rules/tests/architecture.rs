@@ -100,6 +100,7 @@ forbidden_paths = ["std::fs", "std::env", "std::process", "std::time::Instant", 
 "fx_api::store::FieldManager::Cli" = ["fx-api", "fx-mgr"]
 
 [[restricted]]
+applies_to = ["pure", "adapter", "orchestration", "edge"]
 path = "std::process::Command"
 allowed = []
 why = "no external programs"
@@ -635,7 +636,7 @@ fn a_function_local_import_does_not_hide_a_module_read() {
 #[test]
 fn cfg_alternative_imports_are_both_judged() {
     let rules = format!(
-        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+        "{RULES}\n[[restricted]]\napplies_to = [\"pure\", \"adapter\", \"orchestration\", \"edge\"]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
     );
     expect(
         "cfg-alternatives",
@@ -762,7 +763,7 @@ fn a_macro_imported_under_another_name_is_judged() {
 #[test]
 fn a_struct_does_not_shadow_a_glob_imported_macro() {
     let rules = format!(
-        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+        "{RULES}\n[[restricted]]\napplies_to = [\"pure\", \"adapter\", \"orchestration\", \"edge\"]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
     );
     expect(
         "macro-shadow",
@@ -782,7 +783,7 @@ fn a_struct_does_not_shadow_a_glob_imported_macro() {
 #[test]
 fn a_module_does_not_shadow_a_glob_imported_macro() {
     let rules = format!(
-        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+        "{RULES}\n[[restricted]]\napplies_to = [\"pure\", \"adapter\", \"orchestration\", \"edge\"]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
     );
     expect(
         "macro-module-shadow",
@@ -854,6 +855,41 @@ fn only_the_exec_crate_spawns_and_others_reach_programs_through_it() {
     expect("exec-bypass", &dirty, &[("restricted", "fx-store")]);
 }
 
+/// A restricted path binds only the roles and crates its rule applies to.
+#[test]
+fn a_restriction_binds_only_the_roles_and_crates_it_names() {
+    let store = "pub fn s() { let _: Option<fx_api::store::FieldManager> = None; }\n";
+    for (scope, want) in [("adapter", "fx-store"), ("fx-mgr", "fx-mgr")] {
+        let rules = format!(
+            "{RULES}\n[[restricted]]\napplies_to = [\"{scope}\"]\npath = \"fx_api::store\"\nallowed = []\nwhy = \"fixture\"\n"
+        );
+        expect(
+            &format!("restricted-scope-{scope}"),
+            &[
+                ("architecture.toml", &rules),
+                ("crates/fx-store/src/lib.rs", store),
+            ],
+            &[("restricted", want)],
+        );
+    }
+}
+
+/// A rule whose scope names no role or crate binds nothing, so a typo or an
+/// empty list is reported rather than silently allowing every reach.
+#[test]
+fn a_restriction_must_apply_to_a_known_role_or_crate() {
+    for scope in ["[\"adapters\"]", "[]"] {
+        let rules = format!(
+            "{RULES}\n[[restricted]]\napplies_to = {scope}\npath = \"fx_api::FieldManager\"\nallowed = []\nwhy = \"fixture\"\n"
+        );
+        expect(
+            "restricted-unknown-scope",
+            &[("architecture.toml", &rules)],
+            &[("restricted-scope", "fx_api::FieldManager")],
+        );
+    }
+}
+
 /// One crate starts processes: every way to spawn one is restricted to it.
 #[test]
 fn the_rules_keep_spawning_in_fleet_exec() {
@@ -921,7 +957,7 @@ fn the_rules_keep_the_sdk_and_exporter_in_fleet_telemetry() {
 #[test]
 fn only_the_telemetry_crate_names_the_sdk() {
     let rules = format!(
-        "{RULES}\n[crates.fx-tel]\nrole = \"adapter\"\ndeps = []\n\n[[restricted]]\npath = \"fx_sdk\"\nallowed = [\"fx-tel\"]\nwhy = \"one crate exports telemetry\"\n"
+        "{RULES}\n[crates.fx-tel]\nrole = \"adapter\"\ndeps = []\n\n[[restricted]]\napplies_to = [\"pure\", \"adapter\", \"orchestration\", \"edge\"]\npath = \"fx_sdk\"\nallowed = [\"fx-tel\"]\nwhy = \"one crate exports telemetry\"\n"
     );
     let base = [
         ("architecture.toml", rules.as_str()),
@@ -1166,7 +1202,7 @@ fn a_runtime_adapter_cannot_claim_the_tasks_status_identity() {
 #[test]
 fn runtime_effect_capability_cannot_leak_to_an_observer_adapter() {
     let rules = format!(
-        "{RULES}\n[[restricted]]\npath = \"fx_api::Runtime\"\nallowed = [\"fx-api\", \"fx-ctl\", \"fx-mgr\"]\nwhy = \"only the manager performs runtime effects\"\n"
+        "{RULES}\n[[restricted]]\napplies_to = [\"pure\", \"adapter\", \"orchestration\", \"edge\"]\npath = \"fx_api::Runtime\"\nallowed = [\"fx-api\", \"fx-ctl\", \"fx-mgr\"]\nwhy = \"only the manager performs runtime effects\"\n"
     );
     expect(
         "runtime-effect-negative",
@@ -1227,7 +1263,7 @@ fn the_rules_keep_the_forge_port_and_its_one_write_with_the_manager() {
 #[test]
 fn forge_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() {
     let rules = format!(
-        "{RULES}\n[[restricted]]\npath = \"fx_api::Forge\"\nallowed = [\"fx-api\", \"fx-mgr\"]\nwhy = \"only the manager performs the mark-ready effect\"\n"
+        "{RULES}\n[[restricted]]\napplies_to = [\"pure\", \"adapter\", \"orchestration\", \"edge\"]\npath = \"fx_api::Forge\"\nallowed = [\"fx-api\", \"fx-mgr\"]\nwhy = \"only the manager performs the mark-ready effect\"\n"
     );
     let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, Worker, Cli }\n}\npub use store::FieldManager;\npub trait Forge { fn mark_ready(&self); }\nuse serde::Serialize;\n";
     expect(
@@ -1346,7 +1382,7 @@ fn the_rules_keep_the_gateway_below_its_port_and_its_writes_with_the_manager() {
 #[test]
 fn gateway_effect_capability_cannot_leak_to_an_observer_adapter_or_a_controller() {
     let rules = format!(
-        "{RULES}\n[[restricted]]\npath = \"fx_api::Gateway\"\nallowed = [\"fx-api\", \"fx-mgr\"]\nwhy = \"only the manager performs the post effect\"\n"
+        "{RULES}\n[[restricted]]\napplies_to = [\"pure\", \"adapter\", \"orchestration\", \"edge\"]\npath = \"fx_api::Gateway\"\nallowed = [\"fx-api\", \"fx-mgr\"]\nwhy = \"only the manager performs the post effect\"\n"
     );
     let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, Worker, Cli }\n}\npub use store::FieldManager;\npub trait Gateway { fn post(&self); fn open(&self); }\nuse serde::Serialize;\n";
     expect(
