@@ -1214,6 +1214,8 @@ impl<'a> Resolver<'a> {
                             // `use x;` of an extern crate: it names itself.
                             out.push(segments.to_vec());
                         } else {
+                            // A macro read goes on through the import as one in
+                            // `through_exports`, from the unaliased path below.
                             let base = self.resolve(
                                 idx,
                                 module,
@@ -1334,16 +1336,24 @@ impl<'a> Resolver<'a> {
                 .get(name)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
+            let last = k == path.len();
+            // As in `resolve`: a macro read keeps every other meaning, and
+            // stays one through an import.
+            let macro_read = last && read == Read::Macro;
             let mut via_alias: Vec<Vec<String>> = Vec::new();
             for a in aliases {
-                for base in self.resolve(idx, &module, &a.target, a.global, false, true, depth + 1)
-                {
+                for base in self.resolve(
+                    idx,
+                    &module,
+                    &a.target,
+                    a.global,
+                    macro_read,
+                    true,
+                    depth + 1,
+                ) {
                     via_alias.push(base.into_iter().chain(tail.iter().cloned()).collect());
                 }
             }
-            let last = k == path.len();
-            // As in `resolve`: a macro read keeps every other meaning.
-            let macro_read = last && read == Read::Macro;
             if !via_alias.is_empty() && !macro_read && !aliases.iter().all(|a| a.weak) {
                 return via_alias;
             }

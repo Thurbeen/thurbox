@@ -723,6 +723,33 @@ fn a_reexported_type_named_like_a_macro_does_not_hide_it() {
     );
 }
 
+/// An import of a re-exported name, read as a macro, keeps the macro meaning
+/// of that name at its source: `m::println` there is the glob's macro too.
+#[test]
+fn a_renamed_import_of_a_reexport_read_as_a_macro_is_judged() {
+    let src = ctl(
+        "pub mod m {\n    pub use std::*;\n    pub use std::fmt::Error as println;\n}\nuse crate::m::println as say;\npub fn b() { say!(\"x\"); }\n",
+    );
+    expect(
+        "renamed-reexport-macro",
+        &[(CTL, &src)],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// The same when the renaming import is itself reached through a path.
+#[test]
+fn a_reexported_renamed_macro_read_through_a_path_is_judged() {
+    let src = ctl(
+        "pub mod m {\n    pub use std::*;\n    pub use std::fmt::Error as println;\n}\npub mod n {\n    pub use crate::m::println as say;\n}\npub fn b() { n::say!(\"x\"); }\n",
+    );
+    expect(
+        "path-renamed-reexport-macro",
+        &[(CTL, &src)],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
 /// An import of a macro under another name is still followed.
 #[test]
 fn a_macro_imported_under_another_name_is_judged() {
