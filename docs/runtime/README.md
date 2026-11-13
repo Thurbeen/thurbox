@@ -44,6 +44,8 @@ own rules, below the hooks; the runtime only returns the screen.
 Fleet's config names each runtime in `[runtimes.<name>]`, a `program`, and
 each host in `[hosts.<name>]`, the runtime serving it, so a Task's
 `spec.host` chooses the program ([configuration](../fleet/configuration.md#native-fleet-configuration-fleettoml)).
+[Places](#proposed-places-protocol-version-2) are planned to replace
+`[hosts]`.
 
 ### Protocol version 1
 
@@ -175,6 +177,71 @@ The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
 runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
 stops with a kernel lock in tmux's private socket directory, taken with
 `flock(1)` or else `perl`, which a killed holder releases.
+
+### Proposed: places (protocol version 2)
+
+**Status**: proposed. No runtime and no Fleet speaks it yet. Version 1,
+above, is the protocol in force. The decision is
+[ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes).
+
+A place is where a runtime runs a process: this machine, an ssh host, a WSL
+distro, a VM. A host's id is `<runtime>/<place>`. `local` is the short form of
+`mux/local`.
+
+```text
+Fleet config                        Fleet                 runtime
+[runtimes.mux]                        │                      │
+program = "runtime-mux"               │ manifest {places}    │
+[runtimes.mux.places.devbox] ────────▶├─────────────────────▶│ checks each place
+kind = "ssh"                          │◀─────────────────────┤ each place: ready, why
+destination = "me@devbox"             │                      │
+                                      │ start {key, place}   │
+Task spec.host = "mux/devbox" ───────▶├─────────────────────▶│ runs it on devbox
+                                      │ place = {name,config}│
+```
+
+Changes from version 1:
+
+- **`place` on every request.** Every request but `manifest` carries
+  `place: {name, config}`, so `list` answers for one place. `config` is the
+  place's table from Fleet's config, as JSON. Fleet does not read it. A
+  runtime that gets a config it cannot use answers Unknown with why. The
+  runtime keeps no place config of its own.
+- **`manifest` reports places.** The request carries `places`, every
+  configured place with its config. The answer adds
+  `places: [{name, platform, dynamic, ready, why}]`:
+  - `platform` is `posix` or `windows`;
+  - `dynamic` is true when each key gets a new machine, such as a VM;
+  - `ready` is false when the place lacks something, and `why` names it and
+    the command that fixes it;
+  - the runtime may add places it discovers, such as WSL distros, with an
+    empty config.
+
+  A runtime with no `[runtimes.<name>.places]` table has one place,
+  `default`, with an empty config. An unreachable runtime makes its places
+  Unknown, never absent.
+
+New optional verbs:
+
+| Verb | Request (besides `protocol`, `place`) | Known answer |
+| --- | --- | --- |
+| `signals` | `key`, `from` (a byte offset) | `{"lines": {"text", "next"}}`: the signal file's lines from `from`, and the offset to ask from next |
+| `shell` | `key` | `{"stream": {"argv"}}` or `{"tty": {"argv"}}`: a shell in the key's directory on its place, opened like `attach` |
+| `browse` | `dir` (absolute, optional: the place's home) | `{"listing": {"dir", "entries": [{"name", "dir", "repo"}]}}`, or `{"failed": {"why"}}` |
+
+- **`signals`.** The runtime sets `FLEET_SIGNAL_FILE` to a file on the place
+  and reads it back for Fleet. Fleet asks from the last `next` it got. A
+  place without the verb keeps today's rule: what the file would say stays
+  Unknown.
+- **`shell`.** thurbox's companion shell on a remote place opens through
+  Fleet with this answer. thurbox keeps no ssh launcher of its own.
+- **`browse`.** The new-session modal browses a place's folders through it,
+  and still takes a clone URL, whose branches `git ls-remote` lists on this
+  machine. `dir` and `repo` say whether an entry is a directory and whether
+  it is a git checkout. A dedicated verb is simpler than `exec` here: an
+  `exec` answer is the text of the place's own command, so the reader would
+  need one parser per platform. The runtime knows its place, and a VM runtime
+  can answer from its own API.
 
 ### What a runtime is
 

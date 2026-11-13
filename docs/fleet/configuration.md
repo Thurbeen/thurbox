@@ -187,6 +187,51 @@ tells whether a program speaks the protocol before a host names it.
 A second Fleet installation on the same runtime needs a distinct
 `keyPrefix`. Store and config must remain separate paths.
 
+### Planned: places of a runtime
+
+**Status**: planned, not implemented. Fleet refuses these keys today. The
+decision is [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes),
+and the protocol is
+[places](../runtime/README.md#proposed-places-protocol-version-2).
+
+The next shape removes `[hosts]`. Each runtime declares its places inline,
+and a Task's `spec.host` names `<runtime>/<place>`:
+
+```toml
+version = 1
+
+[runtimes.mux]
+program = "runtime-mux"
+
+# this machine; spec.host = "local" or "mux/local"
+[runtimes.mux.places.local]
+
+# an ssh host; spec.host = "mux/devbox"
+[runtimes.mux.places.devbox]
+kind = "ssh"
+destination = "me@devbox"
+multiplexer = "tmux"
+
+# a WSL distro; spec.host = "mux/ubuntu"
+[runtimes.mux.places.ubuntu]
+kind = "wsl"
+distro = "Ubuntu"
+
+# a dynamic place: one new VM per key; spec.host = "vm/sandbox"
+[runtimes.vm]
+program = "runtime-vm"
+
+[runtimes.vm.places.sandbox]
+image = "agent-base"
+```
+
+- Fleet passes a place's table to the runtime in each request and does not
+  read it. The keys are the runtime's own: the `runtime-mux` keys above are
+  today's `hosts.toml` fields.
+- A runtime with no `places` table has one place, `default`.
+- `fleet doctor` asks each runtime about each place and prints what is
+  missing, with the command that fixes it. Nothing installs silently.
+
 ### Fake runtime
 
 `[runtime]`, a single table, configures the offline fake runtime for tests
