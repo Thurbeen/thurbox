@@ -64,25 +64,6 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             <a href="https://github.com/Thurbeen/thurbox/releases">releases page</a>.
           </p>
 
-          <h3 id="rmux">Optional RMUX backend</h3>
-          <p>
-            <a href="https://github.com/Helvesec/rmux">RMUX</a> is a Rust terminal
-            multiplexer with a tmux-compatible command interface. Thurbox requires
-            RMUX 0.10.0 or newer. Install it separately on the session machine;
-            <code>cargo install rmux --locked</code> is one upstream option.
-            Follow the <a href="https://github.com/Helvesec/rmux/tree/v0.10.0#installation">upstream installation guide</a>
-            for packages and archive layout, then check <code>rmux -V</code>.
-          </p>
-          <p>
-            Since 3.0 the new-session flow offers no multiplexer: Fleet's
-            <code>runtime-mux</code> starts every session on the platform default,
-            tmux on POSIX and psmux on native Windows. RMUX was tested with thurbox
-            on Linux; macOS, real SSH, WSL execution and native Windows
-            integration remain unverified.
-            See <a href="configuration.html#multiplexers">multiplexer configuration</a>
-            and the <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup">verified version table and troubleshooting</a>.
-          </p>
-
           <h3>Windows (PowerShell)</h3>
           <div class="info-box">
             <p>
@@ -90,7 +71,7 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
               Install
               <a href="https://github.com/psmux/psmux">psmux</a>, a drop-in tmux
               clone on ConPTY that speaks the same control-mode protocol. (A WSL distro is a remote host and runs tmux
-              inside the distro by default; RMUX is opt-in.) psmux is a bit less
+              inside the distro.) psmux is a bit less
               stable, so please report anything you hit.
             </p>
           </div>
@@ -358,7 +339,7 @@ cargo build --release</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td><strong>tmux >= 3.2</strong> (or <strong>psmux >= 3.3.8</strong> on Windows, or opt-in <strong>RMUX >= 0.10.0</strong>)</td>
+                <td><strong>tmux >= 3.2</strong> (or <strong>psmux >= 3.3.8</strong> on Windows)</td>
                 <td>Yes</td>
                 <td>Session backend</td>
               </tr>
@@ -505,11 +486,8 @@ cargo build --release</code></pre>
           <pre data-wrap><code class="language-bash">thurbox-cli version --json      # note tmux_socket and data_dir
 tmux -L thurbox kill-server     # stops every session</code></pre>
           <p>
-            For RMUX sessions run <code>rmux -L &lt;socket&gt; kill-server</code>;
-            for psmux use <code>psmux -L &lt;socket&gt; kill-server</code>.
-            Use the actual socket reported above. If sessions used more than one
-            multiplexer, stop each server separately; stopping tmux leaves RMUX
-            sessions running. Remote servers must be stopped on their hosts.
+            For psmux use <code>psmux -L &lt;socket&gt; kill-server</code>.
+            Use the actual socket reported above. Remote servers must be stopped on their hosts.
           </p>
 
           <h3 id="uninstall-other-tools">2. Remove what Thurbox added to other tools</h3>
@@ -520,13 +498,6 @@ tmux -L thurbox kill-server     # stops every session</code></pre>
             hooks or skills, no shell completions, no shell profile, no tmux or git config, and no
             services.
           </p>
-          <p>
-            Thurbox v2 did write into your coding agents' configs: status-hook entries, status
-            files and two skills. If you ran v2, remove them by hand as
-            <a href="extensions.html">Removing old hook entries</a>
-            describes.
-          </p>
-
           <h3 id="uninstall-binaries">3. Remove the binaries</h3>
           <p>Every install method ships both <code>thurbox</code> and <code>thurbox-cli</code>.</p>
           <pre data-wrap><code class="language-bash"># curl one-liner (the tarball also puts a LICENSE file next to the binaries)
@@ -653,7 +624,5 @@ for wt in ~/.local/share/thurbox/worktrees/*/*/; do
 done
 rm -rf ~/.local/share/thurbox ~/.config/thurbox</code></pre>
           <p>
-            Then remove the v2 hook entries on the host by hand, as
-            <a href="extensions.html#windows-remote">Removing old hook entries</a>
-            describes. A Windows host is the same with psmux and the Windows paths above.
+            A Windows host is the same with psmux and the Windows paths above.
           </p>

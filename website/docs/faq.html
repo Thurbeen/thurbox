@@ -13,8 +13,8 @@ breadcrumb: 'FAQ'
 
 <h2 id="what-is-thurbox">What is Thurbox?</h2>
 <p>
-  Thurbox is a multi-session TUI for coding agents — Claude Code and Codex,
-  through Fleet's harness profiles — running inside persistent multiplexer panes.
+  Thurbox is a multi-session TUI for coding agents — the agents Fleet
+  has harness profiles for — running inside persistent multiplexer panes.
   Every session is a Fleet Task: Fleet starts it in a git worktree of the repository you pick and
   keeps it running, so sessions survive crashes and restarts.
 </p>
@@ -24,7 +24,7 @@ breadcrumb: 'FAQ'
 </h2>
 <p>
   Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses an external
-  multiplexer (tmux, psmux, or opt-in RMUX) for its sessions, runs
+  multiplexer (tmux, or psmux on Windows) for its sessions, runs
   as a lightweight terminal UI rather than an Electron or native desktop app,
   and launches the unmodified vendor CLI rather than its own model. Every pane of
   the interface is a Lua file you can edit, turn off or replace. See the
@@ -33,8 +33,8 @@ breadcrumb: 'FAQ'
 
 <h2 id="supported-agents">Which coding agents does Thurbox support?</h2>
 <p>
-  Thurbox runs the agents Fleet has harness profiles for: today Claude Code and
-  Codex. A new agent is a new profile in Fleet, not a change to Thurbox. Fleet
+  Thurbox runs the agents Fleet has harness profiles for: Fleet bundles Claude
+  Code, Codex, pi, opencode, kilo, omp, Qwen Code, GitHub Copilot CLI and Kimi Code. A new agent is a new profile in Fleet, not a change to Thurbox. Fleet
   launches each agent's own CLI unmodified and never touches the agent's model,
   prompts, or permissions.
 </p>
@@ -62,19 +62,9 @@ breadcrumb: 'FAQ'
 </h2>
 <p>
   Thurbox runs on Linux, macOS, and Windows. It defaults to tmux 3.2+ on
-  Linux/macOS and psmux 3.3.8+ on Windows. RMUX 0.10.0+ is an opt-in alternative tested locally on Linux; other RMUX platforms and transports remain unverified. It can also run sessions on a remote host
+  Linux/macOS and psmux 3.3.8+ on Windows. It can also run sessions on a remote host
   over SSH while the TUI runs locally — remote hosts are declared in
   hosts.toml.
-</p>
-
-<h2 id="rmux-troubleshooting">Why is RMUX missing or refusing to start?</h2>
-<p>
-  Check <code>rmux -V</code> where sessions run: locally, on the SSH host, or
-  inside the WSL distro. The picker offers RMUX only where its binary is
-  found (on <code>PATH</code> locally, by the host probe on a host), and thurbox rejects versions below 0.10.0. An old 0.9.x
-  daemon is incompatible with a 0.10.0 client. Finish or save agents' work before
-  stopping that server for an upgrade. See
-  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup">the upgrade procedure and known limits</a>.
 </p>
 
 <h2 id="persistence">Do my sessions survive a crash or restart?</h2>
@@ -120,7 +110,7 @@ breadcrumb: 'FAQ'
         "name": "What is Thurbox?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Thurbox is a multi-session TUI for coding agents — Claude Code and Codex, through Fleet's harness profiles — running inside persistent multiplexer panes. Every session is a Fleet Task: Fleet starts it in a git worktree of the repository you pick and keeps it running, so sessions survive crashes and restarts."
+          "text": "Thurbox is a multi-session TUI for coding agents — the agents Fleet has harness profiles for — running inside persistent multiplexer panes. Every session is a Fleet Task: Fleet starts it in a git worktree of the repository you pick and keeps it running, so sessions survive crashes and restarts."
         }
       },
       {
@@ -128,7 +118,7 @@ breadcrumb: 'FAQ'
         "name": "How is Thurbox different from other parallel coding-agent tools?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses an external multiplexer (tmux, psmux, or opt-in RMUX) for its sessions, runs as a lightweight terminal UI rather than an Electron or native desktop app, and launches the unmodified vendor CLI rather than its own model. Every pane of the interface is a Lua file you can edit, turn off or replace."
+          "text": "Unlike tools such as Conductor, Claude Squad, or Cursor, Thurbox uses an external multiplexer (tmux, or psmux on Windows) for its sessions, runs as a lightweight terminal UI rather than an Electron or native desktop app, and launches the unmodified vendor CLI rather than its own model. Every pane of the interface is a Lua file you can edit, turn off or replace."
         }
       },
       {
@@ -136,7 +126,7 @@ breadcrumb: 'FAQ'
         "name": "Which coding agents does Thurbox support?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Thurbox runs the agents Fleet has harness profiles for: today Claude Code and Codex. A new agent is a new profile in Fleet, not a change to Thurbox. Fleet launches each agent's own CLI unmodified and never touches the agent's model, prompts, or permissions."
+          "text": "Thurbox runs the agents Fleet has harness profiles for: Fleet bundles Claude Code, Codex, pi, opencode, kilo, omp, Qwen Code, GitHub Copilot CLI and Kimi Code. A new agent is a new profile in Fleet, not a change to Thurbox. Fleet launches each agent's own CLI unmodified and never touches the agent's model, prompts, or permissions."
         }
       },
       {
@@ -152,7 +142,7 @@ breadcrumb: 'FAQ'
         "name": "Which platforms does Thurbox run on? Does it support remote machines?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Thurbox runs on Linux, macOS, and Windows. It defaults to tmux 3.2+ on Linux/macOS and psmux 3.3.8+ on Windows. RMUX 0.10.0+ is an opt-in alternative tested locally on Linux; other RMUX platforms and transports remain unverified. It can also run sessions on a remote host over SSH while the TUI runs locally — remote hosts are declared in hosts.toml."
+          "text": "Thurbox runs on Linux, macOS, and Windows. It defaults to tmux 3.2+ on Linux/macOS and psmux 3.3.8+ on Windows. It can also run sessions on a remote host over SSH while the TUI runs locally — remote hosts are declared in hosts.toml."
         }
       },
       {

@@ -35,7 +35,7 @@ breadcrumb: 'Configuration'
           <h2 id="multiplexers">Multiplexer selection</h2>
           <p>
             Adapters are available for tmux (minimum 3.2), psmux (minimum 3.3.8),
-            and opt-in <a href="installation.html#rmux">RMUX (minimum 0.10.0)</a>.
+            and RMUX (minimum 0.10.0).
             A session's terminal belongs to Fleet's runtime: <code>runtime-mux</code>
             starts it on this platform's default multiplexer, tmux on Linux and
             macOS and psmux on Windows. The top-level <code>multiplexer</code> key in
@@ -43,14 +43,6 @@ breadcrumb: 'Configuration'
             <code>[[hosts]]</code> entry's <code>multiplexer</code> names the
             multiplexer of the companion shell opened on that host.
           </p>
-          <p>
-            RMUX integration was tested locally on Linux with 0.10.0; macOS,
-            real SSH, WSL and native Windows execution remain unverified.
-            The adapter skips unsupported flow control and pane monitoring,
-            treats command lists as one reply, and polls remote hook options.
-            See the <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup">source and release evidence, platform table, and troubleshooting</a>.
-          </p>
-
           <h2 id="files">
             Files at a glance
             <a href="#files" class="heading-anchor">#</a>
@@ -182,7 +174,7 @@ breadcrumb: 'Configuration'
             <strong>live</strong>
             : the TUI polls its mtime (~1/s) and applies edits with a confirmation toast &mdash; no
             restart. The
-            <code>shell_pane</code>/<code>perf_hud</code>/<code>soft_delete</code>
+            <code>shell_pane</code>/<code>perf_hud</code>
             feature flags apply immediately; the
             <code>[notifications]</code>
             knobs, the
@@ -267,8 +259,7 @@ thurbox-cli config show       # effective config + where each value came from</c
             <code>version --json</code> report the Fleet in force.
           </p>
           <p id="agents-toml">
-            The agents are Fleet's harness profiles (<a href="agents.html">Agents</a>). An
-            <code>agents.toml</code> left from 2.x is not read, and can be deleted.
+            The agents are Fleet's harness profiles (<a href="agents.html">Agents</a>).
           </p>
 
           <h2 id="hosts-toml">
@@ -404,11 +395,6 @@ thurbox-cli config show       # effective config + where each value came from</c
                 <td>width below which only the terminal renders</td>
               </tr>
               <tr>
-                <td><code>three_panel_min_cols</code></td>
-                <td><code>120</code></td>
-                <td>width unlocking the optional third column</td>
-              </tr>
-              <tr>
                 <td><code>git_poll_secs</code></td>
                 <td><code>5</code></td>
                 <td>
@@ -431,20 +417,15 @@ thurbox-cli config show       # effective config + where each value came from</c
 scrollback_lines      = 1000   # terminal scrollback kept per session
 hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
 two_panel_min_cols    = 80     # width below which only the terminal renders
-three_panel_min_cols  = 120    # width unlocking the optional third column
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
 automations   = true
-file_viewer   = true
-global_search = true
-info_panel    = true
 shell_pane    = true
-code_review   = true           # accepted, gates nothing (the pane was removed)
 mouse         = true
 notifications = true
-version_check = false          # opt-in: makes a network call
-auto_update   = false          # opt-in: downloads + replaces binaries
+version_check = true           # makes a network call
+auto_update   = true           # downloads + replaces binaries
 
 [notifications]
 backend             = "auto"   # auto / dbus / windows / off
@@ -457,9 +438,9 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
           <p>
             Switch off behaviour that reaches outside the interface.
             <strong>All default to <code>true</code></strong>
-            &mdash; as of 1.0 that includes <code>version_check</code> and
-            <code>auto_update</code>, which both reach the network (they were opt-in before 1.0).
-            <code>shell_pane</code>, <code>perf_hud</code> and <code>soft_delete</code> apply
+            &mdash; <code>version_check</code> and <code>auto_update</code> included, which both
+            reach the network.
+            <code>shell_pane</code> and <code>perf_hud</code> apply
             <strong>live</strong> on save; <code>automations</code>, <code>mouse</code>,
             <code>notifications</code>, <code>version_check</code> and <code>auto_update</code>, and
             the write-once scalars, wait for the next launch. Data is never touched, so re-enabling a
@@ -470,13 +451,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               <strong>A pane is not switched off here.</strong>
               Panes are files, so turning one off is <code>space</code> on its row in the Interface
               tab (<code>Ctrl+,</code> then <code>]</code>), recorded in
-              <code>plugin-state.json</code>. Five
-              keys are still <em>accepted and ignored</em> &mdash; <code>tasks</code>,
-              <code>file_viewer</code>, <code>info_panel</code>, <code>code_review</code> and
-              <code>global_search</code> &mdash; because they gated panes the binary no longer
-              draws. They are parsed rather than rejected so an existing
-              <code>settings.toml</code> keeps loading, but setting one has no effect in either
-              direction. Same for <code>three_panel_min_cols</code>.
+              <code>plugin-state.json</code>.
             </p>
           </div>
           <table>
@@ -494,30 +469,9 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
                 <td>the interface's own firing of due automations, every 15 seconds. <code>thurbox-cli automation tick</code> from an OS timer fires them with no interface open</td>
               </tr>
               <tr>
-                <td><code>file_viewer</code></td>
-                <td><code>true</code></td>
-                <td>Accepted, gates nothing &mdash; the file viewer was removed</td>
-              </tr>
-              <tr>
-                <td><code>global_search</code></td>
-                <td><code>true</code></td>
-                <td>Accepted, gates nothing &mdash; the search strip is a plugin, turned off from
-                  the Interface tab</td>
-              </tr>
-              <tr>
-                <td><code>info_panel</code></td>
-                <td><code>true</code></td>
-                <td>Accepted, gates nothing &mdash; the info panel was removed</td>
-              </tr>
-              <tr>
                 <td><code>shell_pane</code></td>
                 <td><code>true</code></td>
                 <td>per-session shell toggle (<code>Ctrl+T</code>)</td>
-              </tr>
-              <tr>
-                <td><code>code_review</code></td>
-                <td><code>true</code></td>
-                <td>Accepted, gates nothing &mdash; the review view was removed</td>
               </tr>
               <tr>
                 <td><code>mouse</code></td>
@@ -531,7 +485,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               </tr>
               <tr>
                 <td><code>version_check</code></td>
-                <td><code>false</code></td>
+                <td><code>true</code></td>
                 <td>
                   GitHub update check: TUI header &ldquo;update available&rdquo; badge +
                   <code>thurbox-cli version --check</code>
@@ -539,7 +493,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               </tr>
               <tr>
                 <td><code>auto_update</code></td>
-                <td><code>false</code></td>
+                <td><code>true</code></td>
                 <td>
                   silent self-update: download + verify + replace the binaries on startup +
                   <code>thurbox-cli update</code>
@@ -722,7 +676,7 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             , and panes declare theirs in the same style (
             <code>sessions.delete</code>
             ,
-            <code>sessions.restart</code>
+            <code>sessions.rename</code>
             , &hellip;):
           </p>
           <pre data-title="ui.json"><code class="language-json">{ "bindings": { "themes.open": "f2", "sessions.delete": "f3" } }</code></pre>

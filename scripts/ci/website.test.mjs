@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { parse } from 'node-html-parser';
 
@@ -87,16 +87,36 @@ test('orchestration page leads with Fleet v2, its release installer and Fleet Le
   assert.doesNotMatch(page.innerHTML, /raw\.githubusercontent\.com\/Thurbeen\/fleet\//, 'no file from Fleet v1');
 });
 
-test('the extensions page only explains removing the old hook entries by hand', () => {
-  const page = built('docs/extensions.html');
-  const copy = text(page);
-  for (const stale of [...retiredFleet, ...fleetV1]) assert.doesNotMatch(copy, stale);
-  assert.match(copy, /installs nothing into a coding agent's configuration/);
-  assert.doesNotMatch(copy, /thurbox-cli extension/, 'no extension command is offered');
-  for (const file of ['~/.codex/hooks.json', '~/.gemini/settings.json', '~/.kimi-code/config.toml']) {
-    assert.ok(copy.includes(file), `names ${file}`);
+const pages = (dir = '_site') =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) return pages(path);
+    return entry.name.endsWith('.html') ? [path.slice('_site/'.length)] : [];
+  });
+
+// The harnesses Fleet bundles, read from the profiles themselves.
+const harnesses = [
+  ...readFileSync('crates/fleet-api/src/harness/bundled.rs', 'utf8').matchAll(/^name = "([a-z-]+)"$/gm),
+].map((m) => m[1]);
+
+test('the site describes only what exists', () => {
+  assert.ok(!existsSync('_site/docs/extensions.html'), 'no page for the removed hook entries');
+  for (const path of pages()) {
+    const page = built(path);
+    for (const link of page.querySelectorAll('a[href]')) {
+      const href = link.getAttribute('href');
+      assert.doesNotMatch(href, /extensions\.html|#rmux$/, `${path} links ${href}`);
+    }
+    const copy = text(page);
+    assert.doesNotMatch(copy, /soft_delete|agents\.toml/, `${path} names a removed key or file`);
+    if (!['docs/configuration.html', 'docs/architecture.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
   }
-  assert.doesNotMatch(built('index.html').innerHTML, /<code>fleet<\/code>/);
+  const llms = readFileSync('_site/llms.txt', 'utf8');
+  assert.doesNotMatch(llms, /extensions\.html|agents\.toml/);
+  assert.ok(harnesses.length > 2, 'read the bundled harnesses');
+  for (const copy of [text(built('docs/agents.html')), llms]) {
+    for (const name of harnesses) assert.match(copy, new RegExp(`\\b${name}\\b`), `names ${name}`);
+  }
 });
 
 test('plugin catalog lists Fleet Lens in place of the Fleet v1 extension', () => {
