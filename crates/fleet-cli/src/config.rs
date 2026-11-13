@@ -305,18 +305,6 @@ impl Config {
                 ));
             }
         }
-        // `local` names the default runtime's `local` place, and a Task
-        // with no host of its own runs there: a default without one would
-        // leave `local` naming nothing.
-        if let Some(default) = self.default_runtime()
-            && let Some(rt) = self.runtimes.get(default)
-            && !rt.places.is_empty()
-            && !rt.places.contains_key(LOCAL)
-        {
-            return Err(format!(
-                "the default runtime {default} has no `local` place, which the host `local` names: add [runtimes.{default}.places.local], or mark a runtime that has one `default = true`"
-            ));
-        }
         Ok(())
     }
 
@@ -334,6 +322,18 @@ impl Config {
             ([], 1) => self.runtimes.keys().next().map(String::as_str),
             _ => None,
         }
+    }
+
+    /// Why the host `local` names nothing, when it does not: the default
+    /// runtime has places and none of them is `local`, as a runtime of VMs
+    /// alone may.
+    pub fn no_local(&self) -> Option<String> {
+        let default = self.default_runtime()?;
+        (!self.places().iter().any(|p| p.local)).then(|| {
+            format!(
+                "no `local` place: the default runtime {default} has none; add [runtimes.{default}.places.local] or name a place"
+            )
+        })
     }
 
     /// Every place of every runtime, by its id `<runtime>/<place>`.

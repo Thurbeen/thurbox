@@ -214,8 +214,12 @@ image = "agent-base"
   fields as their keys.
 - `local` is the short form of `<runtime>/local` on the default runtime: the
   one with `default = true`, or the only runtime. Fleet refuses a config with
-  several runtimes and no single default at load, and one whose default
-  runtime has a `places` table without `local`.
+  several runtimes and no single default at load.
+- A default runtime whose `places` table has no `local`, such as one of VMs
+  alone, leaves the host `local` naming nothing. Fleet refuses to apply a
+  Task on `local`, or one that names no host, and says why. `fleet doctor`
+  warns, and `fleet runtime places --json` has `"local": null` and a
+  `localWhy`.
 - A runtime or place name is 1 to 253 lowercase letters, digits, `-` or `.`.
 - A place's table comes only from this file. The runtime trusts it.
 - A runtime of protocol version 1 serves only `local`, with no config: a
@@ -227,7 +231,8 @@ image = "agent-base"
   manifest says of it: `{"places": [{host, runtime, place, alias, platform,
   dynamic, ready, why}]}`. `alias` is `"local"` on the place `local` names.
   `ready` is `null` when the runtime did not answer: its places are unknown,
-  never absent. With the fake `[runtime]`, `places` is `null`.
+  never absent. `local` is the id the host `local` names, or `null` with
+  `localWhy` saying why. With the fake `[runtime]`, `places` is `null`.
 - `fleet runtime hosts --json` lists the ids a Task may name, `local` first
   and then each other place. thurbox's new-session flow reads it.
 

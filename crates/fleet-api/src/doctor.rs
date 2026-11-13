@@ -198,6 +198,18 @@ pub fn no_runtime() -> Check {
     }
 }
 
+/// The host `local` names no place, for `why`: a warning, since a config
+/// of other places alone is whole.
+pub fn no_local_place(why: &str) -> Check {
+    Check {
+        area: "runtime",
+        name: "local".into(),
+        level: Level::Warn,
+        detail: why.to_string(),
+        hint: Some("a Task names one of the places `fleet runtime places` lists".into()),
+    }
+}
+
 /// How many checks failed.
 pub fn failed(checks: &[Check]) -> usize {
     checks.iter().filter(|c| c.level == Level::Fail).count()

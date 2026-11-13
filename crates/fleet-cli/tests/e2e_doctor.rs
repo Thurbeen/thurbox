@@ -293,3 +293,27 @@ echo '{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop"],"plac
         "{report:#}"
     );
 }
+
+/// With no `local` place, doctor says so: a warning, since a config of
+/// remote places alone is whole.
+#[test]
+fn a_config_without_a_local_place_is_a_warning() {
+    let env = setup("doctor-no-local");
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.vm]\nprogram = '{}'\n\n[runtimes.vm.places.sandbox]\n",
+            env.root.join("no-such-runtime").to_string_lossy()
+        ),
+    )
+    .expect("config");
+    let report = env.fleet(&["doctor", "--json"]).json();
+    let local = check(&report, "runtime", "local");
+    assert_eq!(local["level"], "warn", "{report:#}");
+    assert!(
+        local["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("no `local` place: the default runtime vm has none")),
+        "{report:#}"
+    );
+}

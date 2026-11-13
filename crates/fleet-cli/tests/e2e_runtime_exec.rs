@@ -437,11 +437,6 @@ fn a_config_whose_hosts_are_ambiguous_is_refused_at_load() {
             "runtimes.mux.places.Dev_Box",
         ),
         (
-            "default-without-local",
-            "[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\n",
-            "the default runtime mux has no `local` place",
-        ),
-        (
             "bad-runtime",
             "[runtimes.Mux]\nprogram = \"runtime-mux\"\n",
             "runtimes.Mux",
@@ -451,6 +446,41 @@ fn a_config_whose_hosts_are_ambiguous_is_refused_at_load() {
         fs::write(&env.config, format!("{head}{body}")).expect("config");
         env.fleet(&["list", "task"]).code(1).stderr_has(why);
     }
+}
+
+/// A default runtime with places and none of them `local`, such as one
+/// of VMs, loads: the host `local` names nothing, a Task on it is refused
+/// by name, and `runtime hosts` and `runtime places` say there is no local
+/// place.
+#[test]
+fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
+    let env = Env::new("runtime-no-local");
+    fs::write(
+        &env.config,
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.vm]\nprogram = \"runtime-vm\"\n\n[runtimes.vm.places.sandbox]\nimage = \"agent-base\"\n",
+    )
+    .expect("config");
+    env.fleet(&["list", "task"]).ok();
+    let hosts = env.fleet(&["runtime", "hosts", "--json"]).ok().json();
+    assert_eq!(hosts, json!({"hosts": ["vm/sandbox"]}));
+    let places = env.fleet(&["runtime", "places", "--json"]).ok().json();
+    assert!(places["local"].is_null(), "{places:#}");
+    let why = "no `local` place: the default runtime vm has none; add [runtimes.vm.places.local] or name a place";
+    assert_eq!(places["localWhy"], why, "{places:#}");
+    env.fleet(&["runtime", "places"]).ok().stdout_has(why);
+    let mut named = support::task("t1", true);
+    named["spec"]["host"] = json!("local");
+    let mut unnamed = support::task("t2", true);
+    unnamed["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    for task in [named, unnamed] {
+        env.apply(task.clone()).code(1).stderr_has(why);
+    }
+    let mut placed = support::task("t3", true);
+    placed["spec"]["host"] = json!("vm/sandbox");
+    env.apply(placed).ok();
 }
 
 /// `fleet runtime places`: each configured place with what its runtime's

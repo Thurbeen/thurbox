@@ -558,9 +558,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
     } = &cli.command
     {
         let places = (!config.runtimes.is_empty()).then(|| runtime_places(&config));
+        let local = config.places().into_iter().find(|p| p.local).map(|p| p.id);
+        let no_local = config.no_local();
         if *json {
-            print_json(&json!({ "places": places }));
+            print_json(&json!({ "places": places, "local": local, "localWhy": no_local }));
         } else {
+            if let Some(why) = &no_local {
+                println!("{why}");
+            }
             match places {
                 Some(places) => {
                     for p in places {
@@ -1602,6 +1607,9 @@ fn cmd_doctor(
         checks.push(doctor::harness(&p.name, &p.program, found.as_deref()));
     }
     if !config.runtimes.is_empty() {
+        if let Some(why) = config.no_local() {
+            checks.push(doctor::no_local_place(&why));
+        }
         for place in config.places() {
             let mut program = exec_program(config, &place.runtime);
             program.place = place.place;
@@ -1871,6 +1879,22 @@ fn cmd_apply(
         let obj: Object =
             serde_json::from_value(item).map_err(|e| fail(format!("item {i}: {e}")))?;
         objs.push(obj);
+    }
+    // `local` naming no place is refused here, by name: the runtime would
+    // only read the host as unreachable.
+    if let Some(why) = config.no_local()
+        && objs.iter().any(|obj| {
+            obj.kind == fleet_api::task::KIND
+                && obj.spec["host"]
+                    .as_str()
+                    .is_none_or(|host| host == fleet_api::task::LOCAL_HOST)
+        })
+    {
+        return Err(Failure {
+            code: exit::ERROR,
+            message: why,
+            hint: Some("name a place `fleet runtime places` lists in spec.host".into()),
+        });
     }
     let mut out = Vec::new();
     let mut forge: Option<ForgeHosts> = None;
