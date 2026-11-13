@@ -261,7 +261,8 @@ npm run fmt:website                  # Auto-fix formatting (Prettier)
 ## Architecture Enforcement
 
 ```bash
-cargo test --test architecture_rules                      # Arch rules
+cargo nextest run -p arch-rules                           # Crate and module rules
+cargo test --test architecture_rules                      # thurbox's own checks
 cargo deny check advisories                               # Advisories
 cargo deny check bans licenses sources                    # Dep policy
 ```

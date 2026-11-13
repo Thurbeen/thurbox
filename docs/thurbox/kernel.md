@@ -379,8 +379,8 @@ were found by running it, not by reading the spec.
 
 ## Where the boundary sits
 
-What `kernel` may reference is declared in `tests/architecture_rules.rs`, which
-fails on any other edge.
+What `kernel` may reference is declared in thurbox's module rules in
+`crates/architecture.toml`, and `arch-rules` fails on any other edge.
 
 ## Testing
 
