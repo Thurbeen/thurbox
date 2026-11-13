@@ -565,8 +565,8 @@ distro** is reached with `wsl.exe -d <distro>` (no credentials, no network);
 does, so the *same* tmux control-mode protocol and POSIX quoting apply —
 only the launch prefix differs (multi-word `sh -c` scripts go through
 `wsl.exe --exec`, which hands argv over verbatim). `wsl.exe` is started off
-the interface's terminal, or an attached WSL session takes the keyboard —
-ADR-13. The session list says where a session runs with its host row, or,
+the interface's terminal, or an attached WSL session takes the keyboard
+([runtime-mux](../runtime/runtime-mux.md#hosts-and-transports)). The session list says where a session runs with its host row, or,
 with host rows off, with an `@` after the dot of the top row of its tree.
 
 **Why a config file rather than ad-hoc destinations?** Named hosts

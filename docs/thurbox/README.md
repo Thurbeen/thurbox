@@ -10,7 +10,7 @@ operational guidance (build commands, module layout, event loop), see
 
 | Document | Purpose | Update when... |
 |---|---|---|
-| [architecture.md](architecture.md) | Architecture decisions, ADR-1 … ADR-41 | Changing a technology or structural pattern |
+| [architecture.md](architecture.md) | Architecture decisions | Changing a technology or structural pattern |
 | [features.md](features.md) | Feature-level design | Altering keybindings, lifecycle, layout, or UX |
 | [performance.md](performance.md) | Render/tick performance decisions | Changing the render loop, a cache, or a worker cadence |
 | [kernel.md](kernel.md) | The plugin kernel: its shape, rules and traps | Changing the kernel's contract with Lua |

@@ -932,7 +932,7 @@ pub trait PaneIo: Send + Sync {
     }
 }
 
-/// Status delivery and the heartbeat, behind the contract (ADR-32): a hook's
+/// Status delivery and the heartbeat, behind the contract (docs/runtime/runtime-mux.md): a hook's
 /// state recorded on a pane and read back, and the one heartbeat window the
 /// server keeps. Where the backend has no status channel
 /// ([`Self::hook_signal_command`] is `None`), recording and listing

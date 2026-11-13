@@ -10,10 +10,9 @@
 //! terminal, the error panel and the perf HUD).
 //!
 //! The split is by file only. There is still exactly one model and one loop —
-//! splitting `App` itself into several would be the mistake ADR-22 already
-//! rejected for v1's `app/mod.rs`, and for the same reason: the invariants that
-//! matter (a frame settles, focus never rests on a hidden pane, a command's
-//! result reaches the pane that asked) hold *across* these groups.
+//! splitting `App` itself into several is what ADR-23 rejects, because the
+//! invariants that matter (a frame settles, focus never rests on a hidden pane,
+//! a command's result reaches the pane that asked) hold *across* these groups.
 
 pub(crate) mod boot;
 pub(crate) mod chrome;

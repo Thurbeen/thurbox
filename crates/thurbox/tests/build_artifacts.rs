@@ -30,7 +30,7 @@ fn default_debug_cli_stays_within_artifact_budget() {
     assert!(String::from_utf8_lossy(&output.stdout).contains(env!("THURBOX_VERSION")));
     // The linked CLI exercises the whole application. Leave room for code growth,
     // while catching the hundreds of MiB of DWARF carried by full debuginfo.
-    // Raised from 128 MiB when the OTLP exporter (ADR-37) brought the first
+    // Raised from 128 MiB when the OTLP exporter brought the first
     // HTTP client into the tree, which put a line-tables-only build near 140.
     let bytes = std::fs::metadata(env!("CARGO_BIN_EXE_thurbox-cli"))
         .expect("Cargo built the CLI")

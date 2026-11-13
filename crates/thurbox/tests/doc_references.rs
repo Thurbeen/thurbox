@@ -57,6 +57,10 @@ const SRC_PATH: &str = r"(?:^|[^\w.~/-])(src/[\w./-]*\w)";
 /// `Rust 1.95+`. A toolchain a measurement ran on (`Rust 1.99.1`) is not one.
 const MSRV_CLAIM: &str = r"(?:MSRV(?: is)?:? |Rust )(1\.\d+)[+,.](?:\D|$)";
 
+/// A decision of `docs/thurbox/architecture.md` as text cites one: `ADR-25`,
+/// `ADR-8b`. The performance decisions (`ADR-P6`) are another document's.
+const DECISION: &str = r"\b(ADR-\d+[a-z]?)\b";
+
 /// Tracked paths never read: fixtures that are deliberately old or broken,
 /// and `.claude/skills`, whose entries are links into `.agents/skills` (read
 /// under that name).
@@ -250,6 +254,43 @@ fn retired_names_stay_retired() {
         cited.is_empty(),
         "retired names cited:\n  {}",
         cited.join("\n  ")
+    );
+}
+
+/// A decision is cited by its number (`ADR-25`), which is a heading of
+/// `docs/thurbox/architecture.md`. A decision deleted or moved elsewhere
+/// leaves its number behind in comments and documents, which then send a
+/// reader nowhere.
+#[test]
+fn every_cited_decision_is_in_architecture_md() {
+    let architecture = std::fs::read_to_string(root().join("docs/thurbox/architecture.md"))
+        .expect("read architecture.md");
+    let decisions: Vec<String> = Regex::new(r"(?m)^## (ADR-\d+[a-z]?):")
+        .unwrap()
+        .captures_iter(&architecture)
+        .map(|m| m[1].to_string())
+        .collect();
+    let cited = Regex::new(DECISION).unwrap();
+    assert_eq!(
+        cited
+            .captures_iter("ADR-8b, ADR-41 and ADR-P6")
+            .map(|m| m[1].to_string())
+            .collect::<Vec<_>>(),
+        ["ADR-8b", "ADR-41"]
+    );
+    let mut dangling = Vec::new();
+    for (rel, text) in texts() {
+        for m in cited.captures_iter(&text).map(|m| m.get(1).unwrap()) {
+            if !decisions.iter().any(|d| d == m.as_str()) {
+                let at = line_of(&text, m.start());
+                dangling.push(format!("{rel}:{at}: {}", m.as_str()));
+            }
+        }
+    }
+    assert!(
+        dangling.is_empty(),
+        "decisions cited that docs/thurbox/architecture.md does not have:\n  {}",
+        dangling.join("\n  ")
     );
 }
 

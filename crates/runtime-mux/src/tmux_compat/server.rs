@@ -46,8 +46,9 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     const MULTIPLEXER: Multiplexer;
 
     /// Whether a `#{@…}` answers with a **window's** own option. Where it does
-    /// not, a stamp identifies nothing (ADR-13): none is written, one read back
-    /// is dropped, and a window is found by its name alone.
+    /// not, a stamp identifies nothing (docs/runtime/runtime-mux.md): none is
+    /// written, one read back is dropped, and a window is found by its name
+    /// alone.
     const WINDOW_OPTIONS: bool;
 
     /// Whether windows take tmux's window settings (`remain-on-exit`,
@@ -434,13 +435,14 @@ fn parse_discovered(line: &str, stamps: bool) -> Option<DiscoveredSession> {
     let name = parts.next()?;
     let dead = parts.next()?;
     // Trailing fields are absent rather than empty on a multiplexer that drops
-    // them (ADR-13); an unstamped window is the same answer either way.
+    // them (docs/runtime/runtime-mux.md); an unstamped window is the same answer either way.
     //
     // Dropped outright when this multiplexer's `#{@...}` is not a *window's*
-    // option (`stamps`, [`TmuxCompatible::WINDOW_OPTIONS`] — ADR-13): there the answer is one
-    // global option handed back for every window, which is not a weaker claim
-    // about whose window this is but no claim at all. Believed, it makes one
-    // session's id every window's and loses every pane on the server; see
+    // option (`stamps`, [`TmuxCompatible::WINDOW_OPTIONS`] —
+    // docs/runtime/runtime-mux.md): there the answer is one global option
+    // handed back for every window, which is not a weaker claim about whose
+    // window this is but no claim at all. Believed, it makes one session's id
+    // every window's and loses every pane on the server; see
     // `a_global_stamp_is_not_read_as_every_windows_identity`.
     let (session, role) = match stamps {
         true => (parts.next().unwrap_or(""), parts.next().unwrap_or("")),
@@ -499,8 +501,8 @@ pub(crate) fn qualify_target<'a>(session: &str, target: &'a str, scoped: bool) -
 /// The tmux window option carrying the id of the session row that owns a
 /// window — the identity a window has that a name and a pane id do not.
 ///
-/// A window *name* is neither unique (two sessions may be given the same one,
-/// and ADR-24 mirrors a host's names verbatim) nor injective
+/// A window *name* is neither unique (two sessions may be given the same one)
+/// nor injective
 /// (`sanitize_window_name` collapses `a:b` and `a.b` onto one), while tmux
 /// reissues pane ids from `%0` every time its server starts. A window option
 /// survives both, stored once on the thing it describes — the same channel
@@ -1809,7 +1811,7 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// What `owner`'s `role` window is, where the listing alone could not say.
     ///
-    /// A multiplexer without window options (ADR-13) stamps nothing, so
+    /// A multiplexer without window options (docs/runtime/runtime-mux.md) stamps nothing, so
     /// local recovery can select the sole fresh live namesake, but multiple live
     /// names stay unknown. A restarted server can reissue a remembered pane id
     /// to another same-name window. One stamp on two windows is repairable,
@@ -2945,7 +2947,7 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         let result = self.ctrl_command_list(&cmds)?;
         // Two fields, and the second is optional in practice: a multiplexer
         // that prints only the pane id (psmux's `-P -F` support is unverified
-        // against the documented divergences, ADR-13) leaves `window_id` None
+        // against the divergences in docs/runtime/runtime-mux.md) leaves `window_id` None
         // and `register_pane` falls back to asking, exactly as before.
         let answer = result.trim();
         let (pane_id, window_id) = match answer.split_once(char::is_whitespace) {
@@ -4967,7 +4969,7 @@ impl<M: TmuxCompatible> Server<M> {
             self.new_named_pane(spec, &window_name, &before)?
         };
         // What stamping does after writing a stamp. A server without window
-        // options writes none (ADR-13).
+        // options writes none (docs/runtime/runtime-mux.md).
         if stamped && retire {
             let _ = self.retire_duplicate_windows(session_id, spec.role);
         }
@@ -4977,7 +4979,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// The pane `new-window` just made on a server that does not answer `-P`:
     /// the one under `window_name` that `before` did not list. psmux does not
     /// reuse pane ids within a server's life, so a new id is the new window,
-    /// and a namesake — allowed, and unstamped there (ADR-13) — is never taken
+    /// and a namesake — allowed, and unstamped there (docs/runtime/runtime-mux.md) — is never taken
     /// for it. No new id means the window already closed with its program.
     fn new_named_pane(
         &self,
@@ -5087,11 +5089,11 @@ impl<M: TmuxCompatible> Server<M> {
     /// no ssh handshake of its own; one-shot otherwise, as every other verb a
     /// caller with no connection runs (issue #1635). Only a server with window
     /// options, though: a server
-    /// that keeps `@` options in one server-global map (psmux, ADR-13) hands the
-    /// same value back for every window, so every window there would read as
-    /// stamped for whoever was stamped last; the stamp is withheld at both ends for
-    /// that reason (issue #1168) and this must not be the one place that believes
-    /// it.
+    /// that keeps `@` options in one server-global map (psmux,
+    /// docs/runtime/runtime-mux.md) hands the same value back for every window,
+    /// so every window there would read as stamped for whoever was stamped
+    /// last; the stamp is withheld at both ends for that reason (issue #1168)
+    /// and this must not be the one place that believes it.
     fn retire_duplicate_windows(&self, session_id: &str, role: WindowRole) -> Option<String> {
         if !M::WINDOW_OPTIONS || session_id.is_empty() {
             return None;
@@ -5271,15 +5273,10 @@ pub(crate) fn push_posix_window_program(
 /// A pane runs with the `PATH` of the thurbox that spawned it — tmux replaces
 /// the session environment's from an **unattached** client, which both local
 /// spawn paths are. Usually that is the right answer and there is nothing to
-/// do. It is not the right answer when the spawning thurbox is a `thurbox-cli`
-/// invoked over ssh by a TUI delegating `session create` to this host
-/// (ADR-24): sshd hands a non-interactive command its own `PATH`
+/// do. It is not when the spawning process was started over ssh: sshd hands a
+/// non-interactive command its own `PATH`
 /// (`/usr/local/bin:/usr/bin:/bin:/usr/games`), which has no `~/.local/bin` on
-/// it — where `thurbox-cli` installs. The status hooks are a **bare** name
-/// (`thurbox-cli session signal --state <s> || true`), so on such a host every
-/// one of them resolved nothing and the `|| true` swallowed it: the host's own
-/// rows never gained a `hook_state`, and every session on it read as
-/// statusless on the TUI mirroring them.
+/// it, so a hook that names a sibling binary bare resolves nothing.
 ///
 /// So the CLI's own directory goes in front ([`crate::instance::resolve_cli_binary`] — the
 /// process running knows where its sibling is even when `PATH` does not).
@@ -7657,9 +7654,9 @@ done
         );
     }
 
-    /// A listing that stops short — the psmux divergence (ADR-13) — reads as an
-    /// unstamped window rather than being dropped, and the prefix still says
-    /// what the window is.
+    /// A listing that stops short — the psmux divergence
+    /// (docs/runtime/runtime-mux.md) — reads as an unstamped window rather than
+    /// being dropped, and the prefix still says what the window is.
     #[test]
     fn a_listing_without_the_stamp_fields_still_discovers_the_window() {
         let parsed = parse_discovered("%1|tbs-fleet|0", true).expect("parsed");
@@ -7672,12 +7669,13 @@ done
 
     /// psmux has **no per-window options**: `set-option -w -t <pane> @k v`
     /// writes a *global* one, and `#{@k}` then expands to it on every window
-    /// (measured on a Windows host, psmux 3.3.6 — ADR-13). So the stamp thurbox
-    /// wrote for one session is handed back as every window's, and both readings
-    /// of that lose the pane: the session it names sees several windows claiming
-    /// it, and every *other* session sees its own window claiming somebody else.
-    /// Both end at "session has no pane yet", which is the whole of Windows
-    /// being unattachable from the second session on.
+    /// (measured on a Windows host, psmux 3.3.6 — docs/runtime/runtime-mux.md).
+    /// So the stamp thurbox wrote for one session is handed back as every
+    /// window's, and both readings of that lose the pane: the session it names
+    /// sees several windows claiming it, and every *other* session sees its own
+    /// window claiming somebody else. Both end at "session has no pane yet",
+    /// which is the whole of Windows being unattachable from the second session
+    /// on.
     #[test]
     fn a_global_stamp_is_not_read_as_every_windows_identity() {
         let listing = |stamps: bool| {

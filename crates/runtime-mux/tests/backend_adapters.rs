@@ -63,7 +63,7 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
 
 /// What a multiplexer can report is its adapter's answer, read off its
 /// `Capabilities` and its status channel: tmux announces a window's close and answers a
-/// snapshot in step with the pane's output, psmux does neither (ADR-13), RMUX
+/// snapshot in step with the pane's output, psmux does neither (docs/runtime/runtime-mux.md), RMUX
 /// answers a snapshot but is polled — on any OS, since none of it is a fact
 /// about one. Only a server that keeps a dead pane can hold an exited window,
 /// and only one with a status channel hands out a hook command.
@@ -641,7 +641,7 @@ esac
 
 /// The contract's pane I/O and shutdown, against a real psmux where one is
 /// installed. Not the stamp-reading half: psmux keeps `@` options in one
-/// server-wide map (ADR-13), so it resolves windows by name and declares that
+/// server-wide map (docs/runtime/runtime-mux.md), so it resolves windows by name and declares that
 /// by stamping nothing.
 #[test]
 fn the_psmux_backend_keeps_the_contract_where_psmux_is_installed() {

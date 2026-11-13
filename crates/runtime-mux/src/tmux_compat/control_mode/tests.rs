@@ -1636,7 +1636,7 @@ fn a_command_list_cut_short_by_an_error_fails_and_keeps_later_answers_in_place()
     assert_eq!(next, "next");
 }
 
-// --- the implicit attach response (ADR-13, issue #1168) ---
+// --- the implicit attach response (docs/runtime/runtime-mux.md) ---
 
 /// The drain takes the implicit block and **only** it: the bytes after `%end`
 /// are the connection's, and eating them would lose the first notification.
