@@ -596,12 +596,11 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 |-----|---------|--------|----------|
 | `Ctrl+Q` | Global | Quit Thurbox (detach sessions) | **Q**uit |
 | `Ctrl+N` | Global | New session (opens repo picker) | **N**ew |
-| `Ctrl+C` | Terminal | Copy selection, or send SIGINT if none | **C**opy |
+| `Ctrl+C` | Terminal | SIGINT; copies the selection only when `copy_on_select` is off | **C**opy |
 | `Ctrl+V` | Terminal | Paste from clipboard into PTY | Paste |
 | `Ctrl+P` | Global | Command palette — every action, filtered as you type | **P**alette |
-| `Ctrl+/` | Global | Global search across every scope | **/** = search |
+| `Ctrl+/` | Global | Search session names and terminal text | **/** = search |
 | `Ctrl+T` / `F8` | Global | Toggle shell pane alongside the agent session | **T**erminal |
-| `Ctrl+X` / `F7` | Global | Toggle the native code-review view | Review |
 | `Ctrl+H` | Global | Focus previous pane (cycle backward) | Vim: **h** = left |
 | `Ctrl+J` | Global | Select next session | Vim: **j** = down |
 | `Ctrl+K` | Global | Select previous session | Vim: **k** = up |
@@ -611,9 +610,8 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |
 | `Ctrl+,` / `F6` | Global | Settings panel (edit settings.toml) | **,** = preferences |
 | `F1` / `Ctrl+G` | Global | Keybindings help + interactive editor | Universal help |
-| `Ctrl+B` / `F2` | Global | Toggle info panel | **B**rowse info |
-| `Ctrl+E` | Global (passthrough) | Rename selected session | **E**dit the name |
-| `F3` | Global | Toggle file viewer | Files |
+| `Ctrl+E` | Session list | Rename selected session | **E**dit the name |
+| `F9` | Global | Toggle the session column | |
 | `Shift+J` | Session list | Move selected session down | Reorder |
 | `Shift+K` | Session list | Move selected session up | Reorder |
 | `Shift+S` | Session list | Sort sessions alphabetically within repo groups | **S**ort |
@@ -642,24 +640,20 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `j` / `Down` | Repo picker | Next repo | |
 | `k` / `Up` | Repo picker | Previous repo | |
 | `Space` | Repo picker | Toggle repo selection | |
-| `w` | Repo picker | Toggle worktree mode for repo | |
-| `d` | Repo picker | Delete bookmark | |
+| `Alt+W` | Repo picker | Toggle a worktree for the repo | |
+| `Alt+D` / `Delete` | Repo picker | Forget the remembered repo | |
 | `Tab` | Repo picker | Switch to path input | |
 | `Tab` | Repo picker input | Accept suggestion, else open the path browser | |
 | `↑`/`↓` | Repo picker browser | Move the dropdown selection | |
 | `Enter` | Repo picker browser | Descend into a dir / pick a git repo | |
 | `Esc` | Repo picker browser | Close the dropdown (modal stays open) | |
 | `Alt+P` | Repo picker | Import typed path as a parent folder (local + remote) | |
-| `Enter` | Repo picker | Confirm selection | |
+| `Enter`, `Ctrl+Enter` / `Alt+Enter` | Repo picker | Confirm selection | |
 | `Esc` | Repo picker | Cancel | |
-| `Shift+Up` | Focused terminal | Scroll up 1 line | |
-| `Shift+Down` | Focused terminal | Scroll down 1 line | |
-| `Shift+PageUp` / `Alt+PageUp` | Focused terminal | Scroll up half page | |
-| `Shift+PageDown` / `Alt+PageDown` | Focused terminal | Scroll down half page | |
+| `PageUp` / `PageDown` | Agent tab | Scroll ten rows up / down | |
 | Mouse wheel | Terminal under the pointer | Scroll its scrollback (agent or shell tab) | |
 | Click | Session row | Select the row; the keyboard stays in the list | |
 | Double-click | Session row | Open it: select the row and focus the agent pane, like `Enter` | |
-| Click | Task/automation/file row | Select the row and focus its pane | |
 | Click | Any pane | Focus the pane under the cursor | |
 | Click / drag | Terminal scrollbar | Jump to, or drag to, a place in the scrollback | |
 | Click | Picker modal row | Select and confirm (Enter; repo picker: Space toggle) | |
@@ -680,8 +674,8 @@ and repo are collapsed, and the saved folded-host count under `plugin_state`.
 Notification focus, accepted search results, attention navigation and a created
 session selected by `focus_new_session` reveal the host and repo they target.
 
-Nearly every shortcut can be remapped, including copy/paste, file-viewer
-navigation, session-list navigation, and terminal scroll. The F1 panel doubles
+Nearly every shortcut can be remapped, including copy/paste,
+session-list navigation, and terminal scroll. The F1 panel doubles
 as a live editor: select an action with `j`/`k`, press `Enter`/`r`, then press
 the chord you want — the next physical keypress (including chords like
 `Ctrl+Q`) becomes that action's sole binding. `d` restores the selected
