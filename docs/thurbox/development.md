@@ -324,8 +324,8 @@ To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for 
   `thurbox-data` (+ a private `TMUX_TMPDIR`) are redirected. Use this to dev with
   your real, logged-in agents without polluting your real thurbox state.
 - **full (`--isolate-home`)** — also overrides `HOME` + `XDG_*`, so the env is
-  hermetic and agents boot with no credentials. This is what `scripts/demo/
-  record.sh` uses (via `tbx_sandbox_init_full`).
+  hermetic and agents boot with no credentials. The demo recorders use it (via
+  `tbx_sandbox_init_full`).
 
 **Profile lifetimes:**
 
@@ -341,7 +341,7 @@ To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for 
   demo recorder uses.
 
 The isolation logic is one helper, `scripts/dev/lib/sandbox-env.sh`, sourced by
-`scripts/dev/sandbox.sh` and `scripts/demo/record.sh` (one source of truth).
+`scripts/dev/sandbox.sh` and the demo recorders (one source of truth).
 `tests/tui_e2e.rs` isolates the same way in Rust — private profile dirs, a short
 private `TMUX_TMPDIR` — so it never touches a real profile either.
 

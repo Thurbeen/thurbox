@@ -193,7 +193,7 @@
           jq # handy for `thurbox-cli … --json` in the sandbox
         ];
 
-        # Optional demo-recording stack (scripts/demo/record.sh).
+        # Optional demo and screenshot stack (scripts/demo/record-*.sh, the ui-review skill).
         demoTools = with pkgs; [
           vhs
           ffmpeg

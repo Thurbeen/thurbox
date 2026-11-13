@@ -551,8 +551,7 @@
       doomVideo.className = 'doom-overlay__video';
       // Intrinsic size reserves the aspect ratio so opening the overlay does not
       // reflow once the first frame arrives. Matches what record-doom.sh emits
-      // (a 160x44 terminal rasterised at font-size 20), not the 1920x1080 the
-      // VHS demos use — keep the two in sync.
+      // (a 160x44 terminal rasterised at font-size 20) — keep the two in sync.
       doomVideo.width = 1944;
       doomVideo.height = 1260;
       doomVideo.loop = true;

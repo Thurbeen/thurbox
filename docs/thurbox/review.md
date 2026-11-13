@@ -289,9 +289,8 @@ default shell: the dialect is derived per file from its own shebang, or from a
 Bash is the norm here - judge a script by the line at the top of it rather than
 by a repo-wide default.
 
-Not everything under this path is shell. scripts/demo/*.tape are VHS tapes
-driving the real TUI, scripts/demo/trim-cast.mjs is Node, and the installers have
-their own block.
+Not everything under this path is shell. scripts/demo/trim-cast.mjs is Node,
+and the installers have their own block.
 
 ### `scripts/install.*`
 

@@ -22,10 +22,8 @@
 # in a running interface** — there is deliberately no `thurbox-cli` for it — so the
 # sandbox seeds the grant the settings modal would have written.
 #
-# Unlike the other demos this is not a VHS tape. VHS drives a TUI through
-# ttyd + a headless browser; here the whole point is a *nested* TUI (thurbox
-# rendering Doom), and the toolchain is lighter: asciinema records the real
-# thurbox to an asciicast and agg rasterises it to frames. No browser.
+# asciinema records the real thurbox (rendering Doom, a nested TUI) to an
+# asciicast and agg rasterises it to frames.
 #
 # The clip is Doom's own attract demo, so nothing has to be played. The engine
 # does handle held keys (it infers releases from auto-repeat timing, which is how
@@ -67,7 +65,7 @@ FONT_SIZE="${FONT_SIZE:-20}"
 FPS="${FPS:-25}"
 # The theme the clip is recorded in, persisted as `theme` in interface.json
 # (src/config/interface_state.rs). `doom` for the obvious reason, and it is what
-# scripts/demo/record.sh puts every other clip in.
+# the other recorders use.
 THEME="${THEME:-doom}"
 # Where the plugin comes from. A `git+` prefix is one of the three spellings that
 # clone (`.git` suffix and `git@host:path` are the others); a filesystem path
@@ -99,8 +97,7 @@ POSTER_AT="${POSTER_AT:-3}"
 
 SBX="${SBX:-/tmp/thurbox-doom-rec}"
 
-# The sessions in the left column, named after the work rather than the agent —
-# the same narrative scripts/demo/record.sh records the other clips against.
+# The sessions in the left column, named after the work rather than the agent.
 # Paired with whichever CLIs are installed, in order; extras are dropped.
 SESSION_NAMES=(fix-osc52-tmux add-wsl-host-tests perf-session-order-cache docs-remote-hooks)
 SESSION_BRANCHES=(fix/osc52-tmux test/wsl-hosts perf/session-order docs/remote-hooks)
@@ -260,7 +257,7 @@ print(f"trusting {pane} at {grant['pin']}")
 PYTRUST
 
 # --- The session list beside Doom: one session per installed agent CLI --------
-# Real CLIs, as in scripts/demo/record.sh, because the rows are the real thing or
+# Real CLIs, because the rows are the real thing or
 # they are a mock-up. No agent pane is ever in the kept window — that starts half a
 # minute after `f7`, with Doom on screen throughout — so nothing an agent prints,
 # account name or past conversation or a trust prompt, can reach the clip.

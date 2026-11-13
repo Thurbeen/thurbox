@@ -16,11 +16,9 @@
 # search. Every session is a Fleet Task on this machine: runtime-mux serves
 # local hosts only, so the clip has no remote host.
 #
-# Not a VHS tape. VHS cannot press a mouse button, and the context menu opens on
-# a right press, nor can it send F-keys or Ctrl+punctuation, so a tape has to
-# rebind half the chords it shows. Here thurbox runs under asciinema inside a
-# private tmux server and `tmux send-keys` presses the real keys — a right press
-# is the SGR mouse report a terminal would send. agg rasterises the cast.
+# thurbox runs under asciinema inside a private tmux server and `tmux
+# send-keys` presses the real keys — the context menu's right press is the SGR
+# mouse report a terminal would send. agg rasterises the cast.
 #
 # Isolation: HOME, XDG, thurbox's config/data and the Fleet store all point into
 # $SBX, and every tmux server lives under its TMUX_TMPDIR, so the teardown

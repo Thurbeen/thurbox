@@ -6,7 +6,7 @@
 # that stops looking like its screenshot breaks this script rather than quietly
 # ageing the doc.
 #
-# It differs from scripts/demo/record.sh in three ways that matter:
+# Three things shape it:
 #
 #   * The profile starts with ZERO sessions and an EMPTY repo memory. The
 #     tutorial's subject is the first launch, and a seeded list would show a
@@ -15,14 +15,10 @@
 #     built-in registry a fresh install really has. (Only when `claude` — the
 #     seeded default — is installed; otherwise two stub agents are registered, so
 #     the agent step is still reached rather than skipped.)
-#   * It is NOT a VHS tape. VHS drives a TUI through ttyd and a headless browser;
-#     stills need neither. thurbox runs in a detached tmux session, `tmux
-#     send-keys` presses the keys, and each screenshot is `capture-pane -e`
-#     rasterised by agg — the same asciicast→agg→ffmpeg chain
-#     scripts/demo/record-doom.sh uses, minus the recording step. The consequence
-#     worth knowing is that the REAL chords are pressed: VHS can emit neither
-#     `Ctrl+/` (search) nor an F-key, so the tapes rebind them and the recordings
-#     are of an interface nobody runs. Here `Ctrl+/` is sent as its actual byte.
+#   * thurbox runs in a detached tmux session, `tmux send-keys` presses the
+#     real chords (`Ctrl+/` is sent as its actual byte), and each screenshot is
+#     `capture-pane -e` rasterised by agg — the same asciicast→agg→ffmpeg chain
+#     scripts/demo/record-doom.sh uses, minus the recording step.
 #
 # Isolation is the shared dev-sandbox helper, in its full flavor: a throwaway
 # HOME/XDG/TMUX_TMPDIR, so this can touch neither your thurbox profile, nor your
@@ -55,8 +51,8 @@ OUT_DIR="${1:-$REPO_ROOT/media/tutorial}"
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
-# The theme every clip in scripts/demo/record.sh is recorded in, so the tutorial
-# and the demo videos show the same thurbox.
+# The theme the demo videos are recorded in, so the tutorial and the videos
+# show the same thurbox.
 THEME="${THEME:-doom}"
 # 140x38 at font size 18 lands around 1500x970 — comfortably past the 80-column
 # two-panel threshold in ui/layout.lua, and under the ~1568px long edge above
@@ -168,7 +164,7 @@ trap cleanup EXIT INT TERM
 
 # Hide `wsl.exe`: WSL distros are auto-discovered, and a discovered host puts the
 # "Run on" step in front of the repo step — which would shift every keypress
-# below by one. record.sh drops the same interop dirs for the same reason.
+# below by one.
 PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/mnt/[a-z]/' | paste -sd: -)
 export PATH
 
@@ -297,8 +293,7 @@ TARGET=tut
 
 send()  { tmux -L "$SOCK" send-keys -t "$TARGET" "$@"; }
 write() { tmux -L "$SOCK" send-keys -t "$TARGET" -l -- "$1"; }
-# Ctrl+/ is 0x1F, which has no tmux key name — the byte is sent directly. (This
-# is the chord VHS cannot emit at all, which is why the tapes rebind search.)
+# Ctrl+/ is 0x1F, which has no tmux key name — the byte is sent directly.
 search() { tmux -L "$SOCK" send-keys -t "$TARGET" -H 1f; }
 # run <command> <settle seconds> — type a command line and let its output land.
 run()   { write "$1"; send Enter; sleep "$2"; }

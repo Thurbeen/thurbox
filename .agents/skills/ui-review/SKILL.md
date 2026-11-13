@@ -12,10 +12,9 @@ environment, takes a PNG screenshot of each major screen/panel, then has Claude
 *look at* every screenshot and write a self-contained **HTML report** with UI/UX
 feedback.
 
-It reuses the proven isolation + seeding model from `scripts/demo/record.sh`, but
-swaps VHS video output for VHS `Screenshot` directives. Nothing it does touches your
-real thurbox sessions, tmux server, or agent accounts — everything runs against the
-`thurbox-dev` dev build in a `mktemp` sandbox that is torn down on exit.
+It takes the screenshots with VHS `Screenshot` directives. Nothing it does touches
+your real thurbox sessions, tmux server, or agent accounts — everything runs against
+the `thurbox-dev` dev build in a `mktemp` sandbox that is torn down on exit.
 
 **Run this from the thurbox repo root** (or any subdir of it). The output lands in
 `target/ui-review/` (git-ignored).
@@ -24,7 +23,7 @@ real thurbox sessions, tmux server, or agent accounts — everything runs agains
 
 `vhs` (+ `ffmpeg` + `ttyd`), `cargo`, `git`, `tmux`. The capture script
 preflights these and fails fast with a clear message if any are missing. Real agent
-CLIs (`claude`/`codex`/`antigravity`/`opencode`) are **optional** — if none are installed
+CLIs (`claude`/`codex`/`opencode`) are **optional** — if none are installed
 the script runs a stub agent so every panel still renders. The sessions are Fleet
 Tasks in the sandbox's own store, so the build includes `fleet` and `runtime-mux`.
 
