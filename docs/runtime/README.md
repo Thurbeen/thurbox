@@ -239,8 +239,11 @@ New optional verbs:
   a file on the place. Before it starts a new process under a key, it asks
   `signals` and records the `next` offset with the restart. Only lines after
   that offset describe the new process, so readiness and trust wait for its
-  own report. An Unknown answer starts nothing. The runtime writes no signal
-  line and stays ignorant of their format.
+  own report. When a runtime that declares `signals` answers Unknown, Fleet
+  starts nothing and asks again on the next pass. A runtime without `signals`
+  restarts all the same, and the session's state stays Unknown, as on any
+  remote place without the verb. The runtime writes no signal line and stays
+  ignorant of their format.
 - **`shell`.** thurbox's companion shell on a remote place opens through
   Fleet with this answer. thurbox keeps no ssh launcher of its own.
 - **`browse`.** The new-session modal browses a place's folders through it,
