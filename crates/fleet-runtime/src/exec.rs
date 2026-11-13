@@ -121,9 +121,12 @@ impl ExecProgram {
     pub fn manifest(&self) -> Observation<Manifest> {
         let request = json!({ "protocol": PROTOCOL, "places": [Place::local()] });
         let manifest = self.ask::<Manifest>("manifest", request);
-        if let Observation::Known(m) = &manifest {
-            self.learn(PROTOCOLS.contains(&m.protocol).then_some(m.protocol));
-        }
+        // An Unknown manifest proves no version: the next request asks again.
+        let protocol = match &manifest {
+            Observation::Known(m) => PROTOCOLS.contains(&m.protocol).then_some(m.protocol),
+            Observation::Unknown { .. } => None,
+        };
+        self.learn(protocol);
         manifest
     }
 
@@ -1278,4 +1281,44 @@ fn check_workspace(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case>
             result: kept,
         },
     ]
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A runtime whose manifest answers what the file `answer` beside it
+    /// holds, and fails when the file is gone.
+    fn runtime(dir: &std::path::Path) -> ExecProgram {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("runtime.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nexec cat '{}'\n",
+                dir.join("answer").display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        ExecProgram::new("test", script.to_string_lossy())
+    }
+
+    #[test]
+    fn a_manifest_that_answers_unknown_forgets_the_version() {
+        let dir = std::env::temp_dir().join(format!("fleet-exec-spoken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let rt = runtime(&dir);
+        std::fs::write(
+            dir.join("answer"),
+            r#"{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop"]}}"#,
+        )
+        .expect("answer");
+        assert!(!rt.manifest().is_unknown());
+        assert_eq!(rt.spoken(), Some(2));
+        std::fs::remove_file(dir.join("answer")).expect("remove");
+        assert!(rt.manifest().is_unknown());
+        assert_eq!(rt.spoken(), None, "an Unknown manifest proves no version");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
