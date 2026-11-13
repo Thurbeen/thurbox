@@ -1,6 +1,6 @@
 # fleet-controllers is pure: it decides and never performs I/O. clippy
 # enforces that at compile time on resolved paths (aliases and re-exports
-# included); crates/fleet-arch checks the same rule from source and proves it
+# included); crates/arch-rules checks the same rule from source and proves it
 # with negative fixtures.
 disallowed-types = [
   { path = "std::fs::File", reason = "pure crate: no filesystem" },

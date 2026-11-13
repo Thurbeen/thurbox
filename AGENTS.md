@@ -18,7 +18,7 @@ the harnesses `fleet version --json` lists.
 ## Repository layout
 
 The repository is one Cargo workspace (ADR-41). `crates/architecture.toml`
-lists its crates and the dependencies each may have; `fleet-arch` checks it.
+lists its crates and the dependencies each may have; `arch-rules` checks it.
 `docs/README.md` describes the components and the contracts between them.
 A bare `src/…` or `tests/…` path in this file, a skill or a document under
 `docs/thurbox/` is the thurbox crate's (`crates/thurbox/src/…`);

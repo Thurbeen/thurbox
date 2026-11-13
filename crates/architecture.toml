@@ -1,6 +1,6 @@
-# Fleet's architecture rules, enforced by crates/fleet-arch (its
+# Fleet's architecture rules, enforced by crates/arch-rules (its
 # `architecture` test) on every gate and CI run. docs/fleet/contracts.md explains
-# each rule; fleet-arch's crate docs say what static checking cannot see.
+# each rule; the arch-rules crate docs say what static checking cannot see.
 #
 # The graph, bottom up:
 #
@@ -15,7 +15,7 @@
 #   fleet-telemetry      adapter OTLP export, off unless OTEL_* asks
 #   fleet-manager        orchestration             -> api, controllers
 #   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, plugin, gateway, telemetry
-#   fleet-arch, fleet-dev  tooling
+#   arch-rules, fleet-dev  tooling
 #
 # The other components share the workspace and none of the graph above:
 #
@@ -129,7 +129,7 @@ deps = []
 role = "component"
 deps = ["runtime-mux", "term-stream"]
 
-[crates.fleet-arch]
+[crates.arch-rules]
 role = "tooling"
 deps = []
 

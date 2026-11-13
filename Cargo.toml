@@ -1,7 +1,7 @@
 [workspace]
 # One repository for thurbox, Fleet and the runtimes (ADR-41). Each component
 # is a crate under crates/; docs/README.md says which may depend on which, and
-# crates/architecture.toml is that rule as fleet-arch checks it.
+# crates/architecture.toml is that rule as arch-rules checks it.
 members = ["crates/*"]
 # The vendored crates are patches, not members: CI runs crossterm's own tests
 # from its own manifest and lockfile.
