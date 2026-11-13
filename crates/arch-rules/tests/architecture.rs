@@ -2117,6 +2117,104 @@ fn module_rules_allow_no_cycle_and_no_unused_grant() {
     );
 }
 
+/// A path restricted to some modules is caught anywhere else, test code
+/// included unless the rule is for production code only, and a file's
+/// counted exception covers exactly its count: one more is caught, and one
+/// fewer is stale.
+#[test]
+fn a_restricted_path_binds_every_module_it_does_not_allow() {
+    let restricted = |extra: &str| {
+        format!(
+            "{RULES}{MODULES}\n[[crates.fx-mod.restricted]]\npaths = [\"fx_mod::b::b\"]\nallowed = [\"c::d\"]\nwhy = \"fixture\"\n{extra}"
+        )
+    };
+    let hit = [("module-restricted", "fx-mod")];
+    let rules = restricted("");
+    modules("restricted-module", &[("architecture.toml", &rules)], &hit);
+    // An exempt root has no module rule, but a restriction binds it.
+    modules(
+        "restricted-root",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { let _ = crate::b::B; }\n",
+            ),
+            ("crates/fx-mod/src/b.rs", "pub fn b() {}\npub struct B;\n"),
+            (
+                "crates/fx-mod/src/lib.rs",
+                "pub mod a;\npub mod b;\npub mod c;\npub fn root() { crate::b::b(); }\n",
+            ),
+        ],
+        &hit,
+    );
+    modules(
+        "restricted-test-code",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { let _ = crate::b::B; }\n#[cfg(test)]\nmod tests { fn t() { crate::b::b(); } }\n",
+            ),
+            ("crates/fx-mod/src/b.rs", "pub fn b() {}\npub struct B;\n"),
+        ],
+        &hit,
+    );
+    let production = restricted("production_only = true\n");
+    modules(
+        "restricted-production-only",
+        &[
+            ("architecture.toml", &production),
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { let _ = crate::b::B; }\n#[cfg(test)]\nmod tests { fn t() { crate::b::b(); } }\n",
+            ),
+            ("crates/fx-mod/src/b.rs", "pub fn b() {}\npub struct B;\n"),
+        ],
+        &[],
+    );
+    let two_calls = "pub fn a() { crate::b::b(); crate::b::b(); }\n";
+    for (sites, want) in [
+        (2, &[][..]),
+        (1, &hit[..]),
+        (3, &[("module-restricted-stale", "fx-mod")][..]),
+    ] {
+        let rules = restricted(&format!(
+            "exceptions = [{{ file = \"a.rs\", sites = {sites}, why = \"fixture\" }}]\n"
+        ));
+        modules(
+            &format!("restricted-exception-{sites}"),
+            &[
+                ("architecture.toml", &rules),
+                ("crates/fx-mod/src/a.rs", two_calls),
+            ],
+            want,
+        );
+    }
+}
+
+/// A grant of a governed module itself admits none of its file modules, so
+/// it is a mistake for a grant naming the file module meant.
+#[test]
+fn a_grant_of_a_governed_module_is_caught() {
+    let rules = format!(
+        "{RULES}{}",
+        MODULES.replace("a = { use = [\"b\"] }", "a = { use = [\"b\", \"c\"] }")
+    );
+    modules(
+        "governed-grant",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { crate::b::b(); let _ = crate::c::X; }\n",
+            ),
+            ("crates/fx-mod/src/c/mod.rs", "pub mod d;\npub struct X;\n"),
+        ],
+        &[("module-governed-grant", "fx-mod")],
+    );
+}
+
 /// A module re-exporting another crate's item is what a path through it
 /// reaches: `a` naming `crate::b::read`, which `b` re-exports from `std`,
 /// reaches `b`.

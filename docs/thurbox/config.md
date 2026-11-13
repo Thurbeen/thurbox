@@ -66,8 +66,8 @@ replaced file keeps its permissions, and a file made read-only is refused
 rather than replaced. This
 protects the process-interruption boundary, not storage failure: the staged
 file and parent directory are not explicitly synced to stable storage.
-`tests/architecture_rules.rs`
-(`files_thurbox_reads_back_are_written_atomically`) fails on any other
+thurbox's restrictions in `crates/architecture.toml`, which `arch-rules`
+checks, fail on any other
 production write, apart from an allow-list of logs, a cache, the control
 socket's privately staged files and the self-update's staged binary.
 
