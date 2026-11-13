@@ -584,8 +584,9 @@ fn worktree(
 /// already holds: an offline machine still gets its worktree.
 ///
 /// Bounded by `deadline`: an http `origin` gives up when it has moved no
-/// bytes for that long, and [`git`]'s default ssh has a connect timeout and
-/// keepalives, so an `origin` that never answers cannot hold the make.
+/// bytes for that long, and [`git`]'s default ssh (used when the user
+/// configured none) has a connect timeout and keepalives, so an `origin`
+/// that never answers cannot hold the make.
 fn fetch_upstream(checkout: &Path, deadline: std::time::Duration) {
     let secs = deadline.as_secs().max(1).to_string();
     let _ = git(
@@ -859,7 +860,7 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
         cmd.env_remove(var);
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
+    if reaches_remote(args) && !own_ssh_command(dir) {
         cmd.env(
             "GIT_SSH_COMMAND",
             "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3",
@@ -891,6 +892,30 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
             String::from_utf8_lossy(&out.stderr).trim()
         ))
     }
+}
+
+/// Whether a call can reach a remote: the calls the default ssh command and
+/// its check in [`own_ssh_command`] are for.
+fn reaches_remote(args: &[&str]) -> bool {
+    args.iter()
+        .any(|arg| matches!(*arg, "fetch" | "set-head" | "clone" | "ls-remote"))
+}
+
+/// Whether the user configured how git runs ssh (`GIT_SSH_COMMAND`, `GIT_SSH`
+/// or `core.sshCommand` for `dir`): a wrapper, a key or a proxy git must keep,
+/// so the default ssh command is not set over it.
+fn own_ssh_command(dir: &Path) -> bool {
+    if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+        return true;
+    }
+    let mut cmd = Command::new("git");
+    for var in GIT_LOCATION_ENV {
+        cmd.env_remove(var);
+    }
+    cmd.current_dir(dir)
+        .args(["config", "--get", "core.sshCommand"])
+        .output()
+        .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
 }
 
 /// A key this program accepts: the runtime protocol's.
@@ -1058,6 +1083,46 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A checkout's own `core.sshCommand` is the one its fetch runs: the
+    /// default ssh options never replace it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fetch_keeps_the_checkouts_own_ssh_command() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(&repo).expect("mkdir");
+        git(&repo, &["init", "-q"], &[]).expect("init");
+        let marker = dir.path().join("used");
+        let wrapper = dir.path().join("ssh-wrapper");
+        fs::write(
+            &wrapper,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .expect("wrapper");
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("chmod");
+        git(
+            &repo,
+            &["remote", "add", "origin", "ssh://example.invalid/repo.git"],
+            &[],
+        )
+        .expect("origin");
+        git(
+            &repo,
+            &[
+                "config",
+                "core.sshCommand",
+                wrapper.to_str().expect("utf-8"),
+            ],
+            &[],
+        )
+        .expect("sshCommand");
+
+        fetch_upstream(&repo, std::time::Duration::from_secs(1));
+
+        assert!(marker.exists(), "the configured ssh command was not run");
+    }
 
     /// An `origin` that accepts the connection and never answers costs the
     /// make the deadline, not forever: the checkout's refs are used as they are.

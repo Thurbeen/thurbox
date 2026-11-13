@@ -1481,6 +1481,39 @@ fn a_fetch_from_an_origin_that_never_answers_gives_up() {
     drop(silent);
 }
 
+/// A repository's own `core.sshCommand` (a wrapper, a key, a proxy) is the one
+/// the picker's fetch runs: thurbox's ssh options never replace it.
+#[cfg(unix)]
+#[test]
+fn a_fetch_keeps_the_repositorys_own_ssh_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = dir.path().join("repo");
+    seed_repo(&repo, "README", "one\n");
+    let marker = dir.path().join("used");
+    let wrapper = dir.path().join("ssh-wrapper");
+    std::fs::write(
+        &wrapper,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .expect("wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    for args in [
+        vec!["remote", "add", "origin", "ssh://example.invalid/repo.git"],
+        vec![
+            "config",
+            "core.sshCommand",
+            wrapper.to_str().expect("utf-8"),
+        ],
+    ] {
+        run_git(git_command(&repo, &args), "git").expect("configure");
+    }
+
+    let _ = fetch_origin(&repo.display().to_string(), Duration::from_secs(1));
+
+    assert!(marker.exists(), "the configured ssh command was not run");
+}
+
 /// A repository with no `origin` has nothing to fetch, and that is no error.
 #[test]
 fn a_repository_with_no_origin_fetches_nothing() {

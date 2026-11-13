@@ -168,8 +168,9 @@ pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
 /// now. A repository
 /// with no `origin` has nothing to fetch.
 ///
-/// Bounded by `deadline`: an ssh `origin` already has a connect timeout and
-/// keepalives ([`crate::shell::ssh_appended_opts`]), and an http one gives up
+/// Bounded by `deadline`: an ssh `origin` has a connect timeout and
+/// keepalives ([`crate::shell::ssh_appended_opts`]) unless the user configured
+/// their own ssh command, and an http one gives up
 /// when it has moved no bytes for that long, so a host that accepts the
 /// connection and never answers costs the picker `deadline`, not forever.
 pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), String> {
@@ -190,7 +191,18 @@ pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), Str
             "origin",
         ],
     );
-    super::non_interactive(&mut fetch);
+    // A repository's own ssh command (`core.sshCommand`, `GIT_SSH_COMMAND`,
+    // `GIT_SSH`: a wrapper, a key, a proxy) is kept, so its fetch works as the
+    // user's own does; only one nothing configures gets thurbox's options.
+    let own_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || super::run_git_capture(&["config", "--get", "core.sshCommand"], &repo)
+            .is_some_and(|command| !command.trim().is_empty());
+    if own_ssh {
+        fetch.env("GIT_TERMINAL_PROMPT", "0");
+    } else {
+        super::non_interactive(&mut fetch);
+    }
     fetch.env("GIT_HTTP_LOW_SPEED_LIMIT", "1").env(
         "GIT_HTTP_LOW_SPEED_TIME",
         deadline.as_secs().max(1).to_string(),
