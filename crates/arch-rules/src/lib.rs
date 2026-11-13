@@ -30,8 +30,8 @@
 //!   the method is a type or trait (`Store::update_status(..)`). The
 //!   qualified-self form `<FileStore>::update_status(..)` is not caught.
 //! - Glob imports are resolved conservatively: a name that could come from a
-//!   forbidden glob is judged as if it did, unless the module declares an
-//!   item of that name itself, which shadows every glob.
+//!   forbidden glob is judged as if it did, unless the module declares that
+//!   name itself in the namespace it is read in, which shadows every glob.
 //! - `cfg` is ignored: code behind any `cfg` is judged too.
 //! - Tests and examples (`tests/`, `benches/`, `#[cfg(test)]` modules inside
 //!   `src/` excepted) are not under the source rules; their manifests are.
@@ -515,9 +515,22 @@ struct Scope {
     aliases: BTreeMap<String, (Vec<String>, bool)>,
     /// Glob imports, unresolved.
     globs: Vec<(Vec<String>, bool)>,
-    /// Names this module's own items declare. A declared item shadows every
-    /// glob import of the same name.
-    items: BTreeSet<String>,
+    /// Names this module's own items declare in the type namespace (modules
+    /// and types) and in the value namespace (functions, constants, a unit
+    /// or tuple struct's constructor). A declared name shadows every glob
+    /// import of it in the same namespace.
+    types: BTreeSet<String>,
+    values: BTreeSet<String>,
+}
+
+impl Scope {
+    /// Whether this module declares `name` itself, so no glob can bring it
+    /// in. A name known to be a type or module (a path prefix, a glob's base)
+    /// is shadowed by a type; any other by a type and a value both, since
+    /// which namespace it is read in is not known here.
+    fn shadows(&self, name: &str, as_type: bool) -> bool {
+        self.types.contains(name) && (as_type || self.values.contains(name))
+    }
 }
 
 /// One crate's sources, indexed for resolution.
@@ -665,22 +678,25 @@ impl Walker<'_> {
 
     fn items(&mut self, items: &[Item]) {
         for item in items {
-            let declared = match item {
-                Item::Const(i) => Some(&i.ident),
-                Item::Enum(i) => Some(&i.ident),
-                Item::Fn(i) => Some(&i.sig.ident),
-                Item::Mod(i) => Some(&i.ident),
-                Item::Static(i) => Some(&i.ident),
-                Item::Struct(i) => Some(&i.ident),
-                Item::Trait(i) => Some(&i.ident),
-                Item::TraitAlias(i) => Some(&i.ident),
-                Item::Type(i) => Some(&i.ident),
-                Item::Union(i) => Some(&i.ident),
-                _ => None,
+            let (types, values) = match item {
+                Item::Mod(i) => (Some(&i.ident), None),
+                Item::Enum(i) => (Some(&i.ident), None),
+                Item::Trait(i) => (Some(&i.ident), None),
+                Item::TraitAlias(i) => (Some(&i.ident), None),
+                Item::Type(i) => (Some(&i.ident), None),
+                Item::Union(i) => (Some(&i.ident), None),
+                Item::Struct(i) => {
+                    let constructor = !matches!(i.fields, syn::Fields::Named(_));
+                    (Some(&i.ident), constructor.then_some(&i.ident))
+                }
+                Item::Fn(i) => (None, Some(&i.sig.ident)),
+                Item::Const(i) => (None, Some(&i.ident)),
+                Item::Static(i) => (None, Some(&i.ident)),
+                _ => (None, None),
             };
-            if let Some(name) = declared {
-                self.scope().items.insert(name.to_string());
-            }
+            let scope = self.scope();
+            scope.types.extend(types.map(ToString::to_string));
+            scope.values.extend(values.map(ToString::to_string));
             self.visit_item(item);
         }
     }
@@ -855,7 +871,7 @@ struct Resolver<'a> {
     cut: Cell<bool>,
     cache: bool,
     resolved: Memo<ResolveKey>,
-    exported: Memo<Vec<String>>,
+    exported: Memo<(Vec<String>, bool)>,
 }
 
 /// Finished results, and the keys whose resolution is under way: asking
@@ -1030,8 +1046,7 @@ impl<'a> Resolver<'a> {
                                 .chain(segments.iter().cloned())
                                 .collect(),
                         ];
-                        // An item the module declares shadows every glob.
-                        let shadowed = self.cache && scope.is_some_and(|s| s.items.contains(first));
+                        let shadowed = scope.is_some_and(|s| s.shadows(first, segments.len() > 1));
                         let module_globs = if globs && !shadowed {
                             scope.map(|s| s.globs.clone()).unwrap_or_default()
                         } else {
@@ -1058,7 +1073,8 @@ impl<'a> Resolver<'a> {
             if let Some(real) = s.first().and_then(|f| idx.renames.get(f)) {
                 s[0] = real.clone();
             }
-            out.extend(self.through_exports(s, depth + 1));
+            // Only a glob's base is resolved without globs: a module or enum.
+            out.extend(self.through_exports(s, !globs, depth + 1));
         }
         out
     }
@@ -1066,17 +1082,23 @@ impl<'a> Resolver<'a> {
     /// Follow re-exports: if `a::b::c` names an item that module `a::b` of
     /// crate `a` imports (or glob-imports), replace that prefix by what it
     /// imports, until nothing changes.
-    fn through_exports(&self, path: Vec<String>, depth: u32) -> Vec<Vec<String>> {
+    /// `names_type`: the whole path names a module or a type.
+    fn through_exports(&self, path: Vec<String>, names_type: bool, depth: u32) -> Vec<Vec<String>> {
         let again = path.clone();
         self.remembered(
             &self.exported,
-            path.clone(),
+            (path.clone(), names_type),
             || vec![again],
-            || self.through_exports_afresh(path, depth),
+            || self.through_exports_afresh(path, names_type, depth),
         )
     }
 
-    fn through_exports_afresh(&self, path: Vec<String>, depth: u32) -> Vec<Vec<String>> {
+    fn through_exports_afresh(
+        &self,
+        path: Vec<String>,
+        names_type: bool,
+        depth: u32,
+    ) -> Vec<Vec<String>> {
         if path.len() < 2 {
             return vec![path];
         }
@@ -1109,7 +1131,8 @@ impl<'a> Resolver<'a> {
                     return out;
                 }
             }
-            if !scope.globs.is_empty() && !(self.cache && scope.items.contains(name)) {
+            let as_type = names_type || k < path.len();
+            if !scope.globs.is_empty() && !scope.shadows(name, as_type) {
                 // The name may be the module's own item or come through any
                 // of its globs: judge every possibility.
                 let mut out = vec![path.clone()];
@@ -1120,7 +1143,7 @@ impl<'a> Resolver<'a> {
                             .chain(std::iter::once(name.clone()))
                             .chain(tail.iter().cloned())
                             .collect();
-                        out.extend(self.through_exports(through, depth + 1));
+                        out.extend(self.through_exports(through, names_type, depth + 1));
                     }
                 }
                 return out;

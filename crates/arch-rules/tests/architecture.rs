@@ -503,6 +503,22 @@ fn nested_glob_imports_resolve_within_the_budget() {
     expect("nested-globs", &[(CTL, &src)], &[]);
 }
 
+/// A function only takes a value name: `fs::read` still reaches the
+/// glob-imported `std::fs` module, so the read is caught.
+#[test]
+fn a_function_does_not_shadow_a_glob_imported_module() {
+    let src = ctl("use std::*;\nfn fs() {}\npub fn x() { let _ = fs::read(\"p\"); }\n");
+    expect("value-shadow", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// A module of the same name does shadow the glob: `fs::read` is the local
+/// module's function, so nothing is reported.
+#[test]
+fn a_module_shadows_a_glob_imported_module() {
+    let src = ctl("use std::*;\nmod fs { pub fn read() {} }\npub fn x() { fs::read(); }\n");
+    expect("type-shadow", &[(CTL, &src)], &[]);
+}
+
 #[test]
 fn io_inside_a_macro_argument_is_caught() {
     let src = ctl("pub fn x() -> String { format!(\"{:?}\", std::fs::remove_file(\"x\")) }\n");
