@@ -1944,6 +1944,358 @@ fn a_component_reaching_another_crate_through_a_reexport_is_caught() {
     );
 }
 
+/// A component with module rules: `a` may use `b`, `b` nothing, and `c` is
+/// `governed`, so each of its file modules is a module of its own.
+const MODULES: &str = "\n[crates.fx-mod]\nrole = \"component\"\ndeps = []\nexempt = [\"lib\"]\ngoverned = [\"c\"]\n\n[crates.fx-mod.modules]\na = { use = [\"b\"] }\nb = { use = [] }\nc = { use = [] }\n\"c::d\" = { use = [\"b\"] }\n";
+
+/// The clean module fixture, with `changes` applied, and what it reports.
+fn modules(case: &str, changes: &[(&str, &str)], want: &[(&str, &str)]) {
+    let rules = format!("{RULES}{MODULES}");
+    let mut files: Vec<(&str, &str)> = vec![
+        ("architecture.toml", &rules),
+        (
+            "crates/fx-mod/fixture.toml",
+            "[package]\nname = \"fx-mod\"\n",
+        ),
+        (
+            "crates/fx-mod/src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\n",
+        ),
+        ("crates/fx-mod/src/a.rs", "pub fn a() { crate::b::b(); }\n"),
+        ("crates/fx-mod/src/b.rs", "pub fn b() {}\n"),
+        ("crates/fx-mod/src/c/mod.rs", "pub mod d;\n"),
+        (
+            "crates/fx-mod/src/c/d.rs",
+            "pub fn d() { crate::b::b(); }\n",
+        ),
+    ];
+    for (p, c) in changes {
+        match files.iter_mut().find(|(fp, _)| fp == p) {
+            Some(f) => f.1 = c,
+            None => files.push((p, c)),
+        }
+    }
+    expect(case, &files, want);
+}
+
+#[test]
+fn a_crate_that_keeps_its_module_rules_passes() {
+    modules("modules-clean", &[], &[]);
+}
+
+/// A module reaching one its rule does not name is caught, test code
+/// included, and so is a reach laundered through a re-export or a `type`
+/// alias declared in a module it may use.
+#[test]
+fn a_module_reaching_what_its_rule_does_not_name_is_caught() {
+    let bad = [("module-edge", "fx-mod")];
+    modules(
+        "modules-edge",
+        &[("crates/fx-mod/src/b.rs", "pub fn b() { crate::a::a(); }\n")],
+        &bad,
+    );
+    modules(
+        "modules-edge-test",
+        &[(
+            "crates/fx-mod/src/b.rs",
+            "pub fn b() {}\n#[cfg(test)]\nmod tests { fn t() { crate::a::a(); } }\n",
+        )],
+        &bad,
+    );
+    modules(
+        "modules-edge-alias",
+        &[
+            (
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub type Seen = crate::c::d::Hidden;\n",
+            ),
+            (
+                "crates/fx-mod/src/c/d.rs",
+                "pub fn d() { crate::b::b(); }\npub struct Hidden;\n",
+            ),
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { crate::b::b(); let _: Option<crate::b::Seen> = None; }\n",
+            ),
+        ],
+        // `b` declaring the alias reaches `c::d` itself, and `a` through it.
+        &bad,
+    );
+}
+
+/// A module with no rule, a file under a governed module with no rule of
+/// its own, and a rule naming no module are each caught; a `#[cfg(test)]`
+/// file is part of the module that declares it.
+#[test]
+fn every_module_is_governed_and_every_rule_names_one() {
+    modules(
+        "modules-ungoverned",
+        &[
+            (
+                "crates/fx-mod/src/lib.rs",
+                "pub mod a;\npub mod b;\npub mod c;\npub mod e;\n",
+            ),
+            ("crates/fx-mod/src/e.rs", ""),
+        ],
+        &[("module-ungoverned", "fx-mod")],
+    );
+    modules(
+        "modules-governed",
+        &[
+            ("crates/fx-mod/src/c/mod.rs", "pub mod d;\npub mod f;\n"),
+            ("crates/fx-mod/src/c/f.rs", ""),
+        ],
+        &[("module-ungoverned", "fx-mod")],
+    );
+    modules(
+        "modules-test-file",
+        &[
+            (
+                "crates/fx-mod/src/c/mod.rs",
+                "pub mod d;\n#[cfg(test)]\nmod tests;\n",
+            ),
+            ("crates/fx-mod/src/c/tests.rs", ""),
+        ],
+        &[],
+    );
+    let unknown = format!("{RULES}{MODULES}gone = {{ use = [] }}\n");
+    modules(
+        "modules-unknown",
+        &[("architecture.toml", &unknown)],
+        &[("module-unknown", "fx-mod")],
+    );
+    let typo = format!(
+        "{RULES}{}",
+        MODULES.replace("governed = [\"c\"]", "governed = [\"cc\"]")
+    );
+    modules(
+        "modules-governed-typo",
+        &[("architecture.toml", &typo)],
+        &[("module-unknown", "fx-mod")],
+    );
+}
+
+/// Two modules allowed to use each other are a cycle, and a grant only test
+/// code uses is unused, whether the test module is inline or a file.
+#[test]
+fn module_rules_allow_no_cycle_and_no_unused_grant() {
+    let cycle = MODULES.replace("b = { use = [] }", "b = { use = [\"a\"] }");
+    let rules = format!("{RULES}{cycle}");
+    modules(
+        "modules-cycle",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() { let _ = crate::a::a; }\n",
+            ),
+        ],
+        &[("module-cycle", "fx-mod")],
+    );
+    let unused = [("module-unused", "fx-mod")];
+    modules(
+        "modules-unused-inline",
+        &[(
+            "crates/fx-mod/src/a.rs",
+            "pub fn a() {}\n#[cfg(test)]\nmod tests { fn t() { crate::b::b(); } }\n",
+        )],
+        &unused,
+    );
+    modules(
+        "modules-unused-file",
+        &[
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() {}\n#[cfg(test)]\nmod tests;\n",
+            ),
+            (
+                "crates/fx-mod/src/a/tests.rs",
+                "fn t() { crate::b::b(); }\n",
+            ),
+        ],
+        &unused,
+    );
+}
+
+/// A top-level inline module needs a rule as a file module does; an inline
+/// `#[cfg(test)]` one is test code of the root that declares it.
+#[test]
+fn an_inline_module_is_governed_too() {
+    modules(
+        "modules-inline",
+        &[(
+            "crates/fx-mod/src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\npub mod extra { pub fn e() { crate::b::b(); } }\n",
+        )],
+        &[("module-ungoverned", "fx-mod")],
+    );
+    modules(
+        "modules-inline-test",
+        &[(
+            "crates/fx-mod/src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\n#[cfg(test)]\nmod tests { fn t() { crate::b::b(); } }\n",
+        )],
+        &[],
+    );
+}
+
+/// Every place `#[cfg(test)]` can stand marks test code, and so does
+/// `cfg(all(.., test))`: an associated constant or method, a trait constant, a
+/// `let`, a statement, a statement macro, a match arm, a field, a variant, a
+/// function or closure parameter, `self`, a generic parameter, a field of a
+/// struct expression or pattern, a pattern, a bare `fn` type's argument, a
+/// `where` predicate, a foreign item, and a
+/// whole file by its inner attribute.
+/// A grant only such code uses is unused.
+#[test]
+fn test_code_anywhere_keeps_no_grant_in_use() {
+    let unused = [("module-unused", "fx-mod")];
+    for (case, a, extra) in [
+        (
+            "test-assoc-const",
+            "pub struct A;\nimpl A {\n    #[cfg(test)]\n    const CHECK: fn() = crate::b::b;\n}\npub fn a() {}\n",
+            None,
+        ),
+        (
+            "test-let",
+            "pub fn a() {\n    #[cfg(test)]\n    let _ = crate::b::b;\n}\n",
+            None,
+        ),
+        (
+            "test-stmt",
+            "pub fn a() {\n    #[cfg(test)]\n    crate::b::b();\n}\n",
+            None,
+        ),
+        (
+            "test-file-attr",
+            "pub fn a() {}\nmod helper;\n",
+            Some((
+                "crates/fx-mod/src/a/helper.rs",
+                "#![cfg(test)]\nfn t() { crate::b::b(); }\n",
+            )),
+        ),
+        (
+            "test-impl-fn",
+            "pub struct A;\nimpl A {\n    #[cfg(test)]\n    fn t() { crate::b::b(); }\n}\npub fn a() {}\n",
+            None,
+        ),
+        (
+            "test-cfg-all",
+            "pub fn a() {}\n#[cfg(all(unix, test))]\nfn t() { crate::b::b(); }\n",
+            None,
+        ),
+        (
+            "test-trait-item",
+            "pub trait T {\n    #[cfg(test)]\n    const CHECK: fn() = crate::b::b;\n}\npub fn a() {}\n",
+            None,
+        ),
+        (
+            "test-arm",
+            "pub fn a(x: u8) {\n    match x {\n        #[cfg(test)]\n        0 => crate::b::b(),\n        _ => {}\n    }\n}\n",
+            None,
+        ),
+        (
+            "test-stmt-macro",
+            "pub fn a() {\n    #[cfg(test)]\n    assert!(crate::b::b() == ());\n}\n",
+            None,
+        ),
+        (
+            "test-field",
+            "pub struct A {\n    #[cfg(test)]\n    pub f: crate::b::B,\n}\npub fn a() {}\n",
+            Some(("crates/fx-mod/src/b.rs", "pub fn b() {}\npub struct B;\n")),
+        ),
+        (
+            "test-variant",
+            "pub enum A {\n    #[cfg(test)]\n    V = crate::b::N,\n}\npub fn a() {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub const N: isize = 0;\n",
+            )),
+        ),
+        (
+            "test-fn-param",
+            "pub fn a() {}\nfn t(#[cfg(test)] _x: crate::b::B) {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-closure-param",
+            "pub fn a() {\n    let _f = |#[cfg(test)] _x: crate::b::B| {};\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-receiver",
+            "pub struct A;\nimpl A {\n    fn t(#[cfg(test)] self: std::rc::Rc<crate::b::B>) {}\n}\npub fn a() {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-generic-param",
+            "pub fn a() {}\nfn t<#[cfg(test)] T: crate::b::Tr>() {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-struct-expr-field",
+            "pub struct S {\n    pub f: (),\n}\npub fn a() {\n    let _ = S { #[cfg(test)] f: crate::b::b() };\n}\n",
+            None,
+        ),
+        (
+            "test-field-pattern",
+            "pub struct S {\n    pub f: (),\n}\npub fn a(s: S) {\n    let S { #[cfg(test)] f: crate::b::C, .. } = s;\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-pattern",
+            "pub fn a() {\n    let _f = |#[cfg(test)] crate::b::C| {};\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-foreign-item",
+            "pub fn a() {}\nunsafe extern \"C\" {\n    #[cfg(test)]\n    fn ext(x: crate::b::B);\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-where-predicate",
+            "pub fn a() {}\nfn t<T>()\nwhere\n    #[cfg(test)]\n    T: crate::b::Tr,\n{\n}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+        (
+            "test-bare-fn-arg",
+            "pub fn a() {}\nfn t(_f: fn(#[cfg(test)] crate::b::B)) {}\n",
+            Some((
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\npub struct B;\npub trait Tr {}\npub const C: () = ();\n",
+            )),
+        ),
+    ] {
+        let mut changes = vec![("crates/fx-mod/src/a.rs", a)];
+        changes.extend(extra);
+        modules(case, &changes, &unused);
+    }
+}
+
 /// A dependency inherited from `[workspace.dependencies]` under another name
 /// is still the workspace crate it names: `mux.workspace = true`, where the
 /// root declares `mux = { package = "fx-store" }`, is an edge to fx-store.

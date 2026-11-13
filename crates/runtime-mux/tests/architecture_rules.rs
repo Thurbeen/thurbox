@@ -1,14 +1,8 @@
-//! The runtime's module rules, enforced as tests: an allowlist over resolved
-//! edges, with the resolver thurbox's `architecture_rules.rs` uses.
-//!
-//! Every module under `src/` has an entry naming the modules it may reference
-//! in any form. On top of the allowlist, the shape the boundary depends on:
-//! the adapters are peers, each is exactly one multiplexer, only the factory
-//! names them, and the route and the contract know no launcher, adapter or
-//! build OS (docs/runtime/runtime-mux.md, ADR-31).
-//!
-//! This file is the one statement of the runtime's layering:
-//! docs/constitution.md R3 points here rather than copy it.
+//! The shape the runtime's boundary depends on, over the module rules in
+//! `crates/architecture.toml` (which `arch-rules` checks): the adapters are
+//! peers, each is exactly one multiplexer, only the factory names them, and
+//! the route and the contract know no launcher, adapter or build OS
+//! (docs/runtime/runtime-mux.md, ADR-31).
 
 #[allow(dead_code)]
 #[path = "../../thurbox/tests/architecture/resolver.rs"]
@@ -19,212 +13,35 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use resolver::{cycles, strip_comments_and_strings, Edge, Reference, Tree};
+use resolver::{strip_comments_and_strings, Edge, Reference, Tree};
 
-/// Per-node dependency allowlist.
-struct ModuleRules {
-    /// A top-level module, or a submodule of a [`SUBMODULE_GOVERNED`] one.
-    name: &'static str,
-    /// Nodes this node may reference in any form.
-    allowed: &'static [&'static str],
+/// The runtime's module rules, as `crates/architecture.toml` declares them:
+/// each module and the modules it may use.
+fn module_rules() -> &'static BTreeMap<String, Vec<String>> {
+    static RULES: OnceLock<BTreeMap<String, Vec<String>>> = OnceLock::new();
+    RULES.get_or_init(|| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../architecture.toml");
+        let file: toml::Table = fs::read_to_string(&path)
+            .expect("read crates/architecture.toml")
+            .parse()
+            .expect("parse crates/architecture.toml");
+        let modules = file["crates"]["runtime-mux"]["modules"]
+            .as_table()
+            .expect("runtime-mux declares its modules");
+        modules
+            .iter()
+            .map(|(name, rule)| {
+                let uses = rule["use"]
+                    .as_array()
+                    .expect("a module rule lists what it uses")
+                    .iter()
+                    .map(|u| u.as_str().expect("a module name").to_string())
+                    .collect();
+                (name.clone(), uses)
+            })
+            .collect()
+    })
 }
-
-/// Which nodes each node may touch.
-const MODULE_RULES: &[ModuleRules] = &[
-    // The host model a route names: pure data, the sink.
-    ModuleRules {
-        name: "host",
-        allowed: &[],
-    },
-    // Pure values: the identity a window is stamped with, the hyperlink runs a
-    // pane records, what the embedder injects, and the TOML parse.
-    ModuleRules {
-        name: "session_id",
-        allowed: &[],
-    },
-    ModuleRules {
-        name: "hyperlink",
-        allowed: &[],
-    },
-    ModuleRules {
-        name: "settings",
-        allowed: &[],
-    },
-    ModuleRules {
-        name: "toml_file",
-        allowed: &[],
-    },
-    // Process lookups: `PATH` and the WSL distro this process runs in.
-    ModuleRules {
-        name: "path_lookup",
-        allowed: &[],
-    },
-    // How a command reaches a machine: quoting, ssh and `wsl.exe` launchers.
-    // `host` for the one conversion from a host entry to its launcher.
-    ModuleRules {
-        name: "shell",
-        allowed: &["host"],
-    },
-    // `hosts.toml`: loading, WSL discovery and the loopback repair plan.
-    ModuleRules {
-        name: "hosts",
-        allowed: &["host", "path_lookup", "shell", "toml_file"],
-    },
-    // A host's `PATH` and the multiplexers on it, probed once and cached.
-    ModuleRules {
-        name: "host_path",
-        allowed: &["host", "shell"],
-    },
-    // Whether the binaries a session needs are installed.
-    ModuleRules {
-        name: "preflight",
-        allowed: &["host", "path_lookup", "shell"],
-    },
-    // The contract every adapter implements and the values that cross it.
-    // Names no adapter, no protocol helper and no host config: the bottom of
-    // the boundary.
-    ModuleRules {
-        name: "contract",
-        allowed: &[],
-    },
-    // Which window is whose (ADR-25), over the listing the contract defines.
-    ModuleRules {
-        name: "identity",
-        allowed: &["contract"],
-    },
-    // Which server an instance's sessions live on (ADR-12).
-    ModuleRules {
-        name: "instance",
-        allowed: &["host", "settings"],
-    },
-    // The pane machinery every backend's stream is wired into: the reader
-    // loop, the vt100 parser, the signals it raises.
-    ModuleRules {
-        name: "pane",
-        allowed: &[
-            "contract",
-            "hyperlink",
-            "identity",
-            "osc8",
-            "output_wake",
-            "session_id",
-        ],
-    },
-    ModuleRules {
-        name: "osc8",
-        allowed: &["hyperlink"],
-    },
-    ModuleRules {
-        name: "output_wake",
-        allowed: &[],
-    },
-    // A container of backends. Knows the contract and nothing that builds one.
-    ModuleRules {
-        name: "registry",
-        allowed: &["host", "contract"],
-    },
-    // The runtime protocol over one backend it is handed: the contract and
-    // nothing that builds one.
-    ModuleRules {
-        name: "protocol",
-        allowed: &["contract", "identity", "workspace"],
-    },
-    // The `workspace` verb's side: the runtime's config, the workspace-git
-    // program it runs, and its setup and teardown steps.
-    ModuleRules {
-        name: "workspace",
-        allowed: &[],
-    },
-    // One pane as a terminal stream, over one backend it is handed.
-    ModuleRules {
-        name: "view",
-        allowed: &["contract"],
-    },
-    // What fills the registry: the only node that names an adapter.
-    ModuleRules {
-        name: "wiring",
-        allowed: &[
-            "host", "shell", "settings", "contract", "registry", "tmux", "psmux", "rmux",
-        ],
-    },
-    // The tmux command and control-mode protocol the adapters speak. Shared
-    // grammar, not an adapter: its root only declares the modules below.
-    ModuleRules {
-        name: "tmux_compat",
-        allowed: &[],
-    },
-    ModuleRules {
-        name: "tmux_compat::server",
-        allowed: &[
-            "host",
-            "shell",
-            "settings",
-            "path_lookup",
-            "host_path",
-            "preflight",
-            "contract",
-            "identity",
-            "instance",
-            "session_id",
-            "tmux_compat::control_mode",
-            "tmux_compat::transport",
-        ],
-    },
-    ModuleRules {
-        name: "tmux_compat::control_mode",
-        allowed: &["shell", "contract", "tmux_compat::transport"],
-    },
-    ModuleRules {
-        name: "tmux_compat::transport",
-        allowed: &["shell", "preflight"],
-    },
-    // The adapters are peers: each reaches the protocol helper and never the
-    // other; nothing reaches one but the factory.
-    ModuleRules {
-        name: "tmux",
-        allowed: &[
-            "host",
-            "shell",
-            "settings",
-            "contract",
-            "tmux_compat::control_mode",
-            "tmux_compat::server",
-            "tmux_compat::transport",
-        ],
-    },
-    ModuleRules {
-        name: "psmux",
-        allowed: &[
-            "host",
-            "shell",
-            "settings",
-            "contract",
-            "instance",
-            "tmux_compat::control_mode",
-            "tmux_compat::server",
-            "tmux_compat::transport",
-        ],
-    },
-    ModuleRules {
-        name: "rmux",
-        allowed: &[
-            "host",
-            "shell",
-            "settings",
-            "contract",
-            "tmux_compat::control_mode",
-            "tmux_compat::server",
-            "tmux_compat::transport",
-        ],
-    },
-];
-
-/// The crate root, which only declares and re-exports, and the `runtime-mux`
-/// program's composition root, which calls the factory as an embedder does.
-const EXEMPT: &[&str] = &["lib", "main"];
-
-/// Nodes whose every file module must be a node of its own.
-const SUBMODULE_GOVERNED: &[&str] = &["tmux_compat"];
 
 /// The node that builds the registry, naming every concrete adapter.
 const FACTORY: &str = "wiring";
@@ -249,14 +66,7 @@ fn src_tree() -> &'static Tree {
 }
 
 fn node_names() -> Vec<&'static str> {
-    MODULE_RULES.iter().map(|r| r.name).collect()
-}
-
-fn rules_for(node: &str) -> &'static ModuleRules {
-    MODULE_RULES
-        .iter()
-        .find(|r| r.name == node)
-        .unwrap_or_else(|| panic!("no rule for node `{node}`"))
+    module_rules().keys().map(String::as_str).collect()
 }
 
 fn describe(tree: &Tree, edge: &Edge) -> String {
@@ -270,119 +80,10 @@ fn describe(tree: &Tree, edge: &Edge) -> String {
 }
 
 fn declared_edges() -> BTreeSet<(String, String)> {
-    MODULE_RULES
+    module_rules()
         .iter()
-        .flat_map(|r| {
-            r.allowed
-                .iter()
-                .map(|to| (r.name.to_string(), to.to_string()))
-        })
+        .flat_map(|(from, uses)| uses.iter().map(|to| (from.clone(), to.clone())))
         .collect()
-}
-
-fn production_graph(tree: &Tree) -> BTreeSet<(String, String)> {
-    tree.edges(&node_names())
-        .into_iter()
-        .filter(|e| !e.test)
-        .map(|e| (e.from, e.to))
-        .collect()
-}
-
-/// Every edge breaks no rule — test code included: a test may not reach what
-/// its module may not.
-#[test]
-fn every_module_rule_holds() {
-    let tree = src_tree();
-    let report: Vec<String> = tree
-        .edges(&node_names())
-        .iter()
-        .filter(|e| !rules_for(&e.from).allowed.contains(&e.to.as_str()))
-        .map(|e| describe(tree, e))
-        .collect();
-    assert!(
-        report.is_empty(),
-        "\narchitecture violation(s), as `from → resolved item @ file:line`:\n  {}\n\
-         Fix the reference, or update MODULE_RULES plus AGENTS.md and \
-         docs/constitution.md if the architecture is changing on purpose.\n",
-        report.join("\n  ")
-    );
-}
-
-/// Every allowance is used by production code: an unused grant is a door
-/// nobody decided to open.
-#[test]
-fn every_allowance_is_used() {
-    let used = production_graph(src_tree());
-    let unused: Vec<String> = declared_edges()
-        .into_iter()
-        .filter(|edge| !used.contains(edge))
-        .map(|(from, to)| format!("{from} → {to}"))
-        .collect();
-    assert!(
-        unused.is_empty(),
-        "\nallowances no production code uses — delete them:\n  {}",
-        unused.join("\n  ")
-    );
-}
-
-/// Both the production graph and the declared one are acyclic.
-#[test]
-fn the_graphs_are_acyclic() {
-    let production = cycles(&production_graph(src_tree()));
-    assert!(production.is_empty(), "production cycle(s): {production:?}");
-    let declared = cycles(&declared_edges());
-    assert!(
-        declared.is_empty(),
-        "MODULE_RULES allow a cycle: {declared:?}"
-    );
-}
-
-/// Every module under `src/` is a node or exempt, every file under a
-/// submodule-governed node is a node of its own, and no rule names a module
-/// that does not exist.
-#[test]
-fn every_module_is_governed() {
-    let tree = src_tree();
-    for entry in fs::read_dir(src_root()).expect("read src/") {
-        let path = entry.expect("readable entry").path();
-        let name = if path.is_dir() {
-            path.file_name()
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            path.file_stem()
-        } else {
-            continue;
-        };
-        let name = name
-            .and_then(|n| n.to_str())
-            .expect("UTF-8 path")
-            .to_string();
-        assert!(
-            MODULE_RULES.iter().any(|r| r.name == name) || EXEMPT.contains(&name.as_str()),
-            "src/{name} has no architecture rule — add a MODULE_RULES entry"
-        );
-    }
-    for parent in SUBMODULE_GOVERNED {
-        for child in tree.file_descendants(parent) {
-            assert!(
-                MODULE_RULES.iter().any(|r| r.name == child),
-                "`{child}` has no architecture rule"
-            );
-        }
-    }
-    for rules in MODULE_RULES {
-        assert!(
-            tree.has_module(rules.name),
-            "`{}` matches nothing",
-            rules.name
-        );
-        for target in rules.allowed {
-            assert!(
-                tree.has_module(target),
-                "`{}` allows `{target}`",
-                rules.name
-            );
-        }
-    }
 }
 
 /// Only the factory may reach an adapter, and nothing may reach the factory:
@@ -390,18 +91,16 @@ fn every_module_is_governed() {
 /// the registry it builds.
 #[test]
 fn only_the_factory_names_an_adapter() {
-    for rules in MODULE_RULES {
+    for (name, uses) in module_rules() {
         assert!(
-            !rules.allowed.contains(&FACTORY),
-            "`{}` may reference {FACTORY}; only an embedder's composition root may",
-            rules.name
+            !uses.iter().any(|u| u == FACTORY),
+            "`{name}` may reference {FACTORY}; only an embedder's composition root may"
         );
-        if rules.name != FACTORY {
+        if name != FACTORY {
             for adapter in ADAPTERS {
                 assert!(
-                    !rules.allowed.contains(adapter),
-                    "`{}` may reference the adapter {adapter}; only {FACTORY} may",
-                    rules.name
+                    !uses.iter().any(|u| u == adapter),
+                    "`{name}` may reference the adapter {adapter}; only {FACTORY} may"
                 );
             }
         }
@@ -433,7 +132,7 @@ fn the_adapters_are_peers() {
     }
     for (from, to) in declared_edges() {
         if crosses(&from, &to) {
-            found.push(format!("MODULE_RULES lets {from} reach {to}"));
+            found.push(format!("the module rules let {from} reach {to}"));
         }
     }
     assert!(

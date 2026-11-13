@@ -165,7 +165,8 @@ by reference, alias or re-export. Every file of `agent`, `config` and `update` i
 so a grant names the file it reads.
 
 The runtime's own modules are held to the same kind of allowlist by
-`crates/runtime-mux/tests/architecture_rules.rs`, listed under
+their module rules in `crates/architecture.toml`, checked by `arch-rules` and
+listed under
 [R3](#r3-runtime-mux-module-isolation) below: the tmux, psmux and RMUX adapters are
 peers, none reaches another, `tmux_compat`, the protocol they speak, reaches
 none (ADR-31), and only the factory names one.
@@ -295,10 +296,12 @@ work. `fleet runtime check` holds every runtime to this.
 
 `runtime-mux` depends on no other crate of the repository, and reads nothing
 of the program embedding it: the settings it honours and where that program
-keeps its data are passed in (`MuxSettings`, `HostsConfig`). Inside it,
-`crates/runtime-mux/tests/architecture_rules.rs` holds the module rules: every
-module under `crates/runtime-mux/src/` has one entry there naming what it may
-reference, and the test is the one copy of that graph.
+keeps its data are passed in (`MuxSettings`, `HostsConfig`). Inside it, the
+module rules in `crates/architecture.toml` give every module under
+`crates/runtime-mux/src/` one entry naming what it may reference, and
+`arch-rules` checks them; that file is the one copy of the graph.
+`crates/runtime-mux/tests/architecture_rules.rs` checks the boundary's shape
+over those rules.
 
 Only the factory, `wiring`, names an adapter, and no module of the runtime
 reaches the factory: the `runtime-mux` program's `main.rs` calls it, as an
@@ -332,4 +335,4 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | F4. One writer per field | `arch-rules` (permitted status writers) | Fleet |
 | R1. A runtime knows no Task | The protocol's schema | Every runtime |
 | R2. Idempotent by key | `fleet runtime check`, run by `crates/fleet-cli/tests/e2e_runtime_exec.rs` | runtime-mux, `examples/runtimes/tmux.sh` |
-| R3. runtime-mux module isolation | `crates/runtime-mux/tests/architecture_rules.rs` + `crates/architecture.toml` | runtime-mux |
+| R3. runtime-mux module isolation | `crates/architecture.toml` checked by `arch-rules`, + `crates/runtime-mux/tests/architecture_rules.rs` | runtime-mux |

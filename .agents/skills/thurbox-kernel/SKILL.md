@@ -79,8 +79,8 @@ copy of that graph. Read the test, not a summary of it. Every file of `agent`,
 `config` and `update` is a node of its own (`SUBMODULE_GOVERNED`), a grant in
 `allowed_path_only` admits fully-qualified paths but never `use`, and only the
 `backend` gateway and `RUNTIME_GATEWAYS` may name `runtime_mux`.
-`crates/runtime-mux` has its own `tests/architecture_rules.rs`, and
-`crates/architecture.toml` is the crate graph.
+`crates/architecture.toml` is the crate graph and holds `runtime-mux`'s module
+rules, which `arch-rules` checks.
 
 ### Module Responsibilities
 
