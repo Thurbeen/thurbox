@@ -164,7 +164,8 @@ pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
 }
 
 /// Fetch the `origin` of the repository at `repo` on this machine, so its
-/// `refs/remotes/origin/*` are the upstream's as they are now. A repository
+/// `refs/remotes/origin/*` and `origin/HEAD` are the upstream's as they are
+/// now. A repository
 /// with no `origin` has nothing to fetch.
 ///
 /// Bounded by `deadline`: an ssh `origin` already has a connect timeout and
@@ -176,7 +177,19 @@ pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), Str
     if super::run_git_capture(&["remote", "get-url", "origin"], &repo).is_none() {
         return Ok(());
     }
-    let mut fetch = super::git_command(&repo, &["fetch", "-q", "origin"]);
+    // `followRemoteHEAD=always` moves `origin/HEAD` to what the upstream
+    // advertises in the same fetch, so an upstream that changed its default
+    // branch is followed (git 2.48+; an older git ignores it).
+    let mut fetch = super::git_command(
+        &repo,
+        &[
+            "-c",
+            "remote.origin.followRemoteHEAD=always",
+            "fetch",
+            "-q",
+            "origin",
+        ],
+    );
     super::non_interactive(&mut fetch);
     fetch.env("GIT_HTTP_LOW_SPEED_LIMIT", "1").env(
         "GIT_HTTP_LOW_SPEED_TIME",

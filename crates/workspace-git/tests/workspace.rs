@@ -619,6 +619,30 @@ fn an_origin_base_on_a_checkout_is_fetched_before_the_make() {
     assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
 }
 
+/// An upstream that changed its default branch is followed: the make's fetch
+/// moves the checkout's `origin/HEAD`, so a new branch with no base starts
+/// from the upstream's new default.
+#[test]
+fn a_checkout_follows_an_upstream_that_changed_its_default_branch() {
+    let s = Sandbox::new();
+    let (checkout, _) = behind_checkout(&s);
+    let upstream = s.base.join("app.git");
+    let work = s.base.join("app-work");
+    git(&work, &["checkout", "-q", "-b", "develop"]);
+    git(&work, &["commit", "-q", "--allow-empty", "-m", "develop"]);
+    git(
+        &work,
+        &["push", "-q", &upstream.display().to_string(), "develop"],
+    );
+    git(&upstream, &["symbolic-ref", "HEAD", "refs/heads/develop"]);
+    let develop = git(&work, &["rev-parse", "HEAD"]);
+    let (dirs, _) = s.made(
+        "t.moved",
+        &[format!("{}?branch=fresh", url("git+file", &checkout))],
+    );
+    assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), develop);
+}
+
 /// With no `origin/HEAD`, a checkout's default base is the fetched
 /// `origin/main`, else `origin/master`.
 #[test]

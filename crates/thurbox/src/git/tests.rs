@@ -1419,6 +1419,25 @@ fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
     assert_eq!(fetched.trim(), moved, "origin/main is the fetched tip");
 }
 
+/// An upstream that changed its default branch is followed: the fetch moves
+/// `origin/HEAD`, so the default is the upstream's new one.
+#[test]
+fn the_default_follows_an_upstream_that_changed_its_default_branch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (upstream, clone, _) = behind_clone(dir.path(), "main");
+    for args in [
+        vec!["checkout", "-q", "-b", "develop"],
+        vec!["commit", "-q", "--allow-empty", "-m", "develop"],
+    ] {
+        run_git(git_command(&upstream, &args), "git").expect("develop");
+    }
+
+    fetch_origin(&clone.display().to_string(), Duration::from_secs(10)).expect("fetch");
+    let read = branches(&clone.display().to_string()).expect("branches");
+
+    assert_eq!(read.default.as_deref(), Some("origin/develop"), "{read:?}");
+}
+
 /// With no `origin/HEAD`, the default is `origin/main`, else `origin/master`.
 #[test]
 fn without_origin_head_the_default_is_origin_main_then_master() {

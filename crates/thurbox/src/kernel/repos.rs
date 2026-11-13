@@ -312,13 +312,17 @@ impl RepoStore {
     /// reads `Pending` meanwhile, which is what the picker's spinner shows. A
     /// later re-read only lists refs, so the list it replaces stays on screen.
     pub fn request_branches(&mut self, repo: &str) {
-        if self.branches_inflight.contains(repo)
-            || self.branches.get(repo).is_some_and(|held| !held.stale())
-        {
+        if self.branches_inflight.contains(repo) {
             return;
         }
+        // The fresh-answer shortcut is for re-reads only: an opening fetches
+        // however recently a closed picker listed the repository.
+        let fetch = !self.fetched.contains(repo);
+        if !fetch && self.branches.get(repo).is_some_and(|held| !held.stale()) {
+            return;
+        }
+        self.fetched.insert(repo.to_string());
         self.branches_inflight.insert(repo.to_string());
-        let fetch = self.fetched.insert(repo.to_string());
         if fetch || !self.branches.contains_key(repo) {
             self.branches.insert(
                 repo.to_string(),
@@ -883,7 +887,8 @@ mod tests {
 
     /// The picker fetches `origin` once when it opens on a repository, behind
     /// the spinner. The re-reads while it stays open list the refs only and
-    /// keep the list on screen; opening it again fetches again.
+    /// keep the list on screen; opening it again fetches again, however fresh
+    /// the list it left.
     #[test]
     fn branches_fetch_once_per_opening_and_rereads_only_list() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -916,7 +921,6 @@ mod tests {
         assert_eq!(origin_main(), first, "a re-read does not fetch");
 
         store.serve(&closed);
-        age_branches(&mut store, &repo);
         store.serve(&open);
         assert_eq!(store.branches(&repo), Some(&BranchListing::Pending));
         settle(&mut store, &repo);

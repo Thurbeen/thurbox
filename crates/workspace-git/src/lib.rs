@@ -577,8 +577,9 @@ fn worktree(
     })
 }
 
-/// Fetch a checkout's `origin`, so a base read from `refs/remotes/origin/*`
-/// is the upstream as it is now, not as the user last fetched it. A checkout
+/// Fetch a checkout's `origin`, so a base read from `refs/remotes/origin/*`,
+/// `origin/HEAD` included (`followRemoteHEAD=always`, git 2.48+), is the
+/// upstream as it is now, not as the user last fetched it. A checkout
 /// with no `origin`, or one that cannot be reached, is made from what it
 /// already holds: an offline machine still gets its worktree.
 ///
@@ -589,7 +590,13 @@ fn fetch_upstream(checkout: &Path, deadline: std::time::Duration) {
     let secs = deadline.as_secs().max(1).to_string();
     let _ = git(
         checkout,
-        &["fetch", "-q", "origin"],
+        &[
+            "-c",
+            "remote.origin.followRemoteHEAD=always",
+            "fetch",
+            "-q",
+            "origin",
+        ],
         &[
             ("GIT_HTTP_LOW_SPEED_LIMIT", "1"),
             ("GIT_HTTP_LOW_SPEED_TIME", &secs),
@@ -856,6 +863,15 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
         cmd.env(
             "GIT_SSH_COMMAND",
             "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3",
+        );
+    }
+    // Every call that reaches a remote (a source's fetch, `set-head --auto`,
+    // a base fetched by name) gives up on an http remote that stalls, as
+    // the ssh default above gives up on an ssh one.
+    if std::env::var_os("GIT_HTTP_LOW_SPEED_TIME").is_none() {
+        cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", "1").env(
+            "GIT_HTTP_LOW_SPEED_TIME",
+            FETCH_DEADLINE.as_secs().to_string(),
         );
     }
     for (k, v) in env {
