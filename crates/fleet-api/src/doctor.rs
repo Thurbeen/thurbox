@@ -194,7 +194,7 @@ pub fn no_runtime() -> Check {
         name: "none".into(),
         level: Level::Fail,
         detail: "no runtime configured".into(),
-        hint: Some("run fleet init, or add [runtimes.mux] and [hosts.local] to the config".into()),
+        hint: Some("run fleet init, or add [runtimes.mux] to the config".into()),
     }
 }
 

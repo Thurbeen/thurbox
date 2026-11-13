@@ -25,7 +25,7 @@ expiry before reconnecting. A repeated `fleet init` keeps the existing config.
 Run `fleet version --json` before applying Tasks. Apply each Task with
 `fleet apply -f FILE`, keeping `dispatch` false until it has been inspected.
 Use the fake-runtime examples for an isolated trial. Real sessions use the
-runtime that `[hosts.<name>]` names for the host each Task names:
+runtime of the place each Task names (`<runtime>/<place>`, or `local`):
 `runtime-mux` by default (`fleet runtime check -- <program>` checks another).
 Workers must use the same config as the Task that dispatches them; persist its data.dir instead of a differing
 `up --data-dir` override. `fleet reconcile` is a bounded diagnostic command

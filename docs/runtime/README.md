@@ -42,10 +42,9 @@ prompt hook. Fleet reads an agent's state off the `capture` screen with its
 own rules, below the hooks; the runtime only returns the screen.
 
 Fleet's config names each runtime in `[runtimes.<name>]`, a `program`, and
-each host in `[hosts.<name>]`, the runtime serving it, so a Task's
-`spec.host` chooses the program ([configuration](../fleet/configuration.md#native-fleet-configuration-fleettoml)).
-[Places](#places-protocol-version-2) are planned to replace
-`[hosts]`.
+its [places](#places-protocol-version-2). A Task's `spec.host` names a place,
+`<runtime>/<place>`, so it chooses the program
+([configuration](../fleet/configuration.md#runtimes-and-their-places)).
 
 ### Protocol version 1
 
@@ -184,15 +183,14 @@ stops with a kernel lock in tmux's private socket directory, taken with
 
 ### Places (protocol version 2)
 
-**Status**: the request's `place` and the manifest's `places` are
-implemented, with `local` as the only place Fleet names. Places in Fleet's
-config and the new verbs below are planned. The decision is
+**Status**: the request's `place`, the manifest's `places` and places in
+Fleet's config are implemented. The new verbs below are planned. The decision is
 [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes).
 
 A place is where a runtime runs a process: this machine, an ssh host, a WSL
-distro, a VM. A host's id is planned to be `<runtime>/<place>`, with `local`
-as the short form of `<runtime>/local` on the default runtime
-([configuration](../fleet/configuration.md#planned-places-of-a-runtime)).
+distro, a VM. A host's id is `<runtime>/<place>`, with `local` as the short
+form of `<runtime>/local` on the default runtime
+([configuration](../fleet/configuration.md#runtimes-and-their-places)).
 
 ```text
 Fleet config                        Fleet                 runtime
@@ -234,8 +232,9 @@ answers. Each later request carries the version that manifest named: a
 version 1 runtime gets version 1 requests, with no place. Fleet keeps the
 version for the life of its process and asks `manifest` again after any
 Unknown answer, so a runtime replaced by one of another version is followed.
-Fleet's config names no places yet, so every request names `local`, with an
-empty config.
+Each request names the place of the Task's host, with its table from
+Fleet's config. A version 1 runtime serves only `local`, with no config: Fleet
+sends it nothing for another place, and that place stays Unknown.
 
 `runtime-mux` answers both versions. A version 1 request runs at `local`. It
 serves `local` alone, with an empty config: a version 2 request naming

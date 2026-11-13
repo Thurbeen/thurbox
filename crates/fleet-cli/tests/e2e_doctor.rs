@@ -65,7 +65,7 @@ fn an_unreachable_runtime_fails_and_the_rest_are_reported_with_their_fix() {
     fs::write(
         &env.config,
         format!(
-            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 5000\n\n[hosts.local]\nruntime = \"mux\"\n",
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 5000\n",
             missing.to_string_lossy()
         ),
     )
@@ -75,7 +75,7 @@ fn an_unreachable_runtime_fails_and_the_rest_are_reported_with_their_fix() {
     run.code(1);
     let report = run.json();
 
-    let runtime = check(&report, "runtime", "local");
+    let runtime = check(&report, "runtime", "mux/local");
     assert_eq!(runtime["level"], "fail", "{report:#}");
     assert!(
         runtime["hint"].as_str().is_some_and(|h| !h.is_empty()),

@@ -155,12 +155,13 @@ beside TOML.
 Provider source paths are always absolute and manager-local, even for remote
 Tasks; they never inherit TOML's relative-path rule.
 
-### Runtimes and hosts
+### Runtimes and their places
 
 A runtime is a program that speaks the
 [runtime protocol](../runtime/README.md#the-runtime-protocol). Each one is a
-`[runtimes.<name>]` table, and each host a Task may name in `spec.host` is a
-`[hosts.<name>]` table naming the runtime that serves it:
+`[runtimes.<name>]` table. A host a Task may name in `spec.host` is a place
+of a runtime, `<runtime>/<place>`
+([ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes)):
 
 ```toml
 version = 1
@@ -172,52 +173,31 @@ dir = "store"
 program = "runtime-mux"
 callTimeoutMs = 10000
 keyPrefix = "fleet"
-
-[hosts.local]
-runtime = "mux"
 ```
 
 This is what `fleet init` writes, with an instance-specific `keyPrefix`:
-`runtime-mux` and nothing else. Fleet never falls back to another runtime.
-With no multiplexer on the machine, the first start fails, naming the
-missing binary, and the Task's `Spawned` condition says so. Another runtime
-is opt-in: add its table and point a host at it. `fleet runtime check -- <program>`
-tells whether a program speaks the protocol before a host names it.
+`runtime-mux` and nothing else. A runtime with no `places` table has one
+place, `local`, so this config has one host, `mux/local`, also named `local`.
+Fleet never falls back to another runtime. With no multiplexer on the
+machine, the first start fails, naming the missing binary, and the Task's
+`Spawned` condition says so. Another runtime is opt-in: add its table.
+`fleet runtime check -- <program>` tells whether a program speaks the
+protocol before a config names it.
 
-A second Fleet installation on the same runtime needs a distinct
-`keyPrefix`. Store and config must remain separate paths.
-
-### Planned: places of a runtime
-
-**Status**: planned, not implemented. Fleet refuses these keys today. The
-decision is [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes),
-and the protocol is
-[places](../runtime/README.md#places-protocol-version-2).
-
-The next shape removes `[hosts]`. Each runtime declares its places inline,
-and a Task's `spec.host` names `<runtime>/<place>`:
+A runtime declares its places inline, one table each:
 
 ```toml
-version = 1
-
 [runtimes.mux]
 program = "runtime-mux"
 default = true
 
 # this machine; spec.host = "local" or "mux/local"
-# (the default runtime: the only one, or the one with default = true)
 [runtimes.mux.places.local]
 
 # an ssh host; spec.host = "mux/devbox"
 [runtimes.mux.places.devbox]
 kind = "ssh"
 destination = "me@devbox"
-multiplexer = "tmux"
-
-# a WSL distro; spec.host = "mux/ubuntu"
-[runtimes.mux.places.ubuntu]
-kind = "wsl"
-distro = "Ubuntu"
 
 # a dynamic place: one new VM per key; spec.host = "vm/sandbox"
 [runtimes.vm]
@@ -227,23 +207,33 @@ program = "runtime-vm"
 image = "agent-base"
 ```
 
-- Fleet passes a place's table to the runtime in each request and does not
-  read it. The keys are the runtime's own: the `runtime-mux` keys above are
-  today's `hosts.toml` fields.
-- A runtime with no `places` table has one place, `local`.
+- Fleet passes a place's table to the runtime in each request
+  ([places](../runtime/README.md#places-protocol-version-2)) and does not
+  read it. The keys are the runtime's own. `runtime-mux` serves `local` only
+  today; its ssh and WSL places are planned, with today's `hosts.toml`
+  fields as their keys.
 - `local` is the short form of `<runtime>/local` on the default runtime: the
   one with `default = true`, or the only runtime. Fleet refuses a config with
   several runtimes and no single default at load.
-- A place's table comes only from this file. Fleet does not read it, and the
-  runtime trusts it.
-- `fleet doctor` asks each runtime about each place and prints what is
-  missing, with the command that fixes it. Nothing installs silently.
+- A runtime or place name is 1 to 253 lowercase letters, digits, `-` or `.`.
+- A place's table comes only from this file. The runtime trusts it.
+- A runtime of protocol version 1 serves only `local`, with no config: a
+  Task on another of its places waits, unknown.
+- `fleet runtime places --json` lists every place with what its runtime's
+  manifest says of it: `{"places": [{host, runtime, place, alias, platform,
+  dynamic, ready, why}]}`. `alias` is `"local"` on the place `local` names.
+  `ready` is `null` when the runtime did not answer: its places are unknown,
+  never absent. With the fake `[runtime]`, `places` is `null`.
+- `fleet runtime hosts --json` lists the ids a Task may name, `local` first
+  and then each other place. thurbox's new-session flow reads it.
+
+A second Fleet installation on the same runtime needs a distinct
+`keyPrefix`. Store and config must remain separate paths.
 
 ### Fake runtime
 
 `[runtime]`, a single table, configures the offline fake runtime for tests
-and trials. It excludes `[runtimes]` and `[hosts]`: a file with both is
-refused. See the [offline fake-runtime example](#offline-fake-runtime-example).
+and trials. It excludes `[runtimes]`: a file with both is refused. See the [offline fake-runtime example](#offline-fake-runtime-example).
 
 ### Fields
 
@@ -256,8 +246,9 @@ refused. See the [offline fake-runtime example](#offline-fake-runtime-example).
 | `runtimes.<name>.callTimeoutMs` | `15000` | Bound for each call but `workspace`, 1 to 300000; the manager lease must outlast the runtime's reported worst case. |
 | `runtimes.<name>.workspaceTimeoutMs` | `600000` | Bound for a `workspace` call, which can clone a repository. Unknown on timeout concludes nothing: the next pass asks again under the same key. |
 | `runtimes.<name>.keyPrefix` | `fleet` | The first part of every key Fleet gives the runtime, `<keyPrefix>.<uid>`; at most 32 lowercase letters, digits and `-`. |
-| `hosts.<name>.runtime` | Required for each host | The `[runtimes.<name>]` serving the host. A host naming no runtime, and a runtime no host names, are refused at load. A Task whose `spec.host` is not listed fails its spawn. |
-| `runtime.kind` | Required when configuring `[runtime]` | `fake`; excludes `[runtimes]` and `[hosts]`. |
+| `runtimes.<name>.default` | `false` | The runtime whose `local` place the host `local` names. Required on one runtime when there are several. |
+| `runtimes.<name>.places.<place>` | one place, `local` | A place of the runtime: a table Fleet passes to it in each request and does not read. A Task names it as `spec.host = "<name>/<place>"`; one naming no place is on an unreachable host and waits. |
+| `runtime.kind` | Required when configuring `[runtime]` | `fake`; excludes `[runtimes]`. |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
 
 `--data-dir` is for explicit store operations. `fleet up` rejects a differing

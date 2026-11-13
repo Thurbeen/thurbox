@@ -82,6 +82,12 @@ pub struct ExecProgram {
     /// The first part of every key this Fleet gives the runtime: a second
     /// Fleet on the same runtime takes its own.
     pub key_prefix: String,
+    /// The place each request names (ADR-42): `local` unless the host is
+    /// another of the runtime's places.
+    pub place: Place,
+    /// Every place of the runtime the config names, which `manifest` asks
+    /// about.
+    pub places: Vec<Place>,
     /// The protocol version the runtime's last manifest named, when Fleet
     /// speaks it: what each request carries.
     spoken: Arc<Mutex<Option<u64>>>,
@@ -96,6 +102,8 @@ impl ExecProgram {
             call_timeout: Duration::from_secs(15),
             workspace_timeout: DEFAULT_WORKSPACE_TIMEOUT,
             key_prefix: "fleet".into(),
+            place: Place::local(),
+            places: vec![Place::local()],
             spoken: Arc::default(),
         }
     }
@@ -115,11 +123,11 @@ impl ExecProgram {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = protocol;
     }
 
-    /// The runtime's `manifest`, asked about its one place, `local`: no
-    /// config names places yet (ADR-42). A runtime of either version answers
-    /// it, and the version it names is what later requests carry.
+    /// The runtime's `manifest`, asked about each of its places. A runtime
+    /// of either version answers it, and the version it names is what later
+    /// requests carry.
     pub fn manifest(&self) -> Observation<Manifest> {
-        let request = json!({ "protocol": PROTOCOL, "places": [Place::local()] });
+        let request = json!({ "protocol": PROTOCOL, "places": self.places });
         let manifest = self.ask::<Manifest>("manifest", request);
         // An Unknown manifest proves no version: the next request asks again.
         let protocol = match &manifest {
@@ -131,10 +139,10 @@ impl ExecProgram {
     }
 
     /// `fields` as a request of `protocol`: version 2 names the place.
-    fn request(protocol: u64, fields: Value) -> Value {
+    fn request(&self, protocol: u64, fields: Value) -> Value {
         let mut request = json!({ "protocol": protocol });
         if protocol >= 2 {
-            request["place"] = json!(Place::local());
+            request["place"] = json!(self.place);
         }
         if let (Some(r), Value::Object(f)) = (request.as_object_mut(), fields) {
             r.extend(f);
@@ -142,13 +150,31 @@ impl ExecProgram {
         request
     }
 
+    /// Why a runtime of `protocol` cannot serve `place`, if it cannot:
+    /// version 1 names no place, so it serves only `local`, with no config.
+    pub fn unplaced(&self, protocol: u64, place: &Place) -> Option<String> {
+        (protocol < 2 && (place.name != Place::LOCAL || !place.config.is_empty())).then(|| {
+            format!(
+                "runtime {} speaks protocol 1, which has no places: it serves only {:?}, with no config, not {:?}",
+                self.name,
+                Place::LOCAL,
+                place.name
+            )
+        })
+    }
+
     /// The version to speak: the one learned, or the manifest's.
     fn protocol(&self) -> Observation<u64> {
         if let Some(protocol) = self.spoken() {
-            return Observation::Known(protocol);
+            return match self.unplaced(protocol, &self.place) {
+                Some(why) => Observation::unknown(why),
+                None => Observation::Known(protocol),
+            };
         }
         bind(self.manifest(), |m| {
-            if PROTOCOLS.contains(&m.protocol) {
+            if let Some(why) = self.unplaced(m.protocol, &self.place) {
+                Observation::unknown(why)
+            } else if PROTOCOLS.contains(&m.protocol) {
                 Observation::Known(m.protocol)
             } else {
                 Observation::unknown(format!(
@@ -164,7 +190,7 @@ impl ExecProgram {
     /// version is asked its manifest again.
     fn send<T: DeserializeOwned>(&self, verb: &str, fields: Value) -> Observation<T> {
         let answer = bind(self.protocol(), |protocol| {
-            self.ask(verb, Self::request(protocol, fields))
+            self.ask(verb, self.request(protocol, fields))
         });
         if answer.is_unknown() {
             self.learn(None);
@@ -427,7 +453,11 @@ impl ExecRuntime {
     fn program(&self, host: &str) -> Result<&ExecProgram, String> {
         self.hosts
             .get(host)
-            .ok_or_else(|| format!("no runtime serves host {host:?}; name one in [hosts.{host}]"))
+            .ok_or_else(|| {
+                format!(
+                    "no runtime serves host {host:?}: name `<runtime>/<place>` from [runtimes.<name>.places.<place>], or `local`"
+                )
+            })
     }
 
     fn inspect(&self, host: &str, fleet_key: &str) -> Observation<Inspected> {
@@ -635,6 +665,9 @@ impl Runtime for ExecRuntime {
                     "runtime {} speaks protocol {}; Fleet speaks {PROTOCOLS:?}",
                     rt.name, m.protocol
                 ));
+            }
+            if let Some(why) = rt.unplaced(m.protocol, &rt.place) {
+                return Observation::unknown(why);
             }
             Observation::Known(true)
         })
@@ -979,11 +1012,18 @@ pub struct Case {
     pub result: Result<(), String>,
 }
 
-/// Whether `program` answers its `manifest` as Fleet speaks the protocol:
-/// what `fleet doctor` asks of each host's runtime, and the first case of
-/// [`check`].
+/// Whether `program` answers its `manifest` as Fleet speaks the protocol,
+/// and can serve its place: what `fleet doctor` asks of each place's
+/// runtime. [`check`]'s first case is the protocol half.
 pub fn reach(program: &ExecProgram) -> Result<(), String> {
-    speaks(&program.manifest())
+    let manifest = program.manifest();
+    speaks(&manifest)?;
+    match &manifest {
+        Observation::Known(m) => program
+            .unplaced(m.protocol, &program.place)
+            .map_or(Ok(()), Err),
+        Observation::Unknown { .. } => Ok(()),
+    }
 }
 
 fn speaks(manifest: &Observation<Manifest>) -> Result<(), String> {
@@ -1023,7 +1063,7 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
         Observation::Known(m) => (PROTOCOL, m.verbs.clone()),
         Observation::Unknown { .. } => (PROTOCOL, Vec::new()),
     };
-    let request = |fields: Value| ExecProgram::request(protocol, fields);
+    let request = |fields: Value| program.request(protocol, fields);
     let start = |k: &str, argv: &[&str]| {
         program.ask::<Started>(
             "start",
@@ -1236,7 +1276,7 @@ fn check_workspace(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case>
     let make = || {
         program.ask::<WorkspaceAnswer>(
             "workspace",
-            ExecProgram::request(protocol, json!({ "key": key, "urls": [url] })),
+            program.request(protocol, json!({ "key": key, "urls": [url] })),
         )
     };
     let idempotent = match (make(), make()) {
@@ -1263,7 +1303,7 @@ fn check_workspace(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case>
     };
     let released = program.ask::<Stopped>(
         "stop",
-        ExecProgram::request(protocol, json!({ "key": key, "release": true })),
+        program.request(protocol, json!({ "key": key, "release": true })),
     );
     let kept = match released {
         Observation::Known(Stopped::Stopped) if dir.is_dir() => Ok(()),

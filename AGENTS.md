@@ -45,8 +45,8 @@ and the `fleet-*` skills own the detail):
   Fleet's release joins this repository's pipeline. The repository's gate
   (`.publish.yaml`, CI) covers Fleet's crates like every other.
 - Fleet reaches sessions through the runtime protocol
-  (`docs/runtime/README.md`): `[runtimes.<name>]` names a program,
-  `[hosts.<name>]` the runtime serving a host, and `fleet-runtime`'s `exec`
+  (`docs/runtime/README.md`): `[runtimes.<name>]` names a program and its
+  places, a host is `<runtime>/<place>`, and `fleet-runtime`'s `exec`
   kind runs `<program> <verb>` through `fleet-exec`. Fleet and a runtime share
   no Rust type: `fleet runtime check -- <program>` (the conformance suite,
   `fleet_runtime::exec::check`) and `crates/fleet-cli/tests/e2e_runtime_exec.rs`,

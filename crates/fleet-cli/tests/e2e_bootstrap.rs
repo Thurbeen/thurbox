@@ -40,11 +40,10 @@ fn installed(env: &Env, args: &[&str]) -> Command {
 }
 
 /// `config` with `runtime` as its one `[runtime]`, in place of the
-/// `[runtimes]` and `[hosts]` that `init` writes.
+/// `[runtimes]` that `init` writes.
 fn set_runtime(config: &mut toml::Value, runtime: toml::Value) {
     let table = config.as_table_mut().unwrap();
     table.remove("runtimes");
-    table.remove("hosts");
     table.insert("runtime".into(), runtime);
 }
 
@@ -601,7 +600,7 @@ fn init_writes_the_config_and_no_starter_workspace() {
     let text = fs::read_to_string(&config).unwrap();
     assert!(!text.contains("[starter]"), "{text}");
     assert!(
-        text.contains("[runtimes.mux]") && text.contains("[hosts.local]"),
+        text.contains("[runtimes.mux]") && !text.contains("[hosts"),
         "{text}"
     );
     assert!(!env.root.join("local-data/fleet/vega").exists());
