@@ -87,16 +87,6 @@ to a repository of its own with nothing to untangle.
 | The terminal stream | a view ↔ the process `fleet attach` names | [Runtimes](runtime/README.md#the-terminal-stream) |
 | Workspaces | Fleet → a runtime: a list of URLs in, one directory per URL out | [Runtimes](runtime/README.md#workspaces) |
 
-## Open
-
-- A schedule kind in Fleet to replace thurbox's `automations.json`.
-- Fork and `restart --fresh`: a conversation field on the Task, or dropped.
-- Shared hosts: one Fleet store per operator is assumed.
-- Latency of the `view` bridge against today's in-process control mode, to
-  measure against [performance](thurbox/performance.md)'s frame floors.
-  `stream_panes` in thurbox's `settings.toml` opens local tmux panes through
-  `runtime-mux view` for that measurement.
-
 ## Layout
 
 ```text

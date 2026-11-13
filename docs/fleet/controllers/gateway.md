@@ -452,34 +452,6 @@ Out of scope, deliberately:
   interactive components,
 - the listener programs themselves.
 
-## Questions and answers
-
-| Question | Answer |
-| --- | --- |
-| Where does the earlier history go when a mention lands partway through a thread? | In the first inbox entry, not in the brief. The brief stays the route's brief, the same for every conversation Task. |
-| What brief and workspace does a conversation Task get? | The route's. TaskConfig holds execution defaults only. So a route names a TaskConfig, and carries the brief and the workspace itself. |
-| How can a route run several conversations at once? | Every route can. A `{base}` route gives each thread its own directory below the route's base directory. A URL list route has the runtime make a workspace for each Task, a worktree for a `git+` URL, and release it after the session. |
-| Who deletes a thread's directory? | Fleet, when the thread retires, and only a directory that the manager created. The Conversation records that the manager created it. A directory that existed before stays, as do a route's base directory and anything else in it. |
-| Who deletes a conversation Task? | ConversationController, when its thread retires: only a Concluded Task, idle for `gateway.retainMs`. A person or a conductor can also delete it at any time, as for any Task. The thread then becomes Orphaned. |
-| How long is a Conversation kept? | Until its thread retires: `gateway.retainMs`, seven days by default, after the later of its last message and its orphaning, once its Task is Concluded or gone. A thread with a running Task, or one that waits for its own directory, is kept. |
-| Why does a Comment carry an `id`? | `fleet declare` treats an identical object as a no-op. So two Comments that say "Done." need two ids to be two posts. |
-| How is the questions route chosen per Task? | By the label `gateway.fleet.dev/route`, else the `[gateway]` default. Plugins already mark Tasks with labels. |
-| How is an answer recognised? | The first allowlisted message written after the Question, by the platform's clock. The Gateway does not judge whether it really answers. A worker that needs more asks a new Question. |
-| Does a child's result also go to the log channel? | Yes. The log channel is the record of every Task, a Task that another Task started included. The parent's inbox entry is input for the parent's work, not a record, and the parent does not log it again. |
-| Why is the log channel no route's channel? | So a reply under a log post is never admitted, relayed or answered. The receive verb ignores a channel that no route covers. A wildcard route skips the log channel for the same reason. |
-| How does a route cover every channel? | With `channels = ["*"]`. The wildcard is an entry of the existing list, so a route keeps one key for what it covers, and an explicit list stays as it is. No platform's channel id is `*`. |
-| Which route wins when a channel id is listed and a wildcard exists? | The route that lists the id. A wildcard is the fallback for its account. An account has one wildcard route at most, so the fallback is never ambiguous. |
-| Where does a wildcard route open a thread for a Question? | In the first channel id it lists. A route with only `"*"` has none, so `gateway.questions` refuses it. A Task whose route label names such a route raises `NeedsAttention/RouteUnknown`. No separate setting is needed. |
-| How can every allowlisted person DM the bot? | With `"dm:*"` in a route's `channels`. Like `"*"`, it is an entry of the existing list, so a route keeps one key for what it covers. No DM id is listed, so a new person needs only an `allow` entry. No platform's channel id holds `:`. |
-| Why does a DM need no mention? | A one-to-one DM already addresses the bot, and people rarely type a mention there. The admission rule is the same: only `allow` and `allowBots` start a Task. |
-| Why is a group DM no DM? | A group DM includes other people, as a channel does. So the wildcard covers it, and a request there needs a mention. |
-| Why does the Conversation record `direct`? | Admission reads the rule from the Conversation, not from each event. A history read does not say whether its chat is a DM, and some edit events do not either. |
-| Can a wildcard route use `mention = "top-level"`? | No. On every channel, it would make every top-level post of an allowlisted person a Task. |
-| Does a wildcard route change the listener digest or the Listener conditions? | No. The digest covers the account's own settings, not its routes. `Accepted` asks only whether some route uses the account, and a wildcard route does. |
-| Where does a mark live before the Task exists? | On the Conversation, under `status.reactions`. ConversationController owns admission, so it owns the queued mark and the first working mark. GatewayController owns every mark from the join on. |
-| Why are reactions best effort? | A reaction only shows progress. The relay and the post are what matter to the person, so a reaction never holds them back. A reaction is set, not counted, so a repeat is harmless and needs no marker. |
-| What if a platform cannot find Fleet's posts again? | Fleet never repeats a post whose outcome is unknown there. It raises `NeedsAttention/PostUnconfirmed`, and later posts to that thread wait for a person. |
-
 ## Implementation and evidence
 
 Each part, where it lives, and the suites that hold it, against the built

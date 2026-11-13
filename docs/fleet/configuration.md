@@ -84,24 +84,6 @@ it as it is; a malformed config is an error, never replaced. A symlink at or
 above the config's path is refused. Initializers serialize with an OS lock,
 so two concurrent `init` runs write one config.
 
-### Running VEGA
-
-VEGA, the dispatch-only Mission Control, is content in its own repository,
-[Thurbeen/vega](https://github.com/Thurbeen/vega). It is an ordinary Task
-that Fleet runs like any other. To run it:
-
-1. Clone the repository. Its `workspace/` directory is the session's
-   workspace; edit its instructions, prompts and skills as you like.
-2. In `tasks/vega.json`, set `spec.workspace` to the `file://` URL of that
-   `workspace/` directory, and `spec.harness` to your harness. Append the
-   path of your Fleet config to `spec.brief`: VEGA passes it to the workers
-   it dispatches, so every Task lands in one store.
-3. Apply it: `fleet apply -f tasks/vega.json`. A running `fleet up` starts
-   the session and delivers the brief.
-
-After creation, Fleet keeps the stored Task inputs. Changing them requires
-deleting the Task after its session is released, and applying it again.
-
 ### Resource commands
 
 `apply -f -` reads JSON from stdin. A file can hold one object, an array of

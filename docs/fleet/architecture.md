@@ -122,9 +122,7 @@ lease expiry and observes deterministic session/effect keys.
 
 The CLI's `init` writes a local config without Git or network, separate from
 resource writes. `up` runs the ordinary Task controller for every due Task
-and creates no Task of its own. VEGA, the Mission Control content in its own
-repository, is an ordinary Task applied like any other: it has no extra
-resource kind, controller or privileges. The
+and creates no Task of its own. The
 [initialization guide](configuration.md#configuration-and-customization) owns
 config precedence and startup and recovery instructions.
 
