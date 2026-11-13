@@ -610,7 +610,7 @@ applicable: `h/j/k/l` for navigation, semantic letters for actions
 | `Ctrl+Y` / `F4` | Global | Pick TUI theme | Color **Y**oke |
 | `Ctrl+,` / `F6` | Global | Settings panel (edit settings.toml) | **,** = preferences |
 | `F1` / `Ctrl+G` | Global | Keybindings help + interactive editor | Universal help |
-| `Ctrl+E` | Session list | Rename selected session | **E**dit the name |
+| `Ctrl+E` | Global (passthrough) | Rename selected session | **E**dit the name |
 | `F9` | Global | Toggle the session column | |
 | `Shift+J` | Session list | Move selected session down | Reorder |
 | `Shift+K` | Session list | Move selected session up | Reorder |
