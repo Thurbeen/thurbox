@@ -1287,16 +1287,16 @@ fn check_workspace(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case>
 mod tests {
     use super::*;
 
-    /// A runtime whose manifest answers what the file `answer` beside it
-    /// holds, and fails when the file is gone.
+    /// A runtime that answers each verb with what the file of the verb's
+    /// name beside it holds, and fails when there is none.
     fn runtime(dir: &std::path::Path) -> ExecProgram {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("runtime.sh");
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\ncat >/dev/null\nexec cat '{}'\n",
-                dir.join("answer").display()
+                "#!/bin/sh\ncat >/dev/null\nexec cat '{}/'\"$1\"\n",
+                dir.display()
             ),
         )
         .expect("script");
@@ -1309,16 +1309,42 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("fleet-exec-spoken-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let rt = runtime(&dir);
-        std::fs::write(
-            dir.join("answer"),
-            r#"{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop"]}}"#,
-        )
-        .expect("answer");
+        std::fs::write(dir.join("manifest"), MANIFEST_2).expect("answer");
         assert!(!rt.manifest().is_unknown());
         assert_eq!(rt.spoken(), Some(2));
-        std::fs::remove_file(dir.join("answer")).expect("remove");
+        std::fs::remove_file(dir.join("manifest")).expect("remove");
         assert!(rt.manifest().is_unknown());
         assert_eq!(rt.spoken(), None, "an Unknown manifest proves no version");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const MANIFEST_2: &str =
+        r#"{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop"]}}"#;
+
+    /// A runtime replaced by one of another version answers Unknown to the
+    /// version Fleet learned: the next request asks the manifest again.
+    #[test]
+    fn an_unknown_answer_forgets_the_version() {
+        let dir = std::env::temp_dir().join(format!("fleet-exec-send-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let rt = runtime(&dir);
+        std::fs::write(dir.join("manifest"), MANIFEST_2).expect("answer");
+        std::fs::write(dir.join("inspect"), r#"{"known":"none"}"#).expect("answer");
+        let found: Observation<Inspected> = rt.send("inspect", json!({ "key": "k" }));
+        assert_eq!(found, Observation::Known(Inspected::None));
+        assert_eq!(rt.spoken(), Some(2));
+        std::fs::write(
+            dir.join("inspect"),
+            r#"{"unknown":{"why":"protocol 2 is not served"}}"#,
+        )
+        .expect("answer");
+        let found: Observation<Inspected> = rt.send("inspect", json!({ "key": "k" }));
+        assert!(found.is_unknown(), "{found:?}");
+        assert_eq!(
+            rt.spoken(),
+            None,
+            "the next request asks the manifest again"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
