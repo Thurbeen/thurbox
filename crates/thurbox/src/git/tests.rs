@@ -1377,15 +1377,18 @@ fn a_repository_git_cannot_read_is_a_failure_not_a_plain_directory() {
     );
 }
 
-/// A new worktree starts from the upstream as it is now: listing a clone's
-/// branches fetches its `origin` first, and the default is the remote-tracking
-/// `origin/main`, not the clone's own `main`, which the upstream has moved past.
-#[test]
-fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let upstream = dir.path().join("upstream");
+/// A clone of a new upstream, and the upstream moved on past it: both the
+/// clone's `main` and its `origin/main` are behind. Returns the upstream, the
+/// clone, and the upstream's new `main`.
+fn behind_clone(dir: &Path, branch: &str) -> (PathBuf, PathBuf, String) {
+    let upstream = dir.join("upstream");
     seed_repo(&upstream, "README", "one\n");
-    let clone = dir.path().join("clone");
+    run_git(
+        git_command(&upstream, &["branch", "-M", branch]),
+        "git branch",
+    )
+    .expect("rename");
+    let clone = dir.join("clone");
     let mut cmd = git_program();
     cmd.arg("clone").arg("-q").arg(&upstream).arg(&clone);
     run_git(cmd, "git clone").expect("clone");
@@ -1394,7 +1397,18 @@ fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
         run_git(git_command(&upstream, &args), "git").expect("advance upstream");
     }
     let moved = head_commit(&upstream).expect("head");
+    (upstream, clone, moved)
+}
 
+/// A new worktree starts from the upstream as it is now: the fetch brings the
+/// upstream's new tip, and the default is the remote-tracking `origin/main`,
+/// not the clone's own `main`, which the upstream has moved past.
+#[test]
+fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_, clone, moved) = behind_clone(dir.path(), "main");
+
+    fetch_origin(&clone.display().to_string(), Duration::from_secs(10)).expect("fetch");
     let read = branches(&clone.display().to_string()).expect("branches");
 
     assert_eq!(read.default.as_deref(), Some("origin/main"), "{read:?}");
@@ -1402,10 +1416,60 @@ fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
     assert!(read.names.iter().any(|n| n == "origin/main"), "{read:?}");
     assert!(!read.names.iter().any(|n| n.ends_with("HEAD")), "{read:?}");
     let fetched = run_git_capture(&["rev-parse", "origin/main"], &clone).expect("origin/main");
+    assert_eq!(fetched.trim(), moved, "origin/main is the fetched tip");
+}
+
+/// With no `origin/HEAD`, the default is `origin/main`, else `origin/master`.
+#[test]
+fn without_origin_head_the_default_is_origin_main_then_master() {
+    for branch in ["main", "master"] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, clone, _) = behind_clone(dir.path(), branch);
+        run_git(
+            git_command(&clone, &["remote", "set-head", "origin", "-d"]),
+            "git remote set-head",
+        )
+        .expect("drop origin/HEAD");
+        let read = branches(&clone.display().to_string()).expect("branches");
+        assert_eq!(read.default, Some(format!("origin/{branch}")), "{read:?}");
+    }
+}
+
+/// A fetch from an origin that accepts the connection and never answers gives
+/// up at its deadline, so the picker falls back to the refs already there.
+#[test]
+fn a_fetch_from_an_origin_that_never_answers_gives_up() {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = silent.local_addr().expect("addr").port();
+    let dir = tempfile::tempdir().expect("tempdir");
+    seed_repo(dir.path(), "README", "one\n");
+    let url = format!("http://127.0.0.1:{port}/repo.git");
+    run_git(
+        git_command(dir.path(), &["remote", "add", "origin", &url]),
+        "git remote add",
+    )
+    .expect("origin");
+
+    let started = std::time::Instant::now();
+    let fetched = fetch_origin(&dir.path().display().to_string(), Duration::from_secs(1));
+
+    assert!(fetched.is_err(), "{fetched:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "gave up after {:?}",
+        started.elapsed()
+    );
+    drop(silent);
+}
+
+/// A repository with no `origin` has nothing to fetch, and that is no error.
+#[test]
+fn a_repository_with_no_origin_fetches_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    seed_repo(dir.path(), "README", "one\n");
     assert_eq!(
-        fetched.trim(),
-        moved,
-        "origin/main is fetched before the listing"
+        fetch_origin(&dir.path().display().to_string(), Duration::from_secs(1)),
+        Ok(())
     );
 }
 

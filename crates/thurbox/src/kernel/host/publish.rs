@@ -477,6 +477,9 @@ impl LuaHost {
         if let Some(BranchListing::Failed(why)) = listing {
             out.set("error", why.clone()).map_err(|e| e.to_string())?;
         }
+        if let Some(why) = store.fetch_note(repo) {
+            out.set("fetch_error", why).map_err(|e| e.to_string())?;
+        }
         let names = self.lua.create_table().map_err(|e| e.to_string())?;
         let worktrees = self.lua.create_table().map_err(|e| e.to_string())?;
         if let Some(BranchListing::Ready(found)) = listing {

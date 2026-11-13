@@ -619,6 +619,54 @@ fn an_origin_base_on_a_checkout_is_fetched_before_the_make() {
     assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
 }
 
+/// With no `origin/HEAD`, a checkout's default base is the fetched
+/// `origin/main`, else `origin/master`.
+#[test]
+fn without_origin_head_the_default_is_origin_main_then_master() {
+    for branch in ["main", "master"] {
+        let s = Sandbox::new();
+        let (checkout, moved) = behind_checkout(&s);
+        if branch == "master" {
+            let upstream = s.base.join("app.git");
+            git(&upstream, &["branch", "-m", "main", "master"]);
+            git(&checkout, &["branch", "-m", "main", "master"]);
+            git(&checkout, &["update-ref", "-d", "refs/remotes/origin/main"]);
+        }
+        git(&checkout, &["remote", "set-head", "origin", "-d"]);
+        git(
+            &checkout,
+            &["config", "remote.origin.followRemoteHEAD", "never"],
+        );
+        let (dirs, _) = s.made(
+            "t.fallback",
+            &[format!("{}?branch=fresh", url("git+file", &checkout))],
+        );
+        assert_eq!(
+            git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]),
+            moved,
+            "from origin/{branch}"
+        );
+    }
+}
+
+/// `origin/main` names the remote-tracking branch even when the checkout
+/// has a local branch or tag spelled the same.
+#[test]
+fn an_origin_base_wins_over_a_local_branch_of_that_name() {
+    let s = Sandbox::new();
+    let (checkout, moved) = behind_checkout(&s);
+    git(&checkout, &["branch", "origin/main", "main"]);
+    git(&checkout, &["tag", "origin/main", "main"]);
+    let (dirs, _) = s.made(
+        "t.shadow",
+        &[format!(
+            "{}?branch=fresh#origin/main",
+            url("git+file", &checkout)
+        )],
+    );
+    assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
+}
+
 /// A local branch chosen as the base is still the checkout's own.
 #[test]
 fn a_local_base_on_a_checkout_is_its_own_branch() {

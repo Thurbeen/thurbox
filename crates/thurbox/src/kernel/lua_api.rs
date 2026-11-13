@@ -636,6 +636,9 @@ pub static REPO_BRANCHES: Class = Class {
         leaf("error", "string")
             .opt()
             .doc("Why a git repository's branches could not be read; its worktree choices stay offered."),
+        leaf("fetch_error", "string")
+            .opt()
+            .doc("Why fetching `origin` failed: the branches are the refs already there."),
         leaf("default", "string")
             .opt()
             .doc("The branch a new worktree starts from by default: the upstream's, `origin/<default>`, when there is an `origin`."),

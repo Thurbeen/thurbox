@@ -1657,6 +1657,45 @@ fn main_and_dev() -> thurbox::kernel::repos::BranchListing {
     })
 }
 
+/// The upstream's default branch is under the cursor and is the base sent,
+/// and a fetch that failed says so above the list it left as it was.
+#[test]
+fn the_base_branch_defaults_to_origin_and_says_when_the_fetch_failed() {
+    let host = host();
+    let mut world = world_with_branches(thurbox::kernel::repos::BranchListing::Ready(
+        thurbox::git::Branches {
+            default: Some("origin/main".into()),
+            names: vec!["main".into(), "origin/dev".into(), "origin/main".into()],
+            worktrees: Vec::new(),
+        },
+    ));
+    world
+        .repos
+        .set_fetch_note_for_test("/src/thurbox", "fatal: unable to access origin");
+    open(&host, &world);
+    press(&host, &world, "alt+w");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("▸ origin/main")
+            && screen.contains("not fetched: fatal: unable to access origin"),
+        "{screen}"
+    );
+    press(&host, &world, "enter");
+    type_text(&host, &world, "Fix tooltips");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let sent = host.drain_commands();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [Command::Create { base: Some(base), .. }] if base == "origin/main"
+        ),
+        "{sent:?}"
+    );
+}
+
 /// v2's worktree flow: `alt+w` gives the repository a worktree (`[wt]`),
 /// then the base branch is picked (the default under the cursor), the session
 /// named, and its branch named, prefilled from the name.

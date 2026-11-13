@@ -918,15 +918,31 @@ local function render_branch(flow)
     save(flow)
   end
   local height = math.min(#names, REPO_LIST_MAX)
-  return frame("Base Branch", height + 4, {
-    {
-      type = "box",
-      len = height,
-      children = selector_rows(names, widgets.clamp(flow.branch_index, #names), height),
-    },
-    message_row(flow),
-    modal.footer({ { "j/k", "navigate" } }, "Select"),
-  }, flow)
+  local rows = {}
+  -- A fetch that failed leaves the refs as they were: say so, or `origin/main`
+  -- reads as the upstream's tip when it is only the last one fetched.
+  if read.fetch_error then
+    rows[1] = {
+      type = "text",
+      len = 1,
+      text = {
+        {
+          {
+            text = widgets.middle_truncate(" not fetched: " .. read.fetch_error, ROW_COLS),
+            style = { fg = theme.bad },
+          },
+        },
+      },
+    }
+  end
+  rows[#rows + 1] = {
+    type = "box",
+    len = height,
+    children = selector_rows(names, widgets.clamp(flow.branch_index, #names), height),
+  }
+  rows[#rows + 1] = message_row(flow)
+  rows[#rows + 1] = modal.footer({ { "j/k", "navigate" } }, "Select")
+  return frame("Base Branch", height + 4 + (read.fetch_error and 1 or 0), rows, flow)
 end
 
 local function render_clone(flow)

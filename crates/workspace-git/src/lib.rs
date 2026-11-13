@@ -54,6 +54,10 @@ const CHECKOUTS: &str = ".checkouts";
 /// Where preserved work is kept, per key and repository name.
 const PRESERVED: &str = "refs/fleet/preserved";
 
+/// How long a make waits on a fetch of a checkout's `origin` before it uses
+/// the refs already there.
+const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The longest key: what the runtime protocol accepts.
 const MAX_KEY: usize = 128;
 
@@ -510,7 +514,7 @@ fn worktree(
     fs::create_dir_all(&key_dir).map_err(|e| format!("cannot make {}: {e}", key_dir.display()))?;
     if checkout.is_some() {
         list_path(&cfg.root.join(CHECKOUTS), &source)?;
-        fetch_upstream(&source);
+        fetch_upstream(&source, FETCH_DEADLINE);
     } else {
         fill_source(&source, remote)?;
     }
@@ -577,13 +581,27 @@ fn worktree(
 /// is the upstream as it is now, not as the user last fetched it. A checkout
 /// with no `origin`, or one that cannot be reached, is made from what it
 /// already holds: an offline machine still gets its worktree.
-fn fetch_upstream(checkout: &Path) {
-    let _ = git(checkout, &["fetch", "-q", "origin"], &[]);
+///
+/// Bounded by `deadline`: an http `origin` gives up when it has moved no
+/// bytes for that long, and [`git`]'s default ssh has a connect timeout and
+/// keepalives, so an `origin` that never answers cannot hold the make.
+fn fetch_upstream(checkout: &Path, deadline: std::time::Duration) {
+    let secs = deadline.as_secs().max(1).to_string();
+    let _ = git(
+        checkout,
+        &["fetch", "-q", "origin"],
+        &[
+            ("GIT_HTTP_LOW_SPEED_LIMIT", "1"),
+            ("GIT_HTTP_LOW_SPEED_TIME", &secs),
+        ],
+    );
 }
 
 /// The commit a new branch starts from: the fragment, as a branch, a tag or
-/// a ref or commit as given, else the default branch. A checkout reads its
-/// own branches first, then its remote's; a source, its remote's first.
+/// a ref or commit as given, else the default branch (`origin/HEAD`, else
+/// `origin/main`, else `origin/master`). A checkout reads its own branches
+/// first, then its remote's; a source, its remote's first; `origin/<b>`
+/// is always the remote's.
 /// `named` is the directory a checkout's URL names: with no remote default,
 /// its HEAD is the start.
 fn resolve_base(
@@ -601,16 +619,21 @@ fn resolve_base(
         let default = default.or_else(|| named.and_then(|dir| verify(dir, "HEAD")));
         return default.ok_or_else(|| "the repository has no default branch".to_string());
     };
-    let (first, second) = (
-        format!("refs/remotes/origin/{base}"),
-        format!("refs/heads/{base}"),
-    );
-    let (first, second) = if is_checkout {
-        (second, first)
+    let remote = format!("refs/remotes/origin/{base}");
+    let local = format!("refs/heads/{base}");
+    let tag = format!("refs/tags/{base}");
+    let mut candidates = if is_checkout {
+        vec![local, tag, remote]
     } else {
-        (first, second)
+        vec![remote, tag, local]
     };
-    for candidate in [first, format!("refs/tags/{base}"), second, base.to_string()] {
+    // `origin/<b>` is the remote-tracking branch the new-session flow offers,
+    // ahead of a local branch or tag spelled the same.
+    if base.starts_with("origin/") {
+        candidates.insert(0, format!("refs/remotes/{base}"));
+    }
+    candidates.push(base.to_string());
+    for candidate in candidates {
         if let Some(commit) = verify(source, &candidate) {
             return Ok(commit);
         }
@@ -830,7 +853,10 @@ fn git(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
-        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        cmd.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3",
+        );
     }
     for (k, v) in env {
         cmd.env(k, v);
@@ -1016,6 +1042,28 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `origin` that accepts the connection and never answers costs the
+    /// make the deadline, not forever: the checkout's refs are used as they are.
+    #[test]
+    fn a_fetch_from_an_origin_that_never_answers_gives_up() {
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = silent.local_addr().expect("addr").port();
+        let dir = tempfile::tempdir().expect("tempdir");
+        git(dir.path(), &["init", "-q"], &[]).expect("init");
+        let url = format!("http://127.0.0.1:{port}/repo.git");
+        git(dir.path(), &["remote", "add", "origin", &url], &[]).expect("origin");
+
+        let started = std::time::Instant::now();
+        fetch_upstream(dir.path(), std::time::Duration::from_secs(1));
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "gave up after {:?}",
+            started.elapsed()
+        );
+        drop(silent);
+    }
 
     /// A URL spells a Windows path with a leading `/` and `/` separators.
     #[test]

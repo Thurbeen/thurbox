@@ -638,6 +638,7 @@
 ---@field loading boolean
 ---@field is_git boolean False when the directory is no git repository.
 ---@field error? string Why a git repository's branches could not be read; its worktree choices stay offered.
+---@field fetch_error? string Why fetching `origin` failed: the branches are the refs already there.
 ---@field default? string The branch a new worktree starts from by default: the upstream's, `origin/<default>`, when there is an `origin`.
 ---@field names string[] The local branches, then the `origin/*` ones.
 ---@field worktrees thurbox.ExistingWorktree[] The worktrees the repository already has besides its own checkout.

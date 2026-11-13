@@ -163,12 +163,35 @@ pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
         .collect()
 }
 
-/// The branches of the repository at `repo` on this machine, its `origin`
-/// fetched first, or why there are none.
+/// Fetch the `origin` of the repository at `repo` on this machine, so its
+/// `refs/remotes/origin/*` are the upstream's as they are now. A repository
+/// with no `origin` has nothing to fetch.
+///
+/// Bounded by `deadline`: an ssh `origin` already has a connect timeout and
+/// keepalives ([`crate::shell::ssh_appended_opts`]), and an http one gives up
+/// when it has moved no bytes for that long, so a host that accepts the
+/// connection and never answers costs the picker `deadline`, not forever.
+pub fn fetch_origin(repo: &str, deadline: std::time::Duration) -> Result<(), String> {
+    let repo = paths::expand_tilde(repo);
+    if super::run_git_capture(&["remote", "get-url", "origin"], &repo).is_none() {
+        return Ok(());
+    }
+    let mut fetch = super::git_command(&repo, &["fetch", "-q", "origin"]);
+    super::non_interactive(&mut fetch);
+    fetch.env("GIT_HTTP_LOW_SPEED_LIMIT", "1").env(
+        "GIT_HTTP_LOW_SPEED_TIME",
+        deadline.as_secs().max(1).to_string(),
+    );
+    super::run_git(fetch, "git fetch")
+        .map_err(|e| e.to_string().lines().next().unwrap_or_default().to_string())
+}
+
+/// The branches of the repository at `repo` on this machine, as its refs
+/// hold them, or why there are none. [`fetch_origin`] first for the
+/// upstream's current branches.
 ///
 /// A `git+file` workspace is a worktree of this checkout, so every branch
-/// listed here, remote-tracking ones included, is one it can start from. A
-/// fetch that fails (offline, no `origin`) lists what the checkout holds.
+/// listed here, remote-tracking ones included, is one it can start from.
 pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     let repo = paths::expand_tilde(repo);
     // Whether there is a repository is read from the filesystem, so a `git`
@@ -179,9 +202,6 @@ pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     }
     super::run_git_capture(&["rev-parse", "--git-dir"], &repo)
         .ok_or_else(|| BranchesUnread::Failed(format!("git could not read {}", repo.display())))?;
-    let mut fetch = super::git_command(&repo, &["fetch", "-q", "origin"]);
-    super::non_interactive(&mut fetch);
-    let _ = super::run_git(fetch, "git fetch");
     let refs = super::run_git_capture(
         &[
             "for-each-ref",

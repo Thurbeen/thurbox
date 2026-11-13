@@ -209,8 +209,15 @@ enum Done {
     Branches {
         repo: String,
         listing: BranchListing,
+        /// `None` when this read did not fetch; else why the fetch failed,
+        /// if it did.
+        fetched: Option<Option<String>>,
     },
 }
+
+/// How long the picker waits on a fetch of `origin` before it lists the refs
+/// already there.
+const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A repository's branches and when they arrived.
 struct BranchesHeld {
@@ -220,10 +227,10 @@ struct BranchesHeld {
 
 impl BranchesHeld {
     /// Re-read after [`LISTING_TTL`], as a directory listing is: a branch
-    /// made after the first look must not stay invisible. A pending answer
-    /// is never asked twice.
+    /// made after the first look must not stay invisible. A read on its way
+    /// is never asked twice ([`RepoStore::branches_inflight`]).
     fn stale(&self) -> bool {
-        !matches!(self.listing, BranchListing::Pending) && self.at.elapsed() >= LISTING_TTL
+        self.at.elapsed() >= LISTING_TTL
     }
 }
 
@@ -235,6 +242,16 @@ pub struct RepoStore {
     bookmarks_inflight: std::collections::HashSet<HostKey>,
     listings: HashMap<PathKey, Listed>,
     branches: HashMap<String, BranchesHeld>,
+    /// Repositories whose branches are being read.
+    branches_inflight: std::collections::HashSet<String>,
+    /// Repositories whose `origin` was fetched since the flow last started
+    /// asking for them: the fetch is once per opening, and the
+    /// [`LISTING_TTL`] re-reads only list refs, so an open picker never
+    /// fetches every few seconds.
+    fetched: std::collections::HashSet<String>,
+    /// Why the last fetch of a repository's `origin` failed, while its
+    /// branches are listed from the refs already there.
+    fetch_notes: HashMap<String, String>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
@@ -250,6 +267,9 @@ impl RepoStore {
             bookmarks_inflight: std::collections::HashSet::new(),
             listings: HashMap::new(),
             branches: HashMap::new(),
+            branches_inflight: std::collections::HashSet::new(),
+            fetched: std::collections::HashSet::new(),
+            fetch_notes: HashMap::new(),
             tx,
             rx,
         }
@@ -279,28 +299,49 @@ impl RepoStore {
         self.branches.get(repo).map(|held| &held.listing)
     }
 
+    /// Why the last fetch of `repo`'s `origin` failed, while its branches
+    /// come from the refs already there.
+    pub fn fetch_note(&self, repo: &str) -> Option<&str> {
+        self.fetch_notes.get(repo).map(String::as_str)
+    }
+
     /// Ask for the branches of `repo` on this machine, unless a fresh answer
     /// is held or one is on its way. Read on a worker: it runs `git`.
+    ///
+    /// The first read since the flow started asking fetches `origin` first and
+    /// reads `Pending` meanwhile, which is what the picker's spinner shows. A
+    /// later re-read only lists refs, so the list it replaces stays on screen.
     pub fn request_branches(&mut self, repo: &str) {
-        if self.branches.get(repo).is_some_and(|held| !held.stale()) {
+        if self.branches_inflight.contains(repo)
+            || self.branches.get(repo).is_some_and(|held| !held.stale())
+        {
             return;
         }
-        self.branches.insert(
-            repo.to_string(),
-            BranchesHeld {
-                at: std::time::Instant::now(),
-                listing: BranchListing::Pending,
-            },
-        );
+        self.branches_inflight.insert(repo.to_string());
+        let fetch = self.fetched.insert(repo.to_string());
+        if fetch || !self.branches.contains_key(repo) {
+            self.branches.insert(
+                repo.to_string(),
+                BranchesHeld {
+                    at: std::time::Instant::now(),
+                    listing: BranchListing::Pending,
+                },
+            );
+        }
         let repo = repo.to_string();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            let fetched = fetch.then(|| crate::git::fetch_origin(&repo, FETCH_DEADLINE).err());
             let listing = match crate::git::branches(&repo) {
                 Ok(found) => BranchListing::Ready(found),
                 Err(crate::git::BranchesUnread::NotGit) => BranchListing::NotGit,
                 Err(crate::git::BranchesUnread::Failed(why)) => BranchListing::Failed(why),
             };
-            let _ = tx.send(Done::Branches { repo, listing });
+            let _ = tx.send(Done::Branches {
+                repo,
+                listing,
+                fetched,
+            });
         });
     }
 
@@ -404,7 +445,21 @@ impl RepoStore {
                 Done::Listing { key, listing } => {
                     self.remember_listing(key, listing);
                 }
-                Done::Branches { repo, listing } => {
+                Done::Branches {
+                    repo,
+                    listing,
+                    fetched,
+                } => {
+                    self.branches_inflight.remove(&repo);
+                    match fetched {
+                        Some(Some(why)) => {
+                            self.fetch_notes.insert(repo.clone(), why);
+                        }
+                        Some(None) => {
+                            self.fetch_notes.remove(&repo);
+                        }
+                        None => {}
+                    }
                     self.branches.insert(
                         repo,
                         BranchesHeld {
@@ -433,6 +488,10 @@ impl RepoStore {
         if let Some((host, dir)) = wants.browse {
             self.request_listing(&host, &dir);
         }
+        // A repository the flow stopped asking about is fetched again when
+        // it is asked about next.
+        self.fetched
+            .retain(|repo| wants.branches.as_ref() == Some(repo));
         if let Some(repo) = wants.branches {
             self.request_branches(&repo);
         }
@@ -449,6 +508,12 @@ impl RepoStore {
                 listing,
             },
         );
+    }
+
+    /// Seed why a repository's fetch failed, so a test can render the note.
+    #[doc(hidden)]
+    pub fn set_fetch_note_for_test(&mut self, repo: &str, why: &str) {
+        self.fetch_notes.insert(repo.to_string(), why.to_string());
     }
 
     /// Seed rows directly, so a test can render a flow without the file.
@@ -767,6 +832,95 @@ mod tests {
             Some(&Listing::Pending),
             "a stale one is asked about again"
         );
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = crate::git::git_program()
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A commit on the upstream's `main`; returns it.
+    fn advance(upstream: &std::path::Path, file: &str) -> String {
+        std::fs::write(upstream.join(file), file).expect("write");
+        git(upstream, &["add", file]);
+        git(upstream, &["commit", "-q", "-m", file]);
+        git(upstream, &["rev-parse", "HEAD"])
+    }
+
+    /// Poll until no branch read of `repo` is on its way.
+    fn settle(store: &mut RepoStore, repo: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            store.poll();
+            if !store.branches_inflight.contains(repo) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("the branches of {repo} never arrived");
+    }
+
+    /// Back-date the held branches of `repo` past [`LISTING_TTL`].
+    fn age_branches(store: &mut RepoStore, repo: &str) {
+        let held = store.branches.get_mut(repo).expect("held");
+        held.at = std::time::Instant::now() - LISTING_TTL;
+    }
+
+    /// The picker fetches `origin` once when it opens on a repository, behind
+    /// the spinner. The re-reads while it stays open list the refs only and
+    /// keep the list on screen; opening it again fetches again.
+    #[test]
+    fn branches_fetch_once_per_opening_and_rereads_only_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let upstream = dir.path().join("upstream");
+        std::fs::create_dir_all(&upstream).expect("mkdir");
+        git(&upstream, &["init", "-q"]);
+        advance(&upstream, "one");
+        git(dir.path(), &["clone", "-q", "upstream", "clone"]);
+        let clone = dir.path().join("clone");
+        let repo = clone.display().to_string();
+        let origin_main = || git(&clone, &["rev-parse", "origin/main"]);
+        let open = Wants::default().with_branches(Some(repo.clone()));
+        let closed = Wants::default();
+        let mut store = RepoStore::new();
+
+        let first = advance(&upstream, "two");
+        store.serve(&open);
+        assert_eq!(store.branches(&repo), Some(&BranchListing::Pending));
+        settle(&mut store, &repo);
+        assert_eq!(origin_main(), first, "the opening fetches");
+
+        let second = advance(&upstream, "three");
+        age_branches(&mut store, &repo);
+        store.serve(&open);
+        assert!(
+            matches!(store.branches(&repo), Some(BranchListing::Ready(_))),
+            "a re-read keeps the list on screen"
+        );
+        settle(&mut store, &repo);
+        assert_eq!(origin_main(), first, "a re-read does not fetch");
+
+        store.serve(&closed);
+        age_branches(&mut store, &repo);
+        store.serve(&open);
+        assert_eq!(store.branches(&repo), Some(&BranchListing::Pending));
+        settle(&mut store, &repo);
+        assert_eq!(origin_main(), second, "opening again fetches again");
     }
 
     #[test]
