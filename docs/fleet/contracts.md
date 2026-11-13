@@ -1234,9 +1234,62 @@ Without `--json` the argv is printed one argument per line.
 its own through `fleet-exec` and relays it as the terminal stream on its stdin
 and stdout, until the view detaches or the command exits.
 
-The config file is versioned TOML; [configuration](configuration.md#native-fleet-configuration-fleettoml)
-owns its fields and examples, and the [Task resource](resources/task.md) a
-Task manifest.
+The config file is versioned TOML; relative paths are relative to it, and
+[configuration](configuration.md#native-fleet-configuration-fleettoml) owns its
+fields. This one runs the fake runtime, and the test
+`the_contract_examples_apply_as_written` applies it with the Task below:
+
+```toml
+version = 1
+
+[data]
+dir = "data"
+
+[runtime]
+kind = "fake"
+dir = "fake-host"
+```
+
+A real host is served by a runtime program, and a `[forge]` section names
+the forges ChangeRequests are read from:
+
+```text
+[runtimes.mux]
+program = "runtime-mux"   # a path or a name on PATH
+callTimeoutMs = 15000     # the bound on every call; shorter than the lease
+keyPrefix = "fleet"       # give a second fleet on the same runtime its own
+
+[hosts.local]
+runtime = "mux"           # a Task's spec.host chooses the runtime
+
+[forge.hosts]
+"github.com" = { kind = "github", cli = "gh" }
+"bitbucket.org" = { kind = "bitbucket-cloud", cli = "curl" }
+
+[forge.readyPolicies.checks]   # selected by spec.forge.draft.policy or
+forge.draftPolicy
+checksPassed = true
+```
+
+A Task manifest:
+
+```json
+[
+  {
+    "apiVersion": "fleet/v1alpha1",
+    "kind": "Task",
+    "metadata": {"name": "design-305", "labels": {"topic": "fleet-305"}},
+    "spec": {
+      "harness": "claude-code",
+      "host": "local",
+      "brief": "Write the controller design.",
+      "workspace": [],
+      "dispatch": true,
+      "outputs": {"prUrl": {"type": "string", "required": true}}
+    }
+  }
+]
+```
 
 `fleet reconcile` takes the manager lease, runs passes until nothing changes
 (or `--max-passes`), and gives the lease back. Its default lease is 30 s,
