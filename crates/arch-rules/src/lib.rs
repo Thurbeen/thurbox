@@ -33,6 +33,10 @@
 //!   forbidden glob is judged as if it did, unless the name is read as a
 //!   module (a path's prefix, a glob's base) and the module declares a `mod`
 //!   of that name, which shadows every glob.
+//! - Which namespaces an import fills is not known, so a macro call is
+//!   judged both through any import of its name and as the macro a glob or
+//!   the prelude brings. The other way round is not handled: a macro imported
+//!   under a module, type or value name hides that name's glob meaning.
 //! - `cfg` is ignored: code behind any `cfg` is judged too. So a module
 //!   behind one shadows no glob, and an import behind one, like an import in
 //!   a function body, adds a meaning to its name without removing the others.
@@ -1029,7 +1033,7 @@ struct Resolver<'a> {
     cut: Cell<bool>,
     cache: bool,
     resolved: Memo<ResolveKey>,
-    exported: Memo<(Vec<String>, bool)>,
+    exported: Memo<(Vec<String>, Read)>,
 }
 
 /// Finished results, and the keys whose resolution is under way: asking
@@ -1046,6 +1050,19 @@ impl<K> Default for Memo<K> {
             active: RefCell::default(),
         }
     }
+}
+
+/// What a path being followed through re-exports is read as. Rust keeps
+/// macros in a namespace of their own, and a module is read only from the
+/// type namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Read {
+    /// A module or enum: a glob's base.
+    Module,
+    /// A macro call.
+    Macro,
+    /// Anything else, from any namespace.
+    Any,
 }
 
 /// The crate, module, path and flags a [`Resolver::resolve`] call reads.
@@ -1211,7 +1228,13 @@ impl<'a> Resolver<'a> {
                     }
                     // Only when every import of the name may be out of force
                     // does it keep the meaning it has without one.
-                    let unaliased = aliases.is_none_or(|list| list.iter().all(|a| a.weak));
+                    // An import fills only the namespaces its target has, which
+                    // are not known here: a macro call may still mean the macro
+                    // a glob or the prelude brings, whatever is imported under
+                    // its name.
+                    let macro_read = macro_call && segments.len() == 1;
+                    let unaliased =
+                        macro_read || aliases.is_none_or(|list| list.iter().all(|a| a.weak));
                     if !unaliased {
                     } else if idx.externs.contains(first) || self.index(first).is_some() {
                         out.push(segments.to_vec());
@@ -1251,7 +1274,14 @@ impl<'a> Resolver<'a> {
                 s[0] = real.clone();
             }
             // Only a glob's base is resolved without globs: a module or enum.
-            out.extend(self.through_exports(s, !globs, depth + 1));
+            let read = if !globs {
+                Read::Module
+            } else if macro_call {
+                Read::Macro
+            } else {
+                Read::Any
+            };
+            out.extend(self.through_exports(s, read, depth + 1));
         }
         out
     }
@@ -1259,21 +1289,21 @@ impl<'a> Resolver<'a> {
     /// Follow re-exports: if `a::b::c` names an item that module `a::b` of
     /// crate `a` imports (or glob-imports), replace that prefix by what it
     /// imports, until nothing changes.
-    /// `names_type`: the whole path names a module or a type.
-    fn through_exports(&self, path: Vec<String>, names_type: bool, depth: u32) -> Vec<Vec<String>> {
+    /// `read`: what the whole path is read as.
+    fn through_exports(&self, path: Vec<String>, read: Read, depth: u32) -> Vec<Vec<String>> {
         let again = path.clone();
         self.remembered(
             &self.exported,
-            (path.clone(), names_type),
+            (path.clone(), read),
             || vec![again],
-            || self.through_exports_afresh(path, names_type, depth),
+            || self.through_exports_afresh(path, read, depth),
         )
     }
 
     fn through_exports_afresh(
         &self,
         path: Vec<String>,
-        names_type: bool,
+        read: Read,
         depth: u32,
     ) -> Vec<Vec<String>> {
         if path.len() < 2 {
@@ -1311,10 +1341,13 @@ impl<'a> Resolver<'a> {
                     via_alias.push(base.into_iter().chain(tail.iter().cloned()).collect());
                 }
             }
-            if !via_alias.is_empty() && !aliases.iter().all(|a| a.weak) {
+            let last = k == path.len();
+            // As in `resolve`: a macro read keeps every other meaning.
+            let macro_read = last && read == Read::Macro;
+            if !via_alias.is_empty() && !macro_read && !aliases.iter().all(|a| a.weak) {
                 return via_alias;
             }
-            let read_as_module = names_type || k < path.len();
+            let read_as_module = read == Read::Module || !last;
             let shadowed = read_as_module && scope.modules_declared.contains(name);
             if !scope.globs.is_empty() && !shadowed {
                 // The name may be the module's own item or come through any
@@ -1328,7 +1361,7 @@ impl<'a> Resolver<'a> {
                             .chain(std::iter::once(name.clone()))
                             .chain(tail.iter().cloned())
                             .collect();
-                        out.extend(self.through_exports(through, names_type, depth + 1));
+                        out.extend(self.through_exports(through, read, depth + 1));
                     }
                 }
                 return out;

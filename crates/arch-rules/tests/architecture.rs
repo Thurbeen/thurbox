@@ -701,6 +701,35 @@ fn an_unconditional_reexport_still_shadows_a_glob_beside_a_weak_one() {
     expect("weak-beside-strong-reexport", &[(CTL, &src)], &[]);
 }
 
+/// An import fills only the namespaces its target has: a type imported
+/// under a macro's name does not hide the macro call.
+#[test]
+fn a_type_imported_under_a_macro_name_does_not_hide_the_macro() {
+    let src = ctl("use std::fmt::Error as println;\npub fn b() { println!(\"x\"); }\n");
+    expect("type-as-macro", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// The same through a re-export: `m`'s import of a type named `println`
+/// does not hide the macro its glob of `std` brings in.
+#[test]
+fn a_reexported_type_named_like_a_macro_does_not_hide_it() {
+    let src = ctl(
+        "pub mod m {\n    pub use std::*;\n    pub use std::fmt::Error as println;\n}\npub fn b() { m::println!(\"x\"); }\n",
+    );
+    expect(
+        "reexport-type-as-macro",
+        &[(CTL, &src)],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// An import of a macro under another name is still followed.
+#[test]
+fn a_macro_imported_under_another_name_is_judged() {
+    let src = ctl("use std::println as say;\npub fn b() { say!(\"x\"); }\n");
+    expect("macro-alias", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
 /// Macros are a namespace of their own: a struct of the same name does not
 /// shadow a glob-imported macro.
 #[test]
