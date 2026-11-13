@@ -24,7 +24,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 
 | Verb | Required | Answer |
 | --- | --- | --- |
-| `manifest` | yes | protocol version and the verbs supported |
+| `manifest` | yes | protocol version, the verbs supported and, from version 2, each place's readiness |
 | `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in the workspace made under that key |
 | `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}` |
 | `stop` | yes | a process already gone counts as stopped; `release: true` also removes the key's workspace |
@@ -44,13 +44,14 @@ own rules, below the hooks; the runtime only returns the screen.
 Fleet's config names each runtime in `[runtimes.<name>]`, a `program`, and
 each host in `[hosts.<name>]`, the runtime serving it, so a Task's
 `spec.host` chooses the program ([configuration](../fleet/configuration.md#native-fleet-configuration-fleettoml)).
-[Places](#proposed-places-protocol-version-2) are planned to replace
+[Places](#places-protocol-version-2) are planned to replace
 `[hosts]`.
 
 ### Protocol version 1
 
-`runtime-mux` and the reference script answer it, Fleet's `exec` runtime
-kind speaks it, and `fleet runtime check` holds both to it in CI. Fleet calls
+The reference script answers it, `runtime-mux` answers it as well as
+[version 2](#places-protocol-version-2), Fleet's `exec` runtime kind speaks
+both, and `fleet runtime check` holds both runtimes to it in CI. Fleet calls
 `workspace` before a Task's first start, bounded by the runtime's
 `workspaceTimeoutMs`. It reads the manifest's `workspace.schemes` first and
 refuses a URL whose scheme is not listed, without a call. `fleet attach` asks
@@ -156,7 +157,7 @@ concludes.
 `fleet runtime check -- <program> [args]` is the conformance suite. It prints
 one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
 
-- `manifest` names protocol 1 and the four required verbs;
+- `manifest` names protocol 1 or 2 and the four required verbs;
 - a protocol mismatch answers Unknown;
 - an error (a request that is not JSON, a bad key, an unknown verb) answers
   Unknown, never None;
@@ -169,7 +170,10 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
 - an exited process answers Exited with its code, or None;
 - with `workspace` declared: two calls with one key answer the same
   directories, the second adopted, and a release leaves a `file://` directory
-  in place.
+  in place;
+- with protocol 2: `manifest` reports `local`, the place it was asked about,
+  and a request without a place answers Unknown. The other cases name
+  `local`.
 
 The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
 `crates/fleet-cli/tests/e2e_runtime_exec.rs`, against `runtime-mux` and against
@@ -178,15 +182,16 @@ runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
 stops with a kernel lock in tmux's private socket directory, taken with
 `flock(1)` or else `perl`, which a killed holder releases.
 
-### Proposed: places (protocol version 2)
+### Places (protocol version 2)
 
-**Status**: proposed. No runtime and no Fleet speaks it yet. Version 1,
-above, is the protocol in force. The decision is
+**Status**: the request's `place` and the manifest's `places` are
+implemented, with `local` as the only place Fleet names. Places in Fleet's
+config and the new verbs below are planned. The decision is
 [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes).
 
 A place is where a runtime runs a process: this machine, an ssh host, a WSL
-distro, a VM. A host's id is `<runtime>/<place>`. `local` is the short form of
-`<runtime>/local` on the default runtime
+distro, a VM. A host's id is planned to be `<runtime>/<place>`, with `local`
+as the short form of `<runtime>/local` on the default runtime
 ([configuration](../fleet/configuration.md#planned-places-of-a-runtime)).
 
 ```text
@@ -207,15 +212,16 @@ Changes from version 1:
   `place: {name, config}`, so `list` answers for one place. `config` is the
   place's table from Fleet's config, as JSON. Fleet does not read it. The
   runtime trusts it: it comes only from the operator's Fleet config. A
-  runtime that gets a config it cannot use answers Unknown with why. The
-  runtime keeps no place config of its own.
+  runtime that gets a place or a config it cannot use answers Unknown with
+  why, and so does a version 2 request without a place. The runtime keeps no
+  place config of its own.
 - **`manifest` reports places.** The request carries `places`, every
   configured place with its config. The answer adds
   `places: [{name, platform, dynamic, ready, why}]`:
   - `platform` is `posix` or `windows`;
   - `dynamic` is true when each key gets a new machine, such as a VM;
-  - `ready` is false when the place lacks something, and `why` names it and
-    the command that fixes it;
+  - `ready` is false when the place lacks something, and `why` names it and,
+    where the runtime knows it, the command that fixes it;
   - the runtime may add places it discovers, such as WSL distros, with an
     empty config.
 
@@ -223,7 +229,21 @@ Changes from version 1:
   `local`, with an empty config. An unreachable runtime makes its places
   Unknown, never absent.
 
-New optional verbs:
+Fleet asks `manifest` with `"protocol": 2`, which a runtime of either version
+answers. Each later request carries the version that manifest named: a
+version 1 runtime gets version 1 requests, with no place. Fleet keeps the
+version for the life of its process and asks `manifest` again after any
+Unknown answer, so a runtime replaced by one of another version is followed.
+Fleet's config names no places yet, so every request names `local`, with an
+empty config.
+
+`runtime-mux` answers both versions. A version 1 request runs at `local`. It
+serves `local` alone, with an empty config: a version 2 request naming
+another place, or a config for `local`, answers Unknown, and `manifest`
+reports such a place not ready. `local` is ready when the multiplexer
+answers; otherwise `why` names it. Its `platform` is the machine's.
+
+New optional verbs, planned:
 
 | Verb | Request (besides `protocol`, `place`) | Known answer |
 | --- | --- | --- |

@@ -24,7 +24,7 @@ use fleet_api::harness::{
     kimi_process, profile,
 };
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::{Attach, Runtime, TrustGap, WorkspaceTrust};
+use fleet_api::runtime::{Attach, Place, PlaceReport, Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::session::uid_of_session_key;
 use fleet_api::signal::{Reported, Signal, Signals, State};
 use fleet_api::task::{SessionRef, Workspace, url_scheme};
@@ -36,9 +36,13 @@ use serde_json::{Value, json};
 
 use crate::signals::FileSignals;
 
-/// The protocol version Fleet speaks; every request carries it, and a
-/// runtime that speaks another answers Unknown.
-pub const PROTOCOL: u64 = 1;
+/// The newest protocol version Fleet speaks. Every request carries the
+/// version the runtime's manifest named, and a runtime that speaks another
+/// answers Unknown.
+pub const PROTOCOL: u64 = 2;
+
+/// Every version Fleet speaks. Version 2 names a place on each request.
+pub const PROTOCOLS: &[u64] = &[1, 2];
 
 /// The verbs every runtime answers.
 pub const REQUIRED_VERBS: &[&str] = &["manifest", "start", "inspect", "stop"];
@@ -48,7 +52,9 @@ pub const REQUIRED_VERBS: &[&str] = &["manifest", "start", "inspect", "stop"];
 const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
 /// The calls one port operation can make: `spawn` is a `start`, and nothing
-/// makes more than two.
+/// makes more than two. A call to a runtime whose version this process does
+/// not know yet is a `manifest` first; the operations that already ask the
+/// manifest learn it there.
 const MAX_CALLS_PER_OPERATION: u32 = 2;
 
 /// How long one capture answers the screen probe: a session's screen rules
@@ -76,6 +82,9 @@ pub struct ExecProgram {
     /// The first part of every key this Fleet gives the runtime: a second
     /// Fleet on the same runtime takes its own.
     pub key_prefix: String,
+    /// The protocol version the runtime's last manifest named, when Fleet
+    /// speaks it: what each request carries.
+    spoken: Arc<Mutex<Option<u64>>>,
 }
 
 impl ExecProgram {
@@ -87,7 +96,77 @@ impl ExecProgram {
             call_timeout: Duration::from_secs(15),
             workspace_timeout: DEFAULT_WORKSPACE_TIMEOUT,
             key_prefix: "fleet".into(),
+            spoken: Arc::default(),
         }
+    }
+
+    /// The version this runtime speaks, as its last manifest named it.
+    pub fn spoken(&self) -> Option<u64> {
+        *self
+            .spoken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn learn(&self, protocol: Option<u64>) {
+        *self
+            .spoken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = protocol;
+    }
+
+    /// The runtime's `manifest`, asked about its one place, `local`: no
+    /// config names places yet (ADR-42). A runtime of either version answers
+    /// it, and the version it names is what later requests carry.
+    pub fn manifest(&self) -> Observation<Manifest> {
+        let request = json!({ "protocol": PROTOCOL, "places": [Place::local()] });
+        let manifest = self.ask::<Manifest>("manifest", request);
+        if let Observation::Known(m) = &manifest {
+            self.learn(PROTOCOLS.contains(&m.protocol).then_some(m.protocol));
+        }
+        manifest
+    }
+
+    /// `fields` as a request of `protocol`: version 2 names the place.
+    fn request(protocol: u64, fields: Value) -> Value {
+        let mut request = json!({ "protocol": protocol });
+        if protocol >= 2 {
+            request["place"] = json!(Place::local());
+        }
+        if let (Some(r), Value::Object(f)) = (request.as_object_mut(), fields) {
+            r.extend(f);
+        }
+        request
+    }
+
+    /// The version to speak: the one learned, or the manifest's.
+    fn protocol(&self) -> Observation<u64> {
+        if let Some(protocol) = self.spoken() {
+            return Observation::Known(protocol);
+        }
+        bind(self.manifest(), |m| {
+            if PROTOCOLS.contains(&m.protocol) {
+                Observation::Known(m.protocol)
+            } else {
+                Observation::unknown(format!(
+                    "runtime {} speaks protocol {}; Fleet speaks {PROTOCOLS:?}",
+                    self.name, m.protocol
+                ))
+            }
+        })
+    }
+
+    /// `verb` with `fields`, in the version the runtime speaks. An Unknown
+    /// answer forgets the version, so a runtime replaced by one of another
+    /// version is asked its manifest again.
+    fn send<T: DeserializeOwned>(&self, verb: &str, fields: Value) -> Observation<T> {
+        let answer = bind(self.protocol(), |protocol| {
+            self.ask(verb, Self::request(protocol, fields))
+        });
+        if answer.is_unknown() {
+            self.learn(None);
+        }
+        answer
     }
 
     /// The answer to one call, or why there is none.
@@ -193,6 +272,9 @@ pub struct Manifest {
     /// What a runtime that declares the `workspace` verb makes.
     #[serde(default)]
     pub workspace: Option<WorkspaceManifest>,
+    /// Each place the request asked about, from protocol version 2.
+    #[serde(default)]
+    pub places: Vec<PlaceReport>,
 }
 
 /// The manifest's `workspace`: the URL schemes the runtime handles, and
@@ -345,23 +427,12 @@ impl ExecRuntime {
             .ok_or_else(|| format!("no runtime serves host {host:?}; name one in [hosts.{host}]"))
     }
 
-    fn request(fields: Value) -> Value {
-        let mut request = json!({ "protocol": PROTOCOL });
-        if let (Some(r), Value::Object(f)) = (request.as_object_mut(), fields) {
-            r.extend(f);
-        }
-        request
-    }
-
     fn inspect(&self, host: &str, fleet_key: &str) -> Observation<Inspected> {
         let rt = match self.program(host) {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        rt.ask(
-            "inspect",
-            Self::request(json!({ "key": rt.key(fleet_key) })),
-        )
+        rt.send("inspect", json!({ "key": rt.key(fleet_key) }))
     }
 
     fn exec_on(&self, host: &str, argv: &[&str]) -> Observation<Executed> {
@@ -370,9 +441,9 @@ impl ExecRuntime {
             Err(why) => return Observation::unknown(why),
         };
         let timeout = u64::try_from(rt.call_timeout.as_millis()).unwrap_or(u64::MAX) / 2;
-        rt.ask(
+        rt.send(
             "exec",
-            Self::request(json!({ "in": "host", "argv": argv, "timeoutMs": timeout.max(1) })),
+            json!({ "in": "host", "argv": argv, "timeoutMs": timeout.max(1) }),
         )
     }
 
@@ -411,7 +482,7 @@ impl ExecRuntime {
         if let Some(dir) = dir {
             request["dir"] = json!(dir);
         }
-        rt.ask("start", Self::request(request))
+        rt.send("start", request)
     }
 
     /// Start the agent of `session` again on the harness profile's resume
@@ -461,9 +532,9 @@ impl ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        rt.ask::<Captured>(
+        rt.send::<Captured>(
             "capture",
-            Self::request(json!({ "key": rt.key(&session.key), "lines": 0 })),
+            json!({ "key": rt.key(&session.key), "lines": 0 }),
         )
     }
 
@@ -555,18 +626,15 @@ impl Runtime for ExecRuntime {
             Ok(rt) => rt,
             Err(_) => return Observation::Known(false),
         };
-        bind(
-            rt.ask::<Manifest>("manifest", Self::request(json!({}))),
-            |m| {
-                if m.protocol != PROTOCOL {
-                    return Observation::unknown(format!(
-                        "runtime {} speaks protocol {}; Fleet speaks {PROTOCOL}",
-                        rt.name, m.protocol
-                    ));
-                }
-                Observation::Known(true)
-            },
-        )
+        bind(rt.manifest(), |m| {
+            if !PROTOCOLS.contains(&m.protocol) {
+                return Observation::unknown(format!(
+                    "runtime {} speaks protocol {}; Fleet speaks {PROTOCOLS:?}",
+                    rt.name, m.protocol
+                ));
+            }
+            Observation::Known(true)
+        })
     }
 
     fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<bool, String>> {
@@ -624,28 +692,25 @@ impl Runtime for ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        bind(
-            rt.ask::<Manifest>("manifest", Self::request(json!({}))),
-            |manifest| {
-                if let Some(url) = manifest.unsupported(urls) {
-                    return Observation::Known(EffectOutcome::Unsupported { url: url.clone() });
-                }
-                let request = Self::request(json!({ "key": rt.key(key), "urls": urls }));
-                rt.ask::<WorkspaceAnswer>("workspace", request)
-                    .map(|answer| match answer {
-                        WorkspaceAnswer::Made { dirs, adopted } => EffectOutcome::Materialized {
-                            workspace: Box::new(WorkspaceRef {
-                                key: key.to_string(),
-                                host: host.to_string(),
-                                dirs,
-                            }),
-                            adopted,
-                        },
-                        WorkspaceAnswer::Unsupported { url } => EffectOutcome::Unsupported { url },
-                        WorkspaceAnswer::Failed { why } => EffectOutcome::Failed { why },
-                    })
-            },
-        )
+        bind(rt.manifest(), |manifest| {
+            if let Some(url) = manifest.unsupported(urls) {
+                return Observation::Known(EffectOutcome::Unsupported { url: url.clone() });
+            }
+            let request = json!({ "key": rt.key(key), "urls": urls });
+            rt.send::<WorkspaceAnswer>("workspace", request)
+                .map(|answer| match answer {
+                    WorkspaceAnswer::Made { dirs, adopted } => EffectOutcome::Materialized {
+                        workspace: Box::new(WorkspaceRef {
+                            key: key.to_string(),
+                            host: host.to_string(),
+                            dirs,
+                        }),
+                        adopted,
+                    },
+                    WorkspaceAnswer::Unsupported { url } => EffectOutcome::Unsupported { url },
+                    WorkspaceAnswer::Failed { why } => EffectOutcome::Failed { why },
+                })
+        })
     }
 
     /// The runtime's `stop` with `release`: the process goes, and the
@@ -655,8 +720,8 @@ impl Runtime for ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        let request = Self::request(json!({ "key": rt.key(&workspace.key), "release": true }));
-        rt.ask::<Stopped>("stop", request)
+        let request = json!({ "key": rt.key(&workspace.key), "release": true });
+        rt.send::<Stopped>("stop", request)
             .map(|Stopped::Stopped| EffectOutcome::Deleted)
     }
 
@@ -767,12 +832,12 @@ impl Runtime for ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        let request = Self::request(json!({
+        let request = json!({
             "key": rt.key(&session.key),
             "text": text,
             "submit": true,
-        }));
-        rt.ask::<Sent>("input", request).map(|sent| match sent {
+        });
+        rt.send::<Sent>("input", request).map(|sent| match sent {
             Sent::Sent => EffectOutcome::Delivered {
                 already: false,
                 via: Some("input".into()),
@@ -815,8 +880,8 @@ impl Runtime for ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        let request = Self::request(json!({ "key": rt.key(&session.key), "release": true }));
-        rt.ask::<Stopped>("stop", request)
+        let request = json!({ "key": rt.key(&session.key), "release": true });
+        rt.send::<Stopped>("stop", request)
             .map(|Stopped::Stopped| EffectOutcome::Released)
     }
 
@@ -854,20 +919,17 @@ impl Runtime for ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        bind(
-            rt.ask::<Manifest>("manifest", Self::request(json!({}))),
-            |manifest| {
-                if !manifest.verbs.iter().any(|v| v == "attach") {
-                    return Observation::Known(None);
-                }
-                let request = Self::request(json!({ "key": rt.key(&session.key) }));
-                rt.ask::<Attached>("attach", request).map(|a| match a {
-                    Attached::Stream { argv } => Some(Attach::Stream { argv }),
-                    Attached::Tty { argv } => Some(Attach::Tty { argv }),
-                    Attached::None => None,
-                })
-            },
-        )
+        bind(rt.manifest(), |manifest| {
+            if !manifest.verbs.iter().any(|v| v == "attach") {
+                return Observation::Known(None);
+            }
+            let request = json!({ "key": rt.key(&session.key) });
+            rt.send::<Attached>("attach", request).map(|a| match a {
+                Attached::Stream { argv } => Some(Attach::Stream { argv }),
+                Attached::Tty { argv } => Some(Attach::Tty { argv }),
+                Attached::None => None,
+            })
+        })
     }
 
     /// Lost when the runtime holds the key but its process exited: a `stop`
@@ -918,14 +980,15 @@ pub struct Case {
 /// what `fleet doctor` asks of each host's runtime, and the first case of
 /// [`check`].
 pub fn reach(program: &ExecProgram) -> Result<(), String> {
-    speaks(&program.ask::<Manifest>("manifest", ExecRuntime::request(json!({}))))
+    speaks(&program.manifest())
 }
 
 fn speaks(manifest: &Observation<Manifest>) -> Result<(), String> {
     match manifest {
-        Observation::Known(m) if m.protocol != PROTOCOL => {
-            Err(format!("protocol {}; Fleet speaks {PROTOCOL}", m.protocol))
-        }
+        Observation::Known(m) if !PROTOCOLS.contains(&m.protocol) => Err(format!(
+            "protocol {}; Fleet speaks {PROTOCOLS:?}",
+            m.protocol
+        )),
         Observation::Known(m) => match REQUIRED_VERBS
             .iter()
             .find(|v| !m.verbs.iter().any(|have| have == *v))
@@ -947,24 +1010,25 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
         .unwrap_or_default();
     let key = |n: &str| format!("fleet-check-{run}-{nanos:x}.{n}");
     let mut cases = Vec::new();
-    let manifest = program.ask::<Manifest>("manifest", ExecRuntime::request(json!({})));
+    let manifest = program.manifest();
     cases.push(Case {
         name: "manifest names the protocol version and the required verbs",
         result: speaks(&manifest),
     });
-    let verbs = match manifest {
-        Observation::Known(m) => m.verbs,
-        Observation::Unknown { .. } => Vec::new(),
+    let (protocol, verbs) = match &manifest {
+        Observation::Known(m) if PROTOCOLS.contains(&m.protocol) => (m.protocol, m.verbs.clone()),
+        Observation::Known(m) => (PROTOCOL, m.verbs.clone()),
+        Observation::Unknown { .. } => (PROTOCOL, Vec::new()),
     };
+    let request = |fields: Value| ExecProgram::request(protocol, fields);
     let start = |k: &str, argv: &[&str]| {
         program.ask::<Started>(
             "start",
-            ExecRuntime::request(json!({ "key": k, "argv": argv, "env": {} })),
+            request(json!({ "key": k, "argv": argv, "env": {} })),
         )
     };
-    let inspect =
-        |k: &str| program.ask::<Inspected>("inspect", ExecRuntime::request(json!({ "key": k })));
-    let stop = |k: &str| program.ask::<Stopped>("stop", ExecRuntime::request(json!({ "key": k })));
+    let inspect = |k: &str| program.ask::<Inspected>("inspect", request(json!({ "key": k })));
+    let stop = |k: &str| program.ask::<Stopped>("stop", request(json!({ "key": k })));
     let unknown = |verb: &str, request: Vec<u8>| match program.call_raw(verb, request) {
         Answer::Unknown(_) => Ok(()),
         Answer::Known(v) => Err(format!("answered Known {v}")),
@@ -985,18 +1049,34 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
             .and_then(|()| {
                 unknown(
                     "inspect",
-                    ExecRuntime::request(json!({ "key": "not a key / at all" }))
+                    request(json!({ "key": "not a key / at all" }))
                         .to_string()
                         .into_bytes(),
                 )
             })
-            .and_then(|()| {
-                unknown(
-                    "no-such-verb",
-                    ExecRuntime::request(json!({})).to_string().into_bytes(),
-                )
-            }),
+            .and_then(|()| unknown("no-such-verb", request(json!({})).to_string().into_bytes())),
     });
+    if protocol >= 2 {
+        cases.push(Case {
+            name: "manifest reports each place it was asked about",
+            result: match &manifest {
+                Observation::Known(m) if m.places.iter().any(|p| p.name == Place::LOCAL) => Ok(()),
+                Observation::Known(m) => {
+                    Err(format!("places {:?} lack {}", m.places, Place::LOCAL))
+                }
+                Observation::Unknown { why } => Err(why.clone()),
+            },
+        });
+        cases.push(Case {
+            name: "a version 2 request without a place answers Unknown",
+            result: unknown(
+                "inspect",
+                json!({ "protocol": protocol, "key": key("placeless") })
+                    .to_string()
+                    .into_bytes(),
+            ),
+        });
+    }
     cases.push(Case {
         name: "inspect of an absent key answers None",
         result: match inspect(&key("absent")) {
@@ -1031,7 +1111,7 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
             other => return Err(format!("inspect answered {other:?}, not {first} running")),
         }
         if verbs.iter().any(|v| v == "list") {
-            match program.ask::<Keys>("list", ExecRuntime::request(json!({}))) {
+            match program.ask::<Keys>("list", request(json!({}))) {
                 Observation::Known(Keys { keys })
                     if keys.iter().filter(|k| **k == one).count() == 1 => {}
                 other => return Err(format!("list answered {other:?}, not the key once")),
@@ -1122,7 +1202,7 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
     let _ = stop(&exits);
 
     if verbs.iter().any(|v| v == "workspace") {
-        cases.extend(check_workspace(program, &key("workspace")));
+        cases.extend(check_workspace(program, protocol, &key("workspace")));
     }
     cases
 }
@@ -1141,7 +1221,7 @@ enum WorkspaceAnswer {
 }
 
 /// The workspace rules a runtime that declares `workspace` holds to.
-fn check_workspace(program: &ExecProgram, key: &str) -> Vec<Case> {
+fn check_workspace(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     let dir = std::env::temp_dir().join(format!("{}-file", key.replace('.', "-")));
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return vec![Case {
@@ -1153,7 +1233,7 @@ fn check_workspace(program: &ExecProgram, key: &str) -> Vec<Case> {
     let make = || {
         program.ask::<WorkspaceAnswer>(
             "workspace",
-            ExecRuntime::request(json!({ "key": key, "urls": [url] })),
+            ExecProgram::request(protocol, json!({ "key": key, "urls": [url] })),
         )
     };
     let idempotent = match (make(), make()) {
@@ -1180,7 +1260,7 @@ fn check_workspace(program: &ExecProgram, key: &str) -> Vec<Case> {
     };
     let released = program.ask::<Stopped>(
         "stop",
-        ExecRuntime::request(json!({ "key": key, "release": true })),
+        ExecProgram::request(protocol, json!({ "key": key, "release": true })),
     );
     let kept = match released {
         Observation::Known(Stopped::Stopped) if dir.is_dir() => Ok(()),

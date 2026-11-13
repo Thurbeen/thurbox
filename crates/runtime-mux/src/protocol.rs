@@ -23,8 +23,17 @@ use crate::contract::{Located, Owner, SessionBackend, WindowRole, WindowSpec};
 use crate::identity::window_name_for;
 use crate::workspace::{Workspaces, SCHEMES};
 
-/// The protocol version this program speaks.
-pub const PROTOCOL: u64 = 1;
+/// The newest protocol version this program speaks, which its manifest
+/// names. Version 2 carries a place on each request.
+pub const PROTOCOL: u64 = 2;
+
+/// Every version it answers. A version 1 request names no place and runs at
+/// `local`, the one place this program serves.
+pub const PROTOCOLS: &[u64] = &[1, 2];
+
+/// The one place this program serves: this machine
+/// (docs/runtime/README.md, "Places").
+pub const LOCAL: &str = "local";
 
 /// The verbs it answers, `manifest` first.
 pub const VERBS: &[&str] = &[
@@ -94,6 +103,7 @@ pub fn serve_with(
             "protocol": PROTOCOL,
             "verbs": VERBS,
             "workspace": { "schemes": SCHEMES, "survivesStop": true },
+            "places": places(backend, request),
         }));
     }
     let request: Value = match serde_json::from_slice(request) {
@@ -101,10 +111,15 @@ pub fn serve_with(
         Err(e) => return unknown(format!("the request is not JSON: {e}")),
     };
     match request.get("protocol").and_then(Value::as_u64) {
-        Some(PROTOCOL) => {}
+        Some(1) => {}
+        Some(2) => {
+            if let Err(why) = check_place(request.get("place")) {
+                return unknown(why);
+            }
+        }
         Some(other) => {
             return unknown(format!(
-                "protocol {other} is not served; this runtime speaks {PROTOCOL}"
+                "protocol {other} is not served; this runtime speaks {PROTOCOLS:?}"
             ))
         }
         None => return unknown("the request names no protocol"),
@@ -137,6 +152,82 @@ pub fn serve_with(
         other => Err(format!("unknown verb {other:?}")),
     };
     result.unwrap_or_else(unknown)
+}
+
+/// A place as a request names it: the name, and its table from Fleet's
+/// config.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Place {
+    name: String,
+    #[serde(default)]
+    config: serde_json::Map<String, Value>,
+}
+
+/// Why this program cannot run a request at `place`, if it cannot: it serves
+/// `local` alone, which takes no config.
+fn serves(place: &Place) -> Result<(), String> {
+    if place.name != LOCAL {
+        return Err(format!(
+            "place {:?}: runtime-mux serves only {LOCAL:?}, this machine",
+            place.name
+        ));
+    }
+    if !place.config.is_empty() {
+        return Err(format!(
+            "place {LOCAL:?} takes no config; runtime-mux cannot use {:?}",
+            place.config.keys().collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
+/// A version 2 request's `place`, checked: every request but `manifest`
+/// names one.
+fn check_place(place: Option<&Value>) -> Result<(), String> {
+    let place = place.ok_or("a version 2 request names its place")?;
+    let place: Place =
+        serde_json::from_value(place.clone()).map_err(|e| format!("bad place: {e}"))?;
+    serves(&place)
+}
+
+/// The manifest's `places`: each place the request asks about, or `local`
+/// when it asks about none, with whether this program can run a process
+/// there now.
+fn places(backend: &dyn SessionBackend, request: &[u8]) -> Vec<Value> {
+    let asked: Vec<Value> = serde_json::from_slice::<Value>(request)
+        .ok()
+        .and_then(|r| r.get("places").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    let asked = if asked.is_empty() {
+        vec![json!({ "name": LOCAL, "config": {} })]
+    } else {
+        asked
+    };
+    let platform = if cfg!(windows) { "windows" } else { "posix" };
+    asked
+        .into_iter()
+        .map(|place| {
+            let name = place
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let ready = serde_json::from_value::<Place>(place.clone())
+                .map_err(|e| format!("bad place: {e}"))
+                .and_then(|place| serves(&place))
+                .and_then(|()| backend.check_available().map_err(|e| e.to_string()));
+            let mut report = json!({
+                "name": name,
+                "platform": platform,
+                "dynamic": false,
+                "ready": ready.is_ok(),
+            });
+            if let Err(why) = ready {
+                report["why"] = json!(why);
+            }
+            report
+        })
+        .collect()
 }
 
 /// A request as its verb's shape, with every key it names checked.

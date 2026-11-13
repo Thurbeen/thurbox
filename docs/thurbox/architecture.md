@@ -1260,8 +1260,10 @@ One repository keeps a change across components in one change and one CI.
 
 ## ADR-42: Hosts belong to runtimes
 
-**Status**: planned. The code lands in steps. Until each step lands, Fleet's
-`[hosts]` table and thurbox's `hosts.toml` work as documented today.
+**Status**: in progress. The code lands in steps. The runtime protocol's
+version 2 has landed: each request names a place, and `manifest` reports
+places. Until each other step lands, Fleet's `[hosts]` table and thurbox's
+`hosts.toml` work as documented today.
 
 **Choice**: a host is a place of a runtime.
 
@@ -1281,7 +1283,7 @@ One repository keeps a change across components in one change and one CI.
   missing and the command that fixes it.
 
 The protocol additions are in
-[the runtime protocol](../runtime/README.md#proposed-places-protocol-version-2),
+[the runtime protocol](../runtime/README.md#places-protocol-version-2),
 and the config shape is in
 [Fleet's configuration](../fleet/configuration.md#planned-places-of-a-runtime).
 

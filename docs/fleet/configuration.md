@@ -192,7 +192,7 @@ A second Fleet installation on the same runtime needs a distinct
 **Status**: planned, not implemented. Fleet refuses these keys today. The
 decision is [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes),
 and the protocol is
-[places](../runtime/README.md#proposed-places-protocol-version-2).
+[places](../runtime/README.md#places-protocol-version-2).
 
 The next shape removes `[hosts]`. Each runtime declares its places inline,
 and a Task's `spec.host` names `<runtime>/<place>`:
