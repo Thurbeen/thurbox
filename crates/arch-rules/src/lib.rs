@@ -30,8 +30,16 @@
 //!   the method is a type or trait (`Store::update_status(..)`). The
 //!   qualified-self form `<FileStore>::update_status(..)` is not caught.
 //! - Glob imports are resolved conservatively: a name that could come from a
-//!   forbidden glob is judged as if it did.
-//! - `cfg` is ignored: code behind any `cfg` is judged too.
+//!   forbidden glob is judged as if it did, unless the name is read as a
+//!   module (a path's prefix, a glob's base) and the module declares a `mod`
+//!   of that name, which shadows every glob.
+//! - `cfg` is ignored: code behind any `cfg` is judged too. So a module
+//!   behind one shadows no glob, and an import behind one, like an import in
+//!   a function body, adds a meaning to its name without removing the others.
+//! - Each target (the library, `main.rs`, each `src/bin/` binary) is its own
+//!   module tree, found by following `mod` declarations, `#[path]` included;
+//!   a file two targets declare is a module of each. A file no target
+//!   declares is placed by where it is.
 //! - Tests and examples (`tests/`, `benches/`, `#[cfg(test)]` modules inside
 //!   `src/` excepted) are not under the source rules; their manifests are.
 //!
@@ -42,7 +50,8 @@
 //! This checker is what proves the rules hold across re-exports and is what
 //! the negative fixtures exercise.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -290,12 +299,22 @@ fn collect_deps(table: &toml::Table, inherited: &toml::Table, out: &mut Vec<Dep>
 
 /// Run every check. Violations are sorted; an empty list is a pass.
 pub fn check(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
+    check_with(ws, rules, true)
+}
+
+/// [`check`] with every name resolved afresh for each reference: what the
+/// cache must agree with, for the tests that prove it does.
+#[doc(hidden)]
+pub fn check_uncached(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
+    check_with(ws, rules, false)
+}
+
+fn check_with(ws: &Workspace, rules: &Rules, cache: bool) -> Vec<Violation> {
     let mut v = Vec::new();
     check_governance(ws, rules, &mut v);
     check_graphs(ws, rules, &mut v);
     // A component meets the others only through processes, so its manifest
-    // already shows every edge it has; its sources are not Fleet's to index,
-    // and thurbox's alone would cost more than the rest of the workspace.
+    // already shows every edge it has; its sources are not Fleet's to index.
     let indexes: Vec<CrateIndex> = ws
         .crates
         .iter()
@@ -307,9 +326,10 @@ pub fn check(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
         })
         .map(|c| CrateIndex::build(c, ws, &mut v))
         .collect();
+    let resolver = Resolver::new(&indexes, cache);
     for idx in &indexes {
         if let Some(rule) = rules.crates.get(&idx.name) {
-            check_sources(ws, rules, rule, idx, &indexes, &mut v);
+            check_sources(ws, rules, rule, idx, &resolver, &mut v);
             if rule.role == Role::Pure {
                 check_pure_guards(ws, rules, rule, idx, &mut v);
             }
@@ -499,9 +519,26 @@ struct Ref {
 #[derive(Debug, Clone, Default)]
 struct Scope {
     /// Local name -> the use path it stands for, unresolved, in this module.
-    aliases: BTreeMap<String, (Vec<String>, bool)>,
+    aliases: BTreeMap<String, Vec<Alias>>,
     /// Glob imports, unresolved.
     globs: Vec<(Vec<String>, bool)>,
+    /// The modules this module declares (`mod x`). A declared module
+    /// shadows every glob import of its name wherever a module is read: as a
+    /// path's prefix or as a glob's base. Other items are not recorded, so
+    /// they shadow nothing, and a glob stays a possible source.
+    modules_declared: BTreeSet<String>,
+}
+
+/// One import of a name. A module may hold several for one name (under
+/// different `cfg`s), and each is a possible meaning.
+#[derive(Debug, Clone)]
+struct Alias {
+    target: Vec<String>,
+    global: bool,
+    /// The import may not be in force where the name is read: it is inside a
+    /// block (a function body) or behind a `cfg`. The name may then also mean
+    /// what it would without the import.
+    weak: bool,
 }
 
 /// One crate's sources, indexed for resolution.
@@ -549,6 +586,7 @@ impl CrateIndex {
         let mut files = Vec::new();
         rs_files(&src, &mut files);
         files.sort();
+        let mut parsed_files = Vec::new();
         for file in files {
             let rel = file
                 .strip_prefix(&ws.root)
@@ -569,17 +607,29 @@ impl CrateIndex {
                     continue;
                 }
             };
-            let module = module_of(&src, &file);
-            if module.is_empty() && file.file_name().is_some_and(|n| n == "lib.rs") {
-                idx.lib_doc = doc_text(&parsed.attrs);
+            parsed_files.push((file, rel, parsed));
+        }
+        let modules = module_paths(&src, &parsed_files);
+        for (file, rel, parsed) in &parsed_files {
+            // A file no target declares is placed by where it is.
+            let paths = modules
+                .get(file)
+                .cloned()
+                .unwrap_or_else(|| vec![module_of(&src, file)]);
+            for module in paths {
+                if module.is_empty() && file.file_name().is_some_and(|n| n == "lib.rs") {
+                    idx.lib_doc = doc_text(&parsed.attrs);
+                }
+                let mut walker = Walker {
+                    idx: &mut idx,
+                    module,
+                    file: rel.clone(),
+                    blocks: 0,
+                    cfg_use: false,
+                };
+                walker.scope();
+                walker.items(&parsed.items);
             }
-            let mut walker = Walker {
-                idx: &mut idx,
-                module,
-                file: rel,
-            };
-            walker.scope();
-            walker.items(&parsed.items);
         }
         idx
     }
@@ -595,6 +645,134 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
             rs_files(&p, out);
         } else if p.extension().is_some_and(|x| x == "rs") {
             out.push(p);
+        }
+    }
+}
+
+/// Each file's module paths, found by following `mod` declarations, `#[path]`
+/// included, from every target's root: the library's root is the empty path,
+/// a binary's one segment no Rust name can spell (`#main`, `#bin:<name>`). A
+/// file two targets declare is a module of each, so a binary's modules never
+/// share a scope with the library's.
+fn module_paths(
+    src: &Path,
+    files: &[(PathBuf, String, syn::File)],
+) -> BTreeMap<PathBuf, Vec<Vec<String>>> {
+    let parsed: BTreeMap<&Path, &syn::File> =
+        files.iter().map(|(f, _, p)| (f.as_path(), p)).collect();
+    let bin = src.join("bin");
+    let mut roots = vec![
+        (src.join("lib.rs"), Vec::new()),
+        (src.join("main.rs"), vec!["#main".to_string()]),
+    ];
+    for (file, _, _) in files {
+        let target = if file.parent() == Some(bin.as_path()) {
+            file.file_stem()
+        } else if file.parent().and_then(Path::parent) == Some(bin.as_path())
+            && file.file_name().is_some_and(|n| n == "main.rs")
+        {
+            file.parent().and_then(Path::file_name)
+        } else {
+            None
+        };
+        if let Some(name) = target {
+            roots.push((
+                file.clone(),
+                vec![format!("#bin:{}", name.to_string_lossy())],
+            ));
+        }
+    }
+    let mut out: BTreeMap<PathBuf, Vec<Vec<String>>> = BTreeMap::new();
+    let mut queue = std::collections::VecDeque::new();
+    for (file, module) in roots {
+        // A root declares its children beside it.
+        let children_dir = file.parent().map(Path::to_path_buf);
+        queue.push_back((file, module, children_dir, Vec::new()));
+    }
+    // `chain` is the files that declared this one, root first: a `#[path]`
+    // back to one of them is a cycle, which would otherwise grow the module
+    // path forever.
+    while let Some((file, module, children_dir, chain)) = queue.pop_front() {
+        let Some(ast) = parsed.get(file.as_path()) else {
+            continue;
+        };
+        if chain.contains(&file) {
+            continue;
+        }
+        let seen = out.entry(file.clone()).or_default();
+        if seen.contains(&module) {
+            continue;
+        }
+        seen.push(module.clone());
+        let (Some(file_dir), Some(dir)) = (file.parent(), children_dir) else {
+            continue;
+        };
+        let mut children = Vec::new();
+        declared_files(&ast.items, file_dir, &dir, true, &module, &mut children);
+        let mut chain = chain;
+        chain.push(file.clone());
+        queue.extend(
+            children
+                .into_iter()
+                .map(|(child, path, dir)| (child, path, dir, chain.clone())),
+        );
+    }
+    out
+}
+
+/// The files the `mod x;` declarations in `items` may name, each with its
+/// module path and the directory its own children live in. `dir` is where a
+/// child without `#[path]` lives; `file_dir`, the declaring file's directory,
+/// is what a top-level `#[path]` is relative to.
+fn declared_files(
+    items: &[Item],
+    file_dir: &Path,
+    dir: &Path,
+    top: bool,
+    module: &[String],
+    out: &mut Vec<(PathBuf, Vec<String>, Option<PathBuf>)>,
+) {
+    for item in items {
+        let Item::Mod(m) = item else {
+            continue;
+        };
+        let name = m.ident.to_string();
+        let mut child = module.to_vec();
+        child.push(name.clone());
+        let path_attr = m.attrs.iter().find_map(|a| match &a.meta {
+            syn::Meta::NameValue(nv) if nv.path.is_ident("path") => match &nv.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) => Some(s.value()),
+                _ => None,
+            },
+            _ => None,
+        });
+        match (&m.content, path_attr) {
+            (Some((_, inner)), Some(p)) => {
+                let base = if top { file_dir } else { dir };
+                declared_files(inner, file_dir, &base.join(p), false, &child, out);
+            }
+            (Some((_, inner)), None) => {
+                declared_files(inner, file_dir, &dir.join(&name), false, &child, out);
+            }
+            (None, Some(p)) => {
+                let file = if top { file_dir } else { dir }.join(p);
+                // A `#[path]` file declares its children beside it, like a
+                // `mod.rs`.
+                let children = file.parent().map(Path::to_path_buf);
+                out.push((file, child, children));
+            }
+            (None, None) => {
+                out.push((
+                    dir.join(format!("{name}.rs")),
+                    child.clone(),
+                    Some(dir.join(&name)),
+                ));
+                let mod_rs = dir.join(&name).join("mod.rs");
+                out.push((mod_rs, child, Some(dir.join(&name))));
+            }
         }
     }
 }
@@ -640,6 +818,11 @@ struct Walker<'a> {
     idx: &'a mut CrateIndex,
     module: Vec<String>,
     file: String,
+    /// How many blocks (function bodies and the like) enclose the walk: what
+    /// is declared in one is local to it, so it hides nothing outside.
+    blocks: u32,
+    /// The `use` being walked is behind a `cfg`.
+    cfg_use: bool,
 }
 
 impl Walker<'_> {
@@ -649,6 +832,14 @@ impl Walker<'_> {
 
     fn items(&mut self, items: &[Item]) {
         for item in items {
+            // The checker ignores `cfg`, so a module `cfg` can remove must
+            // not shadow anything.
+            if let Item::Mod(m) = item
+                && !has_cfg(&m.attrs)
+                && self.blocks == 0
+            {
+                self.scope().modules_declared.insert(m.ident.to_string());
+            }
             self.visit_item(item);
         }
     }
@@ -725,7 +916,12 @@ impl Walker<'_> {
             location: loc,
         });
         if local != "_" {
-            self.scope().aliases.insert(local, (target, global));
+            let weak = self.blocks > 0 || self.cfg_use;
+            self.scope().aliases.entry(local).or_default().push(Alias {
+                target,
+                global,
+                weak,
+            });
         }
     }
 }
@@ -733,7 +929,15 @@ impl Walker<'_> {
 impl<'ast> Visit<'ast> for Walker<'_> {
     fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
         let span = u.use_token.span;
+        self.cfg_use = has_cfg(&u.attrs);
         self.use_tree(&u.tree, &mut Vec::new(), u.leading_colon.is_some(), span);
+        self.cfg_use = false;
+    }
+
+    fn visit_block(&mut self, b: &'ast syn::Block) {
+        self.blocks += 1;
+        visit::visit_block(self, b);
+        self.blocks -= 1;
     }
 
     fn visit_item_extern_crate(&mut self, e: &'ast syn::ItemExternCrate) {
@@ -742,7 +946,9 @@ impl<'ast> Visit<'ast> for Walker<'_> {
             .rename
             .as_ref()
             .map_or(name.clone(), |(_, r)| r.to_string());
+        self.cfg_use = has_cfg(&e.attrs);
         self.import(local, vec![name], true, e.ident.span());
+        self.cfg_use = false;
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
@@ -808,17 +1014,95 @@ impl<'ast> Visit<'ast> for Walker<'_> {
 }
 
 /// Resolves paths across every crate's index.
+///
+/// A resolution is remembered, keyed by everything it reads, once it
+/// completed without hitting the depth limit or the budget: such a result
+/// does not depend on where in a reference's resolution it was asked for.
+/// Without it, each bare name under nested globs (`use super::*` in a test
+/// module) re-resolves every glob on the way up, for every reference.
 struct Resolver<'a> {
     indexes: &'a [CrateIndex],
-    budget: std::cell::Cell<u32>,
-    exhausted: std::cell::Cell<bool>,
+    budget: Cell<u32>,
+    exhausted: Cell<bool>,
+    /// Set when the resolution under way hit the depth limit or the budget,
+    /// so its result is partial and must not be remembered.
+    cut: Cell<bool>,
+    cache: bool,
+    resolved: Memo<ResolveKey>,
+    exported: Memo<(Vec<String>, bool)>,
 }
+
+/// Finished results, and the keys whose resolution is under way: asking
+/// for one of those again is a cycle through globs or re-exports.
+struct Memo<K> {
+    done: RefCell<HashMap<K, Vec<Vec<String>>>>,
+    active: RefCell<HashSet<K>>,
+}
+
+impl<K> Default for Memo<K> {
+    fn default() -> Self {
+        Memo {
+            done: RefCell::default(),
+            active: RefCell::default(),
+        }
+    }
+}
+
+/// The crate, module, path and flags a [`Resolver::resolve`] call reads.
+type ResolveKey = (String, Vec<String>, Vec<String>, bool, bool, bool);
 
 /// Resolution steps one reference may take before it is reported as
 /// unresolvable instead of judged.
 const RESOLVE_BUDGET: u32 = 4_096;
 
-impl Resolver<'_> {
+impl<'a> Resolver<'a> {
+    fn new(indexes: &'a [CrateIndex], cache: bool) -> Self {
+        Resolver {
+            indexes,
+            budget: Cell::new(0),
+            exhausted: Cell::new(false),
+            cut: Cell::new(false),
+            cache,
+            resolved: Memo::default(),
+            exported: Memo::default(),
+        }
+    }
+
+    /// Run `compute`, remembering its result under `key` in `memo` unless
+    /// it was cut short. Asked for again while it runs, `key` answers
+    /// `on_cycle`, what the depth limit would: the uncached walk goes round
+    /// the cycle until that limit, adding no path the first pass did not.
+    fn remembered<K: std::hash::Hash + Eq + Clone>(
+        &self,
+        memo: &Memo<K>,
+        key: K,
+        on_cycle: impl FnOnce() -> Vec<Vec<String>>,
+        compute: impl FnOnce() -> Vec<Vec<String>>,
+    ) -> Vec<Vec<String>> {
+        if let Some(hit) = memo.done.borrow().get(&key) {
+            return hit.clone();
+        }
+        if self.cache && !memo.active.borrow_mut().insert(key.clone()) {
+            self.cut.set(true);
+            return on_cycle();
+        }
+        let outer = self.cut.replace(false);
+        let mut out = compute();
+        // Globs reach one item along many routes; one copy of each path is
+        // enough to judge, and keeps a result from doubling at every level.
+        out.sort();
+        out.dedup();
+        let cut = self.cut.get();
+        if self.cache {
+            memo.active.borrow_mut().remove(&key);
+            if !cut {
+                memo.done.borrow_mut().insert(key, out.clone());
+            }
+        }
+        self.cut.set(outer || cut);
+        out
+    }
+
     fn index(&self, lib: &str) -> Option<&CrateIndex> {
         self.indexes.iter().find(|i| i.lib == lib)
     }
@@ -839,7 +1123,35 @@ impl Resolver<'_> {
         globs: bool,
         depth: u32,
     ) -> Vec<Vec<String>> {
-        if segments.is_empty() || depth > 24 || !self.spend() {
+        let key = (
+            idx.lib.clone(),
+            module.to_vec(),
+            segments.to_vec(),
+            global,
+            macro_call,
+            globs,
+        );
+        self.remembered(&self.resolved, key, Vec::new, || {
+            self.resolve_afresh(idx, module, segments, global, macro_call, globs, depth)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_afresh(
+        &self,
+        idx: &CrateIndex,
+        module: &[String],
+        segments: &[String],
+        global: bool,
+        macro_call: bool,
+        globs: bool,
+        depth: u32,
+    ) -> Vec<Vec<String>> {
+        if segments.is_empty() {
+            return Vec::new();
+        }
+        if depth > 24 || !self.spend() {
+            self.cut.set(true);
             return Vec::new();
         }
         let first = segments[0].as_str();
@@ -851,7 +1163,11 @@ impl Resolver<'_> {
             vec![segments.to_vec()]
         } else {
             match first {
-                "crate" => vec![join(vec![idx.lib.clone()])],
+                "crate" => vec![join(
+                    std::iter::once(idx.lib.clone())
+                        .chain(target_root(module).iter().cloned())
+                        .collect(),
+                )],
                 "self" => vec![join(
                     std::iter::once(idx.lib.clone())
                         .chain(module.iter().cloned())
@@ -874,25 +1190,41 @@ impl Resolver<'_> {
                 "Self" => Vec::new(),
                 _ => {
                     let scope = idx.modules.get(module);
-                    if let Some((target, g)) = scope.and_then(|s| s.aliases.get(first)) {
-                        if target.len() == 1 && target[0] == first && !g {
+                    let aliases = scope.and_then(|s| s.aliases.get(first));
+                    let mut out = Vec::new();
+                    for a in aliases.into_iter().flatten() {
+                        if a.target.len() == 1 && a.target[0] == first && !a.global {
                             // `use x;` of an extern crate: it names itself.
-                            vec![segments.to_vec()]
+                            out.push(segments.to_vec());
                         } else {
-                            let base =
-                                self.resolve(idx, module, target, *g, false, globs, depth + 1);
-                            base.into_iter().map(join).collect()
+                            let base = self.resolve(
+                                idx,
+                                module,
+                                &a.target,
+                                a.global,
+                                false,
+                                globs,
+                                depth + 1,
+                            );
+                            out.extend(base.into_iter().map(join));
                         }
+                    }
+                    // Only when every import of the name may be out of force
+                    // does it keep the meaning it has without one.
+                    let unaliased = aliases.is_none_or(|list| list.iter().all(|a| a.weak));
+                    if !unaliased {
                     } else if idx.externs.contains(first) || self.index(first).is_some() {
-                        vec![segments.to_vec()]
+                        out.push(segments.to_vec());
                     } else {
-                        let mut out = vec![
+                        out.push(
                             std::iter::once(idx.lib.clone())
                                 .chain(module.iter().cloned())
                                 .chain(segments.iter().cloned())
                                 .collect(),
-                        ];
-                        let module_globs = if globs {
+                        );
+                        let shadowed = segments.len() > 1
+                            && scope.is_some_and(|s| s.modules_declared.contains(first));
+                        let module_globs = if globs && !shadowed {
                             scope.map(|s| s.globs.clone()).unwrap_or_default()
                         } else {
                             Vec::new()
@@ -907,8 +1239,8 @@ impl Resolver<'_> {
                         if macro_call && segments.len() == 1 {
                             out.push(vec!["std".to_string(), first.to_string()]);
                         }
-                        out
                     }
+                    out
                 }
             }
         };
@@ -918,7 +1250,8 @@ impl Resolver<'_> {
             if let Some(real) = s.first().and_then(|f| idx.renames.get(f)) {
                 s[0] = real.clone();
             }
-            out.extend(self.through_exports(s, depth + 1));
+            // Only a glob's base is resolved without globs: a module or enum.
+            out.extend(self.through_exports(s, !globs, depth + 1));
         }
         out
     }
@@ -926,8 +1259,28 @@ impl Resolver<'_> {
     /// Follow re-exports: if `a::b::c` names an item that module `a::b` of
     /// crate `a` imports (or glob-imports), replace that prefix by what it
     /// imports, until nothing changes.
-    fn through_exports(&self, path: Vec<String>, depth: u32) -> Vec<Vec<String>> {
-        if depth > 24 || path.len() < 2 {
+    /// `names_type`: the whole path names a module or a type.
+    fn through_exports(&self, path: Vec<String>, names_type: bool, depth: u32) -> Vec<Vec<String>> {
+        let again = path.clone();
+        self.remembered(
+            &self.exported,
+            (path.clone(), names_type),
+            || vec![again],
+            || self.through_exports_afresh(path, names_type, depth),
+        )
+    }
+
+    fn through_exports_afresh(
+        &self,
+        path: Vec<String>,
+        names_type: bool,
+        depth: u32,
+    ) -> Vec<Vec<String>> {
+        if path.len() < 2 {
+            return vec![path];
+        }
+        if depth > 24 {
+            self.cut.set(true);
             return vec![path];
         }
         let Some(idx) = self.index(&path[0]) else {
@@ -946,19 +1299,28 @@ impl Resolver<'_> {
             if !self.spend() {
                 return vec![path];
             }
-            if let Some((target, g)) = scope.aliases.get(name) {
-                let mut out = Vec::new();
-                for base in self.resolve(idx, &module, target, *g, false, true, depth + 1) {
-                    out.push(base.into_iter().chain(tail.iter().cloned()).collect());
-                }
-                if !out.is_empty() {
-                    return out;
+            let aliases = scope
+                .aliases
+                .get(name)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let mut via_alias: Vec<Vec<String>> = Vec::new();
+            for a in aliases {
+                for base in self.resolve(idx, &module, &a.target, a.global, false, true, depth + 1)
+                {
+                    via_alias.push(base.into_iter().chain(tail.iter().cloned()).collect());
                 }
             }
-            if !scope.globs.is_empty() {
+            if !via_alias.is_empty() && !aliases.iter().all(|a| a.weak) {
+                return via_alias;
+            }
+            let read_as_module = names_type || k < path.len();
+            let shadowed = read_as_module && scope.modules_declared.contains(name);
+            if !scope.globs.is_empty() && !shadowed {
                 // The name may be the module's own item or come through any
                 // of its globs: judge every possibility.
-                let mut out = vec![path.clone()];
+                let mut out = via_alias;
+                out.push(path.clone());
                 for (g, gg) in &scope.globs {
                     for base in self.resolve(idx, &module, g, *gg, false, false, depth + 1) {
                         let through: Vec<String> = base
@@ -966,12 +1328,13 @@ impl Resolver<'_> {
                             .chain(std::iter::once(name.clone()))
                             .chain(tail.iter().cloned())
                             .collect();
-                        out.extend(self.through_exports(through, depth + 1));
+                        out.extend(self.through_exports(through, names_type, depth + 1));
                     }
                 }
                 return out;
             }
-            return vec![path];
+            via_alias.push(path);
+            return via_alias;
         }
         vec![path]
     }
@@ -982,10 +1345,28 @@ impl Resolver<'_> {
         let left = self.budget.get();
         if left == 0 {
             self.exhausted.set(true);
+            self.cut.set(true);
             return false;
         }
         self.budget.set(left - 1);
         true
+    }
+}
+
+/// Whether `attrs` hold a `cfg` or a `cfg_attr`: something the checker,
+/// which ignores `cfg`, cannot rely on being in force.
+fn has_cfg(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|a| a.path().is_ident("cfg") || a.path().is_ident("cfg_attr"))
+}
+
+/// The root of the target `module` belongs to: empty for the library, a
+/// binary's own first segment otherwise.
+fn target_root(module: &[String]) -> &[String] {
+    match module.first() {
+        Some(first) if first.starts_with('#') => &module[..1],
+        _ => &[],
     }
 }
 
@@ -999,14 +1380,9 @@ fn check_sources(
     rules: &Rules,
     rule: &CrateRule,
     idx: &CrateIndex,
-    all: &[CrateIndex],
+    resolver: &Resolver,
     v: &mut Vec<Violation>,
 ) {
-    let resolver = Resolver {
-        indexes: all,
-        budget: std::cell::Cell::new(0),
-        exhausted: std::cell::Cell::new(false),
-    };
     let allowed_libs: BTreeSet<String> = rule.deps.iter().map(|d| lib_name(d)).collect();
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
     for r in &idx.refs {

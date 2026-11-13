@@ -8,10 +8,26 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use arch_rules::{Workspace, check, load_rules};
+use arch_rules::{Violation, Workspace, check, check_uncached, load_rules};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+}
+
+/// [`check`], asserting that resolving every name afresh finds the same:
+/// the resolution cache may only save work. A fresh resolution that runs
+/// out of budget is the case the cache exists for, so it is not compared.
+fn check_agreeing_with_uncached(
+    ws: &Workspace,
+    rules: &arch_rules::Rules,
+    case: &str,
+) -> Vec<Violation> {
+    let cached = check(ws, rules);
+    let fresh = check_uncached(ws, rules);
+    if !fresh.iter().any(|v| v.code == "unresolvable") {
+        assert_eq!(cached, fresh, "the cache changed what {case} reports");
+    }
+    cached
 }
 
 #[test]
@@ -40,7 +56,7 @@ fn this_workspace_obeys_its_architecture() {
             "{expected} missing from {names:?}"
         );
     }
-    let violations = check(&ws, &rules);
+    let violations = check_agreeing_with_uncached(&ws, &rules, "workspace");
     let shown: Vec<String> = violations.iter().map(ToString::to_string).collect();
     assert!(
         violations.is_empty(),
@@ -144,7 +160,7 @@ fn report(case: &str, changes: &[(&str, &str)]) -> BTreeSet<(String, String)> {
     }
     let ws = Workspace::load(&root, "fixture.toml").expect("fixture workspace");
     let rules = load_rules(&root.join("architecture.toml")).expect("fixture rules");
-    let found = check(&ws, &rules);
+    let found = check_agreeing_with_uncached(&ws, &rules, case);
     let _ = fs::remove_dir_all(&root);
     found
         .into_iter()
@@ -465,6 +481,264 @@ fn a_glob_of_a_local_module_resolves_without_expanding_through_itself() {
         "pub mod conditions { pub const A: &str = \"a\"; }\nuse conditions::*;\npub fn f() -> &'static str { let _ = conditions::A; A }\n",
     );
     expect("local-glob", &[(CTL, &src)], &[]);
+}
+
+/// Nested `use super::*` modules that each glob a sibling too, the shape of
+/// a component's `#[cfg(test)] mod tests` trees: every bare name may come
+/// through every glob on the way up, so resolution that recomputes each
+/// branch runs out of budget, while one that remembers what it resolved
+/// finds nothing to report.
+#[test]
+fn nested_glob_imports_resolve_within_the_budget() {
+    let mut body = String::from("pub mod helpers { pub fn h() {} }\n");
+    let depth = 12;
+    for level in 0..depth {
+        body.push_str(&format!(
+            "pub mod m{level} {{ use super::*; use crate::helpers::*; pub fn f{level}() {{ h(); }}\n"
+        ));
+    }
+    body.push_str("pub fn deepest() { h(); f0(); }\n");
+    body.push_str(&"}\n".repeat(depth));
+    let src = ctl(&body);
+    expect("nested-globs", &[(CTL, &src)], &[]);
+}
+
+/// A function only takes a value name: `fs::read` still reaches the
+/// glob-imported `std::fs` module, so the read is caught.
+#[test]
+fn a_function_does_not_shadow_a_glob_imported_module() {
+    let src = ctl("use std::*;\nfn fs() {}\npub fn x() { let _ = fs::read(\"p\"); }\n");
+    expect("value-shadow", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// A module of the same name does shadow the glob: `fs::read` is the local
+/// module's function, so nothing is reported.
+#[test]
+fn a_module_shadows_a_glob_imported_module() {
+    let src = ctl("use std::*;\nmod fs { pub fn read() {} }\npub fn x() { fs::read(); }\n");
+    expect("type-shadow", &[(CTL, &src)], &[]);
+}
+
+/// A resolution cut short by the depth limit is never remembered: `m29`
+/// re-exports `m28` and so on down to `m0`, which globs `std`, so the first
+/// reference gives up partway down the chain. The references after it, each
+/// within the limit on its own, must still each find `std::fs::read`, as
+/// resolving them afresh does.
+#[test]
+fn a_resolution_cut_short_is_not_remembered() {
+    let mut body = String::from("pub mod m0 { pub use std::*; }\n");
+    for level in 1..30 {
+        body.push_str(&format!(
+            "pub mod m{level} {{ pub use super::m{}::*; }}\n",
+            level - 1
+        ));
+    }
+    body.push_str("pub fn deep() { let _ = crate::m29::fs::read(\"p\"); }\n");
+    for level in 0..=22 {
+        body.push_str(&format!(
+            "pub fn at{level}() {{ let _ = crate::m{level}::fs::read(\"p\"); }}\n"
+        ));
+    }
+    let src = ctl(&body);
+    expect("cut-short", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// A binary is a crate of its own: its `mod fs` does not shadow the
+/// library's glob-imported `std::fs`.
+#[test]
+fn a_binary_module_does_not_shadow_a_library_glob() {
+    let lib = ctl("use std::*;\npub fn x() { let _ = fs::read(\"p\"); }\n");
+    expect(
+        "bin-shadow",
+        &[
+            (CTL, &lib),
+            ("crates/fx-ctl/src/main.rs", "mod fs {}\nfn main() {}\n"),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// A binary's modules are not the library's, even at the same path: the
+/// binary's `net` module (`src/net.rs`) declaring `mod fs` does not shadow
+/// the library's inline `net` module's glob-imported `std::fs`.
+#[test]
+fn a_binary_submodule_does_not_shadow_a_library_submodule() {
+    let lib =
+        ctl("pub mod net {\n    use std::*;\n    pub fn x() { let _ = fs::read(\"p\"); }\n}\n");
+    expect(
+        "bin-submodule-shadow",
+        &[
+            (CTL, &lib),
+            ("crates/fx-ctl/src/main.rs", "mod net;\nfn main() {}\n"),
+            ("crates/fx-ctl/src/net.rs", "mod fs {}\n"),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// The checker ignores `cfg`, so a module `cfg` can remove does not shadow:
+/// outside tests, `fs::read` is still `std::fs::read`.
+#[test]
+fn a_cfg_gated_module_does_not_shadow_a_glob() {
+    let src =
+        ctl("use std::*;\n#[cfg(test)]\nmod fs {}\npub fn x() { let _ = fs::read(\"p\"); }\n");
+    expect("cfg-shadow", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// A file both the library and a binary declare is a module of each: the
+/// binary's reads through it are judged in the binary's tree too.
+#[test]
+fn a_file_two_targets_declare_is_indexed_in_each() {
+    expect(
+        "shared-file",
+        &[
+            (CTL, &ctl("pub mod cli;\n")),
+            ("crates/fx-ctl/src/cli.rs", "pub use std::*;\n"),
+            (
+                "crates/fx-ctl/src/main.rs",
+                "mod cli;\nfn main() { let _ = cli::fs::read(\"p\"); }\n",
+            ),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// A `#[path]` module is the file the attribute names, in the tree that
+/// declares it.
+#[test]
+fn a_path_attribute_module_is_followed() {
+    expect(
+        "path-attr",
+        &[
+            ("crates/fx-ctl/src/other/x.rs", "pub use std::*;\n"),
+            (
+                "crates/fx-ctl/src/main.rs",
+                "#[path = \"other/x.rs\"]\nmod cli;\nfn main() { let _ = cli::fs::read(\"p\"); }\n",
+            ),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// A `use` inside a function names something only there: it does not hide
+/// what the same name is in the rest of the module.
+#[test]
+fn a_function_local_import_does_not_hide_a_module_read() {
+    let src = ctl(
+        "use std::*;\npub mod m { pub fn read(_: &str) {} }\nfn a() { use crate::m as fs; }\npub fn b() { let _ = fs::read(\"p\"); }\n",
+    );
+    expect("fn-local-use", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// Two imports of one name under different `cfg`s are both possible: the
+/// later one does not hide the earlier.
+#[test]
+fn cfg_alternative_imports_are_both_judged() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+    );
+    expect(
+        "cfg-alternatives",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-store/src/lib.rs",
+                "pub mod m { pub fn danger() {} }\n#[cfg(unix)]\nuse fx_api as sys;\n#[cfg(not(unix))]\nuse crate::m as sys;\npub fn b() { sys::danger(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
+}
+
+/// A module declared inside a function is not the module of the same name
+/// outside it: its `mod fs` does not shadow that module's glob.
+#[test]
+fn a_function_local_module_does_not_shadow_a_module_of_the_same_name() {
+    let src = ctl(
+        "pub mod x {\n    use std::*;\n    pub fn r() { let _ = fs::read(\"p\"); }\n}\nfn f() { mod x { mod fs {} } }\n",
+    );
+    expect("fn-local-mod", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// A `#[path]` module that names a file already on its own chain of
+/// declarations (here the root itself) is not followed again, so the walk
+/// ends and the file is checked once per place it really sits.
+#[test]
+fn a_path_attribute_cycle_terminates() {
+    let src = ctl("#[cfg(any())]\n#[path = \"lib.rs\"]\nmod disabled;\npub fn x() {}\n");
+    expect("path-cycle", &[(CTL, &src)], &[]);
+}
+
+/// A weak import (in a function body, or behind a `cfg`) reopens a name's
+/// other meanings only when every import of it is weak: an unconditional
+/// import still shadows the glob.
+#[test]
+fn an_unconditional_import_still_shadows_a_glob_beside_a_weak_one() {
+    let src = ctl(
+        "use std::*;\npub mod safe { pub fn read() {} }\nuse crate::safe as fs;\nfn a() { use crate::safe as fs; }\npub fn b() { fs::read(); }\n",
+    );
+    expect("weak-beside-strong", &[(CTL, &src)], &[]);
+}
+
+/// When every import of a name is weak, the name keeps its other meanings:
+/// `m::fs` still comes through `m`'s glob of `std`, whatever the function in
+/// `m` imports under that name.
+#[test]
+fn a_weak_import_alone_keeps_the_glob_meaning() {
+    let src = ctl(
+        "pub mod n { pub fn read(_: &str) {} }\npub mod m {\n    pub use std::*;\n    fn f() { use crate::n as fs; }\n}\npub fn x() { let _ = m::fs::read(\"p\"); }\n",
+    );
+    expect("weak-alone", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
+}
+
+/// The same through a re-export: `m` imports `fs` unconditionally, so a weak
+/// import of it in a function does not reopen `m`'s glob of `std`.
+#[test]
+fn an_unconditional_reexport_still_shadows_a_glob_beside_a_weak_one() {
+    let src = ctl(
+        "pub mod safe { pub fn read() {} }\npub mod m {\n    pub use std::*;\n    pub use crate::safe as fs;\n    fn f() { use crate::safe as fs; }\n}\npub fn x() { m::fs::read(); }\n",
+    );
+    expect("weak-beside-strong-reexport", &[(CTL, &src)], &[]);
+}
+
+/// Macros are a namespace of their own: a struct of the same name does not
+/// shadow a glob-imported macro.
+#[test]
+fn a_struct_does_not_shadow_a_glob_imported_macro() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+    );
+    expect(
+        "macro-shadow",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-store/src/lib.rs",
+                "use fx_api::*;\npub struct danger;\npub fn x() { danger!(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
+}
+
+/// A macro call is not a module read: even a module of the same name does
+/// not shadow a glob-imported macro.
+#[test]
+fn a_module_does_not_shadow_a_glob_imported_macro() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+    );
+    expect(
+        "macro-module-shadow",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-store/src/lib.rs",
+                "use fx_api::*;\npub mod danger {}\npub fn x() { danger!(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
 }
 
 #[test]
