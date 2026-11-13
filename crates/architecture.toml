@@ -103,11 +103,85 @@ forbidden_methods = [
 
 # Sessions on a terminal multiplexer, local or on a host over ssh or wsl.exe.
 # Knows nothing of thurbox: what it needs from settings and from where
-# thurbox keeps its files is passed in (`MuxSettings`, `HostsConfig`). Its own
-# module rules are crates/runtime-mux/tests/architecture_rules.rs.
+# thurbox keeps its files is passed in (`MuxSettings`, `HostsConfig`). Its
+# module rules follow; the boundary's shape (the adapters are peers, only the
+# factory names one) is crates/runtime-mux/tests/architecture_rules.rs.
 [crates.runtime-mux]
 role = "component"
 deps = ["term-stream"]
+# The crate root only declares and re-exports; `main` is the `runtime-mux`
+# program's composition root, which calls the factory as an embedder does.
+exempt = ["lib", "main"]
+governed = ["tmux_compat"]
+
+[crates.runtime-mux.modules]
+# The host model a route names: pure data, the sink.
+host = { use = [] }
+# Pure values: the identity a window is stamped with, the hyperlink runs a
+# pane records, what the embedder injects, and the TOML parse.
+session_id = { use = [] }
+hyperlink = { use = [] }
+settings = { use = [] }
+toml_file = { use = [] }
+# Process lookups: `PATH` and the WSL distro this process runs in.
+path_lookup = { use = [] }
+# How a command reaches a machine: quoting, ssh and `wsl.exe` launchers.
+# `host` for the one conversion from a host entry to its launcher.
+shell = { use = ["host"] }
+# `hosts.toml`: loading, WSL discovery and the loopback repair plan.
+hosts = { use = ["host", "path_lookup", "shell", "toml_file"] }
+# A host's `PATH` and the multiplexers on it, probed once and cached.
+host_path = { use = ["host", "shell"] }
+# Whether the binaries a session needs are installed.
+preflight = { use = ["host", "path_lookup", "shell"] }
+# The contract every adapter implements and the values that cross it. Names
+# no adapter, no protocol helper and no host config: the bottom of the
+# boundary.
+contract = { use = [] }
+# Which window is whose (ADR-25), over the listing the contract defines.
+identity = { use = ["contract"] }
+# Which server an instance's sessions live on (ADR-12).
+instance = { use = ["host", "settings"] }
+# The pane machinery every backend's stream is wired into: the reader loop,
+# the vt100 parser, the signals it raises.
+pane = { use = ["contract", "hyperlink", "identity", "osc8", "output_wake", "session_id"] }
+osc8 = { use = ["hyperlink"] }
+output_wake = { use = [] }
+# A container of backends. Knows the contract and nothing that builds one.
+registry = { use = ["host", "contract"] }
+# The runtime protocol over one backend it is handed: the contract and nothing
+# that builds one.
+protocol = { use = ["contract", "identity", "workspace"] }
+# The `workspace` verb's side: the runtime's config, the workspace-git program
+# it runs, and its setup and teardown steps.
+workspace = { use = [] }
+# One pane as a terminal stream, over one backend it is handed.
+view = { use = ["contract"] }
+# What fills the registry: the only module that names an adapter.
+wiring = { use = ["host", "shell", "settings", "contract", "registry", "tmux", "psmux", "rmux"] }
+# The tmux command and control-mode protocol the adapters speak. Shared
+# grammar, not an adapter: its root only declares the modules below.
+tmux_compat = { use = [] }
+"tmux_compat::server" = { use = [
+  "host", "shell", "settings", "path_lookup", "host_path", "preflight", "contract",
+  "identity", "instance", "session_id", "tmux_compat::control_mode", "tmux_compat::transport",
+] }
+"tmux_compat::control_mode" = { use = ["shell", "contract", "tmux_compat::transport"] }
+"tmux_compat::transport" = { use = ["shell", "preflight"] }
+# The adapters are peers: each reaches the protocol helper and never the
+# other; nothing reaches one but the factory.
+tmux = { use = [
+  "host", "shell", "settings", "contract",
+  "tmux_compat::control_mode", "tmux_compat::server", "tmux_compat::transport",
+] }
+psmux = { use = [
+  "host", "shell", "settings", "contract", "instance",
+  "tmux_compat::control_mode", "tmux_compat::server", "tmux_compat::transport",
+] }
+rmux = { use = [
+  "host", "shell", "settings", "contract",
+  "tmux_compat::control_mode", "tmux_compat::server", "tmux_compat::transport",
+] }
 
 # Makes a runtime's workspaces from git URLs: a worktree per URL, work
 # preserved on release (docs/runtime/README.md, "workspace-git"). A runtime

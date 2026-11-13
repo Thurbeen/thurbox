@@ -268,8 +268,8 @@ cargo deny check bans licenses sources                    # Dep policy
 
 thurbox's module graph is an allowlist over resolved edges in
 `crates/thurbox/tests/architecture_rules.rs`: every module under `src/` has one
-entry there, and that test is the only copy of the graph. `runtime-mux` has its
-own (`crates/runtime-mux/tests/architecture_rules.rs`). The module
+entry there, and that test is the only copy of the graph. `runtime-mux`'s
+module rules are in `crates/architecture.toml`, which `arch-rules` checks. The module
 responsibilities and the event loop are in the `thurbox-kernel` skill.
 
 ## Conventional Commits

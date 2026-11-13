@@ -3,7 +3,10 @@
 //! The rules live in `crates/architecture.toml`: each crate's role, the
 //! workspace crates it may depend on, the external crates a pure crate may
 //! use, the paths a pure crate may not reach, which crates may name each
-//! status-writing field manager, and which methods the CLI may not call.
+//! status-writing field manager, which methods the CLI may not call, and,
+//! for a crate that declares them, its module rules: each module and the
+//! modules it may use, judged on resolved references, test code included,
+//! with production code alone deciding whether a grant is used.
 //!
 //! The checker reads two things and compares them with the rules:
 //!
@@ -110,6 +113,26 @@ pub struct CrateRule {
     /// Workspace crates this crate's `compile_fail` doc probes must name.
     #[serde(default)]
     pub probes: Vec<String>,
+    /// The crate's modules, each with the modules it may use. A crate with
+    /// none is held to the crate graph only.
+    #[serde(default)]
+    pub modules: BTreeMap<String, ModuleRule>,
+    /// Modules whose every file module, at any depth, has a rule of its own,
+    /// so a file added there is a decision rather than its parent's.
+    #[serde(default)]
+    pub governed: Vec<String>,
+    /// Target roots with no module rule: `lib`, `main`, or a binary's name.
+    #[serde(default)]
+    pub exempt: Vec<String>,
+}
+
+/// One module's rule: the modules it may reference, in any form. A grant
+/// names exactly one module and never its children.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleRule {
+    #[serde(rename = "use")]
+    pub uses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -569,6 +592,9 @@ struct Ref {
     global: bool,
     macro_call: bool,
     location: String,
+    /// The reference is test code: under `#[cfg(test)]`, or in a module a
+    /// `#[cfg(test)] mod x;` declares.
+    test: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -608,6 +634,10 @@ struct CrateIndex {
     lib_doc: String,
     /// Dependency keys that rename a package: alias -> the package's lib name.
     renames: BTreeMap<String, String>,
+    /// The module path of every file walked.
+    file_modules: BTreeSet<Vec<String>>,
+    /// Modules a `#[cfg(test)] mod x;` declares: test code, file and all.
+    test_modules: BTreeSet<Vec<String>>,
 }
 
 impl CrateIndex {
@@ -630,6 +660,8 @@ impl CrateIndex {
             refs: Vec::new(),
             methods: Vec::new(),
             lib_doc: String::new(),
+            file_modules: BTreeSet::new(),
+            test_modules: BTreeSet::new(),
             renames: c
                 .deps
                 .iter()
@@ -675,16 +707,22 @@ impl CrateIndex {
                 if module.is_empty() && file.file_name().is_some_and(|n| n == "lib.rs") {
                     idx.lib_doc = doc_text(&parsed.attrs);
                 }
+                idx.file_modules.insert(module.clone());
                 let mut walker = Walker {
                     idx: &mut idx,
                     module,
                     file: rel.clone(),
                     blocks: 0,
                     cfg_use: false,
+                    tests: 0,
                 };
                 walker.scope();
                 walker.items(&parsed.items);
             }
+        }
+        let tests = idx.test_modules.clone();
+        for r in &mut idx.refs {
+            r.test |= (0..=r.module.len()).any(|n| tests.contains(&r.module[..n]));
         }
         idx
     }
@@ -878,6 +916,8 @@ struct Walker<'a> {
     blocks: u32,
     /// The `use` being walked is behind a `cfg`.
     cfg_use: bool,
+    /// How many `#[cfg(test)]` items enclose the walk.
+    tests: u32,
 }
 
 impl Walker<'_> {
@@ -945,6 +985,7 @@ impl Walker<'_> {
                     global,
                     macro_call: false,
                     location: loc,
+                    test: self.tests > 0,
                 });
             }
             UseTree::Group(g) => {
@@ -969,6 +1010,7 @@ impl Walker<'_> {
             global,
             macro_call: false,
             location: loc,
+            test: self.tests > 0,
         });
         if local != "_" {
             let weak = self.blocks > 0 || self.cfg_use;
@@ -1017,6 +1059,54 @@ impl<'ast> Visit<'ast> for Walker<'_> {
 
     fn visit_attribute(&mut self, _: &'ast syn::Attribute) {}
 
+    fn visit_item(&mut self, i: &'ast Item) {
+        let test = item_attrs(i).iter().any(is_cfg_test);
+        if test {
+            if let Item::Mod(m) = i
+                && m.content.is_none()
+            {
+                let mut path = self.module.clone();
+                path.push(m.ident.to_string());
+                self.idx.test_modules.insert(path);
+            }
+            self.tests += 1;
+        }
+        // A `type` alias is a name for its target, as an import is: a path
+        // through the alias reaches what it names.
+        if let Item::Type(t) = i
+            && let syn::Type::Path(tp) = &*t.ty
+            && tp.qself.is_none()
+        {
+            let target = tp
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            let weak = self.blocks > 0 || has_cfg(&t.attrs);
+            self.scope()
+                .aliases
+                .entry(t.ident.to_string())
+                .or_default()
+                .push(Alias {
+                    target,
+                    global: tp.path.leading_colon.is_some(),
+                    weak,
+                });
+        }
+        visit::visit_item(self, i);
+        if test {
+            self.tests -= 1;
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+        let test = f.attrs.iter().any(is_cfg_test);
+        self.tests += u32::from(test);
+        visit::visit_impl_item_fn(self, f);
+        self.tests -= u32::from(test);
+    }
+
     fn visit_path(&mut self, p: &'ast syn::Path) {
         let segments: Vec<String> = p.segments.iter().map(|s| s.ident.to_string()).collect();
         if let Some(first) = p.segments.first() {
@@ -1027,6 +1117,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 global: p.leading_colon.is_some(),
                 macro_call: false,
                 location: loc,
+                test: self.tests > 0,
             });
         }
         visit::visit_path(self, p);
@@ -1047,6 +1138,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 global: m.path.leading_colon.is_some(),
                 macro_call: true,
                 location: loc,
+                test: self.tests > 0,
             });
         }
         // The arguments of an expression-like macro (`format!`, `vec!`,
@@ -1447,6 +1539,66 @@ impl<'a> Resolver<'a> {
     }
 }
 
+/// The attributes of an item, for the kinds that carry any.
+fn item_attrs(i: &Item) -> &[syn::Attribute] {
+    match i {
+        Item::Const(x) => &x.attrs,
+        Item::Enum(x) => &x.attrs,
+        Item::ExternCrate(x) => &x.attrs,
+        Item::Fn(x) => &x.attrs,
+        Item::ForeignMod(x) => &x.attrs,
+        Item::Impl(x) => &x.attrs,
+        Item::Macro(x) => &x.attrs,
+        Item::Mod(x) => &x.attrs,
+        Item::Static(x) => &x.attrs,
+        Item::Struct(x) => &x.attrs,
+        Item::Trait(x) => &x.attrs,
+        Item::TraitAlias(x) => &x.attrs,
+        Item::Type(x) => &x.attrs,
+        Item::Union(x) => &x.attrs,
+        Item::Use(x) => &x.attrs,
+        _ => &[],
+    }
+}
+
+/// Whether an attribute is a `cfg` only ever true under test: `test`, or an
+/// `all(..)` with `test` among its operands. `any(windows, test)` builds into
+/// a Windows release and `not(test)` into every release, so neither is.
+fn is_cfg_test(a: &syn::Attribute) -> bool {
+    let syn::Meta::List(list) = &a.meta else {
+        return false;
+    };
+    if !list.path.is_ident("cfg") {
+        return false;
+    }
+    let p: String = list
+        .tokens
+        .to_string()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if p == "test" {
+        return true;
+    }
+    let Some(inner) = p.strip_prefix("all(").and_then(|r| r.strip_suffix(')')) else {
+        return false;
+    };
+    let (mut depth, mut start, mut operands) = (0, 0, Vec::new());
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                operands.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    operands.push(&inner[start..]);
+    operands.contains(&"test")
+}
+
 /// Whether `attrs` hold a `cfg` or a `cfg_attr`: something the checker,
 /// which ignores `cfg`, cannot rely on being in force.
 fn has_cfg(attrs: &[syn::Attribute]) -> bool {
@@ -1479,6 +1631,7 @@ fn check_sources(
 ) {
     let allowed_libs: BTreeSet<String> = rule.deps.iter().map(|d| lib_name(d)).collect();
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
+    let mut graph = (!rule.modules.is_empty()).then(|| ModuleGraph::new(rule));
     for r in &idx.refs {
         resolver.budget.set(RESOLVE_BUDGET);
         resolver.exhausted.set(false);
@@ -1495,6 +1648,11 @@ fn check_sources(
         for path in paths {
             let shown = path.join("::");
             let root = path[0].as_str();
+            if let Some(graph) = graph.as_mut()
+                && root == idx.lib
+            {
+                graph.record(r, &path[1..], &shown);
+            }
             if root != idx.lib && workspace_libs.contains(root) && !allowed_libs.contains(root) {
                 // Reached directly (it is in this crate's manifest, under any
                 // name) or only through another crate's re-export.
@@ -1593,6 +1751,206 @@ fn check_sources(
                 format!("calls .{method}(): a write the manager owns"),
             ));
         }
+    }
+    if let Some(graph) = graph {
+        graph.finish(idx, v);
+    }
+}
+
+/// A crate's module graph as its references draw it, judged against its
+/// module rules. A module path belongs to the deepest module with a rule that
+/// contains it; a binary's tree is read without its root segment, so its
+/// modules are named as the library's are.
+struct ModuleGraph<'r> {
+    rule: &'r CrateRule,
+    nodes: BTreeMap<Vec<String>, &'r str>,
+    /// Every edge between two modules: `(from, to)`, and whether production
+    /// code draws it.
+    drawn: BTreeMap<(String, String), bool>,
+    edges: Vec<(String, String, String, String, bool)>,
+}
+
+impl<'r> ModuleGraph<'r> {
+    fn new(rule: &'r CrateRule) -> Self {
+        let nodes = rule
+            .modules
+            .keys()
+            .map(|name| {
+                (
+                    name.split("::").map(str::to_string).collect(),
+                    name.as_str(),
+                )
+            })
+            .collect();
+        ModuleGraph {
+            rule,
+            nodes,
+            drawn: BTreeMap::new(),
+            edges: Vec::new(),
+        }
+    }
+
+    /// The module with a rule that holds `module`, if any.
+    fn node_of(&self, module: &[String]) -> Option<&'r str> {
+        let module = without_target(module);
+        (1..=module.len())
+            .rev()
+            .find_map(|n| self.nodes.get(&module[..n]).copied())
+    }
+
+    /// One resolved reference into this crate: `target` is the path after the
+    /// crate's name.
+    fn record(&mut self, r: &Ref, target: &[String], shown: &str) {
+        let (Some(from), Some(to)) = (self.node_of(&r.module), self.node_of(target)) else {
+            return;
+        };
+        if from == to {
+            return;
+        }
+        let production = self
+            .drawn
+            .entry((from.to_string(), to.to_string()))
+            .or_default();
+        *production |= !r.test;
+        self.edges.push((
+            from.to_string(),
+            to.to_string(),
+            r.location.clone(),
+            shown.to_string(),
+            r.test,
+        ));
+    }
+
+    fn finish(self, idx: &CrateIndex, v: &mut Vec<Violation>) {
+        let rule = self.rule;
+        let uses = |node: &str| -> &[String] {
+            rule.modules
+                .get(node)
+                .map(|m| m.uses.as_slice())
+                .unwrap_or_default()
+        };
+        for (from, to, location, shown, test) in &self.edges {
+            if !uses(from).contains(to) {
+                let test = if *test { " in test code" } else { "" };
+                v.push(violation(
+                    "module-edge",
+                    &idx.name,
+                    location,
+                    format!("{from} reaches {shown}{test}, and its rule does not name {to}"),
+                ));
+            }
+        }
+        let declared: BTreeMap<String, BTreeSet<String>> = rule
+            .modules
+            .iter()
+            .map(|(n, m)| (n.clone(), m.uses.iter().cloned().collect()))
+            .collect();
+        if let Some(c) = find_cycle(&declared) {
+            v.push(violation(
+                "module-cycle",
+                &idx.name,
+                "architecture.toml",
+                format!("module rules allow a cycle: {}", c.join(" -> ")),
+            ));
+        }
+        for (from, m) in &rule.modules {
+            for to in &m.uses {
+                if !rule.modules.contains_key(to) {
+                    v.push(violation(
+                        "module-unknown",
+                        &idx.name,
+                        "architecture.toml",
+                        format!("{from} may use {to}, which has no rule"),
+                    ));
+                } else if self.drawn.get(&(from.clone(), to.clone())) != Some(&true) {
+                    v.push(violation(
+                        "module-unused",
+                        &idx.name,
+                        "architecture.toml",
+                        format!("{from} may use {to}, which no production code does"),
+                    ));
+                }
+            }
+        }
+        // Every rule names a module, and every module has a rule: a top-level
+        // one, or a file module under a governed one. A test module belongs to
+        // the module that declares it.
+        let modules: BTreeSet<&[String]> = idx.modules.keys().map(|m| without_target(m)).collect();
+        for (path, name) in &self.nodes {
+            if !modules.contains(path.as_slice()) {
+                v.push(violation(
+                    "module-unknown",
+                    &idx.name,
+                    "architecture.toml",
+                    format!("{name} has a rule but is not a module"),
+                ));
+            }
+        }
+        // A `governed` entry naming no rule would govern nothing.
+        for g in &rule.governed {
+            if !rule.modules.contains_key(g) {
+                v.push(violation(
+                    "module-unknown",
+                    &idx.name,
+                    "architecture.toml",
+                    format!("{g} is governed but has no rule"),
+                ));
+            }
+        }
+        let governed: Vec<Vec<String>> = rule
+            .governed
+            .iter()
+            .map(|g| g.split("::").map(str::to_string).collect())
+            .collect();
+        for file in &idx.file_modules {
+            let test = (0..=file.len()).any(|n| idx.test_modules.contains(&file[..n]));
+            let module = without_target(file);
+            let ungoverned = match module.first() {
+                None => !rule.exempt.iter().any(|e| e == target_name(file)),
+                Some(top) => {
+                    let top_ok = self.nodes.contains_key(std::slice::from_ref(top))
+                        || rule.exempt.contains(top);
+                    let under_governed = governed
+                        .iter()
+                        .any(|g| module.len() > g.len() && module.starts_with(g));
+                    !test && (!top_ok || under_governed && !self.nodes.contains_key(module))
+                }
+            };
+            if ungoverned {
+                v.push(violation(
+                    "module-ungoverned",
+                    &idx.name,
+                    "architecture.toml",
+                    format!("{} has no module rule", module_label(file)),
+                ));
+            }
+        }
+    }
+}
+
+/// A module path without a binary's root segment (`#main`, `#bin:<name>`).
+fn without_target(module: &[String]) -> &[String] {
+    match module.first() {
+        Some(first) if first.starts_with('#') => &module[1..],
+        _ => module,
+    }
+}
+
+/// The target a module path is in, as `exempt` names it: `lib`, `main`, or a
+/// binary's name.
+fn target_name(module: &[String]) -> &str {
+    match module.first().map(String::as_str) {
+        Some("#main") => "main",
+        Some(first) if first.starts_with("#bin:") => &first["#bin:".len()..],
+        _ => "lib",
+    }
+}
+
+/// A module path as a message names it.
+fn module_label(module: &[String]) -> String {
+    match without_target(module) {
+        [] => format!("the {} root", target_name(module)),
+        m => m.join("::"),
     }
 }
 
