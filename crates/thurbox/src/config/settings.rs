@@ -7,7 +7,9 @@
 
 use std::path::PathBuf;
 
-use crate::session::settings::{retired_key, NotificationBackend, Settings, IGNORED_KEYS};
+use crate::session::settings::{
+    retired_key, NotificationBackend, Settings, IGNORED_KEYS, RETIRED_KEYS,
+};
 
 /// Seed contents for `settings.toml` on first run: every knob documented with
 /// its default, all commented out.
@@ -254,6 +256,21 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         .parse::<DocumentMut>()
         .or_else(|_| SEED_SETTINGS_TOML.parse::<DocumentMut>())
         .unwrap_or_default();
+
+    // An earlier save wrote every key it knew, so a key since retired is in most
+    // files; dropping it here is what stops each launch naming it again.
+    for (key, _) in RETIRED_KEYS {
+        match key.split_once('.') {
+            Some((table, leaf)) => {
+                if let Some(table) = doc.get_mut(table).and_then(|t| t.as_table_like_mut()) {
+                    table.remove(leaf);
+                }
+            }
+            None => {
+                doc.remove(key);
+            }
+        }
+    }
 
     // Top-level scalars (cast to i64 — TOML's only integer type).
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
@@ -535,6 +552,30 @@ mod tests {
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert!(!s.features.automations);
         assert!(s.features.perf_hud, "untouched flags stay enabled");
+    }
+
+    /// An earlier save wrote every key it knew, retired ones included, so a
+    /// save is what clears them: otherwise each launch names them again.
+    #[test]
+    fn save_settings_drops_retired_keys() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::config::file::isolate(temp.path());
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "three_panel_min_cols = 120\n[features]\nfile_viewer = true\n\
+             [notifications]\nalso_on_waiting = false\nsound = false\n",
+        )
+        .unwrap();
+        let (s, warnings) = load_or_seed_with_warnings();
+        assert_eq!(warnings.len(), 3, "got: {warnings:?}");
+
+        save_settings(&s).unwrap();
+
+        let (reloaded, warnings) = load_or_seed_with_warnings();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+        assert!(!reloaded.notifications.sound);
     }
 
     #[test]
