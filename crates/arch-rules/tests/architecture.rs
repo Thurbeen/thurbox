@@ -891,6 +891,30 @@ fn a_restriction_must_apply_to_a_known_role_or_crate() {
 }
 
 /// One crate starts processes: every way to spawn one is restricted to it.
+/// Every restriction in the real rules is Fleet's, so it binds every crate
+/// that is not a component, except the ones it allows: a narrowed scope would
+/// let a Fleet crate reach what the rule exists to keep out.
+#[test]
+fn every_fleet_restriction_binds_every_fleet_crate() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    let mut unbound = Vec::new();
+    for r in &rules.restricted {
+        for (name, crate_rule) in &rules.crates {
+            if crate_rule.role == arch_rules::Role::Component || r.allowed.contains(name) {
+                continue;
+            }
+            if !r
+                .applies_to
+                .iter()
+                .any(|s| s == name || s == crate_rule.role.name())
+            {
+                unbound.push(format!("{} does not bind {name}", r.path));
+            }
+        }
+    }
+    assert!(unbound.is_empty(), "{unbound:#?}");
+}
+
 #[test]
 fn the_rules_keep_spawning_in_fleet_exec() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
