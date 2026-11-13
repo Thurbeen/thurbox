@@ -336,7 +336,7 @@
   // ---- Videos: lazy poster + play only when in view; honor reduced motion ----
   // A <video poster> has no loading="lazy" equivalent — the browser always
   // fetches it eagerly. So every below-the-fold video ships its poster as
-  // data-poster (see index.html) and we promote it to a real poster shortly
+  // data-poster and we promote it to a real poster shortly
   // before the video reaches the viewport. Only the hero keeps an eager
   // poster=, because that one *is* the above-the-fold content.
   var videos = document.querySelectorAll('video');
