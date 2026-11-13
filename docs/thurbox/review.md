@@ -43,18 +43,19 @@ slash matches by basename at any depth.
 
 ### `src/**`
 
-Module boundaries are enforced by tests/architecture_rules.rs as an allowlist
-over resolved edges: session is pure data, agent may reference neither git nor
-backend, and kernel reaches agent or the backend contract by
-fully-qualified path only, never a use - a function-local use or an alias
-included, since a reference counts where it resolves. Consumers name the
-backend contract; only backend::wiring names an adapter, and only a
-composition root names backend::wiring. A new module fails that test until its
-rules entry is declared, and every entry, coordinator's too, is asserted by one
-loop. The runtime
-behind backend is crates/runtime-mux, held to its own tests/architecture_rules.rs:
-the adapters are peers, only its wiring names one, and it reads nothing of
-thurbox - the settings and data directory it needs are passed in.
+Module boundaries are thurbox's module rules in crates/architecture.toml,
+which arch-rules enforces as an allowlist over resolved edges: session is pure
+data, agent may reference neither git nor backend, and kernel reaches agent or
+the backend contract by fully-qualified path only, never a use - a
+function-local use or an alias included, since a reference counts where it
+resolves. Consumers name the backend contract; only backend::wiring names an
+adapter, and only a composition root names backend::wiring
+(crates/thurbox/tests/architecture_rules.rs). A new module fails arch-rules
+until its rules entry is declared, and every entry, coordinator's too, is
+checked. The runtime behind backend is crates/runtime-mux, held to its module
+rules in crates/architecture.toml and its own tests/architecture_rules.rs: the
+adapters are peers, only its wiring names one, and it reads nothing of thurbox -
+the settings and data directory it needs are passed in.
 
 Anything that touches the world - terminal attach, commands, diffs, metrics,
 git, repository reads, update checks - runs on a worker and publishes back,

@@ -664,7 +664,8 @@ commands, publish, draw, input, mouse, focus, interface, paste, boot, chrome).
 The split is by file only: the invariants that matter (a frame settles, focus
 never rests on a hidden pane, a command's result reaches the pane that asked)
 hold across those groups, so `App` is not split into several models. The
-coordinator has its own entry in `tests/architecture_rules.rs`.
+coordinator has its own entry in thurbox's module rules in
+`crates/architecture.toml`.
 
 **Cost, accepted**: a frame is more expensive — every pane is a Lua call returning a
 table that is converted and painted — so the loop settles aggressively and every
@@ -708,7 +709,7 @@ options above, and a backend with no window options leaves every window
 unstamped and resolvable by name. The prefixes and both option names are what
 running windows carry, and changing either would orphan them. The rule cannot
 live inside the tmux adapter: that would make the contract and the adapter
-import each other, a cycle `tests/architecture_rules.rs` fails on.
+import each other, a cycle `arch-rules` fails on.
 
 **Why**: a window's name is neither unique nor injective. Two sessions may be
 given one, and `sanitize_window_name` maps everything outside `[A-Za-z0-9_-]`
@@ -1037,10 +1038,10 @@ row.
   replaces. A binary that is not installed is reported, by name, when its
   backend is first asked to start (`preflight::Dependency::Multiplexer`).
 
-**Consequences**: `tests/architecture_rules.rs` holds the shape by resolved
-references: `the_adapters_are_peers` (no adapter reaches another, and
+**Consequences**: runtime-mux's `tests/architecture_rules.rs` holds the shape by
+resolved references: `the_adapters_are_peers` (no adapter reaches another, and
 the helper reaches neither, test code included) and
-`every_multiplexer_the_factory_serves_has_an_adapter_of_its_own` (each
+`each_multiplexer_is_chosen_only_by_its_adapter_and_the_factory` (each
 adapter's code names exactly its own `Multiplexer` variant, no two the same,
 and every one the factory names has one). `backend::wiring`'s selection matrix
 registers probe adapters for all four multiplexers and checks each route

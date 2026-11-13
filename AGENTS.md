@@ -261,16 +261,18 @@ npm run fmt:website                  # Auto-fix formatting (Prettier)
 ## Architecture Enforcement
 
 ```bash
-cargo test --test architecture_rules                      # Arch rules
+cargo nextest run -p arch-rules                           # Crate and module rules
+cargo test --test architecture_rules                      # thurbox's own checks
 cargo deny check advisories                               # Advisories
 cargo deny check bans licenses sources                    # Dep policy
 ```
 
-thurbox's module graph is an allowlist over resolved edges in
-`crates/thurbox/tests/architecture_rules.rs`: every module under `src/` has one
-entry there, and that test is the only copy of the graph. `runtime-mux`'s
-module rules are in `crates/architecture.toml`, which `arch-rules` checks. The module
-responsibilities and the event loop are in the `thurbox-kernel` skill.
+thurbox's and `runtime-mux`'s module graphs are allowlists over resolved
+edges in `crates/architecture.toml`, which `arch-rules` checks: every module
+under `src/` has one entry there, and that file is the only copy of each graph.
+thurbox's own extra checks are `crates/thurbox/tests/architecture_rules.rs`.
+The module responsibilities and the event loop are in the `thurbox-kernel`
+skill.
 
 ## Conventional Commits
 

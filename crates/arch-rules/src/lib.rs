@@ -133,6 +133,17 @@ pub struct CrateRule {
 pub struct ModuleRule {
     #[serde(rename = "use")]
     pub uses: Vec<String>,
+    /// Modules it may reach by a fully-qualified path but never import, so
+    /// the crossing stays visible at each site.
+    #[serde(default)]
+    pub path_only: Vec<String>,
+}
+
+impl ModuleRule {
+    /// Every module the rule grants, in any form or by path only.
+    fn grants(&self) -> impl Iterator<Item = &String> {
+        self.uses.iter().chain(&self.path_only)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -385,10 +396,11 @@ fn check_with(ws: &Workspace, rules: &Rules, cache: bool) -> Vec<Violation> {
         .iter()
         .map(|c| CrateIndex::build(c, ws, &mut v))
         .collect();
-    let resolver = Resolver::new(&indexes, cache);
+    let resolver = Resolver::new(&indexes, cache, false);
+    let local = Resolver::new(&indexes, cache, true);
     for idx in &indexes {
         if let Some(rule) = rules.crates.get(&idx.name) {
-            check_sources(ws, rules, rule, idx, &resolver, &mut v);
+            check_sources(ws, rules, rule, idx, &resolver, &local, &mut v);
             if rule.role == Role::Pure {
                 check_pure_guards(ws, rules, rule, idx, &mut v);
             }
@@ -595,6 +607,9 @@ struct Ref {
     /// The reference is test code: under `#[cfg(test)]`, or in a module a
     /// `#[cfg(test)] mod x;` declares.
     test: bool,
+    /// The reference is an import (`use`), not a path written where it is
+    /// used.
+    in_use: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -999,6 +1014,7 @@ impl Walker<'_> {
                     macro_call: false,
                     location: loc,
                     test: self.tests > 0,
+                    in_use: true,
                 });
             }
             UseTree::Group(g) => {
@@ -1024,6 +1040,7 @@ impl Walker<'_> {
             macro_call: false,
             location: loc,
             test: self.tests > 0,
+            in_use: true,
         });
         if local != "_" {
             let weak = self.blocks > 0 || self.cfg_use;
@@ -1221,6 +1238,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 macro_call: false,
                 location: loc,
                 test: self.tests > 0,
+                in_use: false,
             });
         }
         visit::visit_path(self, p);
@@ -1242,6 +1260,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 macro_call: true,
                 location: loc,
                 test: self.tests > 0,
+                in_use: false,
             });
         }
         // The arguments of an expression-like macro (`format!`, `vec!`,
@@ -1278,6 +1297,9 @@ struct Resolver<'a> {
     /// so its result is partial and must not be remembered.
     cut: Cell<bool>,
     cache: bool,
+    /// Stop at the crate's own module that re-exports another crate's item,
+    /// rather than follow it out: where a module graph needs a name to land.
+    local: bool,
     resolved: Memo<ResolveKey>,
     exported: Memo<(Vec<String>, Read)>,
 }
@@ -1319,13 +1341,14 @@ type ResolveKey = (String, Vec<String>, Vec<String>, bool, bool, bool);
 const RESOLVE_BUDGET: u32 = 4_096;
 
 impl<'a> Resolver<'a> {
-    fn new(indexes: &'a [CrateIndex], cache: bool) -> Self {
+    fn new(indexes: &'a [CrateIndex], cache: bool, local: bool) -> Self {
         Resolver {
             indexes,
             budget: Cell::new(0),
             exhausted: Cell::new(false),
             cut: Cell::new(false),
             cache,
+            local,
             resolved: Memo::default(),
             exported: Memo::default(),
         }
@@ -1597,7 +1620,13 @@ impl<'a> Resolver<'a> {
                     true,
                     depth + 1,
                 ) {
-                    via_alias.push(base.into_iter().chain(tail.iter().cloned()).collect());
+                    // A re-export of another crate's item, read locally,
+                    // lands on the module that re-exports it.
+                    if self.local && base.first() != path.first() {
+                        via_alias.push(path.clone());
+                    } else {
+                        via_alias.push(base.into_iter().chain(tail.iter().cloned()).collect());
+                    }
                 }
             }
             if !via_alias.is_empty() && !macro_read && !aliases.iter().all(|a| a.weak) {
@@ -1802,6 +1831,7 @@ fn check_sources(
     rule: &CrateRule,
     idx: &CrateIndex,
     resolver: &Resolver,
+    local: &Resolver,
     v: &mut Vec<Violation>,
 ) {
     let allowed_libs: BTreeSet<String> = rule.deps.iter().map(|d| lib_name(d)).collect();
@@ -1823,11 +1853,6 @@ fn check_sources(
         for path in paths {
             let shown = path.join("::");
             let root = path[0].as_str();
-            if let Some(graph) = graph.as_mut()
-                && root == idx.lib
-            {
-                graph.record(r, &path[1..], &shown);
-            }
             if root != idx.lib && workspace_libs.contains(root) && !allowed_libs.contains(root) {
                 // Reached directly (it is in this crate's manifest, under any
                 // name) or only through another crate's re-export.
@@ -1916,6 +1941,27 @@ fn check_sources(
                 }
             }
         }
+        // The module graph reads each path as far as this crate's own modules
+        // go: a module re-exporting another crate's item is what was reached.
+        if let Some(graph) = graph.as_mut() {
+            local.budget.set(RESOLVE_BUDGET);
+            local.exhausted.set(false);
+            let paths = local.resolve(idx, &r.module, &r.segments, r.global, r.macro_call, true, 0);
+            if local.exhausted.get() {
+                // A partial answer could miss an edge, so it is reported.
+                v.push(violation(
+                    "unresolvable",
+                    &idx.name,
+                    &r.location,
+                    format!("{} exceeds the resolution budget", r.segments.join("::")),
+                ));
+            }
+            for path in paths {
+                if path[0] == idx.lib {
+                    graph.record(r, &path[1..], &path.join("::"));
+                }
+            }
+        }
     }
     for (method, loc) in &idx.methods {
         if rule.forbidden_methods.contains(method) {
@@ -1932,6 +1978,16 @@ fn check_sources(
     }
 }
 
+/// One reference from a module into another.
+struct ModEdge {
+    from: String,
+    to: String,
+    location: String,
+    shown: String,
+    test: bool,
+    in_use: bool,
+}
+
 /// A crate's module graph as its references draw it, judged against its
 /// module rules. A module path belongs to the deepest module with a rule that
 /// contains it; a binary's tree is read without its root segment, so its
@@ -1942,7 +1998,7 @@ struct ModuleGraph<'r> {
     /// Every edge between two modules: `(from, to)`, and whether production
     /// code draws it.
     drawn: BTreeMap<(String, String), bool>,
-    edges: Vec<(String, String, String, String, bool)>,
+    edges: Vec<ModEdge>,
 }
 
 impl<'r> ModuleGraph<'r> {
@@ -1987,38 +2043,43 @@ impl<'r> ModuleGraph<'r> {
             .entry((from.to_string(), to.to_string()))
             .or_default();
         *production |= !r.test;
-        self.edges.push((
-            from.to_string(),
-            to.to_string(),
-            r.location.clone(),
-            shown.to_string(),
-            r.test,
-        ));
+        self.edges.push(ModEdge {
+            from: from.to_string(),
+            to: to.to_string(),
+            location: r.location.clone(),
+            shown: shown.to_string(),
+            test: r.test,
+            in_use: r.in_use,
+        });
     }
 
     fn finish(self, idx: &CrateIndex, v: &mut Vec<Violation>) {
         let rule = self.rule;
-        let uses = |node: &str| -> &[String] {
-            rule.modules
-                .get(node)
-                .map(|m| m.uses.as_slice())
-                .unwrap_or_default()
-        };
-        for (from, to, location, shown, test) in &self.edges {
-            if !uses(from).contains(to) {
-                let test = if *test { " in test code" } else { "" };
-                v.push(violation(
-                    "module-edge",
-                    &idx.name,
-                    location,
-                    format!("{from} reaches {shown}{test}, and its rule does not name {to}"),
-                ));
+        for e in &self.edges {
+            let Some(m) = rule.modules.get(&e.from) else {
+                continue;
+            };
+            let by_path = m.path_only.contains(&e.to);
+            if m.uses.contains(&e.to) || by_path && !e.in_use {
+                continue;
             }
+            let test = if e.test { " in test code" } else { "" };
+            let why = if by_path {
+                format!("{} may reach {} by path only, not import it", e.from, e.to)
+            } else {
+                format!("its rule does not name {}", e.to)
+            };
+            v.push(violation(
+                "module-edge",
+                &idx.name,
+                &e.location,
+                format!("{} reaches {}{test}, and {why}", e.from, e.shown),
+            ));
         }
         let declared: BTreeMap<String, BTreeSet<String>> = rule
             .modules
             .iter()
-            .map(|(n, m)| (n.clone(), m.uses.iter().cloned().collect()))
+            .map(|(n, m)| (n.clone(), m.grants().cloned().collect()))
             .collect();
         if let Some(c) = find_cycle(&declared) {
             v.push(violation(
@@ -2029,7 +2090,7 @@ impl<'r> ModuleGraph<'r> {
             ));
         }
         for (from, m) in &rule.modules {
-            for to in &m.uses {
+            for to in m.grants() {
                 if !rule.modules.contains_key(to) {
                     v.push(violation(
                         "module-unknown",

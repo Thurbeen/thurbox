@@ -144,9 +144,10 @@ uses the host's own.
 
 #### T1. Module isolation
 
-Domain dependency flow is one-directional. `tests/architecture_rules.rs`
-holds the rule: every module under `src/` has one entry there naming what it
-may reference, and the test is the one copy of that graph.
+Domain dependency flow is one-directional. thurbox's module rules in
+`crates/architecture.toml` hold the rule: every module under `src/` has one
+entry there naming what it may reference, and that file is the one copy of
+the graph.
 
 `agent` holds downloads and keyboard input and never touches `git`, `kernel`
 or `backend`; `config` holds thurbox's own config files, each read
@@ -182,9 +183,9 @@ the widest, but it **is** a list: a new layer reached from the loop is
 a decision recorded in the test, not an exemption. Only the crate roots
 (`bin`, `lib`, `main`) are exempt.
 
-`tests/architecture_rules.rs` is an **allowlist** and checks every entry
-in one loop: a new `src/` module fails until its dependencies are
-declared there, and a declared rule cannot go unasserted. It judges a
+`arch-rules` checks that **allowlist** entry by entry: a new `src/` module
+fails until its dependencies are declared there, and a declared rule cannot
+go unasserted. It judges a
 reference by what it **resolves to** — through `super::`, brace groups,
 re-exports and `type` aliases — so an alias crosses nothing a path could
 not. The graph of actual edges and the graph the rules declare must both
@@ -325,7 +326,7 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | 9. Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
 | 10. Tag-based versioning | `build.rs` + `cd.yml` (thurbox); `cog bump` in `cd.yml` (Fleet) | `.github/workflows/cd.yml` |
 | 11. Credentials stay put | Code review | All |
-| T1. Module isolation | `tests/architecture_rules.rs` | thurbox |
+| T1. Module isolation | `crates/architecture.toml` checked by `arch-rules`, + `crates/thurbox/tests/architecture_rules.rs` | thurbox |
 | T2. Plugin-kernel rules | `tests/kernel_mvp.rs` + `thurbox.yml` (selene) + `.luarc.json` (luals) | thurbox |
 | T3. Backend-first model | Code review | thurbox |
 | T4. Logging off stdout | Code review | thurbox |
