@@ -14,7 +14,9 @@
 //! tree) gets a worktree of that checkout itself: its branches are the
 //! user's own, a commit made in the worktree is in the checkout at once, and
 //! the preserved work of a release is `refs/fleet/preserved/<key>/<name>` in
-//! the checkout. No branch of a checkout is ever deleted.
+//! the checkout. No branch of a checkout is ever deleted. The checkout's
+//! `origin` is fetched before each make, so a new branch with no base starts
+//! from the upstream's default branch as it is now.
 //!
 //! Any other git URL, a remote or a bare repository, gets a bare source of
 //! its own. A source fetches its remote's branches into
@@ -508,6 +510,7 @@ fn worktree(
     fs::create_dir_all(&key_dir).map_err(|e| format!("cannot make {}: {e}", key_dir.display()))?;
     if checkout.is_some() {
         list_path(&cfg.root.join(CHECKOUTS), &source)?;
+        fetch_upstream(&source);
     } else {
         fill_source(&source, remote)?;
     }
@@ -570,6 +573,14 @@ fn worktree(
     })
 }
 
+/// Fetch a checkout's `origin`, so a base read from `refs/remotes/origin/*`
+/// is the upstream as it is now, not as the user last fetched it. A checkout
+/// with no `origin`, or one that cannot be reached, is made from what it
+/// already holds: an offline machine still gets its worktree.
+fn fetch_upstream(checkout: &Path) {
+    let _ = git(checkout, &["fetch", "-q", "origin"], &[]);
+}
+
 /// The commit a new branch starts from: the fragment, as a branch, a tag or
 /// a ref or commit as given, else the default branch. A checkout reads its
 /// own branches first, then its remote's; a source, its remote's first.
@@ -584,7 +595,9 @@ fn resolve_base(
 ) -> Result<String, String> {
     let is_checkout = named.is_some();
     let Some(base) = base else {
-        let default = verify(source, "refs/remotes/origin/HEAD");
+        let default = ["HEAD", "main", "master"]
+            .iter()
+            .find_map(|branch| verify(source, &format!("refs/remotes/origin/{branch}")));
         let default = default.or_else(|| named.and_then(|dir| verify(dir, "HEAD")));
         return default.ok_or_else(|| "the repository has no default branch".to_string());
     };

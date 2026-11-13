@@ -112,15 +112,16 @@ pub fn list_dir_entries(dir: &str) -> DirListing {
     DirListing::Entries(names)
 }
 
-/// A repository's local branches and the one a new worktree starts from by
+/// A repository's branches and the one a new worktree starts from by
 /// default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branches {
-    /// The default base: the branch `origin/HEAD` names when the repository
-    /// has that branch locally, else the branch checked out, else the first.
-    /// `None` for a repository with no branch yet.
+    /// The default base: the upstream's default branch as `origin` has it
+    /// (`origin/HEAD`, else `origin/main`, else `origin/master`), else the
+    /// branch checked out, else the first. `None` for a repository with no
+    /// branch yet.
     pub default: Option<String>,
-    /// Every local branch, sorted by name.
+    /// Every local branch, sorted by name, then every `origin/*` branch.
     pub names: Vec<String>,
     /// The worktrees the repository already has besides its own checkout,
     /// in git's order: a session can open one as it is.
@@ -162,11 +163,12 @@ pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
         .collect()
 }
 
-/// The local branches of the repository at `repo` on this machine, or `None`
-/// when `repo` is no git repository.
+/// The branches of the repository at `repo` on this machine, its `origin`
+/// fetched first, or why there are none.
 ///
-/// Local branches only: a `git+file` workspace is made from a clone of this
-/// checkout, and that clone holds exactly these branches.
+/// A `git+file` workspace is a worktree of this checkout, so every branch
+/// listed here, remote-tracking ones included, is one it can start from. A
+/// fetch that fails (offline, no `origin`) lists what the checkout holds.
 pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     let repo = paths::expand_tilde(repo);
     // Whether there is a repository is read from the filesystem, so a `git`
@@ -177,30 +179,46 @@ pub fn branches(repo: &str) -> Result<Branches, BranchesUnread> {
     }
     super::run_git_capture(&["rev-parse", "--git-dir"], &repo)
         .ok_or_else(|| BranchesUnread::Failed(format!("git could not read {}", repo.display())))?;
-    let mut names: Vec<String> = super::run_git_capture(
-        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    let mut fetch = super::git_command(&repo, &["fetch", "-q", "origin"]);
+    super::non_interactive(&mut fetch);
+    let _ = super::run_git(fetch, "git fetch");
+    let refs = super::run_git_capture(
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
         &repo,
     )
-    .unwrap_or_default()
-    .lines()
-    .map(str::trim)
-    .filter(|name| !name.is_empty())
-    .map(str::to_string)
-    .collect();
+    .unwrap_or_default();
+    let mut names: Vec<String> = Vec::new();
+    let mut remote: Vec<String> = Vec::new();
+    for line in refs.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix("refs/heads/") {
+            names.push(name.to_string());
+        } else if let Some(name) = line.strip_prefix("refs/remotes/origin/") {
+            if name != "HEAD" {
+                remote.push(format!("origin/{name}"));
+            }
+        }
+    }
     names.sort();
+    remote.sort();
     let local = |name: &str| names.iter().any(|known| known == name);
-    let advertised = super::run_git_capture(
+    let upstream = super::run_git_capture(
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         &repo,
     )
-    .and_then(|out| out.trim().strip_prefix("origin/").map(str::to_string))
-    .filter(|name| local(name));
+    .map(|out| out.trim().to_string())
+    .into_iter()
+    .chain(["origin/main".to_string(), "origin/master".to_string()])
+    .find(|name| remote.contains(name));
     let checked_out = super::run_git_capture(&["symbolic-ref", "--short", "HEAD"], &repo)
         .map(|out| out.trim().to_string())
         .filter(|name| local(name));
-    let default = advertised
-        .or(checked_out)
-        .or_else(|| names.first().cloned());
+    let default = upstream.or(checked_out).or_else(|| names.first().cloned());
+    names.extend(remote);
     let worktrees = super::run_git_capture(&["worktree", "list", "--porcelain"], &repo)
         .map(|out| parse_worktrees(&out))
         .unwrap_or_default();

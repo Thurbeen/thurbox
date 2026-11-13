@@ -626,7 +626,7 @@ pub static BROWSE: Class = Class {
 pub static REPO_BRANCHES: Class = Class {
     name: "thurbox.RepoBranches",
     doc: &[
-        "A repository's local branches on this machine, served only while `store.want_branches` names it.",
+        "A repository's branches on this machine, its `origin` fetched first, served only while `store.want_branches` names it.",
     ],
     exact: true,
     fields: &[
@@ -638,8 +638,8 @@ pub static REPO_BRANCHES: Class = Class {
             .doc("Why a git repository's branches could not be read; its worktree choices stay offered."),
         leaf("default", "string")
             .opt()
-            .doc("The branch a new worktree starts from by default."),
-        leaf("names", "string[]"),
+            .doc("The branch a new worktree starts from by default: the upstream's, `origin/<default>`, when there is an `origin`."),
+        leaf("names", "string[]").doc("The local branches, then the `origin/*` ones."),
         field("worktrees", Ty::List(&EXISTING_WORKTREE))
             .doc("The worktrees the repository already has besides its own checkout."),
     ],

@@ -1376,3 +1376,46 @@ fn a_repository_git_cannot_read_is_a_failure_not_a_plain_directory() {
         Err(BranchesUnread::NotGit)
     );
 }
+
+/// A new worktree starts from the upstream as it is now: listing a clone's
+/// branches fetches its `origin` first, and the default is the remote-tracking
+/// `origin/main`, not the clone's own `main`, which the upstream has moved past.
+#[test]
+fn the_default_base_is_the_freshly_fetched_origin_default_branch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let upstream = dir.path().join("upstream");
+    seed_repo(&upstream, "README", "one\n");
+    let clone = dir.path().join("clone");
+    let mut cmd = git_program();
+    cmd.arg("clone").arg("-q").arg(&upstream).arg(&clone);
+    run_git(cmd, "git clone").expect("clone");
+    std::fs::write(upstream.join("NEW"), "two\n").expect("write");
+    for args in [vec!["add", "NEW"], vec!["commit", "-q", "-m", "moved"]] {
+        run_git(git_command(&upstream, &args), "git").expect("advance upstream");
+    }
+    let moved = head_commit(&upstream).expect("head");
+
+    let read = branches(&clone.display().to_string()).expect("branches");
+
+    assert_eq!(read.default.as_deref(), Some("origin/main"), "{read:?}");
+    assert!(read.names.iter().any(|n| n == "main"), "{read:?}");
+    assert!(read.names.iter().any(|n| n == "origin/main"), "{read:?}");
+    assert!(!read.names.iter().any(|n| n.ends_with("HEAD")), "{read:?}");
+    let fetched = run_git_capture(&["rev-parse", "origin/main"], &clone).expect("origin/main");
+    assert_eq!(
+        fetched.trim(),
+        moved,
+        "origin/main is fetched before the listing"
+    );
+}
+
+/// A repository with no `origin` lists its own branches and defaults to the
+/// one checked out, as before.
+#[test]
+fn a_repository_with_no_origin_defaults_to_its_checked_out_branch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    seed_repo(dir.path(), "README", "one\n");
+    let read = branches(&dir.path().display().to_string()).expect("branches");
+    assert_eq!(read.default.as_deref(), Some("main"));
+    assert_eq!(read.names, vec!["main".to_string()]);
+}

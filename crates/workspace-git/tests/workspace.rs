@@ -564,6 +564,74 @@ fn a_local_checkout_gets_a_worktree_of_itself() {
     );
 }
 
+/// A checkout cloned from a bare upstream, and the upstream moved on past
+/// it: both the checkout's `main` and its `origin/main` are behind. Returns
+/// the checkout and the upstream's new `main`.
+fn behind_checkout(s: &Sandbox) -> (PathBuf, String) {
+    let upstream = s.bare("app");
+    let checkout = s.base.join("app");
+    git(
+        &s.base,
+        &[
+            "clone",
+            "-q",
+            &upstream.display().to_string(),
+            &checkout.display().to_string(),
+        ],
+    );
+    let work = s.base.join("app-work");
+    fs::write(work.join("moved.txt"), "moved\n").unwrap();
+    git(&work, &["add", "moved.txt"]);
+    git(&work, &["commit", "-q", "-m", "moved"]);
+    git(
+        &work,
+        &["push", "-q", &upstream.display().to_string(), "main"],
+    );
+    (checkout, git(&work, &["rev-parse", "HEAD"]))
+}
+
+/// A checkout's new branch with no base starts from its upstream's default
+/// branch as it is now: the checkout's `origin` is fetched first.
+#[test]
+fn a_checkouts_default_base_is_its_freshly_fetched_upstream() {
+    let s = Sandbox::new();
+    let (checkout, moved) = behind_checkout(&s);
+    let (dirs, _) = s.made(
+        "t.up",
+        &[format!("{}?branch=fresh", url("git+file", &checkout))],
+    );
+    assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
+}
+
+/// `origin/main`, the base the new-session flow offers by default, is the
+/// upstream's `main` fetched at the make.
+#[test]
+fn an_origin_base_on_a_checkout_is_fetched_before_the_make() {
+    let s = Sandbox::new();
+    let (checkout, moved) = behind_checkout(&s);
+    let (dirs, _) = s.made(
+        "t.origin",
+        &[format!(
+            "{}?branch=fresh#origin/main",
+            url("git+file", &checkout)
+        )],
+    );
+    assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), moved);
+}
+
+/// A local branch chosen as the base is still the checkout's own.
+#[test]
+fn a_local_base_on_a_checkout_is_its_own_branch() {
+    let s = Sandbox::new();
+    let (checkout, _) = behind_checkout(&s);
+    let local = git(&checkout, &["rev-parse", "main"]);
+    let (dirs, _) = s.made(
+        "t.local",
+        &[format!("{}?branch=fresh#main", url("git+file", &checkout))],
+    );
+    assert_eq!(git(Path::new(&dirs[0]), &["rev-parse", "HEAD"]), local);
+}
+
 /// An existing branch of a checkout is the real one: a commit in the
 /// worktree moves the checkout's branch.
 #[test]
