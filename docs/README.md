@@ -46,7 +46,7 @@ thurbox (interface) ──process: fleet watch / apply / send / delete / attach�
 | --- | --- | --- |
 | Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, the workspace URLs, and when to make and release them, the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
 | A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, the workspaces they work in (made from URLs, kept, released), its own place config (hosts), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
-| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime code, any Rust dependency on `fleet-*` or `runtime-*` |
+| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any Rust dependency on `fleet-*`, any runtime code but `runtime-mux`, which it links until Fleet drives the runtimes |
 
 Where a fact belongs:
 
@@ -66,13 +66,11 @@ on every build:
 | each `runtime-*` | `term-stream`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
 | `term-stream` | crates.io | everything else |
 | `workspace-git` (makes git workspaces; runtimes run it, never link it) | crates.io | everything else |
-| `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*` |
+| `thurbox` | `term-stream`, crates.io, and `runtime-mux` until Fleet drives the runtimes | `fleet-*`, every other `runtime-*` |
 
 The file is `crates/architecture.toml`, and the `architecture` test of
 `arch-rules` checks it. Every crate that is not Fleet's is `role = "component"`: held
-to the crate graph from its manifest, but not to Fleet's own source rules. It
-records the one dependency the table above does not allow yet: `thurbox`
-links `runtime-mux` until Fleet drives the runtimes.
+to the crate graph from its manifest, but not to Fleet's own source rules.
 
 Components talk only through processes; `term-stream` is a wire format, not
 a component. A component can therefore later move

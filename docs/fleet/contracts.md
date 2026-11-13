@@ -87,7 +87,7 @@ fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
 fleet-cli          edge           the `fleet` binary     -> api, manager, store,
 runtime, forge, gateway, plugin, telemetry
 arch-rules         tooling        the architecture test
-fleet-dev          tooling        `cargo xtask release`
+fleet-dev          tooling        `cargo xtask`: gate and release
 ```
 
 `crates/architecture.toml` declares the graph and these rules, and the
