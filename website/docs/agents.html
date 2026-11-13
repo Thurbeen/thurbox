@@ -32,7 +32,8 @@ breadcrumb: 'Agents'
           <p>
             The harness profile owns the command, its arguments, the resume command and the status
             hooks. Fleet wires those hooks when it launches the agent, so Thurbox installs nothing into
-            an agent's own configuration. No model is ever passed: each agent runs with its own default
+            an agent's own configuration. Kimi Code is the exception: it reads hooks only from its own
+            config file, so run <code>fleet integration install kimi</code> once before using it. No model is ever passed: each agent runs with its own default
             configuration.
           </p>
 
