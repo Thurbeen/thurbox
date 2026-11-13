@@ -16,8 +16,8 @@
 #                           Used by the demo recorder.
 #
 # Source it (don't execute) AFTER setting REPO_ROOT (or TBX_REPO_ROOT). Written
-# in POSIX sh so both the bash caller (sandbox.sh) and the
-# /usr/bin/env sh caller (record.sh) can source it. Both flavors prepend the
+# in POSIX sh so both bash callers (sandbox.sh) and sh callers (the ui-review
+# skill's capture.sh) can source it. Both flavors prepend the
 # repo's target/debug to PATH, so `fleet` and `runtime-mux` resolve to this
 # checkout's. Sessions are Fleet's: tbx_sandbox_fleet gives the sandbox a Fleet
 # of its own, and tbx_fleet_session creates one.

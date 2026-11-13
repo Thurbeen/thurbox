@@ -33,9 +33,8 @@ slash matches by basename at any depth.
 - `website/assets/tutorial/**`, `*-poster.webp` — only the unreviewable part of
   `website/assets`: the tutorial stills that `scripts/demo/record-tutorial.sh`
   copies from `media/tutorial/`, and the committed poster frames, which are
-  rasters carrying no reviewable diff (only the doom and hero ones have a
-  producer in the tree, `record-doom.sh` and `record-hero.sh`; the rest were
-  committed by hand). Everything else there — `favicon.svg`,
+  rasters carrying no reviewable diff (`record-doom.sh` and `record-hero.sh`
+  produce them). Everything else there — `favicon.svg`,
   `logo*.svg`, `og-image.*`, the fonts — is hand-authored source and stays under
   review; an SVG is text and can carry a script element or an external
   reference.
@@ -289,9 +288,8 @@ default shell: the dialect is derived per file from its own shebang, or from a
 Bash is the norm here - judge a script by the line at the top of it rather than
 by a repo-wide default.
 
-Not everything under this path is shell. scripts/demo/*.tape are VHS tapes
-driving the real TUI, scripts/demo/trim-cast.mjs is Node, and the installers have
-their own block.
+Not everything under this path is shell. scripts/demo/trim-cast.mjs is Node,
+and the installers have their own block.
 
 ### `scripts/install.*`
 

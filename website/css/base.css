@@ -112,8 +112,7 @@ a {
    near-identical luminance - so inside a paragraph colour is not merely the
    primary cue, it is the only one, and a red-green deficient reader sees plain
    body text. Underline the links that sit in prose. The block links are excluded
-   by :not([class]): .feature-link and .feature-row-link wrap or replace a whole
-   card, where position already says "link". */
+   by :not([class]): .feature-link wraps a whole card, where position already says "link". */
 p a:not([class]),
 li a:not([class]) {
   text-decoration: underline;

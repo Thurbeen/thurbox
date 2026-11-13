@@ -336,7 +336,7 @@
   // ---- Videos: lazy poster + play only when in view; honor reduced motion ----
   // A <video poster> has no loading="lazy" equivalent — the browser always
   // fetches it eagerly. So every below-the-fold video ships its poster as
-  // data-poster (see index.html) and we promote it to a real poster shortly
+  // data-poster and we promote it to a real poster shortly
   // before the video reaches the viewport. Only the hero keeps an eager
   // poster=, because that one *is* the above-the-fold content.
   var videos = document.querySelectorAll('video');
@@ -551,8 +551,7 @@
       doomVideo.className = 'doom-overlay__video';
       // Intrinsic size reserves the aspect ratio so opening the overlay does not
       // reflow once the first frame arrives. Matches what record-doom.sh emits
-      // (a 160x44 terminal rasterised at font-size 20), not the 1920x1080 the
-      // VHS demos use — keep the two in sync.
+      // (a 160x44 terminal rasterised at font-size 20) — keep the two in sync.
       doomVideo.width = 1944;
       doomVideo.height = 1260;
       doomVideo.loop = true;
