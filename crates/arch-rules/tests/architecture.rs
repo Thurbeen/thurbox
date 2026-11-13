@@ -8,10 +8,26 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use arch_rules::{Workspace, check, load_rules};
+use arch_rules::{Violation, Workspace, check, check_uncached, load_rules};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+}
+
+/// [`check`], asserting that resolving every name afresh finds the same:
+/// the resolution cache may only save work. A fresh resolution that runs
+/// out of budget is the case the cache exists for, so it is not compared.
+fn check_agreeing_with_uncached(
+    ws: &Workspace,
+    rules: &arch_rules::Rules,
+    case: &str,
+) -> Vec<Violation> {
+    let cached = check(ws, rules);
+    let fresh = check_uncached(ws, rules);
+    if !fresh.iter().any(|v| v.code == "unresolvable") {
+        assert_eq!(cached, fresh, "the cache changed what {case} reports");
+    }
+    cached
 }
 
 #[test]
@@ -40,7 +56,7 @@ fn this_workspace_obeys_its_architecture() {
             "{expected} missing from {names:?}"
         );
     }
-    let violations = check(&ws, &rules);
+    let violations = check_agreeing_with_uncached(&ws, &rules, "workspace");
     let shown: Vec<String> = violations.iter().map(ToString::to_string).collect();
     assert!(
         violations.is_empty(),
@@ -144,7 +160,7 @@ fn report(case: &str, changes: &[(&str, &str)]) -> BTreeSet<(String, String)> {
     }
     let ws = Workspace::load(&root, "fixture.toml").expect("fixture workspace");
     let rules = load_rules(&root.join("architecture.toml")).expect("fixture rules");
-    let found = check(&ws, &rules);
+    let found = check_agreeing_with_uncached(&ws, &rules, case);
     let _ = fs::remove_dir_all(&root);
     found
         .into_iter()
@@ -465,6 +481,26 @@ fn a_glob_of_a_local_module_resolves_without_expanding_through_itself() {
         "pub mod conditions { pub const A: &str = \"a\"; }\nuse conditions::*;\npub fn f() -> &'static str { let _ = conditions::A; A }\n",
     );
     expect("local-glob", &[(CTL, &src)], &[]);
+}
+
+/// Nested `use super::*` modules that each glob a sibling too, the shape of
+/// a component's `#[cfg(test)] mod tests` trees: every bare name may come
+/// through every glob on the way up, so resolution that recomputes each
+/// branch runs out of budget, while one that remembers what it resolved
+/// finds nothing to report.
+#[test]
+fn nested_glob_imports_resolve_within_the_budget() {
+    let mut body = String::from("pub mod helpers { pub fn h() {} }\n");
+    let depth = 12;
+    for level in 0..depth {
+        body.push_str(&format!(
+            "pub mod m{level} {{ use super::*; use crate::helpers::*; pub fn f{level}() {{ h(); }}\n"
+        ));
+    }
+    body.push_str("pub fn deepest() { h(); f0(); }\n");
+    body.push_str(&"}\n".repeat(depth));
+    let src = ctl(&body);
+    expect("nested-globs", &[(CTL, &src)], &[]);
 }
 
 #[test]

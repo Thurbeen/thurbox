@@ -30,7 +30,8 @@
 //!   the method is a type or trait (`Store::update_status(..)`). The
 //!   qualified-self form `<FileStore>::update_status(..)` is not caught.
 //! - Glob imports are resolved conservatively: a name that could come from a
-//!   forbidden glob is judged as if it did.
+//!   forbidden glob is judged as if it did, unless the module declares an
+//!   item of that name itself, which shadows every glob.
 //! - `cfg` is ignored: code behind any `cfg` is judged too.
 //! - Tests and examples (`tests/`, `benches/`, `#[cfg(test)]` modules inside
 //!   `src/` excepted) are not under the source rules; their manifests are.
@@ -42,7 +43,8 @@
 //! This checker is what proves the rules hold across re-exports and is what
 //! the negative fixtures exercise.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -290,12 +292,22 @@ fn collect_deps(table: &toml::Table, inherited: &toml::Table, out: &mut Vec<Dep>
 
 /// Run every check. Violations are sorted; an empty list is a pass.
 pub fn check(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
+    check_with(ws, rules, true)
+}
+
+/// [`check`] with every name resolved afresh for each reference: what the
+/// cache must agree with, for the tests that prove it does.
+#[doc(hidden)]
+pub fn check_uncached(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
+    check_with(ws, rules, false)
+}
+
+fn check_with(ws: &Workspace, rules: &Rules, cache: bool) -> Vec<Violation> {
     let mut v = Vec::new();
     check_governance(ws, rules, &mut v);
     check_graphs(ws, rules, &mut v);
     // A component meets the others only through processes, so its manifest
-    // already shows every edge it has; its sources are not Fleet's to index,
-    // and thurbox's alone would cost more than the rest of the workspace.
+    // already shows every edge it has; its sources are not Fleet's to index.
     let indexes: Vec<CrateIndex> = ws
         .crates
         .iter()
@@ -307,9 +319,10 @@ pub fn check(ws: &Workspace, rules: &Rules) -> Vec<Violation> {
         })
         .map(|c| CrateIndex::build(c, ws, &mut v))
         .collect();
+    let resolver = Resolver::new(&indexes, cache);
     for idx in &indexes {
         if let Some(rule) = rules.crates.get(&idx.name) {
-            check_sources(ws, rules, rule, idx, &indexes, &mut v);
+            check_sources(ws, rules, rule, idx, &resolver, &mut v);
             if rule.role == Role::Pure {
                 check_pure_guards(ws, rules, rule, idx, &mut v);
             }
@@ -502,6 +515,9 @@ struct Scope {
     aliases: BTreeMap<String, (Vec<String>, bool)>,
     /// Glob imports, unresolved.
     globs: Vec<(Vec<String>, bool)>,
+    /// Names this module's own items declare. A declared item shadows every
+    /// glob import of the same name.
+    items: BTreeSet<String>,
 }
 
 /// One crate's sources, indexed for resolution.
@@ -649,6 +665,22 @@ impl Walker<'_> {
 
     fn items(&mut self, items: &[Item]) {
         for item in items {
+            let declared = match item {
+                Item::Const(i) => Some(&i.ident),
+                Item::Enum(i) => Some(&i.ident),
+                Item::Fn(i) => Some(&i.sig.ident),
+                Item::Mod(i) => Some(&i.ident),
+                Item::Static(i) => Some(&i.ident),
+                Item::Struct(i) => Some(&i.ident),
+                Item::Trait(i) => Some(&i.ident),
+                Item::TraitAlias(i) => Some(&i.ident),
+                Item::Type(i) => Some(&i.ident),
+                Item::Union(i) => Some(&i.ident),
+                _ => None,
+            };
+            if let Some(name) = declared {
+                self.scope().items.insert(name.to_string());
+            }
             self.visit_item(item);
         }
     }
@@ -808,17 +840,95 @@ impl<'ast> Visit<'ast> for Walker<'_> {
 }
 
 /// Resolves paths across every crate's index.
+///
+/// A resolution is remembered, keyed by everything it reads, once it
+/// completed without hitting the depth limit or the budget: such a result
+/// does not depend on where in a reference's resolution it was asked for.
+/// Without it, each bare name under nested globs (`use super::*` in a test
+/// module) re-resolves every glob on the way up, for every reference.
 struct Resolver<'a> {
     indexes: &'a [CrateIndex],
-    budget: std::cell::Cell<u32>,
-    exhausted: std::cell::Cell<bool>,
+    budget: Cell<u32>,
+    exhausted: Cell<bool>,
+    /// Set when the resolution under way hit the depth limit or the budget,
+    /// so its result is partial and must not be remembered.
+    cut: Cell<bool>,
+    cache: bool,
+    resolved: Memo<ResolveKey>,
+    exported: Memo<Vec<String>>,
 }
+
+/// Finished results, and the keys whose resolution is under way: asking
+/// for one of those again is a cycle through globs or re-exports.
+struct Memo<K> {
+    done: RefCell<HashMap<K, Vec<Vec<String>>>>,
+    active: RefCell<HashSet<K>>,
+}
+
+impl<K> Default for Memo<K> {
+    fn default() -> Self {
+        Memo {
+            done: RefCell::default(),
+            active: RefCell::default(),
+        }
+    }
+}
+
+/// The crate, module, path and flags a [`Resolver::resolve`] call reads.
+type ResolveKey = (String, Vec<String>, Vec<String>, bool, bool, bool);
 
 /// Resolution steps one reference may take before it is reported as
 /// unresolvable instead of judged.
 const RESOLVE_BUDGET: u32 = 4_096;
 
-impl Resolver<'_> {
+impl<'a> Resolver<'a> {
+    fn new(indexes: &'a [CrateIndex], cache: bool) -> Self {
+        Resolver {
+            indexes,
+            budget: Cell::new(0),
+            exhausted: Cell::new(false),
+            cut: Cell::new(false),
+            cache,
+            resolved: Memo::default(),
+            exported: Memo::default(),
+        }
+    }
+
+    /// Run `compute`, remembering its result under `key` in `memo` unless
+    /// it was cut short. Asked for again while it runs, `key` answers
+    /// `on_cycle`, what the depth limit would: the uncached walk goes round
+    /// the cycle until that limit, adding no path the first pass did not.
+    fn remembered<K: std::hash::Hash + Eq + Clone>(
+        &self,
+        memo: &Memo<K>,
+        key: K,
+        on_cycle: impl FnOnce() -> Vec<Vec<String>>,
+        compute: impl FnOnce() -> Vec<Vec<String>>,
+    ) -> Vec<Vec<String>> {
+        if let Some(hit) = memo.done.borrow().get(&key) {
+            return hit.clone();
+        }
+        if self.cache && !memo.active.borrow_mut().insert(key.clone()) {
+            self.cut.set(true);
+            return on_cycle();
+        }
+        let outer = self.cut.replace(false);
+        let mut out = compute();
+        // Globs reach one item along many routes; one copy of each path is
+        // enough to judge, and keeps a result from doubling at every level.
+        out.sort();
+        out.dedup();
+        let cut = self.cut.get();
+        if self.cache {
+            memo.active.borrow_mut().remove(&key);
+            if !cut {
+                memo.done.borrow_mut().insert(key, out.clone());
+            }
+        }
+        self.cut.set(outer || cut);
+        out
+    }
+
     fn index(&self, lib: &str) -> Option<&CrateIndex> {
         self.indexes.iter().find(|i| i.lib == lib)
     }
@@ -839,7 +949,35 @@ impl Resolver<'_> {
         globs: bool,
         depth: u32,
     ) -> Vec<Vec<String>> {
-        if segments.is_empty() || depth > 24 || !self.spend() {
+        let key = (
+            idx.lib.clone(),
+            module.to_vec(),
+            segments.to_vec(),
+            global,
+            macro_call,
+            globs,
+        );
+        self.remembered(&self.resolved, key, Vec::new, || {
+            self.resolve_afresh(idx, module, segments, global, macro_call, globs, depth)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_afresh(
+        &self,
+        idx: &CrateIndex,
+        module: &[String],
+        segments: &[String],
+        global: bool,
+        macro_call: bool,
+        globs: bool,
+        depth: u32,
+    ) -> Vec<Vec<String>> {
+        if segments.is_empty() {
+            return Vec::new();
+        }
+        if depth > 24 || !self.spend() {
+            self.cut.set(true);
             return Vec::new();
         }
         let first = segments[0].as_str();
@@ -892,7 +1030,9 @@ impl Resolver<'_> {
                                 .chain(segments.iter().cloned())
                                 .collect(),
                         ];
-                        let module_globs = if globs {
+                        // An item the module declares shadows every glob.
+                        let shadowed = self.cache && scope.is_some_and(|s| s.items.contains(first));
+                        let module_globs = if globs && !shadowed {
                             scope.map(|s| s.globs.clone()).unwrap_or_default()
                         } else {
                             Vec::new()
@@ -927,7 +1067,21 @@ impl Resolver<'_> {
     /// crate `a` imports (or glob-imports), replace that prefix by what it
     /// imports, until nothing changes.
     fn through_exports(&self, path: Vec<String>, depth: u32) -> Vec<Vec<String>> {
-        if depth > 24 || path.len() < 2 {
+        let again = path.clone();
+        self.remembered(
+            &self.exported,
+            path.clone(),
+            || vec![again],
+            || self.through_exports_afresh(path, depth),
+        )
+    }
+
+    fn through_exports_afresh(&self, path: Vec<String>, depth: u32) -> Vec<Vec<String>> {
+        if path.len() < 2 {
+            return vec![path];
+        }
+        if depth > 24 {
+            self.cut.set(true);
             return vec![path];
         }
         let Some(idx) = self.index(&path[0]) else {
@@ -955,7 +1109,7 @@ impl Resolver<'_> {
                     return out;
                 }
             }
-            if !scope.globs.is_empty() {
+            if !scope.globs.is_empty() && !(self.cache && scope.items.contains(name)) {
                 // The name may be the module's own item or come through any
                 // of its globs: judge every possibility.
                 let mut out = vec![path.clone()];
@@ -982,6 +1136,7 @@ impl Resolver<'_> {
         let left = self.budget.get();
         if left == 0 {
             self.exhausted.set(true);
+            self.cut.set(true);
             return false;
         }
         self.budget.set(left - 1);
@@ -999,14 +1154,9 @@ fn check_sources(
     rules: &Rules,
     rule: &CrateRule,
     idx: &CrateIndex,
-    all: &[CrateIndex],
+    resolver: &Resolver,
     v: &mut Vec<Violation>,
 ) {
-    let resolver = Resolver {
-        indexes: all,
-        budget: std::cell::Cell::new(0),
-        exhausted: std::cell::Cell::new(false),
-    };
     let allowed_libs: BTreeSet<String> = rule.deps.iter().map(|d| lib_name(d)).collect();
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
     for r in &idx.refs {
