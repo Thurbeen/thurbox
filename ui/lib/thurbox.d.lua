@@ -586,11 +586,7 @@
 
 ---@class (exact) thurbox.Features
 ---@field automations boolean
----@field file_viewer boolean
----@field global_search boolean
----@field info_panel boolean
 ---@field shell_pane boolean
----@field code_review boolean
 ---@field perf_hud boolean
 ---@field mouse boolean
 ---@field notifications boolean

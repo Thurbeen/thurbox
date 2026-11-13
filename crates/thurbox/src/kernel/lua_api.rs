@@ -31,9 +31,12 @@
 /// feature flags and `settings.three_panel_min_cols`, and the commands
 /// `restore`, `restart`, `fork`, `sync`, `reorder`, `task`, `dispatch` and
 /// `automation`.
+/// API 5 removes the `file_viewer`, `global_search`, `info_panel` and
+/// `code_review` feature flags: no pane read them, and `settings.toml` no
+/// longer holds them.
 /// Additions never bump it: a plugin reads a newer field defensively, as it
 /// reads any optional one.
-pub const API: u32 = 4;
+pub const API: u32 = 5;
 
 /// The prefix of the session meta keys published as `session.meta`.
 ///
@@ -551,11 +554,7 @@ pub static FEATURES: Class = Class {
     exact: true,
     fields: &[
         leaf("automations", "boolean"),
-        leaf("file_viewer", "boolean"),
-        leaf("global_search", "boolean"),
-        leaf("info_panel", "boolean"),
         leaf("shell_pane", "boolean"),
-        leaf("code_review", "boolean"),
         leaf("perf_hud", "boolean"),
         leaf("mouse", "boolean"),
         leaf("notifications", "boolean"),

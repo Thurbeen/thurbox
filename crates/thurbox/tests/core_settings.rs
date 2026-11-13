@@ -556,3 +556,50 @@ fn a_retired_key_does_not_block_a_live_reload() {
     assert_eq!(config.poll(), Some(Reloaded::Live));
     assert!(!config.features().shell_pane, "the edit is in force");
 }
+
+/// The settings that drew v1's panels and the notification edges Fleet never
+/// reports are gone from thurbox 3.0. A file that still sets them keeps
+/// loading, says once per key that it is no longer read, and stays valid.
+#[test]
+fn a_file_setting_a_dropped_key_still_loads() {
+    let _home = isolate();
+    let body = "three_panel_min_cols = 140\n\
+                two_panel_min_cols = 90\n\
+                [features]\n\
+                file_viewer = false\n\
+                global_search = false\n\
+                info_panel = false\n\
+                code_review = false\n\
+                shell_pane = false\n\
+                [notifications]\n\
+                also_on_waiting = true\n\
+                on_automation_failure = true\n\
+                sound = false\n";
+    write_settings(body);
+
+    let (config, warnings) = Config::load();
+    assert_eq!(config.in_force().two_panel_min_cols, 90);
+    assert!(!config.features().shell_pane);
+    assert!(!config.in_force().notifications.sound);
+    for key in [
+        "three_panel_min_cols",
+        "features.file_viewer",
+        "features.global_search",
+        "features.info_panel",
+        "features.code_review",
+        "notifications.also_on_waiting",
+        "notifications.on_automation_failure",
+    ] {
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains(&format!("`{key}` is no longer read"))),
+            "{key}: {warnings:?}"
+        );
+    }
+    assert_eq!(
+        thurbox::config::settings::unknown_keys(body),
+        Ok(Vec::new()),
+        "`config validate` passes the file"
+    );
+}

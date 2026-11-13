@@ -171,16 +171,6 @@ const CORE_FIELDS: &[CoreField] = &[
         },
     },
     CoreField {
-        id: "notifications.also_on_waiting",
-        description: "notify when a turn finishes, not only when it blocks",
-        get: |s| Value::Bool(s.notifications.also_on_waiting),
-        set: |s, v| {
-            if let Value::Bool(on) = v {
-                s.notifications.also_on_waiting = *on;
-            }
-        },
-    },
-    CoreField {
         id: "notifications.suppress_for_active",
         description: "stay quiet about the session you are looking at",
         get: |s| Value::Bool(s.notifications.suppress_for_active),
@@ -252,11 +242,6 @@ const CORE_FIELDS: &[CoreField] = &[
             }
         },
     },
-    // `three_panel_min_cols` is deliberately absent. It sized v1's third column
-    // (info panel / tasks / files) and the interface has no third column, so
-    // offering the row promised a control that could not do anything. The field
-    // is still parsed — an existing `settings.toml` must keep loading rather than
-    // fail on an unknown key — it simply has no reader and no UI.
     CoreField {
         id: "git_poll_secs",
         description: "seconds between git stats of a session; 0 is off",
@@ -1618,14 +1603,6 @@ mod tests {
         assert!(
             marker("two_panel_min_cols"),
             "the panel width is frozen at startup, so it needs a restart"
-        );
-        // `three_panel_min_cols` is not offered at all: there is no third column
-        // for it to size, and a control that cannot act is worse than none.
-        assert!(
-            !CORE_FIELDS
-                .iter()
-                .any(|field| field.id == "three_panel_min_cols"),
-            "a setting for a column the interface does not have must not be offered"
         );
         {
             let id = "features.shell_pane";

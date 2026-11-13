@@ -10,10 +10,10 @@
 //! drift from the icon in the list.
 //!
 //! Every `[notifications]` setting is honoured here, because a setting that is
-//! offered and ignored is worse than one that does not exist: which edge fires,
-//! whether the session in view is skipped, whether a sound plays, and the floor
-//! between two notifications for one session. v1 keeps the same four in
-//! `app::notify_state`.
+//! offered and ignored is worse than one that does not exist: whether the
+//! session in view is skipped, whether a sound plays, and the floor between two
+//! notifications for one session. The one edge is into `blocked`: Fleet reports
+//! no finished state, so v1's opt-in for that edge went with it.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -85,7 +85,7 @@ impl Notifier {
             // The *edge*, not the state: a session that is already blocked when
             // the interface starts has not just asked for anything.
             let Some(previous) = was else { continue };
-            if previous == row.status || !self.worth_raising(previous, row, active) {
+            if previous == row.status || !self.worth_raising(row, active) {
                 continue;
             }
             // The floor is per session: an agent flipping between states must not
@@ -113,23 +113,11 @@ impl Notifier {
 
     /// Whether this transition is one the user asked to hear about.
     ///
-    /// Blocked always notifies; finishing does so only when asked for. A
-    /// notification for the session you are already looking at is noise, so it is
-    /// suppressed when configured.
-    fn worth_raising(
-        &self,
-        previous: SessionState,
-        row: &SessionRow,
-        active: Option<&str>,
-    ) -> bool {
-        let wanted = row.status == SessionState::Blocked
-            || (row.status == SessionState::Done
-                && self.settings.also_on_waiting
-                && previous != SessionState::Blocked);
-        if !wanted {
-            return false;
-        }
-        !(self.settings.suppress_for_active && active == Some(row.id.as_str()))
+    /// Only blocked notifies. A notification for the session you are already
+    /// looking at is noise, so it is suppressed when configured.
+    fn worth_raising(&self, row: &SessionRow, active: Option<&str>) -> bool {
+        row.status == SessionState::Blocked
+            && !(self.settings.suppress_for_active && active == Some(row.id.as_str()))
     }
 
     /// Hand one notification to the delivery layer.
@@ -140,20 +128,9 @@ impl Notifier {
         let Some(sender) = &self.sender else {
             return;
         };
-        let blocked = row.status == SessionState::Blocked;
-        let (title, body) = match blocked {
-            true => (
-                format!("{} needs you", row.name),
-                format!("{} is waiting for input", row.agent),
-            ),
-            false => (
-                format!("{} finished", row.name),
-                format!("{} finished its turn", row.agent),
-            ),
-        };
         sender.send(crate::notifications::Notification {
-            title,
-            body,
+            title: format!("{} needs you", row.name),
+            body: format!("{} is waiting for input", row.agent),
             session_id: row.id.clone(),
             sound: self.settings.sound,
         });
@@ -360,35 +337,9 @@ mod tests {
     }
 
     #[test]
-    fn finishing_notifies_only_when_it_is_asked_for() {
-        let mut off = quiet(false);
-        off.observe(&snap(vec![row("a", SessionState::Working)]), None);
-        assert!(
-            off.observe(&snap(vec![row("a", SessionState::Done)]), None)
-                .is_empty(),
-            "the finish edge is off by default"
-        );
-
-        let mut on = with(NotificationSettings {
-            also_on_waiting: true,
-            ..NotificationSettings::default()
-        });
-        on.observe(&snap(vec![row("a", SessionState::Working)]), None);
-        assert_eq!(
-            on.observe(&snap(vec![row("a", SessionState::Done)]), None),
-            vec!["a".to_string()]
-        );
-    }
-
-    #[test]
-    fn clearing_a_block_is_not_a_finish() {
-        // `blocked → done` is the user having answered, not a turn completing, so
-        // it must not notify even with the finish edge on.
-        let mut notifier = with(NotificationSettings {
-            also_on_waiting: true,
-            ..NotificationSettings::default()
-        });
-        notifier.observe(&snap(vec![row("a", SessionState::Blocked)]), None);
+    fn finishing_a_turn_does_not_notify() {
+        let mut notifier = quiet(false);
+        notifier.observe(&snap(vec![row("a", SessionState::Working)]), None);
         assert!(notifier
             .observe(&snap(vec![row("a", SessionState::Done)]), None)
             .is_empty());

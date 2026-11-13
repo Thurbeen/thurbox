@@ -214,11 +214,11 @@ Documented for users in `docs/thurbox/plugins.md` → **When something goes wron
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
 live half and toasts, noting a restart when `restart_only_differs` says so.
 
-> `[features] code_review`, `file_viewer`, `tasks`, `info_panel`,
-> `global_search` and `three_panel_min_cols` are read by no kernel code. They
-> are parsed so an existing `settings.toml` keeps loading rather than failing on
-> an unknown key, and published in `thurbox.settings` for a pane to honour. The
-> settings panel does not offer them.
+> `[features] code_review`, `file_viewer`, `info_panel`, `global_search` and
+> `three_panel_min_cols` are gone: nothing read them. They are in
+> `session::settings::RETIRED_KEYS`, so an existing `settings.toml` that sets one
+> keeps loading with a "no longer read" notice. `features.tasks` stays in
+> `IGNORED_KEYS`, accepted with no notice.
 
 ## Global search
 

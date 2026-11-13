@@ -7,7 +7,9 @@
 
 use std::path::PathBuf;
 
-use crate::session::settings::{retired_key, NotificationBackend, Settings, IGNORED_KEYS};
+use crate::session::settings::{
+    retired_key, NotificationBackend, Settings, IGNORED_KEYS, RETIRED_KEYS,
+};
 
 /// Seed contents for `settings.toml` on first run: every knob documented with
 /// its default, all commented out.
@@ -37,11 +39,6 @@ config_version = 1
 # Terminal width (columns) below which only the terminal pane renders.
 # two_panel_min_cols = 80
 
-# Accepted and ignored: this sized v1's third column (info panel /
-# tasks / file viewer), and the current interface has no third column.
-# Kept so an existing settings.toml still loads.
-# three_panel_min_cols = 120
-
 # How often each session's git working tree is re-examined (seconds), for the
 # diffstat and ahead/behind beside it in the session list. `0` turns it off.
 #
@@ -58,11 +55,7 @@ config_version = 1
 # touched, so re-enabling a flag is lossless.
 # [features]
 # automations = true      # the TUI fires automation schedules
-# file_viewer = true      # F3 file viewer column
-# global_search = true    # Ctrl+/ search strip
-# info_panel = true       # F2 info panel
 # shell_pane = true       # Ctrl+T per-session shell
-# code_review = true      # native code-review view (diff + comments)
 # perf_hud = true         # F12 perf HUD overlay (live counters + timing)
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
 # notifications = true    # OS desktop notifications when a session needs attention
@@ -88,12 +81,10 @@ config_version = 1
 # Run `thurbox-cli notify` to see the detected backend, or `--test` to fire a
 # sample. The dispatcher only starts when [features] notifications = true.
 # [notifications]
-# also_on_waiting = false       # also fire when a session finishes (Working → Done)
 # suppress_for_active = true    # don't notify if you're already viewing that session
 # sound = true                  # play the OS default notification sound
 # min_interval_secs = 5         # per-session dedup floor (seconds)
 # backend = "auto"              # delivery backend: auto | dbus | windows | off
-# on_automation_failure = false # notify when an automation run fails, once per failing streak
 
 # Clipboard transport for copy. `auto` writes to the local clipboard
 # when one is reachable and otherwise emits an OSC 52 escape sequence, which
@@ -147,17 +138,16 @@ config_version = 1
 # git_poll_secs = 30
 # git_poll_secs = 0
 #
-# Minimal / focused TUI — turn off panels you don't use (frees key chords too):
+# Minimal / focused TUI — turn off what you don't use (frees key chords too):
 # [features]
-# file_viewer = false
-# global_search = false
+# shell_pane = false
+# perf_hud = false
 #
 # Get notified the moment a session needs you, even on quiet agents, and never
 # for the one you're already watching:
 # [features]
 # notifications = true
 # [notifications]
-# also_on_waiting = true        # also fire when a session finishes (Working → Done)
 # suppress_for_active = false   # also notify the focused session
 # min_interval_secs = 30        # at most one notification / 30 s per session
 #
@@ -267,12 +257,26 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         .or_else(|_| SEED_SETTINGS_TOML.parse::<DocumentMut>())
         .unwrap_or_default();
 
+    // An earlier save wrote every key it knew, so a key since retired is in most
+    // files; dropping it here is what stops each launch naming it again.
+    for (key, _) in RETIRED_KEYS {
+        match key.split_once('.') {
+            Some((table, leaf)) => {
+                if let Some(table) = doc.get_mut(table).and_then(|t| t.as_table_like_mut()) {
+                    table.remove(leaf);
+                }
+            }
+            None => {
+                doc.remove(key);
+            }
+        }
+    }
+
     // Top-level scalars (cast to i64 — TOML's only integer type).
     doc["config_version"] = value(i64::from(settings.config_version.unwrap_or(1)));
     doc["scrollback_lines"] = value(settings.scrollback_lines as i64);
     doc["hidden_terminal_secs"] = value(settings.hidden_terminal_secs as i64);
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));
-    doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
     doc["git_poll_secs"] = value(settings.git_poll_secs as i64);
 
     if !doc.contains_key("features") {
@@ -281,11 +285,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     if let Some(features) = doc["features"].as_table_mut() {
         let f = &settings.features;
         set_table_bool(features, "automations", f.automations);
-        set_table_bool(features, "file_viewer", f.file_viewer);
-        set_table_bool(features, "global_search", f.global_search);
-        set_table_bool(features, "info_panel", f.info_panel);
         set_table_bool(features, "shell_pane", f.shell_pane);
-        set_table_bool(features, "code_review", f.code_review);
         set_table_bool(features, "perf_hud", f.perf_hud);
         set_table_bool(features, "mouse", f.mouse);
         set_table_bool(features, "notifications", f.notifications);
@@ -298,7 +298,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     }
     if let Some(notifications) = doc["notifications"].as_table_mut() {
         let n = &settings.notifications;
-        set_table_bool(notifications, "also_on_waiting", n.also_on_waiting);
         set_table_bool(notifications, "suppress_for_active", n.suppress_for_active);
         set_table_bool(notifications, "sound", n.sound);
         notifications["min_interval_secs"] = value(n.min_interval_secs as i64);
@@ -340,24 +339,17 @@ mod tests {
             "scrollback_lines",
             "hidden_terminal_secs",
             "two_panel_min_cols",
-            "three_panel_min_cols",
             "git_poll_secs",
             "[features]",
             "automations",
-            "file_viewer",
-            "global_search",
-            "info_panel",
             "shell_pane",
-            "code_review",
             "perf_hud",
             "notifications",
             "[notifications]",
-            "also_on_waiting",
             "suppress_for_active",
             "sound",
             "min_interval_secs",
             "backend",
-            "on_automation_failure",
             "[telemetry]",
             "export_diagnostic_logs",
             "[fleet]",
@@ -367,6 +359,26 @@ mod tests {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
                 "settings.toml seed must document '{field}'"
+            );
+        }
+    }
+
+    /// The seed documents only what thurbox reads: a key that does nothing
+    /// must not be offered as a switch.
+    #[test]
+    fn seed_toml_offers_no_dropped_key() {
+        for key in [
+            "three_panel_min_cols",
+            "file_viewer",
+            "global_search",
+            "info_panel",
+            "code_review",
+            "also_on_waiting",
+            "on_automation_failure",
+        ] {
+            assert!(
+                !SEED_SETTINGS_TOML.contains(key),
+                "settings.toml seed still offers '{key}'"
             );
         }
     }
@@ -442,7 +454,7 @@ mod tests {
         let (mut s, _) = load_or_seed_with_warnings();
         s.scrollback_lines = 4000;
         s.git_poll_secs = 7;
-        s.features.file_viewer = false;
+        s.features.shell_pane = false;
         s.features.version_check = true;
         s.features.auto_update = true;
         s.notifications.min_interval_secs = 30;
@@ -539,7 +551,31 @@ mod tests {
         let (s, warnings) = load_or_seed_with_warnings();
         assert!(warnings.is_empty(), "got: {warnings:?}");
         assert!(!s.features.automations);
-        assert!(s.features.file_viewer, "untouched flags stay enabled");
+        assert!(s.features.perf_hud, "untouched flags stay enabled");
+    }
+
+    /// An earlier save wrote every key it knew, retired ones included, so a
+    /// save is what clears them: otherwise each launch names them again.
+    #[test]
+    fn save_settings_drops_retired_keys() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::config::file::isolate(temp.path());
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "three_panel_min_cols = 120\n[features]\nfile_viewer = true\n\
+             [notifications]\nalso_on_waiting = false\nsound = false\n",
+        )
+        .unwrap();
+        let (s, warnings) = load_or_seed_with_warnings();
+        assert_eq!(warnings.len(), 3, "got: {warnings:?}");
+
+        save_settings(&s).unwrap();
+
+        let (reloaded, warnings) = load_or_seed_with_warnings();
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+        assert!(!reloaded.notifications.sound);
     }
 
     #[test]

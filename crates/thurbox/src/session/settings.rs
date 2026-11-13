@@ -42,10 +42,6 @@ pub struct Settings {
     /// Terminal width (columns) below which only the terminal pane renders.
     #[serde(default = "default_two_panel_min_cols")]
     pub two_panel_min_cols: u16,
-    /// Terminal width (columns) at which the optional third column (info /
-    /// tasks / file viewer) becomes available.
-    #[serde(default = "default_three_panel_min_cols")]
-    pub three_panel_min_cols: u16,
     /// How often each session's git working tree is re-examined, in seconds.
     /// `0` turns the polling off: no diffstat, no ahead/behind, no `git`.
     ///
@@ -114,6 +110,25 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
         "deleted_retention_days",
         "thurbox keeps no session database to prune",
     ),
+    ("three_panel_min_cols", "the interface has no third column"),
+    ("features.file_viewer", "the interface has no file viewer"),
+    (
+        "features.info_panel",
+        "a plugin's own pane is switched off in the Interface tab",
+    ),
+    (
+        "features.code_review",
+        "a plugin's own pane is switched off in the Interface tab",
+    ),
+    (
+        "features.global_search",
+        "the search pane is switched off in the Interface tab",
+    ),
+    (
+        "notifications.also_on_waiting",
+        "Fleet reports no finished state",
+    ),
+    ("notifications.on_automation_failure", "nothing raised it"),
 ];
 
 /// Keys an older `settings.toml` may hold that are accepted and ignored with
@@ -228,22 +243,9 @@ pub struct FeatureFlags {
     /// The TUI firing the automations' schedules (`automations.json`).
     #[serde(default = "default_true")]
     pub automations: bool,
-    /// File viewer column (F3) and file search results.
-    #[serde(default = "default_true")]
-    pub file_viewer: bool,
-    /// Global search strip (Ctrl+/).
-    #[serde(default = "default_true")]
-    pub global_search: bool,
-    /// Info panel column (F2).
-    #[serde(default = "default_true")]
-    pub info_panel: bool,
     /// Per-session shell pane toggle (Ctrl+T).
     #[serde(default = "default_true")]
     pub shell_pane: bool,
-    /// Native code-review view (tuicr-like): the diff/comment view + its
-    /// keybinding.
-    #[serde(default = "default_true")]
-    pub code_review: bool,
     /// Perf HUD overlay (F12): live perf counters + frame/tick timing. Opening
     /// it also turns on wall-clock timing collection (see docs/thurbox/performance.md).
     #[serde(default = "default_true")]
@@ -395,12 +397,6 @@ impl EditorMode {
 /// configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationSettings {
-    /// Also notify when a session **finishes** (`Working → Done`, reported by an
-    /// agent hook), not just when it becomes `Blocked` (which always fires).
-    /// Off by default. (The field name is historical — it now governs the Done
-    /// edge.)
-    #[serde(default)]
-    pub also_on_waiting: bool,
     /// Skip notifications for the session currently in focus (you're already
     /// looking at it). Defaults on; flip off if you run thurbox in a
     /// background window and want every transition surfaced.
@@ -417,11 +413,6 @@ pub struct NotificationSettings {
     /// macOS at startup; `dbus`/`windows` force one; `off` disables delivery.
     #[serde(default)]
     pub backend: NotificationBackend,
-    /// Notify when an automation run fails or times out, from the headless
-    /// `automation tick` as well — once per failing streak (issue #1508).
-    /// Off by default.
-    #[serde(default)]
-    pub on_automation_failure: bool,
 }
 
 fn default_notification_min_interval_secs() -> u64 {
@@ -431,12 +422,10 @@ fn default_notification_min_interval_secs() -> u64 {
 impl Default for NotificationSettings {
     fn default() -> Self {
         Self {
-            also_on_waiting: false,
             suppress_for_active: true,
             sound: true,
             min_interval_secs: default_notification_min_interval_secs(),
             backend: NotificationBackend::Auto,
-            on_automation_failure: false,
         }
     }
 }
@@ -449,11 +438,7 @@ impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
             automations: true,
-            file_viewer: true,
-            global_search: true,
-            info_panel: true,
             shell_pane: true,
-            code_review: true,
             perf_hud: true,
             mouse: true,
             notifications: true,
@@ -472,9 +457,6 @@ fn default_hidden_terminal_secs() -> u64 {
 }
 fn default_two_panel_min_cols() -> u16 {
     80
-}
-fn default_three_panel_min_cols() -> u16 {
-    120
 }
 fn default_git_poll_secs() -> u64 {
     5
@@ -528,18 +510,13 @@ pub const FIELDS: &[Field] = &[
     // The attach worker reads it once, when the terminals are built.
     field!(NextLaunch, stream_panes),
     field!(NextLaunch, two_panel_min_cols),
-    field!(NextLaunch, three_panel_min_cols),
     // Pruned once, at startup.
     // The git-stat cache is built with it, and a cache that re-read it would
     // also have to re-age every entry.
     field!(NextLaunch, git_poll_secs),
     // The feature switches that only gate whether a surface is drawn, which is
     // decided per frame.
-    field!(Live, features.file_viewer),
-    field!(Live, features.info_panel),
-    field!(Live, features.global_search),
     field!(Live, features.shell_pane),
-    field!(Live, features.code_review),
     field!(Live, features.perf_hud),
     // Capture is an escape already sent, the notifier is a thread already
     // started (or not), the heartbeat is armed once, and the update work ran
@@ -594,7 +571,6 @@ impl Default for Settings {
             hidden_terminal_secs: default_hidden_terminal_secs(),
             stream_panes: false,
             two_panel_min_cols: default_two_panel_min_cols(),
-            three_panel_min_cols: default_three_panel_min_cols(),
             git_poll_secs: default_git_poll_secs(),
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
@@ -615,7 +591,6 @@ mod tests {
         assert_eq!(s, Settings::default());
         assert_eq!(s.scrollback_lines, 1000);
         assert_eq!(s.two_panel_min_cols, 80);
-        assert_eq!(s.three_panel_min_cols, 120);
     }
 
     #[test]
@@ -646,7 +621,7 @@ mod tests {
     fn absent_features_table_enables_everything() {
         let s: Settings = toml::from_str("").unwrap();
         assert_eq!(s.features, FeatureFlags::default());
-        assert!(s.features.file_viewer && s.features.automations);
+        assert!(s.features.shell_pane && s.features.automations);
     }
 
     #[test]
@@ -657,12 +632,10 @@ mod tests {
 
     #[test]
     fn partial_features_override_keeps_other_flags_enabled() {
-        let s: Settings = toml::from_str("[features]\nfile_viewer = false").unwrap();
-        assert!(!s.features.file_viewer);
+        let s: Settings = toml::from_str("[features]\nshell_pane = false").unwrap();
+        assert!(!s.features.shell_pane);
         assert!(s.features.automations);
-        assert!(s.features.global_search);
-        assert!(s.features.info_panel);
-        assert!(s.features.shell_pane);
+        assert!(s.features.perf_hud);
         assert!(s.features.mouse);
     }
 
@@ -670,21 +643,20 @@ mod tests {
     fn mouse_feature_flag_parses() {
         let s: Settings = toml::from_str("[features]\nmouse = false").unwrap();
         assert!(!s.features.mouse);
-        assert!(s.features.file_viewer, "untouched flags stay enabled");
+        assert!(s.features.shell_pane, "untouched flags stay enabled");
     }
 
     #[test]
     fn notifications_feature_flag_parses() {
         let s: Settings = toml::from_str("[features]\nnotifications = false").unwrap();
         assert!(!s.features.notifications);
-        assert!(s.features.file_viewer, "untouched flags stay enabled");
+        assert!(s.features.shell_pane, "untouched flags stay enabled");
     }
 
     #[test]
     fn notifications_table_defaults() {
         let s: Settings = toml::from_str("").unwrap();
         assert_eq!(s.notifications, NotificationSettings::default());
-        assert!(!s.notifications.also_on_waiting);
         assert!(s.notifications.suppress_for_active);
         assert!(s.notifications.sound);
         assert_eq!(s.notifications.min_interval_secs, 5);
@@ -743,12 +715,10 @@ mod tests {
     #[test]
     fn notifications_table_partial_override() {
         let s: Settings =
-            toml::from_str("[notifications]\nalso_on_waiting = true\nmin_interval_secs = 30\n")
-                .unwrap();
-        assert!(s.notifications.also_on_waiting);
+            toml::from_str("[notifications]\nsound = false\nmin_interval_secs = 30\n").unwrap();
+        assert!(!s.notifications.sound);
         assert_eq!(s.notifications.min_interval_secs, 30);
         assert!(s.notifications.suppress_for_active);
-        assert!(s.notifications.sound);
     }
 
     #[test]
@@ -762,7 +732,7 @@ mod tests {
         // On by default for 1.0 (it makes a network call to GitHub).
         let s: Settings = toml::from_str("[features]").unwrap();
         assert!(s.features.version_check, "version_check defaults on");
-        assert!(s.features.file_viewer, "other flags still default on");
+        assert!(s.features.shell_pane, "other flags still default on");
 
         let s: Settings = toml::from_str("[features]\nversion_check = false").unwrap();
         assert!(!s.features.version_check);
@@ -774,7 +744,7 @@ mod tests {
         // On by default for 1.0 (network call + writes to disk).
         let s: Settings = toml::from_str("[features]").unwrap();
         assert!(s.features.auto_update, "auto_update defaults on");
-        assert!(s.features.file_viewer, "other flags still default on");
+        assert!(s.features.shell_pane, "other flags still default on");
 
         let s: Settings = toml::from_str("[features]\nauto_update = false").unwrap();
         assert!(!s.features.auto_update);
@@ -783,8 +753,8 @@ mod tests {
 
     #[test]
     fn feature_flag_type_mismatch_is_rejected() {
-        let err = toml::from_str::<Settings>("[features]\nfile_viewer = \"no\"").unwrap_err();
-        assert!(err.to_string().contains("file_viewer"));
+        let err = toml::from_str::<Settings>("[features]\nshell_pane = \"no\"").unwrap_err();
+        assert!(err.to_string().contains("shell_pane"));
     }
 
     #[test]
@@ -793,7 +763,7 @@ mod tests {
 
         // A live UI-panel flag is not a restart-only difference.
         let mut live = base.clone();
-        live.features.file_viewer = !live.features.file_viewer;
+        live.features.shell_pane = !live.features.shell_pane;
         assert!(!base.restart_only_differs(&live));
 
         // A restart-only feature flag, a scalar, and a notification knob all are.
@@ -842,11 +812,7 @@ mod tests {
         // live"). Each binding is consumed by `cases`, so none goes unused.
         let FeatureFlags {
             automations,
-            file_viewer,
-            global_search,
-            info_panel,
             shell_pane,
-            code_review,
             perf_hud,
             mouse,
             notifications,
@@ -858,11 +824,7 @@ mod tests {
         // warning, not an error).
         let _ = (
             automations,
-            file_viewer,
-            global_search,
-            info_panel,
             shell_pane,
-            code_review,
             perf_hud,
             mouse,
             notifications,
@@ -873,12 +835,8 @@ mod tests {
         // `live` flags gate UI panels read from `App.features` every frame, so
         // flipping one is NOT a restart-only difference; the rest are read once
         // at startup and MUST register as one.
-        let live: [fn(&mut FeatureFlags); 6] = [
-            |f| f.file_viewer = !f.file_viewer,
-            |f| f.global_search = !f.global_search,
-            |f| f.info_panel = !f.info_panel,
+        let live: [fn(&mut FeatureFlags); 2] = [
             |f| f.shell_pane = !f.shell_pane,
-            |f| f.code_review = !f.code_review,
             |f| f.perf_hud = !f.perf_hud,
         ];
         let restart: [fn(&mut FeatureFlags); 5] = [
@@ -931,11 +889,10 @@ mod tests {
         let base = Settings::default();
         let other: Settings = toml::from_str(
             "config_version = 2\nscrollback_lines = 1\n\
-             hidden_terminal_secs = 1\nstream_panes = true\ntwo_panel_min_cols = 1\nthree_panel_min_cols = 1\n\
+             hidden_terminal_secs = 1\nstream_panes = true\ntwo_panel_min_cols = 1\n\
              git_poll_secs = 1\n\
-             [features]\nautomations = false\nfile_viewer = false\n\
-             global_search = false\ninfo_panel = false\nshell_pane = false\n\
-             code_review = false\nperf_hud = false\nmouse = false\nnotifications = false\n\
+             [features]\nautomations = false\nshell_pane = false\n\
+             perf_hud = false\nmouse = false\nnotifications = false\n\
              version_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
              [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n\

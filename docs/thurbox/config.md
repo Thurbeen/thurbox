@@ -43,11 +43,11 @@ backends register at startup) and `themes.toml` need a restart.
 opens a **Settings panel** listing every knob. It writes the file back
 **preserving its comments**, and feature flags that gate UI panels apply
 **live** on save; the rest (`mouse`, `notifications`, `automations`,
-`version_check`, `auto_update`, the four editable `[notifications]` knobs,
+`version_check`, `auto_update`, the three editable `[notifications]` knobs,
 and the scalars) take effect on the next launch — the panel marks those rows
-with `⟳` and toasts a restart note. The panel exposes only the four
-editable notification knobs (`also_on_waiting`, `suppress_for_active`,
-`sound`, `min_interval_secs`); `[notifications] backend` is **not** in
+with `⟳` and toasts a restart note. The panel exposes only the three
+editable notification knobs (`suppress_for_active`, `sound`,
+`min_interval_secs`); `[notifications] backend` is **not** in
 the panel — set it only by hand-editing `settings.toml`. Hand-editing
 the file (or the panel in another instance) is picked up the same way,
 via the live mtime poll.
@@ -342,11 +342,9 @@ version_check = true           # on by default (1.0): makes a network call
 auto_update   = true           # on by default (1.0): downloads + replaces binaries
 
 [notifications]
-also_on_waiting     = false    # accepted; no Fleet session reports done
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
-on_automation_failure = false  # accepted and ignored
 
 [clipboard]
 provider       = "auto"        # auto | native | osc52 | none
@@ -428,13 +426,17 @@ is `space` on its row in the Interface tab (`Ctrl+,` then `]`), recorded
 in `plugin-state.json`. That does strictly more than a flag could: it works for a
 plugin *you* wrote, which no compiled-in flag could know about.
 
-`file_viewer`, `info_panel`, `code_review` and `global_search` gate
-nothing, and neither does the top-level `three_panel_min_cols`: they are
-parsed so a file that sets them still loads. The panes for code review and
-the info panel are plugins
+The panes for code review and the info panel are plugins
 ([`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review),
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)),
 switched on and off from the Interface tab like any other pane.
+
+Seven keys are **retired**, because nothing read them: the top-level
+`three_panel_min_cols`, `[features]` `file_viewer`, `info_panel`,
+`code_review` and `global_search`, and `[notifications]` `also_on_waiting`
+and `on_automation_failure`. A file that sets one still loads and passes
+`thurbox-cli config validate`; startup names each as no longer read, and a
+save from the settings panel removes it.
 
 | Key | Default | Controls |
 |-----|---------|----------|
@@ -677,15 +679,15 @@ They serve debugging thurbox itself, so the switch is off by default.
 ### `[notifications]` — OS notification settings
 
 Surfaces an OS notification when a session **transitions into a state
-that needs your attention**: into `blocked` (`<name> needs you`), and, with
-`also_on_waiting = true`, into `done` (`<name> finished`). The edge is
+that needs your attention**: into `blocked` (`<name> needs you`). The edge is
 detected once per tick in `kernel::notify`, reading the same state the
 session-list status icon draws, so the banner can never drift from the list
 — then deduped per session (`min_interval_secs`) and skipped for the session
 you're currently viewing (`suppress_for_active`).
 
-A Fleet session's state is running, idle, stopped, failed or unreported (see
-[Session status](#session-status)), so a Fleet session raises neither edge.
+A Fleet session is `blocked` when its Task's `agentState` is `attention` (see
+[Session status](#session-status)). Fleet reports no `done` state, so a
+finished turn raises nothing.
 
 These session notifications **only fire while the TUI is open** — the
 dispatcher thread runs only inside the TUI. `thurbox-cli notify send` notifies
@@ -714,12 +716,10 @@ thurbox-cli notify --test   # fire a sample notification to confirm it works
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `also_on_waiting` | `false` | also fire when a session finishes. A Fleet session never reports done, so this fires nothing |
 | `suppress_for_active` | `true` | skip the notification for the session you're currently viewing |
 | `sound` | `true` | play the OS default notification sound |
 | `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
 | `backend` | `auto` | delivery backend: `auto` \| `dbus` \| `windows` \| `off` |
-| `on_automation_failure` | `false` | accepted and ignored |
 
 ### Scripted notifications
 

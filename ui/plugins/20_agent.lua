@@ -785,11 +785,9 @@ local HINT_W, HINT_H = 33, 5
 --- v1's hint box: a SQUARE box (no title) holding left-aligned lines, the key
 --- column padded to 8 so the keys line up.
 ---
---- v1 opens with `Ctrl+N  New session`. It is absent because the new-session
---- plugin is: advertising a chord that resolves to nothing is worse than
---- advertising nothing, and `tests/keymap.rs` asserts that chord stays
---- unbound rather than being reused. Re-adding the wizard means re-adding its
---- line here.
+--- v1 opens with `Ctrl+N  New session`. The session list's own empty state
+--- names that chord, read from the registry so a rebind cannot leave it stale,
+--- so this box does not repeat it.
 local function hint_box_lines()
   local border = { fg = theme.border }
   local inner = HINT_W - 2

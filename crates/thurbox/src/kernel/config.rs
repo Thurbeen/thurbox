@@ -250,22 +250,11 @@ mod tests {
         // Flipping every live flag must change every one of them.
         let mut config = Config::detached(settings());
         let mut edited = settings();
-        edited.features.file_viewer = false;
-        edited.features.info_panel = false;
-        edited.features.global_search = false;
         edited.features.shell_pane = false;
-        edited.features.code_review = false;
         edited.features.perf_hud = false;
         assert_eq!(config.adopt(edited), Reloaded::Live);
         let live = config.features();
-        for (name, value) in [
-            ("file_viewer", live.file_viewer),
-            ("info_panel", live.info_panel),
-            ("global_search", live.global_search),
-            ("shell_pane", live.shell_pane),
-            ("code_review", live.code_review),
-            ("perf_hud", live.perf_hud),
-        ] {
+        for (name, value) in [("shell_pane", live.shell_pane), ("perf_hud", live.perf_hud)] {
             assert!(!value, "{name} was not taken into force");
         }
     }
