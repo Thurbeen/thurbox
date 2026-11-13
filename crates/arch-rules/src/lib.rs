@@ -30,8 +30,9 @@
 //!   the method is a type or trait (`Store::update_status(..)`). The
 //!   qualified-self form `<FileStore>::update_status(..)` is not caught.
 //! - Glob imports are resolved conservatively: a name that could come from a
-//!   forbidden glob is judged as if it did, unless the module declares that
-//!   name itself in the namespace it is read in, which shadows every glob.
+//!   forbidden glob is judged as if it did, unless the name is read as a
+//!   module (a path's prefix, a glob's base) and the module declares a `mod`
+//!   of that name, which shadows every glob.
 //! - `cfg` is ignored: code behind any `cfg` is judged too.
 //! - Tests and examples (`tests/`, `benches/`, `#[cfg(test)]` modules inside
 //!   `src/` excepted) are not under the source rules; their manifests are.
@@ -515,22 +516,11 @@ struct Scope {
     aliases: BTreeMap<String, (Vec<String>, bool)>,
     /// Glob imports, unresolved.
     globs: Vec<(Vec<String>, bool)>,
-    /// Names this module's own items declare in the type namespace (modules
-    /// and types) and in the value namespace (functions, constants, a unit
-    /// or tuple struct's constructor). A declared name shadows every glob
-    /// import of it in the same namespace.
-    types: BTreeSet<String>,
-    values: BTreeSet<String>,
-}
-
-impl Scope {
-    /// Whether this module declares `name` itself, so no glob can bring it
-    /// in. A name known to be a type or module (a path prefix, a glob's base)
-    /// is shadowed by a type; any other by a type and a value both, since
-    /// which namespace it is read in is not known here.
-    fn shadows(&self, name: &str, as_type: bool) -> bool {
-        self.types.contains(name) && (as_type || self.values.contains(name))
-    }
+    /// The modules this module declares (`mod x`). A declared module
+    /// shadows every glob import of its name wherever a module is read: as a
+    /// path's prefix or as a glob's base. Other items are not recorded, so
+    /// they shadow nothing, and a glob stays a possible source.
+    modules_declared: BTreeSet<String>,
 }
 
 /// One crate's sources, indexed for resolution.
@@ -678,27 +668,20 @@ impl Walker<'_> {
 
     fn items(&mut self, items: &[Item]) {
         for item in items {
-            let (types, values) = match item {
-                Item::Mod(i) => (Some(&i.ident), None),
-                Item::Enum(i) => (Some(&i.ident), None),
-                Item::Trait(i) => (Some(&i.ident), None),
-                Item::TraitAlias(i) => (Some(&i.ident), None),
-                Item::Type(i) => (Some(&i.ident), None),
-                Item::Union(i) => (Some(&i.ident), None),
-                Item::Struct(i) => {
-                    let constructor = !matches!(i.fields, syn::Fields::Named(_));
-                    (Some(&i.ident), constructor.then_some(&i.ident))
-                }
-                Item::Fn(i) => (None, Some(&i.sig.ident)),
-                Item::Const(i) => (None, Some(&i.ident)),
-                Item::Static(i) => (None, Some(&i.ident)),
-                _ => (None, None),
-            };
-            let scope = self.scope();
-            scope.types.extend(types.map(ToString::to_string));
-            scope.values.extend(values.map(ToString::to_string));
+            if let Item::Mod(m) = item
+                && !self.bin_root()
+            {
+                self.scope().modules_declared.insert(m.ident.to_string());
+            }
             self.visit_item(item);
         }
+    }
+
+    /// Whether the walk is at the root of a binary target (`main.rs`, a file
+    /// of `src/bin/`), whose root module is not the library's: what it
+    /// declares there must not shadow anything in the library.
+    fn bin_root(&self) -> bool {
+        self.module.is_empty() && !self.file.ends_with("src/lib.rs")
     }
 
     fn scope(&mut self) -> &mut Scope {
@@ -1046,7 +1029,8 @@ impl<'a> Resolver<'a> {
                                 .chain(segments.iter().cloned())
                                 .collect(),
                         ];
-                        let shadowed = scope.is_some_and(|s| s.shadows(first, segments.len() > 1));
+                        let shadowed = segments.len() > 1
+                            && scope.is_some_and(|s| s.modules_declared.contains(first));
                         let module_globs = if globs && !shadowed {
                             scope.map(|s| s.globs.clone()).unwrap_or_default()
                         } else {
@@ -1131,8 +1115,9 @@ impl<'a> Resolver<'a> {
                     return out;
                 }
             }
-            let as_type = names_type || k < path.len();
-            if !scope.globs.is_empty() && !scope.shadows(name, as_type) {
+            let read_as_module = names_type || k < path.len();
+            let shadowed = read_as_module && scope.modules_declared.contains(name);
+            if !scope.globs.is_empty() && !shadowed {
                 // The name may be the module's own item or come through any
                 // of its globs: judge every possibility.
                 let mut out = vec![path.clone()];

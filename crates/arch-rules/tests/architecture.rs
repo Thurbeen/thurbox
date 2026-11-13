@@ -543,6 +543,41 @@ fn a_resolution_cut_short_is_not_remembered() {
     expect("cut-short", &[(CTL, &src)], &[("pure-io", "fx-ctl")]);
 }
 
+/// A binary is a crate of its own: its `mod fs` does not shadow the
+/// library's glob-imported `std::fs`.
+#[test]
+fn a_binary_module_does_not_shadow_a_library_glob() {
+    let lib = ctl("use std::*;\npub fn x() { let _ = fs::read(\"p\"); }\n");
+    expect(
+        "bin-shadow",
+        &[
+            (CTL, &lib),
+            ("crates/fx-ctl/src/main.rs", "mod fs {}\nfn main() {}\n"),
+        ],
+        &[("pure-io", "fx-ctl")],
+    );
+}
+
+/// Macros are a namespace of their own: a struct of the same name does not
+/// shadow a glob-imported macro.
+#[test]
+fn a_struct_does_not_shadow_a_glob_imported_macro() {
+    let rules = format!(
+        "{RULES}\n[[restricted]]\npath = \"fx_api::danger\"\nallowed = []\nwhy = \"fixture\"\n"
+    );
+    expect(
+        "macro-shadow",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-store/src/lib.rs",
+                "use fx_api::*;\npub struct danger;\npub fn x() { danger!(); }\n",
+            ),
+        ],
+        &[("restricted", "fx-store")],
+    );
+}
+
 #[test]
 fn io_inside_a_macro_argument_is_caught() {
     let src = ctl("pub fn x() -> String { format!(\"{:?}\", std::fs::remove_file(\"x\")) }\n");
