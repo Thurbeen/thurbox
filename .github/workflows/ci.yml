@@ -131,6 +131,9 @@ jobs:
               - 'website/**'
               - 'eleventy.config.js'
               - 'scripts/ci/*plugins*.mjs'
+              - 'scripts/ci/website.test.mjs'
+              # website.test.mjs checks the agent list against Fleet's harnesses.
+              - 'crates/fleet-api/src/harness/bundled.rs'
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yml'

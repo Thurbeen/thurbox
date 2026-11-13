@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Agents — Thurbox Docs'
-description: 'Which coding agents a Thurbox session runs: the harness profiles Fleet has. Thurbox keeps no agent registry and reads no agents.toml.'
+description: 'Which coding agents a Thurbox session runs: the harness profiles Fleet has. Thurbox keeps no agent registry.'
 currentPage: 'agents'
 breadcrumb: 'Agents'
 ---
@@ -9,8 +9,7 @@ breadcrumb: 'Agents'
           <p>
             Thurbox 3.0 keeps no agent registry. A session is a Fleet Task, and the agent it runs is
             the Task's <strong>harness</strong>: Fleet starts it, resumes it and reports its status
-            through its harness profiles. Thurbox no longer reads
-            <code>agents.toml</code>.
+            through its harness profiles.
           </p>
 
           <h2 id="overview">
@@ -19,8 +18,10 @@ breadcrumb: 'Agents'
           </h2>
           <p>
             The new-session flow offers the harnesses Fleet has profiles for, as
-            <code>fleet version --json</code> lists them under <code>harnesses</code>. Today those are
-            <code>claude</code> (also spelled <code>claude-code</code>) and <code>codex</code>.
+            <code>fleet version --json</code> lists them under <code>harnesses</code>. Fleet bundles
+            <code>claude</code> (also <code>claude-code</code>), <code>codex</code>, <code>pi</code>,
+            <code>opencode</code>, <code>kilo</code>, <code>omp</code>, <code>qwen</code>,
+            <code>copilot</code> and <code>kimi</code>.
             <code>thurbox-cli doctor</code> lists them beside the Fleet in force.
           </p>
 
@@ -31,7 +32,8 @@ breadcrumb: 'Agents'
           <p>
             The harness profile owns the command, its arguments, the resume command and the status
             hooks. Fleet wires those hooks when it launches the agent, so Thurbox installs nothing into
-            an agent's own configuration. No model is ever passed: each agent runs with its own default
+            an agent's own configuration. Kimi Code is the exception: it reads hooks only from its own
+            config file, so run <code>fleet integration install kimi</code> once before using it. No model is ever passed: each agent runs with its own default
             configuration.
           </p>
 
@@ -43,10 +45,3 @@ breadcrumb: 'Agents'
             A new agent is a new harness profile in Fleet, not a change to Thurbox.
           </p>
 
-          <h2 id="agents-toml">
-            An agents.toml from 2.x
-            <a href="#agents-toml" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            An <code>agents.toml</code> left from Thurbox 2.x is not read, and can be deleted.
-          </p>

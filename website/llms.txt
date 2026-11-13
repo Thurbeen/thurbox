@@ -37,14 +37,13 @@
 - [Tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html): onboarding walkthrough with screenshots — adding a repository to the picker, creating a first session in a repository, the everyday keybindings, and the equivalent fleet commands.
 - [FAQ](https://thurbox.thurbeen.eu/docs/faq.html): short answers to the most common questions (what it is, how it differs, install, platforms, license).
 - [Features](https://thurbox.thurbeen.eu/docs/features.html): the customizable interface, sessions, agent definitions, git worktrees, sessions on other Fleet hosts, automations, global search, headless CLI.
-- [Agents](https://thurbox.thurbeen.eu/docs/agents.html): the agents are Fleet's harness profiles (claude, codex); thurbox keeps no agent registry and reads no agents.toml.
+- [Agents](https://thurbox.thurbeen.eu/docs/agents.html): the agents are the harness profiles Fleet bundles (claude, codex, pi, opencode, kilo, omp, qwen, copilot, kimi).
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
 - [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, Nix/NixOS, winget, Chocolatey, or from source; prerequisites; running it; how to pin a specific version.
 - [Orchestration](https://thurbox.thurbeen.eu/docs/orchestration.html): Fleet (https://github.com/Thurbeen/fleet), an orchestrator that runs one Thurbox session per Task — install, its Task loop, and the Fleet Lens pane (https://github.com/Thurbeen/thurbox-fleetlens) that browses it from Thurbox — plus asking an agent to spin up sessions with thurbox-cli, and the Thurbox primitives Fleet is built on.
 - [Configuration](https://thurbox.thurbeen.eu/docs/configuration.html): every config file and knob — hosts.toml, settings.toml, themes, keybindings, and the Fleet thurbox uses.
 - [The Interface](https://thurbox.thurbeen.eu/docs/interface.html): every pane is an editable Lua plugin — how to move, disable, replace or write one, how a plugin reacts to events and puts actions in the Ctrl+P command palette, how to have a coding agent do it for you, what the kernel refuses a plugin, and the panes you install (thurbox-code-review, thurbox-info-panel).
 - [Architecture](https://thurbox.thurbeen.eu/docs/architecture.html): the Lua-on-Rust plugin kernel and its five rules, module isolation, the tmux session backend, and the decisions behind them.
-- [Removing old hook entries](https://thurbox.thurbeen.eu/docs/extensions.html): Thurbox v3 installs nothing into an agent's config; how to delete by hand the status hooks, status files and skills Thurbox v2 wrote into each agent's config.
 - [Recipes](https://thurbox.thurbeen.eu/docs/recipes.html): worked patterns for orchestrating multi-session, multi-repo workflows.
 
 ## Optional

@@ -142,15 +142,13 @@ breadcrumb: 'Features'
           </figure>
           <p>
             Run multiple coding-agent CLIs side-by-side, each in its own multiplexer pane. A session runs
-            one agent (Claude Code or Codex, through Fleet's harness profiles), each with its own default
+            one agent (any harness Fleet has a profile for), each with its own default
             config. Every session is a Fleet Task: Fleet starts it, keeps it running and reports its
             status. Sessions persist across crashes,
             restarts,
             and even
             multiple concurrent Thurbox instances &mdash; the multiplexer keeps them alive in the background.
-            The defaults are tmux on POSIX and psmux on native Windows;
-            <a href="installation.html#rmux">RMUX 0.10.0+</a> is an opt-in alternative
-            tested locally on Linux.
+            The multiplexer is tmux on POSIX and psmux on native Windows.
           </p>
           <ul>
             <li>
@@ -210,7 +208,7 @@ breadcrumb: 'Features'
           <p>
             The agents are Fleet's harness profiles. Thurbox keeps no agent registry: the agent picker
             offers the harnesses <code>fleet version --json</code> lists, and a session's Task names
-            its harness. An <code>agents.toml</code> left from 2.x is not read. See
+            its harness. See
             <a href="agents.html">Agents</a>.
           </p>
 
@@ -606,12 +604,11 @@ ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
             <code>version_check</code>
             and
             <code>auto_update</code>
-            , which were opt-in before 1.0 and reach the network, so they are the two most worth
-            knowing you can turn off.
+            , which reach the network, so they are the two most worth knowing you can turn off.
           </p>
           <div class="info-box">
             <p>
-              <strong>A pane is no longer switched off here.</strong>
+              <strong>A pane is not switched off here.</strong>
               Panes are files, so turning one off is
               <code>space</code>
               on its row in the Interface tab &mdash; a decision recorded in
@@ -635,17 +632,6 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
             <code>thurbox-cli automation</code>
             commands still work).
           </p>
-          <div class="info-box">
-            <p>
-              <strong>Five keys are accepted and ignored.</strong>
-              <code>tasks</code>, <code>file_viewer</code>, <code>info_panel</code>,
-              <code>code_review</code> and <code>global_search</code> gated panes the binary does
-              not draw, and nothing reads them &mdash; a pane is turned on and off from the
-              Interface tab instead. They are still parsed rather than rejected, so an existing
-              <code>settings.toml</code> keeps loading instead of failing on an unknown key &mdash;
-              but setting one has no effect, in either direction.
-            </p>
-          </div>
           <p>
             You don't have to hand-edit the file: press
             <code>Ctrl+,</code>

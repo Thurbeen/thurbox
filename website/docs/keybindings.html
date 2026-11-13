@@ -34,7 +34,7 @@ breadcrumb: 'Keybindings'
     </tr>
   </thead>
   <tbody>
-    <tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit. Sessions keep running &mdash; tmux owns them, not thurbox</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit. Sessions keep running &mdash; Fleet owns them, not thurbox</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>H</kbd> / <kbd>Ctrl</kbd>+<kbd>L</kbd></td><td>Move focus back / forward through the ring</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copy a selection / paste</td></tr>
     <tr><td><kbd>F1</kbd> or <kbd>Ctrl</kbd>+<kbd>G</kbd></td><td>Keybindings help &mdash; the registry, rendered</td></tr>
@@ -65,11 +65,17 @@ breadcrumb: 'Keybindings'
   <tbody>
     <tr><td><kbd>j</kbd> / <kbd>k</kbd> &middot; <kbd>&darr;</kbd> / <kbd>&uarr;</kbd></td><td>Next / previous session</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>J</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>The same, from anywhere</td></tr>
-    <tr><td><kbd>g</kbd></td><td>First session</td></tr>
+    <tr><td><kbd>g</kbd> / <kbd>Home</kbd> &middot; <kbd>G</kbd> / <kbd>End</kbd></td><td>First / last row</td></tr>
+    <tr><td><kbd>PgUp</kbd> / <kbd>PgDn</kbd></td><td>Previous / next page of rows</td></tr>
+    <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Previous / next host</td></tr>
+    <tr><td><kbd>n</kbd></td><td>Next session that needs you</td></tr>
+    <tr><td><kbd>h</kbd> / <kbd>l</kbd> &middot; <kbd>H</kbd> / <kbd>L</kbd></td><td>Fold / unfold the group &middot; all groups</td></tr>
+    <tr><td><kbd>&larr;</kbd> / <kbd>&rarr;</kbd></td><td>Fold the group or go to its parent / unfold it or go to its first child</td></tr>
     <tr><td><kbd>Enter</kbd></td><td>Open it &mdash; focus its agent</td></tr>
     <tr><td><kbd>Shift</kbd>+<kbd>J</kbd> / <kbd>Shift</kbd>+<kbd>K</kbd></td><td>Move it down / up. A parent drags its children; a whole group moves past a group edge</td></tr>
     <tr><td><kbd>Shift</kbd>+<kbd>S</kbd></td><td>Sort by name within each repository group</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>Delete, for good: Fleet removes the Task and stops its agent</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>E</kbd></td><td>Rename it</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open the session's directories in your editor</td></tr>
     <tr><td><kbd>F9</kbd></td><td>Hide the session list, for a full-width agent</td></tr>
   </tbody>
@@ -120,6 +126,8 @@ breadcrumb: 'Keybindings'
   <tbody>
     <tr><td><kbd>j</kbd> / <kbd>k</kbd> &middot; <kbd>&darr;</kbd> / <kbd>&uarr;</kbd></td><td>Next / previous choice</td></tr>
     <tr><td>any letter</td><td>Filter the repository list &mdash; the search is focused when the flow opens</td></tr>
+    <tr><td><kbd>Space</kbd></td><td>Tick a repository</td></tr>
+    <tr><td><kbd>Alt</kbd>+<kbd>W</kbd></td><td>Give it a worktree of its own</td></tr>
     <tr><td><kbd>Alt</kbd>+<kbd>P</kbd></td><td>Import a folder of repositories</td></tr>
     <tr><td><kbd>Del</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd></td><td>Forget a remembered repository</td></tr>
     <tr><td><kbd>Enter</kbd></td><td>Confirm the step. On the repositories: the one under the cursor</td></tr>
@@ -152,6 +160,8 @@ breadcrumb: 'Keybindings'
   <tbody>
     <tr><td>type</td><td>Filter. Names match as a subsequence; screen text as a substring</td></tr>
     <tr><td><kbd>&darr;</kbd> / <kbd>&uarr;</kbd></td><td>Next / previous result, previewed as you move</td></tr>
+    <tr><td><kbd>PgDn</kbd> / <kbd>PgUp</kbd></td><td>A page of results down / up</td></tr>
+    <tr><td><kbd>Tab</kbd></td><td>Search everything, then terminal text, then names</td></tr>
     <tr><td><kbd>Enter</kbd></td><td>Go to it</td></tr>
     <tr><td><kbd>Esc</kbd></td><td>Close, restoring what was on screen before</td></tr>
   </tbody>
