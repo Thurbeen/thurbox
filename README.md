@@ -19,8 +19,8 @@
   and reboots, so quit thurbox and every agent keeps working.
 - **Agents on other machines too** — a session on another Fleet host sits in the same
   list under its own host, beside the ones running here.
-- **A worktree per session** — Fleet gives each session on this machine a git worktree of its
-  own, so agents never fight over your checkout.
+- **A worktree per session** — a session on this machine can run in a git worktree of its
+  own (`Alt+W` in the new-session flow), so agents never fight over your checkout.
 - **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
   model, prompts or tools, so new agent features arrive the day that CLI ships them.
 - **An interface that is not compiled in** — every pane, the session list included, is a Lua

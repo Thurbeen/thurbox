@@ -58,13 +58,13 @@ refuses on the branch. The tag is pushed by refspec: a push action that
 defaults to the repository's default branch would push the maintenance tip onto
 `main`, be rejected, and the tag would never leave the runner.
 
-`cd.yml` compares the version being cut against every existing tag. When it is
-behind the highest, it publishes the GitHub Release with `make_latest: false`
-and skips Homebrew, AUR, Chocolatey and winget. The tag, the five-target build
-and the release assets are unchanged — what is withheld is every pointer that
-means "the current thurbox" rather than a version. The test is the version, not
-the ref, so a hotfix from any branch that really is the newest still ships
-everywhere.
+`cd.yml` makes two separate checks. `newest` compares the version against every
+existing tag: when it is behind the highest, the GitHub Release is published
+with `make_latest: false`. `channels` (`scripts/ci/release-line.sh`) decides the
+package jobs: Homebrew, AUR, Chocolatey and winget get only the newest release
+of `PACKAGE_CHANNELS_MAJOR`, so the newest 2.x still updates them after a 3.x
+exists, and an older maintenance cut skips them. The tag, the five-target build
+and the release assets are the same either way.
 
 ## v2 and v3
 
