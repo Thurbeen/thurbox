@@ -111,7 +111,7 @@ fn started(answer: &Value) -> (String, bool) {
 fn the_manifest_names_the_protocol_and_the_verbs() {
     let Some(rt) = Runtime::new() else { return };
     let answer = rt.call("manifest", json!({"protocol": 1}));
-    assert_eq!(answer["known"]["protocol"], 1, "{answer}");
+    assert_eq!(answer["known"]["protocol"], 2, "{answer}");
     let verbs = answer["known"]["verbs"].as_array().expect("verbs");
     for verb in ["manifest", "start", "inspect", "stop"] {
         assert!(verbs.iter().any(|v| v == verb), "{verb} in {answer}");
@@ -122,6 +122,125 @@ fn the_manifest_names_the_protocol_and_the_verbs() {
         json!({"schemes": ["git+https", "git+ssh", "git+file", "file"], "survivesStop": true}),
         "{answer}"
     );
+}
+
+/// The place `local` as Fleet passes it when its config names no places.
+fn local() -> Value {
+    json!({"name": "local", "config": {}})
+}
+
+#[test]
+fn the_manifest_reports_the_local_place_it_was_asked_about() {
+    let Some(rt) = Runtime::new() else { return };
+    let answer = rt.call("manifest", json!({"protocol": 2, "places": [local()]}));
+    assert_eq!(
+        answer["known"]["places"],
+        json!([{"name": "local", "platform": "posix", "dynamic": false, "ready": true}]),
+        "{answer}"
+    );
+}
+
+#[test]
+fn a_manifest_that_names_no_places_reports_local() {
+    let Some(rt) = Runtime::new() else { return };
+    for request in [
+        json!({"protocol": 1}),
+        json!({"protocol": 2}),
+        json!({"protocol": 2, "places": []}),
+    ] {
+        let answer = rt.call("manifest", request.clone());
+        let places = answer["known"]["places"].as_array().expect("places");
+        assert_eq!(places.len(), 1, "{request}: {answer}");
+        assert_eq!(places[0]["name"], "local", "{request}: {answer}");
+    }
+}
+
+#[test]
+fn a_place_runtime_mux_does_not_serve_yet_is_reported_not_ready() {
+    let Some(rt) = Runtime::new() else { return };
+    let devbox = json!({"name": "devbox", "config": {"kind": "ssh", "destination": "me@devbox"}});
+    let answer = rt.call(
+        "manifest",
+        json!({"protocol": 2, "places": [local(), devbox]}),
+    );
+    let places = answer["known"]["places"].as_array().expect("places");
+    assert_eq!(places.len(), 2, "{answer}");
+    assert_eq!(places[0]["ready"], true, "{answer}");
+    assert_eq!(places[1]["name"], "devbox", "{answer}");
+    assert_eq!(places[1]["ready"], false, "{answer}");
+    assert!(
+        places[1]["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("local")),
+        "{answer}"
+    );
+}
+
+#[test]
+fn a_missing_multiplexer_makes_the_local_place_not_ready() {
+    let empty = tempfile::tempdir().expect("an empty PATH");
+    let out = Command::new(env!("CARGO_BIN_EXE_runtime-mux"))
+        .arg("manifest")
+        .env("PATH", empty.path())
+        .env_remove("TMUX")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().expect("stdin").write_all(
+                json!({"protocol": 2, "places": [local()]})
+                    .to_string()
+                    .as_bytes(),
+            )?;
+            child.wait_with_output()
+        })
+        .expect("run runtime-mux");
+    let answer: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let place = &answer["known"]["places"][0];
+    assert_eq!(place["ready"], false, "{answer}");
+    assert!(
+        place["why"].as_str().is_some_and(|w| w.contains("tmux")),
+        "{answer}"
+    );
+}
+
+#[test]
+fn a_version_2_request_runs_at_its_place() {
+    let Some(rt) = Runtime::new() else { return };
+    let answer = rt.call(
+        "start",
+        json!({"protocol": 2, "place": local(), "key": "p.one", "argv": ["sleep", "300"], "env": {}}),
+    );
+    started(&answer);
+    let inspected = rt.call(
+        "inspect",
+        json!({"protocol": 2, "place": local(), "key": "p.one"}),
+    );
+    assert!(inspected["known"]["running"].is_object(), "{inspected}");
+    let list = rt.call("list", json!({"protocol": 2, "place": local()}));
+    assert_eq!(list["known"]["keys"], json!(["p.one"]), "{list}");
+    // A version 1 request still reaches the same place.
+    assert!(rt.inspect("p.one")["known"]["running"].is_object());
+}
+
+#[test]
+fn a_version_2_request_at_a_place_it_cannot_serve_is_unknown() {
+    let Some(rt) = Runtime::new() else { return };
+    for place in [
+        None,
+        Some(json!({"name": "devbox", "config": {"kind": "ssh"}})),
+        Some(json!({"name": "local", "config": {"kind": "ssh"}})),
+        Some(json!("local")),
+    ] {
+        let mut request =
+            json!({"protocol": 2, "key": "p.two", "argv": ["sleep", "300"], "env": {}});
+        if let Some(place) = &place {
+            request["place"] = place.clone();
+        }
+        let answer = rt.call("start", request);
+        assert!(answer["unknown"]["why"].is_string(), "{place:?}: {answer}");
+    }
+    assert_eq!(rt.inspect("p.two")["known"], "none", "nothing started");
 }
 
 #[test]

@@ -116,8 +116,14 @@ fn the_reference_script_passes_the_conformance_suite() {
     run.ok()
         .stdout_has("ok   two starts with one key leave one process")
         .stdout_has("ok   concurrent starts with one key leave one process")
-        .stdout_has("ok   an exited process answers Exited with its code, or None");
+        .stdout_has("ok   an exited process answers Exited with its code, or None")
+        .stdout_has("speaks runtime protocol 1");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+    assert!(
+        !run.stdout.contains("manifest reports each place"),
+        "a version 1 runtime is asked about no place: {}",
+        run.stdout
+    );
 }
 
 /// An environment whose one host, `local`, is served by `runtime-mux`.
@@ -150,8 +156,95 @@ fn runtime_mux_passes_the_conformance_suite() {
         .stdout_has("ok   an error answers Unknown, never None")
         .stdout_has("ok   a stop of an absent process succeeds")
         .stdout_has("ok   workspace: idempotent by key")
-        .stdout_has("ok   workspace: release never removes what it did not make");
+        .stdout_has("ok   workspace: release never removes what it did not make")
+        .stdout_has("ok   manifest reports each place it was asked about")
+        .stdout_has("ok   a version 2 request without a place answers Unknown")
+        .stdout_has("speaks runtime protocol 2");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+}
+
+/// [`mux_env`] on `program` behind a script that logs each call,
+/// `<verb> <request>`, one line each, to the file it returns.
+fn logged_env(name: &str, program: &Path, sockets: &Sockets) -> (Env, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let env = mux_env(name, program, sockets);
+    let log = env.root.join("calls.log");
+    let script = env.root.join("logged.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nreq=$(cat)\nprintf '%s %s\\n' \"$1\" \"$req\" >> '{}'\nprintf '%s' \"$req\" | exec '{}' \"$@\"\n",
+            log.display(),
+            program.display()
+        ),
+    )
+    .expect("script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let config = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        config.replace(&*program.to_string_lossy(), &script.to_string_lossy()),
+    )
+    .expect("config");
+    (env, log)
+}
+
+/// Each call the logging script saw: its verb and its request.
+fn calls(log: &Path) -> Vec<(String, Value)> {
+    fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            let (verb, request) = line.split_once(' ').expect("verb and request");
+            let request = serde_json::from_str(request)
+                .unwrap_or_else(|e| panic!("{verb} request is not JSON ({e}): {request}"));
+            (verb.to_string(), request)
+        })
+        .collect()
+}
+
+/// With no places configured, a host's runtime has one place, `local`:
+/// Fleet asks a version 2 runtime about it and names it in every request.
+#[test]
+fn fleet_names_the_local_place_in_each_request_to_a_version_2_runtime() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("place-v2");
+    let (mut env, log) = logged_env("runtime-mux-place-v2", &program, &sockets);
+    waiting_task(&mut env);
+    let calls = calls(&log);
+    assert!(calls.iter().any(|(v, _)| v == "start"), "{calls:?}");
+    let local = json!({"name": "local", "config": {}});
+    for (verb, request) in &calls {
+        assert_eq!(request["protocol"], 2, "{verb} {request}");
+        if verb == "manifest" {
+            assert_eq!(request["places"], json!([local]), "{verb} {request}");
+        } else {
+            assert_eq!(request["place"], local, "{verb} {request}");
+        }
+    }
+    assert_eq!(env.status("t1")["sessionState"], "Running");
+}
+
+/// A version 1 runtime gets version 1 requests, with no place: what Fleet
+/// sends it is what it sent before places.
+#[test]
+fn a_version_1_runtime_gets_version_1_requests() {
+    if !reference_script_runs() {
+        return;
+    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let sockets = Sockets::new("place-v1");
+    let (mut env, log) = logged_env("runtime-script-place-v1", &script, &sockets);
+    waiting_task(&mut env);
+    let calls = calls(&log);
+    assert!(calls.iter().any(|(v, _)| v == "start"), "{calls:?}");
+    for (verb, request) in calls.iter().filter(|(v, _)| v != "manifest") {
+        assert_eq!(request["protocol"], 1, "{verb} {request}");
+        assert!(request.get("place").is_none(), "{verb} {request}");
+    }
+    assert_eq!(env.status("t1")["sessionState"], "Running");
 }
 
 #[test]

@@ -66,6 +66,52 @@ pub enum Attach {
     Tty { argv: Vec<String> },
 }
 
+/// A place of a runtime: where it runs a process, such as this machine, an
+/// ssh host or a VM (ADR-42). Fleet passes it with each request of protocol
+/// version 2 and does not read `config`, the place's table from its config.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Place {
+    pub name: String,
+    #[serde(default)]
+    pub config: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Place {
+    /// The place of a runtime whose config names none.
+    pub const LOCAL: &'static str = "local";
+
+    /// [`Place::LOCAL`], with an empty config.
+    pub fn local() -> Place {
+        Place {
+            name: Place::LOCAL.into(),
+            config: serde_json::Map::new(),
+        }
+    }
+}
+
+/// What a runtime's `manifest` says of one of its places.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlaceReport {
+    pub name: String,
+    pub platform: Platform,
+    /// Each key gets a new machine, such as a VM.
+    #[serde(default)]
+    pub dynamic: bool,
+    /// The runtime can run a process there now.
+    pub ready: bool,
+    /// What the place lacks, when it is not ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// The shell family a place runs commands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    Posix,
+    Windows,
+}
+
 pub trait Runtime {
     /// Resolve runtime model-variable selection into the frozen private environment.
     fn prepare_execution(

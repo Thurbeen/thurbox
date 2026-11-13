@@ -1253,10 +1253,9 @@ fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure
             cases.len()
         )));
     }
-    println!(
-        "{exe} speaks runtime protocol {}",
-        fleet_runtime::exec::PROTOCOL
-    );
+    if let Some(protocol) = rt.spoken() {
+        println!("{exe} speaks runtime protocol {protocol}");
+    }
     Ok(())
 }
 
