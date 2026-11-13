@@ -253,13 +253,13 @@ observations as values and returns probes and a plan. Adapters (store,
 runtime, forge, gateway, plugin) perform every I/O through a port. The manager
 persists plans under the lease; the CLI parses, wires and prints.
 `crates/architecture.toml` declares every crate's allowed dependencies, and
-`fleet-arch` checks crate edges and purity, with positive and negative
+`arch-rules` checks crate edges and purity, with positive and negative
 fixtures.
 
 #### F2. One process spawner, always bounded
 
 `fleet-exec` is the only production process spawner. Every call has a bound,
-and timeout or unwind kills the whole process tree. `fleet-arch` checks the
+and timeout or unwind kills the whole process tree. `arch-rules` checks the
 restricted process APIs.
 
 #### F3. An effect has an intent and a receipt
@@ -272,7 +272,7 @@ key, never by repeating the effect blindly. The contract tests named in
 #### F4. One writer per status field
 
 Each status field has one owner, declared in `crates/architecture.toml` and
-checked by `fleet-arch`. The exceptions are the shared writes
+checked by `arch-rules`. The exceptions are the shared writes
 [contracts.md](fleet/contracts.md) lists: the inbox, `status.answered`, a
 Conversation's `status.received` and a Listener's beat fields. Every write to
 one of them is a typed store mutation.
@@ -311,7 +311,7 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 
 | Rule | Enforced by | Where |
 |---|---|---|
-| 1. Components meet only through processes | `crates/architecture.toml` checked by `fleet-arch`: every other component is `role = "component"`, held to the crate graph from its manifest | The workspace; thurbox links `runtime-mux` until Fleet drives the runtimes |
+| 1. Components meet only through processes | `crates/architecture.toml` checked by `arch-rules`: every other component is `role = "component"`, held to the crate graph from its manifest | The workspace; thurbox links `runtime-mux` until Fleet drives the runtimes |
 | 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox, runtime-mux, `examples/runtimes/tmux.sh` |
 | 3. Crash-free operation | Code review | All |
 | 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit, over every crate |
@@ -326,10 +326,10 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | T2. Plugin-kernel rules | `tests/kernel_mvp.rs` + `thurbox.yml` (selene) + `.luarc.json` (luals) | thurbox |
 | T3. Backend-first model | Code review | thurbox |
 | T4. Logging off stdout | Code review | thurbox |
-| F1. Pure decisions | `fleet-arch` + `crates/architecture.toml` | Fleet |
-| F2. One bounded spawner | `fleet-arch` (restricted process APIs) | Fleet |
+| F1. Pure decisions | `arch-rules` + `crates/architecture.toml` | Fleet |
+| F2. One bounded spawner | `arch-rules` (restricted process APIs) | Fleet |
 | F3. Intent and receipt | Contract tests in `fleet/contracts.md` | Fleet |
-| F4. One writer per field | `fleet-arch` (permitted status writers) | Fleet |
+| F4. One writer per field | `arch-rules` (permitted status writers) | Fleet |
 | R1. A runtime knows no Task | The protocol's schema | Every runtime |
 | R2. Idempotent by key | `fleet runtime check`, run by `crates/fleet-cli/tests/e2e_runtime_exec.rs` | runtime-mux, `examples/runtimes/tmux.sh` |
 | R3. runtime-mux module isolation | `crates/runtime-mux/tests/architecture_rules.rs` + `crates/architecture.toml` | runtime-mux |

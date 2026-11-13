@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use fleet_arch::{Workspace, check, load_rules};
+use arch_rules::{Workspace, check, load_rules};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -27,7 +27,7 @@ fn this_workspace_obeys_its_architecture() {
         "fleet-runtime",
         "fleet-manager",
         "fleet-cli",
-        "fleet-arch",
+        "arch-rules",
         "fleet-exec",
         "fleet-forge",
         "fleet-plugin",
@@ -554,7 +554,7 @@ fn the_rules_keep_the_sdk_and_exporter_in_fleet_telemetry() {
         .crates
         .get("fleet-telemetry")
         .expect("fleet-telemetry is governed");
-    assert_eq!(telemetry.role, fleet_arch::Role::Adapter);
+    assert_eq!(telemetry.role, arch_rules::Role::Adapter);
     assert!(telemetry.deps.is_empty());
     let dependants: Vec<&String> = rules
         .crates
@@ -630,7 +630,7 @@ fn the_rules_keep_forges_below_the_port() {
         .crates
         .get("fleet-forge")
         .expect("fleet-forge is governed");
-    assert_eq!(forge.role, fleet_arch::Role::Adapter);
+    assert_eq!(forge.role, arch_rules::Role::Adapter);
     assert_eq!(
         forge.deps,
         vec!["fleet-api".to_string(), "fleet-exec".to_string()]
@@ -950,7 +950,7 @@ fn the_rules_keep_the_gateway_below_its_port_and_its_writes_with_the_manager() {
         .crates
         .get("fleet-gateway")
         .expect("fleet-gateway is governed");
-    assert_eq!(gateway.role, fleet_arch::Role::Adapter);
+    assert_eq!(gateway.role, arch_rules::Role::Adapter);
     assert_eq!(
         gateway.deps,
         vec!["fleet-api".to_string(), "fleet-exec".to_string()]

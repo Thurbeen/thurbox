@@ -62,7 +62,7 @@ Where a fact belongs:
 
 ### Enforcement
 
-One `architecture.toml` covers the whole workspace and `fleet-arch` checks it
+One `architecture.toml` covers the whole workspace and `arch-rules` checks it
 on every build, the way it checks Fleet's crates today:
 
 | Crate | May depend on | Must not depend on |
@@ -74,8 +74,8 @@ on every build, the way it checks Fleet's crates today:
 | `workspace-git` (makes git workspaces; runtimes run it, never link it) | crates.io | everything else |
 | `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
 
-The file is `crates/architecture.toml`, and `fleet-arch`'s `architecture`
-test checks it. Every crate that is not Fleet's is `role = "component"`: held
+The file is `crates/architecture.toml`, and the `architecture` test of
+`arch-rules` checks it. Every crate that is not Fleet's is `role = "component"`: held
 to the crate graph from its manifest, but not to Fleet's own source rules. It
 records the one dependency the table above does not allow yet: `thurbox`
 links `runtime-mux` until Fleet drives the runtimes.

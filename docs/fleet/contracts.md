@@ -91,12 +91,12 @@ fleet-telemetry    adapter        OTLP export, off by default
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
 fleet-cli          edge           the `fleet` binary     -> api, manager, store,
 runtime, forge, gateway, plugin, telemetry
-fleet-arch         tooling        the architecture test
+arch-rules         tooling        the architecture test
 fleet-dev          tooling        `cargo xtask`: gate and release
 ```
 
 `crates/architecture.toml` declares the graph and these rules, and the
-`architecture` test of `fleet-arch` enforces them on every gate run:
+`architecture` test of `arch-rules` enforces them on every gate run:
 
 - Both the declared and the actual crate graph are acyclic, and every actual
   edge (normal, build and dev dependencies, renames included) is declared.

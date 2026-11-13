@@ -140,6 +140,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arch-rules"
+version = "0.0.0-dev"
+dependencies = [
+ "proc-macro2",
+ "serde",
+ "syn 3.0.9",
+ "toml",
+]
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1128,16 +1138,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "toml",
-]
-
-[[package]]
-name = "fleet-arch"
-version = "0.0.0-dev"
-dependencies = [
- "proc-macro2",
- "serde",
- "syn 3.0.9",
  "toml",
 ]
 

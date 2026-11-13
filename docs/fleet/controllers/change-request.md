@@ -63,7 +63,7 @@ forge calls when the change has many notes, and one small bookkeeping write.
 | Apply by URL, the derived name, ref verification | [Verbs](../../../crates/fleet-manager/src/verbs.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
 | GitHub through `gh`, GitLab through `glab`, Azure DevOps Services through `az`, Bitbucket Cloud through authenticated `curl`, the fake | [fleet-forge](../../../crates/fleet-forge/src/lib.rs): [github](../../../crates/fleet-forge/src/github.rs), [gitlab](../../../crates/fleet-forge/src/gitlab.rs), [azure-devops](../../../crates/fleet-forge/src/azure_devops.rs), [bitbucket-cloud](../../../crates/fleet-forge/src/bitbucket.rs), [fake](../../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) against the stub CLIs |
 | `[forge]` configuration | [CLI config](../../../crates/fleet-cli/src/config.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
-| Crate edges and the field manager | [architecture.toml](../../../crates/architecture.toml) | [Architecture suite](../../../crates/fleet-arch/tests/architecture.rs) |
+| Crate edges and the field manager | [architecture.toml](../../../crates/architecture.toml) | [Architecture suite](../../../crates/arch-rules/tests/architecture.rs) |
 
 The forge E2E suite drives the built CLI through apply by URL, idempotent
 re-apply, the aliasing refusal, bookkeeping-only polls, numbering of notes,

@@ -37,12 +37,12 @@ asks `fleet-telemetry` for each command's root span.
 [OpenTelemetry export](configuration.md#opentelemetry-export) owns the variables, spans
 and metrics.
 
-`fleet-arch` and `fleet-dev` are repository tooling: architecture enforcement,
+`arch-rules` and `fleet-dev` are repository tooling: architecture enforcement,
 validation and release packaging. They are not controllers or services in the
 installed `fleet` runtime.
 
 The executable dependency graph is [crates/architecture.toml](../../crates/architecture.toml).
-The [architecture suite](../../crates/fleet-arch/tests/architecture.rs) checks crate
+The [architecture suite](../../crates/arch-rules/tests/architecture.rs) checks crate
 edges, purity, restricted process and telemetry APIs, permitted status
 writers and the holders of the Forge port, including negative fixtures. The
 CLI may wire adapters, but only manager verbs may perform resource

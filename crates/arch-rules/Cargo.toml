@@ -1,5 +1,5 @@
 [package]
-name = "fleet-arch"
+name = "arch-rules"
 description = "Fleet's architecture rules, checked from source: the allowed crate graph, pure-core purity, status writers."
 version.workspace = true
 edition.workspace = true
