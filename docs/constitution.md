@@ -311,7 +311,7 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 
 | Rule | Enforced by | Where |
 |---|---|---|
-| 1. Components meet only through processes | `crates/architecture.toml` checked by `arch-rules`: every other component is `role = "component"`, held to the crate graph from its manifest | The workspace; thurbox links `runtime-mux` until Fleet drives the runtimes |
+| 1. Components meet only through processes | `crates/architecture.toml` checked by `arch-rules`: every other component is `role = "component"`, held to the crate graph from its manifest and its sources | The workspace; thurbox links `runtime-mux` until Fleet drives the runtimes |
 | 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox, runtime-mux, `examples/runtimes/tmux.sh` |
 | 3. Crash-free operation | Code review | All |
 | 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit, over every crate |
