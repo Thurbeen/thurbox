@@ -298,8 +298,7 @@ The data layer a review pane builds on:
   (`git diff --no-index -- /dev/null <path>`, capped at
   `git::UNTRACKED_FILE_CAP`, overflow reported as `untracked_omitted`): `git diff
   HEAD` cannot show a file git has never been told about. There is deliberately
-  no body-only `git diff HEAD` helper. Rationale and the rejected temporary-index
-  approach: ADR-P6's diff bullets in `docs/thurbox/performance.md`.
+  no body-only `git diff HEAD` helper.
 
 Two rules apply to a review pane: **1 logical diff row = 1 selectable unit**
 (wrapping expands only *visual* rows; selection and comment anchoring stay

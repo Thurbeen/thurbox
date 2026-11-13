@@ -3002,9 +3002,9 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         }
         // Opt-in split timing (THURBOX_PERF_LOG): the history capture is an
         // independent `tmux capture-pane` subprocess, while `connect_pane`
-        // drives the serialized control-mode connection. Restore prefetches
-        // the captures in parallel and passes them in (ADR-P9), so
-        // `capture_ms` here reads 0 on that path; a `None` seed (a mid-run
+        // drives the serialized control-mode connection. A caller that
+        // prefetched the capture passes it in, so `capture_ms` here reads 0 on
+        // that path; a `None` seed (a mid-run
         // adopt) still captures inline, before connecting so seeded history
         // can't duplicate live output. Best-effort: adoption must survive a
         // failed capture — except one saying the pane is gone. Nothing after it

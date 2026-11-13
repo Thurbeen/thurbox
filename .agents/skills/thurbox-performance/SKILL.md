@@ -35,14 +35,7 @@ any input, a resize, a reload, a focus change, a worker result, and **new agent 
 frame, so visible output is responsive while hidden output owes no frame.
 The all-pane `output_generation` still invalidates content search (ADR-P29). It sums each pane's `output_seq`, bumped
 after the parse, never the millisecond `last_output_at`: that stamp was stored
-before the parse and cannot tell two chunks in one millisecond apart. What does **not**: background housekeeping.
-A command answering `Command::is_housekeeping()` (`Command::Reap`, the
-5-second deleted-session sweep, and nothing else) is dispatched to a worker
-with no in-flight record, so it reaches neither `thurbox.commands`, nor the
-message band, nor the animation clock — recorded like a command someone
-pressed, the sweep reserved a
-band row and gave it back every five seconds, and a band row appearing is a
-reflow (ADR-P22). A **reflow** — the arrangement placing a
+before the parse and cannot tell two chunks in one millisecond apart. A **reflow** — the arrangement placing a
 slot at a new rect, so a column opened or closed — additionally forces one *full*
 repaint: the cell diff is only correct while ratatui and the terminal agree on a
 glyph's width, and where they cannot (a flag, an emoji presentation sequence) the
@@ -103,12 +96,7 @@ it also carries a per-session interval that doubles while the answer does not
 move (`GIT_STAT_BACKOFF`, 12× the base) and a base that is a setting rather than
 a constant (`git_poll_secs`, `0` = off) — nine subprocesses per unlanded session
 every five seconds was thurbox's largest background cost, and on a machine whose
-endpoint protection scans process creation it was a visible one (ADR-P25). The same rule holds one level up for anything issued **on a timer
-against a host**: window discovery is throttled per backend, at 500 ms locally
-but `REMOTE_DISCOVERY_INTERVAL` over ssh, and a survey or a mirror pass that
-failed backs off further still (ADR-P19). Sharing made remote rows discoverable
-and the one shared clock behind that throttle then cost two ssh commands a
-second for as long as a single remote row stayed unattached.
+endpoint protection scans process creation it was a visible one (ADR-P25).
 
 `republish` — the one call that rebuilds every `thurbox.*` table — runs once per
 painted frame and **once per input batch**, not once per event: a held-down key
