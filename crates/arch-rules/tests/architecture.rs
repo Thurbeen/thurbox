@@ -56,7 +56,9 @@ fn this_workspace_obeys_its_architecture() {
             "{expected} missing from {names:?}"
         );
     }
-    let violations = check_agreeing_with_uncached(&ws, &rules, "workspace");
+    // Only `check`: resolving every component name afresh takes ten times as
+    // long, and the fixtures already compare it with the cache.
+    let violations = check(&ws, &rules);
     let shown: Vec<String> = violations.iter().map(ToString::to_string).collect();
     assert!(
         violations.is_empty(),
@@ -1918,6 +1920,28 @@ fn a_component_keeps_the_graph_but_not_fleets_source_rules() {
         "fn main() { let _ = fx_api::FieldManager::Cli; }\n",
     ));
     expect("component-edge", &dirty, &[("undeclared-edge", "fx-ui")]);
+}
+
+/// A component's sources are checked too: reaching a workspace crate it does
+/// not depend on, through a dependency's re-export, is caught there, while a
+/// rule that binds only Fleet's roles still leaves it alone.
+#[test]
+fn a_component_reaching_another_crate_through_a_reexport_is_caught() {
+    let rules = format!("{RULES}\n[crates.fx-ui]\nrole = \"component\"\ndeps = [\"fx-ctl\"]\n");
+    let ctl = format!("{PROBES}pub use fx_api::FieldManager;\n");
+    expect(
+        "component-reexport",
+        &[
+            ("architecture.toml", &rules),
+            (CTL, &ctl),
+            ("crates/fx-ui/fixture.toml", &manifest("fx-ui", &["fx-ctl"])),
+            (
+                "crates/fx-ui/src/main.rs",
+                "fn main() { let _ = fx_ctl::FieldManager::Worker; let _ = std::process::Command::new(\"x\"); }\n",
+            ),
+        ],
+        &[("reexport-edge", "fx-ui")],
+    );
 }
 
 /// A dependency inherited from `[workspace.dependencies]` under another name

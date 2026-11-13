@@ -121,8 +121,9 @@ pub enum Role {
     Edge,
     Tooling,
     /// Another component of the repository (thurbox, a runtime): held to
-    /// the crate graph from its manifest, since components meet only through
-    /// processes, and never to Fleet's own source rules.
+    /// the crate graph from its manifest and its sources, since components
+    /// meet only through processes, and bound by no rule written for Fleet's
+    /// roles.
     Component,
 }
 
@@ -354,17 +355,11 @@ fn check_with(ws: &Workspace, rules: &Rules, cache: bool) -> Vec<Violation> {
     let mut v = Vec::new();
     check_governance(ws, rules, &mut v);
     check_graphs(ws, rules, &mut v);
-    // A component meets the others only through processes, so its manifest
-    // already shows every edge it has; its sources are not Fleet's to index.
+    // Every crate is indexed, components included: what a component reaches
+    // through another crate's re-export shows only in its sources.
     let indexes: Vec<CrateIndex> = ws
         .crates
         .iter()
-        .filter(|c| {
-            rules
-                .crates
-                .get(&c.name)
-                .is_none_or(|r| r.role != Role::Component)
-        })
         .map(|c| CrateIndex::build(c, ws, &mut v))
         .collect();
     let resolver = Resolver::new(&indexes, cache);
@@ -1572,8 +1567,13 @@ fn check_sources(
                     ));
                 }
             }
+            // Which crate may write as a field manager is Fleet's rule; a
+            // component naming one already reaches a crate it may not.
             for (writer, crates) in &rules.status_writers {
-                if starts_with(&path, writer) && !crates.contains(&idx.name) {
+                if rule.role != Role::Component
+                    && starts_with(&path, writer)
+                    && !crates.contains(&idx.name)
+                {
                     v.push(violation(
                         "status-writer",
                         &idx.name,

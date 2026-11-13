@@ -75,7 +75,8 @@ on every build:
 
 The file is `crates/architecture.toml`, and the `architecture` test of
 `arch-rules` checks it. Every crate that is not Fleet's is `role = "component"`: held
-to the crate graph from its manifest, but not to Fleet's own source rules.
+to the crate graph from its manifest and its sources, but not to Fleet's own
+source rules.
 
 Components talk only through processes; `term-stream` is a wire format, not
 a component. A component can therefore later move
