@@ -21,10 +21,10 @@ The README GIF is a second agg pass at a smaller font, not an ffmpeg re-encode,
 which turned agg's change-only frames into ~66 MB of full frames.
 
 **Recordings are not committed.** `media/*.gif` and `media/*.mp4` are
-gitignored. After recording, run `scripts/demo/publish-media.sh [FILE...]`. It replaces the assets on the `media`
-GitHub release (a prerelease, so the update check ignores it) and dispatches
-`pages.yml`, which downloads the MP4s into `website/assets/`. The README and
-`docs/thurbox/features.md` link the GIFs at
+gitignored. After recording, run `scripts/demo/publish-media.sh [FILE...]`. It
+replaces the assets on the `media` GitHub release (a prerelease, so the update
+check ignores it) and dispatches `pages.yml`, which downloads the MP4s into
+`website/assets/`. The README links the hero GIF at
 `https://github.com/Thurbeen/thurbox/releases/download/media/<file>`. A
 replaced asset has no history: keep a copy if you may want the old take back.
 `cd.yml` finds the last release with `git describe --match 'v*'` so the
@@ -38,7 +38,7 @@ gh release download media --pattern '*.mp4' --dir website/assets --clobber
 ```
 
 `.github/workflows/pages.yml` copies the mp4s into `website/assets/` at deploy time
-and `README.md` embeds the gifs, so regenerating them propagates everywhere. A
+and `README.md` embeds the hero GIF, so regenerating them propagates everywhere. A
 clip whose dimensions change also changes the `width`/`height` on its `<video>`
 in `website/`, or the page reflows when it decodes.
 

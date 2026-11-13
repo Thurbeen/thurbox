@@ -108,7 +108,7 @@
      are documentation — keep every @media in the codebase on one of these):
        480px   xs → sm   phone: scroll rails collapse to wrapped rows
        640px   sm → md   nav goes inline; panel sweeps switch on; HUD grows
-       768px   md → lg   .feature-row goes side-by-side
+       768px   md → lg   plugin grid collapses to one column
        960px   lg        install tablist stops scrolling and wraps
        1024px  xl        .grid-3 reaches 3 cols; docs sidebar becomes static
        1280px  2xl       docs gains the on-this-page rail

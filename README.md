@@ -96,8 +96,6 @@ from what is running; `Ctrl+P` is a command palette over the same actions.
 For the same walkthrough with screenshots, see the
 [tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html).
 
-![Session creation](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-session-creation.gif)
-
 ## What else it does
 
 - **[Global search](https://thurbox.thurbeen.eu/docs/features.html#global-search)**
@@ -144,8 +142,6 @@ shipped file, `space` turns yours off.
 [The Interface →](https://thurbox.thurbeen.eu/docs/interface.html) ·
 [Writing a pane →](docs/thurbox/plugins.md) ·
 [Configuration →](https://thurbox.thurbeen.eu/docs/configuration.html)
-
-![Turning a pane off from the Interface tab](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-interface.gif)
 
 [**Plugins →**](https://thurbox.thurbeen.eu/plugins.html) — official and community
 panes and other add-ons, with install commands and submission details.

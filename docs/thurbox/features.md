@@ -332,8 +332,6 @@ spatial map you can build muscle memory against.
 
 ## Session Creation
 
-![Session creation workflow](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-session-creation.gif)
-
 `Ctrl+N` walks through a series of modals to configure a new
 session. Each step has a sensible default and can be skipped when
 not applicable.
@@ -1226,8 +1224,6 @@ historical output.
 ---
 
 ## Theme System
-
-![Theme switcher](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-theme.gif)
 
 All UI colors are centralized via a semantic palette:
 `theme` holds the presets and the user's overrides,
