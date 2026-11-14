@@ -5919,11 +5919,15 @@ fn both_kinds_of_link_reach_the_outer_terminal_on_a_host_with_no_browser() {
     // shell variables so the line the shell ECHOES back does not carry the text
     // the presses below are aimed at — a press landing on the echo would be
     // resolving the command, not its output.
+    //
+    // The mark is taken before the command: the frame that first shows the
+    // links carries their OSC 8 runs in the same write, so a mark taken once
+    // the text shows can land after them, and no later frame need repaint
+    // those cells.
+    let mark = tui.raw_len();
     tui.send(b"L=RICH; H=example.test; printf \"rich \\033]8;;https://$H/rich\\007${L}LINK\\033]8;;\\007 bare https://$H/bare\\n\"\r");
     tui.wait_for("RICHLINK");
     tui.wait_for("https://example.test/bare");
-
-    let mark = tui.raw_len();
     tui.wait_for_raw(mark, "\x1b]8;;https://example.test/bare");
 
     // 1. Both runs go out wrapped in OSC 8, so the user's own terminal can open
