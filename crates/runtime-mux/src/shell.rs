@@ -390,11 +390,14 @@ impl HostLauncher {
 }
 
 /// The script a WSL launch runs before the program: the profile files a
-/// login `sh` reads, sourced for their `PATH` with all their output
-/// discarded, then the program itself, `$@`, with stdin, stdout and stderr
-/// its own.
-pub const WSL_PROFILE_EXEC: &str = ". /etc/profile >/dev/null 2>&1; \
-     [ -r \"$HOME/.profile\" ] && . \"$HOME/.profile\" >/dev/null 2>&1; exec \"$@\"";
+/// login `sh` reads, each only when it is there (sourcing a missing file
+/// ends a POSIX `sh`), for their `PATH`, with their output discarded and
+/// stdin closed to them (a profile that reads must not eat the program's
+/// input); then the program itself, `$@`, with stdin, stdout and stderr its
+/// own.
+pub const WSL_PROFILE_EXEC: &str =
+    "[ -r /etc/profile ] && . /etc/profile </dev/null >/dev/null 2>&1; \
+     [ -r \"$HOME/.profile\" ] && . \"$HOME/.profile\" </dev/null >/dev/null 2>&1; exec \"$@\"";
 
 /// `program` with `args`: run on this machine when there is no `launcher`, or
 /// on the host it reaches.
@@ -966,6 +969,40 @@ mod tests {
         assert!(out.status.success(), "{out:?}");
         assert_eq!(String::from_utf8_lossy(&out.stdout), "a b|it's|");
         assert!(out.stderr.is_empty(), "{out:?}");
+    }
+
+    /// A distro with no `/etc/profile` still runs the program: a missing
+    /// file would end a POSIX `sh` that sourced it unguarded. And a profile
+    /// that reads stdin reads nothing: the program's input (a Task on
+    /// stdin, a stream's frames) is the program's.
+    #[cfg(unix)]
+    #[test]
+    fn the_wsl_profile_script_needs_no_etc_profile_and_leaves_stdin_alone() {
+        use std::io::Write;
+        let home = tempfile::tempdir().expect("home");
+        std::fs::write(home.path().join(".profile"), "read eaten\n").expect("profile");
+        let without_etc = WSL_PROFILE_EXEC.replace("/etc/profile", "/nonexistent/etc/profile");
+        let mut child = Command::new("sh")
+            .args(["-c", &without_etc, "sh", "cat"])
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(b"first frame\nsecond frame\n")
+            .expect("write");
+        let out = child.wait_with_output().expect("sh");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "first frame\nsecond frame\n"
+        );
     }
     use super::*;
 

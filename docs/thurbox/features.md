@@ -547,8 +547,9 @@ so the *same* tmux control-mode protocol applies — only the launch prefix
 differs. Over `ssh` the remote shell re-splits the line, so each word is
 POSIX-quoted. Through WSL each word is its own argument of `wsl.exe
 --exec`, which hands argv over verbatim, after a small `sh` script that
-sources `/etc/profile` and `~/.profile` for their `PATH`, with their output
-discarded, and then `exec`s the words. A word holding a space arrives
+sources `/etc/profile` and `~/.profile` for their `PATH` (each only when
+it is there, with stdin closed and output discarded), and then `exec`s the
+words. A word holding a space arrives
 whole, a program on a `PATH` set in the profile is found, and nothing the
 profile prints reaches the program's output. `wsl.exe` is started off
 the interface's terminal, or an attached WSL session takes the keyboard
