@@ -415,21 +415,45 @@ impl FleetFacts {
                     format!("{} ({from})", path.display()),
                 ));
             }
-            // M4: the manager of a Fleet on another machine is that machine's.
-            findings.push(Finding::new(
-                "fleet-manager",
-                Level::Ok,
-                format!(
-                    "thurbox never starts {name}'s manager: a user systemd unit there runs \
-                     `fleet up` (docs/where-sessions-run.md); thurbox cannot tell yet whether \
-                     it runs"
-                ),
-            ));
+            findings.extend(self.manager_finding(broken));
         }
         for finding in &mut findings {
             finding.fleet = Some(name.clone());
         }
         findings
+    }
+
+    /// Whether the manager of a Fleet on another machine runs, from the
+    /// `manager` of its `fleet version --json`. thurbox never starts that
+    /// manager (M4): a user systemd unit there runs `fleet up`. A Fleet that
+    /// did not answer has no such row: its `fleet` row says why.
+    fn manager_finding(&self, broken: Level) -> Option<Finding> {
+        let manager = &self.version.as_ref().ok()?["manager"];
+        Some(match manager["held"].as_bool() {
+            Some(true) => Finding::new(
+                "fleet-manager",
+                Level::Ok,
+                format!(
+                    "manager running ({})",
+                    manager["holder"].as_str().unwrap_or("?")
+                ),
+            ),
+            Some(false) => Finding::new(
+                "fleet-manager",
+                broken,
+                "manager not running — see the systemd unit in docs/where-sessions-run.md".into(),
+            ),
+            None => Finding::new(
+                "fleet-manager",
+                Level::Warn,
+                format!(
+                    "whether the manager runs is unknown: {}",
+                    manager["why"]
+                        .as_str()
+                        .unwrap_or("this Fleet does not report its manager — update Fleet")
+                ),
+            ),
+        })
     }
 
     /// The checks only a Fleet on this machine has: its config file and the

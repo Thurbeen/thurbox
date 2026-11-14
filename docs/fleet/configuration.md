@@ -31,6 +31,19 @@ your own service supervisor. Ctrl-C (also SIGTERM on Unix) finishes the
 bounded sweep, releases the manager lease and retains sessions. Run
 `fleet up` again to reconnect; a simultaneous manager exits with code 6.
 After a crash, wait for the recorded lease to expire before restarting.
+`fleet version --json` reports the manager lease under `manager`, and only
+reads it:
+
+```json
+{"manager": {"held": true, "holder": "fleet-up-4242", "expiresAt": 1763120000000, "why": null}}
+```
+
+- `held` is `true` while the recorded lease is unexpired: a manager runs.
+- `held` is `false` when no lease is recorded, or the lease expired or was
+  released. `holder` and `expiresAt` then name the last lease, if any.
+- `held` is `null` when the lease cannot be read. `why` says why. An
+  unreadable lease never reads as `false`.
+- The report takes no lease and renews none, and it creates no store.
 Unknown session observations never trigger a blind replacement. Each sweep
 reports a Task that is blocked at startup or that needs attention, so no
 separate status query is needed to see why.

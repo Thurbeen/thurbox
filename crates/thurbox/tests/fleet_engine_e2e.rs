@@ -1494,3 +1494,99 @@ fn a_creation_is_awaited_by_its_fleet_qualified_id() {
         Some("box")
     );
 }
+
+/// `doctor` reads whether a remote Fleet's manager runs from that Fleet's
+/// `fleet version --json`, over the link, and never starts one there.
+#[test]
+fn doctor_reports_whether_a_remote_fleets_manager_runs() {
+    let Some(bin) = fleet_bin() else { return };
+    let remote = Fleet::new(bin.clone());
+    let root = remote.root.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let log = root.join("ssh.log");
+    let ssh = ssh_bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o|-p) shift 2 ;; -*) shift ;; *) break ;; esac; done\n\
+             shift\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             exec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='/usr/bin:/bin' sh -c \"exec $*\"\n",
+            log = log.display(),
+            r = root.display(),
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let config_dir = root.join("thurbox-config");
+    std::fs::write(
+        config_dir.join("settings.toml"),
+        format!(
+            "[fleets.box]\ntransport = {{ ssh = \"box\" }}\nprogram = '{bin}'\nconfig = '{config}'\n",
+            bin = bin.display(),
+            config = root.join("fleet.toml").display(),
+        ),
+    )
+    .expect("settings");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![ssh_bin];
+    dirs.extend(std::env::split_paths(&path));
+    let path = std::env::join_paths(dirs).expect("PATH");
+    let manager = || {
+        let out = Process::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(["--json", "doctor"])
+            .env("PATH", &path)
+            .env("THURBOX_CONFIG_DIR", &config_dir)
+            .env("THURBOX_DATA_DIR", root.join("thurbox-data"))
+            .stdin(Stdio::null())
+            .output()
+            .expect("doctor");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("doctor JSON");
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["key"] == "fleet-manager" && c["fleet"] == "box")
+            .unwrap_or_else(|| panic!("no fleet-manager check: {report:#}"))
+            .clone()
+    };
+
+    let down = manager();
+    assert_eq!(down["level"], "fail", "{down:#}");
+    let detail = down["detail"].as_str().unwrap();
+    assert!(detail.contains("manager not running"), "{detail}");
+    assert!(detail.contains("docs/where-sessions-run.md"), "{detail}");
+    assert!(!detail.contains("cannot tell"), "{detail}");
+    assert_eq!(remote.manager(), None, "doctor started no manager");
+
+    // The unit's `fleet up`, started on box by hand here.
+    let mut unit = Process::new(&remote.program)
+        .arg("up")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("fleet up");
+    until("box's manager holds the lease", || {
+        remote.manager().is_some()
+    });
+    let up = manager();
+    assert_eq!(up["level"], "ok", "{up:#}");
+    assert!(
+        up["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("manager running")),
+        "{up:#}"
+    );
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    assert!(
+        !calls
+            .lines()
+            .any(|c| c.ends_with(" up") || c.contains(" up ")),
+        "{calls}"
+    );
+    let _ = unit.kill();
+    let _ = unit.wait();
+}
