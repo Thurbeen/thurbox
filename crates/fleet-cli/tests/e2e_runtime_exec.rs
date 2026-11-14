@@ -2923,6 +2923,18 @@ fn fleet_runtime_browse_and_branches_read_a_place_through_its_runtime() {
         run.ok();
         assert_eq!(run.json(), want, "{place}");
     }
+    // With no directory, the place's home: the `HOME` the runtime runs
+    // with, the test's root, which holds `folders`.
+    let run = env.fleet(&["runtime", "browse", "local", "--json"]);
+    run.ok();
+    let home = run.json();
+    assert_eq!(home["dir"], env.root.display().to_string(), "{home}");
+    assert!(
+        home["entries"]
+            .as_array()
+            .is_some_and(|e| e.contains(&serde_json::json!({"name": "folders", "repo": false}))),
+        "{home}"
+    );
     let text = env.fleet(&["runtime", "browse", "local", dir.to_str().unwrap()]);
     text.ok().stdout_has("plain/").stdout_has("repo/  (git)");
 
