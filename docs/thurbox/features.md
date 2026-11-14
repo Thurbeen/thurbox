@@ -542,11 +542,11 @@ the host is the companion shell (see *Shell Pane Toggle*), which runs in a
 window of the host's multiplexer. For **SSH**, thurbox shells out to the
 system `ssh` binary, so authentication, keys, and connection multiplexing
 come from your `~/.ssh/config` — thurbox never handles credentials. A **WSL
-distro** is reached with `wsl.exe -d <distro>` (no credentials, no network);
-`wsl.exe` forwards whitespace-free tokens to the in-distro shell like `ssh`
-does, so the *same* tmux control-mode protocol and POSIX quoting apply —
-only the launch prefix differs (multi-word `sh -c` scripts go through
-`wsl.exe --exec`, which hands argv over verbatim). `wsl.exe` is started off
+distro** is reached with `wsl.exe -d <distro>` (no credentials, no network),
+so the *same* tmux control-mode protocol applies — only the launch prefix
+differs. A program and its words go through `wsl.exe --exec`, which hands
+argv over verbatim with no shell, so a word holding a space arrives whole;
+over `ssh` each word is POSIX-quoted for the remote shell instead. `wsl.exe` is started off
 the interface's terminal, or an attached WSL session takes the keyboard
 ([runtime-mux](../runtime/runtime-mux.md#hosts-and-transports)). The session list says where a session runs with its host row, or,
 with host rows off, with an `@` after the dot of the top row of its tree.
