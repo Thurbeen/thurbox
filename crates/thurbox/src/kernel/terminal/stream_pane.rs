@@ -64,7 +64,17 @@ pub fn view_program() -> Option<std::path::PathBuf> {
 /// and input that goes up as `input` frames. The process ends when the
 /// input is dropped, as a detach.
 pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend::AdoptedSession> {
-    adopt_with_upstream(argv, rows, cols, None).map(|(adopted, _)| adopted)
+    adopt_with_upstream(command_of(argv)?, rows, cols, None).map(|(adopted, _)| adopted)
+}
+
+/// `argv` as a process on this machine.
+fn command_of(argv: &[String]) -> io::Result<Command> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| io::Error::other("the stream's argv names no program"))?;
+    let mut command = Command::new(program);
+    command.args(args);
+    Ok(command)
 }
 
 /// [`adopt`], with input the stream refused said on `notices`, as
@@ -77,45 +87,98 @@ pub fn adopt_reporting(
     notices: Sender<String>,
     label: &str,
 ) -> io::Result<crate::backend::AdoptedSession> {
-    adopt_with_upstream(argv, rows, cols, Some(Notices::new(notices, label)))
-        .map(|(adopted, _)| adopted)
+    adopt_with_upstream(
+        command_of(argv)?,
+        rows,
+        cols,
+        Some(Notices::new(notices, label)),
+    )
+    .map(|(adopted, _)| adopted)
 }
 
-/// [`adopt`], and the stream's way up for frames other than input.
+/// How much of a stream's standard error is kept: its end, which is where a
+/// launcher's reason (ssh's `connect to host … refused`) is.
+const STDERR_TAIL: usize = 2048;
+
+/// Read `stderr` to its end on a thread of its own, so a chatty stream never
+/// blocks on it, and answer its last [`STDERR_TAIL`] bytes.
+fn stderr_tail(mut stderr: std::process::ChildStderr) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut tail: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = std::io::Read::read(&mut stderr, &mut buf) {
+            if n == 0 {
+                break;
+            }
+            tail.extend_from_slice(&buf[..n]);
+            if tail.len() > STDERR_TAIL {
+                tail.drain(..tail.len() - STDERR_TAIL);
+            }
+        }
+        String::from_utf8_lossy(&tail).trim().to_string()
+    })
+}
+
+/// A stream that did not start: `why`, with what the process said on its
+/// standard error once it is stopped.
+fn refused(
+    why: String,
+    child: &mut std::process::Child,
+    said: Option<std::thread::JoinHandle<String>>,
+) -> io::Error {
+    let _ = child.kill();
+    let _ = child.wait();
+    let said = said.and_then(|tail| tail.join().ok()).unwrap_or_default();
+    io::Error::other(if said.is_empty() {
+        why
+    } else {
+        format!("{why}: {said}")
+    })
+}
+
+/// [`adopt`] of the stream `command` starts, which may run on another
+/// machine (a Fleet's link), and the stream's way up for frames other than
+/// input.
 pub(super) fn adopt_with_upstream(
-    argv: &[String],
+    mut command: Command,
     rows: u16,
     cols: u16,
     notices: Option<Notices>,
 ) -> io::Result<(crate::backend::AdoptedSession, Upstream)> {
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| io::Error::other("the stream's argv names no program"))?;
-    let mut child = Command::new(program)
-        .args(args)
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
     let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(io::Error::other("the stream has no pipes"));
     };
-    let snapshots = match term_stream::read::<Down>(&mut stdout)? {
-        Some(Down::Hello(hello)) if hello.version == term_stream::VERSION => {
+    // Kept so a stream that never starts says why: over ssh, a refused
+    // connection is a line on stderr and no frame at all.
+    let said = child.stderr.take().map(stderr_tail);
+    let snapshots = match term_stream::read::<Down>(&mut stdout) {
+        Ok(Some(Down::Hello(hello))) if hello.version == term_stream::VERSION => {
             hello.has(term_stream::Capability::Snapshot)
         }
-        Some(Down::Hello(hello)) => {
-            return Err(io::Error::other(format!(
-                "the stream speaks version {}, thurbox {}",
-                hello.version,
-                term_stream::VERSION
-            )))
+        Ok(Some(Down::Hello(hello))) => {
+            return Err(refused(
+                format!(
+                    "the stream speaks version {}, thurbox {}",
+                    hello.version,
+                    term_stream::VERSION
+                ),
+                &mut child,
+                said,
+            ))
         }
-        other => {
-            return Err(io::Error::other(format!(
-                "the stream did not start with hello: {other:?}"
-            )))
+        Ok(other) => {
+            return Err(refused(
+                format!("the stream did not start with hello: {other:?}"),
+                &mut child,
+                said,
+            ))
         }
+        Err(e) => return Err(refused(e.to_string(), &mut child, said)),
     };
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
     let upstream = Upstream::over(stdin);
@@ -338,6 +401,25 @@ mod tests {
 
     #[cfg(unix)]
     use term_stream::{Size, Up};
+
+    /// A stream that never starts says why: what its launcher wrote on
+    /// standard error (ssh's refusal) is in the error, not only the missing
+    /// hello.
+    #[cfg(unix)]
+    #[test]
+    fn a_stream_that_never_starts_says_what_it_wrote_on_stderr() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "echo 'ssh: connect to host box port 22: No route to host' >&2; exit 255",
+        ]);
+        let Err(why) = super::adopt_with_upstream(command, 24, 80, None) else {
+            panic!("a stream with no hello was opened");
+        };
+        let why = why.to_string();
+        assert!(why.contains("did not start with hello"), "{why}");
+        assert!(why.contains("No route to host"), "{why}");
+    }
 
     #[cfg(unix)]
     fn notices(tx: std::sync::mpsc::Sender<String>) -> Option<super::Notices> {

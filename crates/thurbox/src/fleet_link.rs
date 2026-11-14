@@ -4,9 +4,10 @@
 //! `doctor`'s probes — is built here, so a Fleet on another machine is a
 //! launcher on the link rather than a change at each call site.
 //!
-//! The launcher is the runtime's ([`crate::shell::launch`]): each word
-//! POSIX-quoted for the remote shell, and ssh hardened (`BatchMode`,
-//! `ConnectTimeout`, `ServerAlive*`) and multiplexed (`ControlMaster`). The
+//! The launcher is the runtime's ([`crate::shell::launch`]): over ssh each
+//! word POSIX-quoted for the remote shell, and ssh hardened (`BatchMode`,
+//! `ConnectTimeout`, `ServerAlive*`) and multiplexed (`ControlMaster`);
+//! through WSL each word as it is, with `wsl.exe --exec`. The
 //! link adds only the Fleet's `--config <path>`, before the verb, and changes
 //! no stream: stdin, stdout, stderr
 //! and the exit status are the remote `fleet`'s, so a JSON answer, a watch's
@@ -106,7 +107,38 @@ impl FleetLink {
             words.extend(["--config", config.as_str()]);
         }
         words.extend(args);
-        crate::shell::launch(self.launcher.as_ref(), &self.program, &words)
+        self.build(&self.program, &words)
+    }
+
+    /// `argv` (a program Fleet named, such as an attach's stream) on the
+    /// machine this Fleet runs on, not yet started: through the same
+    /// launcher, without the Fleet's `--config`.
+    pub fn launch(&self, argv: &[String]) -> Result<Command, String> {
+        let (program, args) = argv
+            .split_first()
+            .ok_or("the stream's argv names no program")?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(self.build(program, &args))
+    }
+
+    /// `program` with `args` on the Fleet's machine: the one place a call
+    /// becomes a process.
+    fn build(&self, program: &str, args: &[&str]) -> Command {
+        crate::shell::launch(self.launcher.as_ref(), program, args)
+    }
+
+    /// Why this Fleet could not be asked, when `out` is ssh's own failure
+    /// (exit 255: an unreachable machine, a refused key) rather than
+    /// Fleet's answer. Such a failure says nothing of a Task: it is never
+    /// "gone".
+    pub fn unreachable(&self, out: &std::process::Output) -> Option<String> {
+        (self.is_ssh() && out.status.code() == Some(255)).then(|| {
+            format!(
+                "the Fleet {} cannot be reached: {}",
+                self.name,
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
+        })
     }
 
     /// Run `fleet <args>` with `input` on its stdin (none: stdin is closed),
@@ -335,6 +367,59 @@ mod tests {
         assert_eq!(
             argv(&link.command(&["send", "review", "it's done"])),
             ["/opt/fleet", "send", "review", "it's done"]
+        );
+    }
+
+    /// Through WSL the command line reaches a login `sh` as one argument
+    /// of `wsl.exe --exec`, verbatim: each word inside it quoted, so a path
+    /// with a space names the program it says, and `~/.profile` read, so a
+    /// bare `fleet` on a `PATH` set there still resolves. Every call goes
+    /// through it: `command` (the verbs, the watch, `run`) and `launch` (an
+    /// attach's stream).
+    #[test]
+    fn a_wsl_fleet_gets_one_quoted_line_for_a_login_shell() {
+        let wsl = |program: &str, config: Option<&str>| {
+            FleetLink::of(
+                "ubuntu",
+                &FleetDef {
+                    transport: FleetTransport::Wsl {
+                        wsl: "Ubuntu".into(),
+                    },
+                    program: program.into(),
+                    config: config.map(str::to_string),
+                },
+            )
+        };
+        let after_exec = |argv: Vec<String>| {
+            assert_eq!(argv[0], "wsl.exe");
+            assert_eq!(&argv[1..3], ["-d", "Ubuntu"]);
+            let exec = argv.iter().position(|a| a == "--exec").expect("--exec");
+            argv[exec + 1..].to_vec()
+        };
+        let spaced = wsl("/opt/my tools/fleet", Some("/etc/fleet/a b.toml"));
+        assert_eq!(
+            after_exec(argv(&spaced.command(&["send", "review", "it's done"]))),
+            [
+                "sh",
+                "-lc",
+                "exec '/opt/my tools/fleet' --config '/etc/fleet/a b.toml' send review 'it'\\''s done'"
+            ]
+        );
+        let stream = spaced
+            .launch(&[
+                "/srv/my apps/runtime-mux".into(),
+                "view".into(),
+                "w 1".into(),
+            ])
+            .expect("a stream");
+        assert_eq!(
+            after_exec(argv(&stream)),
+            ["sh", "-lc", "exec '/srv/my apps/runtime-mux' view 'w 1'"]
+        );
+        // A bare name is left for the login shell's `PATH` to find.
+        assert_eq!(
+            after_exec(argv(&wsl("fleet", None).command(&["version", "--json"]))),
+            ["sh", "-lc", "exec fleet version --json"]
         );
     }
 

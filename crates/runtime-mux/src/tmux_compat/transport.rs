@@ -444,7 +444,12 @@ mod tests {
         let expected: Vec<&str> = prefix
             .iter()
             .copied()
-            .chain(["tmux", "-L", "thurbox", "has-session", "-t", "thurbox"])
+            .chain([
+                "--exec",
+                "sh",
+                "-lc",
+                "exec tmux -L thurbox has-session -t thurbox",
+            ])
             .collect();
         assert_eq!(args, expected);
     }

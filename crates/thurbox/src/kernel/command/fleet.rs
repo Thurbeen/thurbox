@@ -277,12 +277,9 @@ fn get(
             .map(Some)
             .map_err(|e| format!("fleet get answered no JSON: {e}")),
         Some(3) => Ok(None),
-        Some(255) if link.is_ssh() => Err(format!(
-            "the Fleet {} cannot be reached: {}",
-            link.name(),
-            stderr()
-        )),
-        _ => Err(format!("fleet get: {}", stderr())),
+        _ => Err(link
+            .unreachable(&out)
+            .unwrap_or_else(|| format!("fleet get: {}", stderr()))),
     }
 }
 

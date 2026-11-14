@@ -679,6 +679,13 @@ a place.
   again. Closing the pane detaches; the agent keeps running. A stream with no
   snapshot to send (a `tty` answer through `fleet term-bridge`) starts on a
   blank screen of the pane's size.
+- A session of a Fleet on another machine is attached through that Fleet's
+  link: `fleet attach` and the stream it names both run over its ssh (with
+  no pty, so the stream's frames pass unchanged), since the stream's argv
+  names paths there. When the link drops, the pane ends and its attach
+  fails as `the Fleet <name> cannot be reached: …`, which the pane shows;
+  it is tried again 20 seconds later, not at once, and the pane comes back
+  once the Fleet answers.
 - A Task on another host (`spec.host` not `local`) names a workspace there,
   which no route of thurbox's reaches: its files, diff, git state and editor
   are not read on this machine, even where the same path exists here. The

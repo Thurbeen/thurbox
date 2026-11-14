@@ -49,7 +49,7 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | The session list follows every listed Fleet; a row's id is `<fleet>:<task>`, and an unreachable Fleet's rows stay, marked unreachable | implemented |
 | Send, rename, delete and a sent automation go to the session's own Fleet | implemented |
 | Creation goes to the Fleet in force: the only one listed, or the first by name | implemented |
-| A remote Fleet's terminal panes | planned |
+| A remote Fleet's session panes: `fleet attach` and its stream over the link | implemented |
 | The Fleet step and the place step in the new-session modal | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
@@ -67,12 +67,11 @@ Each session runs on `local`: the laptop.
 
 ### 2. Laptop thurbox, Fleet on a remote box
 
-Status: partly implemented. thurbox lists box's Fleet and follows its
-sessions over ssh beside the laptop's, `thurbox-cli doctor` checks it, and
-each command for one of box's sessions goes to box. A creation goes to the
-first Fleet by name until the modal has a Fleet step. A session's terminal
-pane on box is planned: until then, connect to box over ssh and run thurbox
-there.
+Status: implemented, but for the modal's Fleet step. thurbox lists box's
+Fleet and follows its sessions over ssh beside the laptop's, `thurbox-cli
+doctor` checks it, each command for one of box's sessions goes to box, and
+a session's pane shows and takes typing over the same ssh. A creation goes
+to the first Fleet by name until the modal has a Fleet step.
 
 This is the most common setup. The agents run on box, so they keep working
 when the laptop sleeps.
