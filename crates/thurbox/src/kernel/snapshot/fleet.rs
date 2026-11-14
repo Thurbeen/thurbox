@@ -118,6 +118,9 @@ pub struct FleetWatch {
     refreshing: Arc<std::sync::atomic::AtomicBool>,
     /// Set while a remote Fleet's home is being asked for.
     reading_home: Arc<std::sync::atomic::AtomicBool>,
+    /// Set once the Fleet's `version` said it speaks the API thurbox
+    /// writes: nothing but that `version` is asked of it before.
+    admitted: Arc<std::sync::atomic::AtomicBool>,
     /// The state last sent, shared by the `version` worker and a refresh.
     published: Published,
 }
@@ -136,7 +139,12 @@ fn publish_state(
     let Ok(mut last) = published.lock() else {
         return false;
     };
-    if last.as_ref() == Some(&next) {
+    // Incompatible is final: a later probe's answer never replaces it.
+    if last.as_ref() == Some(&next)
+        || last
+            .as_ref()
+            .is_some_and(|(state, _)| *state == FleetState::Incompatible)
+    {
         return true;
     }
     *last = Some(next.clone());
@@ -185,10 +193,13 @@ impl FleetWatch {
         // Nothing else is asked of a Fleet before its `version` says it
         // speaks the API thurbox writes: its home, the manager, the places
         // and the watch start once it has.
+        let admitted_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let admitted: Box<dyn FnOnce() + Send> = {
             let (link, tx, reading) = (link.clone(), tx.clone(), reading_home.clone());
             let manager = manager && link.is_local();
+            let flag = admitted_flag.clone();
             Box::new(move || {
+                flag.store(true, std::sync::atomic::Ordering::Release);
                 if !link.is_local() {
                     let (link, tx) = (link.clone(), tx.clone());
                     std::thread::spawn(move || {
@@ -234,6 +245,7 @@ impl FleetWatch {
             tx,
             refreshing: Arc::default(),
             reading_home,
+            admitted: admitted_flag,
             published,
         }
     }
@@ -245,9 +257,10 @@ impl SnapshotSource for FleetWatch {
     /// Fleet that does not answer keeps what it said last.
     fn refresh_places(&mut self, fleet: &str) {
         use std::sync::atomic::Ordering;
-        // Nothing is asked of a Fleet thurbox cannot speak to.
+        // Nothing is asked of a Fleet before it is admitted, nor ever of one
+        // thurbox cannot speak to.
         if fleet != self.name
-            || self.fleet.state == FleetState::Incompatible
+            || !self.admitted.load(Ordering::Acquire)
             || self.refreshing.swap(true, Ordering::AcqRel)
         {
             return;
@@ -614,12 +627,13 @@ fn read_version(
                 return;
             }
         }
+        if next.0 == FleetState::Incompatible {
+            let why = next.1.clone().unwrap_or_default();
+            publish_state(published, tx, next);
+            let _ = tx.send(Update::Incompatible(why));
+            return;
+        }
         if let Some(answer) = answer {
-            if let Some(why) = crate::fleet_link::incompatible(&answer) {
-                publish_state(published, tx, (FleetState::Incompatible, Some(why.clone())));
-                let _ = tx.send(Update::Incompatible(why));
-                return;
-            }
             if let Some(admit) = admitted.take() {
                 admit();
             }
@@ -654,7 +668,8 @@ fn harnesses_of(answer: &Value) -> Vec<String> {
 }
 
 /// One `fleet version --json`: the Fleet's state and why, and its answer
-/// when it gave one. A Fleet answers whether its manager holds the lease
+/// when it gave one. A Fleet whose answer lacks the API thurbox writes is
+/// [`FleetState::Incompatible`] ([`crate::fleet_link::incompatible`]). A Fleet answers whether its manager holds the lease
 /// in `manager` (M4: thurbox never starts a remote one, so it says when
 /// none runs).
 fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
@@ -683,6 +698,11 @@ fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
             None,
         );
     };
+    // Admission is decided here, once: every reader of a Fleet's state
+    // (the `version` worker, a place refresh) sees the same verdict.
+    if let Some(why) = crate::fleet_link::incompatible(&answer) {
+        return ((FleetState::Incompatible, Some(why)), Some(answer));
+    }
     let manager = &answer["manager"];
     let state = match manager["held"].as_bool() {
         Some(true) => (FleetState::Up, None),
@@ -1185,6 +1205,60 @@ mod tests {
         assert_eq!(any, [HostRow::local("this machine")]);
     }
 
+    /// Opening the place picker asks nothing of a Fleet not yet admitted,
+    /// even while its first `version` is slow, nor of one thurbox cannot
+    /// speak to, which stays incompatible.
+    #[cfg(unix)]
+    #[test]
+    fn the_place_picker_asks_nothing_before_admission_or_of_an_incompatible_fleet() {
+        let slow = crate::fleet_link::testing::Remote::new(
+            "case \"$1\" in\n\
+             version) sleep 2; echo '{\"apiVersions\":[\"fleet/v1alpha1\"]}' ;;\n\
+             *) exec sleep 30 ;;\n\
+             esac",
+        );
+        crate::paths::with_path(slow.path(), || {
+            let mut source = FleetWatch::spawn(slow.link.clone());
+            std::thread::sleep(Duration::from_millis(300));
+            source.refresh_places("devbox");
+            std::thread::sleep(Duration::from_millis(700));
+            let calls = slow.calls();
+            assert!(
+                calls.iter().all(|c| c.ends_with("version --json")),
+                "{calls:?}"
+            );
+            drop(source);
+        });
+
+        let v2 = crate::fleet_link::testing::Remote::new(
+            "[ \"$1\" = version ] && exec echo '{\"version\":\"9.0.0\",\"apiVersions\":[\"fleet/v2\"]}'\n\
+             exit 1",
+        );
+        crate::paths::with_path(v2.path(), || {
+            let mut source = FleetWatch::spawn(v2.link.clone());
+            let state = |source: &mut FleetWatch| {
+                source.poll();
+                source.fleet.state
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while state(&mut source) != FleetState::Incompatible {
+                assert!(std::time::Instant::now() < deadline, "never incompatible");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            source.refresh_places("devbox");
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(state(&mut source), FleetState::Incompatible);
+            // Nothing else either: no places, no watch, and no read of this
+            // remote Fleet's home (`sh -c`).
+            let calls = v2.calls();
+            assert!(!calls.iter().any(|c| c.contains("sh -c")), "{calls:?}");
+            assert!(
+                calls.iter().all(|c| c.ends_with("version --json")),
+                "{calls:?}"
+            );
+        });
+    }
+
     /// A Fleet's places are read again when the place picker opens on it, so
     /// a place's readiness is the one at that opening, not at startup.
     #[cfg(unix)]
@@ -1283,9 +1357,10 @@ mod tests {
         });
     }
 
-    /// A remote Fleet's home is asked for once at startup. A place step
-    /// opened on that Fleet while it cannot be reached asks for it no more:
-    /// each ask could wait out its whole bound.
+    /// A remote Fleet's home is asked for once it is admitted. One that
+    /// cannot be reached is never admitted, so neither startup nor a place
+    /// step opened on it asks for its home: each ask could wait out its
+    /// whole bound.
     #[cfg(unix)]
     #[test]
     fn an_unreachable_fleets_home_is_not_asked_again_on_each_opening() {
@@ -1311,19 +1386,13 @@ mod tests {
         };
         crate::paths::with_path(remote.path(), || {
             let source = FleetWatch::spawn(remote.link.clone());
-            let reading = source.reading_home.clone();
             let mut store =
                 super::super::SnapshotStore::with_source(Box::new(source), &Default::default());
-            // The startup ask has finished: only the Fleet being unreachable
-            // can keep an opening from asking again.
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
                 store.refresh_if_due();
                 let state = store.current().fleets.first().map(|f| f.state);
-                if state == Some(FleetState::Unreachable)
-                    && asked() == 1
-                    && !reading.load(std::sync::atomic::Ordering::Acquire)
-                {
+                if state == Some(FleetState::Unreachable) {
                     break;
                 }
                 assert!(
@@ -1338,7 +1407,7 @@ mod tests {
                 store.want_places(None);
             }
             std::thread::sleep(Duration::from_millis(500));
-            assert_eq!(asked(), 1, "{:?}", remote.calls());
+            assert_eq!(asked(), 0, "{:?}", remote.calls());
         });
     }
 
@@ -1349,11 +1418,23 @@ mod tests {
     #[test]
     fn a_fleets_state_is_its_managers_lease() {
         for (answer, state) in [
-            (r#"{"manager":{"held":true}}"#, FleetState::Up),
-            (r#"{"manager":{"held":false}}"#, FleetState::Down),
             (
-                r#"{"manager":{"held":null,"why":"no store"}}"#,
+                r#"{"apiVersions":["fleet/v1alpha1"],"manager":{"held":true}}"#,
+                FleetState::Up,
+            ),
+            (
+                r#"{"apiVersions":["fleet/v1alpha1"],"manager":{"held":false}}"#,
+                FleetState::Down,
+            ),
+            (
+                r#"{"apiVersions":["fleet/v1alpha1"],"manager":{"held":null,"why":"no store"}}"#,
                 FleetState::Unknown,
+            ),
+            // The API comes first: a Fleet that does not speak it is that,
+            // whatever its manager does.
+            (
+                r#"{"apiVersions":["fleet/v2"],"manager":{"held":true}}"#,
+                FleetState::Incompatible,
             ),
         ] {
             let remote = crate::fleet_link::testing::Remote::new(&format!("echo '{answer}'"));

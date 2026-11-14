@@ -501,6 +501,39 @@ fn a_single_listed_fleet_skips_the_fleet_step() {
     );
 }
 
+/// A sole Fleet thurbox cannot speak to is refused where the flow opens,
+/// on the place step it starts on: the refusal is shown, enter goes no
+/// further, and no step waits on agents that will never come.
+#[test]
+fn a_sole_incompatible_fleet_is_refused_on_the_place_step() {
+    let host = host();
+    let mut world = World::default();
+    let mut only = fleet(
+        "box",
+        "ssh box",
+        FleetState::Incompatible,
+        vec![local_host()],
+        &[],
+    );
+    only.why = Some("incompatible: fleet 9.0.0 speaks fleet/v2".into());
+    only.agents = None;
+    world.snapshot.fleets = vec![only];
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("box is incompatible: fleet 9.0.0 speaks fleet/v2"),
+        "{screen}"
+    );
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("Place"),
+        "still on the place step: {screen}"
+    );
+    assert!(!screen.contains("Asking Fleet"), "{screen}");
+    assert!(host.drain_commands().is_empty());
+}
+
 /// With several Fleets, the Fleet step comes first: each Fleet, how it is
 /// reached and whether it is up, with why for the one under the cursor. An
 /// unreachable Fleet is not taken. The places and agents that follow are
