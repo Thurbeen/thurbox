@@ -114,24 +114,26 @@ pub struct CommandBus {
     deleted: Vec<String>,
     /// What runs each command: Fleet, through its command line.
     executor: Arc<dyn Executor>,
-    /// The Fleet the commands go to, which a created session's id names.
+    /// The Fleet a creation goes to, which a created session's id names.
     fleet: Option<String>,
 }
 
 impl CommandBus {
     /// A bus whose session commands act through the command line of the
-    /// Fleet `link` reaches (ADR-41): `fleet apply`, `send` and `delete`. The
+    /// Fleets `fleets` reach (ADR-41): `fleet apply`, `send` and `delete`, each
+    /// on its session's own Fleet, and a creation on the Fleet in force. The
     /// interface's own files (settings, repository memory) are written here.
-    pub fn fleet(link: crate::fleet_link::FleetLink) -> Self {
-        let fleet = Some(link.name().to_string());
+    pub fn fleet(fleets: impl Into<crate::fleet_link::Fleets>) -> Self {
+        let fleets = fleets.into();
+        let fleet = Some(fleets.in_force().name().to_string());
         Self {
             fleet,
-            ..Self::with_executor(Arc::new(Fleet { link }))
+            ..Self::with_executor(Arc::new(Fleet { fleets }))
         }
     }
 
     /// The id the session a `create` named `name` will have: its Task's name
-    /// in the Fleet the commands go to (`box:review`). A creation is found
+    /// in the Fleet a creation goes to (`box:review`). A creation is found
     /// by it, never by its name, which another Fleet's session can share.
     pub fn created_id(&self, name: &str) -> Option<String> {
         let fleet = self.fleet.as_deref()?;

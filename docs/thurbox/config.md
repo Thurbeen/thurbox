@@ -587,11 +587,21 @@ a place.
   in the list, marked `unreachable`, and the snapshot's error names the
   Fleet. A Fleet that cannot be asked has not lost its sessions. The watch is
   started again every 2 seconds, and the rows clear once it reads.
-- Commands (create, send, rename, delete) and automations go to one Fleet,
-  the Fleet in force: the only one listed, or the first by name when several
-  are. A command for a session of another Fleet is refused by name.
-  `thurbox-cli doctor` names the Fleet in force. The creation flow offers
-  that Fleet's harnesses and places.
+- A command for a session (send, rename, delete, and the check a confirmed
+  delete makes) goes to that session's own Fleet, named by its id. A bare
+  Task name, a creation and an automation's spawn go to the Fleet in force:
+  the only one listed, or the first by name when several are, until the
+  creation flow asks for a Fleet. An automation's send goes to its
+  session's Fleet. A session of a Fleet `settings.toml` does not list is
+  refused by name. `thurbox-cli doctor` names the Fleet in force, and the
+  creation flow offers that Fleet's harnesses and places.
+- A Fleet that cannot be asked (its `ssh` exits 255) makes a command fail
+  with that reason. The check a confirmed delete makes never reads it as a
+  Task that is gone: only Fleet's own answer (exit 3) says so.
+- A session of a Fleet on another machine names a path there. A creation
+  there takes the path as given: it must be absolute, `~` is not expanded,
+  and this machine's disk is not read to tell a repository from a
+  directory, so with no choice made the directory is taken as it is.
 - thurbox never starts `fleet up` on a Fleet on another machine: a user
   systemd unit there runs it
   ([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).

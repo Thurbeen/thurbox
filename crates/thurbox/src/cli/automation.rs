@@ -106,7 +106,7 @@ pub struct EditArgs {
 
 pub fn run(
     action: Action,
-    fleet: &crate::fleet_link::FleetLink,
+    fleet: &crate::fleet_link::Fleets,
 ) -> Result<CommandOutput, CommandError> {
     let now = crate::kernel::automations::now_ms();
     match action {
@@ -300,7 +300,7 @@ fn remove(name: &str) -> Result<CommandOutput, CommandError> {
 }
 
 fn fire(
-    fleet: &crate::fleet_link::FleetLink,
+    fleet: &crate::fleet_link::Fleets,
     name: &str,
     now: u64,
 ) -> Result<CommandOutput, CommandError> {
@@ -312,7 +312,7 @@ fn fire(
     Ok(out)
 }
 
-fn tick(fleet: &crate::fleet_link::FleetLink, now: u64) -> Result<CommandOutput, CommandError> {
+fn tick(fleet: &crate::fleet_link::Fleets, now: u64) -> Result<CommandOutput, CommandError> {
     let fired = crate::kernel::automations::tick(fleet, now)?;
     let rows: Vec<Value> = fired
         .iter()

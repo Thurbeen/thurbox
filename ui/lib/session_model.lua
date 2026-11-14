@@ -619,7 +619,7 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
         -- past a host boundary.
         host = group.host,
         repo_label = group.label,
-        repo_target = "repo:" .. group_slot(group.host, group.repo_key),
+        repo_target = ":repo:" .. group_slot(group.host, group.repo_key),
         group_size = #group.members,
         target = session.id,
       }
@@ -643,7 +643,7 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
         header = first and group_header or nil,
         host = group.host,
         repo_label = group.label,
-        repo_target = "repo:" .. group_slot(group.host, group.repo_key),
+        repo_target = ":repo:" .. group_slot(group.host, group.repo_key),
         target = false,
       }
       first = false
@@ -702,7 +702,10 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
             host = host,
             counts = counts[host],
             collapsed = collapsed[host] == true,
-            target = "host:" .. host,
+            -- A group's id starts with `:`, which no session's id does (a
+            -- session's id is `<fleet>:<task>`, its Fleet named), so a
+            -- Fleet named `host` or `repo` cannot pass for a group.
+            target = ":host:" .. host,
           }
         end
         if not collapsed[host] or reveal then

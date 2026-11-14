@@ -117,7 +117,7 @@ fn reordering_visible_sessions_preserves_a_folded_hosts_sessions() {
     host.on_click(
         index,
         &Click {
-            id: Some("host:example-ssh".into()),
+            id: Some(":host:example-ssh".into()),
             ..Click::default()
         },
     )
@@ -187,7 +187,7 @@ fn right_arrow_steps_through_a_folded_repo_one_level_at_a_time() {
     host.on_click(
         index,
         &Click {
-            id: Some("repo:example-ssh\x01thurbox".into()),
+            id: Some(":repo:example-ssh\x01thurbox".into()),
             ..Click::default()
         },
     )
@@ -196,7 +196,7 @@ fn right_arrow_steps_through_a_folded_repo_one_level_at_a_time() {
     host.on_click(
         index,
         &Click {
-            id: Some("host:example-ssh".into()),
+            id: Some(":host:example-ssh".into()),
             ..Click::default()
         },
     )
@@ -254,7 +254,7 @@ fn next_attention_reveals_a_folded_host_and_repo() {
     host.on_click(
         index,
         &Click {
-            id: Some("repo:example-ssh\x01thurbox".into()),
+            id: Some(":repo:example-ssh\x01thurbox".into()),
             ..Click::default()
         },
     )
@@ -262,7 +262,7 @@ fn next_attention_reveals_a_folded_host_and_repo() {
     host.on_click(
         index,
         &Click {
-            id: Some("host:example-ssh".into()),
+            id: Some(":host:example-ssh".into()),
             ..Click::default()
         },
     )
@@ -284,7 +284,7 @@ fn following_a_created_session_reveals_its_folded_host_and_repo() {
     host.on_click(
         index,
         &Click {
-            id: Some("repo:example-ssh\x01thurbox".into()),
+            id: Some(":repo:example-ssh\x01thurbox".into()),
             ..Click::default()
         },
     )
@@ -292,7 +292,7 @@ fn following_a_created_session_reveals_its_folded_host_and_repo() {
     host.on_click(
         index,
         &Click {
-            id: Some("host:example-ssh".into()),
+            id: Some(":host:example-ssh".into()),
             ..Click::default()
         },
     )
@@ -368,7 +368,7 @@ fn repo_fold_is_scoped_to_host_and_focus_reveals_its_child() {
         .on_click(
             host.index_of(PLUGIN).unwrap(),
             &Click {
-                id: Some("repo:example-ssh\x01thurbox".into()),
+                id: Some(":repo:example-ssh\x01thurbox".into()),
                 clicks: 1,
                 ..Click::default()
             },
@@ -604,7 +604,7 @@ fn clicking_one_host_folds_only_its_own_children() {
     let registry = registry_for(&host);
     list_text(&host, &snapshot, &registry);
     let click = Click {
-        id: Some("host:example-ssh".into()),
+        id: Some(":host:example-ssh".into()),
         clicks: 1,
         ..Click::default()
     };
@@ -617,7 +617,7 @@ fn clicking_one_host_folds_only_its_own_children() {
     assert!(frame.contains("other-session"), "{frame}");
 
     let second = Click {
-        id: Some("host:example-wsl".into()),
+        id: Some(":host:example-wsl".into()),
         clicks: 1,
         ..Click::default()
     };
@@ -1706,7 +1706,7 @@ fn folding_a_parent_hides_its_children_but_not_one_waiting_for_you() {
     host.on_click(
         index,
         &Click {
-            id: Some("fold:lead".into()),
+            id: Some(":fold:lead".into()),
             ..Click::default()
         },
     )
@@ -1756,7 +1756,7 @@ fn clicking_a_parent_fold_keeps_a_visible_selection_or_selects_the_parent() {
                     host.on_click(
                         index,
                         &Click {
-                            id: Some("fold:lead".into()),
+                            id: Some(":fold:lead".into()),
                             ..Click::default()
                         },
                     )
@@ -1903,7 +1903,7 @@ fn a_folded_repo_row_says_how_many_sessions_it_holds() {
         .set_setting(
             PLUGIN,
             "folded_repos",
-            Some(Value::Text("repo:%00local%01thurbox".into())),
+            Some(Value::Text(":repo:%00local%01thurbox".into())),
         )
         .unwrap();
     publish_with(&host, &family(), &registry);

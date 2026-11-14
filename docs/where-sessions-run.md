@@ -47,9 +47,9 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | `runtime-mux` runs sessions on `local` only | implemented |
 | Several Fleets in thurbox's `settings.toml`, `[fleets.<name>]`, over ssh or WSL; `thurbox-cli doctor` checks each | implemented |
 | The session list follows every listed Fleet; a row's id is `<fleet>:<task>`, and an unreachable Fleet's rows stay, marked unreachable | implemented |
-| Commands go to one Fleet: the only one listed, or the first by name | implemented |
-| Commands go to each row's own Fleet | planned |
-| A remote Fleet's terminal panes and its creation flow | planned |
+| Send, rename, delete and a sent automation go to the session's own Fleet | implemented |
+| Creation goes to the Fleet in force: the only one listed, or the first by name | implemented |
+| A remote Fleet's terminal panes | planned |
 | The Fleet step and the place step in the new-session modal | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
@@ -68,10 +68,11 @@ Each session runs on `local`: the laptop.
 ### 2. Laptop thurbox, Fleet on a remote box
 
 Status: partly implemented. thurbox lists box's Fleet and follows its
-sessions over ssh beside the laptop's, and `thurbox-cli doctor` checks it.
-Commands go to the first Fleet by name until each reaches its row's own. A session's
-terminal pane and the creation flow on box are planned: until then, connect
-to box over ssh and run thurbox there.
+sessions over ssh beside the laptop's, `thurbox-cli doctor` checks it, and
+each command for one of box's sessions goes to box. A creation goes to the
+first Fleet by name until the modal has a Fleet step. A session's terminal
+pane on box is planned: until then, connect to box over ssh and run thurbox
+there.
 
 This is the most common setup. The agents run on box, so they keep working
 when the laptop sleeps.
@@ -117,8 +118,10 @@ when the laptop sleeps.
 
 5. Run `thurbox-cli doctor`. It reports each Fleet, and says when box cannot
    be reached. It reads box's `fleet version --json` to report whether box's
-   manager runs, and points at the unit when it does not. Until the interface
-   follows several Fleets, it uses the first by name (here `box`).
+   manager runs, and points at the unit when it does not. The session list
+   follows every listed Fleet, and each command goes to its session's own
+   Fleet. Only a creation still goes to the first Fleet by name (here `box`),
+   until the new-session modal has a Fleet step.
 
 ### 3. One Fleet, several places
 
