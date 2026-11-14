@@ -280,8 +280,12 @@ pub static SESSION: Class = Class {
     doc: &[],
     exact: true,
     fields: &[
-        leaf("id", "string"),
+        leaf("id", "string")
+            .doc("`<fleet>:<task>` for a Fleet session: two Fleets can each hold a Task of one name."),
         leaf("name", "string"),
+        leaf("fleet", "string")
+            .opt()
+            .doc("The Fleet the session's Task belongs to, as `settings.toml` names it."),
         leaf("key", "string").opt().doc(
             "The address a driver gave the session (`session create --key`); opaque, and unchanged by a rename.",
         ),

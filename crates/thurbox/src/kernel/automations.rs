@@ -133,7 +133,8 @@ fn fire(
         crate::config::automations::Action::Send { session } => {
             run.session = Some(session.clone());
             fleet
-                .run(&["send", session, &automation.prompt], None)
+                .task(session)
+                .and_then(|task| fleet.run(&["send", task, &automation.prompt], None))
                 .map(|()| format!("sent to {session}"))
         }
         crate::config::automations::Action::Spawn { repo, agent } => {

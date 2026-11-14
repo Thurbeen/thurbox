@@ -301,7 +301,11 @@ fn the_snapshot_shows_each_fleet_task_as_a_session_and_follows_a_deletion() {
     until("both Tasks are rows", || {
         names(&mut store) == ["alpha", "beta"]
     });
-    let alpha = store.current().session("alpha").expect("by name").clone();
+    let alpha = store
+        .current()
+        .session("local:alpha")
+        .expect("by name")
+        .clone();
     assert_eq!(alpha.agent, "claude-code");
     assert_eq!(alpha.backend, "fleet");
     assert_eq!(alpha.cwd.as_deref(), Some(Path::new("/work/alpha")));
@@ -488,10 +492,10 @@ fn a_created_session_keeps_the_name_it_was_given() {
     let mut store = store_over(&fleet);
     until("the row arrives", || {
         store.refresh_if_due();
-        store.current().session("read-the-code").is_some()
+        store.current().session("local:read-the-code").is_some()
     });
     assert_eq!(
-        store.current().session("read-the-code").unwrap().name,
+        store.current().session("local:read-the-code").unwrap().name,
         "Read the code"
     );
 }
@@ -571,11 +575,11 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     until("the pane shows the bridged output", || {
         store.refresh_if_due();
         terminals.sync(store.current(), 24, 80);
-        if let Some(failure) = terminals.failure("bridged") {
+        if let Some(failure) = terminals.failure("local:bridged") {
             eprintln!("attach: {failure}");
         }
         terminals
-            .visible_text("bridged")
+            .visible_text("local:bridged")
             .is_some_and(|text| text.contains("bridged-marker"))
     });
 }
@@ -619,10 +623,13 @@ impl SnapshotSource for Fed {
 }
 
 fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
-    let mut row = thurbox::kernel::snapshot::fleet::row_of(&json!({
-        "metadata": {"name": name},
-        "spec": {"harness": "claude-code", "workspace": [format!("file://{}", cwd.display())]},
-    }));
+    let mut row = thurbox::kernel::snapshot::fleet::row_of(
+        &link(Path::new("fleet")),
+        &json!({
+            "metadata": {"name": name},
+            "spec": {"harness": "claude-code", "workspace": [format!("file://{}", cwd.display())]},
+        }),
+    );
     row.backend = backend.into();
     row
 }
@@ -646,7 +653,7 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
     .unwrap();
     store.refresh_if_due();
     assert!(store.fresh_since(ticket));
-    assert!(store.current().session("made").is_some());
+    assert!(store.current().session("local:made").is_some());
 
     let quiet = store.request_refresh();
     assert!(!store.fresh_since(quiet));
@@ -670,7 +677,7 @@ fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
     };
     tx.send(read(&["kept", "gone"])).unwrap();
     store.refresh_if_due();
-    store.hide_until_gone("gone".into());
+    store.hide_until_gone("local:gone".into());
     assert_eq!(names(&mut store), ["kept"]);
 
     tx.send(read(&["kept", "gone"])).unwrap();
@@ -682,9 +689,9 @@ fn a_deleted_session_stays_hidden_until_the_source_drops_it() {
 
     // Removed and made again between two answers: the name never leaves the
     // rows, and the source says it went.
-    store.hide_until_gone("gone".into());
+    store.hide_until_gone("local:gone".into());
     tx.send(SourceRead {
-        removed: vec!["gone".into()],
+        removed: vec!["local:gone".into()],
         ..read(&["kept", "gone"])
     })
     .unwrap();
@@ -774,7 +781,7 @@ fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
 fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
-    let ticket = store.request_refresh_awaiting(vec!["Made".into()]);
+    let ticket = store.request_refresh_awaiting(vec!["local:made".into()]);
     // A watch that answers late: past the second a quiet source is given.
     std::thread::sleep(Duration::from_millis(2_000));
     store.refresh_if_due();
@@ -844,10 +851,10 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
         store.refresh_if_due();
         store
             .current()
-            .session("local")
+            .session("local:local")
             .is_some_and(|r| r.git.is_some())
     });
-    assert_eq!(store.current().session("on-fleet").unwrap().git, None);
+    assert_eq!(store.current().session("local:on-fleet").unwrap().git, None);
 }
 
 /// Nor is it diffed here: the diff is refused, and says where the Task is.
@@ -861,9 +868,9 @@ fn a_fleet_row_elsewhere_is_not_diffed_here() {
     diffs.request_row(&elsewhere);
     until("the diff is answered", || {
         diffs.poll();
-        !matches!(diffs.get("on-fleet"), Some(Diff::Pending) | None)
+        !matches!(diffs.get("local:on-fleet"), Some(Diff::Pending) | None)
     });
-    match diffs.get("on-fleet") {
+    match diffs.get("local:on-fleet") {
         Some(Diff::Failed(why)) => assert!(why.contains("devbox"), "{why}"),
         other => panic!("diffed here: {other:?}"),
     }
@@ -979,7 +986,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
         store.refresh_if_due();
         store
             .current()
-            .session("t1")
+            .session("local:t1")
             .is_some_and(|row| row.key.is_some())
     });
     // A pane's reader and writer run on the process's runtime, as in the
@@ -994,16 +1001,16 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let mut screen = |terminals: &mut thurbox::kernel::terminal::Terminals| {
         store.refresh_if_due();
         terminals.sync(store.current(), 24, 80);
-        if let Some(failure) = terminals.failure("t1") {
+        if let Some(failure) = terminals.failure("local:t1") {
             eprintln!("attach: {failure}");
         }
-        terminals.visible_text("t1").unwrap_or_default()
+        terminals.visible_text("local:t1").unwrap_or_default()
     };
     until("the pane shows the agent's screen", || {
         screen(&mut terminals).contains("ready-marker")
     });
     assert!(
-        terminals.send("t1", b"ping\r".to_vec()),
+        terminals.send("local:t1", b"ping\r".to_vec()),
         "the pane takes input"
     );
     until("the agent answers what was typed", || {
@@ -1041,7 +1048,7 @@ fn an_interactive_rows_status_follows_its_agents_hooks() {
     let mut store = store_over(&fleet);
     let status = |store: &mut SnapshotStore| {
         store.refresh_if_due();
-        store.current().session("alpha").map(|row| row.status)
+        store.current().session("local:alpha").map(|row| row.status)
     };
     signal("idle");
     until("the row is idle", || {
@@ -1087,7 +1094,7 @@ fn an_interactive_rows_status_shows_working_attention_and_idle() {
     let mut store = store_over(&fleet);
     let status = |store: &mut SnapshotStore| {
         store.refresh_if_due();
-        store.current().session("alpha").map(|row| row.status)
+        store.current().session("local:alpha").map(|row| row.status)
     };
     signal("working");
     until("the row works", || {
@@ -1297,5 +1304,193 @@ fn doctor_reports_each_listed_fleet() {
         calls.lines().filter(|c| c.starts_with("gpu ")).count(),
         1,
         "{calls}"
+    );
+}
+
+/// Two Fleets, each with a Task named `review`: thurbox follows both, so the
+/// one list holds two rows, `box:review` and `laptop:review`, each naming its
+/// Fleet. "box" is a second sandboxed Fleet behind a stand-in `ssh`. When
+/// box's watch dies and its `ssh` exits 255 from then on, box's rows stay
+/// in the list, marked unreachable: a Fleet that cannot be asked has not
+/// lost its sessions.
+#[test]
+fn every_listed_fleet_is_followed_in_one_list() {
+    use thurbox::fleet_link::FleetLink;
+    use thurbox::kernel::snapshot::fleet::FleetWatches;
+    use thurbox::session::settings::{FleetDef, FleetTransport};
+    use thurbox::session::SessionState;
+    let Some(bin) = fleet_bin() else { return };
+    let laptop = Fleet::new(bin.clone());
+    let remote = Fleet::new(bin.clone());
+    laptop.apply(json!([task("review")]));
+    remote.apply(json!([task("review"), task("audit")]));
+    let root = laptop.root.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let down = root.join("box-down");
+    let pids = root.join("ssh.pids");
+    let ssh = ssh_bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; *) break ;; esac; done\n\
+             [ \"$1\" = box ] && [ ! -e '{down}' ] || {{ echo 'ssh: connect to host box port 22: No route to host' >&2; exit 255; }}\n\
+             shift\n\
+             echo $$ >> '{pids}'\n\
+             eval \"exec $*\"\n",
+            down = down.display(),
+            pids = pids.display(),
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![ssh_bin];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+
+    let local = FleetLink::of(
+        "laptop",
+        &FleetDef {
+            program: laptop.program.to_string_lossy().into_owned(),
+            ..FleetDef::default()
+        },
+    );
+    let over_ssh = FleetLink::of(
+        "box",
+        &FleetDef {
+            transport: FleetTransport::Ssh {
+                ssh: "box".into(),
+                ssh_opts: Vec::new(),
+            },
+            program: remote.program.to_string_lossy().into_owned(),
+            config: None,
+        },
+    );
+    let source = FleetWatches::new(
+        "box",
+        vec![FleetWatch::spawn(over_ssh), FleetWatch::spawn(local)],
+    );
+    let mut store = SnapshotStore::with_source(Box::new(source), &Default::default());
+    let ids = |store: &mut SnapshotStore| {
+        store.refresh_if_due();
+        let mut ids: Vec<String> = store
+            .current()
+            .sessions
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    };
+    until("both Fleets' Tasks are rows", || {
+        ids(&mut store) == ["box:audit", "box:review", "laptop:review"]
+    });
+    let row = |store: &SnapshotStore, id: &str| store.current().session(id).cloned().unwrap();
+    assert_eq!(row(&store, "box:review").fleet(), Some("box"));
+    assert_eq!(row(&store, "box:review").name, "review");
+    assert_eq!(row(&store, "laptop:review").fleet(), Some("laptop"));
+    // A row of a Fleet on another machine names that Fleet as where it is.
+    assert_eq!(
+        row(&store, "box:review").remote_host.as_deref(),
+        Some("box")
+    );
+    assert_eq!(row(&store, "laptop:review").remote_host, None);
+
+    std::fs::write(&down, "").expect("down");
+    for pid in std::fs::read_to_string(&pids).expect("pids").lines() {
+        let _ = Process::new("kill").arg(pid).status();
+    }
+    until("box's rows are marked unreachable", || {
+        store.refresh_if_due();
+        store.current().session("box:review").map(|r| r.status) == Some(SessionState::Unreachable)
+    });
+    assert_eq!(
+        ids(&mut store),
+        ["box:audit", "box:review", "laptop:review"],
+        "no row is dropped"
+    );
+    assert_eq!(row(&store, "box:audit").status, SessionState::Unreachable);
+    assert_ne!(
+        row(&store, "laptop:review").status,
+        SessionState::Unreachable
+    );
+    // The first watch ended killed; the next one is refused by ssh.
+    until("the error names box and why it cannot be asked", || {
+        store.refresh_if_due();
+        store
+            .current()
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("box: ") && e.contains("No route to host"))
+    });
+    assert_eq!(
+        ids(&mut store),
+        ["box:audit", "box:review", "laptop:review"],
+        "still no row is dropped"
+    );
+
+    // box answers again: the restarted watch reads, and its rows are
+    // reachable once more.
+    std::fs::remove_file(&down).expect("up again");
+    until("box's rows are reachable again", || {
+        store.refresh_if_due();
+        ["box:review", "box:audit"].iter().all(|id| {
+            store
+                .current()
+                .session(id)
+                .is_some_and(|r| r.status != SessionState::Unreachable)
+        })
+    });
+    until("the error clears", || {
+        store.refresh_if_due();
+        store.current().error.is_none()
+    });
+}
+
+/// A creation is found by the id its Task will have in the Fleet the
+/// commands go to, never by its name: with `laptop:review` listed and `box`
+/// in force, creating `review` awaits and reports `box:review`, not the
+/// laptop's session of the same name.
+#[test]
+fn a_creation_is_awaited_by_its_fleet_qualified_id() {
+    use thurbox::fleet_link::FleetLink;
+    use thurbox::session::settings::FleetDef;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
+    let fleet_row = |fleet: &str, task: &str| {
+        thurbox::kernel::snapshot::fleet::row_of(
+            &FleetLink::of(fleet, &FleetDef::default()),
+            &json!({"metadata": {"name": task}}),
+        )
+    };
+    tx.send(SourceRead {
+        sessions: vec![fleet_row("laptop", "review")],
+        ..Default::default()
+    })
+    .unwrap();
+    store.refresh_if_due();
+    let bus = CommandBus::fleet(FleetLink::of("box", &FleetDef::default()));
+    let id = bus
+        .created_id("Review")
+        .expect("a Fleet bus names what it creates");
+    assert_eq!(id, "box:review");
+    let ticket = store.request_refresh_awaiting(vec![id.clone()]);
+    store.refresh_if_due();
+    assert!(
+        !store.fresh_since(ticket),
+        "laptop's session of the same name is not the one created"
+    );
+    tx.send(SourceRead {
+        sessions: vec![fleet_row("laptop", "review"), fleet_row("box", "review")],
+        ..Default::default()
+    })
+    .unwrap();
+    store.refresh_if_due();
+    assert!(store.fresh_since(ticket));
+    assert_eq!(
+        store.current().session(&id).and_then(|r| r.fleet()),
+        Some("box")
     );
 }

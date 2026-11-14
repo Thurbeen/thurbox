@@ -577,9 +577,21 @@ a place.
 - No `[fleets]` table means one Fleet, `local`: `fleet` on this machine. Once
   the file lists a Fleet, thurbox uses only the listed Fleets, so a machine
   that is only a client lists no local Fleet.
-- Until the interface follows several Fleets, it uses one: the only one
-  listed, or the first by name when several are. `thurbox-cli doctor` names
-  it. The others are checked by `doctor` and not used yet.
+- The session list follows every listed Fleet: one `fleet watch` each, as
+  one list. A row's id is `<fleet>:<task>`, since two Fleets can each hold a
+  Task of one name, and the row carries its Fleet (`fleet` in the interface's
+  API). A row of a Fleet on another machine shows that Fleet where a host
+  would be shown, with the place when it is not that Fleet's `local`
+  (`box · vm/sandbox`).
+- When a Fleet's watch ends (its `ssh` exits 255, say), that Fleet's rows stay
+  in the list, marked `unreachable`, and the snapshot's error names the
+  Fleet. A Fleet that cannot be asked has not lost its sessions. The watch is
+  started again every 2 seconds, and the rows clear once it reads.
+- Commands (create, send, rename, delete) and automations go to one Fleet,
+  the Fleet in force: the only one listed, or the first by name when several
+  are. A command for a session of another Fleet is refused by name.
+  `thurbox-cli doctor` names the Fleet in force. The creation flow offers
+  that Fleet's harnesses and places.
 - thurbox never starts `fleet up` on a Fleet on another machine: a user
   systemd unit there runs it
   ([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
@@ -587,7 +599,7 @@ a place.
 
 | The interface | Fleet's command |
 | --- | --- |
-| reads the sessions | `fleet watch --json`: each Task is a session row named as the Task |
+| reads the sessions | `fleet watch --json` of each listed Fleet, as one list: each Task is a session row whose id is `<fleet>:<task>` |
 | creates a session | `fleet apply`: an interactive Task (no brief, dispatched) over the chosen repositories, with the chosen agent as its harness and the chosen host |
 | sends to a session | `fleet send` |
 | deletes a session | `fleet delete task`; Fleet has no undo window |
@@ -1083,19 +1095,21 @@ lists headless CLI commands. With several running TUIs, select one explicitly.
 The two initial typed actions are:
 
 ```sh
-thurbox-cli ui --instance <id> action session.focus --session <session-uuid> --json
+thurbox-cli ui --instance <id> action session.focus --session <fleet>:<task> --json
 thurbox-cli ui --instance <id> action search.open --query 'error handling' --json
 ```
 
 `session.focus` requires a session visible to the target TUI and a focusable
-agent pane. `search.open`
+agent pane. `--session` takes a session's id (`box:review`), or a bare Task
+name when exactly one Fleet holds a Task of that name; a name several Fleets
+hold is refused (`ambiguous_target`), naming the ids it could mean. `search.open`
 opens the strip and sets its query; calling it again replaces the query without
 closing the strip. The reply comes from the target's event loop after it applies
 or refuses the action.
 
 Any non-destructive declared action can be called by its catalog name. Use
 `--arg name=value` for an argument; `--session` and `--query` remain shortcuts
-for the first two actions. A destructive action needs an explicit session UUID.
+for the first two actions. A destructive action needs an explicit session, named the same way.
 Its first request exits with a structured `confirmation_required` result and an
 opaque `result.error.ticket`; it changes nothing. Run `thurbox-cli ui --instance
 <id> confirm <ticket> --json` as a separate step. A ticket expires after 30

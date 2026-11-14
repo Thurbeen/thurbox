@@ -343,8 +343,8 @@ impl App {
             self.record_command_failures();
             // Re-read BEFORE reporting: a `session.post_create` names the row
             // the command made, which only exists here once the rows are.
-            // A creation is awaited by name: a source can publish its row
-            // later than the command finished.
+            // A creation is awaited by the id it will have: a source can
+            // publish its row later than the command finished.
             let live: std::collections::HashSet<u64> = self
                 .commands
                 .inflight()
@@ -357,7 +357,7 @@ impl App {
                 .filter(|(id, tracked)| {
                     !live.contains(id) && !tracked.failed && tracked.kind == "create"
                 })
-                .filter_map(|(_, tracked)| tracked.name.clone())
+                .filter_map(|(_, tracked)| tracked.created.clone())
                 .collect();
             self.report_after = Some(self.snapshots.request_refresh_awaiting(created));
         }
@@ -468,6 +468,9 @@ impl App {
             Command::Create { name, .. } => Some(name.clone()).filter(|n| !n.is_empty()),
             _ => None,
         };
+        let created = name
+            .as_deref()
+            .and_then(|name| self.commands.created_id(name));
         let force = matches!(command, Command::Delete { force: true, .. });
         let id = self.commands.dispatch(command);
         self.tracked_commands.insert(
@@ -478,6 +481,7 @@ impl App {
                 label,
                 failed: false,
                 name,
+                created,
                 force,
             },
         );

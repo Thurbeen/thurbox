@@ -46,8 +46,9 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | Places in Fleet's config, `[runtimes.<name>.places.<place>]`, named `<runtime>/<place>` | implemented |
 | `runtime-mux` runs sessions on `local` only | implemented |
 | Several Fleets in thurbox's `settings.toml`, `[fleets.<name>]`, over ssh or WSL; `thurbox-cli doctor` checks each | implemented |
-| The interface follows one Fleet: the only one listed, or the first by name | implemented |
-| The interface follows every listed Fleet in one list | planned |
+| The session list follows every listed Fleet; a row's id is `<fleet>:<task>`, and an unreachable Fleet's rows stay, marked unreachable | implemented |
+| Commands go to one Fleet: the only one listed, or the first by name | implemented |
+| Commands go to each row's own Fleet | planned |
 | A remote Fleet's terminal panes and its creation flow | planned |
 | The Fleet step and the place step in the new-session modal | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
@@ -66,8 +67,9 @@ Each session runs on `local`: the laptop.
 
 ### 2. Laptop thurbox, Fleet on a remote box
 
-Status: partly implemented. thurbox lists box's Fleet, follows its sessions
-and sends to them over ssh, and `thurbox-cli doctor` checks it. A session's
+Status: partly implemented. thurbox lists box's Fleet and follows its
+sessions over ssh beside the laptop's, and `thurbox-cli doctor` checks it.
+Commands go to the first Fleet by name until each reaches its row's own. A session's
 terminal pane and the creation flow on box are planned: until then, connect
 to box over ssh and run thurbox there.
 
@@ -178,4 +180,7 @@ Rows:  ● fix-auth      box
   shows why.
 - **Repository**: browse folders on the place, or paste a clone URL.
 - **Rows**: each row shows its Fleet, and its place when the place is not
-  `local`. A row of an unreachable Fleet stays in the list.
+  `local`. A row of an unreachable Fleet stays in the list. Implemented
+  today: the session list shows a Fleet on another machine where it shows a
+  host (`@ box`, `@ box · vm/sandbox`), and an unreachable Fleet's rows say
+  `Fleet box unreachable`.

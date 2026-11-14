@@ -234,9 +234,13 @@ struct TrackedCommand {
     session: String,
     label: Option<String>,
     failed: bool,
-    /// The name a creation or a fork was given, so `session.post_create` can
-    /// find the row it made — the command itself names no session.
+    /// The name a creation or a fork was given, which `session.post_create`
+    /// reports.
     name: Option<String>,
+    /// The id the created session will have (`box:review`), so
+    /// `session.post_create` finds the row it made — the command itself
+    /// names no session, and its name can be another Fleet's session's too.
+    created: Option<String>,
     /// Whether a delete was a force delete, for `session.post_delete`.
     force: bool,
 }

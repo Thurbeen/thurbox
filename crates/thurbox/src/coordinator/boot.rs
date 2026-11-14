@@ -194,23 +194,35 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Hoisted out of the struct literal below so each phase can be timed
     // separately; the construction order is unchanged.
     let phase = Instant::now();
-    // The engine (ADR-41): the Tasks of the Fleet in force through its
-    // command line, with a `fleet up` kept running when that Fleet is on this
-    // machine. Until the watches merge, the interface follows one Fleet.
+    // The engine (ADR-41): the Tasks of every listed Fleet through its
+    // command line, as one list, with a `fleet up` kept running for each
+    // Fleet on this machine. Commands go to the Fleet in force until each
+    // reaches its row's own.
     let fleet = thurbox::fleet_link::FleetLink::in_force(&startup_settings);
+    let links: Vec<thurbox::fleet_link::FleetLink> = startup_settings
+        .fleets()
+        .iter()
+        .map(|(name, def)| thurbox::fleet_link::FleetLink::of(name, def))
+        .collect();
     // Automations fire while the interface runs; `thurbox-cli automation
     // tick` fires them from an OS timer otherwise.
     if startup_settings.features.automations {
         thurbox::kernel::automations::keep_ticking(fleet.clone());
     }
     let snapshots = SnapshotStore::with_source(
-        Box::new(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager(
-            fleet.clone(),
+        Box::new(thurbox::kernel::snapshot::fleet::FleetWatches::new(
+            fleet.name(),
+            links
+                .iter()
+                .cloned()
+                .map(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager)
+                .collect(),
         )),
         &startup_settings,
     );
     startup.snapshot_open_ms = phase.elapsed().as_millis() as u64;
-    let shells = crate::coordinator::ShellBook::load();
+    let mut shells = crate::coordinator::ShellBook::load();
+    let unmatchable = shells.take_unmatchable();
 
     let phase = Instant::now();
     let themes = Themes::load(thurbox::config::interface_state::load().theme.as_deref());
@@ -243,7 +255,12 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         snapshots,
         terminals: {
             let mut terminals = terminals(std::sync::Arc::clone(&backends), &startup_settings);
-            terminals.attach_fleet_through(fleet.clone());
+            for link in &links {
+                terminals.attach_fleet_through(link.clone());
+            }
+            for (session, record) in &unmatchable {
+                terminals.kill_shell_window(&record.route, &record.pane, &record.stamp, session);
+            }
             for (session, record) in &shells.records {
                 terminals.record_shell(session, Some(record.pane.clone()));
             }

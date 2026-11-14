@@ -114,6 +114,8 @@ pub struct CommandBus {
     deleted: Vec<String>,
     /// What runs each command: Fleet, through its command line.
     executor: Arc<dyn Executor>,
+    /// The Fleet the commands go to, which a created session's id names.
+    fleet: Option<String>,
 }
 
 impl CommandBus {
@@ -121,7 +123,22 @@ impl CommandBus {
     /// Fleet `link` reaches (ADR-41): `fleet apply`, `send` and `delete`. The
     /// interface's own files (settings, repository memory) are written here.
     pub fn fleet(link: crate::fleet_link::FleetLink) -> Self {
-        Self::with_executor(Arc::new(Fleet { link }))
+        let fleet = Some(link.name().to_string());
+        Self {
+            fleet,
+            ..Self::with_executor(Arc::new(Fleet { link }))
+        }
+    }
+
+    /// The id the session a `create` named `name` will have: its Task's name
+    /// in the Fleet the commands go to (`box:review`). A creation is found
+    /// by it, never by its name, which another Fleet's session can share.
+    pub fn created_id(&self, name: &str) -> Option<String> {
+        let fleet = self.fleet.as_deref()?;
+        Some(crate::kernel::snapshot::row_id(
+            fleet,
+            &super::task_name(name),
+        ))
     }
 
     fn with_executor(executor: Arc<dyn Executor>) -> Self {
@@ -138,6 +155,7 @@ impl CommandBus {
             failed_at: Vec::new(),
             deleted: Vec::new(),
             executor,
+            fleet: None,
         }
     }
 

@@ -96,7 +96,8 @@ crate graph and `runtime-mux`'s module rules.
   into them), `modals/` (help, settings, theme picker, the command palette —
   chrome about thurbox itself,
   which plugins contribute *data* to rather than replace), `bands` (the top/bottom
-  bars), `snapshot` (the read side: a `SnapshotSource`, `fleet::FleetWatch`),
+  bars), `snapshot` (the read side: a `SnapshotSource`, `fleet::FleetWatches`, one
+  `fleet::FleetWatch` per listed Fleet, rows `<fleet>:<task>`),
   `command` (the write side: the `Executor`, `command::fleet`; ADR-41),
   `bookmarks` (the creation flow's repository memory, `bookmarks.json`),
   `terminal/` (live
@@ -163,8 +164,9 @@ crate graph and `runtime-mux`'s module rules.
   `doctor`'s probes all go through it, on this machine or through a `shell`
   launcher (ssh, WSL), with stdin, stdout and exit codes unchanged. Nothing
   else in `kernel` or `cli` starts Fleet. A link is built from a
-  `[fleets.<name>]` entry of `settings.toml` (`FleetLink::of`); the
-  interface uses `FleetLink::in_force`, one Fleet, until it follows several.
+  `[fleets.<name>]` entry of `settings.toml` (`FleetLink::of`). The session
+  list follows every listed Fleet; commands go to `FleetLink::in_force` until
+  each reaches its row's own Fleet.
 - **`cli/`** — `thurbox-cli` subcommands (the `thurbox-cli` skill).
 
 ### Event Loop (`src/main.rs` + `src/coordinator/`)

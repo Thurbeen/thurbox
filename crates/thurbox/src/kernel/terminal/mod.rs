@@ -368,9 +368,9 @@ pub struct Terminals {
     /// What a local tmux pane is viewed through when `settings.toml`'s
     /// `stream_panes` is on ([`Self::view_through`]).
     stream_view: Option<stream_pane::View>,
-    /// The Fleet a Fleet session's pane is attached through
-    /// ([`Self::attach_fleet_through`]).
-    fleet: Option<crate::fleet_link::FleetLink>,
+    /// The Fleets a Fleet session's pane is attached through, by name: a
+    /// row's id names its Fleet ([`Self::attach_fleet_through`]).
+    fleet: HashMap<String, crate::fleet_link::FleetLink>,
     /// What stream panes say about input they dropped, for the interface
     /// to report ([`Self::take_input_notices`]).
     input_notices: (Sender<String>, Receiver<String>),
@@ -402,11 +402,12 @@ impl Terminals {
         self.input_notices.1.try_iter().collect()
     }
 
-    /// Open each Fleet session's pane through the terminal stream `fleet
-    /// attach` names, of the Fleet `link` reaches (ADR-41). A stream pane
-    /// keeps its grid while hidden, as [`Self::view_through`]'s do.
+    /// Open each session of the Fleet `link` reaches through the terminal
+    /// stream `fleet attach` names (ADR-41); called once per listed Fleet. A
+    /// stream pane keeps its grid while hidden, as [`Self::view_through`]'s
+    /// do.
     pub fn attach_fleet_through(&mut self, link: crate::fleet_link::FleetLink) {
-        self.fleet = Some(link);
+        self.fleet.insert(link.name().to_string(), link);
         self.keep_hidden = None;
     }
 
@@ -446,7 +447,7 @@ impl Terminals {
             },
             scrollback: settings.scrollback_lines,
             stream_view: None,
-            fleet: None,
+            fleet: HashMap::new(),
             input_notices: std::sync::mpsc::channel(),
             app_copy_focus: None,
             app_copy_tokens: 0,

@@ -246,17 +246,14 @@ impl App {
         );
         let event = match tracked.kind {
             "create" => {
-                // The command named no session; the row is found by the name it
-                // was given, newest first, now that the snapshot has been
-                // re-read.
-                let row = tracked.name.as_deref().and_then(|name| {
-                    self.snapshots
-                        .current()
-                        .sessions
-                        .iter()
-                        .rev()
-                        .find(|row| row.name == name)
-                });
+                // The command named no session; the row is found by the id
+                // its Task has in the Fleet the command went to, now that the
+                // snapshot has been re-read. Never by its name, which a
+                // session of another Fleet can share.
+                let row = tracked
+                    .created
+                    .as_deref()
+                    .and_then(|id| self.snapshots.current().session(id));
                 let mut event = Event::new("session.post_create")
                     .with("name", tracked.name.as_deref())
                     .with(

@@ -86,7 +86,8 @@ pub enum Action {
     Apply {
         /// A stable name from `ui actions`.
         name: String,
-        /// Session UUID for `session.focus`.
+        /// The session for `session.focus`: its id (`<fleet>:<task>`), or a
+        /// Task name only one Fleet holds.
         #[arg(long)]
         session: Option<String>,
         /// Query to set for `search.open`.

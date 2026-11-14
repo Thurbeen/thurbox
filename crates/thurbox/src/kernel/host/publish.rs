@@ -619,6 +619,7 @@ fn build_sessions(
             .map_err(|e| e.to_string())?;
         set(&entry, "id", to_lua_string(lua, &row.id)?)?;
         set(&entry, "name", to_lua_string(lua, &row.name)?)?;
+        set(&entry, "fleet", opt_lua_string(lua, row.fleet())?)?;
         set(&entry, "agent", to_lua_string(lua, &row.agent)?)?;
         // Three names, three fields, because they are three different facts and
         // no two of them can stand in for each other: what the row was created
