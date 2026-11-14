@@ -396,8 +396,12 @@ mod tests {
                             .chain(command.get_args())
                             .map(|a| a.to_string_lossy().into_owned())
                             .collect();
+                        // Through WSL the same words are one line for a
+                        // login `sh` (`shell::launch`), each still a word.
+                        let line = format!("exec {} ls --all", mux.name());
                         assert!(
-                            argv.ends_with(&[mux.name().to_string(), "ls".into(), "--all".into()]),
+                            argv.ends_with(&[mux.name().to_string(), "ls".into(), "--all".into()])
+                                || argv.ends_with(&["-lc".to_string(), line]),
                             "{at}: the launcher changed the adapter's command line: {argv:?}"
                         );
                         assert!(
