@@ -496,6 +496,9 @@ adding a harness profile to Fleet ([agents.md](agents.md)).
 
 ### Remote SSH & WSL sessions
 
+Which Fleet manages a session, and the place it runs on, are in
+[Where sessions run](../where-sessions-run.md).
+
 Like agents, off-local hosts are **data**. A session can run on a
 remote machine over SSH, or inside a local **WSL distro**, while the
 TUI stays local. Hosts are declared in

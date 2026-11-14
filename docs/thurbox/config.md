@@ -13,7 +13,7 @@ development checkout never touches your real setup.
 
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
-| `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
+| `~/.config/thurbox/hosts.toml` | TOML | you | startup | ssh machines + local WSL distros for the companion shell; places replace it ([Where sessions run](../where-sessions-run.md)) |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
@@ -90,7 +90,7 @@ the right knob:
 | I want to… | Edit | Section |
 |------------|------|---------|
 | Add a coding agent, pin a model | Fleet's harness profiles | [Agents](#agents) |
-| Run sessions on a remote machine over SSH, or in a local WSL distro | `hosts.toml` | [hosts.toml](#hoststoml) |
+| Run sessions on a remote machine or in a WSL distro | Fleet's config, or `[fleets]` in `settings.toml` (planned) | [Where sessions run](../where-sessions-run.md) |
 | Turn a whole TUI feature on/off (mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
 | Tune scrollback, panel breakpoints, git polling | `settings.toml` | [settings.toml](#settingstoml) |
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
@@ -178,8 +178,9 @@ thurbox is itself running in: that one is this machine. An entry whose
 require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
 
-The host picker's choice names the Fleet host a session runs on; see
-[`[fleet]`](#fleet--the-session-engine).
+The new-session modal's host step names the Fleet place a session runs on.
+Fleets and places are explained in
+[Where sessions run](../where-sessions-run.md).
 
 ### Host platform
 

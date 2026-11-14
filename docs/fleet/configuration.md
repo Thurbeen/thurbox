@@ -157,6 +157,9 @@ Tasks; they never inherit TOML's relative-path rule.
 
 ### Runtimes and hosts
 
+[Where sessions run](../where-sessions-run.md) explains Fleets and places, and
+the setups they allow.
+
 A runtime is a program that speaks the
 [runtime protocol](../runtime/README.md#the-runtime-protocol). Each one is a
 `[runtimes.<name>]` table, and each host a Task may name in `spec.host` is a
