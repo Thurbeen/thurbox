@@ -1273,15 +1273,20 @@ mod tests {
                 .count()
         };
         crate::paths::with_path(remote.path(), || {
-            let mut store = super::super::SnapshotStore::with_source(
-                Box::new(FleetWatch::spawn(remote.link.clone())),
-                &Default::default(),
-            );
+            let source = FleetWatch::spawn(remote.link.clone());
+            let reading = source.reading_home.clone();
+            let mut store =
+                super::super::SnapshotStore::with_source(Box::new(source), &Default::default());
+            // The startup ask has finished: only the Fleet being unreachable
+            // can keep an opening from asking again.
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
                 store.refresh_if_due();
                 let state = store.current().fleets.first().map(|f| f.state);
-                if state == Some(FleetState::Unreachable) && asked() == 1 {
+                if state == Some(FleetState::Unreachable)
+                    && asked() == 1
+                    && !reading.load(std::sync::atomic::Ordering::Acquire)
+                {
                     break;
                 }
                 assert!(
