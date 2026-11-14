@@ -62,7 +62,8 @@ teardown() {
   printf 'version = 1\n\n[starter]\nworkspace = "starter"\n' > "$ROOT/fleet/config.toml"
   tbx_sandbox_fleet
   run ! grep -q '^\[starter\]' "$ROOT/fleet/config.toml"
-  grep -qx '\[hosts.local\]' "$ROOT/fleet/config.toml"
+  grep -qx '\[runtimes.mux\]' "$ROOT/fleet/config.toml"
+  run ! grep -q '^\[hosts' "$ROOT/fleet/config.toml"
 }
 
 @test "an old runtime-mux config is written again with the sandbox's root" {
@@ -92,6 +93,7 @@ teardown() {
     wait "$a"
     wait "$b"
   done
-  grep -qx '\[hosts.local\]' "$ROOT/fleet/config.toml"
+  grep -qx '\[runtimes.mux\]' "$ROOT/fleet/config.toml"
+  run ! grep -q '^\[hosts' "$ROOT/fleet/config.toml"
   run ! ls "$ROOT/fleet/"*.toml.*
 }

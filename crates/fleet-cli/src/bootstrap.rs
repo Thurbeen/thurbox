@@ -41,7 +41,7 @@ fn checked(path: &Path) -> Result<(), String> {
 fn native(config_path: &Path, store_dir: &Path) -> Result<String, String> {
     let instance = &hash(config_path.to_string_lossy().as_bytes())[..24];
     let mut config: toml::Value = toml::from_str(&format!(
-        "version = 1\n\n[data]\ndir = {}\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\ncallTimeoutMs = 10000\nkeyPrefix = \"f{instance}\"\n\n[hosts.local]\nruntime = \"mux\"\n",
+        "version = 1\n\n[data]\ndir = {}\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\ncallTimeoutMs = 10000\nkeyPrefix = \"f{instance}\"\n",
         toml::Value::String(store_dir.to_string_lossy().into_owned())
     ))
     .map_err(|e| e.to_string())?;

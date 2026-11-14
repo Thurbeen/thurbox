@@ -13,7 +13,7 @@ development checkout never touches your real setup.
 
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
-| `~/.config/thurbox/hosts.toml` | TOML | you | startup | remote SSH hosts + local WSL distros |
+| `~/.config/thurbox/hosts.toml` | TOML | you | startup | ssh machines + local WSL distros for the companion shell; places replace it ([Where sessions run](../where-sessions-run.md)) |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
@@ -66,8 +66,8 @@ replaced file keeps its permissions, and a file made read-only is refused
 rather than replaced. This
 protects the process-interruption boundary, not storage failure: the staged
 file and parent directory are not explicitly synced to stable storage.
-`tests/architecture_rules.rs`
-(`files_thurbox_reads_back_are_written_atomically`) fails on any other
+thurbox's restrictions in `crates/architecture.toml`, which `arch-rules`
+checks, fail on any other
 production write, apart from an allow-list of logs, a cache, the control
 socket's privately staged files and the self-update's staged binary.
 
@@ -90,7 +90,7 @@ the right knob:
 | I want to… | Edit | Section |
 |------------|------|---------|
 | Add a coding agent, pin a model | Fleet's harness profiles | [Agents](#agents) |
-| Run sessions on a remote machine over SSH, or in a local WSL distro | `hosts.toml` | [hosts.toml](#hoststoml) |
+| Run sessions on a remote machine or in a WSL distro | Fleet's config, or `[fleets]` in `settings.toml` (planned) | [Where sessions run](../where-sessions-run.md) |
 | Turn a whole TUI feature on/off (mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
 | Tune scrollback, panel breakpoints, git polling | `settings.toml` | [settings.toml](#settingstoml) |
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
@@ -178,8 +178,9 @@ thurbox is itself running in: that one is this machine. An entry whose
 require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
 
-The host picker's choice names the Fleet host a session runs on; see
-[`[fleet]`](#fleet--the-session-engine).
+The new-session modal's host step names the Fleet place a session runs on.
+Fleets and places are explained in
+[Where sessions run](../where-sessions-run.md).
 
 ### Host platform
 
@@ -594,9 +595,9 @@ database:
   `git+file://<repo>?branch=<branch>#<base>`, and the runtime makes it; a
   repository without one is `file://<repo>`. A confirmed delete is checked
   against the Task as it is then.
-- The host picker's route names the Fleet host: `ssh:devbox` is `devbox`,
-  this machine is `local`. A host Fleet's config does not define
-  (`fleet runtime hosts`) is refused.
+- The host picker's route names a Fleet place: a Fleet row carries the
+  place's id, `<runtime>/<place>`, and this machine is `local`. A place
+  Fleet's config does not define (`fleet runtime hosts`) is refused.
 - The chosen agent is the Task's harness, and only an agent Fleet has a
   harness profile for (`fleet version --json`'s `harnesses`: the
   [bundled ones](agents.md) and each user profile) is taken. Any

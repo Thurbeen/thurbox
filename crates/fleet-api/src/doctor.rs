@@ -194,7 +194,19 @@ pub fn no_runtime() -> Check {
         name: "none".into(),
         level: Level::Fail,
         detail: "no runtime configured".into(),
-        hint: Some("run fleet init, or add [runtimes.mux] and [hosts.local] to the config".into()),
+        hint: Some("run fleet init, or add [runtimes.mux] to the config".into()),
+    }
+}
+
+/// `local` names no place, for `why`: a warning, since a config
+/// of other places alone is whole.
+pub fn no_local_place(why: &str) -> Check {
+    Check {
+        area: "runtime",
+        name: "local".into(),
+        level: Level::Warn,
+        detail: why.to_string(),
+        hint: Some("a Task names one of the places `fleet runtime places` lists".into()),
     }
 }
 

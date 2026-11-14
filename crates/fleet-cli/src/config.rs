@@ -29,10 +29,10 @@ pub struct Config {
     /// protocol.
     #[serde(default)]
     pub runtimes: BTreeMap<String, ProgramConfig>,
-    /// The `[hosts.<name>]` sections: the runtime serving each host a Task
-    /// may name.
+    /// A `[hosts]` table, read only to refuse it by name: a host is a place
+    /// of a runtime (ADR-42), configured under `[runtimes.<name>.places]`.
     #[serde(default)]
-    pub hosts: BTreeMap<String, HostConfig>,
+    hosts: Option<toml::Value>,
     /// A `[starter]` section, read only to refuse it by name: `fleet up`
     /// needs no starter Task.
     #[serde(default)]
@@ -131,15 +131,32 @@ pub struct ProgramConfig {
     /// The first part of every key Fleet gives the runtime; give a second
     /// Fleet on the same runtime its own.
     pub key_prefix: Option<String>,
+    /// The runtime whose `local` place `local` names, when the
+    /// config has several.
+    #[serde(default)]
+    pub default: bool,
+    /// The `[runtimes.<name>.places.<place>]` tables: where the runtime runs
+    /// a process. Fleet passes each table to the runtime and does not read
+    /// it. None means the one place `local`, with an empty config.
+    #[serde(default)]
+    pub places: BTreeMap<String, toml::Table>,
 }
 
-/// One `[hosts.<name>]` section.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HostConfig {
-    /// The `[runtimes.<name>]` that serves the host.
+/// One place a Task may name, as `spec.host`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostPlace {
+    /// `<runtime>/<place>`.
+    pub id: String,
+    /// The `[runtimes.<name>]` serving it.
     pub runtime: String,
+    /// The place, with its table as JSON, as each request names it.
+    pub place: fleet_api::runtime::Place,
+    /// The default runtime's `local` place, which `local` also names.
+    pub local: bool,
 }
+
+/// The short place id: the default runtime's `local` place.
+pub const LOCAL: &str = fleet_api::runtime::Place::LOCAL;
 
 impl Config {
     pub fn load(path: &Path) -> Result<Config, String> {
@@ -173,6 +190,12 @@ impl Config {
         config
             .check_runtimes()
             .map_err(|e| format!("config {}: {e}", path.display()))?;
+        if config.hosts.is_some() {
+            return Err(format!(
+                "config {}: [hosts] is gone: a Task names a place, `<runtime>/<place>`. Remove [hosts]; a runtime with no [runtimes.<name>.places] table has the one place `local`",
+                path.display()
+            ));
+        }
         if config.starter.is_some() {
             return Err(format!(
                 "config {}: [starter] is no longer read: fleet up needs no starter Task. Remove the section",
@@ -245,28 +268,27 @@ impl Config {
         Ok(config)
     }
 
-    /// `[runtimes]` and `[hosts]` agree: each host names a runtime that is
-    /// there, every runtime serves a host, and `[runtime]` is not beside them.
+    /// `[runtimes]` is well formed: names that make a place id, one default
+    /// when there are several, and no `[runtime]` beside it.
     fn check_runtimes(&self) -> Result<(), String> {
-        if self.runtime.is_some() && (!self.runtimes.is_empty() || !self.hosts.is_empty()) {
-            return Err("[runtime] and [runtimes]/[hosts] exclude each other; keep one".into());
+        if self.runtime.is_some() && !self.runtimes.is_empty() {
+            return Err("[runtime] and [runtimes] exclude each other; keep one".into());
         }
-        for (host, h) in &self.hosts {
-            if !self.runtimes.contains_key(&h.runtime) {
-                return Err(format!(
-                    "hosts.{host}.runtime {:?} names no [runtimes.{}]",
-                    h.runtime, h.runtime
-                ));
-            }
+        if self.runtimes.len() > 1 && self.default_runtime().is_none() {
+            return Err(format!(
+                "several runtimes and no default: mark one `default = true`, the one whose `local` place `local` names (have {})",
+                self.runtimes.keys().cloned().collect::<Vec<_>>().join(", ")
+            ));
         }
         for (name, rt) in &self.runtimes {
+            fleet_api::validate::validate_name(name)
+                .map_err(|e| format!("runtimes.{name}: {e}"))?;
+            for place in rt.places.keys() {
+                fleet_api::validate::validate_name(place)
+                    .map_err(|e| format!("runtimes.{name}.places.{place}: {e}"))?;
+            }
             if rt.program.is_empty() {
                 return Err(format!("runtimes.{name}.program is empty"));
-            }
-            if !self.hosts.values().any(|h| &h.runtime == name) {
-                return Err(format!(
-                    "no host names runtimes.{name}; add [hosts.<name>] runtime = {name:?}"
-                ));
             }
             if let Some(ms) = rt.call_timeout_ms
                 && !(1..=300_000).contains(&ms)
@@ -286,13 +308,67 @@ impl Config {
         Ok(())
     }
 
+    /// The runtime whose place `local` names: the one marked
+    /// `default`, or the only one.
+    pub fn default_runtime(&self) -> Option<&str> {
+        let marked: Vec<&String> = self
+            .runtimes
+            .iter()
+            .filter(|(_, rt)| rt.default)
+            .map(|(name, _)| name)
+            .collect();
+        match (marked.as_slice(), self.runtimes.len()) {
+            ([one], _) => Some(one.as_str()),
+            ([], 1) => self.runtimes.keys().next().map(String::as_str),
+            _ => None,
+        }
+    }
+
+    /// Why `local` names no place, when it does not: the default
+    /// runtime has places and none of them is `local`, as a runtime of VMs
+    /// alone may.
+    pub fn no_local(&self) -> Option<String> {
+        let default = self.default_runtime()?;
+        (!self.places().iter().any(|p| p.local)).then(|| {
+            format!(
+                "no `local` place: the default runtime {default} has none; add [runtimes.{default}.places.local] or name a place"
+            )
+        })
+    }
+
+    /// Every place of every runtime, by its id `<runtime>/<place>`.
+    pub fn places(&self) -> Vec<HostPlace> {
+        let default = self.default_runtime();
+        let mut places = Vec::new();
+        for (runtime, rt) in &self.runtimes {
+            let configured: Vec<(String, toml::Table)> = if rt.places.is_empty() {
+                vec![(LOCAL.to_string(), toml::Table::new())]
+            } else {
+                rt.places.clone().into_iter().collect()
+            };
+            for (name, table) in configured {
+                let config = match serde_json::to_value(&table) {
+                    Ok(serde_json::Value::Object(config)) => config,
+                    _ => serde_json::Map::new(),
+                };
+                places.push(HostPlace {
+                    id: format!("{runtime}/{name}"),
+                    local: Some(runtime.as_str()) == default && name == LOCAL,
+                    runtime: runtime.clone(),
+                    place: fleet_api::runtime::Place { name, config },
+                });
+            }
+        }
+        places
+    }
+
     pub fn empty() -> Config {
         Config {
             version: CONFIG_VERSION,
             data: Data::default(),
             runtime: None,
             runtimes: BTreeMap::new(),
-            hosts: BTreeMap::new(),
+            hosts: None,
             starter: None,
             forge: None,
             plugins: BTreeMap::new(),

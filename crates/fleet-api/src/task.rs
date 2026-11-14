@@ -21,6 +21,16 @@ pub const RELEASE_FINALIZER: &str = "fleet.dev/release";
 /// The runtime host a Task runs on when it names none: this machine.
 pub const LOCAL_HOST: &str = "local";
 
+/// The host a Task runs on: its own `spec.host`, else its TaskConfig's
+/// (`config_host`), else [`LOCAL_HOST`]. The manager resolves a launch by
+/// this rule, and `fleet apply` checks a Task's host by it.
+pub fn effective_host(spec: &serde_json::Value, config_host: Option<&str>) -> String {
+    match spec.get("host") {
+        Some(own) => own.as_str().unwrap_or_default().to_string(),
+        None => config_host.unwrap_or(LOCAL_HOST).to_string(),
+    }
+}
+
 /// What a Task asks for. Fixed once created, like a Pod's spec: only
 /// `dispatch` and `forge` may change, `amendments` only grows through
 /// `fleet amend`, and a different brief is a different Task.

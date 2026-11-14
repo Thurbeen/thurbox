@@ -65,7 +65,7 @@ fn an_unreachable_runtime_fails_and_the_rest_are_reported_with_their_fix() {
     fs::write(
         &env.config,
         format!(
-            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 5000\n\n[hosts.local]\nruntime = \"mux\"\n",
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 5000\n",
             missing.to_string_lossy()
         ),
     )
@@ -75,7 +75,7 @@ fn an_unreachable_runtime_fails_and_the_rest_are_reported_with_their_fix() {
     run.code(1);
     let report = run.json();
 
-    let runtime = check(&report, "runtime", "local");
+    let runtime = check(&report, "runtime", "mux/local");
     assert_eq!(runtime["level"], "fail", "{report:#}");
     assert!(
         runtime["hint"].as_str().is_some_and(|h| !h.is_empty()),
@@ -251,4 +251,69 @@ fn an_unreadable_ledger_fails_even_when_no_profile_installs_anything() {
     let report = run.json();
     let row = check(&report, "integration", "integrations.json");
     assert_eq!(row["level"], "fail", "{report:#}");
+}
+
+/// A place its runtime's manifest reports not ready fails, with the
+/// runtime's why; the ready one beside it passes.
+#[cfg(unix)]
+#[test]
+fn a_place_its_runtime_reports_not_ready_fails_with_why() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = setup("doctor-place");
+    let runtime = env.root.join("runtime.sh");
+    fs::write(
+        &runtime,
+        r#"#!/bin/sh
+cat >/dev/null
+echo '{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop"],"places":[{"name":"local","platform":"posix","ready":true},{"name":"devbox","platform":"posix","ready":false,"why":"no route to devbox"}]}}'
+"#,
+    )
+    .expect("runtime");
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).expect("chmod");
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\n\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\n",
+            runtime.display()
+        ),
+    )
+    .expect("config");
+    let run = env.fleet(&["doctor", "--json"]);
+    run.code(1);
+    let report = run.json();
+    assert_eq!(
+        check(&report, "runtime", "mux/local")["level"],
+        "ok",
+        "{report:#}"
+    );
+    let devbox = check(&report, "runtime", "mux/devbox");
+    assert_eq!(devbox["level"], "fail", "{report:#}");
+    assert!(
+        devbox.to_string().contains("no route to devbox"),
+        "{report:#}"
+    );
+}
+
+/// With no `local` place, doctor says so: a warning, since a config of
+/// remote places alone is whole.
+#[test]
+fn a_config_without_a_local_place_is_a_warning() {
+    let env = setup("doctor-no-local");
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.vm]\nprogram = '{}'\n\n[runtimes.vm.places.sandbox]\n",
+            env.root.join("no-such-runtime").to_string_lossy()
+        ),
+    )
+    .expect("config");
+    let report = env.fleet(&["doctor", "--json"]).json();
+    let local = check(&report, "runtime", "local");
+    assert_eq!(local["level"], "warn", "{report:#}");
+    assert!(
+        local["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("no `local` place: the default runtime vm has none")),
+        "{report:#}"
+    );
 }

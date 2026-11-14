@@ -10,8 +10,8 @@ description: Remote SSH and WSL hosts in thurbox: the hosts.toml schema (runtime
 ## What a host is for
 
 An off-local host is a **remote machine over SSH** or a **local WSL distro**
-(`wsl.exe`). Every session is a Fleet Task, and Fleet runs it on the host its
-spec names, through the runtime Fleet's `[hosts.<name>]` names. thurbox
+(`wsl.exe`). Every session is a Fleet Task, and Fleet runs it on the place its
+spec names (`<runtime>/<place>`, ADR-42). thurbox
 itself reads this machine only:
 
 - **Creating a session.** The host step of the new-session flow is always
@@ -19,7 +19,8 @@ itself reads this machine only:
   `fleet runtime hosts --json` lists when Fleet answers. The picked host
   becomes the Task's `spec.host`; this machine is `local`
   (`Fleet::host`, `src/kernel/command/fleet.rs`). A host Fleet does not list
-  is refused, with a hint to add `[hosts.<name>]` to Fleet's config. A
+  is refused, with a hint to add `[runtimes.<name>.places.<place>]` to
+  Fleet's config. A
   session on another host gets a `file://` workspace URL: the creation flow
   reads branches on this machine only, so it never offers a worktree there.
 - **The creation flow's reads** happen on this machine only

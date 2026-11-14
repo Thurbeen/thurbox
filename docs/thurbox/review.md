@@ -49,8 +49,8 @@ data, agent may reference neither git nor backend, and kernel reaches agent or
 the backend contract by fully-qualified path only, never a use - a
 function-local use or an alias included, since a reference counts where it
 resolves. Consumers name the backend contract; only backend::wiring names an
-adapter, and only a composition root names backend::wiring
-(crates/thurbox/tests/architecture_rules.rs). A new module fails arch-rules
+adapter, and only a composition root names backend::wiring (thurbox's
+restrictions in the same file). A new module fails arch-rules
 until its rules entry is declared, and every entry, coordinator's too, is
 checked. The runtime behind backend is crates/runtime-mux, held to its module
 rules in crates/architecture.toml and its own tests/architecture_rules.rs: the
@@ -343,7 +343,9 @@ sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/thurbox/releasing.md owns the release process and
 docs/thurbox/orchestration.md what thurbox adds to Fleet's orchestration. docs/README.md owns the
 system: the split between thurbox, Fleet and the runtimes, which page owns
-and each contract between them. docs/fleet/ is Fleet's
+and each contract between them. docs/where-sessions-run.md owns the
+user's view of where a session runs: Fleets, places and the setups they
+allow. docs/fleet/ is Fleet's
 documentation and docs/runtime/ the runtimes', each with a README.md index
 saying what its pages own. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md

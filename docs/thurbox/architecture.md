@@ -286,8 +286,8 @@ regardless of which backend is active.
 **Why**: Every consumer — the runtime protocol (`runtime_mux::protocol`) and
 thurbox's `kernel` — reaches a session through the trait and the registry that
 holds one backend per route
-(ADR-29), never through an adapter, which `tests/architecture_rules.rs`
-enforces (`consumers_reach_no_concrete_backend`). The adapters today are
+(ADR-29), never through an adapter, which thurbox's restrictions in
+`crates/architecture.toml` enforce. The adapters today are
 `TmuxBackend`, `PsmuxBackend`, and `RmuxBackend`, peers over the shared tmux-protocol server
 (ADR-31), each reached locally or on a host over a `TmuxTransport`
 ([hosts and transports](../runtime/runtime-mux.md#hosts-and-transports)).
@@ -612,7 +612,7 @@ among them: they are Fleet's, driven through Fleet's own command line
 
 **Why**: A separate binary keeps scripting/automation out of the
 TUI's event loop. The `cli` module never reaches a backend adapter
-(`tests/architecture_rules.rs`), so it can operate without a terminal UI.
+(`crates/architecture.toml`), so it can operate without a terminal UI.
 
 **Rejected**:
 
@@ -1263,8 +1263,9 @@ One repository keeps a change across components in one change and one CI.
 
 **Status**: in progress. The code lands in steps. The runtime protocol's
 version 2 has landed: each request names a place, and `manifest` reports
-places. Until each other step lands, Fleet's `[hosts]` table and thurbox's
-`hosts.toml` work as documented today.
+places. Fleet's config declares places, and its `[hosts]` table is gone.
+Until each other step lands, thurbox's `hosts.toml` works as documented
+today.
 
 **Choice**: a host is a place of a runtime.
 
@@ -1286,7 +1287,7 @@ places. Until each other step lands, Fleet's `[hosts]` table and thurbox's
 The protocol additions are in
 [the runtime protocol](../runtime/README.md#places-protocol-version-2),
 and the config shape is in
-[Fleet's configuration](../fleet/configuration.md#planned-places-of-a-runtime).
+[Fleet's configuration](../fleet/configuration.md#runtimes-and-their-places).
 
 **Why**: how to reach a place is a fact of the runtime (ADR-41). A host table
 in Fleet and another in thurbox are two copies of one fact. One Fleet config

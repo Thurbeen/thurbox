@@ -8,11 +8,4 @@ pub fn spawn() {
     // runtime_mux::rmux::spawn() in a comment is no reference.
     let _ = "runtime_mux::rmux";
     crate::backend::for_hosts();
-    crate::backend::tmux::spawn();
-    crate::backend::wiring::local_only();
-}
-
-fn imported() {
-    use crate::backend::psmux as adapter;
-    adapter::spawn();
 }

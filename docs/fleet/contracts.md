@@ -1202,9 +1202,12 @@ store's create is
 exclusive, so two clients applying one name at once get one object and one
 refusal. A view creates its Tasks this way.
 
-`fleet runtime hosts --json` prints `{"hosts": [...]}`: the names under
-`[hosts]`, the hosts a Task may name, or `null` when the fake `[runtime]`
-serves any host. `fleet version --json` lists the `harnesses` with a profile of
+`fleet runtime hosts --json` prints `{"hosts": [...]}`: the hosts a Task may
+name, `local` first and then each other place, `<runtime>/<place>`, or
+`null` when the fake `[runtime]` serves any. The command keeps its old name
+until thurbox reads `fleet runtime places`. `fleet runtime places --json` prints
+each place with its readiness
+([configuration](configuration.md#runtimes-and-their-places)). `fleet version --json` lists the `harnesses` with a profile of
 their own; any other harness name is run as a program. A view checks a
 Task against both before it applies it.
 
@@ -1216,7 +1219,7 @@ that needs a step names it as a hint.
 | --- | --- | --- |
 | `integration` | each harness with an `[install]` table, as `fleet integration status` reports it ([installed integrations](integration.md)); each ledger entry that no harness profile with an `[install]` table names | `warn` for `outdated` and `modified`; `warn` for an entry left behind, with `fleet integration uninstall <agent>` as its hint; `info` for `not-installed`, `agent-missing` and `unsupported-platform`; `fail` when the ledger cannot be read |
 | `harness` | each harness's `program`, found on PATH | `info` when it is not there: a user installs only the agents they run |
-| `runtime` | each host under `[hosts]`: its runtime program answers `manifest` with protocol 1 or 2 and the required verbs | `fail` when it does not answer; `fail` when no runtime is configured, or when `[runtime]` is not the fake with its `dir` |
+| `runtime` | each place of each runtime, by its id `<runtime>/<place>`: its runtime program answers `manifest` with protocol 1 or 2 and the required verbs, and reports the place ready; a version 1 runtime serves only `local` | `fail` when a place is not ready, with the runtime's why; `fail` when it does not answer; `fail` when no runtime is configured, or when `[runtime]` is not the fake with its `dir` |
 
 The exit status is 1 only when a check fails. Warnings alone exit 0.
 With `--json`, it prints `{"checks": [...], "failed": N}`. Each check has
@@ -1258,9 +1261,7 @@ the forges ChangeRequests are read from:
 program = "runtime-mux"   # a path or a name on PATH
 callTimeoutMs = 15000     # the bound on every call; shorter than the lease
 keyPrefix = "fleet"       # give a second fleet on the same runtime its own
-
-[hosts.local]
-runtime = "mux"           # a Task's spec.host chooses the runtime
+                          # no places table: one place, spec.host = "local"
 
 [forge.hosts]
 "github.com" = { kind = "github", cli = "gh" }
@@ -1338,7 +1339,8 @@ command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `tty` answer comes back bridged, and against `runtime-mux`, whose stream a
 test view drives: snapshot, input, output, and a detach that leaves the
 agent running; it also drives `fleet term-bridge` on its own, and reads
-`fleet runtime hosts` and the harnesses `fleet version` lists.
+`fleet runtime hosts`, `fleet runtime places` and the harnesses
+`fleet version` lists.
 `e2e_interactive` covers a Task with no brief: its spawn, its inbox and the
 refused amendment; and `apply --create-only`, which never changes a Task
 already there.
