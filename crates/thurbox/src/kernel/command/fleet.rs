@@ -117,15 +117,15 @@ impl super::Executor for Fleet {
                 // there, so two names that make one Task name (`Review`,
                 // `review`) are refused rather than merged, by Fleet's
                 // exclusive create even when two interfaces race.
-                self.run(
+                self.link.run(
                     &["apply", "--create-only", "-f", "-"],
                     Some(&task.to_string()),
                 )?;
             }
-            Command::Send { session, text } => self.run(&["send", session, text], None)?,
+            Command::Send { session, text } => self.link.run(&["send", session, text], None)?,
             Command::Rename { session, name } => self.rename(session, name)?,
             // Fleet has no undo window: a delete is for good.
-            Command::Delete { session, .. } => self.run(&["delete", "task", session], None)?,
+            Command::Delete { session, .. } => self.link.run(&["delete", "task", session], None)?,
             // Everything else is a file of thurbox's, or a command no engine
             // runs: refused by name, never dropped.
             _ => {
@@ -172,7 +172,7 @@ impl Fleet {
     fn rename(&self, session: &str, name: &str) -> Result<(), String> {
         crate::paths::validate_safe_name(name)?;
         let label = format!("{}={name}", crate::kernel::snapshot::fleet::NAME_LABEL);
-        self.run(&["label", "task", session, &label], None)
+        self.link.run(&["label", "task", session, &label], None)
     }
 
     /// The Fleet host a session on `route` runs on: the picker's route
@@ -262,12 +262,6 @@ impl Fleet {
                 String::from_utf8_lossy(&out.stderr).trim()
             )),
         }
-    }
-
-    /// Run `fleet <args>`, with `input` on its stdin, and answer its error
-    /// when it exits non-zero.
-    fn run(&self, args: &[&str], input: Option<&str>) -> Result<(), String> {
-        self.link.run(args, input)
     }
 }
 

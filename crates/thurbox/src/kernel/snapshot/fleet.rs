@@ -93,7 +93,7 @@ pub struct FleetWatch {
 impl FleetWatch {
     /// Follow the Tasks of the Fleet `program` runs.
     pub fn spawn(program: PathBuf) -> Self {
-        Self::start(local(&program), false)
+        Self::start(FleetLink::local(program.to_string_lossy()), false)
     }
 
     /// [`Self::spawn`], and keep a `fleet up` running: one is started
@@ -101,7 +101,7 @@ impl FleetWatch {
     /// outlives it, in a process group of its own: Tasks keep reconciling
     /// with no interface open.
     pub fn with_manager(program: PathBuf) -> Self {
-        Self::start(local(&program), true)
+        Self::start(FleetLink::local(program.to_string_lossy()), true)
     }
 
     fn start(link: FleetLink, manager: bool) -> Self {
@@ -217,11 +217,6 @@ impl Drop for FleetWatch {
             }
         }
     }
-}
-
-/// The Fleet `program` runs on this machine.
-fn local(program: &Path) -> FleetLink {
-    FleetLink::local(program.to_string_lossy())
 }
 
 fn now_ms() -> i64 {
@@ -701,6 +696,7 @@ pub fn row_of(task: &Value) -> SessionRow {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::process::Command;
 
     use super::*;
@@ -965,7 +961,7 @@ mod tests {
         let (tx, _rx) = channel();
         let dir = data.path().to_path_buf();
         std::thread::spawn(move || {
-            let _ = manage(&local(&program), &dir, &tx);
+            let _ = manage(&FleetLink::local(program.to_string_lossy()), &dir, &tx);
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let (name, text) = loop {
@@ -1000,7 +996,12 @@ mod tests {
         let data = tempfile::tempdir().expect("data");
         let program = fake_fleet(bin.path(), "echo 'error: no starter' >&2; exit 1");
         let (tx, _rx) = channel();
-        let why = manage(&local(&program), data.path(), &tx).expect_err("it failed");
+        let why = manage(
+            &FleetLink::local(program.to_string_lossy()),
+            data.path(),
+            &tx,
+        )
+        .expect_err("it failed");
         assert_eq!(why, "fleet up: no starter");
         assert_eq!(logs(data.path()), Vec::<String>::new());
     }

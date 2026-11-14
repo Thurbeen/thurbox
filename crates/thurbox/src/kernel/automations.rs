@@ -49,7 +49,7 @@ pub struct Fired {
 /// another, with Fleet at `fleet`. Runs left marked running past their
 /// deadline are recorded as timed out first.
 pub fn tick(fleet: &Path, now: u64) -> Result<Vec<Fired>, String> {
-    let fleet = local(fleet);
+    let fleet = FleetLink::local(fleet.to_string_lossy());
     let claimed = crate::config::automations::update(|all| {
         let mut claimed = Vec::new();
         for automation in &mut all.automations {
@@ -84,12 +84,11 @@ pub fn run_now(fleet: &Path, name: &str, now: u64) -> Result<Fired, String> {
         automation.start_run(now);
         Ok(automation.clone())
     })?;
-    Ok(finish(&local(fleet), &automation, now))
-}
-
-/// The Fleet `program` runs on this machine.
-fn local(program: &Path) -> FleetLink {
-    FleetLink::local(program.to_string_lossy())
+    Ok(finish(
+        &FleetLink::local(fleet.to_string_lossy()),
+        &automation,
+        now,
+    ))
 }
 
 /// Run a claimed fire and record how it went.
