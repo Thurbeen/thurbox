@@ -306,6 +306,28 @@ enum RuntimeCommand {
         #[arg(long)]
         json: bool,
     },
+    /// The folders of a place, read through its runtime's `browse`: each
+    /// subdirectory of `dir` (the place's home when omitted), marked when it
+    /// is a git work tree. Read-only.
+    Browse {
+        /// The place: `local`, or `<runtime>/<place>`.
+        place: String,
+        /// An absolute directory on the place.
+        dir: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The branches of a repository on a place, read through its runtime's
+    /// `branches`, with the one a new branch starts from by default.
+    /// Read-only.
+    Branches {
+        /// The place: `local`, or `<runtime>/<place>`.
+        place: String,
+        /// The absolute path of the repository on the place.
+        repo: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// What a hook reports (`fleet_api::signal::State`).
@@ -552,6 +574,52 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         return Ok(());
+    }
+    if let Command::Runtime {
+        command: RuntimeCommand::Browse { place, dir, json },
+    } = &cli.command
+    {
+        let program = place_program(&config, place)?;
+        return match program.browse(dir.as_deref()) {
+            Observation::Known(fleet_runtime::exec::Browsed::Listing { dir, entries }) => {
+                if *json {
+                    print_json(&json!({ "dir": dir, "entries": entries }));
+                } else {
+                    for entry in entries {
+                        let git = if entry.repo { "  (git)" } else { "" };
+                        println!("{}/{git}", entry.name);
+                    }
+                }
+                Ok(())
+            }
+            Observation::Known(fleet_runtime::exec::Browsed::Failed { why })
+            | Observation::Unknown { why } => Err(fail(why)),
+        };
+    }
+    if let Command::Runtime {
+        command: RuntimeCommand::Branches { place, repo, json },
+    } = &cli.command
+    {
+        let program = place_program(&config, place)?;
+        return match program.branches(repo) {
+            Observation::Known(fleet_runtime::exec::BranchesRead::Branches { names, default }) => {
+                if *json {
+                    print_json(&json!({ "names": names, "default": default }));
+                } else {
+                    for name in &names {
+                        let mark = if Some(name) == default.as_ref() {
+                            "* "
+                        } else {
+                            "  "
+                        };
+                        println!("{mark}{name}");
+                    }
+                }
+                Ok(())
+            }
+            Observation::Known(fleet_runtime::exec::BranchesRead::Failed { why })
+            | Observation::Unknown { why } => Err(fail(why)),
+        };
     }
     if let Command::Runtime {
         command: RuntimeCommand::Places { json },
@@ -1586,6 +1654,41 @@ fn exec_program(config: &Config, name: &str) -> ExecProgram {
         .map(|place| place.place)
         .collect();
     rt
+}
+
+/// The program of the place `id` names (`local`, or `<runtime>/<place>`),
+/// its requests naming that place: how `fleet runtime browse` and
+/// `branches` reach it. A place the config does not define is refused by
+/// name.
+fn place_program(config: &Config, id: &str) -> Result<ExecProgram, Failure> {
+    if config.runtimes.is_empty() {
+        return Err(fail(
+            "the fake [runtime] has no places to read; a place belongs to a runtime under [runtimes]",
+        ));
+    }
+    let places = config.places();
+    let found = places.iter().find(|p| {
+        if id == config::LOCAL {
+            p.local
+        } else {
+            p.id == id
+        }
+    });
+    let Some(found) = found else {
+        if id == config::LOCAL
+            && let Some(why) = config.no_local()
+        {
+            return Err(fail(why));
+        }
+        let known: Vec<&str> = places.iter().map(|p| p.id.as_str()).collect();
+        return Err(fail(format!(
+            "no place {id}; the places are {}",
+            known.join(", ")
+        )));
+    };
+    let mut program = exec_program(config, &found.runtime);
+    program.place = found.place.clone();
+    Ok(program)
 }
 
 /// `fleet runtime places`: each place, with its runtime's manifest answer.

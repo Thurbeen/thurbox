@@ -1207,7 +1207,10 @@ name, `local` first and then each other place, `<runtime>/<place>`, or
 `null` when the fake `[runtime]` serves any. The command keeps its old name
 until thurbox reads `fleet runtime places`. `fleet runtime places --json` prints
 each place with its readiness
-([configuration](configuration.md#runtimes-and-their-places)). `fleet version --json` lists the `harnesses` with a profile of
+([configuration](configuration.md#runtimes-and-their-places)). `fleet runtime browse <place> [dir] --json`
+prints `{"dir", "entries"}` and `fleet runtime branches <place> <repo> --json`
+prints `{"names", "default"}`, read through the runtime's `browse` and
+`branches` verbs. `fleet version --json` lists the `harnesses` with a profile of
 their own; any other harness name is run as a program. A view checks a
 Task against both before it applies it.
 
@@ -1339,8 +1342,9 @@ command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `tty` answer comes back bridged, and against `runtime-mux`, whose stream a
 test view drives: snapshot, input, output, and a detach that leaves the
 agent running; it also drives `fleet term-bridge` on its own, and reads
-`fleet runtime hosts`, `fleet runtime places` and the harnesses
-`fleet version` lists.
+`fleet runtime hosts`, `fleet runtime places`, `fleet runtime browse` and
+`branches` (and their refusal when a runtime does not offer the verb), and
+the harnesses `fleet version` lists.
 `e2e_interactive` covers a Task with no brief: its spawn, its inbox and the
 refused amendment; and `apply --create-only`, which never changes a Task
 already there.
