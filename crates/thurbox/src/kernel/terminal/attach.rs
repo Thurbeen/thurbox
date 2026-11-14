@@ -167,9 +167,12 @@ impl Terminals {
     /// after [`ATTACH_RETRY_INTERVAL`], and a stream that ended is attached
     /// afresh, since `drop_lost_panes` drops a pane whose output ended.
     fn attach_fleet(&mut self, row: &crate::kernel::snapshot::SessionRow, rows: u16, cols: u16) {
-        let Some(link) = self.fleet.clone() else {
+        // The Fleet the row's id names; a row of no listed Fleet has no
+        // stream to ask for.
+        let Some(link) = row.fleet().and_then(|fleet| self.fleet.get(fleet)).cloned() else {
             return;
         };
+        let task = row.task().to_string();
         let Some(key) = row.key.clone() else {
             self.fail(&row.id, None, "session has no pane yet".to_string());
             return;
@@ -194,8 +197,7 @@ impl Terminals {
         std::thread::spawn(move || {
             // The pane's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
-            let result =
-                super::fleet::open(&link, &session, rows, cols, scrollback, notices, shell);
+            let result = super::fleet::open(&link, &task, rows, cols, scrollback, notices, shell);
             let _ = tx.send(Attached {
                 session,
                 pane: key,

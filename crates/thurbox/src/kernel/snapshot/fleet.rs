@@ -59,8 +59,11 @@ enum Update {
     /// Every row, and the Tasks that went since the last rows: see
     /// [`SourceRead::removed`].
     Rows(Vec<SessionRow>, Vec<String>),
-    /// Why the watch is not running, or `None` once it reads again.
+    /// What the running watch warns of, or `None` once it reads again.
     Watch(Option<String>),
+    /// Why the watch ended: until it reads again, the Fleet cannot be asked,
+    /// so its rows are unreachable rather than gone.
+    Lost(String),
     /// Why no manager runs, or `None` once one does.
     Manager(Option<String>),
     /// The harnesses Fleet has profiles for: the agents a session can run.
@@ -71,9 +74,14 @@ enum Update {
 
 /// The Tasks as session rows, followed by `fleet watch` on a worker.
 pub struct FleetWatch {
+    /// The Fleet's name, which each row's id starts with.
+    name: String,
     updates: Receiver<Update>,
     read: SourceRead,
     watch_error: Option<String>,
+    /// Whether the watch ended and has not read since: its rows are drawn
+    /// unreachable.
+    lost: bool,
     manager_error: Option<String>,
     /// The Tasks as `fleet watch` last read them, before the interface's own
     /// order is laid over them.
@@ -125,11 +133,14 @@ impl FleetWatch {
         }
         let child = Arc::new(Mutex::new(None));
         let held = Arc::clone(&child);
+        let name = link.name().to_string();
         std::thread::spawn(move || watch(&link, &tx, &held));
         Self {
+            name,
             updates,
             read: SourceRead::default(),
             watch_error: None,
+            lost: false,
             manager_error: None,
             tasks: Vec::new(),
             rows_seen: false,
@@ -151,7 +162,14 @@ impl SnapshotSource for FleetWatch {
                     self.rows_seen = true;
                     self.read.removed.extend(removed);
                 }
-                Update::Watch(error) => self.watch_error = error,
+                Update::Watch(error) => {
+                    self.lost &= error.is_some();
+                    self.watch_error = error;
+                }
+                Update::Lost(why) => {
+                    self.lost = true;
+                    self.watch_error = Some(why);
+                }
                 Update::Manager(error) => self.manager_error = error,
                 Update::Harnesses(harnesses) => self.read.harnesses = Some(harnesses),
                 Update::Hosts(hosts) => self.read.hosts = Some(hosts),
@@ -192,6 +210,11 @@ impl SnapshotSource for FleetWatch {
             .filter(|row| stuck_at(row).is_none_or(|at| at <= now))
             .cloned()
             .map(|mut row| {
+                // A Fleet that cannot be asked has not lost its sessions: an
+                // unknown observation never means absence.
+                if self.lost {
+                    row.status = SessionState::Unreachable;
+                }
                 if let Some(state) = state {
                     row.display_order = state
                         .order
@@ -211,6 +234,72 @@ impl SnapshotSource for FleetWatch {
         let read = self.read.clone();
         self.read.removed.clear();
         Some(read)
+    }
+}
+
+/// The Tasks of every Fleet thurbox lists, as one list: one [`FleetWatch`]
+/// per Fleet, each row's id naming its Fleet. The harnesses and places the
+/// creation flow offers are the Fleet in force's, which the commands go to.
+pub struct FleetWatches {
+    in_force: String,
+    watches: Vec<FleetWatch>,
+    /// Each watch's last answer, in the order of `watches`.
+    reads: Vec<SourceRead>,
+}
+
+impl FleetWatches {
+    /// Follow `watches` as one list; `in_force` names the Fleet whose
+    /// harnesses and places are offered.
+    pub fn new(in_force: &str, watches: Vec<FleetWatch>) -> Self {
+        let reads = vec![SourceRead::default(); watches.len()];
+        Self {
+            in_force: in_force.to_string(),
+            watches,
+            reads,
+        }
+    }
+}
+
+impl SnapshotSource for FleetWatches {
+    fn poll(&mut self) -> Option<SourceRead> {
+        let mut removed = Vec::new();
+        let mut moved = false;
+        for (watch, read) in self.watches.iter_mut().zip(&mut self.reads) {
+            if let Some(mut next) = watch.poll() {
+                removed.append(&mut next.removed);
+                *read = next;
+                moved = true;
+            }
+        }
+        if !moved {
+            return None;
+        }
+        let in_force = self
+            .watches
+            .iter()
+            .position(|watch| watch.name == self.in_force)
+            .map(|at| &self.reads[at]);
+        let errors: Vec<String> = self
+            .watches
+            .iter()
+            .zip(&self.reads)
+            .filter_map(|(watch, read)| {
+                read.error
+                    .as_ref()
+                    .map(|why| format!("{}: {why}", watch.name))
+            })
+            .collect();
+        Some(SourceRead {
+            sessions: self
+                .reads
+                .iter()
+                .flat_map(|read| read.sessions.iter().cloned())
+                .collect(),
+            error: (!errors.is_empty()).then(|| errors.join("; ")),
+            harnesses: in_force.and_then(|read| read.harnesses.clone()),
+            hosts: in_force.and_then(|read| read.hosts.clone()),
+            removed,
+        })
     }
 }
 
@@ -290,7 +379,7 @@ fn watch(link: &FleetLink, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
             Ok(()) => return,
             Err(why) => why,
         };
-        if tx.send(Update::Watch(Some(why))).is_err() {
+        if tx.send(Update::Lost(why)).is_err() {
             return;
         }
         std::thread::sleep(RETRY);
@@ -403,11 +492,12 @@ fn follow(
         if !synced {
             continue;
         }
-        let rows = tasks.values().map(row_of).collect();
-        if tx
-            .send(Update::Rows(rows, std::mem::take(removed)))
-            .is_err()
-        {
+        let rows = tasks.values().map(|task| row_of(link, task)).collect();
+        let gone = std::mem::take(removed)
+            .iter()
+            .map(|task| super::row_id(link.name(), task))
+            .collect();
+        if tx.send(Update::Rows(rows, gone)).is_err() {
             return stop(held);
         }
     }
@@ -599,17 +689,31 @@ fn local_dir(url: &str) -> Option<String> {
     String::from_utf8(bytes).ok().filter(|p| !p.is_empty())
 }
 
-/// The Task's name is the row's id: every command addresses a Task by name.
-/// The row's name is the one the session was given ([`NAME_LABEL`]), or the
-/// Task's for a Task made elsewhere. What a row says of git, panes and hook
+/// The row of a Task of the Fleet `link` reaches. Its id is
+/// `<fleet>:<task>` (M1): two Fleets can each hold a Task of one name, and
+/// every command addresses a Task by its name in its Fleet
+/// ([`SessionRow::task`]). The row's name is the one the session was given
+/// ([`NAME_LABEL`]), or the Task's for a Task made elsewhere.
+///
+/// `remote_host` says where the session is when that is not this machine:
+/// for a Fleet on another machine, that Fleet's name, with the place when it
+/// is not the Fleet's `local` (`box · vm/sandbox`); for a Fleet here, a place
+/// other than `local`. What a row says of git, panes and hook
 /// columns is thurbox's own engine's and stays empty here; the status is
 /// Fleet's `agentState` (the agent's hooks, else its screen) over its
 /// `sessionState`, and `status.activity` says which source decided it.
-pub fn row_of(task: &Value) -> SessionRow {
+pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
     let text = |value: &Value| value.as_str().map(str::to_string);
     let (spec, status) = (&task["spec"], &task["status"]);
-    let id = text(&task["metadata"]["name"]).unwrap_or_default();
-    let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| id.clone());
+    let task_name = text(&task["metadata"]["name"]).unwrap_or_default();
+    let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| task_name.clone());
+    let id = super::row_id(link.name(), &task_name);
+    let place = text(&spec["host"]).filter(|place| place != "local");
+    let remote_host = match (link.is_local(), place) {
+        (true, place) => place,
+        (false, None) => Some(link.name().to_string()),
+        (false, Some(place)) => Some(format!("{} · {place}", link.name())),
+    };
     // Where the session runs once the runtime made its workspace; before,
     // the directory its first URL names on this machine.
     let cwd = text(&status["workspace"]["dirs"][0])
@@ -667,9 +771,11 @@ pub fn row_of(task: &Value) -> SessionRow {
         // The terminal is the stream `fleet attach` names, not a pane of
         // thurbox's backends.
         backend_id: None,
-        remote_host: text(&spec["host"]).filter(|host| host != "local"),
+        remote_host,
         agent_session_id: text(&status["conversation"]),
-        parent_id: text(&task["metadata"]["labels"]["gateway.fleet.dev/parent"]),
+        // A parent is a Task of the same Fleet.
+        parent_id: text(&task["metadata"]["labels"]["gateway.fleet.dev/parent"])
+            .map(|parent| super::row_id(link.name(), &parent)),
         display_order: None,
         worktree_count: 0,
         git: None,
@@ -805,7 +911,7 @@ mod tests {
             ]},
             "status": {"workspace": {"key": "k", "host": "local", "dirs": ["/w/k/a", "/w/k/b"]}},
         });
-        let row = row_of(&task);
+        let row = row_of(&FleetLink::local("fleet"), &task);
         assert_eq!(row.cwd, Some(PathBuf::from("/w/k/a")));
         assert_eq!(
             row.member_dirs,
@@ -825,7 +931,7 @@ mod tests {
                            "activity": {"source": "screen", "rule": "codex/action-required", "at": 7}},
             })
         };
-        let row = row_of(&task("Running"));
+        let row = row_of(&FleetLink::local("fleet"), &task("Running"));
         assert_eq!(row.status, SessionState::Blocked);
         assert_eq!(
             row.status_source,
@@ -835,10 +941,16 @@ mod tests {
                 since_ms: Some(7),
             })
         );
-        assert_eq!(row_of(&task("Paused")).status_source, None);
+        assert_eq!(
+            row_of(&FleetLink::local("fleet"), &task("Paused")).status_source,
+            None
+        );
         let mut bare = task("Running");
         bare["status"].as_object_mut().unwrap().remove("activity");
-        assert_eq!(row_of(&bare).status_source, None);
+        assert_eq!(
+            row_of(&FleetLink::local("fleet"), &bare).status_source,
+            None
+        );
     }
 
     /// The agents a session can run are the harnesses Fleet has profiles
@@ -926,7 +1038,7 @@ mod tests {
         ));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let (mut removed, mut ids) = (Vec::new(), Vec::new());
-        while !ids.iter().any(|id| id == "kept") {
+        while !ids.iter().any(|id| id == "local:kept") {
             assert!(std::time::Instant::now() < deadline, "no second read");
             // Slower than the script, so the replacement lands in one poll.
             std::thread::sleep(Duration::from_millis(1500));
@@ -935,8 +1047,8 @@ mod tests {
                 ids = read.sessions.into_iter().map(|row| row.id).collect();
             }
         }
-        assert_eq!(removed, ["gone"]);
-        assert!(ids.iter().any(|id| id == "gone"), "{ids:?}");
+        assert_eq!(removed, ["local:gone"]);
+        assert!(ids.iter().any(|id| id == "local:gone"), "{ids:?}");
     }
 
     /// A Task marked for deletion is off the list until its teardown has run
@@ -975,12 +1087,12 @@ mod tests {
         }
         assert!(
             seen.iter()
-                .all(|(_, ids)| !ids.contains(&"prompt".to_string())),
+                .all(|(_, ids)| !ids.contains(&"local:prompt".to_string())),
             "{seen:?}"
         );
         let shown = seen
             .iter()
-            .find(|(_, ids)| ids.contains(&"stuck".to_string()))
+            .find(|(_, ids)| ids.contains(&"local:stuck".to_string()))
             .unwrap_or_else(|| panic!("never listed as stuck: {seen:?}"));
         assert!(
             shown.0 >= Duration::from_millis(1_000),

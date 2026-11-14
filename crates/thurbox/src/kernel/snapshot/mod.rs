@@ -193,12 +193,26 @@ pub struct Deleting {
 
 impl SessionRow {
     /// Whether this machine reaches the session's directories at all: its
-    /// own, or a host thurbox's routes reach. A Fleet Task on another host
-    /// (`remote_host` set) names a path there, which no route of thurbox's
-    /// reaches, so its files, diff and git state are not read here, even
-    /// where the same path exists locally.
+    /// own, or a host thurbox's routes reach. A Fleet Task elsewhere
+    /// (`remote_host` set: a Fleet on another machine, or a place other than
+    /// `local`) names a path there, which no route of thurbox's reaches, so
+    /// its files, diff and git state are not read here, even where the same
+    /// path exists locally.
     pub fn workspace_reachable(&self) -> bool {
         self.backend != fleet::BACKEND || self.remote_host.is_none()
+    }
+
+    /// The Fleet a Fleet row's Task belongs to: a row's id is
+    /// `<fleet>:<task>` (M1), since two Fleets can each hold a Task of one
+    /// name. `None` for a row whose id names no Fleet.
+    pub fn fleet(&self) -> Option<&str> {
+        self.id.split_once(':').map(|(fleet, _)| fleet)
+    }
+
+    /// The name of the row's Task in its Fleet: what every `fleet` command
+    /// takes. The whole id for a row whose id names no Fleet.
+    pub fn task(&self) -> &str {
+        task_of(&self.id)
     }
 
     /// Whether the session's directories are on this machine, so its own
@@ -319,6 +333,59 @@ impl Snapshot {
     pub fn session(&self, id: &str) -> Option<&SessionRow> {
         self.sessions.iter().find(|row| row.id == id)
     }
+
+    /// The row `given` names: its id (`box:review`), or a bare Task name
+    /// (`review`) when exactly one Fleet holds a Task of that name. A bare
+    /// name several Fleets hold is refused with the ids it could mean.
+    pub fn resolve(&self, given: &str) -> Result<&SessionRow, Unresolved> {
+        if let Some(row) = self.session(given) {
+            return Ok(row);
+        }
+        let matches: Vec<&SessionRow> = self
+            .sessions
+            .iter()
+            .filter(|row| row.fleet().is_some() && row.task() == given)
+            .collect();
+        match matches.as_slice() {
+            [row] => Ok(row),
+            [] => Err(Unresolved::Missing),
+            several => Err(Unresolved::Ambiguous(
+                several.iter().map(|row| row.id.clone()).collect(),
+            )),
+        }
+    }
+}
+
+/// Why [`Snapshot::resolve`] found no one row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unresolved {
+    /// No row has that id or Task name.
+    Missing,
+    /// Several Fleets hold a Task of that name: the ids it could mean.
+    Ambiguous(Vec<String>),
+}
+
+impl Unresolved {
+    /// What to tell whoever named `given`.
+    pub fn message(&self, given: &str) -> String {
+        match self {
+            Self::Missing => format!("no session {given} in this interface"),
+            Self::Ambiguous(ids) => format!(
+                "{given} is a session of several Fleets; name one of {}",
+                ids.join(", ")
+            ),
+        }
+    }
+}
+
+/// The Task a session id names: what follows `<fleet>:`, or the whole id.
+pub fn task_of(id: &str) -> &str {
+    id.split_once(':').map_or(id, |(_, task)| task)
+}
+
+/// The id of the row of `task` in the Fleet `fleet` (M1).
+pub fn row_id(fleet: &str, task: &str) -> String {
+    format!("{fleet}:{task}")
 }
 
 /// Where a store's session rows come from: Fleet's Tasks, through
@@ -682,6 +749,43 @@ pub fn parse_id(raw: &str) -> Option<SessionId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session is named by its id, or by a bare Task name only one Fleet
+    /// holds; a name two Fleets hold is refused with both ids.
+    #[test]
+    fn a_bare_task_name_resolves_only_when_one_fleet_holds_it() {
+        let row = |fleet: &str, task: &str| {
+            let link = crate::fleet_link::FleetLink::of(fleet, &Default::default());
+            fleet::row_of(&link, &serde_json::json!({"metadata": {"name": task}}))
+        };
+        let snapshot = Snapshot {
+            sessions: vec![
+                row("box", "review"),
+                row("laptop", "review"),
+                row("box", "audit"),
+            ],
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            snapshot.resolve("box:review").map(|r| r.id.as_str()),
+            Ok("box:review")
+        );
+        assert_eq!(
+            snapshot.resolve("audit").map(|r| r.id.as_str()),
+            Ok("box:audit")
+        );
+        let ambiguous = snapshot.resolve("review").unwrap_err();
+        assert_eq!(
+            ambiguous,
+            Unresolved::Ambiguous(vec!["box:review".into(), "laptop:review".into()])
+        );
+        assert!(ambiguous
+            .message("review")
+            .contains("box:review, laptop:review"));
+        assert_eq!(snapshot.resolve("absent").unwrap_err(), Unresolved::Missing);
+        let audit = snapshot.session("box:audit").unwrap();
+        assert_eq!((audit.fleet(), audit.task()), (Some("box"), "audit"));
+    }
 
     #[test]
     fn a_remote_backend_yields_its_host_name() {

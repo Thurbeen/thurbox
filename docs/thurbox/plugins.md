@@ -1060,7 +1060,7 @@ Give the menu a `target` (the row's id, say) when the entries are about one
 thing. The menu passes it as the action's read-only `args.target`; the owner
 can refuse when that row has gone before the action lands. The bundled sessions
 menu sets `target_argument = "session_id"`, so its contributed actions receive
-the session UUID as `args.session_id`. The bundled menu also leaves the older
+the session's id (`<fleet>:<task>`) as `args.session_id`. The bundled menu also leaves the older
 `store["menu.chosen"]` handoff until edited copies of either bundled pane have
 been migrated; new handlers should use the typed argument.
 

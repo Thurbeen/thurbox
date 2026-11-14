@@ -43,8 +43,8 @@ impl super::Executor for Fleet {
                 member_dirs,
             } => {
                 let row = self
-                    .get(session)?
-                    .map(|task| crate::kernel::snapshot::fleet::row_of(&task));
+                    .get(self.link.task(session)?)?
+                    .map(|task| crate::kernel::snapshot::fleet::row_of(&self.link, &task));
                 if row.is_none_or(|row| {
                     row.backend_id != *backend_id
                         || row.cwd != *cwd
@@ -122,10 +122,14 @@ impl super::Executor for Fleet {
                     Some(&task.to_string()),
                 )?;
             }
-            Command::Send { session, text } => self.link.run(&["send", session, text], None)?,
-            Command::Rename { session, name } => self.rename(session, name)?,
+            Command::Send { session, text } => self
+                .link
+                .run(&["send", self.link.task(session)?, text], None)?,
+            Command::Rename { session, name } => self.rename(self.link.task(session)?, name)?,
             // Fleet has no undo window: a delete is for good.
-            Command::Delete { session, .. } => self.link.run(&["delete", "task", session], None)?,
+            Command::Delete { session, .. } => self
+                .link
+                .run(&["delete", "task", self.link.task(session)?], None)?,
             // Everything else is a file of thurbox's, or a command no engine
             // runs: refused by name, never dropped.
             _ => {
@@ -445,10 +449,16 @@ mod tests {
             })
             .expect("send");
             run(Command::Rename {
-                session: "review".into(),
+                session: "devbox:review".into(),
                 name: "audit".into(),
             })
-            .expect("rename");
+            .expect("a row's id names the Task in its Fleet");
+            let elsewhere = run(Command::Delete {
+                session: "laptop:review".into(),
+                force: false,
+            })
+            .expect_err("a session of another Fleet");
+            assert!(elsewhere.contains("Fleet laptop"), "{elsewhere}");
             run(Command::Delete {
                 session: "review".into(),
                 force: false,

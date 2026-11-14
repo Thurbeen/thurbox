@@ -2303,12 +2303,15 @@ fn a_shell_row_keeps_its_glyph_and_only_an_agent_is_unknown() {
     let host = host();
     let registry = registry_for(&host);
     let task = |name: &str, harness: &str, activity: serde_json::Value| {
-        thurbox::kernel::snapshot::fleet::row_of(&serde_json::json!({
+        thurbox::kernel::snapshot::fleet::row_of(
+            &thurbox::fleet_link::FleetLink::local("fleet"),
+            &serde_json::json!({
             "metadata": {"name": name},
             "spec": {"harness": harness, "host": "local", "workspace": []},
             "status": {"sessionState": "Running", "agentState": "unknown",
                        "activity": activity},
-        }))
+            }),
+        )
     };
     let shell = task("plainshell", "bash", serde_json::Value::Null);
     let agent = task(

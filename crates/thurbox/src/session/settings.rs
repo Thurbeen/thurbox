@@ -74,7 +74,7 @@ pub struct Settings {
     pub telemetry: TelemetrySettings,
     /// The Fleets that manage sessions (`[fleets.<name>]` tables). None
     /// listed: the one on this machine, [`IMPLIED_FLEET`] ([`Self::fleets`]).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "fleet_names")]
     pub fleets: BTreeMap<String, FleetDef>,
 }
 
@@ -149,6 +149,24 @@ pub fn retired_key(path: &str) -> Option<(&'static str, &'static str)> {
                 .strip_prefix(key)
                 .is_some_and(|rest| rest.starts_with('.'))
     })
+}
+
+/// `[fleets]`, each name checked: a session's id is `<fleet>:<task>`, so a
+/// Fleet's name holds no `:`, and is not empty.
+fn fleet_names<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, FleetDef>, D::Error> {
+    let fleets = BTreeMap::<String, FleetDef>::deserialize(deserializer)?;
+    match fleets
+        .keys()
+        .find(|name| name.is_empty() || name.contains(':'))
+    {
+        Some(name) => Err(serde::de::Error::custom(format!(
+            "the Fleet name \"{name}\" is not one: a session's id is <fleet>:<task>, so a \
+             name holds no ':' and is not empty"
+        ))),
+        None => Ok(fleets),
+    }
 }
 
 /// The name of the Fleet thurbox reaches when `settings.toml` lists none:
@@ -786,6 +804,7 @@ mod tests {
             }
         );
         assert!(toml::from_str::<Settings>("[fleets.x]\ntransport = \"remote\"\n").is_err());
+        assert!(toml::from_str::<Settings>("[fleets.\"a:b\"]\n").is_err());
     }
 
     #[test]

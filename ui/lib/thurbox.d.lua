@@ -440,8 +440,9 @@
 ---@field merged? boolean Absent when nobody could say.
 
 ---@class (exact) thurbox.Session
----@field id string
+---@field id string `<fleet>:<task>` for a Fleet session: two Fleets can each hold a Task of one name.
 ---@field name string
+---@field fleet? string The Fleet the session's Task belongs to, as `settings.toml` names it.
 ---@field key? string The address a driver gave the session (`session create --key`); opaque, and unchanged by a rename.
 ---@field agent string What the row was created as.
 ---@field reports_as? string What a driver declared this session runs (`session reports-as`).

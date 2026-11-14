@@ -122,11 +122,11 @@ local function agent_status(session)
     end
     return text, nil
   end
-  -- Nothing the agent said can be current on a host we cannot reach, so the
+  -- Nothing the agent said can be current on a Fleet we cannot ask, so the
   -- row says why instead of showing a last message as if it were live.
   if session.status == "unreachable" then
-    if session.remote_host then
-      return "host " .. session.remote_host .. " unreachable", nil
+    if session.fleet then
+      return "Fleet " .. session.fleet .. " unreachable", nil
     end
     return "unreachable", nil
   end

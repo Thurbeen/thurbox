@@ -413,19 +413,27 @@ impl App {
                 "destructive action needs only session_id".into(),
             ));
         }
-        // A session's id as the snapshot carries it: a Fleet Task's name.
-        let target = object["session_id"]
+        // A session's id as the snapshot carries it (`<fleet>:<task>`), or a
+        // Task name only one Fleet holds.
+        let given = object["session_id"]
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or((
                 "invalid_arguments",
                 "session_id must be a session's id".into(),
-            ))?
-            .to_string();
-        let row = self.snapshots.current().session(&target).ok_or((
-            "stale_target",
-            "session is no longer in this interface".into(),
-        ))?;
+            ))?;
+        let row = self
+            .snapshots
+            .current()
+            .resolve(given)
+            .map_err(|why| match why {
+                thurbox::kernel::snapshot::Unresolved::Missing => (
+                    "stale_target",
+                    "session is no longer in this interface".into(),
+                ),
+                ambiguous => ("ambiguous_target", ambiguous.message(given)),
+            })?;
+        let target = row.id.clone();
         let instance = &self.control.as_ref().expect("control server").instance.id;
         thurbox::ui_control::audit(
             instance,
@@ -602,7 +610,7 @@ impl App {
         }
         match name {
             "session.focus" => {
-                let id = object
+                let given = object
                     .get("session_id")
                     .and_then(Value::as_str)
                     .filter(|id| !id.is_empty())
@@ -610,12 +618,18 @@ impl App {
                         "invalid_arguments",
                         "session_id must be a session's id".into(),
                     ))?;
-                if self.snapshots.current().session(id).is_none() {
-                    return Err((
+                let resolved = self
+                    .snapshots
+                    .current()
+                    .resolve(given)
+                    .map(|row| row.id.clone());
+                let id = &resolved.map_err(|why| match why {
+                    thurbox::kernel::snapshot::Unresolved::Missing => (
                         "session_not_found",
                         "session is not in this interface".into(),
-                    ));
-                }
+                    ),
+                    ambiguous => ("ambiguous_target", ambiguous.message(given)),
+                })?;
                 let agent = self
                     .host
                     .index_of("agent")

@@ -81,6 +81,22 @@ impl FleetLink {
         &self.program
     }
 
+    /// The Task `session` names in this Fleet: a session's id is
+    /// `<fleet>:<task>`, and a bare name is a Task of this Fleet. Commands
+    /// go to one Fleet until each is routed to its session's own, so a
+    /// session of another Fleet is refused by name, never sent here.
+    pub fn task<'a>(&self, session: &'a str) -> Result<&'a str, String> {
+        match session.split_once(':') {
+            None => Ok(session),
+            Some((fleet, task)) if fleet == self.name => Ok(task),
+            Some((fleet, _)) => Err(format!(
+                "{session} is a session of the Fleet {fleet}; commands go to {} until they \
+                 reach each Fleet",
+                self.name
+            )),
+        }
+    }
+
     /// The config file Fleet is given with `--config`, if any.
     pub fn config(&self) -> Option<&str> {
         self.config.as_deref()
