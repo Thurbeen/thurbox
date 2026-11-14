@@ -2408,6 +2408,19 @@ fn static_mut_and_build_target_cfg_can_be_restricted() {
             &hit,
         );
     }
+    // A test-only item's own `cfg` is test code: it is not production code
+    // deciding by a build target.
+    modules(
+        "cfg-all-test",
+        &[
+            ("architecture.toml", &os),
+            (
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\n#[cfg(all(test, unix))]\nfn check() {}\n",
+            ),
+        ],
+        &[],
+    );
     modules(
         "cfg-test-only",
         &[

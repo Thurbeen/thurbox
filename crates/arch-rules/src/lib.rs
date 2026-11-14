@@ -1209,11 +1209,6 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 
     fn visit_item(&mut self, i: &'ast Item) {
-        // Read here for every kind of item, whether or not its own visitor
-        // walks its attributes.
-        for a in item_attrs(i) {
-            self.visit_attribute(a);
-        }
         let test = item_attrs(i).iter().any(is_cfg_test);
         if test {
             if let Item::Mod(m) = i {
@@ -1222,6 +1217,13 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 self.idx.test_modules.insert(path);
             }
             self.tests += 1;
+        }
+        // Read here for every kind of item, whether or not its own visitor
+        // walks its attributes: inside the item's test scope, so a test-only
+        // item's own `cfg` is test code, and in the declaring module, which a
+        // module's attributes belong to.
+        for a in item_attrs(i) {
+            self.visit_attribute(a);
         }
         // A `type` alias is a name for its target, as an import is: a path
         // through the alias reaches what it names.
