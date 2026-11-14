@@ -43,6 +43,7 @@ jobs:
       website: ${{ steps.filter.outputs.website }}
       install_sh: ${{ steps.filter.outputs.install_sh }}
       install_ps: ${{ steps.filter.outputs.install_ps }}
+      install_e2e: ${{ steps.filter.outputs.install_e2e }}
       winget: ${{ steps.filter.outputs.winget }}
       pr_title: ${{ steps.filter.outputs.pr_title }}
       release_line: ${{ steps.filter.outputs.release_line }}
@@ -140,10 +141,24 @@ jobs:
             install_sh:
               - 'scripts/install.sh'
               - 'scripts/install.bats'
+              # The shipped list the suite checks the installer against.
+              - 'scripts/ci/release-archive.sh'
               - '.github/workflows/ci.yml'
             install_ps:
               - 'scripts/install.ps1'
               - 'scripts/install.Tests.ps1'
+              - 'scripts/ci/release-archive.sh'
+              - '.github/workflows/ci.yml'
+            # A release installed on a clean machine: the installers, what packs
+            # the archive they fetch, what builds it, and the manifests that
+            # name the programs it ships.
+            install_e2e:
+              - 'scripts/install.sh'
+              - 'scripts/install.ps1'
+              - 'scripts/ci/release-archive.sh'
+              - 'scripts/ci/install-e2e.sh'
+              - 'crates/*/Cargo.toml'
+              - '.github/workflows/cd.yml'
               - '.github/workflows/ci.yml'
             winget:
               # The winget channel's testable half: the manifest bump and the
@@ -598,6 +613,79 @@ jobs:
           $cfg.Output.Verbosity = 'Detailed'
           Invoke-Pester -Configuration $cfg
 
+  # The one-line install on a machine that has never seen thurbox: the
+  # programs a release ships, packed by the script the Release workflow uses,
+  # served as release assets and installed by install.sh (install.ps1 on
+  # Windows) into an empty home. Then `thurbox-cli version`, `fleet version`,
+  # `fleet init` and `thurbox-cli doctor` must work from the install alone.
+  # A debug build: what is under test is the packing and the install, not the
+  # optimiser.
+  install-e2e:
+    name: Clean install (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.install_e2e == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux installs the static musl build, built with `cross` as the
+          # release builds it, so it runs in a bare Debian container: no
+          # Rust, no tmux, nothing but what the steps add.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, cargo: cross }
+          - { os: macos-15, target: aarch64-apple-darwin, cargo: cargo }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, cargo: cargo }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Exclude build dirs from Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.rustup"
+      # The pinned toolchain (rust-toolchain.toml), with the target the
+      # release builds for.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - if: matrix.cargo == 'cross'
+        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cross
+      - name: Build and pack the release archive
+        run: |
+          bins=()
+          for bin in $(scripts/ci/release-archive.sh --binaries); do bins+=(--bin "$bin"); done
+          ${{ matrix.cargo }} build --locked --target ${{ matrix.target }} "${bins[@]}"
+          scripts/ci/release-archive.sh v0.0.0-ci ${{ matrix.target }} \
+            target/${{ matrix.target }}/debug dist
+      - name: Install and check on a clean Debian
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 \
+            sh -c 'apt-get update -qq &&
+              apt-get install -qq -y --no-install-recommends ca-certificates curl jq python3 tmux >/dev/null &&
+              scripts/ci/install-e2e.sh dist v0.0.0-ci'
+      - name: Install and check on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install tmux
+          scripts/ci/install-e2e.sh dist v0.0.0-ci
+      # No psmux here: doctor's multiplexer check is the one failure the test
+      # accepts when none is on PATH.
+      - name: Install and check on Windows
+        if: runner.os == 'Windows'
+        run: scripts/ci/install-e2e.sh dist v0.0.0-ci
+
   winget-packaging:
     name: winget Packaging Tests
     needs: changes
@@ -879,6 +967,7 @@ jobs:
       - markdown-lint
       - install-script
       - install-script-ps
+      - install-e2e
       - winget-packaging
       - dev-scripts
       - nix

@@ -187,14 +187,18 @@ than from a tag, which is the same thing a source build does.
 
 ## Checklist for a release that changes artifacts
 
-- [ ] `thurbox` and `thurbox-cli` are still in **both** archive steps of `cd.yml`
-      (the `tar czf` line and the `Compress-Archive` line).
-- [ ] A newly added binary is in both archive steps *and* in every channel:
+- [ ] The archive ships what `BINARIES` in `scripts/ci/release-archive.sh`
+      lists: `thurbox`, `thurbox-cli`, `fleet`, `runtime-mux` and
+      `workspace-git`. `cd.yml` builds and packs that list, and CI's
+      `install-e2e` job installs the packed archive on a clean Linux, macOS and
+      Windows machine.
+- [ ] A newly added binary is in that list, in both installers'
+      `BINARIES` (`scripts/install.sh`, `scripts/install.ps1`; `install.bats`
+      and `install.Tests.ps1` fail when they differ), and in every channel:
       `packaging/homebrew/Formula/thurbox.rb`, `packaging/aur/thurbox/PKGBUILD`,
       `packaging/aur/thurbox-bin/PKGBUILD`,
-      `packaging/winget/manifests/*installer.yaml`, `scripts/install.sh`,
-      `scripts/install.ps1`, and `nix/package.nix` (`cargoBuildFlags` and the
-      wrapper loop).
+      `packaging/winget/manifests/*installer.yaml`, and `nix/package.nix`
+      (`cargoBuildFlags` and the wrapper loop).
 - [ ] Installers handle its **absence**, so installing an older release still
       works (`scripts/install.bats` asserts this).
 - [ ] Adding to `BINARIES` was a deliberate decision, not a reflex.

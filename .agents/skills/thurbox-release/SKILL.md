@@ -80,6 +80,9 @@ Each release includes:
   - `thurbox-v{ver}-aarch64-apple-darwin.tar.gz`
   - `thurbox-v{ver}-x86_64-pc-windows-msvc.zip` (the Windows artifact
     extracted by `install.ps1` / packaged by Chocolatey + winget)
+- Each archive holds `thurbox`, `thurbox-cli`, `fleet`, `runtime-mux`,
+  `workspace-git` and `LICENSE`: the list is `BINARIES` in
+  `scripts/ci/release-archive.sh`, the one source cd.yml builds and packs from
 - `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
 - Changelog with categorized commits
 
@@ -220,14 +223,17 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 - Colorized output (auto-disabled when stderr is not a TTY, `NO_COLOR` is set,
   or `TERM=dumb`); platforms Linux/macOS × x86_64/aarch64
 - No external deps beyond standard tools (curl/wget, tar, sha256sum/shasum)
-- Env vars: `VERSION=v1.0.0`, `INSTALL_DIR=/path` (default `~/.local/bin`)
+- Env vars: `VERSION=v1.0.0`, `INSTALL_DIR=/path` (default `~/.local/bin`),
+  `DOWNLOAD_URL` (default `https://github.com/<REPO>/releases/download`; a
+  mirror, or the local copy CI's `install-e2e` serves)
 - Non-interactive (safe pipe-to-shell), cleanup via `trap`
 - Tested by `scripts/install.bats` (bats-core, ~30 tests; CI `install-script` job)
 
 **`install.ps1` (PowerShell 5.1+) specifics:**
 
 - Parameters `-Version` / `-InstallDir` / `-Repo`, or the matching
-  `THURBOX_VERSION` / `THURBOX_INSTALL_DIR` / `THURBOX_REPO` env vars (env vars
+  `THURBOX_VERSION` / `THURBOX_INSTALL_DIR` / `THURBOX_REPO` env vars, plus
+  `THURBOX_DOWNLOAD_URL` (env vars
   are the reliable path for the `irm | iex` form, which can't pass parameters);
   default install dir `%LOCALAPPDATA%\Programs\thurbox`
 - Adds the install dir to the **user** `PATH` (`[Environment]::SetEnvironmentVariable(... 'User')`)
@@ -239,8 +245,8 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
   directory and renames each installed file to `.<name>.old` before moving the
   new one in, because Windows refuses to *delete* a running executable (what
   `Expand-Archive -Force` does) but allows renaming it. A backup still running
-  is removed by the next run; one that cannot be moved fails naming the
-  `thurbox` / `thurbox-cli` PIDs to close
+  is removed by the next run; one that cannot be moved fails naming the PIDs
+  of the shipped programs to close (`fleet up` is the usual one)
 - The helpers (`Get-Target`, `Get-ExpectedChecksum`, `Install-Archive`) are
   guarded by `$env:THURBOX_PS_TEST` so the file can be dot-sourced for testing
   without running the installer
@@ -248,4 +254,17 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
   on ubuntu with `pwsh` and on Windows with both `pwsh` and Windows PowerShell
   5.1 — the running-`thurbox.exe` cases only run on Windows) — the PowerShell
   mirror of `install.bats`
+
+**Clean install (`scripts/ci/install-e2e.sh`, CI `install-e2e` job):** packs a
+debug build with `release-archive.sh`, serves it as release assets on
+`127.0.0.1`, and runs the real installer into an empty home with no shipped
+program on `PATH` — in a bare Debian container on Linux, on the runner on macOS
+and Windows. Every program must then resolve to the install directory,
+`thurbox-cli version`, `fleet version` and `fleet init` must succeed, and
+`thurbox-cli doctor --json` must report `fleet`, `fleet-config` and
+`runtime-mux` ok; with no multiplexer on `PATH` (Windows: no psmux) the
+`multiplexer` check is the only failure allowed. Run it locally after
+`cargo build` of the five programs:
+`scripts/ci/release-archive.sh v0.0.0-ci <target> target/debug dist &&
+scripts/ci/install-e2e.sh dist v0.0.0-ci`.
 

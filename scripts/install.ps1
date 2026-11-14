@@ -5,8 +5,9 @@
 
 .DESCRIPTION
     Downloads the latest thurbox release for Windows, verifies its SHA256
-    checksum, extracts thurbox.exe / thurbox-cli.exe into an install directory,
-    and adds that directory to the user PATH.
+    checksum, extracts its programs (thurbox, thurbox-cli, fleet, runtime-mux,
+    workspace-git) into an install directory, and adds that directory to the
+    user PATH.
 
     Mirrors scripts/install.sh (Linux/macOS). Windows uses psmux as the terminal
     multiplexer (a native, drop-in tmux replacement) instead of tmux.
@@ -25,6 +26,7 @@
       $env:THURBOX_VERSION      = 'v0.1.0'
       $env:THURBOX_INSTALL_DIR  = 'C:\tools\thurbox'
       $env:THURBOX_REPO         = 'Thurbeen/thurbox'
+      $env:THURBOX_DOWNLOAD_URL = 'https://mirror.example/releases/download'
 #>
 
 [CmdletBinding()]
@@ -40,6 +42,10 @@ $ErrorActionPreference = 'Stop'
 # --- Configuration (parameter overrides env var overrides default) ----------
 if (-not $Repo)    { $Repo    = if ($env:THURBOX_REPO)    { $env:THURBOX_REPO }    else { 'Thurbeen/thurbox' } }
 if (-not $Version) { $Version = if ($env:THURBOX_VERSION) { $env:THURBOX_VERSION } else { '' } }
+# Where the release assets are fetched from; a mirror, or a local copy in tests.
+$DownloadUrl = if ($env:THURBOX_DOWNLOAD_URL) { $env:THURBOX_DOWNLOAD_URL } else { "https://github.com/$Repo/releases/download" }
+# Every program a v3 install runs by name (scripts/ci/release-archive.sh packs them).
+$Binaries = @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'workspace-git')
 if (-not $InstallDir) {
     if ($env:THURBOX_INSTALL_DIR) { $InstallDir = $env:THURBOX_INSTALL_DIR }
     elseif ($env:LOCALAPPDATA)    { $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\thurbox' }
@@ -135,11 +141,13 @@ function Add-ToUserPath {
 }
 
 # --- Extraction -------------------------------------------------------------
-# The running thurbox processes started from any of $Path, for the message that
-# asks the user to close them. Path is $null for a process we may not inspect.
+# The running processes of the shipped programs started from any of $Path, for
+# the message that asks the user to close them. `fleet up`, the Fleet manager,
+# runs for as long as sessions do, so it is the likeliest one. Path is $null
+# for a process we may not inspect.
 function Get-LockingProcess {
     param([string[]]$Path)
-    Get-Process -Name 'thurbox', 'thurbox-cli' -ErrorAction SilentlyContinue |
+    Get-Process -Name $Binaries -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and ($Path -contains $_.Path) }
 }
 
@@ -191,6 +199,22 @@ function Install-Archive {
     }
 }
 
+# --- Next steps -------------------------------------------------------------
+# `fleet init` only when the release shipped Fleet: a 2.x release has none.
+function Show-NextSteps {
+    param([string]$Dir)
+    Write-Host "`nNext steps" -ForegroundColor Magenta
+    Write-Step '* Install psmux (the Windows multiplexer): https://github.com/psmux/psmux'
+    Write-Step '* Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, ...)'
+    if (Test-Path -LiteralPath (Join-Path $Dir 'fleet.exe')) {
+        Write-Step '* Set up Fleet:      fleet init'
+    } else {
+        Write-Warn 'This release has no Fleet. thurbox v3 needs a 3.x release: $env:THURBOX_VERSION = "v3.x.y"'
+    }
+    Write-Step '* Check the setup:   thurbox-cli doctor'
+    Write-Step '* Launch the TUI:    thurbox'
+}
+
 # --- Main -------------------------------------------------------------------
 function Invoke-Install {
     Show-Banner
@@ -202,7 +226,7 @@ function Invoke-Install {
     Write-Info "Version:  $ver"
 
     $archive = "thurbox-$ver-$target.zip"
-    $base = "https://github.com/$Repo/releases/download/$ver"
+    $base = "$DownloadUrl/$ver"
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("thurbox-install-" + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
@@ -234,7 +258,10 @@ function Invoke-Install {
     }
 
     Write-Host ''
-    Write-Ok "Thurbox installed to $InstallDir\thurbox.exe"
+    Write-Ok "Thurbox installed to $InstallDir"
+    foreach ($bin in $Binaries) {
+        if (Test-Path -LiteralPath (Join-Path $InstallDir "$bin.exe")) { Write-Step "  $bin" }
+    }
 
     if (Add-ToUserPath $InstallDir) {
         Write-Warn "Added $InstallDir to your user PATH - restart your terminal for it to take effect."
@@ -242,12 +269,7 @@ function Invoke-Install {
 
     Write-Warn 'Windows support is experimental for now - expect rough edges and please report issues.'
 
-    Write-Host "`nNext steps" -ForegroundColor Magenta
-    Write-Step '* Install psmux (the Windows multiplexer): https://github.com/psmux/psmux'
-    Write-Step '* Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, ...)'
-    Write-Step '* Check both:        thurbox-cli doctor'
-    Write-Step '* Launch the TUI:    thurbox'
-    Write-Step '* Scriptable CLI:    thurbox-cli'
+    Show-NextSteps -Dir $InstallDir
     Write-Host ''
     Write-Ok 'Installation complete! Happy hacking.'
 }

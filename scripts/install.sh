@@ -7,6 +7,10 @@ set -e
 REPO="${REPO:-Thurbeen/thurbox}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
+# Where the release assets are fetched from; a mirror, or a local copy in tests.
+DOWNLOAD_URL="${DOWNLOAD_URL:-https://github.com/${REPO}/releases/download}"
+# Every program a v3 install runs by name (scripts/ci/release-archive.sh packs them).
+BINARIES="thurbox thurbox-cli fleet runtime-mux workspace-git"
 TEMP_DIR=""
 
 # Colors (auto-disabled when stderr is not a terminal, NO_COLOR is set, or TERM=dumb)
@@ -154,7 +158,7 @@ check_sum() {
 get_binary() {
   local version="$1" target="$2" tmpdir="$3"
   local base="thurbox-${version}-${target}"
-  local url_base="https://github.com/${REPO}/releases/download/${version}"
+  local url_base="${DOWNLOAD_URL}/${version}"
 
   info "Downloading checksums..."
   download "${url_base}/thurbox-${version}-checksums.txt" "$tmpdir/checksums.txt" || {
@@ -179,14 +183,19 @@ do_install() {
   info "Installing..."
   mkdir -p "$dir"
   tar -xzf "$tarball" -C "$dir"
-  chmod +x "$dir/thurbox"
-  if [ -f "$dir/thurbox-cli" ]; then chmod +x "$dir/thurbox-cli"; fi
+  # An older release ships fewer programs: chmod the ones it has.
+  for bin in $BINARIES; do
+    if [ -f "$dir/$bin" ]; then chmod +x "$dir/$bin"; fi
+  done
 }
 
 # Show success message
 show_success() {
   printf '\n' >&2
-  success "Thurbox installed to ${C_BOLD}$1/thurbox${C_RESET}"
+  success "Thurbox installed to ${C_BOLD}$1${C_RESET}"
+  for bin in $BINARIES; do
+    if [ -f "$1/$bin" ]; then step "  $bin"; fi
+  done
 
   if ! echo "$PATH" | grep -q "$1"; then
     warn "Add to PATH: ${C_BOLD}export PATH=\"$1:\$PATH\"${C_RESET}"
@@ -195,9 +204,13 @@ show_success() {
   printf '\n%b\n' "${C_BOLD}${C_MAGENTA}Next steps${C_RESET}" >&2
   step "• Install tmux >= 3.2"
   step "• Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, …)"
-  step "• Check both:        ${C_CYAN}thurbox-cli doctor${C_RESET}"
+  if [ -f "$1/fleet" ]; then
+    step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
+  else
+    warn "This release has no Fleet. thurbox v3 needs a 3.x release: VERSION=v3.x.y"
+  fi
+  step "• Check the setup:   ${C_CYAN}thurbox-cli doctor${C_RESET}"
   step "• Launch the TUI:    ${C_CYAN}thurbox${C_RESET}"
-  step "• Scriptable CLI:    ${C_CYAN}thurbox-cli${C_RESET}"
 }
 
 # Main
