@@ -336,3 +336,23 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | R1. A runtime knows no Task | The protocol's schema | Every runtime |
 | R2. Idempotent by key | `fleet runtime check`, run by `crates/fleet-cli/tests/e2e_runtime_exec.rs` | runtime-mux, `examples/runtimes/tmux.sh` |
 | R3. runtime-mux module isolation | `crates/architecture.toml` checked by `arch-rules` | runtime-mux |
+
+### What `arch-rules` checks
+
+Each rule `arch-rules` enforces, the violation codes its check reports, and
+the `crates/architecture.toml` entries it reads:
+
+| Rule | Check | `crates/architecture.toml` |
+|---|---|---|
+| 1. Components meet only through processes | `undeclared-edge`, `undeclared-dev-edge`, `reexport-edge`, `cycle`, `ungoverned-crate`, `missing-crate` | `[crates.<name>]`: `role`, `deps`, `dev_deps` |
+| T1. Module isolation | `module-edge`, `module-cycle`, `module-unused`, `module-unknown`, `module-ungoverned`, `module-governed-grant`, `module-external` | `[crates.thurbox]`: `governed`, `exempt`; `[crates.thurbox.modules]` |
+| T1. thurbox's own restrictions: runtime gateways, session purity, kernel workers, concrete backends, multiplexer naming, atomic writes | `module-restricted`, `module-restricted-stale` | `[[crates.thurbox.restricted]]` |
+| F1. Pure decisions | `pure-io`, `pure-external`, `missing-probe`, `missing-clippy-guard`, `cli-method`, `restricted` | `[pure]`: `forbidden_paths`, `clippy_guards`; `[crates.<name>]`: `external`, `probes`, `forbidden_methods`; `[[restricted]]` for the ports and the telemetry SDK |
+| F2. One bounded spawner | `restricted` | `[[restricted]]` for `std::process::Command`, the process-group APIs and `process_wrap` |
+| F4. One writer per field | `status-writer` | `[status_writers]` |
+| R3. runtime-mux module isolation | the T1 module codes, `module-restricted`, `module-restricted-stale` | `[crates.runtime-mux]`: `governed`, `exempt`; `[crates.runtime-mux.modules]`, `[[crates.runtime-mux.restricted]]` |
+
+Every check also reports `unresolvable`, `unparsable` or `unreadable` for a
+reference or file it cannot judge. A top-level `[[restricted]]` entry whose
+`applies_to` is empty or names an unknown role or crate is reported as
+`restricted-scope`.
