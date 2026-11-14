@@ -615,8 +615,10 @@ a place.
   also checks the config it reads (and which rule named it) and
   `runtime-mux` on `PATH`. A Fleet reached over ssh whose `ssh` exits 255 is
   `unreachable`, and is asked only once; the probes of a Fleet on another
-  machine wait 15 seconds, not 5. thurbox cannot yet tell whether a remote
-  Fleet's manager runs: `doctor` points at the unit. The Fleet the interface
+  machine wait 15 seconds, not 5. For a Fleet on another machine,
+  `fleet-manager` reads the `manager` of its `fleet version --json`: the
+  manager runs, it does not run (`doctor` then points at the systemd unit),
+  or the answer is unknown. thurbox never starts that manager. The Fleet the interface
   uses fails the report when it does not answer; another listed Fleet only
   warns. Each check of a Fleet names it (`fleet` in `--json`), and `fleets`
   lists each Fleet with `transport`, `in_force` and `unreachable`. The

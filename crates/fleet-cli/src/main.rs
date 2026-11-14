@@ -1313,6 +1313,7 @@ fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure
 
 fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Result<(), Failure> {
     if json {
+        let explicit = config.is_some() || std::env::var_os(config::CONFIG_ENV).is_some();
         let config = config::discover(config);
         // The user's profiles too, so a view offers their harnesses; one
         // that does not parse is left out here and refused by every
@@ -1320,6 +1321,7 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
         let user =
             user_profiles(harness_dir(config.as_deref()).as_deref(), false).unwrap_or_default();
         let profiles = fleet_api::harness::Profiles::bundled().with(user);
+        let manager = manager_lease(config.as_deref(), explicit, data_dir.clone());
         let outdated = outdated_integrations(&profiles, config.as_deref(), data_dir);
         print_json(&json!({
             "version": VERSION,
@@ -1333,11 +1335,54 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,
+            "manager": manager,
         }));
     } else {
         println!("fleet {VERSION}");
     }
     Ok(())
+}
+
+/// The manager lease, for `version`: `held` while it is unexpired, `false`
+/// when none is recorded or it expired, `null` with `why` when it cannot be
+/// read. Only read: the lease is never taken or renewed, and no store is
+/// created.
+fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf>) -> Value {
+    let unknown =
+        |why: String| json!({"held": null, "holder": null, "expiresAt": null, "why": why});
+    let data_dir = match data_dir {
+        Some(dir) => Some(dir),
+        None => {
+            let loaded = match config {
+                Some(p) => match p.try_exists() {
+                    Ok(true) => Config::load(p).map(Some),
+                    Ok(false) if explicit => Err(format!("config {} does not exist", p.display())),
+                    Ok(false) => Ok(None),
+                    Err(e) => Err(format!("cannot read config {}: {e}", p.display())),
+                },
+                None => Ok(None),
+            };
+            match loaded {
+                Ok(c) => c.and_then(|c| c.data.dir).or_else(default_data_dir),
+                Err(why) => return unknown(why),
+            }
+        }
+    };
+    let Some(data_dir) = data_dir else {
+        return unknown(
+            "no data directory: pass --data-dir or set data.dir in the config file".into(),
+        );
+    };
+    match FileStore::peek_lease(&data_dir) {
+        Ok(None) => json!({"held": false, "holder": null, "expiresAt": null, "why": null}),
+        Ok(Some(l)) => json!({
+            "held": fleet_api::Clock::now(&SystemClock) < l.expires_at,
+            "holder": l.holder,
+            "expiresAt": l.expires_at,
+            "why": null,
+        }),
+        Err(e) => unknown(e.to_string()),
+    }
 }
 
 /// The integrations installed on this machine that are outdated, by agent:

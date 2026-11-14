@@ -290,7 +290,15 @@ impl FileStore {
     }
 
     fn read_lease(&self) -> Result<Option<LeaseToken>, StoreError> {
-        let path = self.root.join("lease.json");
+        FileStore::peek_lease(&self.root)
+    }
+
+    /// The manager lease recorded in the store at `root`, read without
+    /// opening the store or taking its lock: a reader never creates the
+    /// store, takes the lease or renews it. `Ok(None)`: no lease is recorded.
+    /// The record is replaced whole, so a read sees one version or the next.
+    pub fn peek_lease(root: &Path) -> Result<Option<LeaseToken>, StoreError> {
+        let path = root.join("lease.json");
         match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
                 StoreError::Unknown(format!("{}: corrupt lease: {e}", path.display()))

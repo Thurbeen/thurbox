@@ -664,3 +664,78 @@ fn a_starter_section_is_refused_at_load() {
     run.code(1).stderr_has("[starter] is no longer read");
     assert!(!run.stderr.contains("configuration page"), "{}", run.stderr);
 }
+
+/// `fleet version --json` reports the manager's lease under `manager`, and
+/// only reads it: no store is created, and the lease is neither taken nor
+/// renewed.
+#[cfg(target_os = "linux")]
+#[test]
+fn version_reports_the_manager_lease_without_taking_it() {
+    let env = fake_bootstrap("version-manager");
+    let manager = || env.fleet(&["version", "--json"]).ok().json()["manager"].clone();
+    let lease = env.data.join("lease.json");
+
+    let none = manager();
+    assert_eq!(none["held"], false, "{none:#}");
+    assert!(none["holder"].is_null(), "{none:#}");
+    assert!(!lease.exists(), "version wrote no lease");
+    assert!(
+        !env.data.join("store.json").exists(),
+        "version opened no store"
+    );
+
+    let mut up = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    until(|| manager()["held"] == true);
+    let held = manager();
+    assert!(
+        held["holder"]
+            .as_str()
+            .is_some_and(|h| h.starts_with("fleet-up-")),
+        "{held:#}"
+    );
+    assert!(held["expiresAt"].as_u64().is_some(), "{held:#}");
+
+    // A released lease is no manager; version leaves the record as it is.
+    assert!(
+        Command::new("/bin/kill")
+            .args(["-TERM", &up.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    until(|| up.0.try_wait().unwrap().is_some());
+    let released = fs::read(&lease).unwrap();
+    let after = manager();
+    assert_eq!(after["held"], false, "{after:#}");
+    assert_eq!(after["holder"], held["holder"], "{after:#}");
+    assert_eq!(fs::read(&lease).unwrap(), released, "version took no lease");
+
+    // A lease that cannot be read is unknown, never absent.
+    fs::write(&lease, b"{not json").unwrap();
+    let unknown = manager();
+    assert!(unknown["held"].is_null(), "{unknown:#}");
+    assert!(
+        unknown["why"].as_str().is_some_and(|w| w.contains("lease")),
+        "{unknown:#}"
+    );
+
+    // A named config that does not exist is unknown too: the default data
+    // directory is not that Fleet's, and its lease says nothing of it.
+    let missing = env.root.join("missing.toml");
+    let out = installed(
+        &env,
+        &["--config", missing.to_str().unwrap(), "version", "--json"],
+    )
+    .output()
+    .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let named: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let named = &named["manager"];
+    assert!(named["held"].is_null(), "{named:#}");
+    assert!(
+        named["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("missing.toml")),
+        "{named:#}"
+    );
+}

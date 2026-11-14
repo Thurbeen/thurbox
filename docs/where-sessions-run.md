@@ -115,8 +115,9 @@ when the laptop sleeps.
    program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
    ```
 
-5. Run `thurbox-cli doctor`. It reports each Fleet, says when box cannot be
-   reached, and points at the unit for box's manager. Until the interface
+5. Run `thurbox-cli doctor`. It reports each Fleet, and says when box cannot
+   be reached. It reads box's `fleet version --json` to report whether box's
+   manager runs, and points at the unit when it does not. Until the interface
    follows several Fleets, it uses the first by name (here `box`).
 
 ### 3. One Fleet, several places
