@@ -347,11 +347,12 @@ the `crates/architecture.toml` entries it reads:
 | 1. Components meet only through processes | `undeclared-edge`, `undeclared-dev-edge`, `reexport-edge`, `cycle`, `ungoverned-crate`, `missing-crate` | `[crates.<name>]`: `role`, `deps`, `dev_deps` |
 | T1. Module isolation | `module-edge`, `module-cycle`, `module-unused`, `module-unknown`, `module-ungoverned`, `module-governed-grant`, `module-external` | `[crates.thurbox]`: `governed`, `exempt`; `[crates.thurbox.modules]` |
 | T1. thurbox's own restrictions: runtime gateways, session purity, kernel workers, concrete backends, multiplexer naming, atomic writes | `module-restricted`, `module-restricted-stale` | `[[crates.thurbox.restricted]]` |
-| F1. Pure decisions | `pure-io`, `pure-external`, `missing-probe`, `missing-clippy-guard`, `cli-method`, `restricted` | `[pure]`; `[crates.<name>]`: `external`, `probes`, `forbidden_methods`; `[[restricted]]` for the ports and the telemetry SDK |
+| F1. Pure decisions | `pure-io`, `pure-external`, `missing-probe`, `missing-clippy-guard`, `cli-method`, `restricted` | `[pure]`: `forbidden_paths`, `clippy_guards`; `[crates.<name>]`: `external`, `probes`, `forbidden_methods`; `[[restricted]]` for the ports and the telemetry SDK |
 | F2. One bounded spawner | `restricted` | `[[restricted]]` for `std::process::Command`, the process-group APIs and `process_wrap` |
 | F4. One writer per field | `status-writer` | `[status_writers]` |
-| R3. runtime-mux module isolation | the T1 module codes, `module-restricted` | `[crates.runtime-mux.modules]`, `[[crates.runtime-mux.restricted]]` |
+| R3. runtime-mux module isolation | the T1 module codes, `module-restricted`, `module-restricted-stale` | `[crates.runtime-mux]`: `governed`, `exempt`; `[crates.runtime-mux.modules]`, `[[crates.runtime-mux.restricted]]` |
 
 Every check also reports `unresolvable`, `unparsable` or `unreadable` for a
-reference or file it cannot judge, and `restricted-scope` for a restriction
-that names no known role or crate.
+reference or file it cannot judge. A top-level `[[restricted]]` entry whose
+`applies_to` is empty or names an unknown role or crate is reported as
+`restricted-scope`.
