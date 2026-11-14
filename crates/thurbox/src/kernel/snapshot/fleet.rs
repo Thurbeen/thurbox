@@ -112,6 +112,29 @@ pub struct FleetWatch {
     /// Set while a refresh is on its way, so a picker opened again before it
     /// answers starts no second one.
     refreshing: Arc<std::sync::atomic::AtomicBool>,
+    /// The state last sent, shared by the `version` worker and a refresh.
+    published: Published,
+}
+
+/// The Fleet state last sent to the source: the one owner both writers
+/// compare with, so neither leaves the other's answer standing.
+type Published = Arc<Mutex<Option<(FleetState, Option<String>)>>>;
+
+/// Send `next` unless it is what was last sent. `false` once the source is
+/// gone.
+fn publish_state(
+    published: &Published,
+    tx: &Sender<Update>,
+    next: (FleetState, Option<String>),
+) -> bool {
+    let Ok(mut last) = published.lock() else {
+        return false;
+    };
+    if last.as_ref() == Some(&next) {
+        return true;
+    }
+    *last = Some(next.clone());
+    tx.send(Update::State(next.0, next.1)).is_ok()
 }
 
 impl FleetWatch {
@@ -142,9 +165,15 @@ impl FleetWatch {
         // The first poll publishes the Fleet, connecting, before it answers.
         let _ = tx.send(Update::State(FleetState::Connecting, None));
         let alive = Arc::new(());
+        let published = Published::default();
         {
-            let (link, tx, alive) = (link.clone(), tx.clone(), Arc::downgrade(&alive));
-            std::thread::spawn(move || read_version(&link, &tx, &alive));
+            let (link, tx, alive, published) = (
+                link.clone(),
+                tx.clone(),
+                Arc::downgrade(&alive),
+                published.clone(),
+            );
+            std::thread::spawn(move || read_version(&link, &tx, &alive, &published));
         }
         {
             let (link, tx) = (link.clone(), tx.clone());
@@ -184,6 +213,7 @@ impl FleetWatch {
             link,
             tx,
             refreshing: Arc::default(),
+            published,
         }
     }
 }
@@ -197,16 +227,21 @@ impl SnapshotSource for FleetWatch {
         if fleet != self.name || self.refreshing.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (link, tx, refreshing) = (self.link.clone(), self.tx.clone(), self.refreshing.clone());
+        let (link, tx, refreshing, published) = (
+            self.link.clone(),
+            self.tx.clone(),
+            self.refreshing.clone(),
+            self.published.clone(),
+        );
         std::thread::spawn(move || {
             if let Some(answer) = ask(&link, &["runtime", "places", "--json"]) {
                 let _ = tx.send(Update::Places(places_from(&answer, &machine(&link))));
             }
-            let ((state, why), answer) = probe(&link);
+            let (state, answer) = probe(&link);
             if let Some(answer) = answer {
                 let _ = tx.send(Update::Harnesses(harnesses_of(&answer)));
             }
-            let _ = tx.send(Update::State(state, why));
+            publish_state(&published, &tx, state);
             refreshing.store(false, Ordering::Release);
         });
     }
@@ -494,9 +529,13 @@ fn ask(link: &FleetLink, args: &[&str]) -> Option<Value> {
 /// while it does not answer: which harnesses it has profiles for (the
 /// agents the creation flow offers are Fleet's, and thurbox keeps no list
 /// of its own), and whether its manager runs. Only a change is sent.
-fn read_version(link: &FleetLink, tx: &Sender<Update>, alive: &std::sync::Weak<()>) {
+fn read_version(
+    link: &FleetLink,
+    tx: &Sender<Update>,
+    alive: &std::sync::Weak<()>,
+    published: &Published,
+) {
     let mut harnesses = None;
-    let mut state = None;
     while alive.strong_count() > 0 {
         let (next, answer) = probe(link);
         if let Some(answer) = answer {
@@ -509,11 +548,8 @@ fn read_version(link: &FleetLink, tx: &Sender<Update>, alive: &std::sync::Weak<(
             }
         }
         let answered = next.0 != FleetState::Unreachable;
-        if state.as_ref() != Some(&next) {
-            state = Some(next.clone());
-            if tx.send(Update::State(next.0, next.1)).is_err() {
-                return;
-            }
+        if !publish_state(published, tx, next) {
+            return;
         }
         std::thread::sleep(if answered && harnesses.is_some() {
             MANAGER_CHECK
@@ -1121,6 +1157,50 @@ mod tests {
             std::fs::write(&places, answer(true)).expect("places");
             store.want_places(Some("devbox".into()));
             until(&mut store, Some(true));
+        });
+    }
+
+    /// A refresh that fails once (ssh exits 255 while the place picker
+    /// opens) marks the Fleet unreachable, and the next `version` poll that
+    /// answers marks it up again: the published state has one owner.
+    #[cfg(unix)]
+    #[test]
+    fn a_fleet_unreachable_for_one_refresh_is_up_again_at_the_next_poll() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "here=$(dirname \"$0\")\n\
+             case \"$1\" in\n\
+             version) [ -e \"$here/down\" ] && { echo 'no route' >&2; exit 255; }; echo '{\"manager\":{\"held\":true}}' ;;\n\
+             runtime) [ -e \"$here/down\" ] && exit 255; echo '{\"places\":null}' ;;\n\
+             watch) exec sleep 60 ;;\n\
+             esac",
+        );
+        let down = remote.dir().join("remote/down");
+        crate::paths::with_path(remote.path(), || {
+            let mut store = super::super::SnapshotStore::with_source(
+                Box::new(FleetWatch::spawn(remote.link.clone())),
+                &Default::default(),
+            );
+            let until = |store: &mut super::super::SnapshotStore, want: FleetState| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(25);
+                loop {
+                    store.refresh_if_due();
+                    let state = store.current().fleets.first().map(|f| f.state);
+                    if state == Some(want) {
+                        return;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "never {want:?}: {state:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            };
+            until(&mut store, FleetState::Up);
+            std::fs::write(&down, "").expect("down");
+            store.want_places(Some("devbox".into()));
+            until(&mut store, FleetState::Unreachable);
+            std::fs::remove_file(&down).expect("up");
+            until(&mut store, FleetState::Up);
         });
     }
 
