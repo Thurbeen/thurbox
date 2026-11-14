@@ -286,8 +286,8 @@ regardless of which backend is active.
 **Why**: Every consumer — the runtime protocol (`runtime_mux::protocol`) and
 thurbox's `kernel` — reaches a session through the trait and the registry that
 holds one backend per route
-(ADR-29), never through an adapter, which `tests/architecture_rules.rs`
-enforces (`consumers_reach_no_concrete_backend`). The adapters today are
+(ADR-29), never through an adapter, which thurbox's restrictions in
+`crates/architecture.toml` enforce. The adapters today are
 `TmuxBackend`, `PsmuxBackend`, and `RmuxBackend`, peers over the shared tmux-protocol server
 (ADR-31), each reached locally or on a host over a `TmuxTransport`
 ([hosts and transports](../runtime/runtime-mux.md#hosts-and-transports)).
@@ -612,7 +612,7 @@ among them: they are Fleet's, driven through Fleet's own command line
 
 **Why**: A separate binary keeps scripting/automation out of the
 TUI's event loop. The `cli` module never reaches a backend adapter
-(`tests/architecture_rules.rs`), so it can operate without a terminal UI.
+(`crates/architecture.toml`), so it can operate without a terminal UI.
 
 **Rejected**:
 

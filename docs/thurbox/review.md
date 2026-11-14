@@ -49,8 +49,8 @@ data, agent may reference neither git nor backend, and kernel reaches agent or
 the backend contract by fully-qualified path only, never a use - a
 function-local use or an alias included, since a reference counts where it
 resolves. Consumers name the backend contract; only backend::wiring names an
-adapter, and only a composition root names backend::wiring
-(crates/thurbox/tests/architecture_rules.rs). A new module fails arch-rules
+adapter, and only a composition root names backend::wiring (thurbox's
+restrictions in the same file). A new module fails arch-rules
 until its rules entry is declared, and every entry, coordinator's too, is
 checked. The runtime behind backend is crates/runtime-mux, held to its module
 rules in crates/architecture.toml and its own tests/architecture_rules.rs: the

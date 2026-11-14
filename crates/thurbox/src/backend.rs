@@ -2,10 +2,10 @@
 //! (`runtime_mux`, ADR-41), and what thurbox injects into it — its settings
 //! and its data directory ([`mux_settings`]).
 //!
-//! Every crossing into the runtime goes through this module, so
-//! `tests/architecture_rules.rs` can see which of thurbox's modules reaches
-//! which part of it: consumers name the contract, and only the composition
-//! roots name the factory ([`wiring`]) or an adapter.
+//! Every crossing into the runtime goes through this module, so thurbox's
+//! restrictions in `crates/architecture.toml` can say which of its modules
+//! reaches which part of it: consumers name the contract, and only the
+//! composition roots name the factory ([`wiring`]) or an adapter.
 
 pub use runtime_mux::{
     contract, host_path, identity, output_wake, pane, preflight, psmux, registry, rmux, tmux,
@@ -57,8 +57,8 @@ pub mod instance {
 
 /// What fills the registry for a running process: the runtime's factory over
 /// the hosts in thurbox's `hosts.toml`. Only the composition roots may call it
-/// (`tests/architecture_rules.rs`); every other consumer is handed the
-/// registry this builds.
+/// (`crates/architecture.toml`); every other consumer is handed the registry
+/// this builds.
 pub mod wiring {
     use crate::session::settings::Settings;
     use crate::session::HostRegistry;

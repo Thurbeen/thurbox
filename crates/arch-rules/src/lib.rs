@@ -124,6 +124,33 @@ pub struct CrateRule {
     /// Target roots with no module rule: `lib`, `main`, or a binary's name.
     #[serde(default)]
     pub exempt: Vec<String>,
+    /// Paths only some of the crate's modules may reach.
+    #[serde(default)]
+    pub restricted: Vec<ModuleRestricted>,
+}
+
+/// Paths of a crate that only the modules `allowed` may reach, resolved as
+/// any reference is.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModuleRestricted {
+    pub paths: Vec<String>,
+    pub allowed: Vec<String>,
+    /// Judge production code only: a test may name what it pins.
+    #[serde(default)]
+    pub production_only: bool,
+    /// Files, relative to `src/`, allowed exactly this many reaches.
+    #[serde(default)]
+    pub exceptions: Vec<Exception>,
+    pub why: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Exception {
+    pub file: String,
+    pub sites: usize,
+    pub why: String,
 }
 
 /// One module's rule: the modules it may reference, in any form. A grant
@@ -610,6 +637,9 @@ struct Ref {
     /// The reference is an import (`use`), not a path written where it is
     /// used.
     in_use: bool,
+    /// The reference's place among its file's references: the same in every
+    /// tree a file is walked in, so one source site counts once.
+    site: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -734,6 +764,7 @@ impl CrateIndex {
                     blocks: 0,
                     cfg_use: false,
                     tests: 0,
+                    sites: 0,
                 };
                 walker.scope();
                 walker.items(&parsed.items);
@@ -937,6 +968,8 @@ struct Walker<'a> {
     cfg_use: bool,
     /// How many `#[cfg(test)]` items enclose the walk.
     tests: u32,
+    /// References recorded so far in this file.
+    sites: u32,
 }
 
 impl Walker<'_> {
@@ -965,6 +998,11 @@ impl Walker<'_> {
         self.tests += test;
         walk(self);
         self.tests -= test;
+    }
+
+    fn next_site(&mut self) -> u32 {
+        self.sites += 1;
+        self.sites
     }
 
     fn scope(&mut self) -> &mut Scope {
@@ -1007,6 +1045,7 @@ impl Walker<'_> {
                 let p = prefix.clone();
                 let loc = self.location(span);
                 self.scope().globs.push((p.clone(), global));
+                let site = self.next_site();
                 self.idx.refs.push(Ref {
                     module: self.module.clone(),
                     segments: p,
@@ -1015,6 +1054,7 @@ impl Walker<'_> {
                     location: loc,
                     test: self.tests > 0,
                     in_use: true,
+                    site,
                 });
             }
             UseTree::Group(g) => {
@@ -1033,6 +1073,7 @@ impl Walker<'_> {
         span: proc_macro2::Span,
     ) {
         let loc = self.location(span);
+        let site = self.next_site();
         self.idx.refs.push(Ref {
             module: self.module.clone(),
             segments: target.clone(),
@@ -1041,6 +1082,7 @@ impl Walker<'_> {
             location: loc,
             test: self.tests > 0,
             in_use: true,
+            site,
         });
         if local != "_" {
             let weak = self.blocks > 0 || self.cfg_use;
@@ -1231,6 +1273,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
         let segments: Vec<String> = p.segments.iter().map(|s| s.ident.to_string()).collect();
         if let Some(first) = p.segments.first() {
             let loc = self.location(first.ident.span());
+            let site = self.next_site();
             self.idx.refs.push(Ref {
                 module: self.module.clone(),
                 segments,
@@ -1239,6 +1282,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 location: loc,
                 test: self.tests > 0,
                 in_use: false,
+                site,
             });
         }
         visit::visit_path(self, p);
@@ -1253,6 +1297,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
             .collect();
         if let Some(first) = m.path.segments.first() {
             let loc = self.location(first.ident.span());
+            let site = self.next_site();
             self.idx.refs.push(Ref {
                 module: self.module.clone(),
                 segments,
@@ -1261,6 +1306,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 location: loc,
                 test: self.tests > 0,
                 in_use: false,
+                site,
             });
         }
         // The arguments of an expression-like macro (`format!`, `vec!`,
@@ -1837,6 +1883,10 @@ fn check_sources(
     let allowed_libs: BTreeSet<String> = rule.deps.iter().map(|d| lib_name(d)).collect();
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
     let mut graph = (!rule.modules.is_empty()).then(|| ModuleGraph::new(rule));
+    // Each restriction's hits, keyed by source site so a file two targets
+    // include counts once: the file relative to `src/`, the site, the path.
+    let mut hits: Vec<BTreeMap<(String, u32), (String, String)>> =
+        vec![BTreeMap::new(); rule.restricted.len()];
     for r in &idx.refs {
         resolver.budget.set(RESOLVE_BUDGET);
         resolver.exhausted.set(false);
@@ -1849,6 +1899,34 @@ fn check_sources(
                 format!("{} exceeds the resolution budget", r.segments.join("::")),
             ));
             continue;
+        }
+        // A target's root (`lib`, `main`, a binary) is judged under its own
+        // name: an exempt root keeps no module rule, but a restriction still
+        // binds it.
+        let from = match graph.as_ref() {
+            Some(g) => g.node_of(&r.module),
+            // No module rules: each top-level module is judged by its name.
+            None => without_target(&r.module).first().map(String::as_str),
+        }
+        .or_else(|| {
+            without_target(&r.module)
+                .is_empty()
+                .then(|| target_name(&r.module))
+        });
+        if let Some(from) = from {
+            for (x, found) in rule.restricted.iter().zip(&mut hits) {
+                if x.allowed.iter().any(|a| a == from) || x.production_only && r.test {
+                    continue;
+                }
+                if let Some(p) = paths
+                    .iter()
+                    .find(|p| x.paths.iter().any(|f| starts_with(p, f)))
+                {
+                    found
+                        .entry((r.location.clone(), r.site))
+                        .or_insert_with(|| (src_file(&r.location), p.join("::")));
+                }
+            }
         }
         for path in paths {
             let shown = path.join("::");
@@ -1973,9 +2051,57 @@ fn check_sources(
             ));
         }
     }
+    for (x, found) in rule.restricted.iter().zip(&hits) {
+        let mut by_file: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+        for ((location, _), (file, shown)) in found {
+            by_file.entry(file).or_default().push((location, shown));
+        }
+        for (file, sites) in &by_file {
+            let listed = x
+                .exceptions
+                .iter()
+                .find(|e| e.file == *file)
+                .map_or(0, |e| e.sites);
+            if sites.len() > listed {
+                for (location, shown) in sites {
+                    v.push(violation(
+                        "module-restricted",
+                        &idx.name,
+                        *location,
+                        format!("reaches {shown}: {}", x.why),
+                    ));
+                }
+            }
+        }
+        for e in &x.exceptions {
+            let left = by_file.get(e.file.as_str()).map_or(0, Vec::len);
+            if left < e.sites {
+                v.push(violation(
+                    "module-restricted-stale",
+                    &idx.name,
+                    "architecture.toml",
+                    format!(
+                        "{} is allowed {} reaches of {} but {left} remain ({})",
+                        e.file,
+                        e.sites,
+                        x.paths.join(", "),
+                        e.why
+                    ),
+                ));
+            }
+        }
+    }
     if let Some(graph) = graph {
         graph.finish(idx, v);
     }
+}
+
+/// The file of a `file:line` location, relative to its crate's `src/`.
+fn src_file(location: &str) -> String {
+    let file = location.rsplit_once(':').map_or(location, |(f, _)| f);
+    file.split_once("/src/")
+        .map_or(file, |(_, f)| f)
+        .to_string()
 }
 
 /// One reference from a module into another.
@@ -2091,6 +2217,14 @@ impl<'r> ModuleGraph<'r> {
         }
         for (from, m) in &rule.modules {
             for to in m.grants() {
+                if rule.governed.contains(to) {
+                    v.push(violation(
+                        "module-governed-grant",
+                        &idx.name,
+                        "architecture.toml",
+                        format!("{from} is granted all of {to}; name the module it uses"),
+                    ));
+                }
                 if !rule.modules.contains_key(to) {
                     v.push(violation(
                         "module-unknown",

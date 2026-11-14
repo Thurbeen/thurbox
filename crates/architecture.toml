@@ -318,6 +318,85 @@ notifications = { use = ["session", "paths", "shell"] }
 # never reaches into agent or the interface.
 clipboard = { use = ["paths", "session"] }
 
+# What of the runtime a consumer must never reach by name: one multiplexer's
+# adapter, or the protocol grammar only some multiplexers speak. Every verb a
+# consumer needs (lifecycle, pane I/O, status, the heartbeat) goes through the
+# contract. The `backend` gateway re-exports them, and nothing else may.
+[[crates.thurbox.restricted]]
+paths = ["runtime_mux::tmux", "runtime_mux::psmux", "runtime_mux::rmux", "runtime_mux::tmux_compat"]
+allowed = ["backend"]
+why = "consumers reach the runtime through the contract, never a concrete backend"
+
+# The factory that fills the registry, reached only by the composition root
+# (`main`'s body): a consumer that builds its own registry sees a different set
+# of backends from the one the process was wired with.
+[[crates.thurbox.restricted]]
+paths = ["thurbox::backend::wiring", "runtime_mux::wiring"]
+allowed = ["backend", "coordinator"]
+why = "only the composition root builds the registry"
+
+# A specific multiplexer is named only where a route is decided (`session`,
+# the route grammar and its defaults). Anywhere else, `Multiplexer::Psmux`
+# is a consumer choosing behaviour, or an OS, by multiplexer. A test may name
+# the one it pins.
+[[crates.thurbox.restricted]]
+paths = [
+  "runtime_mux::host::multiplexer::Multiplexer::Tmux",
+  "runtime_mux::host::multiplexer::Multiplexer::Psmux",
+  "runtime_mux::host::multiplexer::Multiplexer::Rmux",
+  "runtime_mux::host::multiplexer::Multiplexer::Herdr",
+]
+allowed = ["session"]
+production_only = true
+why = "which multiplexer serves a session is the route's decision"
+
+# Everything a user edits or thurbox reads back, through `std::fs` or
+# `tokio::fs`, goes through `paths::write_atomically`, which a crash, a full
+# disk or a second writer cannot leave half-written. A truncated
+# `agents.toml`, manifest or plugin lock is a broken install; a cut log line
+# or a stale cache is not. Each
+# exception is exact, so a further write in an allowed file needs its own
+# reason, and a write that moves to the atomic writer takes its exception
+# with it.
+[[crates.thurbox.restricted]]
+paths = ["std::fs::write", "tokio::fs::write"]
+allowed = ["paths"]
+production_only = true
+why = "write it through paths::write_atomically"
+exceptions = [
+  { file = "update/version_check.rs", sites = 1, why = "a cache: one that fails to parse is fetched again" },
+  { file = "ui_control.rs", sites = 2, why = "stages the instance file under a private mode (Unix) or owner ACL (Windows), then renames it" },
+]
+
+[[crates.thurbox.restricted]]
+paths = ["std::fs::copy", "tokio::fs::copy"]
+allowed = ["paths"]
+production_only = true
+why = "write it through paths::write_atomically"
+exceptions = [
+  { file = "update/self_update.rs", sites = 1, why = "copies the new binary onto a staged .new file that is renamed into place" },
+]
+
+[[crates.thurbox.restricted]]
+paths = ["std::fs::File::create", "tokio::fs::File::create"]
+allowed = ["paths"]
+production_only = true
+why = "write it through paths::write_atomically"
+exceptions = [
+  { file = "ui_control.rs", sites = 1, why = "creates the empty audit log on Windows so its ACL is set before the first append" },
+]
+
+[[crates.thurbox.restricted]]
+paths = ["std::fs::OpenOptions::new", "tokio::fs::OpenOptions::new"]
+allowed = ["paths"]
+production_only = true
+why = "write it through paths::write_atomically"
+exceptions = [
+  { file = "kernel/snapshot/fleet.rs", sites = 1, why = "fleet up's standard error, created exclusively, unlinked once spawned and read once it exits" },
+  { file = "clipboard.rs", sites = 1, why = "opens /dev/tty to send an OSC 52 sequence, not a file" },
+  { file = "ui_control.rs", sites = 2, why = "appends to the control audit log, on Unix and on Windows" },
+]
+
 [crates.arch-rules]
 role = "tooling"
 deps = []

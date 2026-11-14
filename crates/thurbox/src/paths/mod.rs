@@ -58,7 +58,7 @@ pub fn home_dir() -> Option<PathBuf> {
 /// Write a file beside its destination, then replace the destination.
 ///
 /// The one writer for every file a user edits or thurbox reads back;
-/// `tests/architecture_rules.rs` holds production code outside `paths` to it.
+/// `crates/architecture.toml` holds production code outside `paths` to it.
 ///
 /// Keeping the staged file in the same directory makes the final rename a
 /// same-filesystem operation: readers see either the previous complete file or

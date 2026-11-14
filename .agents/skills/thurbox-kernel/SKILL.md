@@ -78,9 +78,11 @@ edges, one `[crates.thurbox.modules]` entry per module under `src/`, and the
 only copy of that graph, which `arch-rules` checks. Read the file, not a
 summary of it. Every file of `agent`, `config` and `update` is a module of its
 own (`governed`), and a `path_only` grant admits fully-qualified paths but
-never `use`. `tests/architecture_rules.rs` keeps thurbox's own checks: only
-the `backend` gateway and `RUNTIME_GATEWAYS` may name `runtime_mux`, and no
-consumer reaches a concrete backend. `crates/architecture.toml` also holds the
+never `use`. Its `[[crates.thurbox.restricted]]` entries keep consumers off a
+concrete backend, a specific multiplexer outside `session`, and in-place
+writes outside `paths`. `tests/architecture_rules.rs` keeps thurbox's own
+checks: only the `backend` gateway and `RUNTIME_GATEWAYS` may name
+`runtime_mux`. `crates/architecture.toml` also holds the
 crate graph and `runtime-mux`'s module rules.
 
 ### Module Responsibilities

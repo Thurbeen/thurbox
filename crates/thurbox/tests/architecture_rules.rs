@@ -1,70 +1,18 @@
-//! thurbox's own architecture checks, over the module rules in
-//! `crates/architecture.toml`. `arch-rules` holds every module to those rules:
-//! each has one, every reference keeps to it, no cycle, no unused grant. What
-//! stays here is particular to thurbox: no consumer reaches a concrete
-//! backend, the runtime is named only through its gateways, one multiplexer
-//! is named only where one is chosen, `session` stays pure data, files thurbox
-//! reads back are written atomically, and each kernel worker lives in a file
-//! of its own.
+//! thurbox's own architecture checks, beside the module rules and path
+//! restrictions in `crates/architecture.toml` that `arch-rules` checks: the
+//! runtime is named only through its gateways, `session` stays pure data, and
+//! each kernel worker lives in a file of its own.
 
 #[allow(dead_code)]
 #[path = "architecture/resolver.rs"]
 mod resolver;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use resolver::{strip_comments_and_strings, Edge, Reference, Tree};
-
-/// thurbox's module rules as `crates/architecture.toml` declares them.
-struct Rules {
-    /// Each module and every module it is granted, in any form or by path
-    /// only.
-    grants: BTreeMap<String, Vec<String>>,
-    /// The modules whose every file module has a rule of its own.
-    governed: Vec<String>,
-}
-
-fn rules() -> &'static Rules {
-    static RULES: OnceLock<Rules> = OnceLock::new();
-    RULES.get_or_init(|| {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../architecture.toml");
-        let file: toml::Table = fs::read_to_string(&path)
-            .expect("read crates/architecture.toml")
-            .parse()
-            .expect("parse crates/architecture.toml");
-        let thurbox = &file["crates"]["thurbox"];
-        let names = |v: &toml::Value| -> Vec<String> {
-            v.as_array()
-                .expect("a list of module names")
-                .iter()
-                .map(|n| n.as_str().expect("a module name").to_string())
-                .collect()
-        };
-        let grants = thurbox["modules"]
-            .as_table()
-            .expect("thurbox declares its modules")
-            .iter()
-            .map(|(name, rule)| {
-                let mut all = names(&rule["use"]);
-                if let Some(path_only) = rule.get("path_only") {
-                    all.extend(names(path_only));
-                }
-                (name.clone(), all)
-            })
-            .collect();
-        Rules {
-            grants,
-            governed: names(&thurbox["governed"]),
-        }
-    })
-}
-
-fn node_names() -> Vec<&'static str> {
-    rules().grants.keys().map(String::as_str).collect()
-}
+use resolver::{strip_comments_and_strings, Tree};
 
 fn src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -74,164 +22,6 @@ fn src_root() -> PathBuf {
 fn src_tree() -> &'static Tree {
     static TREE: OnceLock<Tree> = OnceLock::new();
     TREE.get_or_init(|| Tree::load(&src_root()))
-}
-
-fn describe(tree: &Tree, edge: &Edge) -> String {
-    format!(
-        "{} → {} @ {}{}",
-        edge.from,
-        edge.target(),
-        edge.site(&tree.root),
-        if edge.test { " [test]" } else { "" },
-    )
-}
-
-/// Where `Multiplexer` is reached, as a resolved path: its variants are the
-/// one kind of item a node may reach *through* a grant and still not name.
-/// `session` re-exports it from the runtime, so a path stops at
-/// `session::Multiplexer`; a tree that defines it in `session/multiplexer.rs`
-/// resolves one segment deeper.
-const MULTIPLEXER: &[&[&str]] = &[
-    &["session", "Multiplexer"],
-    &["session", "multiplexer", "Multiplexer"],
-];
-
-/// The multiplexers a route can name. A name here is not an implementation:
-/// which of them work is what the registry says, at runtime.
-const MULTIPLEXER_VARIANTS: &[&str] = &["Tmux", "Psmux", "Rmux", "Herdr"];
-
-/// The one node that may decide something by naming *one* multiplexer: the
-/// route grammar and its defaults (`session`). The runtime's factory and
-/// adapters are the only other places one is chosen, and `runtime-mux`'s own
-/// architecture test holds them. Anywhere else, a `Multiplexer::Psmux` is a
-/// consumer choosing behaviour — or an OS — by multiplexer, which is what the
-/// route and the registry exist to decide.
-fn may_name_a_multiplexer(node: &str) -> bool {
-    node == "session"
-}
-
-/// The multiplexer variant a resolved path names, if it names one.
-fn multiplexer_variant(reference: &Reference) -> Option<&str> {
-    let path = &reference.path;
-    MULTIPLEXER.iter().find_map(|at| {
-        (path.len() == at.len() + 1
-            && path[..at.len()].iter().eq(at.iter())
-            && MULTIPLEXER_VARIANTS.contains(&path[at.len()].as_str()))
-        .then(|| path[at.len()].as_str())
-    })
-}
-
-/// Every reference to a specific multiplexer from production code in a node
-/// that may not name one, as an edge to `session` whose item is the variant
-/// (`Multiplexer::Psmux`).
-///
-/// Test code is left out: a test names a multiplexer to pin what happens for
-/// it, which is the opposite of deciding behaviour by one.
-fn variant_violations(tree: &Tree, nodes: &[&str]) -> Vec<Edge> {
-    tree.references(nodes)
-        .into_iter()
-        .filter(|r| !r.test && !may_name_a_multiplexer(&r.from))
-        .filter_map(|r| {
-            let variant = multiplexer_variant(&r)?;
-            Some(Edge {
-                item: format!("Multiplexer::{variant}"),
-                from: r.from,
-                to: "session".to_string(),
-                file: r.file,
-                line: r.line,
-                in_use: r.in_use,
-                test: r.test,
-            })
-        })
-        .collect()
-}
-
-/// A specific multiplexer is named only in `session`, where a route is
-/// decided: production code anywhere else naming one is choosing behaviour by
-/// multiplexer.
-#[test]
-fn a_multiplexer_variant_is_named_only_in_session() {
-    let tree = src_tree();
-    let found: Vec<String> = variant_violations(tree, &node_names())
-        .iter()
-        .map(|e| describe(tree, e))
-        .collect();
-    assert!(
-        found.is_empty(),
-        "\nname no multiplexer outside `session`:\n  {}\n",
-        found.join("\n  ")
-    );
-}
-
-/// What of the runtime a consumer must never reach by name: one multiplexer's
-/// adapter, the protocol grammar only some multiplexers speak, or the factory
-/// that names them — items of the `backend` gateway. The adapters' own rules
-/// (peers, one multiplexer each, the factory the only one to name them) are
-/// `runtime-mux`'s architecture test.
-const CONCRETE_BACKEND: &[&str] = &["tmux", "psmux", "rmux", "tmux_compat", "wiring"];
-
-/// The one node that may build the registry: `main`'s body. The exempt crate
-/// roots (`main`, `bin/`) may too. A consumer that builds its own registry
-/// sees a different set of backends from the one the process was wired with.
-const COMPOSITION_ROOT: &str = "coordinator";
-
-/// Each reach of a concrete adapter, the protocol helper or the factory
-/// through the `backend` gateway in `tree`, except the composition root's
-/// reach of the factory. References are resolved through `use`, `super::`,
-/// brace groups, re-exports and `type` aliases, test code included.
-fn concrete_backend_reaches(tree: &Tree, nodes: &[&str]) -> Vec<String> {
-    tree.edges(nodes)
-        .iter()
-        .filter(|e| e.to == "backend" && CONCRETE_BACKEND.contains(&e.item.as_str()))
-        .filter(|e| !(e.from == COMPOSITION_ROOT && e.item == "wiring"))
-        .map(|e| describe(tree, e))
-        .collect()
-}
-
-/// Every verb a consumer needs — lifecycle, pane I/O, status delivery and
-/// polling, the heartbeat — goes through the contract, so no module reaches a
-/// concrete backend at all, and only the composition root reaches the factory.
-#[test]
-fn consumers_reach_no_concrete_backend() {
-    let found = concrete_backend_reaches(src_tree(), &node_names());
-    assert!(
-        found.is_empty(),
-        "\na module reaches a concrete backend:\n  {}\n",
-        found.join("\n  ")
-    );
-}
-
-/// Each grant in `modules` of a whole parent in `governed`.
-fn whole_parent_grants(
-    modules: &BTreeMap<String, Vec<String>>,
-    governed: &[String],
-) -> Vec<String> {
-    modules
-        .iter()
-        .flat_map(|(name, grants)| {
-            grants
-                .iter()
-                .filter(|to| governed.contains(to))
-                .map(move |to| format!("{name} is granted all of `{to}`"))
-        })
-        .collect()
-}
-
-/// No rule grants a whole `governed` parent, so a module added under `agent`
-/// is not reachable until someone decides it is.
-#[test]
-fn no_grant_covers_a_governed_parent() {
-    let rules = rules();
-    assert!(
-        rules.governed.iter().any(|g| g == "agent"),
-        "`agent` must stay governed, so a grant names what it reaches"
-    );
-    let found = whole_parent_grants(&rules.grants, &rules.governed);
-    assert!(
-        found.is_empty(),
-        "\nname the submodules each uses:\n  {}\n",
-        found.join("\n  ")
-    );
 }
 
 /// The modules that may name `runtime_mux` itself: the `backend` gateway, and
@@ -378,30 +168,6 @@ fn aliases_and_reexports_launder_nothing() {
     assert_eq!(found, expected);
 }
 
-/// A specific multiplexer is named only where a multiplexer is decided. The
-/// variant is caught however it is reached — by path, through the parent's
-/// re-export, through an imported name, as a `use` leaf — while the type
-/// itself and its associated items (`Multiplexer::ALL`) stay free to use, and
-/// a test may name the one it pins.
-#[test]
-fn a_multiplexer_variant_is_named_only_where_one_is_chosen() {
-    let tree = fixture("mux_variants");
-    let found: BTreeSet<String> = variant_violations(&tree, &["session", "kernel"])
-        .iter()
-        .map(|e| format!("{} → {} @ {}", e.from, e.target(), e.site(&tree.root)))
-        .collect();
-    let expected: BTreeSet<String> = [
-        "kernel → session::Multiplexer::Psmux @ kernel/mod.rs:3",
-        "kernel → session::Multiplexer::Rmux @ kernel/mod.rs:5",
-        "kernel → session::Multiplexer::Herdr @ kernel/mod.rs:8",
-        "kernel → session::Multiplexer::Tmux @ kernel/mod.rs:10",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
-    assert_eq!(found, expected);
-}
-
 /// `#[cfg(test)]` code is marked — an item, an inline module and a file
 /// declared under `#[cfg(test)] mod x;` — so the multiplexer-variant check can
 /// leave a test's own pinning out.
@@ -418,191 +184,6 @@ fn test_code_makes_no_production_edge() {
         4,
         "{:?}",
         tree.edges(&nodes)
-    );
-}
-
-/// A consumer reaching an adapter or the factory through the gateway is found,
-/// and so is a reach through an imported name; the contract and the composition
-/// root's reach of the factory are not.
-#[test]
-fn a_reach_of_a_concrete_backend_is_found() {
-    assert_eq!(
-        concrete_backend_reaches(
-            &fixture("runtime_imports"),
-            &["backend", "coordinator", "kernel", "session"]
-        ),
-        [
-            "kernel → backend::psmux @ kernel/mod.rs:16",
-            "kernel → backend::tmux @ kernel/mod.rs:11",
-            "kernel → backend::wiring @ kernel/mod.rs:12",
-            "kernel → backend::psmux @ kernel/mod.rs:17",
-        ]
-    );
-}
-
-/// A grant of a governed parent is found, whether in any form or by path only;
-/// a grant of one of its submodules is not.
-#[test]
-fn a_grant_of_a_governed_parent_is_found() {
-    let grants = BTreeMap::from([
-        (
-            "cli".to_string(),
-            vec!["agent".to_string(), "agent::fetch".to_string()],
-        ),
-        ("kernel".to_string(), vec!["config".to_string()]),
-    ]);
-    assert_eq!(
-        whole_parent_grants(&grants, &["agent".to_string(), "config".to_string()]),
-        [
-            "cli is granted all of `agent`",
-            "kernel is granted all of `config`"
-        ]
-    );
-}
-
-/// Every persisted proptest seed must still name a source file that exists.
-///
-/// Proptest's persisted failure-seed store has a layout that is a path contract
-/// rather than incidental, and the default `FileFailurePersistence::
-/// SourceParallel` writes to *two* places depending on the source file:
-///
-/// - It climbs the source file's ancestors for a directory holding `lib.rs` or
-///   `main.rs`. For anything under `src/` that directory is `src/` itself, so a
-///   proptest in `src/agent/backend.rs` persists to its sibling tree,
-///   `proptest-regressions/agent/backend.txt`.
-/// - An integration test under `tests/` has no such ancestor — there is no
-///   `tests/lib.rs`, and none above it — so the climb fails and proptest falls
-///   back to `WithSource`, writing a file *beside the source*: a proptest in
-///   `tests/render_props.rs` persists to
-///   `tests/render_props.proptest-regressions`.
-///
-/// Proptest resolves that path at run time and **says nothing when it misses** —
-/// a renamed or moved source file silently stops re-running its saved cases, so
-/// the regression a seed was written for quietly stops being covered. Both
-/// locations are swept here, since either kind of seed can be orphaned by a
-/// rename.
-///
-/// This is the check that a wide rename needs and that nothing else provides.
-/// The calls that create or truncate a file in place.
-const IN_PLACE_WRITES: &[&str] = &["fs::write", "fs::copy", "File::create", "OpenOptions::new"];
-
-/// Production calls in one file allowed to write in place, how many, and why.
-/// Everything else a user edits or thurbox reads back goes through
-/// `paths::write_atomically`, which a crash, a full disk or a second writer
-/// cannot leave half-written. The count is exact, so a further write in an
-/// allowed file needs its own reason.
-struct InPlaceWrite {
-    file: &'static str,
-    call: &'static str,
-    sites: usize,
-    why: &'static str,
-}
-
-const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
-    InPlaceWrite {
-        file: "kernel/snapshot/fleet.rs",
-        call: "OpenOptions::new",
-        sites: 1,
-        why: "fleet up's standard error, created exclusively, unlinked once spawned and read once \
-              it exits",
-    },
-    InPlaceWrite {
-        file: "update/self_update.rs",
-        call: "fs::copy",
-        sites: 1,
-        why: "copies the new binary onto a staged .new file that is renamed into place",
-    },
-    InPlaceWrite {
-        file: "update/version_check.rs",
-        call: "fs::write",
-        sites: 1,
-        why: "a cache: one that fails to parse is fetched again",
-    },
-    InPlaceWrite {
-        file: "clipboard.rs",
-        call: "OpenOptions::new",
-        sites: 1,
-        why: "opens /dev/tty to send an OSC 52 sequence, not a file",
-    },
-    InPlaceWrite {
-        file: "ui_control.rs",
-        call: "OpenOptions::new",
-        sites: 2,
-        why: "appends to the control audit log, on Unix and on Windows",
-    },
-    InPlaceWrite {
-        file: "ui_control.rs",
-        call: "File::create",
-        sites: 1,
-        why: "creates the empty audit log on Windows so its ACL is set before the first append",
-    },
-    InPlaceWrite {
-        file: "ui_control.rs",
-        call: "fs::write",
-        sites: 2,
-        why: "stages the instance file under a private mode (Unix) or owner ACL (Windows), then renames it",
-    },
-];
-
-/// What [`files_thurbox_reads_back_are_written_atomically`] reports: every site
-/// of a call no entry allows or that outnumbers its entry, and every entry that
-/// outnumbers what is left of it. Files are compared with `/` separators, as
-/// the entries spell them, so the rule holds on Windows too.
-fn unlisted_in_place_writes(
-    found: &[(PathBuf, usize, &str)],
-    allowed: &[InPlaceWrite],
-) -> Vec<String> {
-    let mut sites: BTreeMap<(String, &str), Vec<usize>> = BTreeMap::new();
-    for (file, line, call) in found {
-        sites
-            .entry((file.to_string_lossy().replace('\\', "/"), *call))
-            .or_default()
-            .push(*line);
-    }
-    let mut problems = Vec::new();
-    for ((file, call), lines) in &sites {
-        let listed = allowed
-            .iter()
-            .find(|a| a.file == file && a.call == *call)
-            .map_or(0, |a| a.sites);
-        if lines.len() > listed {
-            for line in lines {
-                problems.push(format!(
-                    "{file}:{line} {call} ({} found, {listed} allowed)",
-                    lines.len()
-                ));
-            }
-        }
-    }
-    for a in allowed {
-        let left = sites.get(&(a.file.to_string(), a.call)).map_or(0, Vec::len);
-        if left < a.sites {
-            problems.push(format!(
-                "{} {} is allowed {} but {left} remain ({})",
-                a.file, a.call, a.sites, a.why
-            ));
-        }
-    }
-    problems
-}
-
-/// Production code outside `paths` writes no file in place unless
-/// [`IN_PLACE_ALLOWED`] says why (#1634): a truncated `agents.toml`, manifest
-/// or plugin lock is a broken install, while a cut log line or a stale cache
-/// is not. Every entry must still match, so a write that moves to the atomic
-/// writer takes its exception with it.
-#[test]
-fn files_thurbox_reads_back_are_written_atomically() {
-    let found: Vec<_> = src_tree()
-        .production_calls(IN_PLACE_WRITES)
-        .into_iter()
-        .filter(|(file, _, _)| !file.starts_with("paths"))
-        .collect();
-    let problems = unlisted_in_place_writes(&found, IN_PLACE_ALLOWED);
-    assert!(
-        problems.is_empty(),
-        "write these through paths::write_atomically, or correct IN_PLACE_ALLOWED with why:\n  {}",
-        problems.join("\n  ")
     );
 }
 
@@ -749,45 +330,29 @@ fn the_mention_scan_takes_test_code_only_when_asked() {
     assert_eq!(sites(true), ["config.rs:5", "config.rs:9", "config.rs:15"]);
 }
 
-/// The scan behind [`files_thurbox_reads_back_are_written_atomically`] sees the
-/// production writes and none of their lookalikes: a comment, a string,
-/// another module's `write`, a `#[cfg(test)]` module inline or in a file of its
-/// own. An allowance covers exactly its count: one write past it fails, and one
-/// short of it is stale.
-#[test]
-fn the_in_place_write_scan_sees_only_production_calls() {
-    let found = fixture("in_place_writes").production_calls(IN_PLACE_WRITES);
-    let sites: Vec<_> = found
-        .iter()
-        .map(|(file, line, call)| format!("{}:{line} {call}", file.display()))
-        .collect();
-    assert_eq!(sites, ["config.rs:5 fs::write", "config.rs:9 fs::write"]);
-
-    let allow = |sites| {
-        [InPlaceWrite {
-            file: "config.rs",
-            call: "fs::write",
-            sites,
-            why: "fixture",
-        }]
-    };
-    assert_eq!(
-        unlisted_in_place_writes(&found, &allow(2)),
-        Vec::<String>::new()
-    );
-    assert_eq!(
-        unlisted_in_place_writes(&found, &allow(1)),
-        [
-            "config.rs:5 fs::write (2 found, 1 allowed)",
-            "config.rs:9 fs::write (2 found, 1 allowed)"
-        ]
-    );
-    assert_eq!(
-        unlisted_in_place_writes(&found, &allow(3)),
-        ["config.rs fs::write is allowed 3 but 2 remain (fixture)"]
-    );
-}
-
+/// Every persisted proptest seed must still name a source file that exists.
+///
+/// Proptest's persisted failure-seed store has a layout that is a path contract
+/// rather than incidental, and the default `FileFailurePersistence::
+/// SourceParallel` writes to *two* places depending on the source file:
+///
+/// - It climbs the source file's ancestors for a directory holding `lib.rs` or
+///   `main.rs`. For anything under `src/` that directory is `src/` itself, so a
+///   proptest in `src/agent/backend.rs` persists to its sibling tree,
+///   `proptest-regressions/agent/backend.txt`.
+/// - An integration test under `tests/` has no such ancestor — there is no
+///   `tests/lib.rs`, and none above it — so the climb fails and proptest falls
+///   back to `WithSource`, writing a file *beside the source*: a proptest in
+///   `tests/render_props.rs` persists to
+///   `tests/render_props.proptest-regressions`.
+///
+/// Proptest resolves that path at run time and **says nothing when it misses** —
+/// a renamed or moved source file silently stops re-running its saved cases, so
+/// the regression a seed was written for quietly stops being covered. Both
+/// locations are swept here, since either kind of seed can be orphaned by a
+/// rename.
+///
+/// This is the check that a wide rename needs and that nothing else provides.
 #[test]
 fn every_proptest_seed_still_names_a_live_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
