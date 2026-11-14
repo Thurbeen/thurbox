@@ -1883,7 +1883,6 @@ fn check_sources(
     let allowed_libs: BTreeSet<String> = rule.deps.iter().map(|d| lib_name(d)).collect();
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
     let mut graph = (!rule.modules.is_empty()).then(|| ModuleGraph::new(rule));
-    // Each restriction's hits: the file, relative to `src/`, and the site.
     // Each restriction's hits, keyed by source site so a file two targets
     // include counts once: the file relative to `src/`, the site, the path.
     let mut hits: Vec<BTreeMap<(String, u32), (String, String)>> =
