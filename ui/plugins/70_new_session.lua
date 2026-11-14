@@ -238,6 +238,21 @@ local function fresh()
   }
 end
 
+--- A remote Fleet's home on its machine, or nil until it has said.
+local function remote_home(flow)
+  local fleet = flow.remote and chosen_fleet()
+  return fleet and fleet.home or nil
+end
+
+--- A typed `~` on a remote Fleet is that machine's home, never this one's.
+local function expand_remote_home(flow, path)
+  local home = remote_home(flow)
+  if home and (path == "~" or path:sub(1, 2) == "~/") then
+    return home .. path:sub(2)
+  end
+  return path
+end
+
 --- Ask the kernel for what this step needs, and stop asking for the rest.
 ---
 --- Written every frame because the want is what keeps the read served; clearing
@@ -256,10 +271,10 @@ local function ask(flow)
   store.want_places = (flow.step == "host" and flow.fleet) or nil
   -- The branches of the first worktree repository, while the base branch is
   -- asked; on the repo step, the expanded repository's, whose read carries
-  -- its existing worktrees. Local only: a worktree is never offered for a
-  -- path on another host.
+  -- its existing worktrees. A remote Fleet's are read on its place, through
+  -- Fleet, so they are asked as `<host>\0<repo>`.
   if flow.step == "branch" then
-    store.want_branches = flow.primary
+    store.want_branches = flow.remote and (flow.host .. "\0" .. flow.primary) or flow.primary
   elseif flow.step == "repo" and flow.wt_repo then
     store.want_branches = flow.wt_repo
   else
@@ -279,14 +294,13 @@ local function ask(flow)
   --
   -- Only while the field has focus: it holds its starting directory the whole
   -- time now, and a flow picking from memory must not pay for a listing.
-  -- Never on a Fleet on another machine: this machine's folders are not its.
+  -- A remote Fleet's listing is read on its place, through Fleet, and its
+  -- `~` is that machine's home.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
-  if
-    flow.step == "repo"
-    and not flow.remote
-    and flow.focus == "input"
-    and (typed ~= "" or flow.browse)
-  then
+  if flow.remote then
+    typed = expand_remote_home(flow, typed)
+  end
+  if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
@@ -373,21 +387,6 @@ local function await_new_row(flow, path)
   flow.cursor = 1
 end
 
---- A remote Fleet's home on its machine, or nil until it has said.
-local function remote_home(flow)
-  local fleet = flow.remote and chosen_fleet()
-  return fleet and fleet.home or nil
-end
-
---- A typed `~` on a remote Fleet is that machine's home, never this one's.
-local function expand_remote_home(flow, path)
-  local home = remote_home(flow)
-  if home and (path == "~" or path:sub(1, 2) == "~/") then
-    return home .. path:sub(2)
-  end
-  return path
-end
-
 --- Move focus into the path field, filling an empty one with where a new path
 --- most likely goes (`pathpicker.start`). The fill is remembered so it can be
 --- told apart from something typed: until it is edited it is no choice at all.
@@ -437,6 +436,10 @@ local function names_missing_folder(flow)
     return false
   end
   local dir, leaf = pathpicker.split_typed(target)
+  -- A folder is made on this machine only: a remote Fleet's path is typed.
+  if flow.remote then
+    return false
+  end
   local listing = browse()
   if listing.dir ~= dir or (listing.host or "") ~= (flow.host or "") or listing.loading then
     return false
@@ -453,9 +456,6 @@ local function names_missing_folder(flow)
 end
 
 local function suggestion_for(flow)
-  if flow.remote then
-    return ""
-  end
   return pathpicker.suggestion(flow.input and flow.input.value or "", browse().entries or {})
 end
 
@@ -999,7 +999,7 @@ local function render_repo(flow)
       { "alt+⏎", "next" },
     }
     if flow.remote then
-      hints = { { "s-tab", "search" }, { "alt+⏎", "next" } }
+      hints = { hints[1], { "s-tab", "search" }, { "alt+⏎", "next" } }
     end
     -- An empty field is nothing to add — including straight after an add, which
     -- clears it and leaves the focus here so several paths can be typed in a
@@ -1077,7 +1077,9 @@ local function render_branch(flow)
   local read = repo_branches(flow.primary)
   local names = (read and read.names) or {}
   if not read or #names == 0 then
-    local text = (read and read.error) or (spinner(flow) .. " fetching and listing branches…")
+    local pending = flow.remote and (" listing " .. flow.fleet .. "'s branches…")
+      or " fetching and listing branches…"
+    local text = (read and read.error) or (spinner(flow) .. pending)
     local failed = read and read.error ~= nil
     return frame("Base Branch", 5, {
       {
@@ -1108,16 +1110,19 @@ local function render_branch(flow)
   local height = math.min(#names, REPO_LIST_MAX)
   local rows = {}
   -- A fetch that failed leaves the refs as they were: say so, or `origin/main`
-  -- reads as the upstream's tip when it is only the last one fetched.
-  if read.fetch_error then
+  -- reads as the upstream's tip when it is only the last one fetched. A
+  -- remote Fleet's are never fetched here: they are as that machine has them.
+  local note = read.fetch_error and (" not fetched: " .. read.fetch_error)
+    or (flow.remote and (" branches as of " .. flow.fleet .. "'s last fetch"))
+  if note then
     rows[1] = {
       type = "text",
       len = 1,
       text = {
         {
           {
-            text = widgets.middle_truncate(" not fetched: " .. read.fetch_error, ROW_COLS),
-            style = { fg = theme.bad },
+            text = widgets.middle_truncate(note, ROW_COLS),
+            style = { fg = read.fetch_error and theme.bad or theme.muted },
           },
         },
       },
@@ -1130,7 +1135,7 @@ local function render_branch(flow)
   }
   rows[#rows + 1] = message_row(flow)
   rows[#rows + 1] = modal.footer({ { "j/k", "navigate" } }, "Select")
-  return frame("Base Branch", height + 4 + (read.fetch_error and 1 or 0), rows, flow)
+  return frame("Base Branch", height + 4 + (note and 1 or 0), rows, flow)
 end
 
 local function render_clone(flow)
@@ -1698,9 +1703,11 @@ return {
           -- the directory stays selectable without it.
           flow.message =
             "Not a git repo — worktree mode needs one (it can still be added as a plain dir)"
-        elseif (flow.host or "") ~= "" then
-          -- thurbox reads no other machine's branches, so it cannot ask what a
-          -- worktree there starts from: the repository runs as it is.
+        elseif (flow.host or "") ~= "" and not flow.remote then
+          -- thurbox reads no other place's branches of this Fleet, so it cannot
+          -- ask what a worktree there starts from: the repository runs as it
+          -- is. A remote Fleet's are read through Fleet on its place, and its
+          -- runtime makes the worktree there.
           flow.message = "Worktrees are made on this machine only — it runs as it is"
         else
           local path = entry.row.path
@@ -2063,11 +2070,7 @@ return {
     end
 
     if flow.focus == "input" then
-      if name == "tab" and flow.remote then
-        flow.message = "browsing " .. flow.fleet .. "'s folders comes later: type a path or a URL"
-        save(flow)
-        return true
-      elseif name == "tab" then
+      if name == "tab" then
         -- Derived here rather than read off the flow: the renderer's copy belongs
         -- to the frame it drew, and this pane does not stash it. (A render CAN
         -- write `state` — it persists whenever it happens — but deriving twice is

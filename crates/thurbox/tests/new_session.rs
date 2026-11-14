@@ -645,10 +645,14 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
 
     press(&host, &world, "tab");
     press(&host, &world, "tab");
-    let screen = drawn(&host, &world);
+    drawn(&host, &world);
+    // Browsing asks for box's place, which the kernel reads through box's
+    // link, never this machine's disk.
     assert!(
-        screen.contains("browsing box's folders comes later"),
-        "{screen}"
+        host.shared_string("want_browse")
+            .is_some_and(|want| want.starts_with("box/local\0")),
+        "{:?}",
+        host.shared_string("want_browse")
     );
     press(&host, &world, "backtab");
     press(&host, &world, "enter");

@@ -471,7 +471,13 @@ impl LuaHost {
         let Some(repo) = &wants.branches else {
             return Ok(out);
         };
-        out.set("repo", repo.clone()).map_err(|e| e.to_string())?;
+        // A remote place's repository is asked as `<host>\0<path>`; the flow
+        // matches the read by its path.
+        let path = repo
+            .split_once('\0')
+            .map_or(repo.as_str(), |(_, path)| path);
+        out.set("repo", path.to_string())
+            .map_err(|e| e.to_string())?;
         let listing = store.branches(repo);
         out.set(
             "loading",

@@ -7542,6 +7542,12 @@ fn second_runtime(config: &str, name: &str) -> String {
 /// unreachable machine (exit 255). The program box's Fleet runs, or `None`
 /// where the `fleet` binary is not built.
 fn fleet_on_box(profile: &Profile) -> Option<PathBuf> {
+    fleet_on_box_with(profile, "[runtime]\nkind = \"fake\"\ndir = \"fake\"\n")
+}
+
+/// [`fleet_on_box`], with box's Fleet on the runtimes `runtime` (TOML)
+/// names.
+fn fleet_on_box_with(profile: &Profile, runtime: &str) -> Option<PathBuf> {
     let fleet = Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .parent()?
         .join("fleet");
@@ -7557,7 +7563,7 @@ fn fleet_on_box(profile: &Profile) -> Option<PathBuf> {
     std::fs::create_dir_all(root.join("tmp")).expect("box tmp");
     std::fs::write(
         root.join("fleet.toml"),
-        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"fake\"\ndir = \"fake\"\n",
+        format!("version = 1\n\n[data]\ndir = \"data\"\n\n{runtime}"),
     )
     .expect("box's Fleet config");
     let program = root.join("fleet.sh");
@@ -7584,6 +7590,124 @@ fn fleet_on_box(profile: &Profile) -> Option<PathBuf> {
         ),
     );
     Some(program)
+}
+
+/// On a Fleet on another machine, the repository step browses that
+/// machine's folders through Fleet (`fleet runtime browse` over box's link,
+/// from box's home), marks a git repository, and `alt+w` asks for a base
+/// branch from box's branches (`fleet runtime branches`), its default
+/// preselected. The session's worktree is made on box, from that base.
+#[test]
+fn the_new_session_modal_browses_a_remote_fleets_folders_and_branches() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let runtime_mux = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).with_file_name("runtime-mux");
+    if !runtime_mux.is_file() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "runtime-mux is not built beside thurbox-cli in CI"
+        );
+        eprintln!("skipping: build runtime-mux");
+        return;
+    }
+    let Some(box_fleet) = fleet_on_box_with(
+        &profile,
+        &format!("[runtimes.mux]\nprogram = '{}'\n", runtime_mux.display()),
+    ) else {
+        return;
+    };
+    let home = profile.path("box");
+    let src = home.join("src");
+    let app = named_repo(&src, "app");
+    git(&app, &["branch", "feat"]);
+    std::fs::create_dir_all(src.join("notes")).expect("a plain folder");
+    let settings = profile.path("config/settings.toml");
+    let mut toml = std::fs::read_to_string(&settings).expect("settings");
+    toml.push_str(&format!(
+        "\n[fleets.air]\n\n[fleets.box]\ntransport = {{ ssh = \"box\" }}\nprogram = '{}'\n",
+        box_fleet.display()
+    ));
+    std::fs::write(&settings, toml).expect("two Fleets");
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(b"\x0e");
+    tui.wait_for("ssh box");
+    tui.send(b"j");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("Place on box");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("Repos on box/local");
+    tui.send(b"\t");
+    tui.wait_for(&format!("{}/", home.display()));
+    tui.wait_until_quiet();
+    // Browsing from box's home lists box's folders.
+    tui.send(b"\t");
+    tui.wait_for("src/");
+    tui.send(b"src/");
+    tui.wait_until("box's src, its repository marked", |frame| {
+        frame.contains("app/ ●git") && frame.contains("notes/")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_until("box's app to be ticked", |frame| {
+        repo_picker_selected(frame, "app")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"\x1b[Z");
+    tui.wait_until_quiet();
+    tui.send(b"\x1bw");
+    tui.wait_until("app to take a worktree", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("app") && line.contains("[wt]"))
+    });
+    tui.wait_until_quiet();
+    tui.send(b"\x1b\r");
+    tui.wait_for("Base Branch");
+    tui.wait_until("box's branches, main preselected", |frame| {
+        frame.contains("▸ main")
+            && frame.contains("feat")
+            && frame.contains("as of box's last fetch")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("Session Name");
+    tui.send(b"boxed\r");
+    tui.wait_for("Branch Name");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("Coding Agent");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+
+    let deadline = Instant::now() + WAIT;
+    let landed = loop {
+        let out = Command::new(&box_fleet)
+            .args(["get", "task", "boxed"])
+            .stdin(Stdio::null())
+            .output()
+            .expect("box's fleet");
+        if out.status.success() {
+            break serde_json::from_slice::<serde_json::Value>(&out.stdout).expect("a Task");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no Task/boxed on box:\n{}",
+            tui.frame()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(
+        landed["spec"]["workspace"],
+        serde_json::json!([format!("git+file://{}?branch=boxed#main", app.display())])
+    );
+    assert!(tui.quit().success());
 }
 
 /// With several Fleets listed, the creation flow asks for the Fleet first,
@@ -7660,13 +7784,6 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
     tui.wait_until("the directory to be ticked", |frame| {
         repo_picker_selected(frame, "work")
     });
-    tui.wait_until_quiet();
-    // No worktree on a remote Fleet yet: its base branches would be read on
-    // this machine.
-    tui.send(b"\x1b[Z");
-    tui.wait_until_quiet();
-    tui.send(b"\x1bw");
-    tui.wait_for("Worktrees are made on this machine only");
     tui.wait_until_quiet();
     tui.send(b"\x1b\r");
     tui.wait_for("Session Name");
