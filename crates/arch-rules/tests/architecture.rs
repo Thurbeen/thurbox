@@ -2241,6 +2241,162 @@ fn a_file_two_targets_include_counts_once_against_an_exception() {
     );
 }
 
+/// One restriction on `fx-mod`, with `fields` appended to it.
+fn restriction(fields: &str) -> String {
+    format!("{RULES}{MODULES}\n[[crates.fx-mod.restricted]]\nwhy = \"fixture\"\n{fields}")
+}
+
+/// A `direct` restriction judges what a module names itself: an import of the
+/// crate under any name is caught, a path through the crate's own module that
+/// re-exports it is that module's, not a direct reach, and so is a glob
+/// re-export.
+#[test]
+fn a_direct_restriction_judges_what_a_module_names_itself() {
+    let rules = restriction("paths = [\"std::fs\"]\nallowed = [\"b\"]\ndirect = true\n");
+    let arch = ("architecture.toml", rules.as_str());
+    let hit = [("module-restricted", "fx-mod")];
+    modules(
+        "direct-alias",
+        &[
+            arch,
+            (
+                "crates/fx-mod/src/a.rs",
+                "use std::fs as f;\npub fn a() { crate::b::b(); let _ = f::read(\"x\"); }\n",
+            ),
+        ],
+        &hit,
+    );
+    for (case, b) in [
+        ("direct-reexport", "pub fn b() {}\npub use std::fs::read;\n"),
+        ("direct-glob", "pub fn b() {}\npub use std::fs::*;\n"),
+    ] {
+        modules(
+            case,
+            &[
+                arch,
+                (
+                    "crates/fx-mod/src/a.rs",
+                    "pub fn a() { crate::b::b(); let _ = crate::b::read; }\n",
+                ),
+                ("crates/fx-mod/src/b.rs", b),
+            ],
+            &[],
+        );
+    }
+}
+
+/// `applies_to` binds only the modules under the paths it names, and
+/// `allowed_files` frees whole files among them.
+#[test]
+fn a_restriction_binds_only_where_it_applies_and_frees_whole_files() {
+    let hit = [("module-restricted", "fx-mod")];
+    let scoped = restriction("paths = [\"fx_mod::b::b\"]\nallowed = []\napplies_to = [\"c\"]\n");
+    // `c::d` reaches `b::b`; `a` does too, but `a` is outside the scope.
+    modules("applies-to", &[("architecture.toml", &scoped)], &hit);
+    // A reach through a glob import is resolved, so it is caught too.
+    modules(
+        "applies-to-glob",
+        &[
+            ("architecture.toml", &scoped),
+            (
+                "crates/fx-mod/src/c/d.rs",
+                "use crate::b::*;\npub fn d() { b(); }\n",
+            ),
+        ],
+        &hit,
+    );
+    let freed = restriction(
+        "paths = [\"fx_mod::b::b\"]\nallowed = []\napplies_to = [\"c\"]\nallowed_files = [\"c/d.rs\"]\n",
+    );
+    modules("allowed-files", &[("architecture.toml", &freed)], &[]);
+    let gone = restriction(
+        "paths = [\"fx_mod::b::b\"]\nallowed = []\napplies_to = [\"c\"]\nallowed_files = [\"c/d.rs\", \"c/gone.rs\"]\n",
+    );
+    modules(
+        "allowed-files-stale",
+        &[("architecture.toml", &gone)],
+        &[("module-restricted-stale", "fx-mod")],
+    );
+}
+
+/// A module's `external` list is every other crate it may name itself:
+/// `std`, `core` and `alloc` are always allowed.
+#[test]
+fn a_module_names_only_the_external_crates_its_rule_lists() {
+    let manifest = (
+        "crates/fx-mod/fixture.toml",
+        "[package]\nname = \"fx-mod\"\n\n[dependencies]\nserde = \"1\"\n",
+    );
+    let a = (
+        "crates/fx-mod/src/a.rs",
+        "pub fn a() { crate::b::b(); let _: Option<serde::de::IgnoredAny> = None; let _ = std::mem::size_of::<u8>(); }\n",
+    );
+    for (case, external, want) in [
+        ("external-none", "[]", &[("module-external", "fx-mod")][..]),
+        ("external-listed", "[\"serde\"]", &[][..]),
+    ] {
+        let rules = format!(
+            "{RULES}{}",
+            MODULES.replace(
+                "a = { use = [\"b\"] }",
+                &format!("a = {{ use = [\"b\"], external = {external} }}")
+            )
+        );
+        modules(case, &[("architecture.toml", &rules), manifest, a], want);
+    }
+}
+
+/// A `static mut` reads as the path `#static_mut`, and a `cfg` predicate
+/// naming a build target as `#cfg::<name>`, attribute and `cfg!` alike, so a
+/// restriction can keep them out of a module.
+#[test]
+fn static_mut_and_build_target_cfg_can_be_restricted() {
+    let hit = [("module-restricted", "fx-mod")];
+    let state = restriction("paths = [\"#static_mut\"]\nallowed = []\napplies_to = [\"b\"]\n");
+    modules(
+        "static-mut",
+        &[
+            ("architecture.toml", &state),
+            (
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\nstatic mut N: u8 = 0;\n",
+            ),
+        ],
+        &hit,
+    );
+    let os = restriction(
+        "paths = [\"#cfg::windows\", \"#cfg::unix\"]\nallowed = []\napplies_to = [\"b\"]\nproduction_only = true\n",
+    );
+    for (case, b) in [
+        (
+            "cfg-attr",
+            "pub fn b() {}\n#[cfg(windows)]\npub fn w() {}\n",
+        ),
+        ("cfg-macro", "pub fn b() { if cfg!(unix) {} }\n"),
+        (
+            "cfg-not",
+            "pub fn b() {}\n#[cfg(not(windows))]\npub fn w() {}\n",
+        ),
+    ] {
+        modules(
+            case,
+            &[("architecture.toml", &os), ("crates/fx-mod/src/b.rs", b)],
+            &hit,
+        );
+    }
+    modules(
+        "cfg-test-only",
+        &[
+            ("architecture.toml", &os),
+            (
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\n#[cfg(test)]\nmod tests { #[cfg(unix)] fn u() {} }\n",
+            ),
+        ],
+        &[],
+    );
+}
+
 /// A grant of a governed module itself admits none of its file modules, so
 /// it is a mistake for a grant naming the file module meant.
 #[test]

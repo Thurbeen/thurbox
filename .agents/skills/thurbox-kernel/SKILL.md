@@ -48,9 +48,9 @@ pane.
    metrics, git stats, repository reads, update checks, and programs a plugin
    asked for. In `kernel::snapshot` (`fleet`, `git`) and `kernel::terminal`
    (`attach`, `shells`, `stream_pane`) each worker is a file of
-   its own, and `each_kernel_worker_lives_in_a_file_of_its_own` in
-   `tests/architecture_rules.rs` fails when the store, the read model or the
-   paint path (`terminal::paint`) starts a thread or runs `git`.
+   its own, and thurbox's restrictions in `crates/architecture.toml` fail when the
+   store, the read model or the paint path (`terminal::paint`) starts a thread or
+   runs `git`.
 
 `files.read` uses `kernel::worker_store::WorkerStore<K, V>`: two reusable
 workers, 16 deduplicated keys/answers, one-second TTL refreshes, and a generation
@@ -79,10 +79,11 @@ only copy of that graph, which `arch-rules` checks. Read the file, not a
 summary of it. Every file of `agent`, `config` and `update` is a module of its
 own (`governed`), and a `path_only` grant admits fully-qualified paths but
 never `use`. Its `[[crates.thurbox.restricted]]` entries keep consumers off a
-concrete backend, a specific multiplexer outside `session`, and in-place
-writes outside `paths`. `tests/architecture_rules.rs` keeps thurbox's own
-checks: only the `backend` gateway and `RUNTIME_GATEWAYS` may name
-`runtime_mux`. `crates/architecture.toml` also holds the
+concrete backend and off `runtime_mux` itself outside its gateways, a specific
+multiplexer outside `session`, process state and environment reads out of
+`session`, threads and `git` out of the kernel's non-worker files, and
+in-place writes outside `paths`; `session`'s `external` list names the crates
+it may use. `crates/architecture.toml` also holds the
 crate graph and `runtime-mux`'s module rules.
 
 ### Module Responsibilities
@@ -127,7 +128,7 @@ crate graph and `runtime-mux`'s module rules.
   (`plugin_spec`, so the kernel and the CLI share one definition) and `review`;
   plus runtime-mux's `SessionId`, host model, routes and `hyperlink` table,
   re-exported. Holds no process state, reads no environment and names no
-  rendering crate (`session_is_pure_data`).
+  rendering crate (`crates/architecture.toml`).
 - **`theme/`** — the 36 presets and the custom-theme overrides, as `ratatui`
   colours: `session` cannot name a rendering crate, so the palettes live here.
 - **`git/`** — every `git` invocation, all on this machine, split by concern:

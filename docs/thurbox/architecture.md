@@ -1038,12 +1038,11 @@ row.
   replaces. A binary that is not installed is reported, by name, when its
   backend is first asked to start (`preflight::Dependency::Multiplexer`).
 
-**Consequences**: runtime-mux's `tests/architecture_rules.rs` holds the shape by
-resolved references: `the_adapters_are_peers` (no adapter reaches another, and
-the helper reaches neither, test code included) and
-`each_multiplexer_is_chosen_only_by_its_adapter_and_the_factory` (each
-adapter's code names exactly its own `Multiplexer` variant, no two the same,
-and every one the factory names has one). `backend::wiring`'s selection matrix
+**Consequences**: runtime-mux's restrictions in `crates/architecture.toml`
+hold the shape by resolved references: no adapter reaches another, and the
+helper reaches neither, test code included; each adapter's code names only its
+own `Multiplexer` variant; and the factory names no multiplexer without an
+adapter. `backend::wiring`'s selection matrix
 registers probe adapters for all four multiplexers and checks each route
 reaches its own from a POSIX and a Windows thurbox, locally, over ssh to a host
 of either platform and in a WSL distro, built from the placement's platform

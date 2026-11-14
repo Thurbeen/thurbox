@@ -448,8 +448,8 @@ jobs:
       - if: ${{ !cancelled() && needs.changes.outputs.fleet == 'true' }}
         run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast
 
-  # No `architecture` job: `tests/architecture_rules.rs` is an ordinary
-  # integration test, so `nextest run --all` above already runs it, and the
+  # No `architecture` job: arch-rules' `architecture` test is an ordinary
+  # integration test, so the nextest runs above already run it, and a
   # dedicated job was a second build and run on its own runner.
   #
   # No `tui-smoke` job either. The bash smoke script it ran (a tmux pane,

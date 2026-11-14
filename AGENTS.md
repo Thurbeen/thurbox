@@ -262,7 +262,6 @@ npm run fmt:website                  # Auto-fix formatting (Prettier)
 
 ```bash
 cargo nextest run -p arch-rules                           # Crate and module rules
-cargo test --test architecture_rules                      # thurbox's own checks
 cargo deny check advisories                               # Advisories
 cargo deny check bans licenses sources                    # Dep policy
 ```
@@ -270,7 +269,7 @@ cargo deny check bans licenses sources                    # Dep policy
 thurbox's and `runtime-mux`'s module graphs are allowlists over resolved
 edges in `crates/architecture.toml`, which `arch-rules` checks: every module
 under `src/` has one entry there, and that file is the only copy of each graph.
-thurbox's own extra checks are `crates/thurbox/tests/architecture_rules.rs`.
+Their `restricted` entries hold the checks particular to each crate.
 The module responsibilities and the event loop are in the `thurbox-kernel`
 skill.
 

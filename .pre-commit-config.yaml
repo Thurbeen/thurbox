@@ -69,7 +69,7 @@ repos:
         args: ["--all"]
         stages: [pre-push]
 
-      # No separate architecture-rules hook: tests/architecture_rules.rs is an
+      # No separate architecture hook: arch-rules' `architecture` test is an
       # ordinary integration test, so the suite above already runs it.
 
       - id: cargo-deny-advisories
