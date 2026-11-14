@@ -7604,9 +7604,36 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
     std::fs::write(&settings, toml).expect("three Fleets");
     let work = profile.path("box/work");
     std::fs::create_dir_all(&work).expect("a directory on box");
+    // A created session is followed, so the id it is awaited by shows: the
+    // agent pane leaves box's `review` for the new session only once
+    // `box:boxed` itself has landed.
+    let mut review = Command::new(&box_fleet)
+        .args(["apply", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("box's fleet");
+    review
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(
+            format!(
+                r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"review"}},"spec":{{"harness":"claude-code","host":"local","workspace":["file://{}"]}}}}"#,
+                work.display()
+            )
+            .as_bytes(),
+        )
+        .expect("a Task");
+    assert!(review.wait().expect("apply").success());
+    std::fs::write(
+        profile.path("config/ui.json"),
+        r#"{"settings":{"sessions.focus_new_session":true}}"#,
+    )
+    .expect("ui.json");
 
     let mut tui = Tui::spawn(&profile, 40, 120);
-    tui.wait_for("No sessions yet");
+    tui.wait_for("▸ review (");
     tui.send(b"\x0e");
     tui.wait_until("each Fleet with its link and state", |frame| {
         frame.contains("ssh box") && frame.contains("local Fleet") && frame.contains("unreachable")
@@ -7663,7 +7690,14 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
             .any(|call| call.starts_with("box ") && call.ends_with("apply --create-only -f -")),
         "{calls}"
     );
-    tui.wait_for("boxed");
+    // Within the 10 s a creation's refresh waits for its id: one awaited
+    // under the first Fleet (`air:boxed`) never lands, and the pane stays on
+    // no session.
+    tui.wait_within(
+        Duration::from_secs(8),
+        "the pane to follow box:boxed",
+        |frame| frame.contains("▸ boxed ("),
+    );
     assert!(tui.quit().success());
 }
 

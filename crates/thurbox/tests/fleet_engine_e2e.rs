@@ -1480,9 +1480,26 @@ fn a_creation_is_awaited_by_its_fleet_qualified_id() {
     store.refresh_if_due();
     let bus = CommandBus::fleet(FleetLink::of("box", &FleetDef::default()));
     let id = bus
-        .created_id("Review")
+        .created_id("Review", None)
         .expect("a Fleet bus names what it creates");
     assert_eq!(id, "box:review");
+    // The modal names the Fleet it picked: with `laptop` in force, a
+    // creation on box is still awaited as box's.
+    let several = CommandBus::fleet(thurbox::fleet_link::Fleets::new(
+        "laptop",
+        vec![
+            FleetLink::of("laptop", &FleetDef::default()),
+            FleetLink::of("box", &FleetDef::default()),
+        ],
+    ));
+    assert_eq!(
+        several.created_id("Review", Some("box")).as_deref(),
+        Some("box:review")
+    );
+    assert_eq!(
+        several.created_id("Review", None).as_deref(),
+        Some("laptop:review")
+    );
     let ticket = store.request_refresh_awaiting(vec![id.clone()]);
     store.refresh_if_due();
     assert!(

@@ -601,10 +601,12 @@ a place.
   while its manager holds the lease, `Fleet not running` when none does
   (the manager `fleet version --json` reports), or `unreachable`. An
   unreachable Fleet is not taken. The places, their readiness (`fleet
-  runtime places --json`) and the agents that follow are the chosen Fleet's.
+  runtime places --json`) and the agents that follow are the chosen Fleet's,
+  read again each time the place step opens on it.
   For a Fleet on another machine, a repository is a typed path on that
   machine or a clone URL (`https://…`, `ssh://…`, `user@host:path`), which
-  the runtime clones there on the session's branch. thurbox does not browse
+  the runtime clones there on the session's branch. A relative scp-like
+  path is under the login's home (`git+ssh://me@box/~/repos/app.git`). thurbox does not browse
   that machine's folders, and remembers its paths apart from this machine's.
 - A Fleet that cannot be asked (its `ssh` exits 255) makes a command fail
   with that reason. The check a confirmed delete makes never reads it as a

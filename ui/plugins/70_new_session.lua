@@ -236,9 +236,13 @@ local function ask(flow)
     store.want_bookmarks = nil
     store.want_browse = nil
     store.want_branches = nil
+    store.want_places = nil
     return
   end
   store.want_bookmarks = flow.host or ""
+  -- The chosen Fleet's places and agents, read again each time the place
+  -- picker opens, so a place's readiness is not the one from startup.
+  store.want_places = (flow.step == "host" and flow.fleet) or nil
   -- The branches of the first worktree repository, while the base branch is
   -- asked; on the repo step, the expanded repository's, whose read carries
   -- its existing worktrees. Local only: a worktree is never offered for a

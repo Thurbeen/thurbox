@@ -106,6 +106,12 @@ pub struct FleetWatch {
     /// Held while the source lives: the `version` worker, which sends only
     /// a change, ends once it is gone.
     _alive: Arc<()>,
+    /// What [`SnapshotSource::refresh_places`] reads through.
+    link: FleetLink,
+    tx: Sender<Update>,
+    /// Set while a refresh is on its way, so a picker opened again before it
+    /// answers starts no second one.
+    refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl FleetWatch {
@@ -157,7 +163,10 @@ impl FleetWatch {
         let child = Arc::new(Mutex::new(None));
         let held = Arc::clone(&child);
         let name = link.name().to_string();
-        std::thread::spawn(move || watch(&link, &tx, &held));
+        {
+            let (link, tx) = (link.clone(), tx.clone());
+            std::thread::spawn(move || watch(&link, &tx, &held));
+        }
         Self {
             name,
             updates,
@@ -172,11 +181,36 @@ impl FleetWatch {
             child,
             fleet,
             _alive: alive,
+            link,
+            tx,
+            refreshing: Arc::default(),
         }
     }
 }
 
 impl SnapshotSource for FleetWatch {
+    /// One `runtime places` and one `version`, on a worker. Each is bounded
+    /// as any call through the link is (ssh's `ConnectTimeout`), and a
+    /// Fleet that does not answer keeps what it said last.
+    fn refresh_places(&mut self, fleet: &str) {
+        use std::sync::atomic::Ordering;
+        if fleet != self.name || self.refreshing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (link, tx, refreshing) = (self.link.clone(), self.tx.clone(), self.refreshing.clone());
+        std::thread::spawn(move || {
+            if let Some(answer) = ask(&link, &["runtime", "places", "--json"]) {
+                let _ = tx.send(Update::Places(places_from(&answer, &machine(&link))));
+            }
+            let ((state, why), answer) = probe(&link);
+            if let Some(answer) = answer {
+                let _ = tx.send(Update::Harnesses(harnesses_of(&answer)));
+            }
+            let _ = tx.send(Update::State(state, why));
+            refreshing.store(false, Ordering::Release);
+        });
+    }
+
     fn poll(&mut self) -> Option<SourceRead> {
         let mut moved = false;
         while let Ok(update) = self.updates.try_recv() {
@@ -310,6 +344,12 @@ impl FleetWatches {
 }
 
 impl SnapshotSource for FleetWatches {
+    fn refresh_places(&mut self, fleet: &str) {
+        for watch in &mut self.watches {
+            watch.refresh_places(fleet);
+        }
+    }
+
     fn poll(&mut self) -> Option<SourceRead> {
         let mut removed = Vec::new();
         let mut moved = false;
@@ -460,12 +500,7 @@ fn read_version(link: &FleetLink, tx: &Sender<Update>, alive: &std::sync::Weak<(
     while alive.strong_count() > 0 {
         let (next, answer) = probe(link);
         if let Some(answer) = answer {
-            let named: Vec<String> = answer["harnesses"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|h| h.as_str().map(str::to_string))
-                .collect();
+            let named = harnesses_of(&answer);
             if harnesses.as_ref() != Some(&named) {
                 harnesses = Some(named.clone());
                 if tx.send(Update::Harnesses(named)).is_err() {
@@ -486,6 +521,16 @@ fn read_version(link: &FleetLink, tx: &Sender<Update>, alive: &std::sync::Weak<(
             RETRY
         });
     }
+}
+
+/// The harnesses a `fleet version --json` answer names.
+fn harnesses_of(answer: &Value) -> Vec<String> {
+    answer["harnesses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h.as_str().map(str::to_string))
+        .collect()
 }
 
 /// One `fleet version --json`: the Fleet's state and why, and its answer
@@ -1023,6 +1068,60 @@ mod tests {
         assert_eq!(rows[1].why.as_deref(), Some("no distro"));
         let any = places_from(&serde_json::json!({"places": null}), "this machine");
         assert_eq!(any, [HostRow::local("this machine")]);
+    }
+
+    /// A Fleet's places are read again when the place picker opens on it, so
+    /// a place's readiness is the one at that opening, not at startup.
+    #[cfg(unix)]
+    #[test]
+    fn the_places_are_read_again_when_the_place_picker_opens() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "here=$(dirname \"$0\")\n\
+             case \"$1\" in\n\
+             runtime) cat \"$here/places.json\" ;;\n\
+             version) echo '{\"harnesses\":[]}' ;;\n\
+             watch) exec sleep 30 ;;\n\
+             esac",
+        );
+        let places = remote.dir().join("remote/places.json");
+        let answer = |ready: bool| {
+            format!(r#"{{"places":[{{"place":"mux/gpu","runtime":"mux","ready":{ready}}}]}}"#)
+        };
+        std::fs::write(&places, answer(true)).expect("places");
+        crate::paths::with_path(remote.path(), || {
+            let mut store = super::super::SnapshotStore::with_source(
+                Box::new(FleetWatch::spawn(remote.link.clone())),
+                &Default::default(),
+            );
+            let ready = |store: &mut super::super::SnapshotStore| {
+                store.refresh_if_due();
+                store
+                    .current()
+                    .fleets
+                    .first()?
+                    .places
+                    .as_ref()?
+                    .iter()
+                    .find(|p| p.name == "mux/gpu")?
+                    .ready
+            };
+            let until = |store: &mut super::super::SnapshotStore, want: Option<bool>| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while ready(store) != want {
+                    assert!(std::time::Instant::now() < deadline, "never {want:?}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            };
+            until(&mut store, Some(true));
+            std::fs::write(&places, answer(false)).expect("places");
+            store.want_places(Some("devbox".into()));
+            until(&mut store, Some(false));
+            // Asked once per opening: a second opening reads again.
+            store.want_places(None);
+            std::fs::write(&places, answer(true)).expect("places");
+            store.want_places(Some("devbox".into()));
+            until(&mut store, Some(true));
+        });
     }
 
     /// A Fleet's state is its manager's lease, from `fleet version --json`:

@@ -382,7 +382,9 @@ fn workspace_url(
 
 /// `repo` as the workspace URL that clones it, or `None` when it is a path:
 /// `https://…` is `git+https://…`; `ssh://…` and git's scp-like
-/// `user@host:path` are `git+ssh://…`.
+/// `user@host:path` are `git+ssh://…`. Fleet takes only an absolute URL, so
+/// the scp-like form is spelled as one: a relative path there is under the
+/// login's home, which an ssh URL writes `/~/`.
 fn clone_url(repo: &str) -> Option<String> {
     let repo = repo.trim();
     if let Some(rest) = repo.strip_prefix("https://") {
@@ -393,8 +395,13 @@ fn clone_url(repo: &str) -> Option<String> {
     }
     // git reads `user@host:path` as ssh when no `/` comes before the `:`.
     let (login, path) = repo.split_once(':')?;
-    (login.contains('@') && !login.contains('/') && !path.is_empty())
-        .then(|| format!("git+ssh://{login}/{}", path.trim_start_matches('/')))
+    if !login.contains('@') || login.contains('/') || path.is_empty() {
+        return None;
+    }
+    Some(match path.strip_prefix('/') {
+        Some(absolute) => format!("git+ssh://{login}/{absolute}"),
+        None => format!("git+ssh://{login}/~/{path}"),
+    })
 }
 
 /// Whether `dir` on this machine is a git repository or inside one. Decided
@@ -668,9 +675,15 @@ mod tests {
             url("https://github.com/o/r.git", Choice::default()),
             "git+https://github.com/o/r.git?branch=wt"
         );
+        // git's scp-like form: a relative path is under the login's home,
+        // an absolute one is not.
         assert_eq!(
-            url("git@github.com:o/r.git", Choice::default()),
-            "git+ssh://git@github.com/o/r.git?branch=wt"
+            url("me@box:repos/app.git", Choice::default()),
+            "git+ssh://me@box/~/repos/app.git?branch=wt"
+        );
+        assert_eq!(
+            url("me@box:/srv/app.git", Choice::default()),
+            "git+ssh://me@box/srv/app.git?branch=wt"
         );
         let on = Choice {
             branch: Some("feat"),

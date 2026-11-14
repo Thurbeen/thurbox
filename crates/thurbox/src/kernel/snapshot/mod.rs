@@ -464,7 +464,16 @@ pub fn row_id(fleet: &str, task: &str) -> String {
 pub trait SnapshotSource: Send {
     /// What moved since the last call, or `None` when nothing did.
     fn poll(&mut self) -> Option<SourceRead>;
+
+    /// Read the places and agents of the Fleet `fleet` again, on a worker:
+    /// the creation flow's place picker opened on it. Its answer arrives
+    /// through [`Self::poll`].
+    fn refresh_places(&mut self, _fleet: &str) {}
 }
+
+/// The `store` key the creation flow names a Fleet in while its place
+/// picker is open: see [`SnapshotStore::want_places`].
+pub const WANT_PLACES: &str = "want_places";
 
 /// One answer of a [`SnapshotSource`]: every session row, and what is wrong
 /// with the source, if anything is. The rows stand while the error does.
@@ -506,6 +515,9 @@ pub struct SnapshotStore {
     git: GitStats,
     current: Snapshot,
     last_refresh: Option<Instant>,
+    /// The Fleet the place picker is open on, as last asked: a new opening
+    /// is what reads its places again.
+    places_wanted: Option<String>,
     /// Moves whenever anything in [`Self::current`] does.
     ///
     /// What gates the published tables and the pure-pane tree cache: a reader
@@ -576,8 +588,23 @@ impl SnapshotStore {
                 ..Snapshot::default()
             },
             last_refresh: None,
+            places_wanted: None,
             version: 0,
         }
+    }
+
+    /// The Fleet the creation flow's place picker is open on, read off
+    /// `store.want_places` each iteration. Each opening (none before, or
+    /// another Fleet) reads that Fleet's places and agents again, so a
+    /// place's readiness is the one at that opening.
+    pub fn want_places(&mut self, fleet: Option<String>) {
+        if fleet == self.places_wanted {
+            return;
+        }
+        if let (Some(fleet), Some(source)) = (&fleet, self.source.as_mut()) {
+            source.refresh_places(fleet);
+        }
+        self.places_wanted = fleet;
     }
 
     /// The current snapshot. Always immediate.

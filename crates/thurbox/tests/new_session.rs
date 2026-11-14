@@ -535,10 +535,16 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
         "still on the Fleet step: {screen}"
     );
 
+    assert_eq!(host.shared_string("want_places"), None);
     press(&host, &world, "up");
     press(&host, &world, "enter");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Place on box"), "{screen}");
+    assert_eq!(
+        host.shared_string("want_places").as_deref(),
+        Some("box"),
+        "the place picker asks box for its places again"
+    );
     assert!(screen.contains("box itself (mux)"), "{screen}");
     assert!(screen.contains("mux/wsl-dev"), "{screen}");
     assert!(screen.contains("● ready"), "{screen}");
@@ -552,6 +558,12 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
         .set_bookmarks_for_test("box/local", vec![bookmark("/srv/app", None)]);
     world.wants.bookmarks = Some("box/local".into());
     press(&host, &world, "enter");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_places"),
+        None,
+        "only while it is open"
+    );
     let screen = drawn(&host, &world);
     assert!(screen.contains("Repos on box/local"), "{screen}");
     assert!(screen.contains("/srv/app"), "{screen}");
