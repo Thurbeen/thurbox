@@ -119,8 +119,10 @@ when the laptop sleeps.
 
 5. Run `thurbox-cli doctor`. It reports each Fleet, and says when box cannot
    be reached. It reads box's `fleet version --json` to report whether box's
-   manager runs, and points at the unit when it does not. Until the interface
-   follows several Fleets, it uses the first by name (here `box`).
+   manager runs, and points at the unit when it does not. The session list
+   follows every listed Fleet, and each command goes to its session's own
+   Fleet. Only a creation still goes to the first Fleet by name (here `box`),
+   until the new-session modal has a Fleet step.
 
 ### 3. One Fleet, several places
 
