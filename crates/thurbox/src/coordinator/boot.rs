@@ -221,7 +221,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         &startup_settings,
     );
     startup.snapshot_open_ms = phase.elapsed().as_millis() as u64;
-    let shells = crate::coordinator::ShellBook::load();
+    let mut shells = crate::coordinator::ShellBook::load();
+    let unmatchable = shells.take_unmatchable();
 
     let phase = Instant::now();
     let themes = Themes::load(thurbox::config::interface_state::load().theme.as_deref());
@@ -256,6 +257,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             let mut terminals = terminals(std::sync::Arc::clone(&backends), &startup_settings);
             for link in &links {
                 terminals.attach_fleet_through(link.clone());
+            }
+            for (session, record) in &unmatchable {
+                terminals.kill_shell_window(&record.route, &record.pane, &record.stamp, session);
             }
             for (session, record) in &shells.records {
                 terminals.record_shell(session, Some(record.pane.clone()));

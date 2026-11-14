@@ -987,6 +987,26 @@ impl ShellBook {
         }
     }
 
+    /// Forget the shells whose session no row can ever have, and answer
+    /// them so their windows are closed: a session's id is `<fleet>:<task>`,
+    /// so a key with no `:` (a bare Task name, from before rows named their
+    /// Fleet) matches no row. Left in the book, such a shell is never seen
+    /// leave the snapshot, so its window would outlive every interface.
+    pub(crate) fn take_unmatchable(
+        &mut self,
+    ) -> Vec<(String, thurbox::config::interface_state::ShellRecord)> {
+        let stale: Vec<(String, thurbox::config::interface_state::ShellRecord)> = self
+            .records
+            .iter()
+            .filter(|(session, _)| !session.contains(':'))
+            .map(|(session, record)| (session.clone(), record.clone()))
+            .collect();
+        for (session, _) in &stale {
+            self.set(session, None);
+        }
+        stale
+    }
+
     /// Write what is still queued, and stop the saver. Called once the
     /// interface has drawn its last frame, so a clean exit loses no change.
     pub(crate) fn finish(&mut self) {
@@ -1025,6 +1045,28 @@ mod tests {
             })
             .expect("save");
         })
+    }
+
+    /// A shell saved under a bare Task name, which no row's id is any more,
+    /// is taken out of the book so its window can be closed; one under a
+    /// row's id stays.
+    #[test]
+    fn a_shell_no_row_can_match_is_taken_out_of_the_book() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut book = book_over(dir.path());
+        book.set("review", Some(record("%1")));
+        book.set("box:review", Some(record("%2")));
+        let stale = book.take_unmatchable();
+        assert_eq!(stale, vec![("review".to_string(), record("%1"))]);
+        assert_eq!(book.records.keys().collect::<Vec<_>>(), ["box:review"]);
+        book.finish();
+        let _isolated = thurbox::paths::TestPathGuard::new(dir.path());
+        let saved = thurbox::config::interface_state::load().shells;
+        assert_eq!(
+            saved.keys().collect::<Vec<_>>(),
+            ["box:review"],
+            "{saved:?}"
+        );
     }
 
     /// A pane found gone is remembered per session, and forgotten once that

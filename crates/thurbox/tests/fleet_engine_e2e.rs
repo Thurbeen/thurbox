@@ -1430,6 +1430,23 @@ fn every_listed_fleet_is_followed_in_one_list() {
         ["box:audit", "box:review", "laptop:review"],
         "still no row is dropped"
     );
+
+    // box answers again: the restarted watch reads, and its rows are
+    // reachable once more.
+    std::fs::remove_file(&down).expect("up again");
+    until("box's rows are reachable again", || {
+        store.refresh_if_due();
+        ["box:review", "box:audit"].iter().all(|id| {
+            store
+                .current()
+                .session(id)
+                .is_some_and(|r| r.status != SessionState::Unreachable)
+        })
+    });
+    until("the error clears", || {
+        store.refresh_if_due();
+        store.current().error.is_none()
+    });
 }
 
 /// A creation is found by the id its Task will have in the Fleet the
