@@ -159,6 +159,10 @@ fn runtime_mux_passes_the_conformance_suite() {
         .stdout_has("ok   workspace: release never removes what it did not make")
         .stdout_has("ok   manifest reports each place it was asked about")
         .stdout_has("ok   a version 2 request without a place answers Unknown")
+        .stdout_has("ok   browse: lists the subdirectories and marks a repository")
+        .stdout_has("ok   browse: a missing directory answers failed")
+        .stdout_has("ok   branches: lists a repository's branches and its default")
+        .stdout_has("ok   branches: a directory that is no repository answers failed")
         .stdout_has("speaks runtime protocol 2");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
 }

@@ -116,7 +116,9 @@ fn the_manifest_names_the_protocol_and_the_verbs() {
     for verb in ["manifest", "start", "inspect", "stop"] {
         assert!(verbs.iter().any(|v| v == verb), "{verb} in {answer}");
     }
-    assert!(verbs.iter().any(|v| v == "workspace"), "{answer}");
+    for verb in ["workspace", "browse", "branches"] {
+        assert!(verbs.iter().any(|v| v == verb), "{verb} in {answer}");
+    }
     assert_eq!(
         answer["known"]["workspace"],
         json!({"schemes": ["git+https", "git+ssh", "git+file", "file"], "survivesStop": true}),
@@ -1044,4 +1046,203 @@ fn a_missing_workspace_program_fails_the_workspace_by_name() {
         .as_str()
         .unwrap_or_default();
     assert!(why.contains("workspace-git"), "{answer}");
+}
+
+/// `browse` lists a directory of the place: its subdirectories by name, each
+/// marked when it is a git checkout. Files are left out, and a directory
+/// the request names none of is the place's home.
+#[test]
+fn browse_lists_the_subdirectories_and_marks_a_repository() {
+    let Some(mut rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("plain")).expect("plain");
+    std::fs::create_dir_all(root.join("repo")).expect("repo");
+    git(&root.join("repo"), &["init", "-q"]);
+    std::fs::write(root.join("notes.txt"), "a file").expect("file");
+    let answer = rt.call(
+        "browse",
+        json!({"protocol": 2, "place": local(), "dir": root.display().to_string()}),
+    );
+    assert_eq!(
+        answer["known"]["listing"],
+        json!({
+            "dir": root.display().to_string(),
+            "entries": [
+                {"name": "plain", "repo": false},
+                {"name": "repo", "repo": true},
+            ],
+        }),
+        "{answer}"
+    );
+
+    rt.env.push(("HOME".into(), root.display().to_string()));
+    let home = rt.call("browse", json!({"protocol": 2, "place": local()}));
+    assert_eq!(
+        home["known"]["listing"]["dir"],
+        root.display().to_string(),
+        "{home}"
+    );
+}
+
+/// A directory that is not there is a failed browse, and a relative one is
+/// no request at all.
+#[test]
+fn browse_of_a_missing_or_relative_directory_is_refused() {
+    let Some(rt) = Runtime::new() else { return };
+    let missing = rt.call(
+        "browse",
+        json!({"protocol": 2, "place": local(), "dir": "/nonexistent/tb-browse"}),
+    );
+    assert!(
+        missing["known"]["failed"]["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("/nonexistent/tb-browse")),
+        "{missing}"
+    );
+    let relative = rt.call(
+        "browse",
+        json!({"protocol": 2, "place": local(), "dir": "src"}),
+    );
+    assert!(relative["unknown"]["why"].is_string(), "{relative}");
+}
+
+/// `branches` lists a repository's branches on the place, local ones then
+/// `origin/*`, with the one a new branch starts from by default.
+#[test]
+fn branches_lists_a_repositorys_branches_and_its_default() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo");
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&repo, &["branch", "feat"]);
+    let answer = rt.call(
+        "branches",
+        json!({"protocol": 2, "place": local(), "repo": repo.display().to_string()}),
+    );
+    assert_eq!(
+        answer["known"]["branches"],
+        json!({"names": ["feat", "main"], "default": "main"}),
+        "{answer}"
+    );
+    // A directory inside a checkout is not its repository.
+    let plain = repo.join("plain");
+    std::fs::create_dir_all(&plain).expect("plain");
+    let refused = rt.call(
+        "branches",
+        json!({"protocol": 2, "place": local(), "repo": plain.display().to_string()}),
+    );
+    assert!(refused["known"]["failed"]["why"].is_string(), "{refused}");
+}
+
+/// A local branch named like a remote one (`origin/main`) is not `origin`'s
+/// default: with no `origin`, the default is the branch checked out.
+#[test]
+fn a_local_branch_named_like_origins_is_not_its_default() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo");
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&repo, &["branch", "origin/main"]);
+    let answer = rt.call(
+        "branches",
+        json!({"protocol": 2, "place": local(), "repo": repo.display().to_string()}),
+    );
+    assert_eq!(
+        answer["known"]["branches"],
+        json!({"names": ["main", "origin/main"], "default": "main"}),
+        "{answer}"
+    );
+}
+
+/// `repo` marks the top of a git work tree, as git reads one: a checkout,
+/// or a linked worktree whose `.git` is a file. An empty `.git` directory
+/// is not one.
+#[test]
+fn browse_marks_a_work_tree_as_git_reads_one() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("fake/.git")).expect("fake");
+    std::fs::create_dir_all(root.join("repo")).expect("repo");
+    git(&root.join("repo"), &["init", "-q"]);
+    git(
+        &root.join("repo"),
+        &["commit", "-q", "--allow-empty", "-m", "first"],
+    );
+    git(
+        &root.join("repo"),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &root.join("linked").display().to_string(),
+        ],
+    );
+    let answer = rt.call(
+        "browse",
+        json!({"protocol": 2, "place": local(), "dir": root.display().to_string()}),
+    );
+    assert_eq!(
+        answer["known"]["listing"]["entries"],
+        json!([
+            {"name": "fake", "repo": false},
+            {"name": "linked", "repo": true},
+            {"name": "repo", "repo": true},
+        ]),
+        "{answer}"
+    );
+}
+
+/// `origin`'s default comes first: a clone's `origin/HEAD`, else
+/// `origin/main`, else `origin/master`, before the branch checked out.
+#[test]
+fn branches_defaults_to_origins_default() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let upstream = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream).expect("upstream");
+    git(&upstream, &["init", "-q", "-b", "trunk"]);
+    git(&upstream, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&upstream, &["branch", "master"]);
+    let branches = |repo: &std::path::Path| {
+        rt.call(
+            "branches",
+            json!({"protocol": 2, "place": local(), "repo": repo.display().to_string()}),
+        )["known"]["branches"]
+            .clone()
+    };
+
+    // A clone: `origin/HEAD` names upstream's `trunk`.
+    git(
+        dir.path(),
+        &["clone", "-q", &upstream.display().to_string(), "clone"],
+    );
+    let clone = dir.path().join("clone");
+    git(&clone, &["checkout", "-q", "-b", "work"]);
+    assert_eq!(
+        branches(&clone),
+        json!({"names": ["trunk", "work", "origin/master", "origin/trunk"], "default": "origin/trunk"})
+    );
+
+    // Fetched, its `origin/HEAD` removed: `origin/master` (no
+    // `origin/main`), not the branch checked out.
+    let fetched = dir.path().join("fetched");
+    std::fs::create_dir_all(&fetched).expect("fetched");
+    git(&fetched, &["init", "-q"]);
+    git(&fetched, &["commit", "-q", "--allow-empty", "-m", "own"]);
+    git(
+        &fetched,
+        &["remote", "add", "origin", &upstream.display().to_string()],
+    );
+    git(&fetched, &["fetch", "-q", "origin"]);
+    git(&fetched, &["remote", "set-head", "origin", "-d"]);
+    assert_eq!(
+        branches(&fetched),
+        json!({"names": ["main", "origin/master", "origin/trunk"], "default": "origin/master"})
+    );
 }

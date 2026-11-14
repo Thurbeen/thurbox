@@ -47,6 +47,8 @@ pub const VERBS: &[&str] = &[
     "exec",
     "attach",
     "workspace",
+    "browse",
+    "branches",
 ];
 
 /// The tmux socket the program's server runs on when [`SOCKET_ENV`] names
@@ -149,9 +151,190 @@ pub fn serve_with(
         "capture" => parse(request).map(|r| capture(backend, r)),
         "exec" => parse(request).map(exec),
         "attach" => parse(request).map(|r: Keyed| attach(backend, &r.key, view)),
+        "browse" => parse(request).map(browse),
+        "branches" => parse(request).map(branches),
         other => Err(format!("unknown verb {other:?}")),
     };
     result.unwrap_or_else(unknown)
+}
+
+/// `browse`: a directory of the place, its home when the request names none.
+#[derive(Deserialize)]
+struct Browse {
+    dir: Option<PathBuf>,
+}
+
+impl Validate for Browse {
+    fn validate(&self) -> Result<(), String> {
+        match &self.dir {
+            Some(dir) if !dir.is_absolute() => Err("dir must be an absolute path".into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// `browse`: the subdirectories of `dir`, by name, each marked when it is a
+/// git checkout, so a creation flow can pick a repository on the place.
+/// Files are left out. A directory that cannot be read is a failed browse.
+fn browse(request: Browse) -> Value {
+    let dir = match request.dir.or_else(home) {
+        Some(dir) => dir,
+        None => return known(json!({ "failed": { "why": "this place has no home directory" } })),
+    };
+    let read = match std::fs::read_dir(&dir) {
+        Ok(read) => read,
+        Err(e) => return known(json!({ "failed": { "why": format!("{}: {e}", dir.display()) } })),
+    };
+    let mut entries: Vec<(String, bool)> = read
+        .filter_map(Result::ok)
+        // `path().is_dir()` follows a symlink to a directory.
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            Some((name, is_repository(&entry.path())))
+        })
+        .collect();
+    entries.sort();
+    let entries: Vec<Value> = entries
+        .into_iter()
+        .map(|(name, repo)| json!({ "name": name, "repo": repo }))
+        .collect();
+    known(json!({ "listing": { "dir": dir.display().to_string(), "entries": entries } }))
+}
+
+/// The home directory of the user this program runs as.
+fn home() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Whether `dir` is the top of a git work tree, as git reads one, from the
+/// filesystem: a `.git` directory holding `HEAD`, `objects` and `refs`, or a
+/// `.git` file naming one (a linked worktree, a submodule). A `git` that
+/// cannot run never passes for none, and an empty `.git` is no work tree.
+fn is_repository(dir: &std::path::Path) -> bool {
+    let dot = dir.join(".git");
+    if dot.is_dir() {
+        return dot.join("HEAD").is_file()
+            && dot.join("objects").is_dir()
+            && dot.join("refs").is_dir();
+    }
+    std::fs::read_to_string(&dot).is_ok_and(|text| text.starts_with("gitdir: "))
+}
+
+/// `branches`: a repository of the place.
+#[derive(Deserialize)]
+struct Branches {
+    repo: PathBuf,
+}
+
+impl Validate for Branches {
+    fn validate(&self) -> Result<(), String> {
+        if !self.repo.is_absolute() {
+            return Err("repo must be an absolute path".into());
+        }
+        Ok(())
+    }
+}
+
+/// `branches`: the repository `repo` is (not one it is inside of): its local
+/// branches, then its `origin/*` ones,
+/// as they are (no fetch), and the one a new branch starts from by default:
+/// `origin`'s default branch (`origin/HEAD`, else `origin/main`, else
+/// `origin/master`), else the branch checked out, else the first.
+fn branches(request: Branches) -> Value {
+    let repo = &request.repo;
+    let failed = |why: String| known(json!({ "failed": { "why": why } }));
+    // The repository itself, as `browse` marks one: a directory inside a
+    // checkout is not its repository.
+    if !is_repository(repo) {
+        return failed(format!("{} is no git repository", repo.display()));
+    }
+    let refs = match git_out(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+    ) {
+        Ok(refs) => refs,
+        Err(why) => return failed(why),
+    };
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+    for line in refs.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix("refs/heads/") {
+            local.push(name.to_string());
+        } else if let Some(name) = line.strip_prefix("refs/remotes/origin/") {
+            if name != "HEAD" {
+                remote.push(format!("origin/{name}"));
+            }
+        }
+    }
+    // The rule thurbox's `git::discovery::branches` reads a repository on
+    // its own machine by, kept the same: no crate both may depend on holds
+    // it (crates/architecture.toml). `origin`'s branches and the local ones
+    // are told apart by their refs, never by name: a local branch may be
+    // called `origin/main`.
+    let in_remote = |name: &str| remote.iter().any(|n| n == name);
+    let in_local = |name: &str| local.iter().any(|n| n == name);
+    let upstream = git_out(repo, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
+        .ok()
+        .and_then(|r| r.trim().strip_prefix("refs/remotes/").map(str::to_string));
+    let checked_out = git_out(repo, &["symbolic-ref", "-q", "--short", "HEAD"])
+        .ok()
+        .map(|b| b.trim().to_string());
+    let default = upstream
+        .filter(|name| in_remote(name))
+        .or_else(|| {
+            ["origin/main", "origin/master"]
+                .into_iter()
+                .find(|name| in_remote(name))
+                .map(str::to_string)
+        })
+        .or_else(|| checked_out.filter(|name| in_local(name)))
+        .or_else(|| local.first().cloned());
+    let names: Vec<String> = local.iter().chain(&remote).cloned().collect();
+    known(json!({ "branches": { "names": names, "default": default } }))
+}
+
+/// `git <args>` in `repo`, its stdout, with the variables that would point
+/// git at another repository cleared.
+fn git_out(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let mut git = Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+    ] {
+        git.env_remove(var);
+    }
+    // Nor may git look for a repository above `repo`.
+    if let Some(parent) = repo.parent() {
+        git.env("GIT_CEILING_DIRECTORIES", parent);
+    }
+    let out = git
+        .args(args)
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// A place as a request names it: the name, and its table from Fleet's
