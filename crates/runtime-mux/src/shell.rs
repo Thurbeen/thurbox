@@ -389,11 +389,23 @@ impl HostLauncher {
     }
 }
 
+/// The script a WSL launch runs before the program: the profile files a
+/// login `sh` reads, each only when it is there (sourcing a missing file
+/// ends a POSIX `sh`), for their `PATH`, with their output discarded and
+/// stdin closed to them (a profile that reads must not eat the program's
+/// input); then the program itself, `$@`, with stdin, stdout and stderr its
+/// own.
+pub const WSL_PROFILE_EXEC: &str =
+    "[ -r /etc/profile ] && . /etc/profile </dev/null >/dev/null 2>&1; \
+     [ -r \"$HOME/.profile\" ] && . \"$HOME/.profile\" </dev/null >/dev/null 2>&1; exec \"$@\"";
+
 /// `program` with `args`: run on this machine when there is no `launcher`, or
 /// on the host it reaches.
 ///
-/// Through a launcher the tokens are re-split by the host's login shell, so
-/// each one is POSIX-quoted to arrive intact (a simple token passes unchanged);
+/// Over ssh the tokens are re-split by the host's login shell, so each one is
+/// POSIX-quoted to arrive intact (a simple token passes unchanged); through
+/// WSL each word is its own argument of `wsl.exe --exec`, after
+/// [`WSL_PROFILE_EXEC`];
 /// a native-Windows host's shell is not POSIX, see [`launch_on_windows`].
 /// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
 /// them — are its adapter's to write, so a launcher carries any adapter's
@@ -403,6 +415,18 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
         None => {
             let mut cmd = Command::new(program);
             cmd.args(args);
+            cmd
+        }
+        // Each word is its own argument of `--exec`, which hands argv over
+        // verbatim, so no quoting and a spaced path stays one word. A small
+        // `sh` runs first to read the profile a login shell would, for the
+        // `PATH` set there (`~/.cargo/bin`), with its output discarded so a
+        // profile that prints never reaches the program's stdout, then
+        // `exec`s the words.
+        Some(launcher @ HostLauncher::Wsl { .. }) => {
+            let mut cmd = launcher.command();
+            cmd.args(["--exec", "sh", "-c", WSL_PROFILE_EXEC, "sh", program])
+                .args(args);
             cmd
         }
         Some(launcher) => {
@@ -881,6 +905,105 @@ fn off_the_terminal(cmd: &mut Command) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Through WSL each word is its own argument of `--exec`, after a small
+    /// `sh` script that reads the profile for `PATH` and then `exec`s them:
+    /// no quoting, so a spaced path stays one word.
+    #[test]
+    fn a_wsl_launch_hands_each_word_to_the_profile_script() {
+        let launcher = HostLauncher::Wsl {
+            distro: "Ubuntu".into(),
+        };
+        let cmd = launch(
+            Some(&launcher),
+            "/opt/my tools/fleet",
+            &["send", "it's done"],
+        );
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let exec = argv.iter().position(|a| a == "--exec").expect("--exec");
+        assert_eq!(
+            &argv[exec + 1..],
+            [
+                "sh",
+                "-c",
+                WSL_PROFILE_EXEC,
+                "sh",
+                "/opt/my tools/fleet",
+                "send",
+                "it's done"
+            ]
+        );
+    }
+
+    /// The script a WSL launch runs, run here by `sh`: a profile that prints
+    /// and puts a directory on `PATH` lends the `PATH`, and none of its
+    /// output reaches the program's stdout, which a JSON answer or a stream
+    /// would not survive.
+    #[cfg(unix)]
+    #[test]
+    fn the_wsl_profile_script_lends_the_path_and_keeps_stdout_clean() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().expect("home");
+        let bin = home.path().join("my bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let tool = bin.join("say");
+        std::fs::write(&tool, "#!/bin/sh\nprintf '%s|' \"$@\"\n").expect("tool");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::write(
+            home.path().join(".profile"),
+            format!(
+                "echo profile-noise\necho profile-err >&2\nPATH=\"{}:$PATH\"\n",
+                bin.display()
+            ),
+        )
+        .expect("profile");
+        let out = Command::new("sh")
+            .args(["-c", WSL_PROFILE_EXEC, "sh", "say", "a b", "it's"])
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("sh");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a b|it's|");
+        assert!(out.stderr.is_empty(), "{out:?}");
+    }
+
+    /// A distro with no `/etc/profile` still runs the program: a missing
+    /// file would end a POSIX `sh` that sourced it unguarded. And a profile
+    /// that reads stdin reads nothing: the program's input (a Task on
+    /// stdin, a stream's frames) is the program's.
+    #[cfg(unix)]
+    #[test]
+    fn the_wsl_profile_script_needs_no_etc_profile_and_leaves_stdin_alone() {
+        use std::io::Write;
+        let home = tempfile::tempdir().expect("home");
+        std::fs::write(home.path().join(".profile"), "read eaten\n").expect("profile");
+        let without_etc = WSL_PROFILE_EXEC.replace("/etc/profile", "/nonexistent/etc/profile");
+        let mut child = Command::new("sh")
+            .args(["-c", &without_etc, "sh", "cat"])
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(b"first frame\nsecond frame\n")
+            .expect("write");
+        let out = child.wait_with_output().expect("sh");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "first frame\nsecond frame\n"
+        );
+    }
     use super::*;
 
     #[test]

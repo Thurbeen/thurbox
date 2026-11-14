@@ -1713,3 +1713,170 @@ fn each_command_goes_to_its_sessions_fleet() {
     );
     assert!(remote.get("review").is_some(), "the Task is left alone");
 }
+
+/// A session of a Fleet on another machine has a pane: `fleet attach` and
+/// the stream it names both run over that Fleet's ssh, so typing reaches the
+/// agent there. When the link drops, the pane says the Fleet cannot be
+/// reached and is not asked for again at once; once the Fleet answers, the
+/// pane is attached again and takes typing.
+#[test]
+fn a_remote_fleets_session_pane_works_over_the_link() {
+    use thurbox::fleet_link::FleetLink;
+    use thurbox::session::settings::{FleetDef, FleetTransport};
+    let Some(bin) = fleet_bin() else { return };
+    let runtime_mux = bin.with_file_name("runtime-mux");
+    if !runtime_mux.is_file() || !bin.with_file_name("workspace-git").is_file() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no runtime-mux or workspace-git binary beside fleet in CI, where this test must run"
+        );
+        eprintln!(
+            "skipping: build runtime-mux and workspace-git (`cargo build -p runtime-mux -p workspace-git`)"
+        );
+        return;
+    }
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let sockets = Sockets::new();
+    let fleet = Fleet::with(
+        bin,
+        &format!(
+            "[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n",
+            runtime_mux.display()
+        ),
+        &format!("TMUX_TMPDIR='{}'", sockets.0.display()),
+    );
+    let harness_dir = fleet.root.path().join("bin");
+    std::fs::create_dir_all(&harness_dir).expect("bin");
+    let harness = harness_dir.join("claude");
+    std::fs::write(
+        &harness,
+        "#!/bin/sh\necho ready-marker\nwhile IFS= read -r l; do echo \"pong-$l\"; done\n",
+    )
+    .expect("harness");
+    make_executable(&harness);
+    let work = fleet.root.path().join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    let mut t1 = task("t1");
+    t1["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    t1["spec"]["dispatch"] = json!(true);
+    fleet.apply(t1);
+    fleet.run(&["reconcile"]).ok();
+
+    // "box": this Fleet, reached only through a stand-in ssh that logs each
+    // remote command line and is refused while `down` exists.
+    let root = fleet.root.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let (down, log, pids) = (
+        root.join("down"),
+        root.join("ssh.log"),
+        root.join("ssh.pids"),
+    );
+    let ssh = ssh_bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; *) break ;; esac; done\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             [ \"$1\" = box ] && [ ! -e '{down}' ] || {{ echo 'ssh: connect to host box port 22: No route to host' >&2; exit 255; }}\n\
+             shift\n\
+             echo $$ >> '{pids}'\n\
+             eval \"exec $*\"\n",
+            down = down.display(),
+            log = log.display(),
+            pids = pids.display(),
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![ssh_bin];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+    let over_ssh = FleetLink::of(
+        "box",
+        &FleetDef {
+            transport: FleetTransport::Ssh {
+                ssh: "box".into(),
+                ssh_opts: Vec::new(),
+            },
+            program: fleet.program.to_string_lossy().into_owned(),
+            config: None,
+        },
+    );
+
+    let mut store = store_of(FleetWatch::spawn(over_ssh.clone()));
+    until("the Task has its session", || {
+        store.refresh_if_due();
+        store
+            .current()
+            .session("box:t1")
+            .is_some_and(|row| row.key.is_some())
+    });
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let _entered = runtime.enter();
+    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
+    terminals.attach_fleet_through(over_ssh);
+    let screen = |store: &mut SnapshotStore,
+                  terminals: &mut thurbox::kernel::terminal::Terminals| {
+        store.refresh_if_due();
+        terminals.sync(store.current(), 24, 80);
+        terminals.visible_text("box:t1").unwrap_or_default()
+    };
+    until("the pane shows the agent's screen", || {
+        screen(&mut store, &mut terminals).contains("ready-marker")
+    });
+    assert!(
+        terminals.send("box:t1", b"ping\r".to_vec()),
+        "the pane takes input"
+    );
+    until("the agent answers what was typed", || {
+        screen(&mut store, &mut terminals).contains("pong-ping")
+    });
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    let attached = |calls: &str| calls.lines().filter(|c| c.contains(" attach t1 ")).count();
+    assert_eq!(attached(&calls), 1, "{calls}");
+    assert!(
+        calls
+            .lines()
+            .any(|c| !c.contains(&*fleet.program.to_string_lossy())),
+        "the stream itself ran over ssh: {calls}"
+    );
+
+    // The link drops: every ssh ends, and box refuses new ones.
+    std::fs::write(&down, "").expect("down");
+    for pid in std::fs::read_to_string(&pids).expect("pids").lines() {
+        let _ = Process::new("kill").arg(pid).status();
+    }
+    until("the pane says box cannot be reached", || {
+        screen(&mut store, &mut terminals);
+        terminals.failure("box:t1").is_some_and(|why| {
+            why.contains("the Fleet box cannot be reached") && why.contains("No route to host")
+        })
+    });
+    // Not asked again and again while box is down.
+    let asked = || attached(&std::fs::read_to_string(&log).unwrap_or_default());
+    let refused_at = asked();
+    for _ in 0..40 {
+        screen(&mut store, &mut terminals);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(asked(), refused_at, "the attach is not tried again at once");
+
+    // box answers again: the pane is attached again and takes typing.
+    std::fs::remove_file(&down).expect("up");
+    until("the pane is back", || {
+        screen(&mut store, &mut terminals);
+        terminals.send("box:t1", b"again\r".to_vec())
+    });
+    until("the agent answers after the link came back", || {
+        screen(&mut store, &mut terminals).contains("pong-again")
+    });
+}

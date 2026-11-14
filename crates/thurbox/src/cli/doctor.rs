@@ -236,14 +236,9 @@ impl FleetFacts {
             REMOTE_PROBE_TIMEOUT
         };
         let answer = bounded_output(link, &["version", "--json"], timeout);
-        let unreachable = match &answer {
-            Ok(out) if link.is_ssh() && out.status.code() == Some(255) => {
-                Some(String::from_utf8_lossy(&out.stderr).trim().to_string())
-            }
-            _ => None,
-        };
+        let unreachable = answer.as_ref().ok().and_then(|out| link.unreachable(out));
         let version = match &unreachable {
-            Some(why) => Err(format!("unreachable: {why}")),
+            Some(why) => Err(why.clone()),
             None => answer.and_then(|out| {
                 if out.status.success() {
                     serde_json::from_slice(&out.stdout)
@@ -258,7 +253,7 @@ impl FleetFacts {
         };
         // A machine that cannot be reached is asked once.
         let hosts = match &unreachable {
-            Some(why) => Err(format!("unreachable: {why}")),
+            Some(why) => Err(why.clone()),
             None => {
                 bounded_output(link, &["runtime", "hosts", "--json"], timeout).and_then(|out| {
                     if out.status.success() {
@@ -377,7 +372,7 @@ impl FleetFacts {
             (Err(why), _) if self.unreachable.is_some() => Finding::new(
                 "fleet",
                 broken,
-                format!("{why} — the machine of [fleets.{name}] cannot be reached"),
+                format!("{why} — check [fleets.{name}] in settings.toml"),
             ),
             (Err(why), _) => Finding::new(
                 "fleet",

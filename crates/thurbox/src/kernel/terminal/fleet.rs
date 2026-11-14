@@ -20,7 +20,9 @@ use super::stream_pane::{adopt_with_upstream, Notices, Upstream};
 pub(super) const BACKEND: &str = crate::kernel::snapshot::fleet::BACKEND;
 
 /// Open `task`'s pane at `rows` × `cols`: ask the Fleet `link` reaches for
-/// the Task's stream, and open it. Input it refuses is said on
+/// the Task's stream, and open it on that Fleet's machine: the argv names
+/// paths there, so it runs through the same link (over ssh, with no pty, so
+/// the stream's frames stay 8-bit clean). Input it refuses is said on
 /// `notices`. The companion shell is a window of `shell`, the multiplexer on
 /// the Task's machine: a stream opens no windows.
 pub(super) fn open(
@@ -33,7 +35,7 @@ pub(super) fn open(
     shell: Option<Arc<dyn crate::backend::SessionBackend>>,
 ) -> Result<crate::backend::Session, String> {
     let argv = attach_argv(link, task)?;
-    let (adopted, upstream) = adopt_with_upstream(&argv, rows, cols, Some(notices))
+    let (adopted, upstream) = adopt_with_upstream(link.launch(&argv)?, rows, cols, Some(notices))
         .map_err(|e| format!("the stream pane: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
     let mut session = crate::backend::Session::adopt_io(
@@ -59,6 +61,9 @@ fn attach_argv(link: &crate::fleet_link::FleetLink, task: &str) -> Result<Vec<St
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("could not start fleet attach: {e}"))?;
+    if let Some(why) = link.unreachable(&out) {
+        return Err(why);
+    }
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let why = stderr

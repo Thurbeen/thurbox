@@ -444,7 +444,19 @@ mod tests {
         let expected: Vec<&str> = prefix
             .iter()
             .copied()
-            .chain(["tmux", "-L", "thurbox", "has-session", "-t", "thurbox"])
+            .chain([
+                "--exec",
+                "sh",
+                "-c",
+                crate::shell::WSL_PROFILE_EXEC,
+                "sh",
+                "tmux",
+                "-L",
+                "thurbox",
+                "has-session",
+                "-t",
+                "thurbox",
+            ])
             .collect();
         assert_eq!(args, expected);
     }
