@@ -458,14 +458,66 @@ pub fn load_rules(path: &Path) -> Result<Rules, String> {
     toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Declares [`Code`]: each variant once, with the name a report prints.
+macro_rules! codes {
+    ($($variant:ident = $name:literal,)*) => {
+        /// Every code a [`Violation`] can carry. docs/constitution.md's table of
+        /// what `arch-rules` checks names each one, and a test holds it to that.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Code {
+            $($variant,)*
+        }
+
+        impl Code {
+            pub const ALL: &[Code] = &[$(Code::$variant,)*];
+
+            /// The code as a report prints it.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Code::$variant => $name,)*
+                }
+            }
+        }
+    };
+}
+
+codes! {
+    CliMethod = "cli-method",
+    Cycle = "cycle",
+    MissingClippyGuard = "missing-clippy-guard",
+    MissingCrate = "missing-crate",
+    MissingProbe = "missing-probe",
+    ModuleCycle = "module-cycle",
+    ModuleEdge = "module-edge",
+    ModuleExternal = "module-external",
+    ModuleGovernedGrant = "module-governed-grant",
+    ModuleRestricted = "module-restricted",
+    ModuleRestrictedStale = "module-restricted-stale",
+    ModuleUngoverned = "module-ungoverned",
+    ModuleUnknown = "module-unknown",
+    ModuleUnused = "module-unused",
+    PureExternal = "pure-external",
+    PureIo = "pure-io",
+    ReexportEdge = "reexport-edge",
+    Restricted = "restricted",
+    RestrictedScope = "restricted-scope",
+    StatusWriter = "status-writer",
+    UndeclaredDevEdge = "undeclared-dev-edge",
+    UndeclaredEdge = "undeclared-edge",
+    UngovernedCrate = "ungoverned-crate",
+    Unparsable = "unparsable",
+    Unreadable = "unreadable",
+    Unresolvable = "unresolvable",
+}
+
 fn violation(
-    code: &'static str,
+    code: Code,
     krate: &str,
     location: impl Into<String>,
     detail: impl Into<String>,
 ) -> Violation {
     Violation {
-        code,
+        code: code.as_str(),
         krate: krate.to_string(),
         location: location.into(),
         detail: detail.into(),
@@ -482,7 +534,7 @@ fn check_governance(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
             .collect();
         if x.applies_to.is_empty() || !unknown.is_empty() {
             v.push(violation(
-                "restricted-scope",
+                Code::RestrictedScope,
                 &x.path,
                 "architecture.toml",
                 format!(
@@ -495,7 +547,7 @@ fn check_governance(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
     for c in &ws.crates {
         if !rules.crates.contains_key(&c.name) {
             v.push(violation(
-                "ungoverned-crate",
+                Code::UngovernedCrate,
                 &c.name,
                 "Cargo.toml",
                 "every workspace crate needs a rule",
@@ -505,7 +557,7 @@ fn check_governance(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
     for (name, rule) in &rules.crates {
         if !ws.is_member(name) {
             v.push(violation(
-                "missing-crate",
+                Code::MissingCrate,
                 name,
                 "architecture.toml",
                 "a rule names a crate that is not a member",
@@ -514,7 +566,7 @@ fn check_governance(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
         for d in rule.deps.iter().chain(&rule.dev_deps).chain(&rule.probes) {
             if !ws.is_member(d) {
                 v.push(violation(
-                    "missing-crate",
+                    Code::MissingCrate,
                     name,
                     "architecture.toml",
                     format!("names {d}, not a member"),
@@ -571,7 +623,7 @@ fn check_graphs(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
         .collect();
     if let Some(c) = find_cycle(&declared) {
         v.push(violation(
-            "cycle",
+            Code::Cycle,
             &c[0],
             "architecture.toml",
             format!("declared graph has a cycle: {}", c.join(" -> ")),
@@ -594,9 +646,9 @@ fn check_graphs(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
             }
             if !allowed {
                 let code = if d.kind == DepKind::Dev {
-                    "undeclared-dev-edge"
+                    Code::UndeclaredDevEdge
                 } else {
-                    "undeclared-edge"
+                    Code::UndeclaredEdge
                 };
                 v.push(violation(
                     code,
@@ -619,7 +671,7 @@ fn check_graphs(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
             {
                 if !r.external.contains(&d.package) {
                     v.push(violation(
-                        "pure-external",
+                        Code::PureExternal,
                         &c.name,
                         "Cargo.toml",
                         format!("pure crate depends on {}", d.package),
@@ -630,7 +682,7 @@ fn check_graphs(ws: &Workspace, rules: &Rules, v: &mut Vec<Violation>) {
     }
     if let Some(c) = find_cycle(&actual) {
         v.push(violation(
-            "cycle",
+            Code::Cycle,
             &c[0],
             "Cargo.toml",
             format!("actual graph has a cycle: {}", c.join(" -> ")),
@@ -746,14 +798,14 @@ impl CrateIndex {
             let text = match fs::read_to_string(&file) {
                 Ok(t) => t,
                 Err(e) => {
-                    v.push(violation("unreadable", &c.name, rel, e.to_string()));
+                    v.push(violation(Code::Unreadable, &c.name, rel, e.to_string()));
                     continue;
                 }
             };
             let parsed = match syn::parse_file(&text) {
                 Ok(f) => f,
                 Err(e) => {
-                    v.push(violation("unparsable", &c.name, rel, e.to_string()));
+                    v.push(violation(Code::Unparsable, &c.name, rel, e.to_string()));
                     continue;
                 }
             };
@@ -1986,7 +2038,7 @@ fn check_sources(
         let paths = resolver.resolve(idx, &r.module, &r.segments, r.global, r.macro_call, true, 0);
         if resolver.exhausted.get() {
             v.push(violation(
-                "unresolvable",
+                Code::Unresolvable,
                 &idx.name,
                 &r.location,
                 format!("{} exceeds the resolution budget", r.segments.join("::")),
@@ -2006,7 +2058,7 @@ fn check_sources(
             if local.exhausted.get() {
                 // A partial answer could miss a reach, so it is reported.
                 v.push(violation(
-                    "unresolvable",
+                    Code::Unresolvable,
                     &idx.name,
                     &r.location,
                     format!("{} exceeds the resolution budget", r.segments.join("::")),
@@ -2069,7 +2121,7 @@ fn check_sources(
                     && !external.iter().any(|e| e == root)
                 {
                     v.push(violation(
-                        "module-external",
+                        Code::ModuleExternal,
                         &idx.name,
                         &r.location,
                         format!(
@@ -2088,9 +2140,9 @@ fn check_sources(
                 // name) or only through another crate's re-export.
                 let direct = idx.externs.contains(root) || idx.renames.values().any(|l| l == root);
                 let code = if direct {
-                    "undeclared-edge"
+                    Code::UndeclaredEdge
                 } else {
-                    "reexport-edge"
+                    Code::ReexportEdge
                 };
                 v.push(violation(
                     code,
@@ -2107,7 +2159,7 @@ fn check_sources(
                     .find(|f| starts_with(&path, f))
                 {
                     v.push(violation(
-                        "pure-io",
+                        Code::PureIo,
                         &idx.name,
                         &r.location,
                         format!("reaches {shown} (forbidden: {f})"),
@@ -2122,7 +2174,7 @@ fn check_sources(
                     && !rule.external.iter().any(|e| lib_name(e) == root)
                 {
                     v.push(violation(
-                        "pure-external",
+                        Code::PureExternal,
                         &idx.name,
                         &r.location,
                         format!("reaches {shown} of external crate {root}"),
@@ -2137,7 +2189,7 @@ fn check_sources(
                 && rule.forbidden_methods.contains(method)
             {
                 v.push(violation(
-                    "cli-method",
+                    Code::CliMethod,
                     &idx.name,
                     &r.location,
                     format!("calls {shown}: a write the manager owns"),
@@ -2150,7 +2202,7 @@ fn check_sources(
             {
                 if starts_with(&path, &x.path) {
                     v.push(violation(
-                        "restricted",
+                        Code::Restricted,
                         &idx.name,
                         &r.location,
                         format!("reaches {shown}: {}", x.why),
@@ -2165,7 +2217,7 @@ fn check_sources(
                     && !crates.contains(&idx.name)
                 {
                     v.push(violation(
-                        "status-writer",
+                        Code::StatusWriter,
                         &idx.name,
                         &r.location,
                         format!("names {writer}, which only {} may", crates.join(", ")),
@@ -2184,7 +2236,7 @@ fn check_sources(
     for (method, loc) in &idx.methods {
         if rule.forbidden_methods.contains(method) {
             v.push(violation(
-                "cli-method",
+                Code::CliMethod,
                 &idx.name,
                 loc,
                 format!("calls .{method}(): a write the manager owns"),
@@ -2205,7 +2257,7 @@ fn check_sources(
             if sites.len() > listed {
                 for (location, shown) in sites {
                     v.push(violation(
-                        "module-restricted",
+                        Code::ModuleRestricted,
                         &idx.name,
                         *location,
                         format!("reaches {shown}: {}", x.why),
@@ -2216,7 +2268,7 @@ fn check_sources(
         for f in &x.allowed_files {
             if !idx.files.contains(f) {
                 v.push(violation(
-                    "module-restricted-stale",
+                    Code::ModuleRestrictedStale,
                     &idx.name,
                     "architecture.toml",
                     format!("{f} is freed from {} but is no file", x.paths.join(", ")),
@@ -2227,7 +2279,7 @@ fn check_sources(
             let left = by_file.get(e.file.as_str()).map_or(0, Vec::len);
             if left < e.sites {
                 v.push(violation(
-                    "module-restricted-stale",
+                    Code::ModuleRestrictedStale,
                     &idx.name,
                     "architecture.toml",
                     format!(
@@ -2346,7 +2398,7 @@ impl<'r> ModuleGraph<'r> {
                 format!("its rule does not name {}", e.to)
             };
             v.push(violation(
-                "module-edge",
+                Code::ModuleEdge,
                 &idx.name,
                 &e.location,
                 format!("{} reaches {}{test}, and {why}", e.from, e.shown),
@@ -2359,7 +2411,7 @@ impl<'r> ModuleGraph<'r> {
             .collect();
         if let Some(c) = find_cycle(&declared) {
             v.push(violation(
-                "module-cycle",
+                Code::ModuleCycle,
                 &idx.name,
                 "architecture.toml",
                 format!("module rules allow a cycle: {}", c.join(" -> ")),
@@ -2369,7 +2421,7 @@ impl<'r> ModuleGraph<'r> {
             for to in m.grants() {
                 if rule.governed.contains(to) {
                     v.push(violation(
-                        "module-governed-grant",
+                        Code::ModuleGovernedGrant,
                         &idx.name,
                         "architecture.toml",
                         format!("{from} is granted all of {to}; name the module it uses"),
@@ -2377,14 +2429,14 @@ impl<'r> ModuleGraph<'r> {
                 }
                 if !rule.modules.contains_key(to) {
                     v.push(violation(
-                        "module-unknown",
+                        Code::ModuleUnknown,
                         &idx.name,
                         "architecture.toml",
                         format!("{from} may use {to}, which has no rule"),
                     ));
                 } else if self.drawn.get(&(from.clone(), to.clone())) != Some(&true) {
                     v.push(violation(
-                        "module-unused",
+                        Code::ModuleUnused,
                         &idx.name,
                         "architecture.toml",
                         format!("{from} may use {to}, which no production code does"),
@@ -2399,7 +2451,7 @@ impl<'r> ModuleGraph<'r> {
         for (path, name) in &self.nodes {
             if !modules.contains(path.as_slice()) {
                 v.push(violation(
-                    "module-unknown",
+                    Code::ModuleUnknown,
                     &idx.name,
                     "architecture.toml",
                     format!("{name} has a rule but is not a module"),
@@ -2410,7 +2462,7 @@ impl<'r> ModuleGraph<'r> {
         for g in &rule.governed {
             if !rule.modules.contains_key(g) {
                 v.push(violation(
-                    "module-unknown",
+                    Code::ModuleUnknown,
                     &idx.name,
                     "architecture.toml",
                     format!("{g} is governed but has no rule"),
@@ -2431,7 +2483,7 @@ impl<'r> ModuleGraph<'r> {
                 && !rule.exempt.contains(top)
             {
                 v.push(violation(
-                    "module-ungoverned",
+                    Code::ModuleUngoverned,
                     &idx.name,
                     "architecture.toml",
                     format!("{} has no module rule", module_label(module)),
@@ -2454,7 +2506,7 @@ impl<'r> ModuleGraph<'r> {
             };
             if ungoverned {
                 v.push(violation(
-                    "module-ungoverned",
+                    Code::ModuleUngoverned,
                     &idx.name,
                     "architecture.toml",
                     format!("{} has no module rule", module_label(file)),
@@ -2504,7 +2556,7 @@ fn check_pure_guards(
     for p in &rule.probes {
         if !probes.contains(&lib_name(p)) {
             v.push(violation(
-                "missing-probe",
+                Code::MissingProbe,
                 &idx.name,
                 "src/lib.rs",
                 format!("no compile_fail probe uses {}", lib_name(p)),
@@ -2535,7 +2587,7 @@ fn check_pure_guards(
     for g in &rules.pure.clippy_guards {
         if !guarded.contains(g) {
             v.push(violation(
-                "missing-clippy-guard",
+                Code::MissingClippyGuard,
                 &idx.name,
                 "clippy.toml",
                 format!("{g} is not disallowed"),
