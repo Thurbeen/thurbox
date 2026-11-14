@@ -824,6 +824,7 @@ fn build_fleets(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
         set(&item, "remote", fleet.remote)?;
         set(&item, "state", fleet.state.as_str())?;
         set(&item, "why", fleet.why.clone())?;
+        set(&item, "home", fleet.home.clone())?;
         let agents = match &fleet.agents {
             None => Value::Nil,
             Some(known) => {

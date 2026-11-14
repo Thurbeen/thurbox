@@ -260,6 +260,7 @@ fn full() -> Snapshot {
             remote: true,
             state: thurbox::kernel::snapshot::FleetState::Down,
             why: Some("no manager".into()),
+            home: Some("/home/me".into()),
             agents: Some(vec![thurbox::kernel::snapshot::AgentRow {
                 name: "claude".into(),
             }]),

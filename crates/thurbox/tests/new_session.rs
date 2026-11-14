@@ -417,6 +417,7 @@ fn fleet(
         remote: transport != "local Fleet",
         state,
         why: None,
+        home: None,
         agents: Some(
             agents
                 .iter()
@@ -594,6 +595,44 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
             extras: Vec::new(),
         }],
         "box's one agent, on box's local"
+    );
+}
+
+/// A remote Fleet's path field starts at its own home, and a typed `~` is
+/// that home. Until the home is known the field starts empty, with a hint,
+/// rather than at a `~/` the Fleet would refuse.
+#[test]
+fn a_remote_fleets_path_starts_at_its_own_home() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.fleets = three_fleets();
+    world.wants.bookmarks = Some("box/local".into());
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("type an absolute path on box, or a clone URL"),
+        "{screen}"
+    );
+    assert!(!screen.contains("~/"), "{screen}");
+
+    let host = self::host();
+    world.snapshot.fleets[0].home = Some("/home/me".into());
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    assert!(drawn(&host, &world).contains("/home/me/"));
+    type_text(&host, &world, "~/app");
+    press(&host, &world, "enter");
+    assert!(
+        host.drain_commands().iter().any(|c| matches!(
+            c,
+            Command::Bookmark { host, path, .. } if host == "box/local" && path == "/home/me/app"
+        )),
+        "a typed ~ is box's home"
     );
 }
 
