@@ -189,7 +189,12 @@ fn default_fleet_program() -> String {
 
 /// How a Fleet's `fleet` is run: `"local"`, `{ ssh = "me@box", ssh_opts =
 /// [...] }` or `{ wsl = "Ubuntu" }`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Read by hand rather than as an untagged enum: untagged buffers the table,
+/// so a misspelt key (`ssh_opt`) would load silently as a transport without
+/// it. Here the table is one struct, whose unknown keys the loader reports,
+/// and a table naming no transport or two is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum FleetTransport {
     Local(Local),
@@ -213,6 +218,89 @@ pub enum Local {
 impl Default for FleetTransport {
     fn default() -> Self {
         Self::Local(Local::Local)
+    }
+}
+
+/// A transport table as written, before it is checked to name exactly one
+/// transport.
+#[derive(Deserialize)]
+struct TransportTable {
+    ssh: Option<String>,
+    ssh_opts: Option<Vec<String>>,
+    wsl: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for FleetTransport {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = FleetTransport;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(
+                    "transport \"local\", { ssh = \"<destination>\", ssh_opts = [...] } or \
+                     { wsl = \"<distro>\" }",
+                )
+            }
+
+            fn visit_str<E: serde::de::Error>(self, word: &str) -> Result<Self::Value, E> {
+                match word {
+                    "local" => Ok(FleetTransport::default()),
+                    other => Err(E::custom(format!(
+                        "transport \"{other}\" is not one: write \"local\", {{ ssh = ... }} or \
+                         {{ wsl = ... }}"
+                    ))),
+                }
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                use serde::de::Error;
+                let table =
+                    TransportTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                match table {
+                    TransportTable {
+                        ssh: Some(ssh),
+                        ssh_opts,
+                        wsl: None,
+                    } => Ok(FleetTransport::Ssh {
+                        ssh,
+                        ssh_opts: ssh_opts.unwrap_or_default(),
+                    }),
+                    TransportTable {
+                        ssh: None,
+                        ssh_opts: None,
+                        wsl: Some(wsl),
+                    } => Ok(FleetTransport::Wsl { wsl }),
+                    TransportTable {
+                        ssh: Some(_),
+                        wsl: Some(_),
+                        ..
+                    } => Err(M::Error::custom(
+                        "transport names both ssh and wsl: a Fleet is reached one way",
+                    )),
+                    TransportTable {
+                        ssh: None,
+                        ssh_opts: Some(_),
+                        ..
+                    } => Err(M::Error::custom(
+                        "transport has ssh_opts but no ssh destination",
+                    )),
+                    TransportTable {
+                        ssh: None,
+                        wsl: None,
+                        ..
+                    } => Err(M::Error::custom(
+                        "transport names no ssh destination or wsl distro",
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
     }
 }
 

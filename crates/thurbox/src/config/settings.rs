@@ -661,6 +661,20 @@ mod tests {
                 .len(),
             1
         );
+        let typo =
+            unknown_keys("[fleets.box]\ntransport = { ssh = \"box\", ssh_opt = [\"-p\"] }\n")
+                .unwrap();
+        assert_eq!(typo.len(), 1, "{typo:?}");
+        assert!(typo[0].contains("ssh_opt"), "{typo:?}");
+        for refused in [
+            "transport = { ssh = \"box\", wsl = \"Ubuntu\" }",
+            "transport = { ssh_opts = [\"-p\", \"2222\"] }",
+            "transport = {}",
+            "transport = \"remote\"",
+        ] {
+            let why = unknown_keys(&format!("[fleets.box]\n{refused}\n")).expect_err(refused);
+            assert!(why.contains("transport"), "{refused}: {why}");
+        }
         assert_eq!(unknown_keys("[fleet]\nprogram = \"fleet\"\n"), Ok(vec![]));
         assert_eq!(
             retired_key("fleet.program").map(|(key, _)| key),
