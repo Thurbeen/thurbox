@@ -786,6 +786,10 @@ impl CrateIndex {
                     sites: 0,
                 };
                 walker.scope();
+                // A file's own `#![..]` attributes, `#![cfg(..)]` included.
+                for a in &parsed.attrs {
+                    walker.visit_attribute(a);
+                }
                 walker.items(&parsed.items);
             }
         }
@@ -1144,6 +1148,9 @@ impl Walker<'_> {
 
 impl<'ast> Visit<'ast> for Walker<'_> {
     fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
+        for a in &u.attrs {
+            self.visit_attribute(a);
+        }
         let span = u.use_token.span;
         self.cfg_use = has_cfg(&u.attrs);
         self.use_tree(&u.tree, &mut Vec::new(), u.leading_colon.is_some(), span);
@@ -1168,6 +1175,10 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        // The attributes belong to the declaring module.
+        for a in &m.attrs {
+            self.visit_attribute(a);
+        }
         if let Some((_, items)) = &m.content {
             self.module.push(m.ident.to_string());
             self.scope();
@@ -2094,8 +2105,10 @@ fn check_sources(
                     ));
                 }
                 let std_like = ["std", "core", "alloc"].contains(&root);
+                // A synthetic path (`#cfg::..`, `#static_mut`) names no crate.
                 if root != idx.lib
                     && !std_like
+                    && !root.starts_with('#')
                     && !workspace_libs.contains(root)
                     && !rule.external.iter().any(|e| lib_name(e) == root)
                 {

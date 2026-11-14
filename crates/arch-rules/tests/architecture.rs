@@ -2347,7 +2347,8 @@ fn a_module_names_only_the_external_crates_its_rule_lists() {
 }
 
 /// A `static mut` reads as the path `#static_mut`, and a `cfg` predicate
-/// naming a build target as `#cfg::<name>`, attribute and `cfg!` alike, so a
+/// naming a build target as `#cfg::<name>` (on an item, a module, a `use`, a
+/// whole file, or `cfg!`), so a
 /// restriction can keep them out of a module.
 #[test]
 fn static_mut_and_build_target_cfg_can_be_restricted() {
@@ -2376,6 +2377,17 @@ fn static_mut_and_build_target_cfg_can_be_restricted() {
         (
             "cfg-not",
             "pub fn b() {}\n#[cfg(not(windows))]\npub fn w() {}\n",
+        ),
+        ("cfg-mod", "pub fn b() {}\n#[cfg(windows)]\nmod w;\n"),
+        (
+            "cfg-inline-mod",
+            "pub fn b() {}\n#[cfg(windows)]\nmod w {}\n",
+        ),
+        ("cfg-use", "pub fn b() {}\n#[cfg(unix)]\nuse std::fs;\n"),
+        ("cfg-file", "#![cfg(unix)]\npub fn b() {}\n"),
+        (
+            "cfg-attr-cfg",
+            "pub fn b() {}\n#[cfg_attr(windows, inline)]\npub fn w() {}\n",
         ),
     ] {
         modules(

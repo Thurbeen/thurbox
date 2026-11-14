@@ -575,12 +575,12 @@ cmd_test_suite() {
   #   * INSTA_WORKSPACE_ROOT points insta at the shipped sources so snapshot
   #     tests resolve their `.snap` files (the archive bakes in the Linux build
   #     path otherwise).
-  #   * `not package(arch-rules)` skips the source-tree static analysis: it
-  #     reads the sources via the compile-time manifest dir and can't run from
-  #     a cross-built archive. The Linux CI jobs cover it instead.
+  #   * `not package(arch-rules)` and `not binary(proptest_seeds)` skip the
+  #     tests that read the sources via the compile-time manifest dir, which a
+  #     cross-built archive can't. The Linux CI jobs cover them instead.
   # The single quotes are intentional: `$env:` must reach PowerShell unexpanded.
   # shellcheck disable=SC2016
-  ssh_vm '$env:INSTA_WORKSPACE_ROOT="C:/thurbox-tests/src"; cargo-nextest nextest run --archive-file C:/thurbox-tests/nextest-archive.tar.zst --workspace-remap C:/thurbox-tests/src -E "not package(arch-rules)"'
+  ssh_vm '$env:INSTA_WORKSPACE_ROOT="C:/thurbox-tests/src"; cargo-nextest nextest run --archive-file C:/thurbox-tests/nextest-archive.tar.zst --workspace-remap C:/thurbox-tests/src -E "not package(arch-rules) and not binary(proptest_seeds)"'
 }
 
 cmd_web()  { printf 'Browser viewer: http://localhost:%s\n' "$WEB_PORT"; }

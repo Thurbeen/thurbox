@@ -381,10 +381,10 @@ EOF
   log "running the full suite on $DEST"
   echo
   # INSTA_WORKSPACE_ROOT re-roots insta snapshots onto the shipped sources;
-  # arch-rules scans the source tree via a compile-time path and runs in the
-  # Linux CI jobs. `$env:` must reach PowerShell verbatim.
+  # arch-rules and the proptest_seeds tests read the source tree via a
+  # compile-time path and run in the Linux CI jobs. `$env:` must reach PowerShell verbatim.
   # shellcheck disable=SC2016
-  ssh_host '$env:INSTA_WORKSPACE_ROOT="'"$LAB_DIR"'/tests/src"; '"$nextest_bin"' nextest run --archive-file '"$LAB_DIR"'/tests/nextest-archive.tar.zst --workspace-remap '"$LAB_DIR"'/tests/src -E "not package(arch-rules)"'
+  ssh_host '$env:INSTA_WORKSPACE_ROOT="'"$LAB_DIR"'/tests/src"; '"$nextest_bin"' nextest run --archive-file '"$LAB_DIR"'/tests/nextest-archive.tar.zst --workspace-remap '"$LAB_DIR"'/tests/src -E "not package(arch-rules) and not binary(proptest_seeds)"'
 }
 
 # ---- Windows: WSL --------------------------------------------------------
