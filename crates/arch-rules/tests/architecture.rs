@@ -2422,6 +2422,17 @@ fn static_mut_and_build_target_cfg_can_be_restricted() {
         &[],
     );
     modules(
+        "cfg-test-then-unix",
+        &[
+            ("architecture.toml", &os),
+            (
+                "crates/fx-mod/src/b.rs",
+                "pub fn b() {}\n#[cfg(test)]\n#[cfg(unix)]\nfn check() {}\n",
+            ),
+        ],
+        &[],
+    );
+    modules(
         "cfg-test-only",
         &[
             ("architecture.toml", &os),
