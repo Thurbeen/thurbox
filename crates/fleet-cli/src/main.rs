@@ -293,9 +293,16 @@ enum RuntimeCommand {
         #[arg(last = true, required = true)]
         program: Vec<String>,
     },
-    /// The hosts a Task may name: the `[hosts]` of the config, or none
-    /// (`null` with --json) when one `[runtime]` serves any host.
+    /// The hosts a Task may name: `local` and each `<runtime>/<place>` it
+    /// does not stand for, or none (`null` with --json) when one `[runtime]`
+    /// serves any host.
     Hosts {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Every place of every runtime, with what the runtime's manifest says
+    /// of it: ready, not ready and why, or unknown when it did not answer.
+    Places {
         #[arg(long)]
         json: bool,
     },
@@ -524,15 +531,60 @@ fn run(cli: Cli) -> Result<(), Failure> {
         command: RuntimeCommand::Hosts { json },
     } = &cli.command
     {
-        // Runtime programs serve exactly the hosts named for them, as
-        // `open_runtime` wires them.
-        let hosts = (!config.runtimes.is_empty()).then(|| config.hosts.keys().collect::<Vec<_>>());
+        // Runtime programs serve exactly their places, as `open_runtime`
+        // wires them; `local` stands for the default runtime's own.
+        let hosts = (!config.runtimes.is_empty()).then(|| {
+            let places = config.places();
+            let mut hosts: Vec<String> = places
+                .iter()
+                .filter(|p| p.local)
+                .map(|_| config::LOCAL.to_string())
+                .collect();
+            hosts.extend(places.into_iter().filter(|p| !p.local).map(|p| p.id));
+            hosts
+        });
         if *json {
             print_json(&json!({ "hosts": hosts }));
         } else {
             match hosts {
                 Some(hosts) => hosts.iter().for_each(|host| println!("{host}")),
                 None => println!("any host: one [runtime] serves them all"),
+            }
+        }
+        return Ok(());
+    }
+    if let Command::Runtime {
+        command: RuntimeCommand::Places { json },
+    } = &cli.command
+    {
+        let places = (!config.runtimes.is_empty()).then(|| runtime_places(&config));
+        let local = config.places().into_iter().find(|p| p.local).map(|p| p.id);
+        let no_local = config.no_local();
+        if *json {
+            print_json(&json!({ "places": places, "local": local, "localWhy": no_local }));
+        } else {
+            if let Some(why) = &no_local {
+                println!("{why}");
+            }
+            match places {
+                Some(places) => {
+                    for p in places {
+                        let state = match p["ready"].as_bool() {
+                            Some(true) => "ready",
+                            Some(false) => "not ready",
+                            None => "unknown",
+                        };
+                        let why = p["why"]
+                            .as_str()
+                            .map(|w| format!(": {w}"))
+                            .unwrap_or_default();
+                        println!(
+                            "{:<24} {state}{why}",
+                            p["place"].as_str().unwrap_or_default()
+                        );
+                    }
+                }
+                None => println!("any place: one [runtime] serves them all"),
             }
         }
         return Ok(());
@@ -1109,10 +1161,10 @@ fn cmd_up(
     // Every host the config names, or `local` under one `[runtime]`. One
     // that answers is enough to start; each other is reported, and its
     // Tasks wait in their own status.
-    let hosts: Vec<&str> = if config.hosts.is_empty() {
-        vec!["local"]
+    let hosts: Vec<String> = if config.runtimes.is_empty() {
+        vec![config::LOCAL.to_string()]
     } else {
-        config.hosts.keys().map(String::as_str).collect()
+        config.places().into_iter().map(|p| p.id).collect()
     };
     let mut down = Vec::new();
     for host in &hosts {
@@ -1427,12 +1479,18 @@ fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
     FileSignals::open(&dir).map_err(|e| fail(format!("{}: {e}", dir.display())))
 }
 
-/// The runtime: the programs under `[runtimes]`, one per host, or the fake.
+/// The runtime: the programs under `[runtimes]`, one per place, or the
+/// fake. `local` is the default runtime's `local` place under a second name.
 fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtime>, Failure> {
     if !config.runtimes.is_empty() {
         let mut hosts = BTreeMap::new();
-        for (host, h) in &config.hosts {
-            hosts.insert(host.clone(), exec_program(config, &h.runtime));
+        for place in config.places() {
+            let mut rt = exec_program(config, &place.runtime);
+            rt.place = place.place;
+            if place.local {
+                hosts.insert(config::LOCAL.to_string(), rt.clone());
+            }
+            hosts.insert(place.id, rt);
         }
         let runtime = ExecRuntime::new(hosts).with_signals(signals.clone());
         return Ok(Box::new(runtime));
@@ -1442,7 +1500,7 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
             code: exit::ERROR,
             message: "no runtime configured".into(),
             hint: Some(
-                "add [runtimes.mux] program = \"runtime-mux\" and [hosts.local] runtime = \"mux\" to the config file, or run fleet init"
+                "add [runtimes.mux] program = \"runtime-mux\" to the config file, or run fleet init"
                     .into(),
             ),
         });
@@ -1476,7 +1534,40 @@ fn exec_program(config: &Config, name: &str) -> ExecProgram {
     if let Some(prefix) = &p.key_prefix {
         rt.key_prefix = prefix.clone();
     }
+    rt.places = config
+        .places()
+        .into_iter()
+        .filter(|place| place.runtime == name)
+        .map(|place| place.place)
+        .collect();
     rt
+}
+
+/// `fleet runtime places`: each place, with its runtime's manifest answer.
+/// A runtime that does not answer leaves each of its places unknown, and one
+/// of protocol 1 serves only `local`.
+fn runtime_places(config: &Config) -> Vec<Value> {
+    let places = config.places();
+    let mut rows = Vec::new();
+    for runtime in config.runtimes.keys() {
+        let program = exec_program(config, runtime);
+        let manifest = program.manifest();
+        for place in places.iter().filter(|p| &p.runtime == runtime) {
+            let r = fleet_runtime::exec::readiness(&program, &place.place, &manifest);
+            let row = json!({
+                "place": place.id,
+                "runtime": runtime,
+                "name": place.place.name,
+                "alias": place.local.then_some(config::LOCAL),
+                "platform": r.report.as_ref().map(|r| r.platform),
+                "dynamic": r.report.as_ref().map(|r| r.dynamic),
+                "ready": r.ready,
+                "why": r.why,
+            });
+            rows.push(row);
+        }
+    }
+    rows
 }
 
 /// `fleet doctor`: each check's finding, classified by
@@ -1516,9 +1607,14 @@ fn cmd_doctor(
         checks.push(doctor::harness(&p.name, &p.program, found.as_deref()));
     }
     if !config.runtimes.is_empty() {
-        for (host, h) in &config.hosts {
-            let answer = fleet_runtime::exec::reach(&exec_program(config, &h.runtime));
-            checks.push(doctor::runtime(host, &h.runtime, answer));
+        if let Some(why) = config.no_local() {
+            checks.push(doctor::no_local_place(&why));
+        }
+        for place in config.places() {
+            let mut program = exec_program(config, &place.runtime);
+            program.place = place.place;
+            let answer = fleet_runtime::exec::reach(&program);
+            checks.push(doctor::runtime(&place.id, &place.runtime, answer));
         }
     } else if let Some(rt) = &config.runtime {
         checks.push(doctor::fake_runtime(&rt.kind, rt.dir.is_some()));
@@ -1783,6 +1879,48 @@ fn cmd_apply(
         let obj: Object =
             serde_json::from_value(item).map_err(|e| fail(format!("item {i}: {e}")))?;
         objs.push(obj);
+    }
+    // `local` naming no place is refused here, by name: the runtime would
+    // only read the place as unreachable. The host is the manager's rule
+    // (`effective_host`); a TaskConfig not there yet leaves it untold. Of
+    // several of one name in the batch, the last is the one stored.
+    let on_local = |obj: &Object| {
+        if obj.kind != fleet_api::task::KIND {
+            return false;
+        }
+        let config_host = match obj
+            .spec
+            .get("host")
+            .is_none()
+            .then(|| obj.spec["configRef"]["name"].as_str())
+        {
+            Some(Some(name)) => {
+                let config = objs
+                    .iter()
+                    .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
+                    .cloned()
+                    .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
+                        Observation::Known(found) => found,
+                        Observation::Unknown { .. } => None,
+                    });
+                match config {
+                    Some(config) => config.spec["host"].as_str().map(str::to_string),
+                    None => return false,
+                }
+            }
+            _ => None,
+        };
+        fleet_api::task::effective_host(&obj.spec, config_host.as_deref())
+            == fleet_api::task::LOCAL_HOST
+    };
+    if let Some(why) = config.no_local()
+        && objs.iter().any(on_local)
+    {
+        return Err(Failure {
+            code: exit::ERROR,
+            message: why,
+            hint: Some("name a place `fleet runtime places` lists in spec.host".into()),
+        });
     }
     let mut out = Vec::new();
     let mut forge: Option<ForgeHosts> = None;

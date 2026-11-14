@@ -132,7 +132,7 @@ fn mux_env(name: &str, program: &Path, sockets: &Sockets) -> Env {
     fs::write(
         &env.config,
         format!(
-            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n\n[hosts.local]\nruntime = \"mux\"\n",
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n",
             program.display()
         ),
     )
@@ -225,6 +225,12 @@ fn fleet_names_the_local_place_in_each_request_to_a_version_2_runtime() {
         }
     }
     assert_eq!(env.status("t1")["sessionState"], "Running");
+    // `mux/local` is the place `local` names on the default runtime.
+    let mut long = support::task("t3", true);
+    long["spec"]["host"] = json!("mux/local");
+    env.apply(json!([long])).ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t3")["sessionState"], "Running");
 }
 
 /// A version 1 runtime gets version 1 requests, with no place: what Fleet
@@ -356,17 +362,29 @@ fn mux_call(program: &Path, sockets: &Sockets, verb: &str, request: &Value) -> V
 }
 
 /// A view asks which hosts a Task may name, and which harnesses Fleet has a
-/// profile for, before it applies one.
+/// profile for, before it applies one. A host is `<runtime>/<place>`, and
+/// `local` names the default runtime's `local` place.
 #[test]
 fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
     let env = Env::new("runtime-hosts");
     fs::write(
         &env.config,
-        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[hosts.local]\nruntime = \"mux\"\n\n[hosts.devbox]\nruntime = \"mux\"\n",
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@devbox\"\n",
     )
     .expect("config");
     let hosts = env.fleet(&["runtime", "hosts", "--json"]).ok().json();
-    assert_eq!(hosts, json!({"hosts": ["devbox", "local"]}));
+    assert_eq!(hosts, json!({"hosts": ["local", "mux/devbox"]}));
+
+    // A runtime with no places table has the one place `local`; the
+    // default runtime's is also `local`, and another's is not.
+    let two = Env::new("runtime-hosts-two");
+    fs::write(
+        &two.config,
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\ndefault = true\n\n[runtimes.vm]\nprogram = \"runtime-vm\"\n\n[runtimes.vm.places.sandbox]\nimage = \"agent-base\"\n",
+    )
+    .expect("config");
+    let hosts = two.fleet(&["runtime", "hosts", "--json"]).ok().json();
+    assert_eq!(hosts, json!({"hosts": ["local", "vm/sandbox"]}));
 
     // The one `[runtime]` of the linked adapters serves whatever host a Task
     // names: there is no list.
@@ -392,17 +410,225 @@ fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
     );
 }
 
+/// A config whose hosts cannot be told apart, or that names them the old
+/// way, is refused when it loads, by what is wrong.
 #[test]
-fn a_host_naming_no_runtime_is_refused_at_load() {
-    let env = Env::new("runtime-unnamed");
+fn a_config_whose_hosts_are_ambiguous_is_refused_at_load() {
+    let head = "version = 1\n\n[data]\ndir = \"data\"\n\n";
+    for (name, body, why) in [
+        (
+            "no-default",
+            "[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[runtimes.vm]\nprogram = \"runtime-vm\"\n",
+            "several runtimes and no default",
+        ),
+        (
+            "two-defaults",
+            "[runtimes.mux]\nprogram = \"runtime-mux\"\ndefault = true\n\n[runtimes.vm]\nprogram = \"runtime-vm\"\ndefault = true\n",
+            "several runtimes and no default",
+        ),
+        (
+            "old-hosts",
+            "[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[hosts.local]\nruntime = \"mux\"\n",
+            "[hosts] is gone",
+        ),
+        (
+            "bad-place",
+            "[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[runtimes.mux.places.Dev_Box]\n",
+            "runtimes.mux.places.Dev_Box",
+        ),
+        (
+            "bad-runtime",
+            "[runtimes.Mux]\nprogram = \"runtime-mux\"\n",
+            "runtimes.Mux",
+        ),
+    ] {
+        let env = Env::new(&format!("runtime-config-{name}"));
+        fs::write(&env.config, format!("{head}{body}")).expect("config");
+        env.fleet(&["list", "task"]).code(1).stderr_has(why);
+    }
+}
+
+/// A default runtime with places and none of them `local`, such as one
+/// of VMs, loads: the host `local` names nothing, a Task on it is refused
+/// by name, and `runtime hosts` and `runtime places` say there is no local
+/// place.
+#[test]
+fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
+    let env = Env::new("runtime-no-local");
     fs::write(
         &env.config,
-        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[hosts.local]\nruntime = \"muxx\"\n",
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.vm]\nprogram = \"runtime-vm\"\n\n[runtimes.vm.places.sandbox]\nimage = \"agent-base\"\n",
     )
     .expect("config");
-    env.fleet(&["list", "task"])
+    env.fleet(&["list", "task"]).ok();
+    let hosts = env.fleet(&["runtime", "hosts", "--json"]).ok().json();
+    assert_eq!(hosts, json!({"hosts": ["vm/sandbox"]}));
+    let places = env.fleet(&["runtime", "places", "--json"]).ok().json();
+    assert!(places["local"].is_null(), "{places:#}");
+    let why = "no `local` place: the default runtime vm has none; add [runtimes.vm.places.local] or name a place";
+    assert_eq!(places["localWhy"], why, "{places:#}");
+    env.fleet(&["runtime", "places"]).ok().stdout_has(why);
+    let mut named = support::task("t1", true);
+    named["spec"]["host"] = json!("local");
+    let mut unnamed = support::task("t2", true);
+    unnamed["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    for task in [named, unnamed] {
+        env.apply(task.clone()).code(1).stderr_has(why);
+    }
+    let mut placed = support::task("t3", true);
+    placed["spec"]["host"] = json!("vm/sandbox");
+    env.apply(placed).ok();
+    // A Task with no host takes its TaskConfig's: on `vm/sandbox` it is
+    // applied, whether the TaskConfig comes in the same batch or before.
+    let config = support::object("TaskConfig", "on-vm", json!({"host": "vm/sandbox"}));
+    let mut inherits = support::task("t4", true);
+    inherits["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    inherits["spec"]["configRef"] = json!({"name": "on-vm"});
+    env.apply(json!([config, inherits])).ok();
+    let mut later = inherits.clone();
+    later["metadata"]["name"] = json!("t5");
+    env.apply(later).ok();
+    // A TaskConfig that names no host leaves it `local`, which is refused.
+    let bare = support::object("TaskConfig", "bare", json!({}));
+    let mut on_bare = support::task("t6", true);
+    on_bare["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    on_bare["spec"]["configRef"] = json!({"name": "bare"});
+    env.apply(json!([bare, on_bare])).code(1).stderr_has(why);
+    // Of two TaskConfigs of one name in a batch, the last is stored: its
+    // host, here none, is the one checked.
+    let first = support::object("TaskConfig", "twice", json!({"host": "vm/sandbox"}));
+    let last = support::object("TaskConfig", "twice", json!({}));
+    let mut on_twice = support::task("t7", true);
+    on_twice["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    on_twice["spec"]["configRef"] = json!({"name": "twice"});
+    env.apply(json!([first, last, on_twice]))
         .code(1)
-        .stderr_has("hosts.local.runtime \"muxx\" names no [runtimes.muxx]");
+        .stderr_has(why);
+}
+
+/// `fleet runtime places`: each configured place with what its runtime's
+/// manifest says of it. A runtime that does not answer leaves its places
+/// unknown, never absent, and a version 1 runtime serves only `local`.
+#[test]
+fn the_places_are_listed_with_their_readiness() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("places");
+    let env = mux_env("runtime-places", &program, &sockets);
+    let v1 = env.root.join("v1.sh");
+    fs::write(
+        &v1,
+        "#!/bin/sh\ncat >/dev/null\necho '{\"known\":{\"protocol\":1,\"verbs\":[\"manifest\",\"start\",\"inspect\",\"stop\"]}}'\n",
+    )
+    .expect("v1 runtime");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&v1, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}default = true\n\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@devbox\"\n\n[runtimes.old]\nprogram = '{}'\n\n[runtimes.old.places.local]\n\n[runtimes.old.places.far]\n\n[runtimes.gone]\nprogram = '{}'\n",
+            v1.display(),
+            env.root.join("no-such-runtime").display()
+        ),
+    )
+    .expect("config");
+    let places = env.fleet(&["runtime", "places", "--json"]).ok().json();
+    let rows = places["places"].as_array().expect("places");
+    let row = |host: &str| {
+        rows.iter()
+            .find(|r| r["place"] == host)
+            .unwrap_or_else(|| panic!("no {host} in {places:#}"))
+            .clone()
+    };
+    assert_eq!(rows.len(), 5, "{places:#}");
+    let local = row("mux/local");
+    assert_eq!(local["ready"], true, "{places:#}");
+    assert_eq!(local["platform"], "posix", "{places:#}");
+    assert_eq!(local["alias"], "local", "{places:#}");
+    let devbox = row("mux/devbox");
+    assert_eq!(devbox["ready"], false, "{places:#}");
+    assert!(devbox["why"].is_string(), "{places:#}");
+    assert_eq!(row("old/local")["ready"], true, "{places:#}");
+    let far = row("old/far");
+    assert_eq!(far["ready"], false, "{places:#}");
+    assert!(
+        far["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("protocol 1")),
+        "{places:#}"
+    );
+    let gone = row("gone/local");
+    assert!(gone["ready"].is_null(), "unknown, not absent: {places:#}");
+    assert!(gone["why"].is_string(), "{places:#}");
+}
+
+/// A Task on a place names it with its config in each request; runtime-mux
+/// serves `local` alone, so the Task waits and nothing starts.
+#[test]
+fn a_task_on_a_place_passes_its_config_to_the_runtime() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("place-config");
+    let (env, log) = logged_env("runtime-place-config", &program, &sockets);
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@devbox\"\n"
+        ),
+    )
+    .expect("config");
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/devbox");
+    env.apply(json!([task])).ok();
+    env.reconcile();
+    let calls = calls(&log);
+    let devbox = json!({"name": "devbox", "config": {"kind": "ssh", "destination": "me@devbox"}});
+    let starts: Vec<&Value> = calls
+        .iter()
+        .filter(|(v, _)| v == "start")
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!starts.is_empty(), "{calls:?}");
+    for start in starts {
+        assert_eq!(start["place"], devbox, "{start}");
+    }
+    let status = env.get("t1")["status"].clone();
+    assert!(status["session"].is_null(), "{status:#}");
+    assert!(status.to_string().contains("devbox"), "{status:#}");
+}
+
+/// A Task on a place no runtime has is on an unreachable host: it waits,
+/// and nothing starts.
+#[test]
+fn a_task_on_an_unknown_place_waits_unreachable() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("place-unknown");
+    let env = mux_env("runtime-place-unknown", &program, &sockets);
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/nowhere");
+    env.apply(json!([task])).ok();
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    support::assert_condition(&status, "HostReachable", "False", "Unreachable");
+    assert!(status["session"].is_null(), "{status:#}");
 }
 
 #[test]

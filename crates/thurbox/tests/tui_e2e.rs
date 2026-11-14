@@ -162,7 +162,7 @@ impl Profile {
         std::fs::write(
             root.join("fleet.toml"),
             format!(
-                "version = 1\n\n[data]\ndir = \"fleet-data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n\n[hosts.local]\nruntime = \"mux\"\n",
+                "version = 1\n\n[data]\ndir = \"fleet-data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\ndefault = true\n",
                 runtime.display()
             ),
         )
@@ -7067,14 +7067,10 @@ fn an_image_dropped_on_a_remote_session_is_refused_not_typed() {
     }
     let fleet_toml = profile.path("fleet.toml");
     let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
-    std::fs::write(
-        &fleet_toml,
-        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
-    )
-    .expect("a second host");
+    std::fs::write(&fleet_toml, second_runtime(&config, "devbox")).expect("a second host");
     let repo = repo(profile.root.path());
     let task = format!(
-        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":["file://{}"]}}}}"#,
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox/local","dispatch":true,"workspace":["file://{}"]}}}}"#,
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
@@ -7120,14 +7116,10 @@ fn a_remote_machines_own_image_path_is_typed_not_refused() {
     }
     let fleet_toml = profile.path("fleet.toml");
     let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
-    std::fs::write(
-        &fleet_toml,
-        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
-    )
-    .expect("a second host");
+    std::fs::write(&fleet_toml, second_runtime(&config, "devbox")).expect("a second host");
     let repo = repo(profile.root.path());
     let task = format!(
-        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":["file://{}"]}}}}"#,
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox/local","dispatch":true,"workspace":["file://{}"]}}}}"#,
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);
@@ -7528,6 +7520,17 @@ fn an_existing_worktree_is_opened_as_it_is() {
     assert!(tui.quit().success());
 }
 
+/// `config`, a profile's Fleet config, with a second runtime `name` on the
+/// same program: its `local` place, `<name>/local`, is a host other than
+/// `local` that runs on this machine.
+fn second_runtime(config: &str, name: &str) -> String {
+    let program = config
+        .lines()
+        .find(|line| line.starts_with("program = "))
+        .expect("the profile's runtime program");
+    format!("{config}\n[runtimes.{name}]\n{program}\ncallTimeoutMs = 10000\n")
+}
+
 /// The hosts the creation flow offers are the ones Fleet defines (`fleet
 /// runtime hosts --json`), not a `hosts.toml` of thurbox's: a host Fleet
 /// names is offered, and one only `hosts.toml` names is not.
@@ -7543,11 +7546,7 @@ fn the_host_picker_lists_the_hosts_fleet_reports() {
     }
     let fleet_toml = profile.path("fleet.toml");
     let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
-    std::fs::write(
-        &fleet_toml,
-        format!("{config}\n[hosts.fleetbox]\nruntime = \"mux\"\n"),
-    )
-    .expect("a second host");
+    std::fs::write(&fleet_toml, second_runtime(&config, "fleetbox")).expect("a second host");
     std::fs::write(
         {
             std::fs::create_dir_all(profile.path("config")).expect("config dir");
@@ -7559,7 +7558,7 @@ fn the_host_picker_lists_the_hosts_fleet_reports() {
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    tui.wait_for("fleetbox");
+    tui.wait_for("fleetbox/local");
     assert!(
         !tui.frame().contains("onlyhoststoml"),
         "a host only hosts.toml names is offered:\n{}",
@@ -7583,14 +7582,10 @@ fn input_after_a_held_remote_paste_keeps_its_order() {
     }
     let fleet_toml = profile.path("fleet.toml");
     let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
-    std::fs::write(
-        &fleet_toml,
-        format!("{config}\n[hosts.devbox]\nruntime = \"mux\"\n"),
-    )
-    .expect("a second host");
+    std::fs::write(&fleet_toml, second_runtime(&config, "devbox")).expect("a second host");
     let repo = repo(profile.root.path());
     let task = format!(
-        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox","dispatch":true,"workspace":["file://{}"]}}}}"#,
+        r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"far"}},"spec":{{"harness":"claude-code","host":"devbox/local","dispatch":true,"workspace":["file://{}"]}}}}"#,
         repo.display()
     );
     profile.fleet(&["apply", "-f", "-"], &task);

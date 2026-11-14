@@ -944,7 +944,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let fleet = Fleet::with(
         bin,
         &format!(
-            "[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n\n[hosts.local]\nruntime = \"mux\"\n",
+            "[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n",
             runtime_mux.display()
         ),
         &format!("TMUX_TMPDIR='{}'", sockets.0.display()),

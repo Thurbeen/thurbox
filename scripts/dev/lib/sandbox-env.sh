@@ -161,9 +161,6 @@ dir = "store"
 program = "runtime-mux"
 callTimeoutMs = 10000
 keyPrefix = "tbx-sandbox"
-
-[hosts.local]
-runtime = "mux"
 EOF
     mv -f "$staged" "$FLEET_CONFIG"
 }

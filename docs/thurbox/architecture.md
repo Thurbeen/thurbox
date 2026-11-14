@@ -1263,8 +1263,9 @@ One repository keeps a change across components in one change and one CI.
 
 **Status**: in progress. The code lands in steps. The runtime protocol's
 version 2 has landed: each request names a place, and `manifest` reports
-places. Until each other step lands, Fleet's `[hosts]` table and thurbox's
-`hosts.toml` work as documented today.
+places. Fleet's config declares places, and its `[hosts]` table is gone.
+Until each other step lands, thurbox's `hosts.toml` works as documented
+today.
 
 **Choice**: a host is a place of a runtime.
 
@@ -1286,7 +1287,7 @@ places. Until each other step lands, Fleet's `[hosts]` table and thurbox's
 The protocol additions are in
 [the runtime protocol](../runtime/README.md#places-protocol-version-2),
 and the config shape is in
-[Fleet's configuration](../fleet/configuration.md#planned-places-of-a-runtime).
+[Fleet's configuration](../fleet/configuration.md#runtimes-and-their-places).
 
 **Why**: how to reach a place is a fact of the runtime (ADR-41). A host table
 in Fleet and another in thurbox are two copies of one fact. One Fleet config
