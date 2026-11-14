@@ -179,7 +179,7 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
   and a file lists the two subdirectories, the checkout marked, and a
   missing directory answers `failed`;
 - with `branches` declared: a repository with the branches `main` and
-  `feat` lists both with `main` as its default, and a directory inside a
+  `feat` lists both, in any order, with `main` as its default, and a directory inside a
   checkout answers `failed`. The check makes the repository with this
   machine's `git`.
 
@@ -289,14 +289,19 @@ place, and the branch a worktree there starts from. Each request carries
 
 - **`browse`** lists the subdirectories of `dir`, sorted by name. It follows
   a link to a directory and leaves files out. `repo` is true when the entry
-  is a git checkout or a bare repository. A directory that cannot be read
+  is the top of a git work tree: a checkout or a linked worktree. A
+  directory that cannot be read
   answers `failed`, with why. A relative `dir` answers Unknown.
-- **`branches`** lists the local branches of the repository at `repo`, then
-  its `origin/*` branches, as they are: the runtime does not fetch.
+- **`branches`** lists each local branch of the repository at `repo` and
+  each of its `origin/*` branches, as they are: the runtime does not fetch.
+  The order is the runtime's. `runtime-mux` lists the local branches first,
+  and each group by name.
   `default` is the branch a new one starts from: `origin`'s default
   (`origin/HEAD`, else `origin/main`, else `origin/master`), else the branch
-  checked out, else the first, or `null` with no branch. `repo` must be the
-  repository itself: a directory inside a checkout answers `failed`.
+  checked out, else the first, or `null` with no branch. `origin`'s
+  branches are told from local ones by their refs: a local branch named
+  `origin/main` is local. `repo` must be the top of the work tree: a
+  directory inside a checkout answers `failed`.
 - A dedicated verb is simpler than `exec` here. An `exec` answer is the text
   of the place's own command, so the reader would need one parser per
   platform. The runtime knows its place, and a VM runtime can answer from

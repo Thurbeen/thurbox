@@ -210,10 +210,18 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Whether `dir` is a git checkout or a bare repository, from the
-/// filesystem: a `git` that cannot run never passes for none.
+/// Whether `dir` is the top of a git work tree, as git reads one, from the
+/// filesystem: a `.git` directory holding `HEAD`, `objects` and `refs`, or a
+/// `.git` file naming one (a linked worktree, a submodule). A `git` that
+/// cannot run never passes for none, and an empty `.git` is no work tree.
 fn is_repository(dir: &std::path::Path) -> bool {
-    dir.join(".git").exists() || (dir.join("HEAD").is_file() && dir.join("objects").is_dir())
+    let dot = dir.join(".git");
+    if dot.is_dir() {
+        return dot.join("HEAD").is_file()
+            && dot.join("objects").is_dir()
+            && dot.join("refs").is_dir();
+    }
+    std::fs::read_to_string(&dot).is_ok_and(|text| text.starts_with("gitdir: "))
 }
 
 /// `branches`: a repository of the place.
@@ -256,19 +264,24 @@ fn branches(request: Branches) -> Value {
         Ok(refs) => refs,
         Err(why) => return failed(why),
     };
-    let mut names = Vec::new();
+    let mut local = Vec::new();
     let mut remote = Vec::new();
     for line in refs.lines().map(str::trim) {
         if let Some(name) = line.strip_prefix("refs/heads/") {
-            names.push(name.to_string());
+            local.push(name.to_string());
         } else if let Some(name) = line.strip_prefix("refs/remotes/origin/") {
             if name != "HEAD" {
                 remote.push(format!("origin/{name}"));
             }
         }
     }
-    names.extend(remote);
-    let has = |name: &str| names.iter().any(|n| n == name);
+    // The rule thurbox's `git::discovery::branches` reads a repository on
+    // its own machine by, kept the same: no crate both may depend on holds
+    // it (crates/architecture.toml). `origin`'s branches and the local ones
+    // are told apart by their refs, never by name: a local branch may be
+    // called `origin/main`.
+    let in_remote = |name: &str| remote.iter().any(|n| n == name);
+    let in_local = |name: &str| local.iter().any(|n| n == name);
     let upstream = git_out(repo, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
         .ok()
         .and_then(|r| r.trim().strip_prefix("refs/remotes/").map(str::to_string));
@@ -276,15 +289,16 @@ fn branches(request: Branches) -> Value {
         .ok()
         .map(|b| b.trim().to_string());
     let default = upstream
-        .filter(|name| has(name))
+        .filter(|name| in_remote(name))
         .or_else(|| {
             ["origin/main", "origin/master"]
                 .into_iter()
-                .find(|name| has(name))
+                .find(|name| in_remote(name))
                 .map(str::to_string)
         })
-        .or_else(|| checked_out.filter(|name| has(name)))
-        .or_else(|| names.first().cloned());
+        .or_else(|| checked_out.filter(|name| in_local(name)))
+        .or_else(|| local.first().cloned());
+    let names: Vec<String> = local.iter().chain(&remote).cloned().collect();
     known(json!({ "branches": { "names": names, "default": default } }))
 }
 

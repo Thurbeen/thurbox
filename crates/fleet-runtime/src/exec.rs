@@ -1325,7 +1325,8 @@ fn scratch(key: &str, what: &str) -> Result<std::path::PathBuf, String> {
 
 /// The browse rules a runtime that declares `browse` holds to: the
 /// subdirectories of a directory, by name, each marked when it is a git
-/// checkout, files left out; and a failed browse of one that is not there.
+/// work tree (made with this machine's `git`), files left out; and a failed
+/// browse of one that is not there.
 fn check_browse(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     let browse = |dir: &std::path::Path| {
         program.ask::<Value>(
@@ -1335,11 +1336,11 @@ fn check_browse(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     };
     let listed = scratch(key, "browse").and_then(|dir| {
         let made = std::fs::create_dir_all(dir.join("plain"))
-            .and_then(|()| std::fs::create_dir_all(dir.join("repo/.git")))
-            .and_then(|()| std::fs::write(dir.join("notes.txt"), "a file"));
-        let answer = made
+            .and_then(|()| std::fs::create_dir_all(dir.join("repo")))
+            .and_then(|()| std::fs::write(dir.join("notes.txt"), "a file"))
             .map_err(|e| format!("cannot fill {}: {e}", dir.display()))
-            .map(|()| browse(&dir));
+            .and_then(|()| git_in(&dir.join("repo"), &["init", "-q"]));
+        let answer = made.map(|()| browse(&dir));
         let _ = std::fs::remove_dir_all(&dir);
         let want = json!({"listing": {
             "dir": dir.display().to_string(),
@@ -1388,10 +1389,26 @@ fn check_branches(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> 
         .try_for_each(|args| git_in(&repo, args));
         let answer = made.map(|()| branches(&repo));
         let _ = std::fs::remove_dir_all(&repo);
-        let want = json!({"branches": {"names": ["feat", "main"], "default": "main"}});
+        // The names are compared as a set: their order is the runtime's.
+        let names = |got: &Value| {
+            let mut names: Vec<String> = got["branches"]["names"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect();
+            names.sort();
+            names
+        };
         match answer? {
-            Observation::Known(got) if got == want => Ok(()),
-            other => Err(format!("answered {other:?}, not {want}")),
+            Observation::Known(got)
+                if names(&got) == ["feat", "main"] && got["branches"]["default"] == "main" =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "answered {other:?}, not the names feat and main with main as default"
+            )),
         }
     });
     let refused = scratch(key, "plain").and_then(|outer| {

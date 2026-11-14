@@ -1136,3 +1136,113 @@ fn branches_lists_a_repositorys_branches_and_its_default() {
     );
     assert!(refused["known"]["failed"]["why"].is_string(), "{refused}");
 }
+
+/// A local branch named like a remote one (`origin/main`) is not `origin`'s
+/// default: with no `origin`, the default is the branch checked out.
+#[test]
+fn a_local_branch_named_like_origins_is_not_its_default() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo");
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&repo, &["branch", "origin/main"]);
+    let answer = rt.call(
+        "branches",
+        json!({"protocol": 2, "place": local(), "repo": repo.display().to_string()}),
+    );
+    assert_eq!(
+        answer["known"]["branches"],
+        json!({"names": ["main", "origin/main"], "default": "main"}),
+        "{answer}"
+    );
+}
+
+/// `repo` marks the top of a git work tree, as git reads one: a checkout,
+/// or a linked worktree whose `.git` is a file. An empty `.git` directory
+/// is not one.
+#[test]
+fn browse_marks_a_work_tree_as_git_reads_one() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("fake/.git")).expect("fake");
+    std::fs::create_dir_all(root.join("repo")).expect("repo");
+    git(&root.join("repo"), &["init", "-q"]);
+    git(
+        &root.join("repo"),
+        &["commit", "-q", "--allow-empty", "-m", "first"],
+    );
+    git(
+        &root.join("repo"),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &root.join("linked").display().to_string(),
+        ],
+    );
+    let answer = rt.call(
+        "browse",
+        json!({"protocol": 2, "place": local(), "dir": root.display().to_string()}),
+    );
+    assert_eq!(
+        answer["known"]["listing"]["entries"],
+        json!([
+            {"name": "fake", "repo": false},
+            {"name": "linked", "repo": true},
+            {"name": "repo", "repo": true},
+        ]),
+        "{answer}"
+    );
+}
+
+/// `origin`'s default comes first: a clone's `origin/HEAD`, else
+/// `origin/main`, else `origin/master`, before the branch checked out.
+#[test]
+fn branches_defaults_to_origins_default() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let upstream = dir.path().join("upstream");
+    std::fs::create_dir_all(&upstream).expect("upstream");
+    git(&upstream, &["init", "-q", "-b", "trunk"]);
+    git(&upstream, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&upstream, &["branch", "master"]);
+    let branches = |repo: &std::path::Path| {
+        rt.call(
+            "branches",
+            json!({"protocol": 2, "place": local(), "repo": repo.display().to_string()}),
+        )["known"]["branches"]
+            .clone()
+    };
+
+    // A clone: `origin/HEAD` names upstream's `trunk`.
+    git(
+        dir.path(),
+        &["clone", "-q", &upstream.display().to_string(), "clone"],
+    );
+    let clone = dir.path().join("clone");
+    git(&clone, &["checkout", "-q", "-b", "work"]);
+    assert_eq!(
+        branches(&clone),
+        json!({"names": ["trunk", "work", "origin/master", "origin/trunk"], "default": "origin/trunk"})
+    );
+
+    // Fetched, its `origin/HEAD` removed: `origin/master` (no
+    // `origin/main`), not the branch checked out.
+    let fetched = dir.path().join("fetched");
+    std::fs::create_dir_all(&fetched).expect("fetched");
+    git(&fetched, &["init", "-q"]);
+    git(&fetched, &["commit", "-q", "--allow-empty", "-m", "own"]);
+    git(
+        &fetched,
+        &["remote", "add", "origin", &upstream.display().to_string()],
+    );
+    git(&fetched, &["fetch", "-q", "origin"]);
+    git(&fetched, &["remote", "set-head", "origin", "-d"]);
+    assert_eq!(
+        branches(&fetched),
+        json!({"names": ["main", "origin/master", "origin/trunk"], "default": "origin/master"})
+    );
+}
