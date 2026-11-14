@@ -2386,6 +2386,18 @@ fn static_mut_and_build_target_cfg_can_be_restricted() {
         ("cfg-use", "pub fn b() {}\n#[cfg(unix)]\nuse std::fs;\n"),
         ("cfg-file", "#![cfg(unix)]\npub fn b() {}\n"),
         (
+            "cfg-extern-crate",
+            "pub fn b() {}\n#[cfg(windows)]\nextern crate alloc;\n",
+        ),
+        (
+            "cfg-impl",
+            "pub fn b() {}\npub struct S;\n#[cfg(windows)]\nimpl S {}\n",
+        ),
+        (
+            "cfg-const",
+            "pub fn b() {}\n#[cfg(unix)]\nconst C: u8 = 0;\n",
+        ),
+        (
             "cfg-attr-cfg",
             "pub fn b() {}\n#[cfg_attr(windows, inline)]\npub fn w() {}\n",
         ),

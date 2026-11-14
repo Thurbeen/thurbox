@@ -784,6 +784,7 @@ impl CrateIndex {
                     cfg_use: false,
                     tests: 0,
                     sites: 0,
+                    attrs_seen: HashSet::new(),
                 };
                 walker.scope();
                 // A file's own `#![..]` attributes, `#![cfg(..)]` included.
@@ -993,6 +994,8 @@ struct Walker<'a> {
     tests: u32,
     /// References recorded so far in this file.
     sites: u32,
+    /// The attributes already read, by where they start.
+    attrs_seen: HashSet<(usize, usize)>,
 }
 
 impl Walker<'_> {
@@ -1148,9 +1151,6 @@ impl Walker<'_> {
 
 impl<'ast> Visit<'ast> for Walker<'_> {
     fn visit_item_use(&mut self, u: &'ast syn::ItemUse) {
-        for a in &u.attrs {
-            self.visit_attribute(a);
-        }
         let span = u.use_token.span;
         self.cfg_use = has_cfg(&u.attrs);
         self.use_tree(&u.tree, &mut Vec::new(), u.leading_colon.is_some(), span);
@@ -1175,10 +1175,6 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
-        // The attributes belong to the declaring module.
-        for a in &m.attrs {
-            self.visit_attribute(a);
-        }
         if let Some((_, items)) = &m.content {
             self.module.push(m.ident.to_string());
             self.scope();
@@ -1191,6 +1187,12 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     /// restriction can keep a build target's `cfg` out of a module. Nothing
     /// else in an attribute is a reference.
     fn visit_attribute(&mut self, a: &'ast syn::Attribute) {
+        // Every item's attributes are read in `visit_item`, and syn's own walk
+        // reaches some of them again: each attribute counts once.
+        let start = a.pound_token.span.start();
+        if !self.attrs_seen.insert((start.line, start.column)) {
+            return;
+        }
         if let syn::Meta::List(list) = &a.meta
             && (list.path.is_ident("cfg") || list.path.is_ident("cfg_attr"))
         {
@@ -1207,6 +1209,11 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 
     fn visit_item(&mut self, i: &'ast Item) {
+        // Read here for every kind of item, whether or not its own visitor
+        // walks its attributes.
+        for a in item_attrs(i) {
+            self.visit_attribute(a);
+        }
         let test = item_attrs(i).iter().any(is_cfg_test);
         if test {
             if let Item::Mod(m) = i {
