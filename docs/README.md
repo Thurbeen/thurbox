@@ -59,6 +59,8 @@ A host is a place of a runtime
 ([ADR-42](thurbox/architecture.md#adr-42-hosts-belong-to-runtimes), in progress):
 its id is `<runtime>/<place>`, and its config is a table of the runtime's in
 Fleet's config, passed to the runtime with each request.
+[Where sessions run](where-sessions-run.md) explains Fleets and places, and the
+setups they allow.
 
 ### Enforcement
 
@@ -97,6 +99,7 @@ to a repository of its own with nothing to untangle.
 docs/
 ├── README.md                  the system: this page
 ├── constitution.md            the rules for every component, and each one's own
+├── where-sessions-run.md      Fleets and places: where a session runs
 ├── components.svg
 ├── thurbox/                   the interface
 │   ├── README.md              its index

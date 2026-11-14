@@ -343,7 +343,9 @@ sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/thurbox/releasing.md owns the release process and
 docs/thurbox/orchestration.md what thurbox adds to Fleet's orchestration. docs/README.md owns the
 system: the split between thurbox, Fleet and the runtimes, which page owns
-and each contract between them. docs/fleet/ is Fleet's
+and each contract between them. docs/where-sessions-run.md owns the
+user's view of where a session runs: Fleets, places and the setups they
+allow. docs/fleet/ is Fleet's
 documentation and docs/runtime/ the runtimes', each with a README.md index
 saying what its pages own. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md

@@ -19,6 +19,7 @@ operational guidance (build commands, module layout, event loop), see
 | [plugins.md](plugins.md) | Writing an interface plugin | Changing the plugin API or the `thurbox.*` shape |
 | [orchestration.md](orchestration.md) | What thurbox adds to Fleet's orchestration: Tasks as sessions, the `fleet` verbs | Changing how sessions map to Fleet Tasks |
 | [agents.md](agents.md) | Which agents a session can run: Fleet's harnesses | Adding or changing an agent |
+| [Where sessions run](../where-sessions-run.md) | Fleets and places: which Fleet manages a session, and where it runs | Changing how a session picks its Fleet or its place |
 | [config.md](config.md) | Thurbox's own config files and env vars in one place | Adding/changing a config file or env var |
 | [releasing.md](releasing.md) | What a release may and may not change about the artifacts | Changing the release workflow or a published artifact |
 | [review.md](review.md) | The per-path house rules a change is reviewed against, and which document owns which class of fact | Encoding a new house rule, or moving what a document owns |
