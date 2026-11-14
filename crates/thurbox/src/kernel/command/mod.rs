@@ -73,6 +73,9 @@ pub enum Command {
         repo: String,
         agent: Option<String>,
         host: Option<String>,
+        /// The Fleet the session is a Task of, by its `settings.toml` name.
+        /// `None`: the Fleet in force.
+        fleet: Option<String>,
         /// The session's own worktree of `repo` (`git+file`), or `repo` as
         /// it is (`file`). `None`: a worktree for a git repository on this
         /// machine, the directory as it is otherwise.
@@ -737,6 +740,7 @@ impl Command {
             repo,
             agent: args.agent.filter(|a| !a.is_empty()),
             host: args.host.filter(|h| !h.is_empty()),
+            fleet: args.fleet.filter(|f| !f.is_empty()),
             worktree: args.worktree,
             branch: args.branch.filter(|b| !b.is_empty()),
             base: args.base.filter(|b| !b.is_empty()),
@@ -879,6 +883,8 @@ pub struct Args {
     pub repo: Option<String>,
     pub agent: Option<String>,
     pub host: Option<String>,
+    /// `create`: the Fleet the session is a Task of.
+    pub fleet: Option<String>,
     /// `create`: a worktree of the repository, or the directory as it is.
     pub worktree: Option<bool>,
     /// `create`: the worktree's branch.
@@ -1169,6 +1175,7 @@ mod tests {
                     repo: "/srv/repo".into(),
                     agent: None,
                     host: Some("box".into()),
+                    fleet: None,
                     worktree: None,
                     branch: None,
                     base: None,

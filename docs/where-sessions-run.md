@@ -48,9 +48,9 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | Several Fleets in thurbox's `settings.toml`, `[fleets.<name>]`, over ssh or WSL; `thurbox-cli doctor` checks each | implemented |
 | The session list follows every listed Fleet; a row's id is `<fleet>:<task>`, and an unreachable Fleet's rows stay, marked unreachable | implemented |
 | Send, rename, delete and a sent automation go to the session's own Fleet | implemented |
-| Creation goes to the Fleet in force: the only one listed, or the first by name | implemented |
 | A remote Fleet's session panes: `fleet attach` and its stream over the link | implemented |
-| The Fleet step and the place step in the new-session modal | planned |
+| The new-session modal's Fleet step, then the chosen Fleet's places and agents; creation goes to that Fleet | implemented |
+| Browsing a remote Fleet's folders in the modal | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
 ## Common setups
@@ -67,11 +67,12 @@ Each session runs on `local`: the laptop.
 
 ### 2. Laptop thurbox, Fleet on a remote box
 
-Status: implemented, but for the modal's Fleet step. thurbox lists box's
-Fleet and follows its sessions over ssh beside the laptop's, `thurbox-cli
-doctor` checks it, each command for one of box's sessions goes to box, and
-a session's pane shows and takes typing over the same ssh. A creation goes
-to the first Fleet by name until the modal has a Fleet step.
+Status: implemented. thurbox lists box's Fleet and follows its sessions over
+ssh beside the laptop's, `thurbox-cli doctor` checks it, the new-session
+modal creates on it, each command for one of box's sessions goes to box,
+and a session's pane shows and takes typing over the same ssh. The modal
+does not browse box's folders yet: type a path on box, or paste a clone
+URL.
 
 This is the most common setup. The agents run on box, so they keep working
 when the laptop sleeps.
@@ -118,9 +119,8 @@ when the laptop sleeps.
 5. Run `thurbox-cli doctor`. It reports each Fleet, and says when box cannot
    be reached. It reads box's `fleet version --json` to report whether box's
    manager runs, and points at the unit when it does not. The session list
-   follows every listed Fleet, and each command goes to its session's own
-   Fleet. Only a creation still goes to the first Fleet by name (here `box`),
-   until the new-session modal has a Fleet step.
+   follows every listed Fleet, each command goes to its session's own Fleet,
+   and the new-session modal asks which Fleet a new session goes to.
 
 ### 3. One Fleet, several places
 
@@ -154,8 +154,7 @@ it. Nothing installs silently.
 
 ## The new-session modal
 
-Status: planned. Today the modal has a host step that lists the places of the
-one Fleet.
+Status: implemented, but for browsing a remote Fleet's folders.
 
 ```text
 New session · Fleet
@@ -178,10 +177,16 @@ Rows:  ● fix-auth      box
 ```
 
 - **Fleet**: pick the Fleet. The modal skips this step when only one Fleet is
-  listed.
-- **Place**: pick a place of that Fleet's runtimes. A place that is not ready
-  shows why.
-- **Repository**: browse folders on the place, or paste a clone URL.
+  listed. Each Fleet shows how thurbox reaches it and its state, read from
+  the manager that its `fleet version --json` reports. The modal does not take
+  an unreachable Fleet.
+- **Place**: pick a place of that Fleet's runtimes, from its `fleet runtime
+  places --json`. A place that is not ready shows why. The agents that the
+  modal offers next are that Fleet's too.
+- **Repository**: on this machine's Fleet, browse folders or pick a
+  remembered repository. On a remote Fleet, type a path on that machine or
+  paste a clone URL: the runtime clones it there. Browsing a remote Fleet's
+  folders is planned.
 - **Rows**: each row shows its Fleet, and its place when the place is not
   `local`. A row of an unreachable Fleet stays in the list. Implemented
   today: the session list shows a Fleet on another machine where it shows a

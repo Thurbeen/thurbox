@@ -204,6 +204,17 @@ fn row(name: &str) -> SessionRow {
     }
 }
 
+/// A place with every optional field set.
+fn box_place() -> HostRow {
+    HostRow {
+        name: "box".into(),
+        detail: "ssh".into(),
+        backend: "ssh:box".into(),
+        ready: Some(false),
+        why: Some("no tmux".into()),
+    }
+}
+
 /// A snapshot with every optional field of every row set, so a key the
 /// declaration lacks is one the walk meets.
 fn full() -> Snapshot {
@@ -242,11 +253,18 @@ fn full() -> Snapshot {
         agents: Some(vec![thurbox::kernel::snapshot::AgentRow {
             name: "claude".into(),
         }]),
-        hosts: Some(vec![HostRow {
+        hosts: Some(vec![box_place()]),
+        fleets: vec![thurbox::kernel::snapshot::FleetRow {
             name: "box".into(),
-            detail: "ssh".into(),
-            backend: "ssh:box".into(),
-        }]),
+            transport: "ssh box".into(),
+            remote: true,
+            state: thurbox::kernel::snapshot::FleetState::Down,
+            why: Some("no manager".into()),
+            agents: Some(vec![thurbox::kernel::snapshot::AgentRow {
+                name: "claude".into(),
+            }]),
+            places: Some(vec![box_place()]),
+        }],
         taken_at_ms: 1_700_000_000_000,
         error: Some("a failed refresh".into()),
     }

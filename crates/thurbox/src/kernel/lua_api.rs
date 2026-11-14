@@ -360,12 +360,43 @@ pub static AGENT: Class = Class {
 
 pub static HOST: Class = Class {
     name: "thurbox.Host",
-    doc: &[],
+    doc: &["A place a Fleet defines: where its sessions can run."],
     exact: true,
     fields: &[
         leaf("name", "string"),
         leaf("detail", "string"),
         leaf("backend", "string"),
+        leaf("ready", "boolean")
+            .opt()
+            .doc("Whether the place's runtime can run a session now. Nil when it did not say."),
+        leaf("why", "string")
+            .opt()
+            .doc("Why the place is not ready."),
+    ],
+};
+
+pub static FLEET: Class = Class {
+    name: "thurbox.Fleet",
+    doc: &["A Fleet `settings.toml` lists: where sessions are managed."],
+    exact: true,
+    fields: &[
+        leaf("name", "string"),
+        leaf("transport", "string")
+            .doc("How it is reached: `local Fleet`, `ssh <destination>` or `wsl <distro>`."),
+        leaf("remote", "boolean")
+            .doc("It runs on another machine, whose folders thurbox does not read."),
+        leaf(
+            "state",
+            "\"connecting\"|\"up\"|\"down\"|\"unreachable\"|\"unknown\"",
+        )
+        .doc("`up` while its manager holds the lease, `down` when none does."),
+        leaf("why", "string").opt().doc("Why it is not up."),
+        field("agents", Ty::List(&AGENT))
+            .opt()
+            .doc("Nil until this Fleet has said which harnesses it has."),
+        field("places", Ty::List(&HOST))
+            .opt()
+            .doc("Every place this Fleet defines, `local` first. Nil until it answers."),
     ],
 };
 
@@ -901,7 +932,10 @@ pub static API_ROOT: Class = Class {
         field("browse", Ty::Record(&BROWSE)),
         field("repo_branches", Ty::Record(&REPO_BRANCHES)),
         field("hosts", Ty::List(&HOST)).opt().doc(
-            "Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.",
+            "Every place the Fleet in force defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.",
+        ),
+        field("fleets", Ty::List(&FLEET)).doc(
+            "Every Fleet `settings.toml` lists, by name, each with its own agents and places.",
         ),
         field("automations", Ty::List(&AUTOMATION)),
         field("commands", Ty::List(&IN_FLIGHT)),
@@ -948,6 +982,7 @@ pub static ITEMS: &[Item] = &[
     Item::Alias(&PRESENCE),
     Item::Class(&AGENT),
     Item::Class(&HOST),
+    Item::Class(&FLEET),
     Item::Class(&AUTOMATION_RUN),
     Item::Class(&AUTOMATION),
     Item::Class(&IN_FLIGHT),

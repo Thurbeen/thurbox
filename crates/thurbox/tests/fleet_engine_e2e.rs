@@ -409,6 +409,7 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
             repo: repo.to_string_lossy().into_owned(),
             agent: Some("claude-code".into()),
             host: None,
+            fleet: None,
             worktree: None,
             branch: None,
             base: None,
@@ -481,6 +482,7 @@ fn a_created_session_keeps_the_name_it_was_given() {
             repo: fleet.root.path().to_string_lossy().into_owned(),
             agent: Some("claude-code".into()),
             host: None,
+            fleet: None,
             worktree: None,
             branch: None,
             base: None,
@@ -513,6 +515,7 @@ fn a_name_already_taken_is_refused_and_the_task_left_alone() {
         repo: fleet.root.path().to_string_lossy().into_owned(),
         agent: Some("claude-code".into()),
         host: None,
+        fleet: None,
         worktree: None,
         branch: None,
         base: None,
@@ -563,6 +566,7 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
         sessions: vec![bridged],
         error: None,
         removed: Vec::new(),
+        fleets: Vec::new(),
     })
     .unwrap();
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -649,6 +653,7 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
         sessions: vec![row("made", "fleet", Path::new("/w"))],
         error: None,
         removed: Vec::new(),
+        fleets: Vec::new(),
     })
     .unwrap();
     store.refresh_if_due();
@@ -794,6 +799,7 @@ fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
         sessions: vec![made],
         error: None,
         removed: Vec::new(),
+        fleets: Vec::new(),
     })
     .unwrap();
     store.refresh_if_due();
@@ -845,6 +851,7 @@ fn a_fleet_row_elsewhere_is_not_examined_by_git() {
         sessions: vec![elsewhere, row("local", "tmux", repo.path())],
         error: None,
         removed: Vec::new(),
+        fleets: Vec::new(),
     })
     .unwrap();
     until("the local row has its git state", || {
