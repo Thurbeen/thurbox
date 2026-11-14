@@ -481,6 +481,28 @@ fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
     let mut placed = support::task("t3", true);
     placed["spec"]["host"] = json!("vm/sandbox");
     env.apply(placed).ok();
+    // A Task with no host takes its TaskConfig's: on `vm/sandbox` it is
+    // applied, whether the TaskConfig comes in the same batch or before.
+    let config = support::object("TaskConfig", "on-vm", json!({"host": "vm/sandbox"}));
+    let mut inherits = support::task("t4", true);
+    inherits["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    inherits["spec"]["configRef"] = json!({"name": "on-vm"});
+    env.apply(json!([config, inherits])).ok();
+    let mut later = inherits.clone();
+    later["metadata"]["name"] = json!("t5");
+    env.apply(later).ok();
+    // A TaskConfig that names no host leaves it `local`, which is refused.
+    let bare = support::object("TaskConfig", "bare", json!({}));
+    let mut on_bare = support::task("t6", true);
+    on_bare["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    on_bare["spec"]["configRef"] = json!({"name": "bare"});
+    env.apply(json!([bare, on_bare])).code(1).stderr_has(why);
 }
 
 /// `fleet runtime places`: each configured place with what its runtime's
@@ -515,7 +537,7 @@ fn the_places_are_listed_with_their_readiness() {
     let rows = places["places"].as_array().expect("places");
     let row = |host: &str| {
         rows.iter()
-            .find(|r| r["host"] == host)
+            .find(|r| r["place"] == host)
             .unwrap_or_else(|| panic!("no {host} in {places:#}"))
             .clone()
     };

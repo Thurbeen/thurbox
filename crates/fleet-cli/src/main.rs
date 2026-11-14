@@ -580,11 +580,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
                             .unwrap_or_default();
                         println!(
                             "{:<24} {state}{why}",
-                            p["host"].as_str().unwrap_or_default()
+                            p["place"].as_str().unwrap_or_default()
                         );
                     }
                 }
-                None => println!("any host: one [runtime] serves them all"),
+                None => println!("any place: one [runtime] serves them all"),
             }
         }
         return Ok(());
@@ -1555,9 +1555,9 @@ fn runtime_places(config: &Config) -> Vec<Value> {
         for place in places.iter().filter(|p| &p.runtime == runtime) {
             let r = fleet_runtime::exec::readiness(&program, &place.place, &manifest);
             let row = json!({
-                "host": place.id,
+                "place": place.id,
                 "runtime": runtime,
-                "place": place.place.name,
+                "name": place.place.name,
                 "alias": place.local.then_some(config::LOCAL),
                 "platform": r.report.as_ref().map(|r| r.platform),
                 "dynamic": r.report.as_ref().map(|r| r.dynamic),
@@ -1881,14 +1881,39 @@ fn cmd_apply(
         objs.push(obj);
     }
     // `local` naming no place is refused here, by name: the runtime would
-    // only read the host as unreachable.
+    // only read the place as unreachable. The host is the manager's rule
+    // (`effective_host`); a TaskConfig not there yet leaves it untold.
+    let on_local = |obj: &Object| {
+        if obj.kind != fleet_api::task::KIND {
+            return false;
+        }
+        let config_host = match obj
+            .spec
+            .get("host")
+            .is_none()
+            .then(|| obj.spec["configRef"]["name"].as_str())
+        {
+            Some(Some(name)) => {
+                let config = objs
+                    .iter()
+                    .find(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
+                    .cloned()
+                    .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
+                        Observation::Known(found) => found,
+                        Observation::Unknown { .. } => None,
+                    });
+                match config {
+                    Some(config) => config.spec["host"].as_str().map(str::to_string),
+                    None => return false,
+                }
+            }
+            _ => None,
+        };
+        fleet_api::task::effective_host(&obj.spec, config_host.as_deref())
+            == fleet_api::task::LOCAL_HOST
+    };
     if let Some(why) = config.no_local()
-        && objs.iter().any(|obj| {
-            obj.kind == fleet_api::task::KIND
-                && obj.spec["host"]
-                    .as_str()
-                    .is_none_or(|host| host == fleet_api::task::LOCAL_HOST)
-        })
+        && objs.iter().any(on_local)
     {
         return Err(Failure {
             code: exit::ERROR,

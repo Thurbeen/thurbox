@@ -82,7 +82,7 @@ pub struct ExecProgram {
     /// The first part of every key this Fleet gives the runtime: a second
     /// Fleet on the same runtime takes its own.
     pub key_prefix: String,
-    /// The place each request names (ADR-42): `local` unless the host is
+    /// The place each request names (ADR-42): `local` unless the Task names
     /// another of the runtime's places.
     pub place: Place,
     /// Every place of the runtime the config names, which `manifest` asks
@@ -455,7 +455,7 @@ impl ExecRuntime {
             .get(host)
             .ok_or_else(|| {
                 format!(
-                    "no runtime serves host {host:?}: name `<runtime>/<place>` from [runtimes.<name>.places.<place>], or `local`"
+                    "no runtime has the place {host:?}: name `<runtime>/<place>` from [runtimes.<name>.places.<place>], or `local`"
                 )
             })
     }

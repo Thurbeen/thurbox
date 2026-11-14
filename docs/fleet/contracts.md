@@ -1203,8 +1203,9 @@ exclusive, so two clients applying one name at once get one object and one
 refusal. A view creates its Tasks this way.
 
 `fleet runtime hosts --json` prints `{"hosts": [...]}`: the hosts a Task may
-name, `local` first and then each other `<runtime>/<place>`, or `null` when
-the fake `[runtime]` serves any host. `fleet runtime places --json` prints
+name, `local` first and then each other place, `<runtime>/<place>`, or
+`null` when the fake `[runtime]` serves any. The command keeps its old name
+until thurbox reads `fleet runtime places`. `fleet runtime places --json` prints
 each place with its readiness
 ([configuration](configuration.md#runtimes-and-their-places)). `fleet version --json` lists the `harnesses` with a profile of
 their own; any other harness name is run as a program. A view checks a

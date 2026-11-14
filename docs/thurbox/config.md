@@ -594,9 +594,9 @@ database:
   `git+file://<repo>?branch=<branch>#<base>`, and the runtime makes it; a
   repository without one is `file://<repo>`. A confirmed delete is checked
   against the Task as it is then.
-- The host picker's route names the Fleet host: a Fleet host row carries its
-  id, `<runtime>/<place>`, and this machine is `local`. A host Fleet's config
-  does not define (`fleet runtime hosts`) is refused.
+- The host picker's route names a Fleet place: a Fleet row carries the
+  place's id, `<runtime>/<place>`, and this machine is `local`. A place
+  Fleet's config does not define (`fleet runtime hosts`) is refused.
 - The chosen agent is the Task's harness, and only an agent Fleet has a
   harness profile for (`fleet version --json`'s `harnesses`: the
   [bundled ones](agents.md) and each user profile) is taken. Any

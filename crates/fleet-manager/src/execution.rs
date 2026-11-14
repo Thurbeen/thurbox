@@ -3,7 +3,7 @@ use fleet_api::config::{
     ConfigSource, ENV_PROVIDER, EnvProviderSpec, Execution, TASK_CONFIG, TaskConfigSpec, merge_env,
 };
 use fleet_api::runtime::Runtime;
-use fleet_api::task::{LOCAL_HOST, TaskSpec};
+use fleet_api::task::{TaskSpec, effective_host};
 use fleet_api::validate::{typed, validate_env, validate_execution};
 use fleet_api::{Object, Observation, Store, StoreError};
 
@@ -62,11 +62,7 @@ pub(crate) fn resolve(
     } else {
         defaults.harness.unwrap_or_default()
     };
-    let host = if task.spec.get("host").is_some() {
-        spec.host
-    } else {
-        defaults.host.unwrap_or_else(|| LOCAL_HOST.into())
-    };
+    let host = effective_host(&task.spec, defaults.host.as_deref());
     let model = if task.spec.get("model").is_some() {
         spec.model
     } else {

@@ -10,8 +10,8 @@ description: Remote SSH and WSL hosts in thurbox: the hosts.toml schema (runtime
 ## What a host is for
 
 An off-local host is a **remote machine over SSH** or a **local WSL distro**
-(`wsl.exe`). Every session is a Fleet Task, and Fleet runs it on the host its
-spec names, a place of a runtime (`<runtime>/<place>`, ADR-42). thurbox
+(`wsl.exe`). Every session is a Fleet Task, and Fleet runs it on the place its
+spec names (`<runtime>/<place>`, ADR-42). thurbox
 itself reads this machine only:
 
 - **Creating a session.** The host step of the new-session flow is always

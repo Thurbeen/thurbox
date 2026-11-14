@@ -131,7 +131,7 @@ pub struct ProgramConfig {
     /// The first part of every key Fleet gives the runtime; give a second
     /// Fleet on the same runtime its own.
     pub key_prefix: Option<String>,
-    /// The runtime whose `local` place the host `local` names, when the
+    /// The runtime whose `local` place `local` names, when the
     /// config has several.
     #[serde(default)]
     pub default: bool,
@@ -155,7 +155,7 @@ pub struct HostPlace {
     pub local: bool,
 }
 
-/// The short host id: the default runtime's `local` place.
+/// The short place id: the default runtime's `local` place.
 pub const LOCAL: &str = fleet_api::runtime::Place::LOCAL;
 
 impl Config {
@@ -192,7 +192,7 @@ impl Config {
             .map_err(|e| format!("config {}: {e}", path.display()))?;
         if config.hosts.is_some() {
             return Err(format!(
-                "config {}: [hosts] is gone: a host is a place of a runtime, `<runtime>/<place>`. Remove [hosts]; a runtime with no [runtimes.<name>.places] table has the one place `local`",
+                "config {}: [hosts] is gone: a Task names a place, `<runtime>/<place>`. Remove [hosts]; a runtime with no [runtimes.<name>.places] table has the one place `local`",
                 path.display()
             ));
         }
@@ -268,7 +268,7 @@ impl Config {
         Ok(config)
     }
 
-    /// `[runtimes]` is well formed: names that make a host id, one default
+    /// `[runtimes]` is well formed: names that make a place id, one default
     /// when there are several, and no `[runtime]` beside it.
     fn check_runtimes(&self) -> Result<(), String> {
         if self.runtime.is_some() && !self.runtimes.is_empty() {
@@ -276,7 +276,7 @@ impl Config {
         }
         if self.runtimes.len() > 1 && self.default_runtime().is_none() {
             return Err(format!(
-                "several runtimes and no default: mark one `default = true`, the one whose `local` place the host `local` names (have {})",
+                "several runtimes and no default: mark one `default = true`, the one whose `local` place `local` names (have {})",
                 self.runtimes.keys().cloned().collect::<Vec<_>>().join(", ")
             ));
         }
@@ -308,7 +308,7 @@ impl Config {
         Ok(())
     }
 
-    /// The runtime the host `local` names a place of: the one marked
+    /// The runtime whose place `local` names: the one marked
     /// `default`, or the only one.
     pub fn default_runtime(&self) -> Option<&str> {
         let marked: Vec<&String> = self
@@ -324,7 +324,7 @@ impl Config {
         }
     }
 
-    /// Why the host `local` names nothing, when it does not: the default
+    /// Why `local` names no place, when it does not: the default
     /// runtime has places and none of them is `local`, as a runtime of VMs
     /// alone may.
     pub fn no_local(&self) -> Option<String> {

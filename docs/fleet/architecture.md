@@ -174,7 +174,7 @@ Fleet owns when workspaces are made and released, the agent's lifecycle hooks
 runtime is the `exec` runtime kind:
 `[runtimes.<name>]` names a program that speaks the
 [runtime protocol](../runtime/README.md#the-runtime-protocol),
-each host is a place of a runtime, `<runtime>/<place>`, and `fleet init`
+a Task names a place of a runtime, `<runtime>/<place>`, and `fleet init`
 configures `runtime-mux` alone. The port's calls map onto the protocol's
 verbs: `spawn` is `start` with the harness profile's launch argv and the
 session's `FLEET_SIGNAL_FILE`, `revive` is `start` with its resume argv,

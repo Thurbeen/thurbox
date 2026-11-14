@@ -198,7 +198,7 @@ impl Fleet {
             if !hosts.iter().any(|known| known == host.as_str()) {
                 let known: Vec<&str> = hosts.iter().filter_map(|h| h.as_str()).collect();
                 return Err(format!(
-                    "Fleet defines no host {host} (its hosts: {}); a host is a place of a runtime, `<runtime>/<place>`: add [runtimes.<name>.places.<place>] to Fleet's config",
+                    "Fleet has no place {host} (its places: {}); a place is `<runtime>/<place>`: add [runtimes.<name>.places.<place>] to Fleet's config",
                     known.join(", ")
                 ));
             }

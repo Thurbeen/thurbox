@@ -188,7 +188,7 @@ Fleet's config are implemented. The new verbs below are planned. The decision is
 [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes).
 
 A place is where a runtime runs a process: this machine, an ssh host, a WSL
-distro, a VM. A host's id is `<runtime>/<place>`, with `local` as the short
+distro, a VM. A place's id is `<runtime>/<place>`, with `local` as the short
 form of `<runtime>/local` on the default runtime
 ([configuration](../fleet/configuration.md#runtimes-and-their-places)).
 
@@ -232,7 +232,7 @@ answers. Each later request carries the version that manifest named: a
 version 1 runtime gets version 1 requests, with no place. Fleet keeps the
 version for the life of its process and asks `manifest` again after any
 Unknown answer, so a runtime replaced by one of another version is followed.
-Each request names the place of the Task's host, with its table from
+Each request names the Task's place, with its table from
 Fleet's config. A version 1 runtime serves only `local`, with no config: Fleet
 sends it nothing for another place, and that place stays Unknown.
 
