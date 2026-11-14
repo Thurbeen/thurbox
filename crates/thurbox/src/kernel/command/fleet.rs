@@ -21,8 +21,9 @@ use super::execute::Outcome;
 use super::Command;
 
 pub(super) struct Fleet {
-    /// The Fleet's command line.
-    pub(super) link: crate::fleet_link::FleetLink,
+    /// Every listed Fleet's command line: a command goes to its session's
+    /// own, a creation to the Fleet in force.
+    pub(super) fleets: crate::fleet_link::Fleets,
 }
 
 impl super::Executor for Fleet {
@@ -42,9 +43,9 @@ impl super::Executor for Fleet {
                 cwd,
                 member_dirs,
             } => {
-                let row = self
-                    .get(self.link.task(session)?)?
-                    .map(|task| crate::kernel::snapshot::fleet::row_of(&self.link, &task));
+                let (link, task) = self.fleets.route(session)?;
+                let row = get(link, task)?
+                    .map(|task| crate::kernel::snapshot::fleet::row_of(link, &task));
                 if row.is_none_or(|row| {
                     row.backend_id != *backend_id
                         || row.cwd != *cwd
@@ -69,7 +70,9 @@ impl super::Executor for Fleet {
                     self.harness(agent)?;
                 }
                 let session = task_name(name);
+                let fleet = self.fleets.in_force();
                 let mut urls = vec![workspace_url(
+                    fleet,
                     &host,
                     repo,
                     Choice {
@@ -83,6 +86,7 @@ impl super::Executor for Fleet {
                 // default: the base asked for is the first repository's.
                 for extra in extras {
                     urls.push(workspace_url(
+                        fleet,
                         &host,
                         &extra.path,
                         Choice {
@@ -117,19 +121,24 @@ impl super::Executor for Fleet {
                 // there, so two names that make one Task name (`Review`,
                 // `review`) are refused rather than merged, by Fleet's
                 // exclusive create even when two interfaces race.
-                self.link.run(
+                self.fleets.in_force().run(
                     &["apply", "--create-only", "-f", "-"],
                     Some(&task.to_string()),
                 )?;
             }
-            Command::Send { session, text } => self
-                .link
-                .run(&["send", self.link.task(session)?, text], None)?,
-            Command::Rename { session, name } => self.rename(self.link.task(session)?, name)?,
+            Command::Send { session, text } => {
+                let (link, task) = self.fleets.route(session)?;
+                link.run(&["send", task, text], None)?
+            }
+            Command::Rename { session, name } => {
+                let (link, task) = self.fleets.route(session)?;
+                rename(link, task, name)?
+            }
             // Fleet has no undo window: a delete is for good.
-            Command::Delete { session, .. } => self
-                .link
-                .run(&["delete", "task", self.link.task(session)?], None)?,
+            Command::Delete { session, .. } => {
+                let (link, task) = self.fleets.route(session)?;
+                link.run(&["delete", "task", task], None)?
+            }
             // Everything else is a file of thurbox's, or a command no engine
             // runs: refused by name, never dropped.
             _ => {
@@ -167,18 +176,6 @@ pub(crate) fn task_name(name: &str) -> String {
 }
 
 impl Fleet {
-    /// Give the session `name`: the Task's [`NAME_LABEL`], set with `fleet
-    /// label`, which changes that label and nothing else of the Task, so a
-    /// Task a Conversation made keeps the labels only Fleet writes. The name
-    /// is checked by the rules a created session's name is.
-    ///
-    /// [`NAME_LABEL`]: crate::kernel::snapshot::fleet::NAME_LABEL
-    fn rename(&self, session: &str, name: &str) -> Result<(), String> {
-        crate::paths::validate_safe_name(name)?;
-        let label = format!("{}={name}", crate::kernel::snapshot::fleet::NAME_LABEL);
-        self.link.run(&["label", "task", session, &label], None)
-    }
-
     /// The Fleet host a session on `route` runs on: the picker's route
     /// (`ssh:devbox`) names the machine Fleet calls `devbox`, and no route
     /// is `local`. A host Fleet's config does not define is refused.
@@ -231,7 +228,8 @@ impl Fleet {
     /// `fleet <args>`'s JSON answer.
     fn json(&self, args: &[&str]) -> Result<serde_json::Value, String> {
         let out = self
-            .link
+            .fleets
+            .in_force()
             .command(args)
             .stdin(Stdio::null())
             .output()
@@ -246,26 +244,45 @@ impl Fleet {
         serde_json::from_slice(&out.stdout)
             .map_err(|e| format!("fleet {} answered no JSON: {e}", args.join(" ")))
     }
+}
 
-    /// `fleet get task <name>`: the Task, or `None` when there is none.
-    fn get(&self, name: &str) -> Result<Option<serde_json::Value>, String> {
-        let out = self
-            .link
-            .command(&["get", "task", name])
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("could not start fleet get: {e}"))?;
-        match out.status.code() {
-            Some(0) => serde_json::from_slice(&out.stdout)
-                .map(Some)
-                .map_err(|e| format!("fleet get answered no JSON: {e}")),
-            // Not found: the Task is gone.
-            Some(3) => Ok(None),
-            _ => Err(format!(
-                "fleet get: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )),
-        }
+/// Give the session `task` of the Fleet `link` reaches the name `name`: the
+/// Task's [`NAME_LABEL`], set with `fleet label`, which changes that label
+/// and nothing else of the Task, so a Task a Conversation made keeps the
+/// labels only Fleet writes. The name is checked by the rules a created
+/// session's name is.
+///
+/// [`NAME_LABEL`]: crate::kernel::snapshot::fleet::NAME_LABEL
+fn rename(link: &crate::fleet_link::FleetLink, task: &str, name: &str) -> Result<(), String> {
+    crate::paths::validate_safe_name(name)?;
+    let label = format!("{}={name}", crate::kernel::snapshot::fleet::NAME_LABEL);
+    link.run(&["label", "task", task, &label], None)
+}
+
+/// `fleet get task <name>` of the Fleet `link` reaches: the Task, or `None`
+/// when Fleet says there is none (exit 3). Anything else is an error: a
+/// Fleet that cannot be reached (ssh's exit 255) has not lost the Task.
+fn get(
+    link: &crate::fleet_link::FleetLink,
+    name: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let out = link
+        .command(&["get", "task", name])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not start fleet get: {e}"))?;
+    let stderr = || String::from_utf8_lossy(&out.stderr).trim().to_string();
+    match out.status.code() {
+        Some(0) => serde_json::from_slice(&out.stdout)
+            .map(Some)
+            .map_err(|e| format!("fleet get answered no JSON: {e}")),
+        Some(3) => Ok(None),
+        Some(255) if link.is_ssh() => Err(format!(
+            "the Fleet {} cannot be reached: {}",
+            link.name(),
+            stderr()
+        )),
+        _ => Err(format!("fleet get: {}", stderr())),
     }
 }
 
@@ -282,7 +299,14 @@ struct Choice<'a> {
     base: Option<&'a str>,
 }
 
-/// The workspace URL of a session over `repo` on the Fleet host `host`.
+/// The workspace URL of a session over `repo` on the place `host` of the
+/// Fleet `fleet` reaches.
+///
+/// Only a session on this machine (a Fleet here, on its `local` place) has
+/// its path read on this machine's disk: `~` expanded, and a git repository
+/// told from a directory. Anywhere else the path is the one given, which must
+/// be absolute, and with no choice made the directory is taken as it is,
+/// since this machine cannot tell whether that one is a repository.
 ///
 /// A worktree is `git+file://<repo>?branch=<branch>#<base>`: the runtime
 /// makes the worktree on the branch, from the base when the branch is new.
@@ -291,18 +315,24 @@ struct Choice<'a> {
 /// relative URL. Whether a host's runtime makes worktrees at all is its own:
 /// Fleet refuses a scheme the runtime does not list.
 fn workspace_url(
+    fleet: &crate::fleet_link::FleetLink,
     host: &str,
     repo: &str,
     choice: Choice<'_>,
     session: &str,
 ) -> Result<String, String> {
-    let local = host == "local";
+    let local = host == "local" && fleet.is_local();
+    let place = match (fleet.is_local(), host) {
+        (true, host) => host.to_string(),
+        (false, "local") => fleet.name().to_string(),
+        (false, host) => format!("{} · {host}", fleet.name()),
+    };
     let dir = if local {
         crate::paths::expand_tilde(repo)
     } else {
         std::path::PathBuf::from(repo)
     };
-    // Another host's path is read as that host reads it, which need not be
+    // A path elsewhere is read as that machine reads it, which need not be
     // this machine's way: `/srv/app` is absolute on a Linux host even when
     // thurbox runs on Windows.
     let absolute = if local {
@@ -314,7 +344,7 @@ fn workspace_url(
         return Err(if local {
             format!("not an absolute path: {repo}")
         } else {
-            format!("a path on {host} must be absolute, not {repo}")
+            format!("a path on {place} must be absolute, not {repo}")
         });
     }
     let worktree = match choice.worktree {
@@ -426,7 +456,7 @@ mod tests {
         );
         let repo = tempfile::tempdir().expect("repo");
         let fleet = super::Fleet {
-            link: remote.link.clone(),
+            fleets: remote.link.clone().into(),
         };
         let (progress, _) = std::sync::mpsc::channel();
         let run = |command: Command| fleet.execute(&command, 1, &progress).map(|_| ());
@@ -502,6 +532,7 @@ mod tests {
     /// when one was chosen; the directory as it is takes neither.
     #[test]
     fn a_workspace_url_carries_the_branch_and_base_chosen() {
+        let here = crate::fleet_link::FleetLink::local("fleet");
         let repo = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(repo.path().join(".git")).expect(".git");
         let dir = repo.path().display().to_string();
@@ -511,15 +542,15 @@ mod tests {
             base,
         };
         assert_eq!(
-            workspace_url("local", &dir, new(None, Some("main")), "wt").unwrap(),
+            workspace_url(&here, "local", &dir, new(None, Some("main")), "wt").unwrap(),
             format!("git+file://{}?branch=wt#main", super::url_path(&dir))
         );
         assert_eq!(
-            workspace_url("local", &dir, new(Some("feat/a&b"), None), "wt").unwrap(),
+            workspace_url(&here, "local", &dir, new(Some("feat/a&b"), None), "wt").unwrap(),
             format!("git+file://{}?branch=feat/a%26b", super::url_path(&dir))
         );
         assert_eq!(
-            workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
+            workspace_url(&here, "local", &dir, Choice::default(), "wt").unwrap(),
             format!("git+file://{}?branch=wt", super::url_path(&dir))
         );
         let off = Choice {
@@ -527,7 +558,7 @@ mod tests {
             ..Choice::default()
         };
         assert_eq!(
-            workspace_url("local", &dir, off, "wt").unwrap(),
+            workspace_url(&here, "local", &dir, off, "wt").unwrap(),
             format!("file://{}", super::url_path(&dir))
         );
     }
@@ -536,25 +567,65 @@ mod tests {
     /// another host must be absolute: only that host knows its `~`.
     #[test]
     fn a_workspace_url_refuses_what_no_runtime_could_make() {
+        let here = crate::fleet_link::FleetLink::local("fleet");
         let plain = tempfile::tempdir().expect("tempdir");
         let dir = plain.path().display().to_string();
         let on = Choice {
             worktree: Some(true),
             ..Choice::default()
         };
-        assert!(workspace_url("local", &dir, on, "wt")
+        assert!(workspace_url(&here, "local", &dir, on, "wt")
             .unwrap_err()
             .contains("no git repository"));
         assert_eq!(
-            workspace_url("local", &dir, Choice::default(), "wt").unwrap(),
+            workspace_url(&here, "local", &dir, Choice::default(), "wt").unwrap(),
             format!("file://{}", super::url_path(&dir))
         );
-        assert!(workspace_url("devbox", "~/app", Choice::default(), "wt")
-            .unwrap_err()
-            .contains("must be absolute"));
+        assert!(
+            workspace_url(&here, "devbox", "~/app", Choice::default(), "wt")
+                .unwrap_err()
+                .contains("must be absolute")
+        );
         assert_eq!(
-            workspace_url("devbox", "/srv/app", Choice::default(), "wt").unwrap(),
+            workspace_url(&here, "devbox", "/srv/app", Choice::default(), "wt").unwrap(),
             "file:///srv/app"
+        );
+    }
+
+    /// A Fleet on another machine is never answered from this machine's
+    /// disk: its `local` is that machine, so a git repository here does not
+    /// make a worktree there, `~` is not expanded here, and a worktree asked
+    /// for is taken as asked.
+    #[test]
+    fn a_remote_fleets_workspace_is_not_read_on_this_machine() {
+        use crate::session::settings::{FleetDef, FleetTransport};
+        let remote = crate::fleet_link::FleetLink::of(
+            "box",
+            &FleetDef {
+                transport: FleetTransport::Ssh {
+                    ssh: "me@box".into(),
+                    ssh_opts: Vec::new(),
+                },
+                ..FleetDef::default()
+            },
+        );
+        let repo = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(repo.path().join(".git")).expect(".git");
+        let dir = repo.path().display().to_string();
+        assert_eq!(
+            workspace_url(&remote, "local", &dir, Choice::default(), "wt").unwrap(),
+            format!("file://{}", super::url_path(&dir)),
+            "a repository here says nothing of box"
+        );
+        let why = workspace_url(&remote, "local", "~/app", Choice::default(), "wt").unwrap_err();
+        assert!(why.contains("a path on box must be absolute"), "{why}");
+        let on = Choice {
+            worktree: Some(true),
+            ..Choice::default()
+        };
+        assert_eq!(
+            workspace_url(&remote, "local", "/srv/app", on, "wt").unwrap(),
+            "git+file:///srv/app?branch=wt"
         );
     }
 

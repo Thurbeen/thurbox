@@ -653,7 +653,7 @@ fn a_partly_folded_list_offers_both_bulk_actions() {
     host.on_click(
         sessions,
         &Click {
-            id: Some("host:\0local".into()),
+            id: Some(":host:\0local".into()),
             clicks: 1,
             ..Click::default()
         },

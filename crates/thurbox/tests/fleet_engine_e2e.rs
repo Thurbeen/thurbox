@@ -1590,3 +1590,126 @@ fn doctor_reports_whether_a_remote_fleets_manager_runs() {
     let _ = unit.kill();
     let _ = unit.wait();
 }
+
+/// Each command goes to its session's own Fleet: with `laptop` in force,
+/// a send to `box:review` reaches box over ssh and lands in box's inbox
+/// only, and a rename of `laptop:review` stays on the laptop. Once box's
+/// ssh exits 255, a confirmed delete of `box:review` is an error, never
+/// "the Task is gone", and leaves the Task alone.
+#[test]
+fn each_command_goes_to_its_sessions_fleet() {
+    use thurbox::fleet_link::{FleetLink, Fleets};
+    use thurbox::session::settings::{FleetDef, FleetTransport};
+    let Some(bin) = fleet_bin() else { return };
+    let laptop = Fleet::new(bin.clone());
+    let remote = Fleet::new(bin.clone());
+    laptop.apply(json!([task("review")]));
+    remote.apply(json!([task("review")]));
+    let root = laptop.root.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let down = root.join("box-down");
+    let log = root.join("ssh.log");
+    let ssh = ssh_bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; *) break ;; esac; done\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             [ \"$1\" = box ] && [ ! -e '{down}' ] || {{ echo 'ssh: connect to host box port 22: No route to host' >&2; exit 255; }}\n\
+             shift\n\
+             eval \"exec $*\"\n",
+            down = down.display(),
+            log = log.display(),
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![ssh_bin];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+
+    let local = FleetLink::of(
+        "laptop",
+        &FleetDef {
+            program: laptop.program.to_string_lossy().into_owned(),
+            ..FleetDef::default()
+        },
+    );
+    let over_ssh = FleetLink::of(
+        "box",
+        &FleetDef {
+            transport: FleetTransport::Ssh {
+                ssh: "box".into(),
+                ssh_opts: Vec::new(),
+            },
+            program: remote.program.to_string_lossy().into_owned(),
+            config: None,
+        },
+    );
+    let mut bus = CommandBus::fleet(Fleets::new("laptop", vec![local, over_ssh]));
+    run_command(
+        &mut bus,
+        Command::Send {
+            session: "box:review".into(),
+            text: "for box only".into(),
+        },
+    )
+    .expect("send to box");
+    let inbox = |fleet: &Fleet| fleet.get("review").unwrap()["status"]["inbox"].clone();
+    assert_eq!(
+        inbox(&remote)[0]["text"],
+        "for box only",
+        "{:#}",
+        inbox(&remote)
+    );
+    assert!(
+        inbox(&laptop).as_array().is_none_or(|i| i.is_empty()),
+        "{:#}",
+        inbox(&laptop)
+    );
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    assert!(
+        calls
+            .lines()
+            .any(|call| call.starts_with("box ") && call.ends_with("send review 'for box only'")),
+        "{calls}"
+    );
+
+    run_command(
+        &mut bus,
+        Command::Rename {
+            session: "laptop:review".into(),
+            name: "audit".into(),
+        },
+    )
+    .expect("rename on the laptop");
+    let label = |fleet: &Fleet| {
+        fleet.get("review").unwrap()["metadata"]["labels"]["thurbox.dev/name"].clone()
+    };
+    assert_eq!(label(&laptop), "audit");
+    assert!(label(&remote).is_null(), "box's Task is left alone");
+
+    std::fs::write(&down, "").expect("down");
+    let refused = run_command(
+        &mut bus,
+        Command::Guarded {
+            inner: Box::new(Command::Delete {
+                session: "box:review".into(),
+                force: true,
+            }),
+            session: "box:review".into(),
+            backend_id: None,
+            cwd: None,
+            member_dirs: Vec::new(),
+        },
+    )
+    .expect_err("box cannot be asked");
+    assert!(
+        refused.contains("box") && refused.contains("No route to host"),
+        "{refused}"
+    );
+    assert!(remote.get("review").is_some(), "the Task is left alone");
+}

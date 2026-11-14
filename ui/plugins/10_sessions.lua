@@ -392,7 +392,7 @@ local function session_line(item, layout, elapsed, is_selected, work, search)
       item.collapsed and "▸ " or "▾ ",
       { fg = theme.accent },
       nil,
-      "fold:" .. session.id
+      ":fold:" .. session.id
     )
   else
     row:gap(2)
@@ -1460,7 +1460,7 @@ pane = {
     end
     -- Keep a selection that remains visible. A folded-away child selects its
     -- parent, never whichever unrelated row took the child's place.
-    local parent = hit.id:match("^fold:(.+)$")
+    local parent = hit.id:match("^:fold:(.+)$")
     if parent then
       if hit.clicks ~= 2 then
         local cursor = ui.cursor("sessions", model(), CURSOR_OPTS)
@@ -1478,7 +1478,7 @@ pane = {
       return true
     end
     local items = model()
-    if hit.id:match("^host:") or hit.id:match("^repo:") then
+    if hit.id:match("^:host:") or hit.id:match("^:repo:") then
       if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
         return false
       end
@@ -1509,11 +1509,11 @@ pane = {
   on_context = function(hit)
     local items = model()
     -- The fold handle is part of its session's row for a menu.
-    local parent = hit.id and hit.id:match("^fold:(.+)$")
+    local parent = hit.id and hit.id:match("^:fold:(.+)$")
     if parent then
       hit = { id = parent, screen_x = hit.screen_x, screen_y = hit.screen_y }
     end
-    if hit.id and (hit.id:match("^host:") or hit.id:match("^repo:")) then
+    if hit.id and (hit.id:match("^:host:") or hit.id:match("^:repo:")) then
       if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
         return false
       end
@@ -1556,7 +1556,7 @@ pane = {
     if requested_host then
       -- The local group's sentinel cannot be supplied on a command line.
       local host = requested_host == "" and "\0local" or requested_host
-      if cursor:select_by_id("host:" .. host) == nil then
+      if cursor:select_by_id(":host:" .. host) == nil then
         command("message", { text = "that host has no group", level = "error" })
         return true
       end
@@ -1605,7 +1605,7 @@ pane = {
       elseif selected and selected.kind ~= "host" then
         local repo = selected.kind ~= "repo" and selected.repo_target
         if not (repo and cursor:select_by_id(repo)) and selected.host then
-          cursor:select_by_id("host:" .. selected.host)
+          cursor:select_by_id(":host:" .. selected.host)
         end
       end
       return true
@@ -1719,7 +1719,7 @@ pane = {
         local host = selected and selected.host
         if host then
           if folding then
-            cursor:select_by_id("host:" .. host)
+            cursor:select_by_id(":host:" .. host)
           end
           set_host_folded(host, folding)
         end

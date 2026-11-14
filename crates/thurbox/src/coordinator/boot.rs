@@ -196,18 +196,15 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let phase = Instant::now();
     // The engine (ADR-41): the Tasks of every listed Fleet through its
     // command line, as one list, with a `fleet up` kept running for each
-    // Fleet on this machine. Commands go to the Fleet in force until each
-    // reaches its row's own.
-    let fleet = thurbox::fleet_link::FleetLink::in_force(&startup_settings);
-    let links: Vec<thurbox::fleet_link::FleetLink> = startup_settings
-        .fleets()
-        .iter()
-        .map(|(name, def)| thurbox::fleet_link::FleetLink::of(name, def))
-        .collect();
+    // Fleet on this machine. A command goes to its session's own Fleet, a
+    // creation to the Fleet in force.
+    let fleets = thurbox::fleet_link::Fleets::of(&startup_settings);
+    let fleet = fleets.in_force().clone();
+    let links = fleets.all().to_vec();
     // Automations fire while the interface runs; `thurbox-cli automation
     // tick` fires them from an OS timer otherwise.
     if startup_settings.features.automations {
-        thurbox::kernel::automations::keep_ticking(fleet.clone());
+        thurbox::kernel::automations::keep_ticking(fleets.clone());
     }
     let snapshots = SnapshotStore::with_source(
         Box::new(thurbox::kernel::snapshot::fleet::FleetWatches::new(
@@ -266,7 +263,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             }
             terminals
         },
-        commands: CommandBus::fleet(fleet),
+        commands: CommandBus::fleet(fleets),
         diffs: DiffStore::new(),
         repos: thurbox::kernel::repos::RepoStore::new(),
         metrics: Metrics::new(),

@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use crate::fleet_link::FleetLink;
+use crate::fleet_link::Fleets;
 
 /// How much of an exec's output a run keeps, from its end.
 const TAIL_CHARS: usize = 4096;
@@ -29,7 +29,7 @@ const TICK_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Tick on a thread of its own for as long as the process runs: the
 /// interface's firer. A fire never runs on the render thread.
-pub fn keep_ticking(fleet: FleetLink) {
+pub fn keep_ticking(fleet: Fleets) {
     std::thread::spawn(move || loop {
         if let Err(e) = tick(&fleet, now_ms()) {
             tracing::warn!("automation tick: {e}");
@@ -48,7 +48,7 @@ pub struct Fired {
 /// Fire every enabled automation whose next run is due at `now`, one after
 /// another, through the Fleet `fleet` reaches. Runs left marked running past their
 /// deadline are recorded as timed out first.
-pub fn tick(fleet: &FleetLink, now: u64) -> Result<Vec<Fired>, String> {
+pub fn tick(fleet: &Fleets, now: u64) -> Result<Vec<Fired>, String> {
     let claimed = crate::config::automations::update(|all| {
         let mut claimed = Vec::new();
         for automation in &mut all.automations {
@@ -70,7 +70,7 @@ pub fn tick(fleet: &FleetLink, now: u64) -> Result<Vec<Fired>, String> {
 
 /// Fire the automation `name` now, whatever its schedule says. A disabled one
 /// is refused rather than switched on.
-pub fn run_now(fleet: &FleetLink, name: &str, now: u64) -> Result<Fired, String> {
+pub fn run_now(fleet: &Fleets, name: &str, now: u64) -> Result<Fired, String> {
     let automation = crate::config::automations::update(|all| {
         let automation = all
             .automations
@@ -88,7 +88,7 @@ pub fn run_now(fleet: &FleetLink, name: &str, now: u64) -> Result<Fired, String>
 
 /// Run a claimed fire and record how it went.
 fn finish(
-    fleet: &FleetLink,
+    fleet: &Fleets,
     automation: &crate::config::automations::Automation,
     started_at: u64,
 ) -> Fired {
@@ -118,7 +118,7 @@ fn finish(
 
 /// What a fire did; its start and end are set by the caller.
 fn fire(
-    fleet: &FleetLink,
+    fleet: &Fleets,
     automation: &crate::config::automations::Automation,
 ) -> crate::config::automations::Run {
     let mut run = crate::config::automations::Run {
@@ -132,13 +132,15 @@ fn fire(
     let done = match &automation.action {
         crate::config::automations::Action::Send { session } => {
             run.session = Some(session.clone());
+            // To the session's own Fleet; a bare name is the Fleet in
+            // force's.
             fleet
-                .task(session)
-                .and_then(|task| fleet.run(&["send", task, &automation.prompt], None))
+                .route(session)
+                .and_then(|(link, task)| link.run(&["send", task, &automation.prompt], None))
                 .map(|()| format!("sent to {session}"))
         }
         crate::config::automations::Action::Spawn { repo, agent } => {
-            spawn(fleet, automation, repo, agent.as_deref()).map(|task| {
+            spawn(fleet.in_force(), automation, repo, agent.as_deref()).map(|task| {
                 let detail = format!("created {task}");
                 run.session = Some(task);
                 detail
@@ -162,7 +164,7 @@ fn fire(
 /// named after the automation and the second it fired, so each fire makes a
 /// session of its own.
 fn spawn(
-    fleet: &FleetLink,
+    fleet: &crate::fleet_link::FleetLink,
     automation: &crate::config::automations::Automation,
     repo: &Path,
     agent: Option<&str>,
@@ -408,13 +410,13 @@ mod tests {
         let repo = tempfile::tempdir().expect("repo");
         let (send, spawn) = crate::paths::with_path(remote.path(), || {
             let send = fire(
-                &remote.link,
+                &remote.link.clone().into(),
                 &automation(crate::config::automations::Action::Send {
                     session: "review".into(),
                 }),
             );
             let spawn = fire(
-                &remote.link,
+                &remote.link.clone().into(),
                 &automation(crate::config::automations::Action::Spawn {
                     repo: repo.path().to_path_buf(),
                     agent: None,

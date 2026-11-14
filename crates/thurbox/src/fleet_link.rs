@@ -81,22 +81,6 @@ impl FleetLink {
         &self.program
     }
 
-    /// The Task `session` names in this Fleet: a session's id is
-    /// `<fleet>:<task>`, and a bare name is a Task of this Fleet. Commands
-    /// go to one Fleet until each is routed to its session's own, so a
-    /// session of another Fleet is refused by name, never sent here.
-    pub fn task<'a>(&self, session: &'a str) -> Result<&'a str, String> {
-        match session.split_once(':') {
-            None => Ok(session),
-            Some((fleet, task)) if fleet == self.name => Ok(task),
-            Some((fleet, _)) => Err(format!(
-                "{session} is a session of the Fleet {fleet}; commands go to {} until they \
-                 reach each Fleet",
-                self.name
-            )),
-        }
-    }
-
     /// The config file Fleet is given with `--config`, if any.
     pub fn config(&self) -> Option<&str> {
         self.config.as_deref()
@@ -158,6 +142,80 @@ impl FleetLink {
             .find_map(|line| line.strip_prefix("error: "))
             .unwrap_or(stderr.trim());
         Err(format!("fleet {verb}: {why}"))
+    }
+}
+
+/// Every Fleet thurbox lists, and the one in force: what a command is
+/// routed by. A session's id is `<fleet>:<task>`, so a command for it goes to
+/// that Fleet; a bare Task name, and a creation, go to the Fleet in force
+/// (the only one listed, or the first by name).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fleets {
+    in_force: FleetLink,
+    all: Vec<FleetLink>,
+}
+
+impl Fleets {
+    /// `all` the Fleets, with `in_force` named among them. One not among
+    /// them is taken as the first, so the set is never without one.
+    pub fn new(in_force: &str, all: Vec<FleetLink>) -> Self {
+        let chosen = all
+            .iter()
+            .find(|link| link.name == in_force)
+            .or(all.first())
+            .cloned()
+            .unwrap_or_else(|| FleetLink::local("fleet"));
+        Self {
+            in_force: chosen,
+            all,
+        }
+    }
+
+    /// The Fleets `settings.toml` lists, or the implied local one.
+    pub fn of(settings: &crate::session::settings::Settings) -> Self {
+        let all = settings
+            .fleets()
+            .iter()
+            .map(|(name, def)| FleetLink::of(name, def))
+            .collect();
+        Self::new(&settings.fleet_in_force().0, all)
+    }
+
+    /// The Fleet a creation, and a bare Task name, goes to.
+    pub fn in_force(&self) -> &FleetLink {
+        &self.in_force
+    }
+
+    /// Every listed Fleet.
+    pub fn all(&self) -> &[FleetLink] {
+        &self.all
+    }
+
+    /// The Fleet `session` is a session of, and its Task's name there: a
+    /// session's id is `<fleet>:<task>`, and a bare name is a Task of the
+    /// Fleet in force. A Fleet `settings.toml` does not list is refused by
+    /// name, never stood in for by another.
+    pub fn route<'a>(&self, session: &'a str) -> Result<(&FleetLink, &'a str), String> {
+        match session.split_once(':') {
+            None => Ok((&self.in_force, session)),
+            Some((fleet, task)) => self
+                .all
+                .iter()
+                .find(|link| link.name == fleet)
+                .map(|link| (link, task))
+                .ok_or_else(|| {
+                    format!("{session} is a session of the Fleet {fleet}, which settings.toml does not list")
+                }),
+        }
+    }
+}
+
+impl From<FleetLink> for Fleets {
+    fn from(link: FleetLink) -> Self {
+        Self {
+            in_force: link.clone(),
+            all: vec![link],
+        }
     }
 }
 

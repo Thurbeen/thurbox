@@ -313,7 +313,7 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
     Ok(match command {
         Command::Editor { action } => editor::run(action)?,
         Command::Automation { action } => {
-            automation::run(action, &crate::fleet_link::FleetLink::in_force(settings))?
+            automation::run(action, &crate::fleet_link::Fleets::of(settings))?
         }
         Command::Config { action } => config::run(action, settings)?,
         Command::Version(args) => version::run(
