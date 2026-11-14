@@ -1010,7 +1010,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
         screen(&mut terminals).contains("ready-marker")
     });
     assert!(
-        terminals.send("t1", b"ping\r".to_vec()),
+        terminals.send("local:t1", b"ping\r".to_vec()),
         "the pane takes input"
     );
     until("the agent answers what was typed", || {
