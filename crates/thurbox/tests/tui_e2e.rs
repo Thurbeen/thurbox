@@ -7662,7 +7662,7 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
     tui.send(b"\x1b[Z");
     tui.wait_until_quiet();
     tui.send(b"\x1bw");
-    tui.wait_for("branches on box come later");
+    tui.wait_for("Worktrees are made on this machine only");
     tui.wait_until_quiet();
     tui.send(b"\x1b\r");
     tui.wait_for("Session Name");

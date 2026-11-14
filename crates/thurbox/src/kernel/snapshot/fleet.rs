@@ -114,6 +114,8 @@ pub struct FleetWatch {
     /// Set while a refresh is on its way, so a picker opened again before it
     /// answers starts no second one.
     refreshing: Arc<std::sync::atomic::AtomicBool>,
+    /// Set while a remote Fleet's home is being asked for.
+    reading_home: Arc<std::sync::atomic::AtomicBool>,
     /// The state last sent, shared by the `version` worker and a refresh.
     published: Published,
 }
@@ -181,9 +183,13 @@ impl FleetWatch {
             let (link, tx) = (link.clone(), tx.clone());
             std::thread::spawn(move || read_places(&link, &tx));
         }
+        let reading_home = Arc::new(std::sync::atomic::AtomicBool::new(!link.is_local()));
         if !link.is_local() {
-            let (link, tx) = (link.clone(), tx.clone());
-            std::thread::spawn(move || read_home(&link, &tx));
+            let (link, tx, reading) = (link.clone(), tx.clone(), reading_home.clone());
+            std::thread::spawn(move || {
+                read_home(&link, &tx);
+                reading.store(false, std::sync::atomic::Ordering::Release);
+            });
         }
         // The Fleet's own `local` until it lists its places, so a Fleet that
         // is slow or absent never holds the creation flow on a place step
@@ -219,6 +225,7 @@ impl FleetWatch {
             link,
             tx,
             refreshing: Arc::default(),
+            reading_home,
             published,
         }
     }
@@ -235,9 +242,22 @@ impl SnapshotSource for FleetWatch {
         }
         // A home not read at startup is asked for again with the places, on
         // a worker of its own: a slow one must not hold the next refresh.
-        if !self.link.is_local() && self.fleet.home.is_none() {
-            let (link, tx) = (self.link.clone(), self.tx.clone());
-            std::thread::spawn(move || read_home(&link, &tx));
+        // Once read it is kept; it is not asked of a Fleet that cannot be
+        // reached, nor again while one ask is on its way.
+        if !self.link.is_local()
+            && self.fleet.home.is_none()
+            && self.fleet.state != FleetState::Unreachable
+            && !self.reading_home.swap(true, Ordering::AcqRel)
+        {
+            let (link, tx, reading) = (
+                self.link.clone(),
+                self.tx.clone(),
+                self.reading_home.clone(),
+            );
+            std::thread::spawn(move || {
+                read_home(&link, &tx);
+                reading.store(false, Ordering::Release);
+            });
         }
         let (link, tx, refreshing, published) = (
             self.link.clone(),
@@ -1223,6 +1243,60 @@ mod tests {
             until(&mut store, FleetState::Unreachable);
             std::fs::remove_file(&down).expect("up");
             until(&mut store, FleetState::Up);
+        });
+    }
+
+    /// A remote Fleet's home is asked for once at startup. A place step
+    /// opened on that Fleet while it cannot be reached asks for it no more:
+    /// each ask could wait out its whole bound.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreachable_fleets_home_is_not_asked_again_on_each_opening() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "case \"$1\" in\n\
+             version) exit 255 ;;\n\
+             runtime) echo '{\"places\":null}' ;;\n\
+             watch) exec sleep 60 ;;\n\
+             esac",
+        );
+        std::fs::write(remote.dir().join("remote/sh"), "#!/bin/sh\nexit 255\n").expect("sh");
+        std::process::Command::new("chmod")
+            .args(["+x"])
+            .arg(remote.dir().join("remote/sh"))
+            .status()
+            .expect("chmod");
+        let asked = || {
+            remote
+                .calls()
+                .iter()
+                .filter(|c| c.contains("sh -c"))
+                .count()
+        };
+        crate::paths::with_path(remote.path(), || {
+            let mut store = super::super::SnapshotStore::with_source(
+                Box::new(FleetWatch::spawn(remote.link.clone())),
+                &Default::default(),
+            );
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                store.refresh_if_due();
+                let state = store.current().fleets.first().map(|f| f.state);
+                if state == Some(FleetState::Unreachable) && asked() == 1 {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{state:?}: {:?}",
+                    remote.calls()
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            for _ in 0..3 {
+                store.want_places(Some("devbox".into()));
+                store.want_places(None);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(asked(), 1, "{:?}", remote.calls());
         });
     }
 

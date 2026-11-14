@@ -612,8 +612,8 @@ a place.
   over the Fleet's link and given 15 seconds, like `doctor`'s probes. A
   typed `~` is that home. When the home cannot be read, the field starts
   empty and asks for an absolute path. A remote Fleet's repository gets no
-  worktree yet (`alt+w` says its branches come later), since its base
-  branches would be read on this machine.
+  worktree yet: `alt+w` says worktrees are made on this machine only, since
+  its base branches would be read here.
 - A Fleet that cannot be asked (its `ssh` exits 255) makes a command fail
   with that reason. The check a confirmed delete makes never reads it as a
   Task that is gone: only Fleet's own answer (exit 3) says so.

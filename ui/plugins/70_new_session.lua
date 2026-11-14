@@ -1667,13 +1667,6 @@ return {
       if dropdown_open(flow) then
         return false
       end
-      -- A worktree asks for a base branch, read on this machine: never for
-      -- a remote Fleet's repository.
-      if flow.remote then
-        flow.message = "branches on " .. flow.fleet .. " come later"
-        save(flow)
-        return true
-      end
       local entry = current_row(flow)
       if entry and not entry.row.is_parent and not entry.row.is_worktree then
         if entry.row.is_git == false then
