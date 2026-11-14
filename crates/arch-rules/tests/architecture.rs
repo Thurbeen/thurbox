@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use arch_rules::{CODES, Violation, Workspace, check, check_uncached, load_rules};
+use arch_rules::{Code, Violation, Workspace, check, check_uncached, load_rules};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -2724,6 +2724,35 @@ fn a_renamed_workspace_dependency_is_the_crate_it_names() {
     );
 }
 
+/// A rule naming a crate that is no member, a source file that does not
+/// parse, and a pure crate whose clippy.toml lacks a guard are each reported.
+#[test]
+fn a_missing_crate_an_unparsable_file_and_a_missing_clippy_guard_are_caught() {
+    let ghost = format!("{RULES}\n[crates.fx-ghost]\nrole = \"adapter\"\ndeps = []\n");
+    expect(
+        "missing-crate",
+        &[("architecture.toml", &ghost)],
+        &[("missing-crate", "fx-ghost")],
+    );
+    expect(
+        "unparsable",
+        &[("crates/fx-store/src/broken.rs", "fn (\n")],
+        &[("unparsable", "fx-store")],
+    );
+    let guarded = RULES.replace("[pure]\n", "[pure]\nclippy_guards = [\"std::fs::File\"]\n");
+    expect(
+        "missing-clippy-guard",
+        &[
+            ("architecture.toml", &guarded),
+            (
+                "crates/fx-api/clippy.toml",
+                "disallowed-types = [\"std::fs::File\"]\n",
+            ),
+        ],
+        &[("missing-clippy-guard", "fx-ctl")],
+    );
+}
+
 /// Every code the checker can report is in the constitution's table of what
 /// `arch-rules` checks, so a new check cannot land without its row.
 #[test]
@@ -2735,9 +2764,9 @@ fn every_violation_code_is_in_the_constitution() {
         .expect("the constitution has the table");
     let section = &constitution[start..];
     let section = &section[..section[4..].find("\n#").map_or(section.len(), |i| i + 4)];
-    let missing: Vec<&str> = CODES
+    let missing: Vec<&str> = Code::ALL
         .iter()
-        .copied()
+        .map(|code| code.as_str())
         .filter(|code| !section.contains(&format!("`{code}`")))
         .collect();
     assert!(
