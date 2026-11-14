@@ -90,7 +90,7 @@ the right knob:
 | I want to… | Edit | Section |
 |------------|------|---------|
 | Add a coding agent, pin a model | Fleet's harness profiles | [Agents](#agents) |
-| Run sessions on a remote machine or in a WSL distro | Fleet's config | [Where sessions run](../where-sessions-run.md) |
+| Run sessions on a remote machine or in a WSL distro | Fleet's config, or `[fleets]` in `settings.toml` (planned) | [Where sessions run](../where-sessions-run.md) |
 | Turn a whole TUI feature on/off (mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
 | Tune scrollback, panel breakpoints, git polling | `settings.toml` | [settings.toml](#settingstoml) |
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
