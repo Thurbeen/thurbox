@@ -503,6 +503,19 @@ fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
         .remove("host");
     on_bare["spec"]["configRef"] = json!({"name": "bare"});
     env.apply(json!([bare, on_bare])).code(1).stderr_has(why);
+    // Of two TaskConfigs of one name in a batch, the last is stored: its
+    // host, here none, is the one checked.
+    let first = support::object("TaskConfig", "twice", json!({"host": "vm/sandbox"}));
+    let last = support::object("TaskConfig", "twice", json!({}));
+    let mut on_twice = support::task("t7", true);
+    on_twice["spec"]
+        .as_object_mut()
+        .expect("spec")
+        .remove("host");
+    on_twice["spec"]["configRef"] = json!({"name": "twice"});
+    env.apply(json!([first, last, on_twice]))
+        .code(1)
+        .stderr_has(why);
 }
 
 /// `fleet runtime places`: each configured place with what its runtime's

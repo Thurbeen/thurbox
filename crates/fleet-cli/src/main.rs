@@ -1882,7 +1882,8 @@ fn cmd_apply(
     }
     // `local` naming no place is refused here, by name: the runtime would
     // only read the place as unreachable. The host is the manager's rule
-    // (`effective_host`); a TaskConfig not there yet leaves it untold.
+    // (`effective_host`); a TaskConfig not there yet leaves it untold. Of
+    // several of one name in the batch, the last is the one stored.
     let on_local = |obj: &Object| {
         if obj.kind != fleet_api::task::KIND {
             return false;
@@ -1896,7 +1897,7 @@ fn cmd_apply(
             Some(Some(name)) => {
                 let config = objs
                     .iter()
-                    .find(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
+                    .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
                     .cloned()
                     .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
                         Observation::Known(found) => found,
