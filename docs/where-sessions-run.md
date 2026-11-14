@@ -43,10 +43,9 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | Part | Status |
 | --- | --- |
 | One Fleet, named by `[fleet] program` in thurbox's `settings.toml` | implemented |
-| Fleet's `[hosts.<name>]` table, which names a runtime for each host | implemented |
 | The runtime protocol carries a place, and `manifest` reports places | implemented |
+| Places in Fleet's config, `[runtimes.<name>.places.<place>]`, named `<runtime>/<place>` | implemented |
 | `runtime-mux` runs sessions on `local` only | implemented |
-| Places in Fleet's config, `[runtimes.<name>.places.<place>]`, in place of `[hosts]` | planned |
 | Several Fleets in `settings.toml`, `[fleets.<name>]` | planned |
 | The Fleet step and the place step in the new-session modal | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
@@ -114,16 +113,26 @@ when the laptop sleeps.
 
 ### 3. One Fleet, several places
 
-Status: planned. Today, `runtime-mux` runs sessions on `local` only.
+Status: Fleet's config takes these places today. `runtime-mux` runs sessions
+on `local` only, and no VM runtime ships yet, so these sessions are planned.
 
 One Fleet runs sessions in a WSL distro or a VM. Declare each place in
 Fleet's config, under its runtime
-([places of a runtime](fleet/configuration.md#planned-places-of-a-runtime)):
+([runtimes and their places](fleet/configuration.md#runtimes-and-their-places)):
 
 ```toml
+[runtimes.mux]
+program = "runtime-mux"
+default = true   # several runtimes need one default
+
+[runtimes.mux.places.local]   # keeps local: a places table replaces the implied one
+
 [runtimes.mux.places.wsl-dev]
 kind = "wsl"
 distro = "Ubuntu"
+
+[runtimes.vm]
+program = "runtime-vm"
 
 [runtimes.vm.places.sandbox]
 image = "agent-base"
@@ -134,7 +143,7 @@ it. Nothing installs silently.
 
 ## The new-session modal
 
-Status: planned. Today the modal has a host step that lists the hosts of the
+Status: planned. Today the modal has a host step that lists the places of the
 one Fleet.
 
 ```text
