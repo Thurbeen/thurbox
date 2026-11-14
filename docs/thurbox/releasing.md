@@ -8,13 +8,14 @@ its own binaries on startup.
 
 ## The rule that matters
 
-> **Never remove `thurbox` or `thurbox-cli` from a release archive.**
+> **Never remove a program the updater replaces from a release archive.**
 
 The updater in the *already installed* binary decides what to install, and it
 hard-fails on a known binary that is missing from the tarball:
 
     // src/update/self_update.rs
-    const BINARIES: [&str; 2] = ["thurbox", "thurbox-cli"];
+    const BINARIES: [&str; 5] =
+        ["thurbox", "thurbox-cli", "fleet", "runtime-mux", "workspace-git"];
     // …
     if !src.exists() {
         return Err(format!("release archive is missing `{name}`"));
@@ -27,7 +28,9 @@ work, permanently, on every install already out there**, with the only trace in
 `thurbox.log`. There is no way to push a fix to a client whose updater has
 stopped running, so this mistake cannot be corrected by a later release.
 
-Renaming what a binary *does* is fine. Renaming or dropping the file is not.
+Every 2.x updater names `thurbox` and `thurbox-cli`; one built from this tree
+names all five programs a v3 archive ships. Renaming what a binary *does* is
+fine. Renaming or dropping the file is not.
 
 ## Adding a binary is safe, and also invisible
 

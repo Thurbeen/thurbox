@@ -47,11 +47,21 @@ use crate::update::version_check::{current_version, decide_update, fetch_release
 /// `scripts/install.sh`); the per-release directory is `<base>/v{version}/`.
 const RELEASE_BASE: &str = "https://github.com/Thurbeen/thurbox/releases/download";
 
-/// The binaries shipped in a release archive, replaced in place on update.
+/// The binaries shipped in a release archive, replaced in place on update:
+/// `BINARIES` in `scripts/ci/release-archive.sh`, which packs the archive (a
+/// test holds the two lists equal). All of them, because thurbox runs `fleet`,
+/// Fleet runs `runtime-mux` and runtime-mux runs `workspace-git`: an update
+/// that left one behind would pair programs from two releases.
 ///
 /// Stems, not file names: the archive and the install directory both spell them
 /// with the platform's executable suffix, which [`install_binaries`] appends.
-const BINARIES: [&str; 2] = ["thurbox", "thurbox-cli"];
+const BINARIES: [&str; 5] = [
+    "thurbox",
+    "thurbox-cli",
+    "fleet",
+    "runtime-mux",
+    "workspace-git",
+];
 
 /// Outcome of an update attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1467,6 +1477,42 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         .unwrap();
     }
 
+    /// The programs a release archive ships: `BINARIES` in
+    /// `scripts/ci/release-archive.sh`, which packs every archive.
+    fn shipped() -> Vec<String> {
+        let packer = include_str!("../../../../scripts/ci/release-archive.sh");
+        let list = packer
+            .lines()
+            .find_map(|l| l.strip_prefix("BINARIES=("))
+            .and_then(|l| l.strip_suffix(')'))
+            .expect("release-archive.sh declares BINARIES=(...)");
+        list.split_whitespace().map(str::to_string).collect()
+    }
+
+    /// The updater replaces what the release ships, so a v3 install's `fleet`,
+    /// `runtime-mux` and `workspace-git` move with thurbox.
+    #[test]
+    fn the_updater_replaces_every_program_the_release_ships() {
+        assert_eq!(BINARIES.to_vec(), shipped());
+    }
+
+    /// An update on an install of every shipped program leaves none of them on
+    /// the old version.
+    #[cfg(unix)]
+    #[test]
+    fn an_update_moves_every_shipped_program_to_the_new_release() {
+        let feed = Feed::new(&["2.85.0", "2.84.2"], "2.84.2");
+        let outcome = feed.update("2.84.2", false).unwrap();
+        assert!(
+            matches!(outcome, UpdateOutcome::Updated { .. }),
+            "{outcome:?}"
+        );
+        for name in shipped() {
+            let installed = std::fs::read_to_string(feed.install.path().join(&name)).unwrap();
+            assert_eq!(installed, "2.85.0", "{name} stayed on {installed}");
+        }
+    }
+
     /// A release feed on disk, served to the real updater over `file://`.
     ///
     /// Each release gets the archive for this platform and a checksums file, the
@@ -1492,8 +1538,8 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 let stage = root.path().join("stage").join(version);
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::create_dir_all(&stage).unwrap();
-                for name in BINARIES {
-                    std::fs::write(stage.join(name), version).unwrap();
+                for name in shipped() {
+                    std::fs::write(stage.join(&name), version).unwrap();
                 }
                 let archive = archive_name(version, target);
                 let ok = Command::new("tar")
@@ -1501,7 +1547,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                     .arg(dir.join(&archive))
                     .arg("-C")
                     .arg(&stage)
-                    .args(BINARIES)
+                    .args(shipped())
                     .status()
                     .unwrap()
                     .success();
@@ -1522,8 +1568,8 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 serde_json::to_string(&list).unwrap(),
             )
             .unwrap();
-            for name in BINARIES {
-                std::fs::write(install.path().join(name), installed).unwrap();
+            for name in shipped() {
+                std::fs::write(install.path().join(&name), installed).unwrap();
             }
             Self {
                 root,
@@ -1544,11 +1590,14 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             perform_update_from(&self.feed(), current, self.install.path(), force)
         }
 
-        fn installed(&self) -> Vec<String> {
-            BINARIES
+        /// The version every installed program now names, or `None` when
+        /// they disagree.
+        fn installed(&self) -> Option<String> {
+            let versions: std::collections::BTreeSet<String> = shipped()
                 .iter()
                 .map(|n| std::fs::read_to_string(self.install.path().join(n)).unwrap())
-                .collect()
+                .collect();
+            (versions.len() == 1).then(|| versions.into_iter().next().unwrap())
         }
     }
 
@@ -1565,7 +1614,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             if let UpdateOutcome::Updated { to, .. } = &outcome {
                 assert_eq!(to, "2.84.1", "force={force}");
             }
-            assert_eq!(feed.installed(), ["2.84.1", "2.84.1"], "force={force}");
+            assert_eq!(feed.installed().as_deref(), Some("2.84.1"), "force={force}");
         }
         assert_eq!(
             feed.update("2.84.1", false).unwrap(),
@@ -1595,7 +1644,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             },
             "the 2.x is taken and 3.x still reported"
         );
-        assert_eq!(feed.installed(), ["2.84.2", "2.84.2"]);
+        assert_eq!(feed.installed().as_deref(), Some("2.84.2"));
     }
 
     #[cfg(unix)]
@@ -1607,7 +1656,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             matches!(outcome, UpdateOutcome::Updated { .. }),
             "{outcome:?}"
         );
-        assert_eq!(feed.installed(), ["2.84.2", "2.84.2"]);
+        assert_eq!(feed.installed().as_deref(), Some("2.84.2"));
     }
 
     #[test]
