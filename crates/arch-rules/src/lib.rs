@@ -637,6 +637,9 @@ struct Ref {
     /// The reference is an import (`use`), not a path written where it is
     /// used.
     in_use: bool,
+    /// The reference's place among its file's references: the same in every
+    /// tree a file is walked in, so one source site counts once.
+    site: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -761,6 +764,7 @@ impl CrateIndex {
                     blocks: 0,
                     cfg_use: false,
                     tests: 0,
+                    sites: 0,
                 };
                 walker.scope();
                 walker.items(&parsed.items);
@@ -964,6 +968,8 @@ struct Walker<'a> {
     cfg_use: bool,
     /// How many `#[cfg(test)]` items enclose the walk.
     tests: u32,
+    /// References recorded so far in this file.
+    sites: u32,
 }
 
 impl Walker<'_> {
@@ -992,6 +998,11 @@ impl Walker<'_> {
         self.tests += test;
         walk(self);
         self.tests -= test;
+    }
+
+    fn next_site(&mut self) -> u32 {
+        self.sites += 1;
+        self.sites
     }
 
     fn scope(&mut self) -> &mut Scope {
@@ -1034,6 +1045,7 @@ impl Walker<'_> {
                 let p = prefix.clone();
                 let loc = self.location(span);
                 self.scope().globs.push((p.clone(), global));
+                let site = self.next_site();
                 self.idx.refs.push(Ref {
                     module: self.module.clone(),
                     segments: p,
@@ -1042,6 +1054,7 @@ impl Walker<'_> {
                     location: loc,
                     test: self.tests > 0,
                     in_use: true,
+                    site,
                 });
             }
             UseTree::Group(g) => {
@@ -1060,6 +1073,7 @@ impl Walker<'_> {
         span: proc_macro2::Span,
     ) {
         let loc = self.location(span);
+        let site = self.next_site();
         self.idx.refs.push(Ref {
             module: self.module.clone(),
             segments: target.clone(),
@@ -1068,6 +1082,7 @@ impl Walker<'_> {
             location: loc,
             test: self.tests > 0,
             in_use: true,
+            site,
         });
         if local != "_" {
             let weak = self.blocks > 0 || self.cfg_use;
@@ -1258,6 +1273,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
         let segments: Vec<String> = p.segments.iter().map(|s| s.ident.to_string()).collect();
         if let Some(first) = p.segments.first() {
             let loc = self.location(first.ident.span());
+            let site = self.next_site();
             self.idx.refs.push(Ref {
                 module: self.module.clone(),
                 segments,
@@ -1266,6 +1282,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 location: loc,
                 test: self.tests > 0,
                 in_use: false,
+                site,
             });
         }
         visit::visit_path(self, p);
@@ -1280,6 +1297,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
             .collect();
         if let Some(first) = m.path.segments.first() {
             let loc = self.location(first.ident.span());
+            let site = self.next_site();
             self.idx.refs.push(Ref {
                 module: self.module.clone(),
                 segments,
@@ -1288,6 +1306,7 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 location: loc,
                 test: self.tests > 0,
                 in_use: false,
+                site,
             });
         }
         // The arguments of an expression-like macro (`format!`, `vec!`,
@@ -1865,7 +1884,10 @@ fn check_sources(
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
     let mut graph = (!rule.modules.is_empty()).then(|| ModuleGraph::new(rule));
     // Each restriction's hits: the file, relative to `src/`, and the site.
-    let mut hits: Vec<Vec<(String, String, String)>> = vec![Vec::new(); rule.restricted.len()];
+    // Each restriction's hits, keyed by source site so a file two targets
+    // include counts once: the file relative to `src/`, the site, the path.
+    let mut hits: Vec<BTreeMap<(String, u32), (String, String)>> =
+        vec![BTreeMap::new(); rule.restricted.len()];
     for r in &idx.refs {
         resolver.budget.set(RESOLVE_BUDGET);
         resolver.exhausted.set(false);
@@ -1882,14 +1904,16 @@ fn check_sources(
         // A target's root (`lib`, `main`, a binary) is judged under its own
         // name: an exempt root keeps no module rule, but a restriction still
         // binds it.
-        let from = graph
-            .as_ref()
-            .and_then(|g| g.node_of(&r.module))
-            .or_else(|| {
-                without_target(&r.module)
-                    .is_empty()
-                    .then(|| target_name(&r.module))
-            });
+        let from = match graph.as_ref() {
+            Some(g) => g.node_of(&r.module),
+            // No module rules: each top-level module is judged by its name.
+            None => without_target(&r.module).first().map(String::as_str),
+        }
+        .or_else(|| {
+            without_target(&r.module)
+                .is_empty()
+                .then(|| target_name(&r.module))
+        });
         if let Some(from) = from {
             for (x, found) in rule.restricted.iter().zip(&mut hits) {
                 if x.allowed.iter().any(|a| a == from) || x.production_only && r.test {
@@ -1899,7 +1923,9 @@ fn check_sources(
                     .iter()
                     .find(|p| x.paths.iter().any(|f| starts_with(p, f)))
                 {
-                    found.push((src_file(&r.location), r.location.clone(), p.join("::")));
+                    found
+                        .entry((r.location.clone(), r.site))
+                        .or_insert_with(|| (src_file(&r.location), p.join("::")));
                 }
             }
         }
@@ -2028,7 +2054,7 @@ fn check_sources(
     }
     for (x, found) in rule.restricted.iter().zip(&hits) {
         let mut by_file: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
-        for (file, location, shown) in found {
+        for ((location, _), (file, shown)) in found {
             by_file.entry(file).or_default().push((location, shown));
         }
         for (file, sites) in &by_file {

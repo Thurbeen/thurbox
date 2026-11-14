@@ -350,15 +350,16 @@ allowed = ["session"]
 production_only = true
 why = "which multiplexer serves a session is the route's decision"
 
-# Everything a user edits or thurbox reads back goes through
-# `paths::write_atomically`, which a crash, a full disk or a second writer
-# cannot leave half-written. A truncated `agents.toml`, manifest or plugin
-# lock is a broken install; a cut log line or a stale cache is not. Each
+# Everything a user edits or thurbox reads back, through `std::fs` or
+# `tokio::fs`, goes through `paths::write_atomically`, which a crash, a full
+# disk or a second writer cannot leave half-written. A truncated
+# `agents.toml`, manifest or plugin lock is a broken install; a cut log line
+# or a stale cache is not. Each
 # exception is exact, so a further write in an allowed file needs its own
 # reason, and a write that moves to the atomic writer takes its exception
 # with it.
 [[crates.thurbox.restricted]]
-paths = ["std::fs::write"]
+paths = ["std::fs::write", "tokio::fs::write"]
 allowed = ["paths"]
 production_only = true
 why = "write it through paths::write_atomically"
@@ -368,7 +369,7 @@ exceptions = [
 ]
 
 [[crates.thurbox.restricted]]
-paths = ["std::fs::copy"]
+paths = ["std::fs::copy", "tokio::fs::copy"]
 allowed = ["paths"]
 production_only = true
 why = "write it through paths::write_atomically"
@@ -377,7 +378,7 @@ exceptions = [
 ]
 
 [[crates.thurbox.restricted]]
-paths = ["std::fs::File::create"]
+paths = ["std::fs::File::create", "tokio::fs::File::create"]
 allowed = ["paths"]
 production_only = true
 why = "write it through paths::write_atomically"
@@ -386,7 +387,7 @@ exceptions = [
 ]
 
 [[crates.thurbox.restricted]]
-paths = ["std::fs::OpenOptions::new"]
+paths = ["std::fs::OpenOptions::new", "tokio::fs::OpenOptions::new"]
 allowed = ["paths"]
 production_only = true
 why = "write it through paths::write_atomically"

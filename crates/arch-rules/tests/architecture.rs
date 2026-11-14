@@ -2193,6 +2193,54 @@ fn a_restricted_path_binds_every_module_it_does_not_allow() {
     }
 }
 
+/// A crate with restrictions and no module rules is still bound by them:
+/// each top-level module is judged under its own name.
+#[test]
+fn a_restriction_binds_a_crate_without_module_rules() {
+    let rules = format!(
+        "{RULES}\n[crates.fx-flat]\nrole = \"component\"\ndeps = []\n\n[[crates.fx-flat.restricted]]\npaths = [\"fx_flat::b::b\"]\nallowed = [\"b\"]\nwhy = \"fixture\"\n"
+    );
+    expect(
+        "restricted-flat",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-flat/fixture.toml",
+                "[package]\nname = \"fx-flat\"\n",
+            ),
+            ("crates/fx-flat/src/lib.rs", "pub mod a;\npub mod b;\n"),
+            ("crates/fx-flat/src/a.rs", "pub fn a() { crate::b::b(); }\n"),
+            ("crates/fx-flat/src/b.rs", "pub fn b() {}\n"),
+        ],
+        &[("module-restricted", "fx-flat")],
+    );
+}
+
+/// A file two targets include is one source: its reach counts once against
+/// a file's exception, not once per target.
+#[test]
+fn a_file_two_targets_include_counts_once_against_an_exception() {
+    let rules = format!(
+        "{RULES}{MODULES}\n[[crates.fx-mod.restricted]]\npaths = [\"std::fs::write\"]\nallowed = [\"c::d\"]\nwhy = \"fixture\"\nexceptions = [{{ file = \"a.rs\", sites = 1, why = \"fixture\" }}]\n"
+    );
+    let main_rules = rules.replace("exempt = [\"lib\"]", "exempt = [\"lib\", \"main\"]");
+    modules(
+        "restricted-shared-file",
+        &[
+            ("architecture.toml", &main_rules),
+            (
+                "crates/fx-mod/src/a.rs",
+                "pub fn a() { crate::b::b(); let _ = std::fs::write(\"x\", \"y\"); }\n",
+            ),
+            (
+                "crates/fx-mod/src/main.rs",
+                "#[path = \"a.rs\"]\nmod a;\nfn main() {}\n",
+            ),
+        ],
+        &[],
+    );
+}
+
 /// A grant of a governed module itself admits none of its file modules, so
 /// it is a mistake for a grant naming the file module meant.
 #[test]
