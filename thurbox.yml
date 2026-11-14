@@ -368,6 +368,8 @@ globals:
     property: read-only
   thurbox.hosts:
     property: read-only
+  thurbox.fleets:
+    property: read-only
   thurbox.automations:
     property: read-only
   thurbox.commands:

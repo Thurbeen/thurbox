@@ -178,7 +178,8 @@ thurbox is itself running in: that one is this machine. An entry whose
 require a restart (the registry is read once and each host's `$HOME` is
 cached for the process lifetime).
 
-The new-session modal's host step names the Fleet place a session runs on.
+The new-session modal's place step names the place of the chosen Fleet a
+session runs on.
 Fleets and places are explained in
 [Where sessions run](../where-sessions-run.md).
 
@@ -588,13 +589,25 @@ a place.
   Fleet. A Fleet that cannot be asked has not lost its sessions. The watch is
   started again every 2 seconds, and the rows clear once it reads.
 - A command for a session (send, rename, delete, and the check a confirmed
-  delete makes) goes to that session's own Fleet, named by its id. A bare
-  Task name, a creation and an automation's spawn go to the Fleet in force:
-  the only one listed, or the first by name when several are, until the
-  creation flow asks for a Fleet. An automation's send goes to its
+  delete makes) goes to that session's own Fleet, named by its id. A
+  creation goes to the Fleet the new-session modal picked. A bare Task name
+  and an automation's spawn go to the Fleet in force: the only one listed,
+  or the first by name when several are. An automation's send goes to its
   session's Fleet. A session of a Fleet `settings.toml` does not list is
-  refused by name. `thurbox-cli doctor` names the Fleet in force, and the
-  creation flow offers that Fleet's harnesses and places.
+  refused by name. `thurbox-cli doctor` names the Fleet in force.
+- The new-session modal asks for the Fleet first when several are listed,
+  and skips that step when one is. Each Fleet shows how it is reached
+  (`local Fleet`, `ssh <destination>`, `wsl <distro>`) and its state: `up`
+  while its manager holds the lease, `Fleet not running` when none does
+  (the manager `fleet version --json` reports), or `unreachable`. An
+  unreachable Fleet is not taken. The places, their readiness (`fleet
+  runtime places --json`) and the agents that follow are the chosen Fleet's,
+  read again each time the place step opens on it.
+  For a Fleet on another machine, a repository is a typed path on that
+  machine or a clone URL (`https://…`, `ssh://…`, `user@host:path`), which
+  the runtime clones there on the session's branch. A relative scp-like
+  path is under the login's home (`git+ssh://me@box/~/repos/app.git`). thurbox does not browse
+  that machine's folders, and remembers its paths apart from this machine's.
 - A Fleet that cannot be asked (its `ssh` exits 255) makes a command fail
   with that reason. The check a confirmed delete makes never reads it as a
   Task that is gone: only Fleet's own answer (exit 3) says so.
@@ -610,7 +623,7 @@ a place.
 | The interface | Fleet's command |
 | --- | --- |
 | reads the sessions | `fleet watch --json` of each listed Fleet, as one list: each Task is a session row whose id is `<fleet>:<task>` |
-| creates a session | `fleet apply`: an interactive Task (no brief, dispatched) over the chosen repositories, with the chosen agent as its harness and the chosen host |
+| creates a session | `fleet apply` on the chosen Fleet: an interactive Task (no brief, dispatched) over the chosen repositories, with the chosen agent as its harness and the chosen place |
 | sends to a session | `fleet send` |
 | deletes a session | `fleet delete task`; Fleet has no undo window |
 | shows a session's terminal | `fleet attach --json`: the stream it names, as a stream pane |
@@ -650,7 +663,7 @@ a place.
   `Review`) is refused, and the Task already there is left as it was: the
   create is `fleet apply --create-only`, whose exclusive create gives two
   interfaces racing for one name one Task and one refusal.
-- The creation flow asks for what a Task takes: the host, the repositories,
+- The creation flow asks for what a Task takes: the Fleet, the place, the repositories,
   a base branch and a branch name when a repository gets a worktree (the
   base picker fetches `origin` once when it opens, notes a fetch that fails
   or stalls for 10 seconds, and preselects `origin/<default>`), the
@@ -658,9 +671,10 @@ a place.
   `git+file://<repo>?branch=<branch>#<base>`, and the runtime makes it; a
   repository without one is `file://<repo>`. A confirmed delete is checked
   against the Task as it is then.
-- The host picker's route names a Fleet place: a Fleet row carries the
-  place's id, `<runtime>/<place>`, and this machine is `local`. A place
-  Fleet's config does not define (`fleet runtime hosts`) is refused.
+- The place picker names a place of the chosen Fleet: a row carries the
+  place's id, `<runtime>/<place>`, and the Fleet's own machine is `local`. A
+  place that Fleet's config does not define (`fleet runtime hosts`) is
+  refused.
 - The chosen agent is the Task's harness, and only an agent Fleet has a
   harness profile for (`fleet version --json`'s `harnesses`: the
   [bundled ones](agents.md) and each user profile) is taken. Any

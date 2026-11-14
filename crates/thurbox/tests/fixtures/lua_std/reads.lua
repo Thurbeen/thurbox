@@ -39,6 +39,7 @@ return {
       tostring(thurbox.repo_branches.names),
       tostring(thurbox.repo_branches.worktrees),
       tostring(thurbox.hosts),
+      tostring(thurbox.fleets),
       tostring(thurbox.automations),
       tostring(thurbox.commands),
       tostring(thurbox.diffs),

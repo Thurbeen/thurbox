@@ -22,7 +22,8 @@ use super::Command;
 
 pub(super) struct Fleet {
     /// Every listed Fleet's command line: a command goes to its session's
-    /// own, a creation to the Fleet in force.
+    /// own, a creation to the Fleet it names (the Fleet in force when it
+    /// names none).
     pub(super) fleets: crate::fleet_link::Fleets,
 }
 
@@ -60,17 +61,18 @@ impl super::Executor for Fleet {
                 repo,
                 agent,
                 host,
+                fleet,
                 worktree,
                 branch,
                 base,
                 extras,
             } => {
-                let host = self.host(host.as_deref())?;
+                let fleet = self.fleets.named(fleet.as_deref())?;
+                let host = place(fleet, host.as_deref())?;
                 if let Some(agent) = agent {
-                    self.harness(agent)?;
+                    harness(fleet, agent)?;
                 }
                 let session = task_name(name);
-                let fleet = self.fleets.in_force();
                 let mut urls = vec![workspace_url(
                     fleet,
                     &host,
@@ -121,7 +123,7 @@ impl super::Executor for Fleet {
                 // there, so two names that make one Task name (`Review`,
                 // `review`) are refused rather than merged, by Fleet's
                 // exclusive create even when two interfaces race.
-                self.fleets.in_force().run(
+                fleet.run(
                     &["apply", "--create-only", "-f", "-"],
                     Some(&task.to_string()),
                 )?;
@@ -175,75 +177,72 @@ pub(crate) fn task_name(name: &str) -> String {
         .to_string()
 }
 
-impl Fleet {
-    /// The Fleet host a session on `route` runs on: the picker's route
-    /// (`ssh:devbox`) names the machine Fleet calls `devbox`, and no route
-    /// is `local`. A host Fleet's config does not define is refused.
-    fn host(&self, route: Option<&str>) -> Result<String, String> {
-        let host = match route.filter(|route| !route.is_empty()) {
-            None => "local".to_string(),
-            Some(route) if crate::session::Route::parse(route).is_ok_and(|r| r.is_local()) => {
-                "local".to_string()
-            }
-            // The flow's host rows carry Fleet's own host names.
-            Some(route) if !route.contains(':') => route.to_string(),
-            Some(route) => crate::session::host_of_key(route)
-                .ok_or_else(|| format!("not a host: {route}"))?
-                .to_string(),
-        };
-        let answer = self.json(&["runtime", "hosts", "--json"])?;
-        // `null`: one runtime serves any host.
-        if let Some(hosts) = answer["hosts"].as_array() {
-            if !hosts.iter().any(|known| known == host.as_str()) {
-                let known: Vec<&str> = hosts.iter().filter_map(|h| h.as_str()).collect();
-                return Err(format!(
+/// The place a session on `route` runs on, of the Fleet `fleet` reaches:
+/// the picker's route (`ssh:devbox`) names the machine Fleet calls
+/// `devbox`, and no route is `local`. A place that Fleet's config does not
+/// define is refused.
+fn place(fleet: &crate::fleet_link::FleetLink, route: Option<&str>) -> Result<String, String> {
+    let host = match route.filter(|route| !route.is_empty()) {
+        None => "local".to_string(),
+        Some(route) if crate::session::Route::parse(route).is_ok_and(|r| r.is_local()) => {
+            "local".to_string()
+        }
+        // The flow's host rows carry Fleet's own host names.
+        Some(route) if !route.contains(':') => route.to_string(),
+        Some(route) => crate::session::host_of_key(route)
+            .ok_or_else(|| format!("not a host: {route}"))?
+            .to_string(),
+    };
+    let answer = json(fleet, &["runtime", "hosts", "--json"])?;
+    // `null`: one runtime serves any host.
+    if let Some(hosts) = answer["hosts"].as_array() {
+        if !hosts.iter().any(|known| known == host.as_str()) {
+            let known: Vec<&str> = hosts.iter().filter_map(|h| h.as_str()).collect();
+            return Err(format!(
                     "Fleet has no place {host} (its places: {}); a place is `<runtime>/<place>`: add [runtimes.<name>.places.<place>] to Fleet's config",
                     known.join(", ")
                 ));
-            }
         }
-        Ok(host)
     }
+    Ok(host)
+}
 
-    /// Refuse an agent Fleet has no harness profile for: Fleet would run a
-    /// program named as the agent, which is not the command thurbox's
-    /// registry runs for it (`shell` is `bash -i`).
-    fn harness(&self, agent: &str) -> Result<(), String> {
-        let answer = self.json(&["version", "--json"])?;
-        let profiled: Vec<&str> = answer["harnesses"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|h| h.as_str())
-            .collect();
-        if profiled.contains(&agent) {
-            return Ok(());
-        }
-        Err(format!(
-            "the agent {agent} has no Fleet harness profile; Fleet runs {}",
-            profiled.join(", ")
-        ))
+/// Refuse an agent the Fleet `fleet` reaches has no harness profile for:
+/// Fleet would run a program named as the agent, which is not the command
+/// thurbox's registry runs for it (`shell` is `bash -i`).
+fn harness(fleet: &crate::fleet_link::FleetLink, agent: &str) -> Result<(), String> {
+    let answer = json(fleet, &["version", "--json"])?;
+    let profiled: Vec<&str> = answer["harnesses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h.as_str())
+        .collect();
+    if profiled.contains(&agent) {
+        return Ok(());
     }
+    Err(format!(
+        "the agent {agent} has no Fleet harness profile; Fleet runs {}",
+        profiled.join(", ")
+    ))
+}
 
-    /// `fleet <args>`'s JSON answer.
-    fn json(&self, args: &[&str]) -> Result<serde_json::Value, String> {
-        let out = self
-            .fleets
-            .in_force()
-            .command(args)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("could not start fleet {}: {e}", args[0]))?;
-        if !out.status.success() {
-            return Err(format!(
-                "fleet {}: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        serde_json::from_slice(&out.stdout)
-            .map_err(|e| format!("fleet {} answered no JSON: {e}", args.join(" ")))
+/// `fleet <args>`'s JSON answer, from the Fleet `fleet` reaches.
+fn json(fleet: &crate::fleet_link::FleetLink, args: &[&str]) -> Result<serde_json::Value, String> {
+    let out = fleet
+        .command(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("could not start fleet {}: {e}", args[0]))?;
+    if !out.status.success() {
+        return Err(format!(
+            "fleet {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("fleet {} answered no JSON: {e}", args.join(" ")))
 }
 
 /// Give the session `task` of the Fleet `link` reaches the name `name`: the
@@ -311,6 +310,11 @@ struct Choice<'a> {
 /// absolute, because only that host could expand a `~`, and Fleet takes no
 /// relative URL. Whether a host's runtime makes worktrees at all is its own:
 /// Fleet refuses a scheme the runtime does not list.
+///
+/// A clone URL (`https://…`, `ssh://…`, git's `user@host:path`) is cloned
+/// by the runtime on the session's machine, always on a branch of its own:
+/// it is how a session on a Fleet whose folders thurbox does not read
+/// starts from a repository that machine does not hold yet.
 fn workspace_url(
     fleet: &crate::fleet_link::FleetLink,
     host: &str,
@@ -318,6 +322,15 @@ fn workspace_url(
     choice: Choice<'_>,
     session: &str,
 ) -> Result<String, String> {
+    if let Some(mut url) = clone_url(repo) {
+        url.push_str("?branch=");
+        url.push_str(&encode(choice.branch.unwrap_or(session)));
+        if let Some(base) = choice.base {
+            url.push('#');
+            url.push_str(&encode(base));
+        }
+        return Ok(url);
+    }
     let local = host == "local" && fleet.is_local();
     let place = match (fleet.is_local(), host) {
         (true, host) => host.to_string(),
@@ -365,6 +378,30 @@ fn workspace_url(
         url.push_str(&encode(base));
     }
     Ok(url)
+}
+
+/// `repo` as the workspace URL that clones it, or `None` when it is a path:
+/// `https://…` is `git+https://…`; `ssh://…` and git's scp-like
+/// `user@host:path` are `git+ssh://…`. Fleet takes only an absolute URL, so
+/// the scp-like form is spelled as one: a relative path there is under the
+/// login's home, which an ssh URL writes `/~/`.
+fn clone_url(repo: &str) -> Option<String> {
+    let repo = repo.trim();
+    if let Some(rest) = repo.strip_prefix("https://") {
+        return Some(format!("git+https://{rest}"));
+    }
+    if let Some(rest) = repo.strip_prefix("ssh://") {
+        return Some(format!("git+ssh://{rest}"));
+    }
+    // git reads `user@host:path` as ssh when no `/` comes before the `:`.
+    let (login, path) = repo.split_once(':')?;
+    if !login.contains('@') || login.contains('/') || path.is_empty() {
+        return None;
+    }
+    Some(match path.strip_prefix('/') {
+        Some(absolute) => format!("git+ssh://{login}/{absolute}"),
+        None => format!("git+ssh://{login}/~/{path}"),
+    })
 }
 
 /// Whether `dir` on this machine is a git repository or inside one. Decided
@@ -463,6 +500,7 @@ mod tests {
                 repo: repo.path().display().to_string(),
                 agent: Some("claude".into()),
                 host: None,
+                fleet: None,
                 worktree: Some(false),
                 branch: None,
                 base: None,
@@ -624,6 +662,40 @@ mod tests {
             workspace_url(&remote, "local", "/srv/app", on, "wt").unwrap(),
             "git+file:///srv/app?branch=wt"
         );
+    }
+
+    /// A clone URL is a workspace the runtime clones on the session's
+    /// machine, on the session's own branch: how a session on a Fleet whose
+    /// folders thurbox does not read starts from a repository.
+    #[test]
+    fn a_clone_url_is_cloned_on_the_sessions_machine() {
+        let link = crate::fleet_link::FleetLink::local("fleet");
+        let url = |repo: &str, choice| workspace_url(&link, "local", repo, choice, "wt").unwrap();
+        assert_eq!(
+            url("https://github.com/o/r.git", Choice::default()),
+            "git+https://github.com/o/r.git?branch=wt"
+        );
+        // git's scp-like form: a relative path is under the login's home,
+        // an absolute one is not.
+        assert_eq!(
+            url("me@box:repos/app.git", Choice::default()),
+            "git+ssh://me@box/~/repos/app.git?branch=wt"
+        );
+        assert_eq!(
+            url("me@box:/srv/app.git", Choice::default()),
+            "git+ssh://me@box/srv/app.git?branch=wt"
+        );
+        let on = Choice {
+            branch: Some("feat"),
+            base: Some("main"),
+            ..Choice::default()
+        };
+        assert_eq!(
+            url("ssh://me@box/srv/r.git", on),
+            "git+ssh://me@box/srv/r.git?branch=feat#main"
+        );
+        assert_eq!(super::clone_url("/srv/app"), None);
+        assert_eq!(super::clone_url("C:/app"), None);
     }
 
     /// A Windows path is spelled as a URL spells one, so a runtime reads it

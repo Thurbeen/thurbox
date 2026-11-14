@@ -17,7 +17,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{repo_name, Deleting, SessionRow, SnapshotSource, SourceRead, StatusSource};
+use super::{
+    repo_name, AgentRow, Deleting, FleetRow, FleetState, HostRow, SessionRow, SnapshotSource,
+    SourceRead, StatusSource,
+};
 use crate::fleet_link::FleetLink;
 use crate::session::SessionState;
 
@@ -68,8 +71,10 @@ enum Update {
     Manager(Option<String>),
     /// The harnesses Fleet has profiles for: the agents a session can run.
     Harnesses(Vec<String>),
-    /// The hosts Fleet defines: where a session can run.
-    Hosts(Vec<String>),
+    /// The places Fleet defines: where a session can run.
+    Places(Vec<HostRow>),
+    /// Whether the Fleet is up, from its `fleet version --json`, and why not.
+    State(FleetState, Option<String>),
 }
 
 /// The Tasks as session rows, followed by `fleet watch` on a worker.
@@ -96,6 +101,40 @@ pub struct FleetWatch {
     interface: Option<(u64, crate::config::interface_state::InterfaceState)>,
     /// The running `fleet watch`, killed when the source goes.
     child: Arc<Mutex<Option<Child>>>,
+    /// The Fleet as the creation flow offers it, as last asked.
+    fleet: FleetRow,
+    /// Held while the source lives: the `version` worker, which sends only
+    /// a change, ends once it is gone.
+    _alive: Arc<()>,
+    /// What [`SnapshotSource::refresh_places`] reads through.
+    link: FleetLink,
+    tx: Sender<Update>,
+    /// Set while a refresh is on its way, so a picker opened again before it
+    /// answers starts no second one.
+    refreshing: Arc<std::sync::atomic::AtomicBool>,
+    /// The state last sent, shared by the `version` worker and a refresh.
+    published: Published,
+}
+
+/// The Fleet state last sent to the source: the one owner both writers
+/// compare with, so neither leaves the other's answer standing.
+type Published = Arc<Mutex<Option<(FleetState, Option<String>)>>>;
+
+/// Send `next` unless it is what was last sent. `false` once the source is
+/// gone.
+fn publish_state(
+    published: &Published,
+    tx: &Sender<Update>,
+    next: (FleetState, Option<String>),
+) -> bool {
+    let Ok(mut last) = published.lock() else {
+        return false;
+    };
+    if last.as_ref() == Some(&next) {
+        return true;
+    }
+    *last = Some(next.clone());
+    tx.send(Update::State(next.0, next.1)).is_ok()
 }
 
 impl FleetWatch {
@@ -123,18 +162,40 @@ impl FleetWatch {
             let (link, tx) = (link.clone(), tx.clone());
             std::thread::spawn(move || keep_manager(&link, &tx));
         }
+        // The first poll publishes the Fleet, connecting, before it answers.
+        let _ = tx.send(Update::State(FleetState::Connecting, None));
+        let alive = Arc::new(());
+        let published = Published::default();
         {
-            let (link, tx) = (link.clone(), tx.clone());
-            std::thread::spawn(move || read_harnesses(&link, &tx));
+            let (link, tx, alive, published) = (
+                link.clone(),
+                tx.clone(),
+                Arc::downgrade(&alive),
+                published.clone(),
+            );
+            std::thread::spawn(move || read_version(&link, &tx, &alive, &published));
         }
         {
             let (link, tx) = (link.clone(), tx.clone());
-            std::thread::spawn(move || read_hosts(&link, &tx));
+            std::thread::spawn(move || read_places(&link, &tx));
         }
+        // The Fleet's own `local` until it lists its places, so a Fleet that
+        // is slow or absent never holds the creation flow on a place step
+        // with nothing to choose; its answer replaces it.
+        let fleet = FleetRow {
+            name: link.name().to_string(),
+            transport: link.transport(),
+            remote: !link.is_local(),
+            places: Some(vec![HostRow::local(&machine(&link))]),
+            ..FleetRow::default()
+        };
         let child = Arc::new(Mutex::new(None));
         let held = Arc::clone(&child);
         let name = link.name().to_string();
-        std::thread::spawn(move || watch(&link, &tx, &held));
+        {
+            let (link, tx) = (link.clone(), tx.clone());
+            std::thread::spawn(move || watch(&link, &tx, &held));
+        }
         Self {
             name,
             updates,
@@ -147,11 +208,44 @@ impl FleetWatch {
             next_stuck_ms: None,
             interface: None,
             child,
+            fleet,
+            _alive: alive,
+            link,
+            tx,
+            refreshing: Arc::default(),
+            published,
         }
     }
 }
 
 impl SnapshotSource for FleetWatch {
+    /// One `runtime places` and one `version`, on a worker. Each is bounded
+    /// as any call through the link is (ssh's `ConnectTimeout`), and a
+    /// Fleet that does not answer keeps what it said last.
+    fn refresh_places(&mut self, fleet: &str) {
+        use std::sync::atomic::Ordering;
+        if fleet != self.name || self.refreshing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (link, tx, refreshing, published) = (
+            self.link.clone(),
+            self.tx.clone(),
+            self.refreshing.clone(),
+            self.published.clone(),
+        );
+        std::thread::spawn(move || {
+            if let Some(answer) = ask(&link, &["runtime", "places", "--json"]) {
+                let _ = tx.send(Update::Places(places_from(&answer, &machine(&link))));
+            }
+            let (state, answer) = probe(&link);
+            if let Some(answer) = answer {
+                let _ = tx.send(Update::Harnesses(harnesses_of(&answer)));
+            }
+            publish_state(&published, &tx, state);
+            refreshing.store(false, Ordering::Release);
+        });
+    }
+
     fn poll(&mut self) -> Option<SourceRead> {
         let mut moved = false;
         while let Ok(update) = self.updates.try_recv() {
@@ -171,8 +265,23 @@ impl SnapshotSource for FleetWatch {
                     self.watch_error = Some(why);
                 }
                 Update::Manager(error) => self.manager_error = error,
-                Update::Harnesses(harnesses) => self.read.harnesses = Some(harnesses),
-                Update::Hosts(hosts) => self.read.hosts = Some(hosts),
+                Update::Harnesses(harnesses) => {
+                    self.fleet.agents = Some(
+                        harnesses
+                            .iter()
+                            .map(|name| AgentRow { name: name.clone() })
+                            .collect(),
+                    );
+                    self.read.harnesses = Some(harnesses);
+                }
+                Update::Places(places) => {
+                    self.fleet.places = Some(places.clone());
+                    self.read.hosts = Some(places);
+                }
+                Update::State(state, why) => {
+                    self.fleet.state = state;
+                    self.fleet.why = why;
+                }
             }
         }
         // The interface's own file, read again only when this process wrote
@@ -231,6 +340,14 @@ impl SnapshotSource for FleetWatch {
             .map(String::as_str)
             .collect();
         self.read.error = (!errors.is_empty()).then(|| errors.join("; "));
+        let mut fleet = self.fleet.clone();
+        // A watch that ended says more than the last `version`: the Fleet
+        // cannot be asked now.
+        if self.lost {
+            fleet.state = FleetState::Unreachable;
+            fleet.why.clone_from(&self.watch_error);
+        }
+        self.read.fleets = vec![fleet];
         let read = self.read.clone();
         self.read.removed.clear();
         Some(read)
@@ -238,8 +355,9 @@ impl SnapshotSource for FleetWatch {
 }
 
 /// The Tasks of every Fleet thurbox lists, as one list: one [`FleetWatch`]
-/// per Fleet, each row's id naming its Fleet. The harnesses and places the
-/// creation flow offers are the Fleet in force's, which the commands go to.
+/// per Fleet, each row's id naming its Fleet. Each Fleet's harnesses and
+/// places are offered with it, the creation flow's choice of Fleet; the
+/// unscoped ones are the Fleet in force's.
 pub struct FleetWatches {
     in_force: String,
     watches: Vec<FleetWatch>,
@@ -261,6 +379,12 @@ impl FleetWatches {
 }
 
 impl SnapshotSource for FleetWatches {
+    fn refresh_places(&mut self, fleet: &str) {
+        for watch in &mut self.watches {
+            watch.refresh_places(fleet);
+        }
+    }
+
     fn poll(&mut self) -> Option<SourceRead> {
         let mut removed = Vec::new();
         let mut moved = false;
@@ -298,6 +422,11 @@ impl SnapshotSource for FleetWatches {
             error: (!errors.is_empty()).then(|| errors.join("; ")),
             harnesses: in_force.and_then(|read| read.harnesses.clone()),
             hosts: in_force.and_then(|read| read.hosts.clone()),
+            fleets: self
+                .reads
+                .iter()
+                .flat_map(|read| read.fleets.iter().cloned())
+                .collect(),
             removed,
         })
     }
@@ -319,23 +448,70 @@ fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Ask Fleet which hosts it defines (`fleet runtime hosts --json`), again
-/// every [`RETRY`] until it answers: the hosts the creation flow offers are
-/// Fleet's. `null` (one runtime serves any host) names none to offer.
-fn read_hosts(link: &FleetLink, tx: &Sender<Update>) {
+/// Ask Fleet which places it defines (`fleet runtime places --json`), again
+/// every [`RETRY`] until it answers: the places the creation flow offers
+/// are Fleet's.
+fn read_places(link: &FleetLink, tx: &Sender<Update>) {
+    let machine = machine(link);
     loop {
-        if let Some(answer) = ask(link, &["runtime", "hosts", "--json"]) {
-            let hosts = answer["hosts"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|h| h.as_str().map(str::to_string))
-                .collect();
-            let _ = tx.send(Update::Hosts(hosts));
+        if let Some(answer) = ask(link, &["runtime", "places", "--json"]) {
+            let _ = tx.send(Update::Places(places_from(&answer, &machine)));
             return;
         }
         std::thread::sleep(RETRY);
     }
+}
+
+/// How the machine a Fleet runs on reads beside its `local` place.
+fn machine(link: &FleetLink) -> String {
+    if link.is_local() {
+        "this machine".to_string()
+    } else {
+        format!("{} itself", link.name())
+    }
+}
+
+/// The places the creation flow offers, from `fleet runtime places --json`:
+/// the one Fleet calls `local` first, with an empty backend (a Task names
+/// it `local`), then each other place by its `<runtime>/<place>`. `null`
+/// (one runtime serves any place) offers `local` alone. `machine` is how
+/// the Fleet's own machine reads.
+pub(crate) fn places_from(answer: &Value, machine: &str) -> Vec<HostRow> {
+    let Some(places) = answer["places"].as_array() else {
+        return vec![HostRow::local(machine)];
+    };
+    let mut rows = Vec::new();
+    for place in places {
+        let runtime = place["runtime"].as_str().unwrap_or_default();
+        let ready = place["ready"].as_bool();
+        let why = place["why"].as_str().map(str::to_string);
+        if place["alias"].as_str() == Some("local") {
+            rows.insert(
+                0,
+                HostRow {
+                    detail: format!("{machine} ({runtime})"),
+                    ready,
+                    why,
+                    ..HostRow::local(machine)
+                },
+            );
+            continue;
+        }
+        let id = place["place"].as_str().unwrap_or_default().to_string();
+        let detail = if place["dynamic"].as_bool() == Some(true) {
+            format!("a new machine per session ({runtime})")
+        } else {
+            format!("a {runtime} place")
+        };
+        rows.push(HostRow {
+            name: id.clone(),
+            detail,
+            backend: id,
+            ready,
+            why,
+        });
+    }
+    rows
 }
 
 /// One `fleet <args>` answer as JSON, or `None` when it failed.
@@ -349,23 +525,100 @@ fn ask(link: &FleetLink, args: &[&str]) -> Option<Value> {
         .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
 }
 
-/// Ask Fleet which harnesses it has profiles for (`fleet version --json`),
-/// again every [`RETRY`] until it answers: the agents the creation flow
-/// offers are Fleet's, and thurbox keeps no list of its own.
-fn read_harnesses(link: &FleetLink, tx: &Sender<Update>) {
-    loop {
-        if let Some(answer) = ask(link, &["version", "--json"]) {
-            let harnesses = answer["harnesses"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|h| h.as_str().map(str::to_string))
-                .collect();
-            let _ = tx.send(Update::Harnesses(harnesses));
+/// Ask Fleet for its `version --json` every [`MANAGER_CHECK`], [`RETRY`]
+/// while it does not answer: which harnesses it has profiles for (the
+/// agents the creation flow offers are Fleet's, and thurbox keeps no list
+/// of its own), and whether its manager runs. Only a change is sent.
+fn read_version(
+    link: &FleetLink,
+    tx: &Sender<Update>,
+    alive: &std::sync::Weak<()>,
+    published: &Published,
+) {
+    let mut harnesses = None;
+    while alive.strong_count() > 0 {
+        let (next, answer) = probe(link);
+        if let Some(answer) = answer {
+            let named = harnesses_of(&answer);
+            if harnesses.as_ref() != Some(&named) {
+                harnesses = Some(named.clone());
+                if tx.send(Update::Harnesses(named)).is_err() {
+                    return;
+                }
+            }
+        }
+        let answered = next.0 != FleetState::Unreachable;
+        if !publish_state(published, tx, next) {
             return;
         }
-        std::thread::sleep(RETRY);
+        std::thread::sleep(if answered && harnesses.is_some() {
+            MANAGER_CHECK
+        } else {
+            RETRY
+        });
     }
+}
+
+/// The harnesses a `fleet version --json` answer names.
+fn harnesses_of(answer: &Value) -> Vec<String> {
+    answer["harnesses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h.as_str().map(str::to_string))
+        .collect()
+}
+
+/// One `fleet version --json`: the Fleet's state and why, and its answer
+/// when it gave one. A Fleet answers whether its manager holds the lease
+/// in `manager` (M4: thurbox never starts a remote one, so it says when
+/// none runs).
+fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
+    let out = match link
+        .command(&["version", "--json"])
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => {
+            let why = format!("could not start fleet: {e}");
+            return ((FleetState::Unreachable, Some(why)), None);
+        }
+    };
+    if let Some(why) = link.unreachable(&out) {
+        return ((FleetState::Unreachable, Some(why)), None);
+    }
+    let answer = out
+        .status
+        .success()
+        .then(|| serde_json::from_slice::<Value>(&out.stdout).ok())
+        .flatten();
+    let Some(answer) = answer else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let why = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("error: "))
+            .unwrap_or(stderr.trim());
+        return (
+            (FleetState::Unknown, Some(format!("fleet version: {why}"))),
+            None,
+        );
+    };
+    let manager = &answer["manager"];
+    let state = match manager["held"].as_bool() {
+        Some(true) => (FleetState::Up, None),
+        Some(false) => (FleetState::Down, None),
+        None => (
+            FleetState::Unknown,
+            Some(
+                manager["why"]
+                    .as_str()
+                    .unwrap_or("this Fleet does not report its manager — update Fleet")
+                    .to_string(),
+            ),
+        ),
+    };
+    (state, Some(answer))
 }
 
 /// Run `fleet watch` until the source goes, starting it again whenever it
@@ -812,8 +1065,167 @@ mod tests {
 
     use super::*;
 
+    /// The places offered are Fleet's: `local` first, named `local` with no
+    /// backend, then each other place by its `<runtime>/<place>`, each with
+    /// whether it is ready. A Fleet whose one runtime serves any place
+    /// (`null`) offers `local` alone.
+    #[test]
+    fn the_places_offered_are_fleets_local_first() {
+        let answer = serde_json::json!({"places": [
+            {"place": "mux/wsl-dev", "runtime": "mux", "alias": null, "ready": false, "why": "no distro"},
+            {"place": "mux/local", "runtime": "mux", "alias": "local", "ready": true},
+            {"place": "vm/sandbox", "runtime": "vm", "dynamic": true, "ready": null},
+        ]});
+        let rows = places_from(&answer, "box itself");
+        let shown: Vec<(&str, &str, &str, Option<bool>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.detail.as_str(),
+                    r.backend.as_str(),
+                    r.ready,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("local", "box itself (mux)", "", Some(true)),
+                ("mux/wsl-dev", "a mux place", "mux/wsl-dev", Some(false)),
+                (
+                    "vm/sandbox",
+                    "a new machine per session (vm)",
+                    "vm/sandbox",
+                    None
+                ),
+            ]
+        );
+        assert_eq!(rows[1].why.as_deref(), Some("no distro"));
+        let any = places_from(&serde_json::json!({"places": null}), "this machine");
+        assert_eq!(any, [HostRow::local("this machine")]);
+    }
+
+    /// A Fleet's places are read again when the place picker opens on it, so
+    /// a place's readiness is the one at that opening, not at startup.
+    #[cfg(unix)]
+    #[test]
+    fn the_places_are_read_again_when_the_place_picker_opens() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "here=$(dirname \"$0\")\n\
+             case \"$1\" in\n\
+             runtime) cat \"$here/places.json\" ;;\n\
+             version) echo '{\"harnesses\":[]}' ;;\n\
+             watch) exec sleep 30 ;;\n\
+             esac",
+        );
+        let places = remote.dir().join("remote/places.json");
+        let answer = |ready: bool| {
+            format!(r#"{{"places":[{{"place":"mux/gpu","runtime":"mux","ready":{ready}}}]}}"#)
+        };
+        std::fs::write(&places, answer(true)).expect("places");
+        crate::paths::with_path(remote.path(), || {
+            let mut store = super::super::SnapshotStore::with_source(
+                Box::new(FleetWatch::spawn(remote.link.clone())),
+                &Default::default(),
+            );
+            let ready = |store: &mut super::super::SnapshotStore| {
+                store.refresh_if_due();
+                store
+                    .current()
+                    .fleets
+                    .first()?
+                    .places
+                    .as_ref()?
+                    .iter()
+                    .find(|p| p.name == "mux/gpu")?
+                    .ready
+            };
+            let until = |store: &mut super::super::SnapshotStore, want: Option<bool>| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while ready(store) != want {
+                    assert!(std::time::Instant::now() < deadline, "never {want:?}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            };
+            until(&mut store, Some(true));
+            std::fs::write(&places, answer(false)).expect("places");
+            store.want_places(Some("devbox".into()));
+            until(&mut store, Some(false));
+            // Asked once per opening: a second opening reads again.
+            store.want_places(None);
+            std::fs::write(&places, answer(true)).expect("places");
+            store.want_places(Some("devbox".into()));
+            until(&mut store, Some(true));
+        });
+    }
+
+    /// A refresh that fails once (ssh exits 255 while the place picker
+    /// opens) marks the Fleet unreachable, and the next `version` poll that
+    /// answers marks it up again: the published state has one owner.
+    #[cfg(unix)]
+    #[test]
+    fn a_fleet_unreachable_for_one_refresh_is_up_again_at_the_next_poll() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "here=$(dirname \"$0\")\n\
+             case \"$1\" in\n\
+             version) [ -e \"$here/down\" ] && { echo 'no route' >&2; exit 255; }; echo '{\"manager\":{\"held\":true}}' ;;\n\
+             runtime) [ -e \"$here/down\" ] && exit 255; echo '{\"places\":null}' ;;\n\
+             watch) exec sleep 60 ;;\n\
+             esac",
+        );
+        let down = remote.dir().join("remote/down");
+        crate::paths::with_path(remote.path(), || {
+            let mut store = super::super::SnapshotStore::with_source(
+                Box::new(FleetWatch::spawn(remote.link.clone())),
+                &Default::default(),
+            );
+            let until = |store: &mut super::super::SnapshotStore, want: FleetState| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(25);
+                loop {
+                    store.refresh_if_due();
+                    let state = store.current().fleets.first().map(|f| f.state);
+                    if state == Some(want) {
+                        return;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "never {want:?}: {state:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            };
+            until(&mut store, FleetState::Up);
+            std::fs::write(&down, "").expect("down");
+            store.want_places(Some("devbox".into()));
+            until(&mut store, FleetState::Unreachable);
+            std::fs::remove_file(&down).expect("up");
+            until(&mut store, FleetState::Up);
+        });
+    }
+
+    /// A Fleet's state is its manager's lease, from `fleet version --json`:
+    /// up while it is held, down when it is not, and unreachable when ssh
+    /// itself fails (exit 255).
+    #[cfg(unix)]
+    #[test]
+    fn a_fleets_state_is_its_managers_lease() {
+        for (answer, state) in [
+            (r#"{"manager":{"held":true}}"#, FleetState::Up),
+            (r#"{"manager":{"held":false}}"#, FleetState::Down),
+            (
+                r#"{"manager":{"held":null,"why":"no store"}}"#,
+                FleetState::Unknown,
+            ),
+        ] {
+            let remote = crate::fleet_link::testing::Remote::new(&format!("echo '{answer}'"));
+            let ((got, _), _) = crate::paths::with_path(remote.path(), || probe(&remote.link));
+            assert_eq!(got, state, "{answer}");
+        }
+    }
+
     /// Every call the source makes of Fleet goes through its link: the
-    /// watch, the manager, and the `version` and `runtime hosts` reads, each
+    /// watch, the manager, and the `version` and `runtime places` reads, each
     /// logged by a stand-in `ssh` in front of a Fleet only that `ssh` can
     /// reach.
     ///
@@ -827,7 +1239,7 @@ mod tests {
         let remote = crate::fleet_link::testing::Remote::new(
             "case \"$1\" in\n\
              version) echo '{\"harnesses\":[\"claude\"]}' ;;\n\
-             runtime) echo '{\"hosts\":[\"local\",\"devbox\"]}' ;;\n\
+             runtime) echo '{\"places\":[{\"place\":\"mux/local\",\"runtime\":\"mux\",\"alias\":\"local\",\"ready\":true},{\"place\":\"mux/devbox\",\"runtime\":\"mux\",\"ready\":false,\"why\":\"no tmux\"}]}' ;;\n\
              watch) echo '{\"type\":\"synced\",\"revision\":1,\"names\":[]}'; exec sleep 30 ;;\n\
              up) exit 6 ;;\n\
              esac",
@@ -855,13 +1267,22 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
             }
             assert_eq!(read.harnesses, Some(vec!["claude".to_string()]));
+            let places: Vec<(String, String, Option<bool>)> = read
+                .hosts
+                .unwrap()
+                .into_iter()
+                .map(|p| (p.name, p.backend, p.ready))
+                .collect();
             assert_eq!(
-                read.hosts,
-                Some(vec!["local".to_string(), "devbox".to_string()])
+                places,
+                [
+                    ("local".into(), String::new(), Some(true)),
+                    ("mux/devbox".into(), "mux/devbox".into(), Some(false)),
+                ]
             );
             drop(source);
         });
-        for call in ["up", "version --json", "runtime hosts --json"] {
+        for call in ["up", "version --json", "runtime places --json"] {
             assert!(remote.called(call), "{call}: {:?}", remote.calls());
         }
     }

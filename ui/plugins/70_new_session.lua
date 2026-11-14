@@ -6,16 +6,22 @@
 --
 -- A session is a Fleet Task (ADR-41), and the steps ask for what a Task takes:
 --
---   host  → repo → [base branch] → name → [branch name] → [agent] → create
+--   [fleet] → place → repo → [base branch] → name → [branch name] → [agent] → create
 --
 -- plus a detour off the repo step for a typed path that does not exist yet:
 --
 --   repo → new folder (git init / leave it empty) → repo
 --                     (clone into it)         → clone URL → repo
 --
--- These are v2's steps, in v2's order. `host` is always asked: this machine
--- is a choice at once, and the hosts Fleet names join the open step when they
--- arrive. The repo step gathers repositories, each ticked (`space`) and each
+-- These are v2's steps, in v2's order, after a Fleet step of their own: with
+-- several Fleets listed, which one manages the session is asked first, each
+-- with how it is reached and whether it is up, and every later list (places,
+-- agents) is that Fleet's. With one, the step is skipped. The place step (still
+-- `host` in the flow's state) is always asked: the Fleet's `local` is a choice
+-- at once, and the places Fleet names join the open step when they arrive. A
+-- Fleet on another machine has folders thurbox does not read: there, a
+-- repository is a typed path on that machine or a clone URL, never a browse of
+-- this one. The repo step gathers repositories, each ticked (`space`) and each
 -- given a worktree of its own or not (`alt+w`); a repository's existing
 -- worktrees open under it (`→`), and one picked runs as it is. `base branch`
 -- and `branch name` only appear when some repository has a worktree, and
@@ -58,14 +64,48 @@ local function browse()
   return (thurbox and thurbox.browse) or {}
 end
 
---- Every host Fleet defines, `local` first when it does; `nil` until Fleet
---- has answered, which is pending, not empty.
+--- Every Fleet `settings.toml` lists, by name.
+local function fleets()
+  return (thurbox and thurbox.fleets) or {}
+end
+
+--- Whether there is a Fleet to choose: with one, the Fleet step is skipped.
+local function several_fleets()
+  return #fleets() > 1
+end
+
+--- The Fleet the open flow chose, or nil before the flow has one.
+local function chosen_fleet()
+  local name = state.flow and state.flow.fleet
+  for _, fleet in ipairs(fleets()) do
+    if fleet.name == name then
+      return fleet
+    end
+  end
+  return nil
+end
+
+--- Every place the chosen Fleet defines, `local` first when it does; `nil`
+--- until that Fleet has answered, which is pending, not empty.
 local function hosts()
+  local fleet = chosen_fleet()
+  if fleet then
+    return fleet.places
+  end
   return thurbox and thurbox.hosts
 end
 
+--- The chosen Fleet's agents, or nil until it has said.
+local function known_agents()
+  local fleet = chosen_fleet()
+  if fleet then
+    return fleet.agents
+  end
+  return thurbox and thurbox.agents
+end
+
 local function agents()
-  return (thurbox and thurbox.agents) or {}
+  return known_agents() or {}
 end
 
 --- The branches of the repository `store.want_branches` names, or `nil`
@@ -81,7 +121,7 @@ end
 --- Whether Fleet has said which agents it has. Until it has, the list is
 --- pending, not empty, and nothing is created without one.
 local function agents_known()
-  return thurbox ~= nil and thurbox.agents ~= nil
+  return known_agents() ~= nil
 end
 
 --- The spinner frame for this paint, from the flow's own clock.
@@ -140,9 +180,17 @@ end
 --- A fresh flow. `step` is what "open" means — there is no separate flag for the
 --- kernel and this to disagree about, exactly as floating itself works.
 local function fresh()
+  -- With one Fleet there is nothing to ask: the flow starts on its places.
+  local only = not several_fleets() and fleets()[1] or nil
   return {
-    step = "host",
+    step = several_fleets() and "fleet" or "host",
+    fleet = only and only.name or nil,
+    remote = only ~= nil and only.remote == true,
+    fleet_index = 1,
     host = "",
+    -- The place a created Task names: empty for the Fleet's own `local`.
+    -- `host` above is where its repositories are remembered.
+    place = "",
     host_index = 1,
     cursor = 1,
     -- The repo step opens on its search, not on the list: the first thing a
@@ -188,9 +236,13 @@ local function ask(flow)
     store.want_bookmarks = nil
     store.want_browse = nil
     store.want_branches = nil
+    store.want_places = nil
     return
   end
   store.want_bookmarks = flow.host or ""
+  -- The chosen Fleet's places and agents, read again each time the place
+  -- picker opens, so a place's readiness is not the one from startup.
+  store.want_places = (flow.step == "host" and flow.fleet) or nil
   -- The branches of the first worktree repository, while the base branch is
   -- asked; on the repo step, the expanded repository's, whose read carries
   -- its existing worktrees. Local only: a worktree is never offered for a
@@ -216,8 +268,14 @@ local function ask(flow)
   --
   -- Only while the field has focus: it holds its starting directory the whole
   -- time now, and a flow picking from memory must not pay for a listing.
+  -- Never on a Fleet on another machine: this machine's folders are not its.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
-  if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
+  if
+    flow.step == "repo"
+    and not flow.remote
+    and flow.focus == "input"
+    and (typed ~= "" or flow.browse)
+  then
     local dir = pathpicker.split_typed(typed)
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
@@ -357,6 +415,9 @@ local function names_missing_folder(flow)
 end
 
 local function suggestion_for(flow)
+  if flow.remote then
+    return ""
+  end
   return pathpicker.suggestion(flow.input and flow.input.value or "", browse().entries or {})
 end
 
@@ -385,6 +446,10 @@ local function trail(flow)
     return ""
   end
   local parts = {}
+  -- A remote Fleet's repository key already names it (`box/local`).
+  if several_fleets() and flow.fleet and not flow.remote and flow.step ~= "fleet" then
+    parts[#parts + 1] = flow.fleet
+  end
   if (flow.host or "") ~= "" then
     parts[#parts + 1] = flow.host
   end
@@ -461,12 +526,85 @@ end
 
 -- ── The steps ──────────────────────────────────────────────────────────────
 
---- The host picker: each host Fleet defines, with the detail that tells two
---- apart. Fleet's `local` is offered only when Fleet defines it.
+--- `text` padded with spaces to `width` cells, so a list's columns line up.
+local function pad(text, width)
+  return text .. string.rep(" ", math.max(1, width - widgets.len(text)))
+end
+
+--- A Fleet's state as its row shows it, short enough to fit beside its name.
+local FLEET_STATES = {
+  up = "● up",
+  down = "○ Fleet not running",
+  unreachable = "○ unreachable",
+  connecting = "◌ connecting…",
+  unknown = "? unknown",
+}
+
+--- What the row under the cursor says beyond its state: why a Fleet is not
+--- up, and for a remote one with no manager, what runs it (M4: thurbox never
+--- starts a manager on another machine).
+local function fleet_detail(fleet)
+  if not fleet then
+    return ""
+  end
+  if fleet.state == "down" and fleet.remote then
+    return "install the systemd unit (see doctor)"
+  end
+  return fleet.why or ""
+end
+
+--- The Fleet picker: each listed Fleet, how it is reached, and its state.
+local function fleet_labels()
+  local labels = {}
+  for _, fleet in ipairs(fleets()) do
+    labels[#labels + 1] = pad(fleet.name, 12)
+      .. pad(fleet.transport or "", 18)
+      .. (FLEET_STATES[fleet.state] or fleet.state or "")
+  end
+  return labels
+end
+
+local function render_fleet(flow)
+  local labels = fleet_labels()
+  if flow.fleet_index > #labels then
+    flow.fleet_index = math.max(#labels, 1)
+    save(flow)
+  end
+  local height = #labels
+  local detail = fleet_detail(fleets()[flow.fleet_index])
+  return frame("Fleet", height + 5, {
+    { type = "box", len = height, children = selector_rows(labels, flow.fleet_index, height) },
+    {
+      type = "text",
+      len = 1,
+      text = {
+        {
+          { text = " " .. widgets.middle_truncate(detail, ROW_COLS), style = { fg = theme.muted } },
+        },
+      },
+    },
+    message_row(flow),
+    modal.footer({ { "j/k", "navigate" } }, "Select"),
+  }, flow)
+end
+
+--- Whether a place's runtime says it can run a session, as its row shows it.
+local function readiness(place)
+  if place.ready == true then
+    return "  ● ready"
+  elseif place.ready == false then
+    return "  ○ not ready" .. (place.why and (": " .. place.why) or "")
+  end
+  return ""
+end
+
+--- The place picker: each place the chosen Fleet defines, with the detail
+--- that tells two apart. Fleet's `local` is offered only when Fleet defines
+--- it.
 local function host_labels()
   local labels = {}
   for _, host in ipairs(hosts() or {}) do
-    labels[#labels + 1] = host.name .. "  (" .. (host.detail or "") .. ")"
+    labels[#labels + 1] = pad(host.name, 12) .. pad(host.detail or "", 24) .. readiness(host)
   end
   return labels
 end
@@ -474,7 +612,7 @@ end
 local function render_host(flow)
   local labels = host_labels()
   if hosts() == nil then
-    labels = { "Asking Fleet for its hosts…" }
+    labels = { "Asking " .. (flow.fleet or "Fleet") .. " for its places…" }
   end
   -- Fleet's answer replaces the list under an open step, and can shorten it.
   if flow.host_index > #labels then
@@ -482,7 +620,8 @@ local function render_host(flow)
     save(flow)
   end
   local height = #labels
-  return frame("Run On", height + 4, {
+  local title = several_fleets() and flow.fleet and ("Place on " .. flow.fleet) or "Place"
+  return frame(title, height + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
     message_row(flow),
     modal.footer({ { "j/k", "navigate" } }, "Select"),
@@ -645,7 +784,9 @@ local function render_repo(flow)
   -- typed text. The input node is sized to the value so the caret lands where
   -- the text ends and the ghost begins there rather than at the right edge.
   local suggestion = flow.suggestion or ""
-  local label = "Add Repo Path"
+  -- A remote Fleet's folders are not this machine's: a path there is typed,
+  -- or its repository cloned there from a URL.
+  local label = flow.remote and "Add Repo Path or Clone URL" or "Add Repo Path"
   if bookmark_pending() then
     label = label .. " " .. spinner(flow) .. " " .. (flow.pending_label or "checking…")
   end
@@ -813,6 +954,9 @@ local function render_repo(flow)
       -- can send it, and help lists both.
       { "alt+⏎", "next" },
     }
+    if flow.remote then
+      hints = { { "s-tab", "search" }, { "alt+⏎", "next" } }
+    end
     -- An empty field is nothing to add — including straight after an add, which
     -- clears it and leaves the focus here so several paths can be typed in a
     -- row. Trimmed as `enter` trims it, so a field holding only spaces reads as
@@ -1140,7 +1284,8 @@ local function commit(flow)
     branch = worktree and flow.branch.value or nil,
     base = worktree and flow.base or nil,
     agent = picked and picked.name or nil,
-    host = (flow.host ~= "" and flow.host) or nil,
+    host = (flow.place ~= "" and flow.place) or nil,
+    fleet = flow.fleet,
     extras = (not open and flow.extras) or {},
   })
   save(nil)
@@ -1204,7 +1349,9 @@ end
 --- by different routes — a declared action, and a raw key while a field has
 --- focus.
 local function move_selection(flow, step)
-  if flow.step == "host" then
+  if flow.step == "fleet" then
+    flow.fleet_index = widgets.clamp(flow.fleet_index + step, #fleets())
+  elseif flow.step == "host" then
     flow.host_index = widgets.clamp(flow.host_index + step, #host_labels())
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
@@ -1229,7 +1376,9 @@ return {
       return { open = false }
     end
     local selection = flow.cursor or 1
-    if flow.step == "host" then
+    if flow.step == "fleet" then
+      selection = flow.fleet_index
+    elseif flow.step == "host" then
       selection = flow.host_index
     elseif flow.step == "agent" then
       selection = flow.agent_index
@@ -1397,7 +1546,9 @@ return {
       save(flow)
     end
 
-    if flow.step == "host" then
+    if flow.step == "fleet" then
+      return render_fleet(flow)
+    elseif flow.step == "host" then
       return render_host(flow)
     elseif flow.step == "repo" then
       return render_repo(flow)
@@ -1584,6 +1735,9 @@ return {
         flow.focus = "input"
       elseif flow.step == "clone" then
         flow.step = "new_folder"
+      elseif flow.step == "host" and several_fleets() then
+        -- Back to the Fleets: the places shown are only the one picked.
+        flow.step = "fleet"
       else
         save(nil)
         ask(nil)
@@ -1596,14 +1750,43 @@ return {
 
     flow.message = nil
 
+    if flow.step == "fleet" then
+      if name == "enter" then
+        local chosen = fleets()[flow.fleet_index]
+        if not chosen then
+          return true
+        end
+        if chosen.state == "unreachable" then
+          flow.message = chosen.name .. " cannot be reached: " .. (chosen.why or "see doctor")
+          save(flow)
+          return true
+        end
+        flow.fleet = chosen.name
+        flow.remote = chosen.remote == true
+        flow.step = "host"
+        flow.host_index = 1
+        save(flow)
+        return true
+      end
+      return false
+    end
+
     if flow.step == "host" then
       if name == "enter" then
         local chosen = (hosts() or {})[flow.host_index]
         if not chosen then
-          -- Fleet has not answered yet, or defines no host: nothing to run on.
+          -- Fleet has not answered yet, or defines no place: nothing to run on.
           return true
         end
-        flow.host = chosen.backend or ""
+        flow.place = chosen.backend or ""
+        -- Repositories are remembered per place. A remote Fleet's are kept
+        -- under `<fleet>/<place>`, never under this machine's empty key,
+        -- since none of its paths is a path here.
+        if flow.remote then
+          flow.host = flow.fleet .. "/" .. chosen.name
+        else
+          flow.host = flow.place
+        end
         flow.step = "repo"
         flow.cursor = 1
         -- Bookmarks are host-scoped, so the choices change with the host: an
@@ -1818,7 +2001,11 @@ return {
     end
 
     if flow.focus == "input" then
-      if name == "tab" then
+      if name == "tab" and flow.remote then
+        flow.message = "browsing " .. flow.fleet .. "'s folders comes later: type a path or a URL"
+        save(flow)
+        return true
+      elseif name == "tab" then
         -- Derived here rather than read off the flow: the renderer's copy belongs
         -- to the frame it drew, and this pane does not stash it. (A render CAN
         -- write `state` — it persists whenever it happens — but deriving twice is
@@ -1935,7 +2122,9 @@ return {
     if not index then
       return false
     end
-    if flow.step == "host" then
+    if flow.step == "fleet" then
+      flow.fleet_index = index
+    elseif flow.step == "host" then
       flow.host_index = index
     elseif flow.step == "agent" then
       flow.agent_index = index

@@ -464,13 +464,15 @@ impl App {
             .filter(|label| !label.is_empty());
         // What `session.post_*` will need once the command has finished and its
         // row is gone (a delete) or only just arrived (a create).
-        let name = match &command {
-            Command::Create { name, .. } => Some(name.clone()).filter(|n| !n.is_empty()),
-            _ => None,
+        let (name, fleet) = match &command {
+            Command::Create { name, fleet, .. } => {
+                (Some(name.clone()).filter(|n| !n.is_empty()), fleet.clone())
+            }
+            _ => (None, None),
         };
         let created = name
             .as_deref()
-            .and_then(|name| self.commands.created_id(name));
+            .and_then(|name| self.commands.created_id(name, fleet.as_deref()));
         let force = matches!(command, Command::Delete { force: true, .. });
         let id = self.commands.dispatch(command);
         self.tracked_commands.insert(

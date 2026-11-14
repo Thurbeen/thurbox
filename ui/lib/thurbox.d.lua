@@ -481,10 +481,23 @@
 ---@class (exact) thurbox.Agent
 ---@field name string A harness Fleet has a profile for.
 
+--- A place a Fleet defines: where its sessions can run.
 ---@class (exact) thurbox.Host
 ---@field name string
 ---@field detail string
 ---@field backend string
+---@field ready? boolean Whether the place's runtime can run a session now. Nil when it did not say.
+---@field why? string Why the place is not ready.
+
+--- A Fleet `settings.toml` lists: where sessions are managed.
+---@class (exact) thurbox.Fleet
+---@field name string
+---@field transport string How it is reached: `local Fleet`, `ssh <destination>` or `wsl <distro>`.
+---@field remote boolean It runs on another machine, whose folders thurbox does not read.
+---@field state "connecting"|"up"|"down"|"unreachable"|"unknown" `up` while its manager holds the lease, `down` when none does.
+---@field why? string Why it is not up.
+---@field agents? thurbox.Agent[] Nil until this Fleet has said which harnesses it has.
+---@field places? thurbox.Host[] Every place this Fleet defines, `local` first. Nil until it answers.
 
 ---@class (exact) thurbox.AutomationRun
 ---@field id integer
@@ -776,7 +789,8 @@
 ---@field bookmarks thurbox.Bookmarks
 ---@field browse thurbox.Browse
 ---@field repo_branches thurbox.RepoBranches
----@field hosts? thurbox.Host[] Every host Fleet defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.
+---@field hosts? thurbox.Host[] Every place the Fleet in force defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.
+---@field fleets thurbox.Fleet[] Every Fleet `settings.toml` lists, by name, each with its own agents and places.
 ---@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
 ---@field diffs table<string, thurbox.Diff>
@@ -976,7 +990,8 @@ function require(name) end
 ---@field base? string What a new branch starts from. Nil: the repository's default branch.
 ---@field extras? thurbox.cmd.CreateExtra[] The other repositories, in order. Each worktree is on `branch`.
 ---@field agent? string
----@field host? string
+---@field host? string The place, as `thurbox.fleets[i].places[j].backend` names it. Nil: the Fleet's `local`.
+---@field fleet? string The Fleet the session is a Task of, by name. Nil: the first listed.
 
 ---@class (exact) thurbox.cmd.Bookmark
 ---@field repo string The path to remember or forget.

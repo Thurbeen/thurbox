@@ -881,6 +881,7 @@ fn command_for(
             repo: get_string("repo"),
             agent: get_string("agent"),
             host: get_string("host"),
+            fleet: get_string("fleet"),
             worktree: get_bool("worktree"),
             branch: get_string("branch"),
             base: get_string("base"),

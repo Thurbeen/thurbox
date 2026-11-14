@@ -295,14 +295,78 @@ pub struct AgentRow {
     pub name: String,
 }
 
-/// A host Fleet defines, as the creation flow offers it: its name, the
+/// A place a Fleet defines, as the creation flow offers it: its name, the
 /// detail shown beside it, and the `backend` a created Task names (empty for
-/// this machine).
+/// the Fleet's own `local`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HostRow {
     pub name: String,
     pub detail: String,
     pub backend: String,
+    /// Whether the place's runtime says it can run a session now; `None`
+    /// when it did not say (`fleet runtime places --json`).
+    pub ready: Option<bool>,
+    /// Why the place is not ready.
+    pub why: Option<String>,
+}
+
+impl HostRow {
+    /// The `local` place of a Fleet whose runtime names no places: the
+    /// machine the Fleet runs on, `machine` as the flow shows it.
+    pub fn local(machine: &str) -> Self {
+        Self {
+            name: "local".to_string(),
+            detail: machine.to_string(),
+            ..Self::default()
+        }
+    }
+}
+
+/// Whether a Fleet can take a session now, as the creation flow shows it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FleetState {
+    /// Not asked yet.
+    #[default]
+    Connecting,
+    /// Its manager holds the lease.
+    Up,
+    /// It answers, but no manager holds the lease: its Tasks wait.
+    Down,
+    /// It cannot be asked: ssh or WSL failed, or its watch ended.
+    Unreachable,
+    /// It answers, but cannot say whether its manager runs.
+    Unknown,
+}
+
+impl FleetState {
+    /// The state as the interface reads it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Connecting => "connecting",
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Unreachable => "unreachable",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// A Fleet thurbox lists, as the creation flow offers it: how it is
+/// reached, whether it is up, and the agents and places a session on it can
+/// have. Each list is `None` until that Fleet has answered.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FleetRow {
+    pub name: String,
+    /// How thurbox reaches it: `local Fleet`, `ssh <destination>` or
+    /// `wsl <distro>`.
+    pub transport: String,
+    /// Whether it runs on another machine, whose disk thurbox does not read.
+    pub remote: bool,
+    pub state: FleetState,
+    /// Why it is not up.
+    pub why: Option<String>,
+    pub agents: Option<Vec<AgentRow>>,
+    pub places: Option<Vec<HostRow>>,
 }
 
 /// An immutable picture of the engine at one instant.
@@ -315,10 +379,13 @@ pub struct Snapshot {
     /// agents a session can run. `None` until Fleet has answered, which is
     /// not the same as no agents.
     pub agents: Option<Vec<AgentRow>>,
-    /// Every host Fleet defines (`fleet runtime hosts --json`), `local`
-    /// included when Fleet defines it, with an empty `backend`. `None` until
-    /// Fleet has answered, which is not the same as no hosts.
+    /// Every place the Fleet in force defines (`fleet runtime places
+    /// --json`), `local` included when Fleet defines it, with an empty
+    /// `backend`. `None` until Fleet has answered, which is not the same as
+    /// no places.
     pub hosts: Option<Vec<HostRow>>,
+    /// Every Fleet thurbox lists, by name, with its own agents and places.
+    pub fleets: Vec<FleetRow>,
     pub automations: Vec<AutomationRow>,
     /// Epoch milliseconds this snapshot represents. Readable by plugins so
     /// they can render staleness.
@@ -397,7 +464,16 @@ pub fn row_id(fleet: &str, task: &str) -> String {
 pub trait SnapshotSource: Send {
     /// What moved since the last call, or `None` when nothing did.
     fn poll(&mut self) -> Option<SourceRead>;
+
+    /// Read the places and agents of the Fleet `fleet` again, on a worker:
+    /// the creation flow's place picker opened on it. Its answer arrives
+    /// through [`Self::poll`].
+    fn refresh_places(&mut self, _fleet: &str) {}
 }
+
+/// The `store` key the creation flow names a Fleet in while its place
+/// picker is open: see [`SnapshotStore::want_places`].
+pub const WANT_PLACES: &str = "want_places";
 
 /// One answer of a [`SnapshotSource`]: every session row, and what is wrong
 /// with the source, if anything is. The rows stand while the error does.
@@ -407,8 +483,10 @@ pub struct SourceRead {
     pub error: Option<String>,
     /// The harnesses Fleet has profiles for, once it has said.
     pub harnesses: Option<Vec<String>>,
-    /// The hosts Fleet defines, once it has said.
-    pub hosts: Option<Vec<String>>,
+    /// The places Fleet defines, once it has said.
+    pub hosts: Option<Vec<HostRow>>,
+    /// Each Fleet the source follows.
+    pub fleets: Vec<FleetRow>,
     /// The sessions that went since the source's last answer, though one of
     /// the same id may be listed again: a Task deleted and made anew between
     /// two answers.
@@ -437,6 +515,9 @@ pub struct SnapshotStore {
     git: GitStats,
     current: Snapshot,
     last_refresh: Option<Instant>,
+    /// The Fleet the place picker is open on, as last asked: a new opening
+    /// is what reads its places again.
+    places_wanted: Option<String>,
     /// Moves whenever anything in [`Self::current`] does.
     ///
     /// What gates the published tables and the pure-pane tree cache: a reader
@@ -482,8 +563,9 @@ impl SnapshotStore {
             );
         }
         if let Some(hosts) = read.hosts {
-            self.current.hosts = Some(hosts_from(&hosts));
+            self.current.hosts = Some(hosts);
         }
+        self.current.fleets = read.fleets;
         self.current.taken_at_ms = taken_at_stamp();
         self.mark_changed();
         true
@@ -501,13 +583,28 @@ impl SnapshotStore {
                 // This machine until Fleet lists its hosts, so a Fleet that is
                 // slow or absent never holds the creation flow on a host step
                 // with nothing to choose; Fleet's answer replaces it.
-                hosts: Some(hosts_from(&[])),
+                hosts: Some(vec![HostRow::local("this machine")]),
                 taken_at_ms: taken_at_stamp(),
                 ..Snapshot::default()
             },
             last_refresh: None,
+            places_wanted: None,
             version: 0,
         }
+    }
+
+    /// The Fleet the creation flow's place picker is open on, read off
+    /// `store.want_places` each iteration. Each opening (none before, or
+    /// another Fleet) reads that Fleet's places and agents again, so a
+    /// place's readiness is the one at that opening.
+    pub fn want_places(&mut self, fleet: Option<String>) {
+        if fleet == self.places_wanted {
+            return;
+        }
+        if let (Some(fleet), Some(source)) = (&fleet, self.source.as_mut()) {
+            source.refresh_places(fleet);
+        }
+        self.places_wanted = fleet;
     }
 
     /// The current snapshot. Always immediate.
@@ -671,36 +768,6 @@ impl SnapshotStore {
     }
 }
 
-/// The host rows the creation flow offers: each host Fleet defines, `local`
-/// first. A row's `backend` is what a created Task names: empty for `local`
-/// (this machine), else the Fleet host name, which is what a session row's
-/// `remote_host` carries, so a creation in flight and its row group as one.
-/// An empty list (Fleet's `null`: one runtime serves any host) offers this
-/// machine alone.
-fn hosts_from(hosts: &[String]) -> Vec<HostRow> {
-    let local = HostRow {
-        name: "local".to_string(),
-        detail: "this machine".to_string(),
-        ..HostRow::default()
-    };
-    if hosts.is_empty() {
-        return vec![local];
-    }
-    let mut rows: Vec<HostRow> = hosts
-        .iter()
-        .filter(|host| host.as_str() != "local")
-        .map(|host| HostRow {
-            name: host.clone(),
-            detail: "Fleet host".to_string(),
-            backend: host.clone(),
-        })
-        .collect();
-    if hosts.iter().any(|host| host == "local") {
-        rows.insert(0, local);
-    }
-    rows
-}
-
 /// A remote session's host name — `ssh:devbox:rmux` → `devbox` — whether or
 /// not `hosts.toml` still describes it.
 ///
@@ -802,19 +869,6 @@ mod tests {
         assert_eq!(repo_name(&cwd, Some(&repo)).as_deref(), Some("thurbox"));
         assert_eq!(repo_name(&cwd, None).as_deref(), Some("feature-x"));
         assert_eq!(repo_name(&None, None), None);
-    }
-
-    #[test]
-    fn the_host_rows_are_fleets_hosts_local_first() {
-        let rows = hosts_from(&["devbox".to_string(), "local".to_string()]);
-        let names: Vec<(&str, &str)> = rows
-            .iter()
-            .map(|r| (r.name.as_str(), r.backend.as_str()))
-            .collect();
-        assert_eq!(names, [("local", ""), ("devbox", "devbox")]);
-        // A Fleet with no `local` host offers none.
-        let rows = hosts_from(&["devbox".to_string()]);
-        assert!(rows.iter().all(|r| r.name != "local"), "{rows:?}");
     }
 
     #[test]

@@ -661,6 +661,7 @@ fn a_hosts_kind_follows_its_transport() {
         name: name.into(),
         backend: backend.into(),
         detail: String::new(),
+        ..HostRow::default()
     })
     .collect::<Vec<_>>()
     .into();

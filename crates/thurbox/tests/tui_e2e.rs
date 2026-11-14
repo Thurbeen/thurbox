@@ -4696,7 +4696,7 @@ fn open_repo_picker(profile: &Profile) -> Tui {
     let mut tui = Tui::spawn(profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    tui.wait_for("Run On");
+    tui.wait_for("Place");
     tui.send(b"\r");
     tui.wait_for("Select Repo");
     tui
@@ -7180,8 +7180,8 @@ fn create_through_the_flow(
     let mut tui = Tui::spawn(profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    tui.wait_for("Run On");
-    titles.push("Run On");
+    tui.wait_for("Place");
+    titles.push("Place");
     tui.send(b"\r");
     tui.wait_for("Select Repos");
     titles.push("Select Repos");
@@ -7307,7 +7307,7 @@ fn the_flow_asks_v2s_questions_in_v2s_order() {
     assert_eq!(
         titles,
         [
-            "Run On",
+            "Place",
             "Select Repos",
             "Base Branch",
             "Session Name",
@@ -7446,7 +7446,7 @@ fn a_directory_with_no_repository_is_refused_a_worktree() {
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    tui.wait_for("Run On");
+    tui.wait_for("Place");
     tui.send(b"\r");
     tui.wait_for("Select Repos");
     tui.send(format!("\t{}\r", dir.display()).as_bytes());
@@ -7492,7 +7492,7 @@ fn an_existing_worktree_is_opened_as_it_is() {
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
-    tui.wait_for("Run On");
+    tui.wait_for("Place");
     tui.send(b"\r");
     tui.wait_for("Select Repos");
     tui.send(format!("\t{}\r", repo.display()).as_bytes());
@@ -7529,6 +7529,176 @@ fn second_runtime(config: &str, name: &str) -> String {
         .find(|line| line.starts_with("program = "))
         .expect("the profile's runtime program");
     format!("{config}\n[runtimes.{name}]\n{program}\ncallTimeoutMs = 10000\n")
+}
+
+/// A second Fleet, "box", for `profile`: its own store on Fleet's fake
+/// runtime under `<profile>/box`, reached only through a stand-in `ssh` on
+/// the profile's `PATH` that logs each remote command line to
+/// `<profile>/ssh.log`. Any other destination is refused as ssh refuses an
+/// unreachable machine (exit 255). The program box's Fleet runs, or `None`
+/// where the `fleet` binary is not built.
+fn fleet_on_box(profile: &Profile) -> Option<PathBuf> {
+    let fleet = Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .parent()?
+        .join("fleet");
+    if !fleet.is_file() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "fleet is not built beside thurbox-cli in CI, where this scenario must run"
+        );
+        eprintln!("skipping: build fleet (`cargo build -p fleet-cli`)");
+        return None;
+    }
+    let root = profile.path("box");
+    std::fs::create_dir_all(root.join("tmp")).expect("box tmp");
+    std::fs::write(
+        root.join("fleet.toml"),
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"fake\"\ndir = \"fake\"\n",
+    )
+    .expect("box's Fleet config");
+    let program = root.join("fleet.sh");
+    write_script(
+        &program,
+        &format!(
+            "#!/bin/sh\nexec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='/usr/bin:/bin' '{f}' --config '{r}/fleet.toml' \"$@\"\n",
+            r = root.display(),
+            f = fleet.display(),
+        ),
+    );
+    write_script(
+        &profile.bin.join("ssh"),
+        &format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done\n\
+             dest=$1; shift\n\
+             printf '%s %s\\n' \"$dest\" \"$*\" >> '{log}'\n\
+             [ \"$dest\" = box ] || {{ echo \"ssh: connect to host $dest port 22: Connection refused\" >&2; exit 255; }}\n\
+             eval \"exec $*\"\n",
+            log = profile.path("ssh.log").display(),
+        ),
+    );
+    Some(program)
+}
+
+/// With several Fleets listed, the creation flow asks for the Fleet first,
+/// each one shown with how it is reached and whether it is up, then for a
+/// place of the Fleet picked: here "box", a Fleet on another machine that is
+/// not the first listed. The Task lands in box's store, through box's link,
+/// and its row joins the list.
+#[test]
+fn the_new_session_modal_creates_on_the_fleet_picked() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let Some(box_fleet) = fleet_on_box(&profile) else {
+        return;
+    };
+    let settings = profile.path("config/settings.toml");
+    let mut toml = std::fs::read_to_string(&settings).expect("settings");
+    toml.push_str(&format!(
+        "\n[fleets.air]\n\n[fleets.box]\ntransport = {{ ssh = \"box\" }}\nprogram = '{}'\n\n[fleets.gpu]\ntransport = {{ ssh = \"gpu\" }}\n",
+        box_fleet.display()
+    ));
+    std::fs::write(&settings, toml).expect("three Fleets");
+    let work = profile.path("box/work");
+    std::fs::create_dir_all(&work).expect("a directory on box");
+    // A created session is followed, so the id it is awaited by shows: the
+    // agent pane leaves box's `review` for the new session only once
+    // `box:boxed` itself has landed.
+    let mut review = Command::new(&box_fleet)
+        .args(["apply", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("box's fleet");
+    review
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(
+            format!(
+                r#"{{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{{"name":"review"}},"spec":{{"harness":"claude-code","host":"local","workspace":["file://{}"]}}}}"#,
+                work.display()
+            )
+            .as_bytes(),
+        )
+        .expect("a Task");
+    assert!(review.wait().expect("apply").success());
+    std::fs::write(
+        profile.path("config/ui.json"),
+        r#"{"settings":{"sessions.focus_new_session":true}}"#,
+    )
+    .expect("ui.json");
+
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("▸ review (");
+    tui.send(b"\x0e");
+    tui.wait_until("each Fleet with its link and state", |frame| {
+        frame.contains("ssh box") && frame.contains("local Fleet") && frame.contains("unreachable")
+    });
+    tui.send(b"j");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+    tui.wait_for("Place on box");
+    tui.wait_for("box itself");
+    tui.send(b"\r");
+    tui.wait_for("Repos on box/local");
+    tui.send(format!("\t{}\r", work.display()).as_bytes());
+    tui.wait_until("the directory to be ticked", |frame| {
+        repo_picker_selected(frame, "work")
+    });
+    tui.wait_until_quiet();
+    tui.send(b"\x1b\r");
+    tui.wait_for("Session Name");
+    tui.send(b"boxed\r");
+    tui.wait_for("Coding Agent");
+    tui.wait_until_quiet();
+    tui.send(b"\r");
+
+    let task = || {
+        Command::new(&box_fleet)
+            .args(["get", "task", "boxed"])
+            .stdin(Stdio::null())
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
+    };
+    let deadline = Instant::now() + WAIT;
+    let landed = loop {
+        if let Some(task) = task() {
+            break task;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no Task/boxed in box's store:\n{}",
+            tui.frame()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(landed["spec"]["host"], "local");
+    assert_eq!(
+        landed["spec"]["workspace"],
+        serde_json::json!([format!("file://{}", work.display())])
+    );
+    let calls = std::fs::read_to_string(profile.path("ssh.log")).expect("ssh log");
+    assert!(
+        calls
+            .lines()
+            .any(|call| call.starts_with("box ") && call.ends_with("apply --create-only -f -")),
+        "{calls}"
+    );
+    // Within the 10 s a creation's refresh waits for its id: one awaited
+    // under the first Fleet (`air:boxed`) never lands, and the pane stays on
+    // no session.
+    tui.wait_within(
+        Duration::from_secs(8),
+        "the pane to follow box:boxed",
+        |frame| frame.contains("▸ boxed ("),
+    );
+    assert!(tui.quit().success());
 }
 
 /// The hosts the creation flow offers are the ones Fleet defines (`fleet

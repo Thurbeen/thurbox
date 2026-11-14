@@ -92,6 +92,16 @@ impl FleetLink {
         self.launcher.is_none()
     }
 
+    /// How the Fleet is reached, as the creation flow shows it: `local
+    /// Fleet`, `ssh <destination>` or `wsl <distro>`.
+    pub fn transport(&self) -> String {
+        match &self.launcher {
+            None => "local Fleet".to_string(),
+            Some(HostLauncher::Ssh { destination, .. }) => format!("ssh {destination}"),
+            Some(HostLauncher::Wsl { distro }) => format!("wsl {distro}"),
+        }
+    }
+
     /// Whether Fleet is reached over ssh, whose own failure (an unreachable
     /// machine, a refused key) is exit 255.
     pub fn is_ssh(&self) -> bool {
@@ -221,6 +231,20 @@ impl Fleets {
     /// Every listed Fleet.
     pub fn all(&self) -> &[FleetLink] {
         &self.all
+    }
+
+    /// The Fleet a creation goes to: the one `name` names, or the Fleet in
+    /// force when it names none. A Fleet `settings.toml` does not list is
+    /// refused by name, never stood in for by another.
+    pub fn named(&self, name: Option<&str>) -> Result<&FleetLink, String> {
+        match name.filter(|name| !name.is_empty()) {
+            None => Ok(&self.in_force),
+            Some(name) => self
+                .all
+                .iter()
+                .find(|link| link.name == name)
+                .ok_or_else(|| format!("settings.toml lists no Fleet {name}")),
+        }
     }
 
     /// The Fleet `session` is a session of, and its Task's name there: a

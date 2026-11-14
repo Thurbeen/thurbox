@@ -584,6 +584,11 @@ impl App {
         // is idempotent, so asking every iteration costs four lookups.
         let wants = self.repo_wants();
         self.repos.serve(&wants);
+        self.snapshots.want_places(
+            self.host
+                .shared_string(thurbox::kernel::snapshot::WANT_PLACES)
+                .filter(|fleet| !fleet.is_empty()),
+        );
         if self.repos.poll() {
             self.note_data_change();
         }

@@ -7,7 +7,7 @@ use crate::kernel::command::InFlight;
 use crate::kernel::diff::DiffStore;
 use crate::kernel::metrics::Metrics;
 use crate::kernel::registry::{Registry, Value as SettingValue};
-use crate::kernel::snapshot::Snapshot;
+use crate::kernel::snapshot::{HostRow, Snapshot};
 use crate::kernel::theme::Themes;
 
 /// Set one key on a Lua table, mapping the error to a String — the shape
@@ -139,6 +139,12 @@ impl LuaHost {
             build_hosts(&self.lua, snapshot)
         })?;
         set(&table, "hosts", hosts)?;
+
+        // Built from the snapshot alone, like the agents and places above.
+        let fleets = self.group("fleets", [epoch.snapshot, 0, 0, 0], || {
+            build_fleets(&self.lua, snapshot)
+        })?;
+        set(&table, "fleets", fleets)?;
 
         self.publish_repo_reads(&table, repo_store, wants, epoch)?;
         self.publish_settings(&table, settings)?;
@@ -784,10 +790,14 @@ fn build_agents(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
     Ok(Value::Table(agents))
 }
 
-/// `nil` until Fleet has said which hosts it defines: a flow must tell a
-/// pending list from one with no remote host.
+/// `nil` until Fleet has said which places it defines: a flow must tell a
+/// pending list from one with no remote place.
 fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
-    let Some(known) = &snapshot.hosts else {
+    hosts_table(lua, snapshot.hosts.as_deref())
+}
+
+fn hosts_table(lua: &Lua, known: Option<&[HostRow]>) -> Result<Value, String> {
+    let Some(known) = known else {
         return Ok(Value::Nil);
     };
     let hosts = lua.create_table().map_err(|e| e.to_string())?;
@@ -796,9 +806,41 @@ fn build_hosts(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
         set(&item, "name", host.name.clone())?;
         set(&item, "detail", host.detail.clone())?;
         set(&item, "backend", host.backend.clone())?;
+        set(&item, "ready", host.ready)?;
+        set(&item, "why", host.why.clone())?;
         hosts.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(hosts))
+}
+
+/// Every listed Fleet, each with its own agents and places, `nil` until
+/// that Fleet has answered.
+fn build_fleets(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
+    let fleets = lua.create_table().map_err(|e| e.to_string())?;
+    for (index, fleet) in snapshot.fleets.iter().enumerate() {
+        let item = lua.create_table().map_err(|e| e.to_string())?;
+        set(&item, "name", fleet.name.clone())?;
+        set(&item, "transport", fleet.transport.clone())?;
+        set(&item, "remote", fleet.remote)?;
+        set(&item, "state", fleet.state.as_str())?;
+        set(&item, "why", fleet.why.clone())?;
+        let agents = match &fleet.agents {
+            None => Value::Nil,
+            Some(known) => {
+                let agents = lua.create_table().map_err(|e| e.to_string())?;
+                for (at, agent) in known.iter().enumerate() {
+                    let row = lua.create_table().map_err(|e| e.to_string())?;
+                    set(&row, "name", agent.name.clone())?;
+                    agents.raw_set(at + 1, row).map_err(|e| e.to_string())?;
+                }
+                Value::Table(agents)
+            }
+        };
+        set(&item, "agents", agents)?;
+        set(&item, "places", hosts_table(lua, fleet.places.as_deref())?)?;
+        fleets.raw_set(index + 1, item).map_err(|e| e.to_string())?;
+    }
+    Ok(Value::Table(fleets))
 }
 
 fn build_automations(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {

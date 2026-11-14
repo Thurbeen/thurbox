@@ -22,7 +22,7 @@ use thurbox::kernel::node::Identity;
 use thurbox::kernel::paint::Hit;
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::repos::{BookmarkRow, BrowseEntry, Listing, RepoStore, Wants};
-use thurbox::kernel::snapshot::{AgentRow, HostRow, Snapshot};
+use thurbox::kernel::snapshot::{AgentRow, FleetRow, FleetState, HostRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 
 const PLUGIN: &str = "new_session";
@@ -389,7 +389,7 @@ fn type_text(host: &LuaHost, world: &World, text: &str) {
 /// Open the flow and take the host step's first row, for tests of later steps.
 fn open(host: &LuaHost, world: &World) {
     press(host, world, "ctrl+n");
-    if drawn(host, world).contains("Run On") {
+    if drawn(host, world).contains("Place") {
         press(host, world, "enter");
     }
 }
@@ -399,7 +399,202 @@ fn devbox() -> HostRow {
         name: "devbox".into(),
         detail: "me@devbox".into(),
         backend: "ssh:devbox".into(),
+        ..HostRow::default()
     }
+}
+
+/// A Fleet as the snapshot publishes it, with its own places and agents.
+fn fleet(
+    name: &str,
+    transport: &str,
+    state: FleetState,
+    places: Vec<HostRow>,
+    agents: &[&str],
+) -> FleetRow {
+    FleetRow {
+        name: name.into(),
+        transport: transport.into(),
+        remote: transport != "local Fleet",
+        state,
+        why: None,
+        agents: Some(
+            agents
+                .iter()
+                .map(|name| AgentRow {
+                    name: (*name).into(),
+                })
+                .collect(),
+        ),
+        places: Some(places),
+    }
+}
+
+/// Three Fleets, as the approved mock-up lists them: box (no manager
+/// running) with a place beside its `local`, gpu (unreachable) and this
+/// machine's laptop.
+fn three_fleets() -> Vec<FleetRow> {
+    let box_local = HostRow {
+        detail: "box itself (mux)".into(),
+        ready: Some(true),
+        ..HostRow::local("box itself")
+    };
+    let wsl = HostRow {
+        name: "mux/wsl-dev".into(),
+        detail: "a mux place".into(),
+        backend: "mux/wsl-dev".into(),
+        ready: Some(true),
+        why: None,
+    };
+    let mut gpu = fleet("gpu", "ssh gpu", FleetState::Unreachable, Vec::new(), &[]);
+    gpu.why = Some("ssh: connect to host gpu port 22: Connection refused".into());
+    gpu.places = None;
+    vec![
+        fleet(
+            "box",
+            "ssh box",
+            FleetState::Down,
+            vec![box_local, wsl],
+            &["codex"],
+        ),
+        gpu,
+        fleet(
+            "laptop",
+            "local Fleet",
+            FleetState::Up,
+            vec![local_host()],
+            &["claude", "codex"],
+        ),
+    ]
+}
+
+// ── The Fleet step ─────────────────────────────────────────────────────────
+
+/// With one Fleet listed there is nothing to choose: the flow opens on that
+/// Fleet's places, and the create names it.
+#[test]
+fn a_single_listed_fleet_skips_the_fleet_step() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.fleets = vec![fleet(
+        "laptop",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host()],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Place"), "{screen}");
+    assert!(!screen.contains("local Fleet"), "no Fleet step: {screen}");
+    press(&host, &world, "enter");
+    press(&host, &world, "down"); // /src/notes
+    press(&host, &world, "enter");
+    type_text(&host, &world, "notes");
+    press(&host, &world, "enter");
+    assert!(
+        matches!(
+            &host.drain_commands()[..],
+            [Command::Create { fleet: Some(f), agent: Some(a), .. }] if f == "laptop" && a == "claude"
+        ),
+        "one agent spawns at once, on the one Fleet"
+    );
+}
+
+/// With several Fleets, the Fleet step comes first: each Fleet, how it is
+/// reached and whether it is up, with why for the one under the cursor. An
+/// unreachable Fleet is not taken. The places and agents that follow are
+/// the chosen Fleet's, its repositories are remembered under
+/// `<fleet>/<place>` rather than as this machine's, and the create names
+/// the Fleet.
+#[test]
+fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
+    let host = host();
+    let mut world = World::default();
+    world.snapshot.fleets = three_fleets();
+    press(&host, &world, "ctrl+n");
+    let screen = drawn(&host, &world);
+    for shown in [
+        "Fleet",
+        "ssh box",
+        "Fleet not running",
+        "install the systemd unit (see doctor)",
+        "ssh gpu",
+        "○ unreachable",
+        "local Fleet",
+        "● up",
+    ] {
+        assert!(screen.contains(shown), "{shown}: {screen}");
+    }
+
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("gpu cannot be reached"), "{screen}");
+    assert!(
+        screen.contains("ssh box"),
+        "still on the Fleet step: {screen}"
+    );
+
+    assert_eq!(host.shared_string("want_places"), None);
+    press(&host, &world, "up");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Place on box"), "{screen}");
+    assert_eq!(
+        host.shared_string("want_places").as_deref(),
+        Some("box"),
+        "the place picker asks box for its places again"
+    );
+    assert!(screen.contains("box itself (mux)"), "{screen}");
+    assert!(screen.contains("mux/wsl-dev"), "{screen}");
+    assert!(screen.contains("● ready"), "{screen}");
+    assert!(
+        !screen.contains("this machine"),
+        "laptop's places: {screen}"
+    );
+
+    world
+        .repos
+        .set_bookmarks_for_test("box/local", vec![bookmark("/srv/app", None)]);
+    world.wants.bookmarks = Some("box/local".into());
+    press(&host, &world, "enter");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_places"),
+        None,
+        "only while it is open"
+    );
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Repos on box/local"), "{screen}");
+    assert!(screen.contains("/srv/app"), "{screen}");
+    assert!(!screen.contains("/src/thurbox"), "this machine's: {screen}");
+
+    press(&host, &world, "tab");
+    press(&host, &world, "tab");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("browsing box's folders comes later"),
+        "{screen}"
+    );
+    press(&host, &world, "backtab");
+    press(&host, &world, "enter");
+    type_text(&host, &world, "app");
+    press(&host, &world, "enter");
+    assert_eq!(
+        host.drain_commands(),
+        vec![Command::Create {
+            name: "app".into(),
+            repo: "/srv/app".into(),
+            agent: Some("codex".into()),
+            host: None,
+            fleet: Some("box".into()),
+            worktree: Some(false),
+            branch: None,
+            base: None,
+            extras: Vec::new(),
+        }],
+        "box's one agent, on box's local"
+    );
 }
 
 // ── Opening and closing ────────────────────────────────────────────────────
@@ -424,7 +619,7 @@ fn the_host_step_offers_this_machine_at_once_and_fleets_hosts_when_they_arrive()
     let mut world = World::default();
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Run On"), "{screen}");
+    assert!(screen.contains("Place"), "{screen}");
     assert!(screen.contains("this machine"), "{screen}");
     world.snapshot.hosts = Some(vec![local_host(), devbox()]);
     let screen = drawn(&host, &world);
@@ -442,7 +637,7 @@ fn a_host_list_not_yet_published_shows_the_wait() {
     world.snapshot.hosts = None;
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Asking Fleet for its hosts"), "{screen}");
+    assert!(screen.contains("Asking Fleet for its places"), "{screen}");
     world.snapshot.hosts = Some(vec![local_host(), devbox()]);
     let screen = drawn(&host, &world);
     assert!(screen.contains("devbox"), "{screen}");
@@ -472,7 +667,7 @@ fn opening_with_hosts_asks_where_to_run_first() {
     world.snapshot.hosts = Some(vec![local_host(), devbox()]);
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
-    assert!(screen.contains("Run On"), "{screen}");
+    assert!(screen.contains("Place"), "{screen}");
     assert!(
         screen.contains("local"),
         "the local machine is a choice: {screen}"
@@ -1631,6 +1826,7 @@ fn a_plain_selection_names_the_session_then_the_agent() {
             repo: "/src/notes".into(),
             agent: Some("claude".into()),
             host: None,
+            fleet: None,
             worktree: Some(false),
             branch: None,
             base: None,
@@ -1734,6 +1930,7 @@ fn a_worktree_asks_the_base_branch_then_names_the_branch() {
             repo: "/src/thurbox".into(),
             agent: Some("claude".into()),
             host: None,
+            fleet: None,
             worktree: Some(true),
             branch: Some("fix-tooltips".into()),
             base: Some("main".into()),
@@ -2031,6 +2228,7 @@ fn a_session_on_another_fleet_host_runs_in_its_directory() {
             repo: "/home/me/far-repo".into(),
             agent: Some("claude".into()),
             host: Some("ssh:devbox".into()),
+            fleet: None,
             worktree: None,
             branch: None,
             base: None,
@@ -2060,6 +2258,7 @@ fn a_directory_that_is_no_repository_runs_as_it_is() {
             repo: path.clone(),
             agent: Some("claude".into()),
             host: None,
+            fleet: None,
             worktree: None,
             branch: None,
             base: None,
@@ -2090,6 +2289,7 @@ fn a_bare_repository_is_not_run_as_a_plain_directory() {
             repo: path.clone(),
             agent: Some("claude".into()),
             host: None,
+            fleet: None,
             worktree: None,
             branch: None,
             base: None,
@@ -2174,6 +2374,7 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
             repo: "/src/thurbox".into(),
             agent: Some("claude".into()),
             host: None,
+            fleet: None,
             worktree: Some(false),
             branch: None,
             base: None,
@@ -2213,6 +2414,7 @@ fn a_host_is_carried_into_the_create_and_scopes_the_memory() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
+            ..HostRow::default()
         },
     ]);
     // The memory that matters here is the HOST's, not the local machine's.
@@ -2384,6 +2586,7 @@ fn what_the_flow_asks_for_is_what_the_loop_reads() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
+            ..HostRow::default()
         },
     ]);
     world
@@ -2456,11 +2659,13 @@ fn the_arrows_pick_a_host_as_well_as_j_and_k() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
+            ..HostRow::default()
         },
         HostRow {
             name: "builder".into(),
             detail: "me@builder".into(),
             backend: "ssh:builder".into(),
+            ..HostRow::default()
         },
     ]);
     press(&host, &world, "ctrl+n");
@@ -2724,6 +2929,7 @@ fn a_host_with_nothing_ticked_offers_nothing_to_advance_to() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
+            ..HostRow::default()
         },
     ]);
     world.repos.set_bookmarks_for_test("ssh:devbox", Vec::new());
@@ -3001,6 +3207,7 @@ fn a_hovered_host_row_is_banded() {
             name: "devbox".into(),
             detail: "me@devbox".into(),
             backend: "ssh:devbox".into(),
+            ..HostRow::default()
         },
     ]);
     let host = host();

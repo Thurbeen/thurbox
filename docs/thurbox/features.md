@@ -336,11 +336,15 @@ spatial map you can build muscle memory against.
 session. Each step has a sensible default and can be skipped when
 not applicable.
 
-1. **Host picker** — choose where the session runs: this machine at
-   once, and the hosts Fleet defines (`fleet runtime hosts --json`) when
-   Fleet names them. The session's Task runs on the Fleet host of that
-   name. thurbox reads this machine only, so for another host a typed
-   path is remembered as typed and must be absolute.
+1. **Fleet and place pickers** — with several Fleets listed, choose the
+   Fleet first; each shows how it is reached and whether it is up, and the
+   step is skipped when one is listed. Then choose where the session runs:
+   that Fleet's `local` at once, and the places it defines (`fleet runtime
+   places --json`), each with whether it is ready, when it names them. The
+   session's Task runs on the place of that name. thurbox reads this
+   machine only, so for another place, or any place of a remote Fleet, a
+   typed path is remembered as typed and must be absolute; a remote Fleet
+   also takes a clone URL.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` ticks a repository (`[x]`), and every ticked one goes
    into the session. `Alt+W` gives the repository under the cursor a
