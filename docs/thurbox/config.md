@@ -3,7 +3,7 @@
 Every knob thurbox reads, where it lives, and how it behaves. One file
 per audience/lifecycle: hand-edited registries are TOML, and what the
 interface writes for itself is JSON. thurbox keeps no database: every
-session is a Fleet Task ([`[fleet]`](#fleet--the-session-engine)).
+session is a Task of a Fleet ([`[fleets]`](#fleets--the-fleets-that-manage-sessions)).
 
 Dev builds (version `0.0.0-dev`) use `thurbox-dev` in place of
 `thurbox` in every path below, plus a `thurbox-dev` tmux socket, so a
@@ -318,7 +318,7 @@ all commented so defaults still apply out of the box.
 | `stream_panes` | `false` | open each local tmux session's pane through `runtime-mux view`, a [terminal stream](../runtime/README.md#the-terminal-stream), instead of thurbox's own control-mode connection; restart to apply. A stream pane keeps its grid while hidden, so `hidden_terminal_secs` does not apply |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
-| `[fleet] program` | `fleet` | the Fleet that runs every session; see [`[fleet]`](#fleet--the-session-engine) |
+| `[fleets.<name>]` | none: `fleet` on this machine | the Fleets that manage sessions; see [`[fleets]`](#fleets--the-fleets-that-manage-sessions) |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -351,8 +351,10 @@ min_interval_secs   = 5        # per-session floor between notifications
 provider       = "auto"        # auto | native | osc52 | none
 copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies a selection
 
-[fleet]
-program = "fleet"              # the fleet binary: a name on PATH or a path (restart-only)
+# No [fleets] table: `fleet` on this machine. Restart-only.
+[fleets.laptop]
+transport = "local"            # "local" | { ssh = "me@box", ssh_opts = [...] } | { wsl = "Ubuntu" }
+program   = "fleet"            # the fleet binary: a name on PATH or a path, on that machine
 ```
 
 ### `hidden_terminal_secs` — how much memory a session off screen holds
@@ -543,17 +545,45 @@ name. **No flag crosses**, `--force` included: moving to a new major is a reinst
 `update::version_check::RELEASE_LINE`, and the release workflow refuses to cut a
 version off it — `docs/thurbox/releasing.md`, "v2 and v3".
 
-### `[fleet]` — the session engine
+### `[fleets]` — the Fleets that manage sessions
 
 ```toml
-[fleet]
-program = "fleet"    # the fleet binary: a name on PATH or a path
+[fleets.laptop]
+transport = "local"                     # the default
+program = "fleet"                       # the default: a name on PATH or a path
+
+[fleets.box]
+transport = { ssh = "me@box", ssh_opts = ["-p", "2222"] }
+program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+config = "/home/me/.config/fleet/config.toml"   # optional: `fleet --config <path>`
+
+[fleets.ubuntu]
+transport = { wsl = "Ubuntu" }
 ```
 
-Fleet runs every session
+A Fleet manages sessions
 ([ADR-41](architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)),
 and the interface is a client of Fleet's command line. thurbox keeps no
-database:
+database. [Where sessions run](../where-sessions-run.md) explains a Fleet and
+a place.
+
+- Each `[fleets.<name>]` table is one Fleet. `transport` says how `fleet` is
+  run: `"local"` (the default), `{ ssh = "<destination>", ssh_opts = [...] }`
+  or `{ wsl = "<distro>" }`. Over ssh, each call is one `ssh` with
+  `BatchMode`, `ConnectTimeout=5` and a shared master connection. `program`
+  (default `fleet`) is found on that machine; ssh runs it with that machine's
+  non-login `PATH`, so give a path when `fleet` is in `~/.cargo/bin`.
+  `config`, when set, is given as `fleet --config <path>` before every verb.
+- No `[fleets]` table means one Fleet, `local`: `fleet` on this machine. Once
+  the file lists a Fleet, thurbox uses only the listed Fleets, so a machine
+  that is only a client lists no local Fleet.
+- Until the interface follows several Fleets, it uses one: the only one
+  listed, or the first by name when several are. `thurbox-cli doctor` names
+  it. The others are checked by `doctor` and not used yet.
+- thurbox never starts `fleet up` on a Fleet on another machine: a user
+  systemd unit there runs it
+  ([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
+- v3 reads no `[fleet] program`: it is reported as replaced by `[fleets]`.
 
 | The interface | Fleet's command |
 | --- | --- |
@@ -562,16 +592,25 @@ database:
 | sends to a session | `fleet send` |
 | deletes a session | `fleet delete task`; Fleet has no undo window |
 | shows a session's terminal | `fleet attach --json`: the stream it names, as a stream pane |
-| keeps a manager | `fleet up`, started whenever none holds the lease |
+| keeps a manager | `fleet up`, started whenever none holds the lease, for a Fleet on this machine only |
 
-- Fleet reads its own config (`FLEET_CONFIG`, then its per-user file). Run
-  `fleet init` before the first `fleet up`.
-- `thurbox-cli doctor` checks the Fleet in force: the program and its
-  version, the harnesses it has profiles for, the config it reads (and which
-  rule named it), and `runtime-mux` on `PATH`. A Fleet that does not answer
-  `fleet version --json` fails the report. `thurbox-cli config show` and
-  `thurbox-cli version --json` report the same under `fleet`, with Fleet's
-  data directory.
+- Fleet reads its own config (`FLEET_CONFIG`, then its per-user file), unless
+  `config` names one. Run `fleet init` before the first `fleet up`.
+- `thurbox-cli doctor` checks each listed Fleet: the program and its version,
+  the harnesses it has profiles for, and the places it defines. A Fleet whose
+  `fleet version --json` lacks `fleet/v1alpha1` in `apiVersions` is refused:
+  thurbox writes its Tasks in that version. For a Fleet on this machine it
+  also checks the config it reads (and which rule named it) and
+  `runtime-mux` on `PATH`. A Fleet reached over ssh whose `ssh` exits 255 is
+  `unreachable`, and is asked only once; the probes of a Fleet on another
+  machine wait 15 seconds, not 5. thurbox cannot yet tell whether a remote
+  Fleet's manager runs: `doctor` points at the unit. The Fleet the interface
+  uses fails the report when it does not answer; another listed Fleet only
+  warns. Each check of a Fleet names it (`fleet` in `--json`), and `fleets`
+  lists each Fleet with `transport`, `in_force` and `unreachable`. The
+  multiplexer is checked only when a listed Fleet runs on this machine.
+  `thurbox-cli config show` and `thurbox-cli version --json` report the Fleet
+  in use under `fleet`, with Fleet's data directory.
 - A `fleet up` the interface started runs in a process group of its own and
   outlives the interface: Tasks keep reconciling with no interface open.
 - A session row's status is the Task's `agentState` (`working`, `attention`

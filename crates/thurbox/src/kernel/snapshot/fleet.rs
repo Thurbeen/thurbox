@@ -91,22 +91,27 @@ pub struct FleetWatch {
 }
 
 impl FleetWatch {
-    /// Follow the Tasks of the Fleet `program` runs.
-    pub fn spawn(program: PathBuf) -> Self {
-        Self::start(FleetLink::local(program.to_string_lossy()), false)
+    /// Follow the Tasks of the Fleet `link` reaches.
+    pub fn spawn(link: FleetLink) -> Self {
+        Self::start(link, false)
     }
 
     /// [`Self::spawn`], and keep a `fleet up` running: one is started
     /// whenever no manager holds the lease. A manager thurbox started
     /// outlives it, in a process group of its own: Tasks keep reconciling
     /// with no interface open.
-    pub fn with_manager(program: PathBuf) -> Self {
-        Self::start(FleetLink::local(program.to_string_lossy()), true)
+    ///
+    /// Only for a Fleet on this machine: a Fleet on another machine keeps its
+    /// own manager (a user systemd unit there, docs/where-sessions-run.md),
+    /// and thurbox never starts one through a launcher, where it would end
+    /// with the connection.
+    pub fn with_manager(link: FleetLink) -> Self {
+        Self::start(link, true)
     }
 
     fn start(link: FleetLink, manager: bool) -> Self {
         let (tx, updates) = channel();
-        if manager {
+        if manager && link.is_local() {
             let (link, tx) = (link.clone(), tx.clone());
             std::thread::spawn(move || keep_manager(&link, &tx));
         }
@@ -755,6 +760,40 @@ mod tests {
         }
     }
 
+    /// thurbox never starts `fleet up` on a Fleet on another machine (M4):
+    /// asked to keep a manager, the source follows that Fleet and starts
+    /// none.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_fleet_gets_no_manager() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "case \"$1\" in\n\
+             version) echo '{\"harnesses\":[]}' ;;\n\
+             runtime) echo '{\"hosts\":null}' ;;\n\
+             watch) echo '{\"type\":\"synced\",\"revision\":1,\"names\":[]}'; exec sleep 30 ;;\n\
+             up) exit 6 ;;\n\
+             esac",
+        );
+        crate::paths::with_path(remote.path(), || {
+            let mut source = FleetWatch::with_manager(remote.link.clone());
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut harnesses = None;
+            while harnesses.is_none() || !remote.called("watch --json --since 0") {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "calls: {:?}",
+                    remote.calls()
+                );
+                if let Some(next) = source.poll() {
+                    harnesses = harnesses.or(next.harnesses);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            drop(source);
+        });
+        assert!(!remote.called("up"), "{:?}", remote.calls());
+    }
+
     /// A session over several repositories spans every directory the runtime
     /// made, in order: the editor (`Ctrl+O`) opens them all, not the first.
     #[test]
@@ -816,7 +855,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut source = FleetWatch::spawn(fleet);
+        let mut source = FleetWatch::spawn(FleetLink::local(fleet.to_string_lossy()));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let harnesses = loop {
             if let Some(harnesses) = source.poll().and_then(|read| read.harnesses) {
@@ -882,7 +921,9 @@ mod tests {
             "exec sleep 30".to_string(),
         ]
         .join("\n");
-        let mut source = FleetWatch::spawn(fake_fleet(bin.path(), &script));
+        let mut source = FleetWatch::spawn(FleetLink::local(
+            fake_fleet(bin.path(), &script).to_string_lossy(),
+        ));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let (mut removed, mut ids) = (Vec::new(), Vec::new());
         while !ids.iter().any(|id| id == "kept") {
@@ -920,7 +961,9 @@ mod tests {
             "exec sleep 30".into(),
         ]
         .join("\n");
-        let mut source = FleetWatch::spawn(fake_fleet(bin.path(), &script));
+        let mut source = FleetWatch::spawn(FleetLink::local(
+            fake_fleet(bin.path(), &script).to_string_lossy(),
+        ));
         let started = std::time::Instant::now();
         let mut seen: Vec<(Duration, Vec<String>)> = Vec::new();
         while started.elapsed() < Duration::from_secs(5) {

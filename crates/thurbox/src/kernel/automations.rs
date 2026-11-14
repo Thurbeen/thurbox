@@ -29,7 +29,7 @@ const TICK_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Tick on a thread of its own for as long as the process runs: the
 /// interface's firer. A fire never runs on the render thread.
-pub fn keep_ticking(fleet: std::path::PathBuf) {
+pub fn keep_ticking(fleet: FleetLink) {
     std::thread::spawn(move || loop {
         if let Err(e) = tick(&fleet, now_ms()) {
             tracing::warn!("automation tick: {e}");
@@ -46,10 +46,9 @@ pub struct Fired {
 }
 
 /// Fire every enabled automation whose next run is due at `now`, one after
-/// another, with Fleet at `fleet`. Runs left marked running past their
+/// another, through the Fleet `fleet` reaches. Runs left marked running past their
 /// deadline are recorded as timed out first.
-pub fn tick(fleet: &Path, now: u64) -> Result<Vec<Fired>, String> {
-    let fleet = FleetLink::local(fleet.to_string_lossy());
+pub fn tick(fleet: &FleetLink, now: u64) -> Result<Vec<Fired>, String> {
     let claimed = crate::config::automations::update(|all| {
         let mut claimed = Vec::new();
         for automation in &mut all.automations {
@@ -65,13 +64,13 @@ pub fn tick(fleet: &Path, now: u64) -> Result<Vec<Fired>, String> {
     })?;
     Ok(claimed
         .into_iter()
-        .map(|automation| finish(&fleet, &automation, now))
+        .map(|automation| finish(fleet, &automation, now))
         .collect())
 }
 
 /// Fire the automation `name` now, whatever its schedule says. A disabled one
 /// is refused rather than switched on.
-pub fn run_now(fleet: &Path, name: &str, now: u64) -> Result<Fired, String> {
+pub fn run_now(fleet: &FleetLink, name: &str, now: u64) -> Result<Fired, String> {
     let automation = crate::config::automations::update(|all| {
         let automation = all
             .automations
@@ -84,11 +83,7 @@ pub fn run_now(fleet: &Path, name: &str, now: u64) -> Result<Fired, String> {
         automation.start_run(now);
         Ok(automation.clone())
     })?;
-    Ok(finish(
-        &FleetLink::local(fleet.to_string_lossy()),
-        &automation,
-        now,
-    ))
+    Ok(finish(fleet, &automation, now))
 }
 
 /// Run a claimed fire and record how it went.

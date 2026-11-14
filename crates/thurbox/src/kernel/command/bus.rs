@@ -117,13 +117,11 @@ pub struct CommandBus {
 }
 
 impl CommandBus {
-    /// A bus whose session commands act through Fleet's command line,
-    /// `program` (ADR-41): `fleet apply`, `send` and `delete`. The interface's
-    /// own files (settings, repository memory) are written here.
-    pub fn fleet(program: std::path::PathBuf) -> Self {
-        Self::with_executor(Arc::new(Fleet {
-            link: crate::fleet_link::FleetLink::local(program.to_string_lossy()),
-        }))
+    /// A bus whose session commands act through the command line of the
+    /// Fleet `link` reaches (ADR-41): `fleet apply`, `send` and `delete`. The
+    /// interface's own files (settings, repository memory) are written here.
+    pub fn fleet(link: crate::fleet_link::FleetLink) -> Self {
+        Self::with_executor(Arc::new(Fleet { link }))
     }
 
     fn with_executor(executor: Arc<dyn Executor>) -> Self {

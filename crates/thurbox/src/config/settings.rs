@@ -114,18 +114,29 @@ config_version = 1
 # headers = {}                  # e.g. { authorization = "Bearer ..." }
 # export_diagnostic_logs = false
 
-# Fleet, the session engine. Every session is a Fleet Task: the interface
-# follows them with `fleet watch`, creates, sends to and deletes them with
-# `fleet apply`, `send` and `delete`, and starts `fleet up` whenever no
-# manager holds the lease. Restart-only.
+# The Fleets that manage sessions. Every session is a Task of a Fleet: the
+# interface follows them with `fleet watch`, creates, sends to and deletes
+# them with `fleet apply`, `send` and `delete`, and, for a Fleet on this
+# machine, starts `fleet up` whenever no manager holds the lease. A Fleet on
+# another machine keeps its own manager (a user systemd unit there).
+# Restart-only.
+#
+# No [fleets] table: `fleet` on this machine. Once one is listed, only the
+# listed Fleets are used. Until the interface follows several, it uses the
+# first by name; `thurbox-cli doctor` reports each one.
 #
 # Fleet reads its own config, as `fleet` does anywhere: the file named by
-# FLEET_CONFIG, else its per-user file (~/.config/fleet/config.toml). The
-# hosts sessions run on, the harnesses (agents) they run and the runtimes
-# that keep their terminals are all set there. `thurbox-cli doctor` and
-# `thurbox-cli config show` name the config in force.
-# [fleet]
-# program = "fleet"             # a name on PATH or a path
+# FLEET_CONFIG, else its per-user file (~/.config/fleet/config.toml), unless
+# `config` names one. The places sessions run in, the harnesses (agents) they
+# run and the runtimes that keep their terminals are all set there.
+# [fleets.laptop]
+# transport = "local"           # "local" | { ssh = "me@box", ssh_opts = [...] } | { wsl = "Ubuntu" }
+# program = "fleet"             # a name on PATH or a path, on that machine
+# config = "/path/to/fleet.toml"  # optional: given as `fleet --config <path>`
+#
+# [fleets.box]
+# transport = { ssh = "me@box" }
+# program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
 # ──────────────────────────────────────────────────────────────────────────
@@ -352,8 +363,10 @@ mod tests {
             "backend",
             "[telemetry]",
             "export_diagnostic_logs",
-            "[fleet]",
+            "[fleets.",
+            "transport",
             "program",
+            "config",
             "FLEET_CONFIG",
         ] {
             assert!(
@@ -631,6 +644,27 @@ mod tests {
             unknown_keys("stale = 1\n").unwrap().len(),
             1,
             "an unknown key still fails"
+        );
+    }
+
+    /// Each `[fleets.<name>]` key is known, a misspelt one is reported, and
+    /// the old `[fleet]` table is named as replaced rather than unknown.
+    #[test]
+    fn a_fleets_table_validates_and_the_old_fleet_table_is_retired() {
+        let listed = "[fleets.laptop]\ntransport = \"local\"\n\
+                      [fleets.box]\ntransport = { ssh = \"me@box\", ssh_opts = [\"-p\", \"2222\"] }\n\
+                      program = \"/opt/fleet\"\nconfig = \"/etc/fleet.toml\"\n";
+        assert_eq!(unknown_keys(listed), Ok(vec![]));
+        assert_eq!(
+            unknown_keys("[fleets.box]\nprogramm = \"fleet\"\n")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(unknown_keys("[fleet]\nprogram = \"fleet\"\n"), Ok(vec![]));
+        assert_eq!(
+            retired_key("fleet.program").map(|(key, _)| key),
+            Some("fleet")
         );
     }
 }

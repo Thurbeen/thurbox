@@ -312,12 +312,14 @@ fn parse_fields(spec: &str) -> Vec<String> {
 fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action)?,
-        Command::Automation { action } => automation::run(action, &settings.fleet.program)?,
+        Command::Automation { action } => {
+            automation::run(action, &crate::fleet_link::FleetLink::in_force(settings))?
+        }
         Command::Config { action } => config::run(action, settings)?,
         Command::Version(args) => version::run(
             args,
             settings.features.version_check,
-            &settings.fleet.program,
+            &crate::fleet_link::FleetLink::in_force(settings),
         ),
         Command::Update(args) => update::run(args, settings.features.auto_update),
         Command::Notify(args) => notify::run(args, settings)?,
@@ -327,7 +329,7 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
         Command::Schema { instance } => ui::schema(instance)?,
         // Reads the machine: what is installed is not something thurbox
         // recorded.
-        Command::Doctor => doctor::run(&settings.fleet.program)?,
+        Command::Doctor => doctor::run(settings)?,
     })
 }
 

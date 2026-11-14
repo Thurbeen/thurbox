@@ -231,6 +231,7 @@ fn render_show(report: &Value) -> String {
     sections.push(format!(
         "Fleet\n{}",
         output::kv(&[
+            ("name", output::dash(fleet["name"].as_str())),
             ("program", output::dash(fleet["program"].as_str())),
             ("version", output::dash(fleet["version"].as_str())),
             ("config", output::dash(fleet["config"].as_str())),
@@ -277,8 +278,9 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
         // rather than constant and worth reporting where the dirs are.
         "tmux_socket": crate::backend::instance::local_socket_name(),
         "settings": settings,
-        // Fleet runs every session (ADR-41): which one, and what it reads.
-        "fleet": super::doctor::FleetFacts::read(&settings.fleet.program).document(),
+        // Fleet runs every session (ADR-41): the one in force, and what it
+        // reads.
+        "fleet": super::doctor::FleetFacts::read(&crate::fleet_link::FleetLink::in_force(settings)).document(),
         "editor": { "command": editor, "source": editor_source, "mode": state.editor_mode.as_db_value() },
         "theme": state.theme,
         "custom_themes": custom_themes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),

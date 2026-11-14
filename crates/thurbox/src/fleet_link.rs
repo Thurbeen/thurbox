@@ -7,7 +7,8 @@
 //! The launcher is the runtime's ([`crate::shell::launch`]): each word
 //! POSIX-quoted for the remote shell, and ssh hardened (`BatchMode`,
 //! `ConnectTimeout`, `ServerAlive*`) and multiplexed (`ControlMaster`). The
-//! link adds no flag of its own and changes no stream: stdin, stdout, stderr
+//! link adds only the Fleet's `--config <path>`, before the verb, and changes
+//! no stream: stdin, stdout, stderr
 //! and the exit status are the remote `fleet`'s, so a JSON answer, a watch's
 //! NDJSON, a Task on stdin and an exit code (3 not found, 6 lease held) read
 //! the same either way.
@@ -15,33 +16,64 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use crate::session::settings::{FleetDef, FleetTransport, IMPLIED_FLEET};
 use crate::shell::HostLauncher;
 
 /// One Fleet's command line: the `fleet` program, on this machine or behind
 /// a launcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FleetLink {
+    /// The Fleet's name in `settings.toml`.
+    name: String,
     /// `None`: this machine.
     launcher: Option<HostLauncher>,
     /// A name on the `PATH` of the machine Fleet runs on, or a path there.
     program: String,
+    /// The config file Fleet reads, given as `--config` when set.
+    config: Option<String>,
 }
 
 impl FleetLink {
-    /// The Fleet `program` runs on this machine.
+    /// The Fleet `program` runs on this machine, under [`IMPLIED_FLEET`].
     pub fn local(program: impl Into<String>) -> Self {
         Self {
+            name: IMPLIED_FLEET.to_string(),
             launcher: None,
             program: program.into(),
+            config: None,
         }
     }
 
-    /// The Fleet `program` runs on the machine `launcher` reaches.
-    pub fn over(launcher: HostLauncher, program: impl Into<String>) -> Self {
+    /// The Fleet `settings.toml` lists as `[fleets.<name>]`.
+    pub fn of(name: &str, def: &FleetDef) -> Self {
+        let launcher = match &def.transport {
+            FleetTransport::Local(_) => None,
+            FleetTransport::Ssh { ssh, ssh_opts } => Some(HostLauncher::Ssh {
+                destination: ssh.clone(),
+                ssh_opts: ssh_opts.clone(),
+            }),
+            FleetTransport::Wsl { wsl } => Some(HostLauncher::Wsl {
+                distro: wsl.clone(),
+            }),
+        };
         Self {
-            launcher: Some(launcher),
-            program: program.into(),
+            name: name.to_string(),
+            launcher,
+            program: def.program.clone(),
+            config: def.config.clone(),
         }
+    }
+
+    /// The one Fleet the interface uses until it follows several
+    /// ([`crate::session::settings::Settings::fleet_in_force`]).
+    pub fn in_force(settings: &crate::session::settings::Settings) -> Self {
+        let (name, def) = settings.fleet_in_force();
+        Self::of(&name, &def)
+    }
+
+    /// The Fleet's name in `settings.toml`.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// The `fleet` program, as configured.
@@ -49,10 +81,32 @@ impl FleetLink {
         &self.program
     }
 
-    /// `fleet <args>`, not yet started. Its streams are the caller's to set,
-    /// as for any [`Command`].
+    /// The config file Fleet is given with `--config`, if any.
+    pub fn config(&self) -> Option<&str> {
+        self.config.as_deref()
+    }
+
+    /// Whether Fleet runs on this machine.
+    pub fn is_local(&self) -> bool {
+        self.launcher.is_none()
+    }
+
+    /// Whether Fleet is reached over ssh, whose own failure (an unreachable
+    /// machine, a refused key) is exit 255.
+    pub fn is_ssh(&self) -> bool {
+        matches!(self.launcher, Some(HostLauncher::Ssh { .. }))
+    }
+
+    /// `fleet [--config <path>] <args>`, not yet started. Its streams are the
+    /// caller's to set, as for any [`Command`]. `--config` is a global flag
+    /// of Fleet's, so it goes before the verb.
     pub fn command(&self, args: &[&str]) -> Command {
-        crate::shell::launch(self.launcher.as_ref(), &self.program, args)
+        let mut words: Vec<&str> = Vec::with_capacity(args.len() + 2);
+        if let Some(config) = &self.config {
+            words.extend(["--config", config.as_str()]);
+        }
+        words.extend(args);
+        crate::shell::launch(self.launcher.as_ref(), &self.program, &words)
     }
 
     /// Run `fleet <args>` with `input` on its stdin (none: stdin is closed),
@@ -102,7 +156,7 @@ pub(crate) mod testing {
     use std::path::{Path, PathBuf};
 
     use super::FleetLink;
-    use crate::shell::HostLauncher;
+    use crate::session::settings::{FleetDef, FleetTransport};
 
     /// The program name the stand-in Fleet answers to: one no machine has, so
     /// a call run here rather than through the launcher fails to start.
@@ -137,12 +191,16 @@ pub(crate) mod testing {
                 ),
             );
             executable(&remote.join(PROGRAM), script);
-            let link = FleetLink::over(
-                HostLauncher::Ssh {
-                    destination: "devbox".into(),
-                    ssh_opts: Vec::new(),
+            let link = FleetLink::of(
+                "devbox",
+                &FleetDef {
+                    transport: FleetTransport::Ssh {
+                        ssh: "devbox".into(),
+                        ssh_opts: Vec::new(),
+                    },
+                    program: PROGRAM.into(),
+                    config: None,
                 },
-                PROGRAM,
             );
             Self { dir, link }
         }
@@ -206,16 +264,63 @@ mod tests {
         );
     }
 
+    /// A listed Fleet's config goes before the verb, as Fleet's global flag,
+    /// on this machine and over ssh alike.
+    #[test]
+    fn a_fleets_config_goes_before_the_verb() {
+        let def = |transport| FleetDef {
+            transport,
+            program: "fleet".into(),
+            config: Some("/etc/fleet/a b.toml".into()),
+        };
+        let local = FleetLink::of("laptop", &def(FleetTransport::default()));
+        assert!(local.is_local());
+        assert_eq!(
+            argv(&local.command(&["version", "--json"])),
+            [
+                "fleet",
+                "--config",
+                "/etc/fleet/a b.toml",
+                "version",
+                "--json"
+            ]
+        );
+        let remote = FleetLink::of(
+            "box",
+            &def(FleetTransport::Ssh {
+                ssh: "me@box".into(),
+                ssh_opts: Vec::new(),
+            }),
+        );
+        assert!(remote.is_ssh() && !remote.is_local());
+        assert_eq!(remote.name(), "box");
+        let argv = argv(&remote.command(&["version", "--json"]));
+        let dest = argv.iter().position(|a| a == "me@box").expect("dest");
+        assert_eq!(
+            &argv[dest + 1..],
+            [
+                "fleet",
+                "--config",
+                "'/etc/fleet/a b.toml'",
+                "version",
+                "--json"
+            ]
+        );
+    }
+
     /// Over ssh each word is quoted for the remote shell, after the hardened
     /// options and the destination, so free text arrives as one word.
     #[test]
     fn an_ssh_call_quotes_each_word_after_the_destination() {
-        let link = FleetLink::over(
-            HostLauncher::Ssh {
-                destination: "me@devbox".into(),
-                ssh_opts: vec!["-p".into(), "2222".into()],
+        let link = FleetLink::of(
+            "devbox",
+            &FleetDef {
+                transport: FleetTransport::Ssh {
+                    ssh: "me@devbox".into(),
+                    ssh_opts: vec!["-p".into(), "2222".into()],
+                },
+                ..FleetDef::default()
             },
-            "fleet",
         );
         let argv = argv(&link.command(&["send", "review", "it's done"]));
         assert_eq!(argv[0], "ssh");
