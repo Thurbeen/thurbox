@@ -1857,9 +1857,9 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     }
     until("the pane says box cannot be reached", || {
         screen(&mut store, &mut terminals);
-        terminals
-            .failure("box:t1")
-            .is_some_and(|why| why.contains("box") && why.contains("No route to host"))
+        terminals.failure("box:t1").is_some_and(|why| {
+            why.contains("the Fleet box cannot be reached") && why.contains("No route to host")
+        })
     });
     // Not asked again and again while box is down.
     let asked = || attached(&std::fs::read_to_string(&log).unwrap_or_default());

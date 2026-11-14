@@ -61,14 +61,8 @@ fn attach_argv(link: &crate::fleet_link::FleetLink, task: &str) -> Result<Vec<St
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("could not start fleet attach: {e}"))?;
-    if link.is_ssh() && out.status.code() == Some(255) {
-        // ssh's own failure: the Fleet cannot be asked, which says nothing
-        // of the Task.
-        return Err(format!(
-            "the Fleet {} cannot be reached: {}",
-            link.name(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+    if let Some(why) = link.unreachable(&out) {
+        return Err(why);
     }
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

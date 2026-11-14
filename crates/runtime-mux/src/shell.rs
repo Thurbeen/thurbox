@@ -392,8 +392,9 @@ impl HostLauncher {
 /// `program` with `args`: run on this machine when there is no `launcher`, or
 /// on the host it reaches.
 ///
-/// Through a launcher the tokens are re-split by the host's login shell, so
-/// each one is POSIX-quoted to arrive intact (a simple token passes unchanged);
+/// Over ssh the tokens are re-split by the host's login shell, so each one is
+/// POSIX-quoted to arrive intact (a simple token passes unchanged); through
+/// WSL they go as they are, with `wsl.exe --exec`;
 /// a native-Windows host's shell is not POSIX, see [`launch_on_windows`].
 /// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
 /// them — are its adapter's to write, so a launcher carries any adapter's
@@ -403,6 +404,15 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
         None => {
             let mut cmd = Command::new(program);
             cmd.args(args);
+            cmd
+        }
+        // `--exec` runs the program with no shell, so each word arrives as
+        // it is: without it `wsl.exe` hands the line to the distro's shell,
+        // which keeps the quotes `posix_quote` writes in a word holding a
+        // space, and `/my tools/x` would name another program.
+        Some(launcher @ HostLauncher::Wsl { .. }) => {
+            let mut cmd = launcher.command();
+            cmd.arg("--exec").arg(program).args(args);
             cmd
         }
         Some(launcher) => {

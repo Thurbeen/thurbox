@@ -4,7 +4,7 @@
 //! `doctor`'s probes — is built here, so a Fleet on another machine is a
 //! launcher on the link rather than a change at each call site.
 //!
-//! The launcher is the runtime's: over ssh ([`crate::shell::launch`]) each
+//! The launcher is the runtime's ([`crate::shell::launch`]): over ssh each
 //! word POSIX-quoted for the remote shell, and ssh hardened (`BatchMode`,
 //! `ConnectTimeout`, `ServerAlive*`) and multiplexed (`ControlMaster`);
 //! through WSL each word as it is, with `wsl.exe --exec`. The
@@ -122,20 +122,23 @@ impl FleetLink {
     }
 
     /// `program` with `args` on the Fleet's machine: the one place a call
-    /// becomes a process. Through WSL the words go through `wsl.exe --exec`
-    /// as they are: without it `wsl.exe` hands the line to a shell, which
-    /// would keep the quotes [`crate::shell::launch`] writes for ssh, so a
-    /// path with a space would name another program. Over ssh, and on this
-    /// machine, that launch is the rule.
+    /// becomes a process.
     fn build(&self, program: &str, args: &[&str]) -> Command {
-        match &self.launcher {
-            Some(launcher @ HostLauncher::Wsl { .. }) => {
-                let mut command = launcher.command();
-                command.arg("--exec").arg(program).args(args);
-                command
-            }
-            launcher => crate::shell::launch(launcher.as_ref(), program, args),
-        }
+        crate::shell::launch(self.launcher.as_ref(), program, args)
+    }
+
+    /// Why this Fleet could not be asked, when `out` is ssh's own failure
+    /// (exit 255: an unreachable machine, a refused key) rather than
+    /// Fleet's answer. Such a failure says nothing of a Task: it is never
+    /// "gone".
+    pub fn unreachable(&self, out: &std::process::Output) -> Option<String> {
+        (self.is_ssh() && out.status.code() == Some(255)).then(|| {
+            format!(
+                "the Fleet {} cannot be reached: {}",
+                self.name,
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
+        })
     }
 
     /// Run `fleet <args>` with `input` on its stdin (none: stdin is closed),
