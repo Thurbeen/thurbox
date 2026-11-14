@@ -49,8 +49,7 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | The session list follows every listed Fleet; a row's id is `<fleet>:<task>`, and an unreachable Fleet's rows stay, marked unreachable | implemented |
 | Send, rename, delete and a sent automation go to the session's own Fleet | implemented |
 | Creation goes to the Fleet in force: the only one listed, or the first by name | implemented |
-| The new-session modal's Fleet step | planned |
-| A remote Fleet's terminal panes and its creation flow | planned |
+| A remote Fleet's terminal panes | planned |
 | The Fleet step and the place step in the new-session modal | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
