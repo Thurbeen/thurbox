@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -18,6 +18,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{repo_name, Deleting, SessionRow, SnapshotSource, SourceRead, StatusSource};
+use crate::fleet_link::FleetLink;
 use crate::session::SessionState;
 
 /// How long a watch that ended waits before it is started again, resuming
@@ -92,7 +93,7 @@ pub struct FleetWatch {
 impl FleetWatch {
     /// Follow the Tasks of the Fleet `program` runs.
     pub fn spawn(program: PathBuf) -> Self {
-        Self::start(program, false)
+        Self::start(FleetLink::local(program.to_string_lossy()), false)
     }
 
     /// [`Self::spawn`], and keep a `fleet up` running: one is started
@@ -100,26 +101,26 @@ impl FleetWatch {
     /// outlives it, in a process group of its own: Tasks keep reconciling
     /// with no interface open.
     pub fn with_manager(program: PathBuf) -> Self {
-        Self::start(program, true)
+        Self::start(FleetLink::local(program.to_string_lossy()), true)
     }
 
-    fn start(program: PathBuf, manager: bool) -> Self {
+    fn start(link: FleetLink, manager: bool) -> Self {
         let (tx, updates) = channel();
         if manager {
-            let (program, tx) = (program.clone(), tx.clone());
-            std::thread::spawn(move || keep_manager(&program, &tx));
+            let (link, tx) = (link.clone(), tx.clone());
+            std::thread::spawn(move || keep_manager(&link, &tx));
         }
         {
-            let (program, tx) = (program.clone(), tx.clone());
-            std::thread::spawn(move || read_harnesses(&program, &tx));
+            let (link, tx) = (link.clone(), tx.clone());
+            std::thread::spawn(move || read_harnesses(&link, &tx));
         }
         {
-            let (program, tx) = (program.clone(), tx.clone());
-            std::thread::spawn(move || read_hosts(&program, &tx));
+            let (link, tx) = (link.clone(), tx.clone());
+            std::thread::spawn(move || read_hosts(&link, &tx));
         }
         let child = Arc::new(Mutex::new(None));
         let held = Arc::clone(&child);
-        std::thread::spawn(move || watch(&program, &tx, &held));
+        std::thread::spawn(move || watch(&link, &tx, &held));
         Self {
             updates,
             read: SourceRead::default(),
@@ -227,9 +228,9 @@ fn now_ms() -> i64 {
 /// Ask Fleet which hosts it defines (`fleet runtime hosts --json`), again
 /// every [`RETRY`] until it answers: the hosts the creation flow offers are
 /// Fleet's. `null` (one runtime serves any host) names none to offer.
-fn read_hosts(program: &Path, tx: &Sender<Update>) {
+fn read_hosts(link: &FleetLink, tx: &Sender<Update>) {
     loop {
-        if let Some(answer) = ask(program, &["runtime", "hosts", "--json"]) {
+        if let Some(answer) = ask(link, &["runtime", "hosts", "--json"]) {
             let hosts = answer["hosts"]
                 .as_array()
                 .into_iter()
@@ -244,9 +245,8 @@ fn read_hosts(program: &Path, tx: &Sender<Update>) {
 }
 
 /// One `fleet <args>` answer as JSON, or `None` when it failed.
-fn ask(program: &Path, args: &[&str]) -> Option<Value> {
-    Command::new(program)
-        .args(args)
+fn ask(link: &FleetLink, args: &[&str]) -> Option<Value> {
+    link.command(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -258,9 +258,9 @@ fn ask(program: &Path, args: &[&str]) -> Option<Value> {
 /// Ask Fleet which harnesses it has profiles for (`fleet version --json`),
 /// again every [`RETRY`] until it answers: the agents the creation flow
 /// offers are Fleet's, and thurbox keeps no list of its own.
-fn read_harnesses(program: &Path, tx: &Sender<Update>) {
+fn read_harnesses(link: &FleetLink, tx: &Sender<Update>) {
     loop {
-        if let Some(answer) = ask(program, &["version", "--json"]) {
+        if let Some(answer) = ask(link, &["version", "--json"]) {
             let harnesses = answer["harnesses"]
                 .as_array()
                 .into_iter()
@@ -276,12 +276,12 @@ fn read_harnesses(program: &Path, tx: &Sender<Update>) {
 
 /// Run `fleet watch` until the source goes, starting it again whenever it
 /// ends.
-fn watch(program: &Path, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
+fn watch(link: &FleetLink, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
     let mut tasks: BTreeMap<String, Value> = BTreeMap::new();
     let mut removed = Vec::new();
     let mut since = 0u64;
     loop {
-        let why = match follow(program, &mut tasks, &mut removed, &mut since, tx, held) {
+        let why = match follow(link, &mut tasks, &mut removed, &mut since, tx, held) {
             Ok(()) => return,
             Err(why) => why,
         };
@@ -297,15 +297,15 @@ fn watch(program: &Path, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
 /// (deleted, marked for deletion, or replaced by a Task of another uid) until
 /// rows are sent with them.
 fn follow(
-    program: &Path,
+    link: &FleetLink,
     tasks: &mut BTreeMap<String, Value>,
     removed: &mut Vec<String>,
     since: &mut u64,
     tx: &Sender<Update>,
     held: &Mutex<Option<Child>>,
 ) -> Result<(), String> {
-    let mut child = Command::new(program)
-        .args(["watch", "--json", "--since", &since.to_string()])
+    let mut child = link
+        .command(&["watch", "--json", "--since", &since.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -429,12 +429,12 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
 /// Keep a `fleet up` running while the source does: start one, and when it
 /// exits, say why and start another after [`MANAGER_CHECK`]. One that
 /// exits for a held lease is no error: another manager runs.
-fn keep_manager(program: &Path, tx: &Sender<Update>) {
+fn keep_manager(link: &FleetLink, tx: &Sender<Update>) {
     loop {
         let dir = crate::paths::data_directory();
         let error = match dir
             .ok_or_else(|| "fleet up: no data directory for its log".to_string())
-            .and_then(|dir| manage(program, &dir, tx))
+            .and_then(|dir| manage(link, &dir, tx))
         {
             Ok(Some(LEASE_HELD)) => None,
             Ok(code) => Some(format!(
@@ -456,14 +456,13 @@ fn keep_manager(program: &Path, tx: &Sender<Update>) {
 /// The file is read back and removed when the manager exits; one whose
 /// manager outlived the interface stays readable, and a later start removes
 /// it once that manager is gone ([`clear_old_logs`]).
-fn manage(program: &Path, dir: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
+fn manage(link: &FleetLink, dir: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("fleet up: log: {e}"))?;
     clear_old_logs(dir);
     let dir = dir.to_path_buf();
     let (log, mut reader, path) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
-    let mut command = Command::new(program);
+    let mut command = link.command(&["up"]);
     command
-        .arg("up")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
@@ -697,7 +696,64 @@ pub fn row_of(task: &Value) -> SessionRow {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::process::Command;
+
     use super::*;
+
+    /// Every call the source makes of Fleet goes through its link: the
+    /// watch, the manager, and the `version` and `runtime hosts` reads, each
+    /// logged by a stand-in `ssh` in front of a Fleet only that `ssh` can
+    /// reach.
+    ///
+    /// The manager is run by itself and waited for rather than through
+    /// [`FleetWatch::with_manager`]: that worker starts `fleet up` again
+    /// every [`MANAGER_CHECK`], and one outliving the test would do so after
+    /// the stand-in `ssh` left `PATH`.
+    #[cfg(unix)]
+    #[test]
+    fn every_call_of_the_source_goes_through_its_link() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "case \"$1\" in\n\
+             version) echo '{\"harnesses\":[\"claude\"]}' ;;\n\
+             runtime) echo '{\"hosts\":[\"local\",\"devbox\"]}' ;;\n\
+             watch) echo '{\"type\":\"synced\",\"revision\":1,\"names\":[]}'; exec sleep 30 ;;\n\
+             up) exit 6 ;;\n\
+             esac",
+        );
+        crate::paths::with_path(remote.path(), || {
+            let (tx, _rx) = channel();
+            let data = tempfile::tempdir().expect("data");
+            assert_eq!(manage(&remote.link, data.path(), &tx), Ok(Some(LEASE_HELD)));
+            let mut source = FleetWatch::start(remote.link.clone(), false);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut read = SourceRead::default();
+            while read.harnesses.is_none()
+                || read.hosts.is_none()
+                || !remote.called("watch --json --since 0")
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "calls: {:?}",
+                    remote.calls()
+                );
+                if let Some(next) = source.poll() {
+                    read.harnesses = read.harnesses.or(next.harnesses);
+                    read.hosts = read.hosts.or(next.hosts);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(read.harnesses, Some(vec!["claude".to_string()]));
+            assert_eq!(
+                read.hosts,
+                Some(vec!["local".to_string(), "devbox".to_string()])
+            );
+            drop(source);
+        });
+        for call in ["up", "version --json", "runtime hosts --json"] {
+            assert!(remote.called(call), "{call}: {:?}", remote.calls());
+        }
+    }
 
     /// A session over several repositories spans every directory the runtime
     /// made, in order: the editor (`Ctrl+O`) opens them all, not the first.
@@ -911,7 +967,7 @@ mod tests {
         let (tx, _rx) = channel();
         let dir = data.path().to_path_buf();
         std::thread::spawn(move || {
-            let _ = manage(&program, &dir, &tx);
+            let _ = manage(&FleetLink::local(program.to_string_lossy()), &dir, &tx);
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let (name, text) = loop {
@@ -946,7 +1002,12 @@ mod tests {
         let data = tempfile::tempdir().expect("data");
         let program = fake_fleet(bin.path(), "echo 'error: no starter' >&2; exit 1");
         let (tx, _rx) = channel();
-        let why = manage(&program, data.path(), &tx).expect_err("it failed");
+        let why = manage(
+            &FleetLink::local(program.to_string_lossy()),
+            data.path(),
+            &tx,
+        )
+        .expect_err("it failed");
         assert_eq!(why, "fleet up: no starter");
         assert_eq!(logs(data.path()), Vec::<String>::new());
     }

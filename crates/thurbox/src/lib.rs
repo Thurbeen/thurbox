@@ -5,6 +5,7 @@ pub mod backend;
 pub mod cli;
 pub mod clipboard;
 pub mod config;
+pub mod fleet_link;
 pub mod git;
 pub mod kernel;
 pub mod notifications;

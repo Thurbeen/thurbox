@@ -19,12 +19,12 @@ use super::stream_pane::{adopt_with_upstream, Notices, Upstream};
 /// publishes every Task under it.
 pub(super) const BACKEND: &str = crate::kernel::snapshot::fleet::BACKEND;
 
-/// Open `task`'s pane at `rows` × `cols`: ask `program` (the `fleet`
-/// binary) for the Task's stream, and open it. Input it refuses is said on
+/// Open `task`'s pane at `rows` × `cols`: ask the Fleet `link` reaches for
+/// the Task's stream, and open it. Input it refuses is said on
 /// `notices`. The companion shell is a window of `shell`, the multiplexer on
 /// the Task's machine: a stream opens no windows.
 pub(super) fn open(
-    program: &Path,
+    link: &crate::fleet_link::FleetLink,
     task: &str,
     rows: u16,
     cols: u16,
@@ -32,7 +32,7 @@ pub(super) fn open(
     notices: Notices,
     shell: Option<Arc<dyn crate::backend::SessionBackend>>,
 ) -> Result<crate::backend::Session, String> {
-    let argv = attach_argv(program, task)?;
+    let argv = attach_argv(link, task)?;
     let (adopted, upstream) = adopt_with_upstream(&argv, rows, cols, Some(notices))
         .map_err(|e| format!("the stream pane: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
@@ -53,9 +53,9 @@ pub(super) fn open(
 }
 
 /// The argv `fleet attach <task> --json` answers: `{"stream": {"argv": […]}}`.
-fn attach_argv(program: &Path, task: &str) -> Result<Vec<String>, String> {
-    let out = std::process::Command::new(program)
-        .args(["attach", task, "--json"])
+fn attach_argv(link: &crate::fleet_link::FleetLink, task: &str) -> Result<Vec<String>, String> {
+    let out = link
+        .command(&["attach", task, "--json"])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("could not start fleet attach: {e}"))?;
@@ -278,5 +278,28 @@ impl crate::backend::SessionBackend for Stream {
             needs_liveness_poll: false,
             ..crate::backend::Capabilities::NONE
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The attach is asked of the Fleet through its link, and its stream's
+    /// argv read from the answer.
+    #[test]
+    fn an_attach_goes_through_the_link() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "[ \"$1 $2 $3\" = 'attach review --json' ] || exit 1\n\
+             echo '{\"stream\":{\"argv\":[\"runtime-mux\",\"view\",\"w 1\"]}}'",
+        );
+        let argv = crate::paths::with_path(remote.path(), || attach_argv(&remote.link, "review"))
+            .expect("the stream's argv");
+        assert_eq!(argv, ["runtime-mux", "view", "w 1"]);
+        assert!(
+            remote.called("attach review --json"),
+            "{:?}",
+            remote.calls()
+        );
     }
 }

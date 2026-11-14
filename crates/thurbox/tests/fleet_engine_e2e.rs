@@ -1095,3 +1095,77 @@ fn an_interactive_rows_status_shows_working_attention_and_idle() {
         status(&mut store) == Some(SessionState::Idle)
     });
 }
+
+/// The link reaches a Fleet over ssh, though no config selects one yet: the
+/// real binary behind a stand-in `ssh` that logs each remote command line and
+/// runs it, as `tests/tui_e2e.rs`'s does. A Task goes in on stdin, free text
+/// arrives as the one word it was, a JSON answer reads back, and Fleet's exit
+/// 3 (no such Task) survives the hop.
+#[test]
+fn the_link_reaches_a_fleet_over_ssh() {
+    use thurbox::fleet_link::FleetLink;
+    use thurbox::shell::HostLauncher;
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin);
+    let root = fleet.root.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let log = root.join("ssh.log");
+    let ssh = ssh_bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; *) break ;; esac; done\n\
+             [ \"$1\" = devbox ] || exit 255\n\
+             shift\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             eval \"exec $*\"\n",
+            log = log.display()
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![ssh_bin];
+    dirs.extend(std::env::split_paths(&path));
+    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+
+    let link = FleetLink::over(
+        HostLauncher::Ssh {
+            destination: "devbox".into(),
+            ssh_opts: Vec::new(),
+        },
+        fleet.program.to_string_lossy(),
+    );
+    link.run(
+        &["apply", "--create-only", "-f", "-"],
+        Some(&task("remote").to_string()),
+    )
+    .expect("apply over ssh");
+    let text = "it's \"done\"; $HOME `x` | y";
+    link.run(&["send", "remote", text], None)
+        .expect("send over ssh");
+    let got = link
+        .command(&["get", "task", "remote"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("get over ssh");
+    assert_eq!(got.status.code(), Some(0));
+    let task: Value = serde_json::from_slice(&got.stdout).expect("JSON over ssh");
+    assert_eq!(task["status"]["inbox"][0]["text"], text, "{task:#}");
+    let gone = link
+        .command(&["get", "task", "absent"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("get over ssh");
+    assert_eq!(gone.status.code(), Some(3), "not found, through ssh");
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    assert_eq!(calls.lines().count(), 4, "{calls}");
+    assert!(
+        calls
+            .lines()
+            .all(|call| call.starts_with(&*fleet.program.to_string_lossy())),
+        "{calls}"
+    );
+}

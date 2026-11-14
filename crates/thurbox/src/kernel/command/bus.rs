@@ -121,7 +121,9 @@ impl CommandBus {
     /// `program` (ADR-41): `fleet apply`, `send` and `delete`. The interface's
     /// own files (settings, repository memory) are written here.
     pub fn fleet(program: std::path::PathBuf) -> Self {
-        Self::with_executor(Arc::new(Fleet { program }))
+        Self::with_executor(Arc::new(Fleet {
+            link: crate::fleet_link::FleetLink::local(program.to_string_lossy()),
+        }))
     }
 
     fn with_executor(executor: Arc<dyn Executor>) -> Self {

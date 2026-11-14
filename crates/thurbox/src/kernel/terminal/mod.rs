@@ -368,9 +368,9 @@ pub struct Terminals {
     /// What a local tmux pane is viewed through when `settings.toml`'s
     /// `stream_panes` is on ([`Self::view_through`]).
     stream_view: Option<stream_pane::View>,
-    /// The `fleet` binary a Fleet session's pane is attached through
+    /// The Fleet a Fleet session's pane is attached through
     /// ([`Self::attach_fleet_through`]).
-    fleet: Option<PathBuf>,
+    fleet: Option<crate::fleet_link::FleetLink>,
     /// What stream panes say about input they dropped, for the interface
     /// to report ([`Self::take_input_notices`]).
     input_notices: (Sender<String>, Receiver<String>),
@@ -406,7 +406,9 @@ impl Terminals {
     /// attach` names, `program` being the `fleet` binary (ADR-41). A stream
     /// pane keeps its grid while hidden, as [`Self::view_through`]'s do.
     pub fn attach_fleet_through(&mut self, program: PathBuf) {
-        self.fleet = Some(program);
+        self.fleet = Some(crate::fleet_link::FleetLink::local(
+            program.to_string_lossy(),
+        ));
         self.keep_hidden = None;
     }
 
