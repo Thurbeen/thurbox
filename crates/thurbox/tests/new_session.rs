@@ -695,6 +695,37 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     );
     assert!(!screen.contains("~/"), "{screen}");
 
+    // Browsing with the home unknown lists the runtime's own home, and an
+    // entry picked there is an absolute path on box, never `~/…`.
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("box/local\0~")
+    );
+    world.wants.browse = Some(("box/local".into(), "~".into()));
+    world.repos.set_listing_for_test(
+        "box/local",
+        "~",
+        Listing::Ready(vec![BrowseEntry {
+            name: "app".into(),
+            is_git: true,
+        }]),
+    );
+    world
+        .repos
+        .set_resolved_dir_for_test("box/local", "~", "/home/box");
+    drawn(&host, &world);
+    press(&host, &world, "enter");
+    assert!(
+        host.drain_commands().iter().any(|c| matches!(
+            c,
+            Command::Bookmark { host, path, .. } if host == "box/local" && path == "/home/box/app"
+        )),
+        "a picked entry is absolute"
+    );
+    world.wants.browse = None;
+
     let host = self::host();
     world.snapshot.fleets[0].home = Some("/home/me".into());
     press(&host, &world, "ctrl+n");

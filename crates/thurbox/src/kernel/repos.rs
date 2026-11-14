@@ -205,6 +205,9 @@ enum Done {
     Listing {
         key: PathKey,
         listing: Listing,
+        /// The directory the listing is of, when it is not the one asked
+        /// for as typed: a remote place's home asked for as `~`.
+        dir: Option<String>,
     },
     Branches {
         repo: String,
@@ -256,6 +259,9 @@ pub struct RepoStore {
     /// is read on that place, through that Fleet (`fleet runtime browse`,
     /// `branches`), never on this machine's disk.
     remote: Vec<crate::fleet_link::FleetLink>,
+    /// The absolute directory a listing answered for, where it was asked as
+    /// `~` of a remote place whose home is not known here.
+    resolved: HashMap<PathKey, String>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
@@ -275,6 +281,7 @@ impl RepoStore {
             fetched: std::collections::HashSet::new(),
             fetch_notes: HashMap::new(),
             remote: Vec::new(),
+            resolved: HashMap::new(),
             tx,
             rx,
         }
@@ -404,6 +411,22 @@ impl RepoStore {
         self.bookmarks.get(host).map(|held| held.rows.as_slice())
     }
 
+    /// The absolute directory the listing of `dir` on `host` is of, when
+    /// `dir` was a remote place's `~` and the runtime named its home.
+    pub fn resolved_dir(&self, host: &str, dir: &str) -> Option<&str> {
+        self.resolved
+            .get(&(host.to_string(), dir.to_string()))
+            .map(String::as_str)
+    }
+
+    /// Seed [`Self::resolved_dir`] directly, so a test can render a remote
+    /// home's listing.
+    #[doc(hidden)]
+    pub fn set_resolved_dir_for_test(&mut self, host: &str, dir: &str, resolved: &str) {
+        self.resolved
+            .insert((host.to_string(), dir.to_string()), resolved.to_string());
+    }
+
     /// What is known about `dir` on `host`.
     pub fn listing(&self, host: &str, dir: &str) -> Option<&Listing> {
         self.listings
@@ -458,8 +481,8 @@ impl RepoStore {
         // machine's directory of the same name.
         if let Some((link, place)) = self.remote_place(host) {
             std::thread::spawn(move || {
-                let listing = remote_listing(&link, &place, &dir);
-                let _ = tx.send(Done::Listing { key, listing });
+                let (listing, dir) = remote_listing(&link, &place, &dir);
+                let _ = tx.send(Done::Listing { key, listing, dir });
             });
             return;
         }
@@ -475,7 +498,11 @@ impl RepoStore {
                         .collect(),
                 ),
             };
-            let _ = tx.send(Done::Listing { key, listing });
+            let _ = tx.send(Done::Listing {
+                key,
+                listing,
+                dir: None,
+            });
         });
     }
 
@@ -505,7 +532,10 @@ impl RepoStore {
                         },
                     );
                 }
-                Done::Listing { key, listing } => {
+                Done::Listing { key, listing, dir } => {
+                    if let Some(dir) = dir {
+                        self.resolved.insert(key.clone(), dir);
+                    }
                     self.remember_listing(key, listing);
                 }
                 Done::Branches {
@@ -641,28 +671,45 @@ fn ask_place(
 /// A bare `~` is a home not known here: the runtime is asked with no
 /// directory, which it answers with its own home, since it takes only an
 /// absolute one.
-fn remote_listing(link: &crate::fleet_link::FleetLink, place: &str, dir: &str) -> Listing {
-    let args: &[&str] = if dir == "~" {
+fn remote_listing(
+    link: &crate::fleet_link::FleetLink,
+    place: &str,
+    dir: &str,
+) -> (Listing, Option<String>) {
+    let home = dir == "~";
+    let args: &[&str] = if home {
         &["runtime", "browse", place, "--json"]
     } else {
         &["runtime", "browse", place, dir, "--json"]
     };
     match ask_place(link, args, "browse") {
-        Ok(answer) => Listing::Ready(
-            answer["entries"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| {
-                    Some(BrowseEntry {
-                        name: entry["name"].as_str()?.to_string(),
-                        is_git: entry["repo"].as_bool().unwrap_or(false),
-                    })
-                })
-                .collect(),
-        ),
-        Err(why) => Listing::Failed(why),
+        Ok(answer) => {
+            // The runtime names the home it listed: kept, so an entry picked
+            // from it is an absolute path.
+            let resolved = home
+                .then(|| answer["dir"].as_str().map(str::to_string))
+                .flatten();
+            (listing_of(&answer), resolved)
+        }
+        Err(why) => (Listing::Failed(why), None),
     }
+}
+
+/// The entries of a `fleet runtime browse --json` answer.
+fn listing_of(answer: &serde_json::Value) -> Listing {
+    Listing::Ready(
+        answer["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                Some(BrowseEntry {
+                    name: entry["name"].as_str()?.to_string(),
+                    is_git: entry["repo"].as_bool().unwrap_or(false),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// The branches of the repository at `repo` on a remote Fleet's `place`
@@ -948,6 +995,7 @@ mod tests {
                 "{:?}",
                 store.listing("devbox/mux/vm", "/srv")
             );
+            assert_eq!(store.resolved_dir("devbox/local", "~"), Some("/srv"));
             match store.branches("devbox/local\0/srv/app") {
                 Some(super::BranchListing::Ready(found)) => {
                     assert_eq!(found.names, ["feat", "main"]);
@@ -962,7 +1010,9 @@ mod tests {
             remote.calls()
         );
         // A home not known here is the runtime's own default: `~` itself is
-        // never sent, since a runtime takes only an absolute directory.
+        // never sent, since a runtime takes only an absolute directory. The
+        // directory the runtime answered for is kept, so an entry picked
+        // from it is an absolute path.
         assert!(
             remote.called("runtime browse local --json"),
             "{:?}",

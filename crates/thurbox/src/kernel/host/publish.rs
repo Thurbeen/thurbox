@@ -584,7 +584,12 @@ impl LuaHost {
             browse
                 .set("host", host.clone())
                 .map_err(|e| e.to_string())?;
-            browse.set("dir", dir.clone()).map_err(|e| e.to_string())?;
+            // A remote place's `~` is published as the home the runtime
+            // listed, so an entry joined to it is an absolute path there.
+            let shown = store.resolved_dir(host, dir).unwrap_or(dir);
+            browse
+                .set("dir", shown.to_string())
+                .map_err(|e| e.to_string())?;
             let listing = store.listing(host, dir);
             browse
                 .set("loading", matches!(listing, None | Some(Listing::Pending)))
