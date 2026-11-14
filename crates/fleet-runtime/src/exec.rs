@@ -1305,7 +1305,154 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
     if verbs.iter().any(|v| v == "workspace") {
         cases.extend(check_workspace(program, protocol, &key("workspace")));
     }
+    if verbs.iter().any(|v| v == "browse") {
+        cases.extend(check_browse(program, protocol, &key("browse")));
+    }
+    if verbs.iter().any(|v| v == "branches") {
+        cases.extend(check_branches(program, protocol, &key("branches")));
+    }
     cases
+}
+
+/// A directory of the check's own under the temporary directory, made anew.
+fn scratch(key: &str, what: &str) -> Result<std::path::PathBuf, String> {
+    let dir = std::env::temp_dir().join(format!("{}-{what}", key.replace('.', "-")));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)
+        .map(|()| dir.clone())
+        .map_err(|e| format!("cannot make {}: {e}", dir.display()))
+}
+
+/// The browse rules a runtime that declares `browse` holds to: the
+/// subdirectories of a directory, by name, each marked when it is a git
+/// checkout, files left out; and a failed browse of one that is not there.
+fn check_browse(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
+    let browse = |dir: &std::path::Path| {
+        program.ask::<Value>(
+            "browse",
+            program.request(protocol, json!({ "dir": dir.display().to_string() })),
+        )
+    };
+    let listed = scratch(key, "browse").and_then(|dir| {
+        let made = std::fs::create_dir_all(dir.join("plain"))
+            .and_then(|()| std::fs::create_dir_all(dir.join("repo/.git")))
+            .and_then(|()| std::fs::write(dir.join("notes.txt"), "a file"));
+        let answer = made
+            .map_err(|e| format!("cannot fill {}: {e}", dir.display()))
+            .map(|()| browse(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let want = json!({"listing": {
+            "dir": dir.display().to_string(),
+            "entries": [{"name": "plain", "repo": false}, {"name": "repo", "repo": true}],
+        }});
+        match answer? {
+            Observation::Known(got) if got == want => Ok(()),
+            other => Err(format!("answered {other:?}, not {want}")),
+        }
+    });
+    let missing = std::env::temp_dir().join(format!("{}-absent", key.replace('.', "-")));
+    let refused = match browse(&missing) {
+        Observation::Known(got) if got["failed"]["why"].is_string() => Ok(()),
+        other => Err(format!("answered {other:?}, not failed")),
+    };
+    vec![
+        Case {
+            name: "browse: lists the subdirectories and marks a repository",
+            result: listed,
+        },
+        Case {
+            name: "browse: a missing directory answers failed",
+            result: refused,
+        },
+    ]
+}
+
+/// The branch rules a runtime that declares `branches` holds to: a
+/// repository's branches with its default, and a failed answer for a
+/// directory that is no repository, even inside one. The repository is
+/// made with this machine's `git`.
+fn check_branches(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
+    let branches = |repo: &std::path::Path| {
+        program.ask::<Value>(
+            "branches",
+            program.request(protocol, json!({ "repo": repo.display().to_string() })),
+        )
+    };
+    let listed = scratch(key, "branches").and_then(|repo| {
+        let made = [
+            &["init", "-q", "-b", "main"][..],
+            &["commit", "-q", "--allow-empty", "-m", "first"][..],
+            &["branch", "feat"][..],
+        ]
+        .iter()
+        .try_for_each(|args| git_in(&repo, args));
+        let answer = made.map(|()| branches(&repo));
+        let _ = std::fs::remove_dir_all(&repo);
+        let want = json!({"branches": {"names": ["feat", "main"], "default": "main"}});
+        match answer? {
+            Observation::Known(got) if got == want => Ok(()),
+            other => Err(format!("answered {other:?}, not {want}")),
+        }
+    });
+    let refused = scratch(key, "plain").and_then(|outer| {
+        let plain = outer.join("plain");
+        let answer = git_in(&outer, &["init", "-q"])
+            .and_then(|()| {
+                std::fs::create_dir_all(&plain)
+                    .map_err(|e| format!("cannot make {}: {e}", plain.display()))
+            })
+            .map(|()| branches(&plain));
+        let _ = std::fs::remove_dir_all(&outer);
+        let answer = answer?;
+        match answer {
+            Observation::Known(got) if got["failed"]["why"].is_string() => Ok(()),
+            other => Err(format!("answered {other:?}, not failed")),
+        }
+    });
+    vec![
+        Case {
+            name: "branches: lists a repository's branches and its default",
+            result: listed,
+        },
+        Case {
+            name: "branches: a directory that is no repository answers failed",
+            result: refused,
+        },
+    ]
+}
+
+/// `git <args>` in `dir` for a check's fixture, through `fleet-exec`, with
+/// an identity of its own and the variables that would point git at another
+/// repository cleared.
+fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
+    let mut spec = Spec::new("git", Duration::from_secs(30))
+        .args([
+            "-c",
+            "user.name=fleet",
+            "-c",
+            "user.email=check@example.invalid",
+        ])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args.iter().copied());
+    spec.cwd = Some(dir.to_path_buf());
+    spec.env_remove = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+    ]
+    .map(String::from)
+    .to_vec();
+    let out = fleet_exec::run(&spec);
+    match out.success_text() {
+        Some(_) => Ok(()),
+        None => Err(format!("git {}: {}", args.join(" "), out.failure())),
+    }
 }
 
 #[derive(Debug, Deserialize)]

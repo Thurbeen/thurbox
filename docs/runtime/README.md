@@ -34,6 +34,8 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
 | `workspace` | no | `{key, urls}` → one directory per URL, as the process sees it ([workspaces](#workspaces)) |
 | `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream ([the terminal stream](#the-terminal-stream)) |
+| `browse` | no | a directory's subdirectories on the place, each marked when it is a git checkout ([browse and branches](#browse-and-branches)) |
+| `branches` | no | a repository's branches on the place and its default ([browse and branches](#browse-and-branches)) |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
 journal: pause is `stop`, resume and revive are `start` with the harness's
@@ -172,7 +174,14 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
   in place;
 - with protocol 2: `manifest` reports `local`, the place it was asked about,
   and a request without a place answers Unknown. The other cases name
-  `local`.
+  `local`;
+- with `browse` declared: a directory with a plain subdirectory, a checkout
+  and a file lists the two subdirectories, the checkout marked, and a
+  missing directory answers `failed`;
+- with `branches` declared: a repository with the branches `main` and
+  `feat` lists both with `main` as its default, and a directory inside a
+  checkout answers `failed`. The check makes the repository with this
+  machine's `git`.
 
 The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
 `crates/fleet-cli/tests/e2e_runtime_exec.rs`, against `runtime-mux` and against
@@ -184,7 +193,9 @@ stops with a kernel lock in tmux's private socket directory, taken with
 ### Places (protocol version 2)
 
 **Status**: the request's `place`, the manifest's `places` and places in
-Fleet's config are implemented. The new verbs below are planned. The decision is
+Fleet's config are implemented, and so are `browse` and `branches`
+([browse and branches](#browse-and-branches)). `signals` and `shell` are
+planned. The decision is
 [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes).
 
 A place is where a runtime runs a process: this machine, an ssh host, a WSL
@@ -248,7 +259,6 @@ New optional verbs, planned:
 | --- | --- | --- |
 | `signals` | `key`, `from` (a byte offset) | `{"lines": {"text", "next"}}`: the signal file's lines from `from`, and the offset to ask from next |
 | `shell` | `key` | `{"stream": {"argv"}}` or `{"tty": {"argv"}}`: a shell in the key's directory on its place, opened like `attach` |
-| `browse` | `dir` (absolute, optional: the place's home) | `{"listing": {"dir", "entries": [{"name", "dir", "repo"}]}}`, or `{"failed": {"why"}}` |
 
 - **`signals`.** The runtime sets `FLEET_SIGNAL_FILE` to a file on the place
   and reads it back for Fleet. Fleet asks from the last `next` it got. A
@@ -265,13 +275,36 @@ New optional verbs, planned:
   ignorant of their format.
 - **`shell`.** thurbox's companion shell on a remote place opens through
   Fleet with this answer. thurbox keeps no ssh launcher of its own.
-- **`browse`.** The new-session modal browses a place's folders through it,
-  and still takes a clone URL, whose branches `git ls-remote` lists on this
-  machine. `dir` and `repo` say whether an entry is a directory and whether
-  it is a git checkout. A dedicated verb is simpler than `exec` here: an
-  `exec` answer is the text of the place's own command, so the reader would
-  need one parser per platform. The runtime knows its place, and a VM runtime
-  can answer from its own API.
+
+#### Browse and branches
+
+Two optional read-only verbs let a creation flow pick a repository on a
+place, and the branch a worktree there starts from. Each request carries
+`protocol` and, from version 2, `place`.
+
+| Verb | Request | Known answer |
+| --- | --- | --- |
+| `browse` | `dir` (absolute, optional: the place's home) | `{"listing": {"dir", "entries": [{"name", "repo"}]}}`, or `{"failed": {"why"}}` |
+| `branches` | `repo` (absolute) | `{"branches": {"names", "default"}}`, or `{"failed": {"why"}}` |
+
+- **`browse`** lists the subdirectories of `dir`, sorted by name. It follows
+  a link to a directory and leaves files out. `repo` is true when the entry
+  is a git checkout or a bare repository. A directory that cannot be read
+  answers `failed`, with why. A relative `dir` answers Unknown.
+- **`branches`** lists the local branches of the repository at `repo`, then
+  its `origin/*` branches, as they are: the runtime does not fetch.
+  `default` is the branch a new one starts from: `origin`'s default
+  (`origin/HEAD`, else `origin/main`, else `origin/master`), else the branch
+  checked out, else the first, or `null` with no branch. `repo` must be the
+  repository itself: a directory inside a checkout answers `failed`.
+- A dedicated verb is simpler than `exec` here. An `exec` answer is the text
+  of the place's own command, so the reader would need one parser per
+  platform. The runtime knows its place, and a VM runtime can answer from
+  its own API.
+
+`runtime-mux` answers both at `local`, from this machine's filesystem and
+its `git`. The new-session modal still takes a clone URL, whose branches
+`git ls-remote` lists on the machine thurbox runs on.
 
 ### What a runtime is
 
