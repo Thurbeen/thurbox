@@ -544,11 +544,13 @@ system `ssh` binary, so authentication, keys, and connection multiplexing
 come from your `~/.ssh/config` — thurbox never handles credentials. A **WSL
 distro** is reached with `wsl.exe -d <distro>` (no credentials, no network),
 so the *same* tmux control-mode protocol applies — only the launch prefix
-differs. Each word is POSIX-quoted either way. Over `ssh` the remote
-shell re-splits the line; through WSL the line is one argument of
-`wsl.exe --exec sh -lc`, which hands it over verbatim. A word holding a
-space arrives whole, and the login `sh` reads `~/.profile`, so a program
-on a `PATH` set there is found. `wsl.exe` is started off
+differs. Over `ssh` the remote shell re-splits the line, so each word is
+POSIX-quoted. Through WSL each word is its own argument of `wsl.exe
+--exec`, which hands argv over verbatim, after a small `sh` script that
+sources `/etc/profile` and `~/.profile` for their `PATH`, with their output
+discarded, and then `exec`s the words. A word holding a space arrives
+whole, a program on a `PATH` set in the profile is found, and nothing the
+profile prints reaches the program's output. `wsl.exe` is started off
 the interface's terminal, or an attached WSL session takes the keyboard
 ([runtime-mux](../runtime/runtime-mux.md#hosts-and-transports)). The session list says where a session runs with its host row, or,
 with host rows off, with an `@` after the dot of the top row of its tree.

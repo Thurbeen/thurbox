@@ -370,14 +370,14 @@ mod tests {
         );
     }
 
-    /// Through WSL the command line reaches a login `sh` as one argument
-    /// of `wsl.exe --exec`, verbatim: each word inside it quoted, so a path
-    /// with a space names the program it says, and `~/.profile` read, so a
-    /// bare `fleet` on a `PATH` set there still resolves. Every call goes
-    /// through it: `command` (the verbs, the watch, `run`) and `launch` (an
-    /// attach's stream).
+    /// Through WSL each word reaches the distro as its own argument of
+    /// `wsl.exe --exec`, after the script that reads the profile for `PATH`
+    /// with its output discarded: a path with a space names the program it
+    /// says, and a bare `fleet` on a `PATH` set in `~/.profile` still
+    /// resolves. Every call goes through it: `command` (the verbs, the
+    /// watch, `run`) and `launch` (an attach's stream).
     #[test]
-    fn a_wsl_fleet_gets_one_quoted_line_for_a_login_shell() {
+    fn a_wsl_fleet_hands_each_word_to_the_profile_script() {
         let wsl = |program: &str, config: Option<&str>| {
             FleetLink::of(
                 "ubuntu",
@@ -390,19 +390,26 @@ mod tests {
                 },
             )
         };
-        let after_exec = |argv: Vec<String>| {
+        let words = |argv: Vec<String>| {
             assert_eq!(argv[0], "wsl.exe");
             assert_eq!(&argv[1..3], ["-d", "Ubuntu"]);
             let exec = argv.iter().position(|a| a == "--exec").expect("--exec");
-            argv[exec + 1..].to_vec()
+            assert_eq!(
+                &argv[exec + 1..exec + 5],
+                ["sh", "-c", crate::shell::WSL_PROFILE_EXEC, "sh"]
+            );
+            argv[exec + 5..].to_vec()
         };
         let spaced = wsl("/opt/my tools/fleet", Some("/etc/fleet/a b.toml"));
         assert_eq!(
-            after_exec(argv(&spaced.command(&["send", "review", "it's done"]))),
+            words(argv(&spaced.command(&["send", "review", "it's done"]))),
             [
-                "sh",
-                "-lc",
-                "exec '/opt/my tools/fleet' --config '/etc/fleet/a b.toml' send review 'it'\\''s done'"
+                "/opt/my tools/fleet",
+                "--config",
+                "/etc/fleet/a b.toml",
+                "send",
+                "review",
+                "it's done"
             ]
         );
         let stream = spaced
@@ -413,13 +420,13 @@ mod tests {
             ])
             .expect("a stream");
         assert_eq!(
-            after_exec(argv(&stream)),
-            ["sh", "-lc", "exec '/srv/my apps/runtime-mux' view 'w 1'"]
+            words(argv(&stream)),
+            ["/srv/my apps/runtime-mux", "view", "w 1"]
         );
-        // A bare name is left for the login shell's `PATH` to find.
+        // A bare name is left for the profile's `PATH` to find.
         assert_eq!(
-            after_exec(argv(&wsl("fleet", None).command(&["version", "--json"]))),
-            ["sh", "-lc", "exec fleet version --json"]
+            words(argv(&wsl("fleet", None).command(&["version", "--json"]))),
+            ["fleet", "version", "--json"]
         );
     }
 

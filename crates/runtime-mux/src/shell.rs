@@ -389,12 +389,20 @@ impl HostLauncher {
     }
 }
 
+/// The script a WSL launch runs before the program: the profile files a
+/// login `sh` reads, sourced for their `PATH` with all their output
+/// discarded, then the program itself, `$@`, with stdin, stdout and stderr
+/// its own.
+pub const WSL_PROFILE_EXEC: &str = ". /etc/profile >/dev/null 2>&1; \
+     [ -r \"$HOME/.profile\" ] && . \"$HOME/.profile\" >/dev/null 2>&1; exec \"$@\"";
+
 /// `program` with `args`: run on this machine when there is no `launcher`, or
 /// on the host it reaches.
 ///
 /// Over ssh the tokens are re-split by the host's login shell, so each one is
 /// POSIX-quoted to arrive intact (a simple token passes unchanged); through
-/// WSL the same quoted line is one argument of `wsl.exe --exec sh -lc`;
+/// WSL each word is its own argument of `wsl.exe --exec`, after
+/// [`WSL_PROFILE_EXEC`];
 /// a native-Windows host's shell is not POSIX, see [`launch_on_windows`].
 /// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
 /// them — are its adapter's to write, so a launcher carries any adapter's
@@ -406,24 +414,16 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
             cmd.args(args);
             cmd
         }
-        // The command line goes to a login `sh` as one argument of
-        // `--exec`, which hands it over verbatim: inside it each word is
-        // POSIX-quoted, so `/my tools/x` names that program, and the login
-        // shell reads `~/.profile`, so a `PATH` set there (`~/.cargo/bin`)
-        // still finds it (`host_path` reads the same `sh -l`). Without
-        // `--exec`, `wsl.exe` hands the line to the distro's shell, which
-        // keeps those quotes; with the bare program after `--exec`, no
-        // shell would set that `PATH`.
+        // Each word is its own argument of `--exec`, which hands argv over
+        // verbatim, so no quoting and a spaced path stays one word. A small
+        // `sh` runs first to read the profile a login shell would, for the
+        // `PATH` set there (`~/.cargo/bin`), with its output discarded so a
+        // profile that prints never reaches the program's stdout, then
+        // `exec`s the words.
         Some(launcher @ HostLauncher::Wsl { .. }) => {
-            let line: Vec<String> = std::iter::once(&program)
-                .chain(args)
-                .map(|word| posix_quote(word))
-                .collect();
             let mut cmd = launcher.command();
-            cmd.arg("--exec")
-                .arg("sh")
-                .arg("-lc")
-                .arg(format!("exec {}", line.join(" ")));
+            cmd.args(["--exec", "sh", "-c", WSL_PROFILE_EXEC, "sh", program])
+                .args(args);
             cmd
         }
         Some(launcher) => {
@@ -902,6 +902,71 @@ fn off_the_terminal(cmd: &mut Command) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Through WSL each word is its own argument of `--exec`, after a small
+    /// `sh` script that reads the profile for `PATH` and then `exec`s them:
+    /// no quoting, so a spaced path stays one word.
+    #[test]
+    fn a_wsl_launch_hands_each_word_to_the_profile_script() {
+        let launcher = HostLauncher::Wsl {
+            distro: "Ubuntu".into(),
+        };
+        let cmd = launch(
+            Some(&launcher),
+            "/opt/my tools/fleet",
+            &["send", "it's done"],
+        );
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let exec = argv.iter().position(|a| a == "--exec").expect("--exec");
+        assert_eq!(
+            &argv[exec + 1..],
+            [
+                "sh",
+                "-c",
+                WSL_PROFILE_EXEC,
+                "sh",
+                "/opt/my tools/fleet",
+                "send",
+                "it's done"
+            ]
+        );
+    }
+
+    /// The script a WSL launch runs, run here by `sh`: a profile that prints
+    /// and puts a directory on `PATH` lends the `PATH`, and none of its
+    /// output reaches the program's stdout, which a JSON answer or a stream
+    /// would not survive.
+    #[cfg(unix)]
+    #[test]
+    fn the_wsl_profile_script_lends_the_path_and_keeps_stdout_clean() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().expect("home");
+        let bin = home.path().join("my bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let tool = bin.join("say");
+        std::fs::write(&tool, "#!/bin/sh\nprintf '%s|' \"$@\"\n").expect("tool");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::write(
+            home.path().join(".profile"),
+            format!(
+                "echo profile-noise\necho profile-err >&2\nPATH=\"{}:$PATH\"\n",
+                bin.display()
+            ),
+        )
+        .expect("profile");
+        let out = Command::new("sh")
+            .args(["-c", WSL_PROFILE_EXEC, "sh", "say", "a b", "it's"])
+            .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("sh");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a b|it's|");
+        assert!(out.stderr.is_empty(), "{out:?}");
+    }
     use super::*;
 
     #[test]

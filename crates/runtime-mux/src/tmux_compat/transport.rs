@@ -447,8 +447,15 @@ mod tests {
             .chain([
                 "--exec",
                 "sh",
-                "-lc",
-                "exec tmux -L thurbox has-session -t thurbox",
+                "-c",
+                crate::shell::WSL_PROFILE_EXEC,
+                "sh",
+                "tmux",
+                "-L",
+                "thurbox",
+                "has-session",
+                "-t",
+                "thurbox",
             ])
             .collect();
         assert_eq!(args, expected);
