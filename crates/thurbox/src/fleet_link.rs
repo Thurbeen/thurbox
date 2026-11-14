@@ -109,6 +109,17 @@ impl FleetLink {
         crate::shell::launch(self.launcher.as_ref(), &self.program, &words)
     }
 
+    /// `argv` (a program Fleet named, such as an attach's stream) on the
+    /// machine this Fleet runs on, not yet started: through the same
+    /// launcher, without the Fleet's `--config`.
+    pub fn launch(&self, argv: &[String]) -> Result<Command, String> {
+        let (program, args) = argv
+            .split_first()
+            .ok_or("the stream's argv names no program")?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        Ok(crate::shell::launch(self.launcher.as_ref(), program, &args))
+    }
+
     /// Run `fleet <args>` with `input` on its stdin (none: stdin is closed),
     /// and answer its error when it exits non-zero: the first `error: ` line
     /// it wrote, else all of its stderr.

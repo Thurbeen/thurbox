@@ -64,7 +64,17 @@ pub fn view_program() -> Option<std::path::PathBuf> {
 /// and input that goes up as `input` frames. The process ends when the
 /// input is dropped, as a detach.
 pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend::AdoptedSession> {
-    adopt_with_upstream(argv, rows, cols, None).map(|(adopted, _)| adopted)
+    adopt_with_upstream(command_of(argv)?, rows, cols, None).map(|(adopted, _)| adopted)
+}
+
+/// `argv` as a process on this machine.
+fn command_of(argv: &[String]) -> io::Result<Command> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| io::Error::other("the stream's argv names no program"))?;
+    let mut command = Command::new(program);
+    command.args(args);
+    Ok(command)
 }
 
 /// [`adopt`], with input the stream refused said on `notices`, as
@@ -77,22 +87,25 @@ pub fn adopt_reporting(
     notices: Sender<String>,
     label: &str,
 ) -> io::Result<crate::backend::AdoptedSession> {
-    adopt_with_upstream(argv, rows, cols, Some(Notices::new(notices, label)))
-        .map(|(adopted, _)| adopted)
+    adopt_with_upstream(
+        command_of(argv)?,
+        rows,
+        cols,
+        Some(Notices::new(notices, label)),
+    )
+    .map(|(adopted, _)| adopted)
 }
 
-/// [`adopt`], and the stream's way up for frames other than input.
+/// [`adopt`] of the stream `command` starts, which may run on another
+/// machine (a Fleet's link), and the stream's way up for frames other than
+/// input.
 pub(super) fn adopt_with_upstream(
-    argv: &[String],
+    mut command: Command,
     rows: u16,
     cols: u16,
     notices: Option<Notices>,
 ) -> io::Result<(crate::backend::AdoptedSession, Upstream)> {
-    let (program, args) = argv
-        .split_first()
-        .ok_or_else(|| io::Error::other("the stream's argv names no program"))?;
-    let mut child = Command::new(program)
-        .args(args)
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
