@@ -198,10 +198,6 @@ fn version_suffix(mux: &str) -> String {
     }
 }
 
-/// The API version thurbox writes its Tasks in: a Fleet that does not speak
-/// it is refused (M6).
-const TASK_API: &str = "fleet/v1alpha1";
-
 /// What a Fleet, which manages sessions (ADR-41), answers about itself: the
 /// program, its version and harness profiles, and the config and data
 /// directory it reads. thurbox links no Fleet crate, so this is Fleet's
@@ -230,12 +226,8 @@ impl FleetFacts {
         let program = link.program();
         // ssh's connect bound is inside the probe's: a slow handshake is not
         // a Fleet that stalls.
-        let timeout = if link.is_local() {
-            PROBE_TIMEOUT
-        } else {
-            REMOTE_PROBE_TIMEOUT
-        };
-        let answer = bounded_output(link, &["version", "--json"], timeout);
+        let timeout = link.probe_timeout();
+        let answer = link.bounded_output(&["version", "--json"], timeout);
         let unreachable = answer.as_ref().ok().and_then(|out| link.unreachable(out));
         let version = match &unreachable {
             Some(why) => Err(why.clone()),
@@ -254,8 +246,9 @@ impl FleetFacts {
         // A machine that cannot be reached is asked once.
         let hosts = match &unreachable {
             Some(why) => Err(why.clone()),
-            None => {
-                bounded_output(link, &["runtime", "hosts", "--json"], timeout).and_then(|out| {
+            None => link
+                .bounded_output(&["runtime", "hosts", "--json"], timeout)
+                .and_then(|out| {
                     if out.status.success() {
                         serde_json::from_slice(&out.stdout).map_err(|e| {
                             format!("{program} runtime hosts --json answered no JSON: {e}")
@@ -266,8 +259,7 @@ impl FleetFacts {
                             String::from_utf8_lossy(&out.stderr).trim()
                         ))
                     }
-                })
-            }
+                }),
         };
         let config = match link.config() {
             Some(path) => Some((std::path::PathBuf::from(path), "settings.toml")),
@@ -327,28 +319,10 @@ impl FleetFacts {
         })
     }
 
-    /// Why thurbox cannot write this Fleet's Tasks, when its answer lacks
-    /// [`TASK_API`] among its `apiVersions`.
+    /// Why thurbox cannot write this Fleet's Tasks: the shared rule,
+    /// [`crate::fleet_link::incompatible`].
     fn incompatible(&self) -> Option<String> {
-        let version = self.version.as_ref().ok()?;
-        let apis: Vec<&str> = version["apiVersions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|a| a.as_str())
-            .collect();
-        (!apis.contains(&TASK_API)).then(|| {
-            format!(
-                "{} {} speaks {}; thurbox writes {TASK_API} — update Fleet",
-                self.program,
-                version["version"].as_str().unwrap_or("?"),
-                if apis.is_empty() {
-                    "no API version".to_string()
-                } else {
-                    apis.join(", ")
-                }
-            )
-        })
+        crate::fleet_link::incompatible(self.version.as_ref().ok()?)
     }
 
     /// The checks of this Fleet. `in_force`: the interface uses it, so a
@@ -504,51 +478,6 @@ impl FleetFacts {
             "unreachable": self.unreachable,
             "error": self.version.as_ref().err(),
         })
-    }
-}
-
-/// How long `fleet version --json` may take: a wrapper that stalls must not
-/// hang `doctor`, `config show` or `version`.
-const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-use crate::fleet_link::REMOTE_PROBE_TIMEOUT;
-
-/// `fleet args`'s output, or why there is none: it could not start, or it
-/// ran past `timeout` and was stopped.
-fn bounded_output(
-    link: &crate::fleet_link::FleetLink,
-    args: &[&str],
-    timeout: std::time::Duration,
-) -> Result<std::process::Output, String> {
-    use std::process::Stdio;
-    let program = link.program();
-    let mut child = link
-        .command(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start {program}: {e}"))?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|e| format!("{program}: {e}"))
-            }
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "{program} {} did not answer within {}s",
-                    args.join(" "),
-                    timeout.as_secs()
-                ));
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-            Err(e) => return Err(format!("{program}: {e}")),
-        }
     }
 }
 
@@ -725,11 +654,8 @@ mod tests {
         std::fs::write(&stuck, "#!/bin/sh\nexec sleep 60\n").unwrap();
         std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
         let started = std::time::Instant::now();
-        let out = bounded_output(
-            &crate::fleet_link::FleetLink::local(stuck.to_string_lossy()),
-            &["version"],
-            std::time::Duration::from_millis(300),
-        );
+        let out = crate::fleet_link::FleetLink::local(stuck.to_string_lossy())
+            .bounded_output(&["version"], std::time::Duration::from_millis(300));
         assert!(out.unwrap_err().contains("did not answer"));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }

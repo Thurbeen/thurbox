@@ -387,7 +387,7 @@ pub static FLEET: Class = Class {
             .doc("It runs on another machine, whose folders thurbox does not read."),
         leaf(
             "state",
-            "\"connecting\"|\"up\"|\"down\"|\"unreachable\"|\"unknown\"",
+            "\"connecting\"|\"up\"|\"down\"|\"unreachable\"|\"unknown\"|\"incompatible\"",
         )
         .doc("`up` while its manager holds the lease, `down` when none does."),
         leaf("why", "string").opt().doc("Why it is not up."),

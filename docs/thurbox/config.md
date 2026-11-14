@@ -599,8 +599,8 @@ a place.
   and skips that step when one is. Each Fleet shows how it is reached
   (`local Fleet`, `ssh <destination>`, `wsl <distro>`) and its state: `up`
   while its manager holds the lease, `Fleet not running` when none does
-  (the manager `fleet version --json` reports), or `unreachable`. An
-  unreachable Fleet is not taken. The places, their readiness (`fleet
+  (the manager `fleet version --json` reports), `unreachable`, or
+  `incompatible`. An unreachable or incompatible Fleet is not taken. The places, their readiness (`fleet
   runtime places --json`) and the agents that follow are the chosen Fleet's,
   read again each time the place step opens on it.
   For a Fleet on another machine, a repository is a typed path on that
@@ -614,6 +614,16 @@ a place.
   empty and asks for an absolute path. A remote Fleet's repository gets no
   worktree yet: `alt+w` says worktrees are made on this machine only, since
   its base branches would be read here.
+- The first thing asked of each listed Fleet is `fleet version --json`. A
+  Fleet whose `apiVersions` lack `fleet/v1alpha1`, the version thurbox
+  writes its Tasks in, is refused: it shows as `incompatible`, the session
+  list's error says `<fleet>: incompatible: …`, its watch, manager and
+  places are never asked for, and a command or creation for it fails
+  without sending anything but that `version`; an automation's send or
+  spawn too. `doctor` applies the same rule. The `version` probe waits 5
+  seconds, or 15 for a Fleet on another machine, and is then stopped. A
+  Fleet that does not answer, in time or at all, is not refused: it is
+  unreachable (`the Fleet <name> did not answer …`), and is asked again.
 - A Fleet that cannot be asked (its `ssh` exits 255) makes a command fail
   with that reason. The check a confirmed delete makes never reads it as a
   Task that is gone: only Fleet's own answer (exit 3) says so.

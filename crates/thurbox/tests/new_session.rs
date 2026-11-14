@@ -2112,7 +2112,7 @@ impl StubFleet {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\ncase \"$1\" in\n  get) exit 3 ;;\n  version) echo '{{\"harnesses\":[\"claude\",\"claude-code\",\"codex\"]}}' ;;\n  runtime) echo '{{\"hosts\":{hosts}}}' ;;\n  repositories) echo '{{\"repositories\":{{\"https://example.invalid/thurbox\":\"/src/thurbox\"}}}}' ;;\n  *) echo \"$@\" >> '{0}'; cat >> '{0}' ;;\nesac\n",
+                "#!/bin/sh\ncase \"$1\" in\n  get) exit 3 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude\",\"claude-code\",\"codex\"]}}' ;;\n  runtime) echo '{{\"hosts\":{hosts}}}' ;;\n  repositories) echo '{{\"repositories\":{{\"https://example.invalid/thurbox\":\"/src/thurbox\"}}}}' ;;\n  *) echo \"$@\" >> '{0}'; cat >> '{0}' ;;\nesac\n",
                 dir.path().join("asked").display()
             ),
         )

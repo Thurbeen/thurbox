@@ -171,6 +171,102 @@ impl FleetLink {
         (out.status.success() && home.starts_with('/')).then_some(home)
     }
 
+    /// How long a probe of this Fleet (`fleet version --json`) may take: a
+    /// program or launcher that stalls must not hang what asked. On another
+    /// machine ssh's own `ConnectTimeout` (5 s) comes first, and a first
+    /// connection also sets up the shared master.
+    pub fn probe_timeout(&self) -> std::time::Duration {
+        if self.is_local() {
+            PROBE_TIMEOUT
+        } else {
+            REMOTE_PROBE_TIMEOUT
+        }
+    }
+
+    /// `fleet <args>`'s output, or why there is none: it could not start,
+    /// or it ran past `timeout` and was stopped, which says the Fleet did
+    /// not answer, never what it would have said.
+    ///
+    /// The child's exit is bounded by `timeout`: one still running then is
+    /// stopped with its whole process group (a job object on Windows) and
+    /// did not answer. Once it has exited, its pipes get a short grace (250 ms) and
+    /// give what they read: a launcher (ssh, `wsl.exe`, `sh`) can exit while
+    /// something it started (ssh's ControlPersist master) still holds a
+    /// pipe, and reading to that end would never return. That group is not
+    /// killed: the master is meant to outlive the call.
+    pub fn bounded_output(
+        &self,
+        args: &[&str],
+        timeout: std::time::Duration,
+    ) -> Result<std::process::Output, String> {
+        let mut command = self.command(args);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut wrap = process_wrap::std::CommandWrap::from(command);
+        #[cfg(unix)]
+        wrap.wrap(process_wrap::std::ProcessGroup::leader());
+        #[cfg(windows)]
+        wrap.wrap(process_wrap::std::JobObject);
+        let mut child = wrap
+            .spawn()
+            .map_err(|e| format!("could not start fleet {}: {e}", args.join(" ")))?;
+        let stdout = read_all(child.stdout().take());
+        let stderr = read_all(child.stderr().take());
+        let deadline = std::time::Instant::now() + timeout;
+        let did_not_answer = || {
+            format!(
+                "the Fleet {} did not answer `fleet {}` within {}s",
+                self.name,
+                args.join(" "),
+                timeout.as_secs()
+            )
+        };
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait();
+                    return Err(did_not_answer());
+                }
+                Err(e) => return Err(format!("{}: {e}", self.program)),
+            }
+        };
+        // Exited: the answer is what each pipe gave. A pipe still held
+        // after the exit (a background job, ssh's ControlPersist master
+        // keeping stderr) is not a failure: each gets a short grace, then
+        // gives what it read so far.
+        let grace = std::time::Instant::now() + PIPE_GRACE;
+        let (out, err) = (stdout.by(grace), stderr.by(grace));
+        Ok(std::process::Output {
+            status,
+            stdout: out,
+            stderr: err,
+        })
+    }
+
+    /// `fleet version --json`, within [`Self::probe_timeout`], or why it did
+    /// not come: the Fleet could not be reached, did not answer in time, or
+    /// failed. Any of those is unknown, never an answer.
+    pub fn version(&self) -> Result<serde_json::Value, String> {
+        let out = self.bounded_output(&["version", "--json"], self.probe_timeout())?;
+        if !out.status.success() {
+            return Err(self.unreachable(&out).unwrap_or_else(|| {
+                format!(
+                    "fleet version: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )
+            }));
+        }
+        serde_json::from_slice(&out.stdout)
+            .map_err(|e| format!("fleet version answered no JSON: {e}"))
+    }
+
     /// Why this Fleet could not be asked, when `out` is ssh's own failure
     /// (exit 255: an unreachable machine, a refused key) rather than
     /// Fleet's answer. Such a failure says nothing of a Task: it is never
@@ -221,14 +317,119 @@ impl FleetLink {
     }
 }
 
+/// How long a pipe still held after its process exited is read for.
+const PIPE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The most one probe pipe keeps: an answer is a small JSON document, and a
+/// pipe that says more is not read for more.
+const PIPE_CAP: usize = 1024 * 1024;
+
+/// A pipe read on a thread of its own, its bytes kept as they arrive, so a
+/// reader can take what came by a deadline even when the pipe never closes.
+///
+/// Once taken, or past [`PIPE_CAP`], nothing more is kept: a background job
+/// still writing (a launcher's leftover) is drained into a scratch buffer
+/// for as long as it writes, never into memory that grows. The pipe is not
+/// closed on it, which would end such a job with `SIGPIPE`: ssh's
+/// ControlPersist master is meant to outlive the call.
+struct Reading {
+    /// What the pipe gave, and whether it was taken: one lock, so the
+    /// reader's check and its append are one step, and nothing is kept once
+    /// [`Self::by`] has taken it.
+    kept: std::sync::Arc<std::sync::Mutex<Kept>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+#[derive(Default)]
+struct Kept {
+    bytes: Vec<u8>,
+    taken: bool,
+}
+
+fn read_all(pipe: Option<impl std::io::Read + Send + 'static>) -> Reading {
+    let kept = std::sync::Arc::new(std::sync::Mutex::new(Kept::default()));
+    let (tx, done) = std::sync::mpsc::channel();
+    let into = std::sync::Arc::clone(&kept);
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut chunk = [0u8; 16 * 1024];
+            while let Ok(n @ 1..) = std::io::Read::read(&mut pipe, &mut chunk) {
+                if let Ok(mut kept) = into.lock() {
+                    if !kept.taken {
+                        let room = PIPE_CAP.saturating_sub(kept.bytes.len());
+                        kept.bytes.extend_from_slice(&chunk[..n.min(room)]);
+                    }
+                }
+            }
+        }
+        let _ = tx.send(());
+    });
+    Reading { kept, done }
+}
+
+impl Reading {
+    /// What the pipe gave once it closed, or by `deadline`, whichever is
+    /// first. Nothing is kept after.
+    fn by(&self, deadline: std::time::Instant) -> Vec<u8> {
+        let _ = self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
+        self.kept
+            .lock()
+            .map(|mut kept| {
+                kept.taken = true;
+                std::mem::take(&mut kept.bytes)
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// How long a probe of a Fleet on this machine may take.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The API version thurbox writes its Tasks in: a Fleet that does not speak
+/// it is refused (M6).
+pub const TASK_API: &str = "fleet/v1alpha1";
+
+/// Why thurbox cannot speak to the Fleet whose `fleet version --json`
+/// answered `answer`: its `apiVersions` lack [`TASK_API`]. The one rule, for
+/// the session list, the commands and `doctor`.
+pub fn incompatible(answer: &serde_json::Value) -> Option<String> {
+    let apis: Vec<&str> = answer["apiVersions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a.as_str())
+        .collect();
+    (!apis.contains(&TASK_API)).then(|| {
+        format!(
+            "incompatible: fleet {} speaks {}; thurbox writes {TASK_API} — update Fleet",
+            answer["version"].as_str().unwrap_or("?"),
+            if apis.is_empty() {
+                "no API version".to_string()
+            } else {
+                apis.join(", ")
+            }
+        )
+    })
+}
+
 /// Every Fleet thurbox lists, and the one in force: what a command is
 /// routed by. A session's id is `<fleet>:<task>`, so a command for it goes to
 /// that Fleet; a bare Task name, and a creation, go to the Fleet in force
 /// (the only one listed, or the first by name).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Every Fleet a command reaches through it is admitted first: its
+/// `fleet version --json` must speak [`TASK_API`] ([`incompatible`]), so no
+/// path, an automation's included, can send anything else to a Fleet
+/// thurbox cannot speak to. A verdict is kept, shared by the clones; a
+/// Fleet that did not answer is asked again next time.
+#[derive(Debug, Clone)]
 pub struct Fleets {
     in_force: FleetLink,
     all: Vec<FleetLink>,
+    /// Each Fleet's verdict by name: `None` admitted, else why not.
+    admitted: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Option<String>>>>,
 }
 
 impl Fleets {
@@ -244,6 +445,7 @@ impl Fleets {
         Self {
             in_force: chosen,
             all,
+            admitted: Default::default(),
         }
     }
 
@@ -267,18 +469,20 @@ impl Fleets {
         &self.all
     }
 
-    /// The Fleet a creation goes to: the one `name` names, or the Fleet in
-    /// force when it names none. A Fleet `settings.toml` does not list is
-    /// refused by name, never stood in for by another.
+    /// The Fleet a creation goes to, once admitted: the one `name` names, or
+    /// the Fleet in force when it names none. A Fleet `settings.toml` does
+    /// not list is refused by name, never stood in for by another.
     pub fn named(&self, name: Option<&str>) -> Result<&FleetLink, String> {
-        match name.filter(|name| !name.is_empty()) {
-            None => Ok(&self.in_force),
+        let link = match name.filter(|name| !name.is_empty()) {
+            None => &self.in_force,
             Some(name) => self
                 .all
                 .iter()
                 .find(|link| link.name == name)
-                .ok_or_else(|| format!("settings.toml lists no Fleet {name}")),
-        }
+                .ok_or_else(|| format!("settings.toml lists no Fleet {name}"))?,
+        };
+        self.admit(link)?;
+        Ok(link)
     }
 
     /// The Fleet `session` is a session of, and its Task's name there: a
@@ -286,6 +490,38 @@ impl Fleets {
     /// Fleet in force. A Fleet `settings.toml` does not list is refused by
     /// name, never stood in for by another.
     pub fn route<'a>(&self, session: &'a str) -> Result<(&FleetLink, &'a str), String> {
+        let (link, task) = self.find(session)?;
+        self.admit(link)?;
+        Ok((link, task))
+    }
+
+    /// Refuse a Fleet thurbox cannot speak to ([`incompatible`]). Asked once
+    /// per Fleet, within its probe deadline; an answer that did not come is
+    /// that error, never a verdict.
+    fn admit(&self, link: &FleetLink) -> Result<(), String> {
+        let known = self
+            .admitted
+            .lock()
+            .map_err(|_| "the Fleet check is poisoned")?
+            .get(&link.name)
+            .cloned();
+        let verdict = match known {
+            Some(verdict) => verdict,
+            None => {
+                let verdict = incompatible(&link.version()?);
+                if let Ok(mut admitted) = self.admitted.lock() {
+                    admitted.insert(link.name.clone(), verdict.clone());
+                }
+                verdict
+            }
+        };
+        match verdict {
+            None => Ok(()),
+            Some(why) => Err(format!("the Fleet {} is {why}", link.name)),
+        }
+    }
+
+    fn find<'a>(&self, session: &'a str) -> Result<(&FleetLink, &'a str), String> {
         match session.split_once(':') {
             None => Ok((&self.in_force, session)),
             Some((fleet, task)) => self
@@ -302,10 +538,7 @@ impl Fleets {
 
 impl From<FleetLink> for Fleets {
     fn from(link: FleetLink) -> Self {
-        Self {
-            in_force: link.clone(),
-            all: vec![link],
-        }
+        Self::new(&link.name.clone(), vec![link])
     }
 }
 
@@ -426,6 +659,141 @@ mod tests {
             argv(&link.command(&["send", "review", "it's done"])),
             ["/opt/fleet", "send", "review", "it's done"]
         );
+    }
+
+    /// A wrapper that exits while something it started still holds its
+    /// stdout (a backgrounded `sleep`, as an ssh or `wsl.exe` launch can
+    /// leave) is not waited on past the deadline: the whole read, the
+    /// pipes' end included, is bounded.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_is_bounded_when_a_grandchild_holds_the_pipe() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let fleet = dir.path().join("fleet");
+        std::fs::write(&fleet, "#!/bin/sh\nsleep 600 &\necho answered\n").expect("fleet");
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let started = std::time::Instant::now();
+        let out = FleetLink::local(fleet.to_string_lossy())
+            .bounded_output(&["version"], std::time::Duration::from_millis(500));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "waited {:?}",
+            started.elapsed()
+        );
+        let out = out.expect("the wrapper answered");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "answered\n");
+    }
+
+    /// A wrapper that answers on stdout and leaves a child holding only its
+    /// stderr keeps that answer: what each pipe gave is kept once read, and
+    /// a pipe still held at the deadline gives only what it had.
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_on_stdout_survives_a_held_stderr() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let fleet = dir.path().join("fleet");
+        std::fs::write(
+            &fleet,
+            "#!/bin/sh\nsleep 600 >/dev/null &\necho '{\"apiVersions\":[\"fleet/v1alpha1\"]}'\n",
+        )
+        .expect("fleet");
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let started = std::time::Instant::now();
+        let answer = FleetLink::local(fleet.to_string_lossy())
+            .version()
+            .expect("the answer on stdout");
+        assert_eq!(answer["apiVersions"][0], "fleet/v1alpha1");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        // The same with a plain answer, read raw.
+        std::fs::write(&fleet, "#!/bin/sh\nsleep 600 >/dev/null &\necho answered\n")
+            .expect("fleet");
+        let started = std::time::Instant::now();
+        let out = FleetLink::local(fleet.to_string_lossy())
+            .bounded_output(&["version"], std::time::Duration::from_secs(5))
+            .expect("answered");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "answered\n");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// A pipe a background job keeps writing to after the answer is not
+    /// kept growing: what it held is taken once, and nothing it writes after
+    /// is kept, nor more than the cap before.
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_written_on_after_the_answer_stays_bounded() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exec yes"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("yes");
+        let reading = read_all(child.stdout.take());
+        let kept = std::sync::Arc::clone(&reading.kept);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let taken = reading.by(std::time::Instant::now());
+        assert!(
+            !taken.is_empty() && taken.len() <= PIPE_CAP,
+            "{}",
+            taken.len()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            kept.lock().expect("kept").bytes.len(),
+            0,
+            "kept after it was taken"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// A probe whose own process runs past the deadline did not answer: it
+    /// is stopped with everything in its group.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_past_its_deadline_is_stopped_with_its_group() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let pid = dir.path().join("pid");
+        let fleet = dir.path().join("fleet");
+        std::fs::write(
+            &fleet,
+            format!(
+                "#!/bin/sh\nsleep 60 &\necho $! > '{}'\nwait\n",
+                pid.display()
+            ),
+        )
+        .expect("fleet");
+        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let started = std::time::Instant::now();
+        let why = FleetLink::local(fleet.to_string_lossy())
+            .bounded_output(&["version"], std::time::Duration::from_millis(500))
+            .expect_err("it never exits");
+        assert!(why.contains("did not answer"), "{why}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        // The kill is a signal: the sleep goes a moment later.
+        let pid = std::fs::read_to_string(&pid).expect("pid");
+        // A zombie answers `kill -0` too: it is dead, waiting to be reaped.
+        let alive = || {
+            let signalled = std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            let zombie =
+                std::fs::read_to_string(format!("/proc/{}/stat", pid.trim())).is_ok_and(|stat| {
+                    stat.rsplit(')')
+                        .next()
+                        .is_some_and(|rest| rest.trim_start().starts_with('Z'))
+                });
+            signalled && !zombie
+        };
+        let gone_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive() && std::time::Instant::now() < gone_by {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!alive(), "the group's sleep was left running");
     }
 
     /// Through WSL each word reaches the distro as its own argument of

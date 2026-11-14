@@ -565,6 +565,7 @@ local FLEET_STATES = {
   unreachable = "○ unreachable",
   connecting = "◌ connecting…",
   unknown = "? unknown",
+  incompatible = "⊘ incompatible",
 }
 
 --- What the row under the cursor says beyond its state: why a Fleet is not
@@ -1785,6 +1786,11 @@ return {
         end
         if chosen.state == "unreachable" then
           flow.message = chosen.name .. " cannot be reached: " .. (chosen.why or "see doctor")
+          save(flow)
+          return true
+        end
+        if chosen.state == "incompatible" then
+          flow.message = chosen.name .. " is " .. (chosen.why or "incompatible: update Fleet")
           save(flow)
           return true
         end

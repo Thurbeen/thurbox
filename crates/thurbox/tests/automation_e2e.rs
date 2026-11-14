@@ -26,7 +26,7 @@ impl Instance {
         std::fs::write(
             &fleet,
             format!(
-                "#!/bin/sh\nlog='{}'\necho \"$*\" >> \"$log\"\nif [ \"$1\" = apply ]; then cat >> \"$log\"; echo >> \"$log\"; fi\n",
+                "#!/bin/sh\n[ \"$1\" = version ] && exec echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}'\nlog='{}'\necho \"$*\" >> \"$log\"\nif [ \"$1\" = apply ]; then cat >> \"$log\"; echo >> \"$log\"; fi\n",
                 root.path().join("fleet.log").display()
             ),
         )

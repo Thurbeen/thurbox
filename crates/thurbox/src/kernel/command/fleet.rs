@@ -27,6 +27,12 @@ pub(super) struct Fleet {
     pub(super) fleets: crate::fleet_link::Fleets,
 }
 
+impl Fleet {
+    pub(super) fn new(fleets: crate::fleet_link::Fleets) -> Self {
+        Self { fleets }
+    }
+}
+
 impl super::Executor for Fleet {
     fn execute(
         &self,
@@ -235,11 +241,13 @@ fn json(fleet: &crate::fleet_link::FleetLink, args: &[&str]) -> Result<serde_jso
         .output()
         .map_err(|e| format!("could not start fleet {}: {e}", args[0]))?;
     if !out.status.success() {
-        return Err(format!(
-            "fleet {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        return Err(fleet.unreachable(&out).unwrap_or_else(|| {
+            format!(
+                "fleet {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
+        }));
     }
     serde_json::from_slice(&out.stdout)
         .map_err(|e| format!("fleet {} answered no JSON: {e}", args.join(" ")))
@@ -482,16 +490,14 @@ mod tests {
             "here=$(dirname \"$0\")\n\
              case \"$1\" in\n\
              runtime) echo '{\"hosts\":[\"local\"]}' ;;\n\
-             version) echo '{\"harnesses\":[\"claude\"]}' ;;\n\
+             version) echo '{\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude\"]}' ;;\n\
              apply) cat > \"$here/applied.json\" ;;\n\
              send) printf '%s' \"$3\" > \"$here/sent\" ;;\n\
              get) exit 3 ;;\n\
              esac",
         );
         let repo = tempfile::tempdir().expect("repo");
-        let fleet = super::Fleet {
-            fleets: remote.link.clone().into(),
-        };
+        let fleet = super::Fleet::new(remote.link.clone().into());
         let (progress, _) = std::sync::mpsc::channel();
         let run = |command: Command| fleet.execute(&command, 1, &progress).map(|_| ());
         crate::paths::with_path(remote.path(), || {
