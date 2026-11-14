@@ -567,6 +567,9 @@ fn a_fleet_refused_later_shows_the_refusal_on_the_agent_step() {
         "{screen}"
     );
     assert!(!screen.contains("Asking Fleet"), "{screen}");
+    // Only the refusal and the way out: no empty list, no Create pill.
+    assert!(!screen.contains("Create"), "{screen}");
+    assert!(screen.contains("esc"), "{screen}");
     press(&host, &world, "enter");
     assert!(host.drain_commands().is_empty());
 }

@@ -1201,7 +1201,14 @@ local function render_field(title, label, field, flow, placeholder)
 end
 
 local function render_agent(flow)
-  if not agents_known() and not refusal() then
+  -- A refused Fleet sends no agents: only why, and the way out.
+  if refusal() then
+    return frame("Coding Agent", 4, {
+      message_row(flow),
+      modal.footer({ { "esc", "cancel" } }, nil),
+    }, flow)
+  end
+  if not agents_known() then
     return frame("Coding Agent", 5, {
       {
         type = "text",
