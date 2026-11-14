@@ -127,7 +127,9 @@ fn a_snapshot_read_never_touches_the_database() {
 #[test]
 fn dispatching_a_command_never_blocks_the_caller() {
     // The bus has no blocking form to accidentally use.
-    let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
+    let bus = CommandBus::fleet(thurbox::fleet_link::FleetLink::local(
+        "thurbox-test-no-fleet",
+    ));
     let started = std::time::Instant::now();
 
     for _ in 0..20 {

@@ -272,7 +272,7 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 fn store_over(fleet: &Fleet) -> SnapshotStore {
-    store_of(FleetWatch::spawn(fleet.program.clone()))
+    store_of(FleetWatch::spawn(link(&fleet.program)))
 }
 
 fn store_of(source: FleetWatch) -> SnapshotStore {
@@ -349,7 +349,9 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
     let mut store = SnapshotStore::with_source(
-        Box::new(FleetWatch::spawn(fleet.root.path().join("no-such-fleet"))),
+        Box::new(FleetWatch::spawn(link(
+            &fleet.root.path().join("no-such-fleet"),
+        ))),
         &Default::default(),
     );
     until("the error is published", || {
@@ -361,7 +363,12 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
 }
 
 fn fleet_bus(program: &Path) -> CommandBus {
-    CommandBus::fleet(program.to_path_buf())
+    CommandBus::fleet(link(program))
+}
+
+/// The Fleet `program` runs on this machine.
+fn link(program: &Path) -> thurbox::fleet_link::FleetLink {
+    thurbox::fleet_link::FleetLink::local(program.to_string_lossy())
 }
 
 fn run_command(bus: &mut CommandBus, command: Command) -> Result<(), String> {
@@ -560,7 +567,7 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
         std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
         &Default::default(),
     );
-    terminals.attach_fleet_through(program);
+    terminals.attach_fleet_through(link(&program));
     until("the pane shows the bridged output", || {
         store.refresh_if_due();
         terminals.sync(store.current(), 24, 80);
@@ -869,7 +876,7 @@ fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     assert_eq!(fleet.manager(), None);
 
     fleet.apply(json!([task("alpha")]));
-    let mut store = store_of(FleetWatch::with_manager(fleet.program.clone()));
+    let mut store = store_of(FleetWatch::with_manager(link(&fleet.program)));
     // The `fleet up` thurbox starts reconciles the Tasks it finds.
     until("a manager holds the lease", || fleet.manager().is_some());
     until("the Task is a row", || {
@@ -882,7 +889,7 @@ fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     });
 
     // A second interface finds the lease held, and leaves that manager be.
-    let mut second = store_of(FleetWatch::with_manager(fleet.program.clone()));
+    let mut second = store_of(FleetWatch::with_manager(link(&fleet.program)));
     until("the second store reads the Tasks", || {
         names(&mut second).contains(&"alpha".to_string())
     });
@@ -983,7 +990,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
         std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
         &Default::default(),
     );
-    terminals.attach_fleet_through(fleet.program.clone());
+    terminals.attach_fleet_through(link(&fleet.program));
     let mut screen = |terminals: &mut thurbox::kernel::terminal::Terminals| {
         store.refresh_if_due();
         terminals.sync(store.current(), 24, 80);
@@ -1104,7 +1111,7 @@ fn an_interactive_rows_status_shows_working_attention_and_idle() {
 #[test]
 fn the_link_reaches_a_fleet_over_ssh() {
     use thurbox::fleet_link::FleetLink;
-    use thurbox::shell::HostLauncher;
+    use thurbox::session::settings::{FleetDef, FleetTransport};
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
     let root = fleet.root.path();
@@ -1131,12 +1138,16 @@ fn the_link_reaches_a_fleet_over_ssh() {
     dirs.extend(std::env::split_paths(&path));
     std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
 
-    let link = FleetLink::over(
-        HostLauncher::Ssh {
-            destination: "devbox".into(),
-            ssh_opts: Vec::new(),
+    let link = FleetLink::of(
+        "devbox",
+        &FleetDef {
+            transport: FleetTransport::Ssh {
+                ssh: "devbox".into(),
+                ssh_opts: Vec::new(),
+            },
+            program: fleet.program.to_string_lossy().into_owned(),
+            config: None,
         },
-        fleet.program.to_string_lossy(),
     );
     link.run(
         &["apply", "--create-only", "-f", "-"],
@@ -1166,6 +1177,125 @@ fn the_link_reaches_a_fleet_over_ssh() {
         calls
             .lines()
             .all(|call| call.starts_with(&*fleet.program.to_string_lossy())),
+        "{calls}"
+    );
+}
+
+/// `settings.toml` lists three Fleets, and `doctor` reports each: one on this
+/// machine, one on "box" reached over ssh with its own `config` (given as
+/// `fleet --config <path>` before the verb), and one on "gpu", whose ssh
+/// exits 255 and so is unreachable. Until the interface merges Fleets it
+/// uses the first by name, and `doctor` says which.
+#[test]
+fn doctor_reports_each_listed_fleet() {
+    let Some(bin) = fleet_bin() else { return };
+    let laptop = Fleet::new(bin.clone());
+    let remote = Fleet::new(bin.clone());
+    let root = laptop.root.path();
+    let box_root = remote.root.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let log = root.join("ssh.log");
+    let ssh = ssh_bin.join("ssh");
+    // "box" is a second sandboxed machine: its own HOME, so nothing of this
+    // one's Fleet is in reach there.
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o|-p) shift 2 ;; -*) shift ;; *) break ;; esac; done\n\
+             dest=$1; shift\n\
+             printf '%s %s\\n' \"$dest\" \"$*\" >> '{log}'\n\
+             case \"$dest\" in\n\
+             box) exec env -i HOME='{b}' TMPDIR='{b}/tmp' PATH='/usr/bin:/bin' sh -c \"exec $*\" ;;\n\
+             *) echo \"ssh: connect to host $dest port 22: Connection refused\" >&2; exit 255 ;;\n\
+             esac\n",
+            log = log.display(),
+            b = box_root.display(),
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let config_dir = root.join("thurbox-config");
+    std::fs::write(
+        config_dir.join("settings.toml"),
+        format!(
+            "[fleets.laptop]\nprogram = '{laptop}'\n\n\
+             [fleets.box]\ntransport = {{ ssh = \"box\" }}\nprogram = '{bin}'\nconfig = '{config}'\n\n\
+             [fleets.gpu]\ntransport = {{ ssh = \"gpu\", ssh_opts = [\"-p\", \"2222\"] }}\n",
+            laptop = laptop.program.display(),
+            bin = bin.display(),
+            config = box_root.join("fleet.toml").display(),
+        ),
+    )
+    .expect("settings");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![ssh_bin];
+    dirs.extend(std::env::split_paths(&path));
+    let out = Process::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["--json", "doctor"])
+        .env("PATH", std::env::join_paths(dirs).expect("PATH"))
+        .env("THURBOX_CONFIG_DIR", &config_dir)
+        .env("THURBOX_DATA_DIR", root.join("thurbox-data"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("doctor");
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "{e}: {}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    let fleets = report["fleets"].as_array().expect("fleets");
+    let names: Vec<&str> = fleets.iter().filter_map(|f| f["name"].as_str()).collect();
+    assert_eq!(names, ["box", "gpu", "laptop"], "{report:#}");
+    let fleet = |name: &str| fleets.iter().find(|f| f["name"] == name).unwrap();
+    assert!(fleet("box")["version"].is_string(), "{report:#}");
+    assert!(fleet("box")["unreachable"].is_null(), "{report:#}");
+    assert!(fleet("laptop")["version"].is_string(), "{report:#}");
+    assert!(
+        fleet("gpu")["unreachable"]
+            .as_str()
+            .is_some_and(|why| why.contains("Connection refused")),
+        "{report:#}"
+    );
+    assert_eq!(fleet("box")["in_force"], true, "{report:#}");
+    assert_eq!(fleet("laptop")["in_force"], false, "{report:#}");
+    let check = |key: &str, fleet: &str| {
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["key"] == key && c["fleet"] == fleet)
+            .unwrap_or_else(|| panic!("no {key} check of {fleet}: {report:#}"))
+            .clone()
+    };
+    assert_eq!(check("fleet", "box")["level"], "ok", "{report:#}");
+    assert_eq!(check("fleet", "laptop")["level"], "ok", "{report:#}");
+    // A Fleet the interface does not use yet warns, never fails the report.
+    assert_eq!(check("fleet", "gpu")["level"], "warn", "{report:#}");
+    // thurbox never starts a remote manager: doctor points at the unit.
+    assert!(
+        check("fleet-manager", "box")["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("where-sessions-run.md")),
+        "{report:#}"
+    );
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    assert!(
+        calls.lines().any(|call| call
+            == format!(
+                "box {} --config {} version --json",
+                bin.display(),
+                box_root.join("fleet.toml").display()
+            )),
+        "{calls}"
+    );
+    // An unreachable Fleet is asked once, not once per probe.
+    assert_eq!(
+        calls.lines().filter(|c| c.starts_with("gpu ")).count(),
+        1,
         "{calls}"
     );
 }

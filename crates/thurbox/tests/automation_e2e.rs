@@ -40,7 +40,7 @@ impl Instance {
         std::fs::write(
             root.path().join("config/settings.toml"),
             format!(
-                "[features]\nversion_check = false\nauto_update = false\n\n[fleet]\nprogram = '{}'\n",
+                "[features]\nversion_check = false\nauto_update = false\n\n[fleets.local]\nprogram = '{}'\n",
                 fleet.display()
             ),
         )

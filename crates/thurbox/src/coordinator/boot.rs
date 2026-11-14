@@ -194,9 +194,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Hoisted out of the struct literal below so each phase can be timed
     // separately; the construction order is unchanged.
     let phase = Instant::now();
-    // The engine (ADR-41): Fleet's Tasks through its command line, with a
-    // `fleet up` kept running.
-    let fleet = std::path::PathBuf::from(&startup_settings.fleet.program);
+    // The engine (ADR-41): the Tasks of the Fleet in force through its
+    // command line, with a `fleet up` kept running when that Fleet is on this
+    // machine. Until the watches merge, the interface follows one Fleet.
+    let fleet = thurbox::fleet_link::FleetLink::in_force(&startup_settings);
     // Automations fire while the interface runs; `thurbox-cli automation
     // tick` fires them from an OS timer otherwise.
     if startup_settings.features.automations {

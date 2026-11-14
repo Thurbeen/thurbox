@@ -1232,7 +1232,7 @@ Task; thurbox keeps no session state and no database, and reaches Fleet
 only through its CLI (`fleet watch`, `apply`, `send`, `delete`, `attach`). The
 snapshot reads the sessions from a `SnapshotSource` (Fleet's Tasks through
 `fleet watch`), and the command bus runs commands through an `Executor`
-(Fleet's command line, [`[fleet]`](config.md#fleet--the-session-engine)).
+(Fleet's command line, [`[fleets]`](config.md#fleets--the-fleets-that-manage-sessions)).
 Fleet reaches sessions only through a process protocol (`start`, `inspect`,
 `stop`, and optionally `input`, `capture`, `exec`, `attach`) that any runtime
 implements: a multiplexer, a container, a VM. The first is `runtime-mux`, with

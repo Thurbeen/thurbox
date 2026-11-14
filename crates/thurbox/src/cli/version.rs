@@ -25,8 +25,12 @@ pub struct VersionArgs {
 /// version and (with `--check`) the network.
 ///
 /// `enabled` is `[features] version_check` as the process loaded it, and
-/// `fleet_program` the `[fleet] program` it reports beside the version.
-pub fn run(args: VersionArgs, enabled: bool, fleet_program: &str) -> CommandOutput {
+/// `fleet` the Fleet in force, which it reports beside the version.
+pub fn run(
+    args: VersionArgs,
+    enabled: bool,
+    fleet: &crate::fleet_link::FleetLink,
+) -> CommandOutput {
     let current = crate::update::version_check::current_version();
 
     if !args.check {
@@ -38,7 +42,7 @@ pub fn run(args: VersionArgs, enabled: bool, fleet_program: &str) -> CommandOutp
                 "tmux_socket": crate::backend::instance::local_socket_name(),
                 "tmux_tmpdir": crate::backend::instance::local_socket_dir_report(),
                 "data_dir": crate::paths::data_directory().map(|d| d.display().to_string()),
-                "fleet": super::doctor::FleetFacts::read(fleet_program).document(),
+                "fleet": super::doctor::FleetFacts::read(fleet).document(),
             }),
             format!("thurbox {current}"),
         );
@@ -111,7 +115,11 @@ mod tests {
 
     #[test]
     fn version_without_check_prints_current_version() {
-        let out = run(VersionArgs { check: false }, true, "fleet");
+        let out = run(
+            VersionArgs { check: false },
+            true,
+            &crate::fleet_link::FleetLink::local("fleet"),
+        );
         assert!(out["version"].is_string(), "version field present");
         assert!(out["tmux_socket"].is_string(), "the socket in force");
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
@@ -122,7 +130,11 @@ mod tests {
     fn version_check_when_flag_disabled_prints_enable_hint() {
         // The flag is on by default for 1.0, so exercise the disabled path
         // directly, with the flag passed in — no network.
-        let out = run(VersionArgs { check: true }, false, "fleet");
+        let out = run(
+            VersionArgs { check: true },
+            false,
+            &crate::fleet_link::FleetLink::local("fleet"),
+        );
         assert_eq!(out["check_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

@@ -403,12 +403,10 @@ impl Terminals {
     }
 
     /// Open each Fleet session's pane through the terminal stream `fleet
-    /// attach` names, `program` being the `fleet` binary (ADR-41). A stream
-    /// pane keeps its grid while hidden, as [`Self::view_through`]'s do.
-    pub fn attach_fleet_through(&mut self, program: PathBuf) {
-        self.fleet = Some(crate::fleet_link::FleetLink::local(
-            program.to_string_lossy(),
-        ));
+    /// attach` names, of the Fleet `link` reaches (ADR-41). A stream pane
+    /// keeps its grid while hidden, as [`Self::view_through`]'s do.
+    pub fn attach_fleet_through(&mut self, link: crate::fleet_link::FleetLink) {
+        self.fleet = Some(link);
         self.keep_hidden = None;
     }
 

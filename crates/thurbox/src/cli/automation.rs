@@ -5,8 +5,6 @@
 //! an OS timer (cron, a systemd timer), so a schedule keeps firing with no
 //! interface open.
 
-use std::path::{Path, PathBuf};
-
 use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 
@@ -106,8 +104,10 @@ pub struct EditArgs {
     pub disable: bool,
 }
 
-pub fn run(action: Action, fleet: &str) -> Result<CommandOutput, CommandError> {
-    let fleet = PathBuf::from(fleet);
+pub fn run(
+    action: Action,
+    fleet: &crate::fleet_link::FleetLink,
+) -> Result<CommandOutput, CommandError> {
     let now = crate::kernel::automations::now_ms();
     match action {
         Action::Create(args) => create(args, now),
@@ -115,8 +115,8 @@ pub fn run(action: Action, fleet: &str) -> Result<CommandOutput, CommandError> {
         Action::Show { name } => show(&name),
         Action::Edit(args) => edit(args, now),
         Action::Remove { name } => remove(&name),
-        Action::Run { name } => fire(&fleet, &name, now),
-        Action::Tick => tick(&fleet, now),
+        Action::Run { name } => fire(fleet, &name, now),
+        Action::Tick => tick(fleet, now),
     }
 }
 
@@ -299,7 +299,11 @@ fn remove(name: &str) -> Result<CommandOutput, CommandError> {
     ))
 }
 
-fn fire(fleet: &Path, name: &str, now: u64) -> Result<CommandOutput, CommandError> {
+fn fire(
+    fleet: &crate::fleet_link::FleetLink,
+    name: &str,
+    now: u64,
+) -> Result<CommandOutput, CommandError> {
     let fired = crate::kernel::automations::run_now(fleet, name, now)?;
     let mut out = run_output(&fired);
     if fired.run.status != crate::config::automations::RunStatus::Success {
@@ -308,7 +312,7 @@ fn fire(fleet: &Path, name: &str, now: u64) -> Result<CommandOutput, CommandErro
     Ok(out)
 }
 
-fn tick(fleet: &Path, now: u64) -> Result<CommandOutput, CommandError> {
+fn tick(fleet: &crate::fleet_link::FleetLink, now: u64) -> Result<CommandOutput, CommandError> {
     let fired = crate::kernel::automations::tick(fleet, now)?;
     let rows: Vec<Value> = fired
         .iter()

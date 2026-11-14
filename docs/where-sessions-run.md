@@ -42,11 +42,13 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 
 | Part | Status |
 | --- | --- |
-| One Fleet, named by `[fleet] program` in thurbox's `settings.toml` | implemented |
 | The runtime protocol carries a place, and `manifest` reports places | implemented |
 | Places in Fleet's config, `[runtimes.<name>.places.<place>]`, named `<runtime>/<place>` | implemented |
 | `runtime-mux` runs sessions on `local` only | implemented |
-| Several Fleets in `settings.toml`, `[fleets.<name>]` | planned |
+| Several Fleets in thurbox's `settings.toml`, `[fleets.<name>]`, over ssh or WSL; `thurbox-cli doctor` checks each | implemented |
+| The interface follows one Fleet: the only one listed, or the first by name | implemented |
+| The interface follows every listed Fleet in one list | planned |
+| A remote Fleet's terminal panes and its creation flow | planned |
 | The Fleet step and the place step in the new-session modal | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
@@ -64,7 +66,10 @@ Each session runs on `local`: the laptop.
 
 ### 2. Laptop thurbox, Fleet on a remote box
 
-Status: planned. Today, connect to box over ssh and run thurbox there.
+Status: partly implemented. thurbox lists box's Fleet, follows its sessions
+and sends to them over ssh, and `thurbox-cli doctor` checks it. A session's
+terminal pane and the creation flow on box are planned: until then, connect
+to box over ssh and run thurbox there.
 
 This is the most common setup. The agents run on box, so they keep working
 when the laptop sleeps.
@@ -108,8 +113,9 @@ when the laptop sleeps.
    program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
    ```
 
-5. Run `thurbox-cli doctor`. It reports each Fleet, and says when box's
-   manager does not run.
+5. Run `thurbox-cli doctor`. It reports each Fleet, says when box cannot be
+   reached, and points at the unit for box's manager. Until the interface
+   follows several Fleets, it uses the first by name (here `box`).
 
 ### 3. One Fleet, several places
 

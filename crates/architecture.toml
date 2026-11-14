@@ -372,8 +372,9 @@ kernel = { use = ["session", "paths", "git", "notifications", "theme", "fleet_li
 ] }
 # The one way to a Fleet's command line (ADR-41): every `fleet` call the
 # kernel and the CLI make becomes a process here, on this machine or through
-# `shell`'s launchers, so neither of them launches anything itself.
-fleet_link = { use = ["shell"] }
+# `shell`'s launchers, so neither of them launches anything itself. `session`
+# for the `[fleets.<name>]` entry a link is built from.
+fleet_link = { use = ["session", "shell"] }
 # Leaf utilities.
 paths = { use = [] }
 ui_control = { use = ["paths"] }
@@ -387,7 +388,7 @@ workspace = { use = ["paths"] }
 # loop is a decision recorded here rather than an exemption. It reaches the
 # library by its crate name (`thurbox::`), the only spelling a binary has.
 coordinator = { use = [
-  "clipboard", "kernel", "notifications", "paths", "session", "shell", "telemetry",
+  "clipboard", "fleet_link", "kernel", "notifications", "paths", "session", "shell", "telemetry",
   "ui_control", "agent::input", "backend", "config::interface_state",
 ] }
 # Leaf side-effect module: OS desktop notifications. Knows `session` (for

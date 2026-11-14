@@ -7,6 +7,8 @@
 //! hardcoded. There is no process-wide copy: each binary loads the file once
 //! and hands the value to what it builds (`session` holds no state, #1477).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Settings loaded from `settings.toml`. Every field has a default, so
@@ -70,9 +72,10 @@ pub struct Settings {
     /// OpenTelemetry settings (`[telemetry]` table). Off by default.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
-    /// Fleet, the session engine (`[fleet]` table).
+    /// The Fleets that manage sessions (`[fleets.<name>]` tables). None
+    /// listed: the one on this machine, [`IMPLIED_FLEET`] ([`Self::fleets`]).
     #[serde(default)]
-    pub fleet: FleetSettings,
+    pub fleets: BTreeMap<String, FleetDef>,
 }
 
 /// Keys an older `settings.toml` may hold that thurbox no longer reads, each
@@ -129,6 +132,7 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
         "Fleet reports no finished state",
     ),
     ("notifications.on_automation_failure", "nothing raised it"),
+    ("fleet", "the Fleets are listed as [fleets.<name>]"),
 ];
 
 /// Keys an older `settings.toml` may hold that are accepted and ignored with
@@ -147,28 +151,184 @@ pub fn retired_key(path: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// How thurbox reaches Fleet, which runs every session (`[fleet]` table),
-/// ADR-41: each session is a Fleet Task, which the interface reads through
-/// `fleet watch` and acts on through `fleet apply`, `send` and `delete`, with
-/// a `fleet up` kept running. Read at startup only.
+/// The name of the Fleet thurbox reaches when `settings.toml` lists none:
+/// `fleet` on this machine.
+pub const IMPLIED_FLEET: &str = "local";
+
+/// One Fleet thurbox reaches (`[fleets.<name>]`), ADR-41: each session is a
+/// Task of a Fleet, which the interface reads through `fleet watch` and acts
+/// on through `fleet apply`, `send` and `delete`. Read at startup only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FleetSettings {
-    /// The `fleet` binary: a name on `PATH` or a path. It reads its own
-    /// config, as `fleet` does anywhere (`FLEET_CONFIG`, then its per-user
-    /// file).
+pub struct FleetDef {
+    /// How `fleet` is run: on this machine, over ssh, or in a WSL distro.
+    #[serde(default)]
+    pub transport: FleetTransport,
+    /// The `fleet` binary: a name on `PATH` or a path, on the machine the
+    /// transport reaches. ssh runs it with that machine's non-login `PATH`.
     #[serde(default = "default_fleet_program")]
     pub program: String,
+    /// The config file that Fleet reads, as `fleet --config <path>`. `None`:
+    /// Fleet's own rule (`FLEET_CONFIG`, then its per-user file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+}
+
+impl Default for FleetDef {
+    fn default() -> Self {
+        Self {
+            transport: FleetTransport::default(),
+            program: default_fleet_program(),
+            config: None,
+        }
+    }
 }
 
 fn default_fleet_program() -> String {
     "fleet".to_string()
 }
 
-impl Default for FleetSettings {
+/// How a Fleet's `fleet` is run: `"local"`, `{ ssh = "me@box", ssh_opts =
+/// [...] }` or `{ wsl = "Ubuntu" }`.
+///
+/// Read by hand rather than as an untagged enum: untagged buffers the table,
+/// so a misspelt key (`ssh_opt`) would load silently as a transport without
+/// it. Here the table is one struct, whose unknown keys the loader reports,
+/// and a table naming no transport or two is refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum FleetTransport {
+    Local(Local),
+    Ssh {
+        ssh: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ssh_opts: Vec<String>,
+    },
+    Wsl {
+        wsl: String,
+    },
+}
+
+/// The one word a local transport is spelled with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Local {
+    Local,
+}
+
+impl Default for FleetTransport {
     fn default() -> Self {
-        Self {
-            program: default_fleet_program(),
+        Self::Local(Local::Local)
+    }
+}
+
+/// A transport table as written, before it is checked to name exactly one
+/// transport.
+#[derive(Deserialize)]
+struct TransportTable {
+    ssh: Option<String>,
+    ssh_opts: Option<Vec<String>>,
+    wsl: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for FleetTransport {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = FleetTransport;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(
+                    "transport \"local\", { ssh = \"<destination>\", ssh_opts = [...] } or \
+                     { wsl = \"<distro>\" }",
+                )
+            }
+
+            fn visit_str<E: serde::de::Error>(self, word: &str) -> Result<Self::Value, E> {
+                match word {
+                    "local" => Ok(FleetTransport::default()),
+                    other => Err(E::custom(format!(
+                        "transport \"{other}\" is not one: write \"local\", {{ ssh = ... }} or \
+                         {{ wsl = ... }}"
+                    ))),
+                }
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                use serde::de::Error;
+                let table =
+                    TransportTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                match table {
+                    TransportTable {
+                        ssh: Some(ssh),
+                        ssh_opts,
+                        wsl: None,
+                    } => Ok(FleetTransport::Ssh {
+                        ssh,
+                        ssh_opts: ssh_opts.unwrap_or_default(),
+                    }),
+                    TransportTable {
+                        ssh: None,
+                        ssh_opts: None,
+                        wsl: Some(wsl),
+                    } => Ok(FleetTransport::Wsl { wsl }),
+                    TransportTable {
+                        ssh: Some(_),
+                        wsl: Some(_),
+                        ..
+                    } => Err(M::Error::custom(
+                        "transport names both ssh and wsl: a Fleet is reached one way",
+                    )),
+                    TransportTable {
+                        ssh: None,
+                        ssh_opts: Some(_),
+                        ..
+                    } => Err(M::Error::custom(
+                        "transport has ssh_opts but no ssh destination",
+                    )),
+                    TransportTable {
+                        ssh: None,
+                        wsl: None,
+                        ..
+                    } => Err(M::Error::custom(
+                        "transport names no ssh destination or wsl distro",
+                    )),
+                }
+            }
         }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl FleetTransport {
+    pub fn is_local(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+}
+
+impl Settings {
+    /// The Fleets thurbox reaches, by name: those `[fleets]` lists, or, when
+    /// it lists none, [`IMPLIED_FLEET`] on this machine. Once one is listed
+    /// only the listed ones are used, so a machine that is only a client
+    /// lists no local Fleet.
+    pub fn fleets(&self) -> Vec<(String, FleetDef)> {
+        if self.fleets.is_empty() {
+            return vec![(IMPLIED_FLEET.to_string(), FleetDef::default())];
+        }
+        self.fleets
+            .iter()
+            .map(|(name, def)| (name.clone(), def.clone()))
+            .collect()
+    }
+
+    /// The one Fleet the interface uses until it follows several: the first
+    /// of [`Self::fleets`] by name.
+    pub fn fleet_in_force(&self) -> (String, FleetDef) {
+        self.fleets().swap_remove(0)
     }
 }
 
@@ -531,7 +691,7 @@ pub const FIELDS: &[Field] = &[
     // Read at every copy.
     field!(Live, clipboard),
     // The engine's source and executor are chosen once, at boot (ADR-41).
-    field!(NextLaunch, fleet),
+    field!(NextLaunch, fleets),
     // Feeds only the diagnostic-log bridge, built once at boot (ADR-38), so
     // only a change to how that bridge would be built needs a restart.
     Field {
@@ -576,7 +736,7 @@ impl Default for Settings {
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),
             telemetry: TelemetrySettings::default(),
-            fleet: FleetSettings::default(),
+            fleets: BTreeMap::new(),
         }
     }
 }
@@ -584,6 +744,49 @@ impl Default for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No `[fleets]`: the one Fleet on this machine. Once one is listed only
+    /// the listed ones are used, and the interface uses the first by name.
+    #[test]
+    fn the_local_fleet_is_implied_only_when_none_is_listed() {
+        let none: Settings = toml::from_str("").unwrap();
+        assert_eq!(
+            none.fleets(),
+            vec![(IMPLIED_FLEET.to_string(), FleetDef::default())]
+        );
+        assert!(none.fleet_in_force().1.transport.is_local());
+
+        let listed: Settings = toml::from_str(
+            "[fleets.laptop]\n\
+             [fleets.box]\ntransport = { ssh = \"me@box\", ssh_opts = [\"-p\", \"2222\"] }\n\
+             program = \"/home/me/.cargo/bin/fleet\"\nconfig = \"/home/me/fleet.toml\"\n\
+             [fleets.ubuntu]\ntransport = { wsl = \"Ubuntu\" }\n",
+        )
+        .unwrap();
+        let names: Vec<String> = listed.fleets().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["box", "laptop", "ubuntu"]);
+        let (name, def) = listed.fleet_in_force();
+        assert_eq!(name, "box");
+        assert_eq!(
+            def,
+            FleetDef {
+                transport: FleetTransport::Ssh {
+                    ssh: "me@box".into(),
+                    ssh_opts: vec!["-p".into(), "2222".into()],
+                },
+                program: "/home/me/.cargo/bin/fleet".into(),
+                config: Some("/home/me/fleet.toml".into()),
+            }
+        );
+        assert_eq!(listed.fleets["laptop"], FleetDef::default());
+        assert_eq!(
+            listed.fleets["ubuntu"].transport,
+            FleetTransport::Wsl {
+                wsl: "Ubuntu".into()
+            }
+        );
+        assert!(toml::from_str::<Settings>("[fleets.x]\ntransport = \"remote\"\n").is_err());
+    }
 
     #[test]
     fn empty_document_yields_defaults() {
@@ -896,7 +1099,7 @@ mod tests {
              version_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
              [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n\
-             [fleet]\nprogram = \"/opt/fleet\"\n",
+             [fleets.box]\nprogram = \"/opt/fleet\"\n",
         )
         .unwrap();
         let adopted = base.with_live_from(&other);

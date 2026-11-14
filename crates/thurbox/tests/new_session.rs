@@ -1889,7 +1889,9 @@ impl StubFleet {
     /// Dispatch `commands` on the Fleet engine's bus, one by one, and
     /// answer the first failure.
     fn run(&self, commands: Vec<Command>) -> Result<(), String> {
-        let mut bus = thurbox::kernel::command::CommandBus::fleet(self.program.clone());
+        let mut bus = thurbox::kernel::command::CommandBus::fleet(
+            thurbox::fleet_link::FleetLink::local(self.program.to_string_lossy()),
+        );
         for command in commands {
             let id = bus.dispatch(command);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

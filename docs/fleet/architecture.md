@@ -347,9 +347,9 @@ runtime side, the protocol and the terminal stream, is
   again when it exits. A `fleet up` that exits with
   6 found the lease held, which is no error.
 
-Fleet is thurbox's only engine: `[fleet] program` in thurbox's
-`settings.toml` names the binary
-([thurbox's configuration](../thurbox/config.md#fleet--the-session-engine)).
+Fleet is thurbox's only engine: `[fleets.<name>]` in thurbox's
+`settings.toml` names each Fleet it reaches, on this machine or over ssh or
+WSL ([thurbox's configuration](../thurbox/config.md#fleets--the-fleets-that-manage-sessions)).
 
 An interactive session is a Task with no brief: it spawns and waits for its
 user. It stays Spawned with `Briefed=False/Interactive`, and its inbox

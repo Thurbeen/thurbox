@@ -22,7 +22,7 @@ thurbox-cli. thurbox-cli covers the interface's own files and a running interfac
 | `perf [--plugins]` | the perf snapshot a running interface publishes to `perf.json` |
 | `plugin …` | interface plugins: where they live, install, sync, check |
 | `ui …`, `schema` | bounded requests to a running interface (`src/ui_control.rs`) |
-| `doctor` | whether this machine has Fleet, with its harnesses and hosts, and the multiplexer |
+| `doctor` | each Fleet `settings.toml` lists (`[fleets.<name>]`, or `fleet` on this machine): reachable, version, harnesses and places; and the multiplexer when a Fleet runs here |
 
 ## Output and exit codes
 
