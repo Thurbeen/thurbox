@@ -75,6 +75,8 @@ enum Update {
     Places(Vec<HostRow>),
     /// Whether the Fleet is up, from its `fleet version --json`, and why not.
     State(FleetState, Option<String>),
+    /// The home directory of a remote Fleet's machine.
+    Home(String),
 }
 
 /// The Tasks as session rows, followed by `fleet watch` on a worker.
@@ -179,6 +181,10 @@ impl FleetWatch {
             let (link, tx) = (link.clone(), tx.clone());
             std::thread::spawn(move || read_places(&link, &tx));
         }
+        if !link.is_local() {
+            let (link, tx) = (link.clone(), tx.clone());
+            std::thread::spawn(move || read_home(&link, &tx));
+        }
         // The Fleet's own `local` until it lists its places, so a Fleet that
         // is slow or absent never holds the creation flow on a place step
         // with nothing to choose; its answer replaces it.
@@ -226,6 +232,12 @@ impl SnapshotSource for FleetWatch {
         use std::sync::atomic::Ordering;
         if fleet != self.name || self.refreshing.swap(true, Ordering::AcqRel) {
             return;
+        }
+        // A home not read at startup is asked for again with the places, on
+        // a worker of its own: a slow one must not hold the next refresh.
+        if !self.link.is_local() && self.fleet.home.is_none() {
+            let (link, tx) = (self.link.clone(), self.tx.clone());
+            std::thread::spawn(move || read_home(&link, &tx));
         }
         let (link, tx, refreshing, published) = (
             self.link.clone(),
@@ -282,6 +294,7 @@ impl SnapshotSource for FleetWatch {
                     self.fleet.state = state;
                     self.fleet.why = why;
                 }
+                Update::Home(home) => self.fleet.home = Some(home),
             }
         }
         // The interface's own file, read again only when this process wrote
@@ -459,6 +472,15 @@ fn read_places(link: &FleetLink, tx: &Sender<Update>) {
             return;
         }
         std::thread::sleep(RETRY);
+    }
+}
+
+/// Ask a remote Fleet's machine for its home once, bounded as a probe of
+/// it is. One that does not answer is left unknown, and the creation flow
+/// starts its path field empty rather than at a path it would refuse.
+fn read_home(link: &FleetLink, tx: &Sender<Update>) {
+    if let Some(home) = link.home(crate::fleet_link::REMOTE_PROBE_TIMEOUT) {
+        let _ = tx.send(Update::Home(home));
     }
 }
 

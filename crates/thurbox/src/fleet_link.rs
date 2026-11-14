@@ -16,6 +16,12 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+/// How long a probe of a Fleet on another machine may take: ssh's own
+/// `ConnectTimeout` (5 s) comes first, and a first connection also sets up
+/// the shared master.
+pub const REMOTE_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 use crate::session::settings::{FleetDef, FleetTransport, IMPLIED_FLEET};
 use crate::shell::HostLauncher;
@@ -135,6 +141,34 @@ impl FleetLink {
     /// becomes a process.
     fn build(&self, program: &str, args: &[&str]) -> Command {
         crate::shell::launch(self.launcher.as_ref(), program, args)
+    }
+
+    /// The home directory of the machine this Fleet runs on, as that
+    /// machine spells it: `$HOME` there, read through the same launcher. A
+    /// creation flow starts a path there, and reads a typed `~` as it.
+    /// `None` when it does not answer an absolute path within `timeout`.
+    pub fn home(&self, timeout: Duration) -> Option<String> {
+        let argv = ["sh", "-c", r#"printf %s "$HOME""#].map(String::from);
+        let mut child = self
+            .launch(&argv)
+            .ok()?
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let started = std::time::Instant::now();
+        while child.try_wait().ok()?.is_none() {
+            if started.elapsed() >= timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let out = child.wait_with_output().ok()?;
+        let home = String::from_utf8(out.stdout).ok()?;
+        (out.status.success() && home.starts_with('/')).then_some(home)
     }
 
     /// Why this Fleet could not be asked, when `out` is ssh's own failure

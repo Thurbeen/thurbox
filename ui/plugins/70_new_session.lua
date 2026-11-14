@@ -362,13 +362,40 @@ local function await_new_row(flow, path)
   flow.cursor = 1
 end
 
+--- A remote Fleet's home on its machine, or nil until it has said.
+local function remote_home(flow)
+  local fleet = flow.remote and chosen_fleet()
+  return fleet and fleet.home or nil
+end
+
+--- A typed `~` on a remote Fleet is that machine's home, never this one's.
+local function expand_remote_home(flow, path)
+  local home = remote_home(flow)
+  if home and (path == "~" or path:sub(1, 2) == "~/") then
+    return home .. path:sub(2)
+  end
+  return path
+end
+
 --- Move focus into the path field, filling an empty one with where a new path
 --- most likely goes (`pathpicker.start`). The fill is remembered so it can be
 --- told apart from something typed: until it is edited it is no choice at all.
+---
+--- A remote Fleet's path starts at that machine's home, an absolute path it
+--- takes. Until its home is known the field starts empty: a `~/` there would
+--- only be refused.
 local function enter_path_field(flow)
   flow.focus = "input"
   if (flow.input.value or "") == "" then
-    flow.prefill = pathpicker.start(bookmarks().rows or {})
+    if flow.remote then
+      local home = remote_home(flow)
+      flow.prefill = home and (home .. "/") or ""
+      if not home then
+        flow.message = "type an absolute path on " .. flow.fleet .. ", or a clone URL"
+      end
+    else
+      flow.prefill = pathpicker.start(bookmarks().rows or {})
+    end
     textinput.set(flow.input, flow.prefill)
   end
 end
@@ -1640,6 +1667,13 @@ return {
       if dropdown_open(flow) then
         return false
       end
+      -- A worktree asks for a base branch, read on this machine: never for
+      -- a remote Fleet's repository.
+      if flow.remote then
+        flow.message = "branches on " .. flow.fleet .. " come later"
+        save(flow)
+        return true
+      end
       local entry = current_row(flow)
       if entry and not entry.row.is_parent and not entry.row.is_worktree then
         if entry.row.is_git == false then
@@ -2034,6 +2068,7 @@ return {
           flow.step = "new_folder"
           flow.browse = false
         elseif path ~= "" and not untouched(flow) then
+          path = expand_remote_home(flow, path)
           -- Validated on the target machine, not here: a missing path is refused
           -- by the command and reported, with the text left to be corrected.
           command("bookmark", { host = flow.host, repo = path, action = "add" })

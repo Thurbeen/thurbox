@@ -511,10 +511,7 @@ impl FleetFacts {
 /// hang `doctor`, `config show` or `version`.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// [`PROBE_TIMEOUT`] for a Fleet on another machine: ssh's own
-/// `ConnectTimeout` (5 s) comes first, and a first connection also sets up
-/// the shared master.
-const REMOTE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+use crate::fleet_link::REMOTE_PROBE_TIMEOUT;
 
 /// `fleet args`'s output, or why there is none: it could not start, or it
 /// ran past `timeout` and was stopped.

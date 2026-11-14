@@ -185,8 +185,9 @@ Rows:  ● fix-auth      box
   modal offers next are that Fleet's too.
 - **Repository**: on this machine's Fleet, browse folders or pick a
   remembered repository. On a remote Fleet, type a path on that machine or
-  paste a clone URL: the runtime clones it there. Browsing a remote Fleet's
-  folders is planned.
+  paste a clone URL: the runtime clones it there. The path starts at that
+  machine's home, and `~` is that home. Browsing a remote Fleet's folders,
+  and a worktree of a repository there, are planned.
 - **Rows**: each row shows its Fleet, and its place when the place is not
   `local`. A row of an unreachable Fleet stays in the list. Implemented
   today: the session list shows a Fleet on another machine where it shows a

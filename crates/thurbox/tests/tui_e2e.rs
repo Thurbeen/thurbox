@@ -7573,8 +7573,10 @@ fn fleet_on_box(profile: &Profile) -> Option<PathBuf> {
              dest=$1; shift\n\
              printf '%s %s\\n' \"$dest\" \"$*\" >> '{log}'\n\
              [ \"$dest\" = box ] || {{ echo \"ssh: connect to host $dest port 22: Connection refused\" >&2; exit 255; }}\n\
+             export HOME='{home}'\n\
              eval \"exec $*\"\n",
             log = profile.path("ssh.log").display(),
+            home = root.display(),
         ),
     );
     Some(program)
@@ -7645,10 +7647,22 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
     tui.wait_for("box itself");
     tui.send(b"\r");
     tui.wait_for("Repos on box/local");
-    tui.send(format!("\t{}\r", work.display()).as_bytes());
+    // The path field starts at box's own home, read over box's link, and a
+    // typed `~` is that home too: never this machine's.
+    tui.send(b"\t");
+    let home = profile.path("box").display().to_string();
+    tui.wait_for(&format!("{home}/"));
+    tui.send(b"~/work\r");
     tui.wait_until("the directory to be ticked", |frame| {
         repo_picker_selected(frame, "work")
     });
+    tui.wait_until_quiet();
+    // No worktree on a remote Fleet yet: its base branches would be read on
+    // this machine.
+    tui.send(b"\x1b[Z");
+    tui.wait_until_quiet();
+    tui.send(b"\x1bw");
+    tui.wait_for("branches on box come later");
     tui.wait_until_quiet();
     tui.send(b"\x1b\r");
     tui.wait_for("Session Name");

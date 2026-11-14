@@ -365,6 +365,9 @@ pub struct FleetRow {
     pub state: FleetState,
     /// Why it is not up.
     pub why: Option<String>,
+    /// The home directory of a remote Fleet's machine, once it has said:
+    /// where a path there starts, and what a typed `~` there is.
+    pub home: Option<String>,
     pub agents: Option<Vec<AgentRow>>,
     pub places: Option<Vec<HostRow>>,
 }

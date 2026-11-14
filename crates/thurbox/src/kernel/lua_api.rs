@@ -391,6 +391,9 @@ pub static FLEET: Class = Class {
         )
         .doc("`up` while its manager holds the lease, `down` when none does."),
         leaf("why", "string").opt().doc("Why it is not up."),
+        leaf("home", "string")
+            .opt()
+            .doc("A remote Fleet's home directory on its machine, once it has said. Nil for a local Fleet."),
         field("agents", Ty::List(&AGENT))
             .opt()
             .doc("Nil until this Fleet has said which harnesses it has."),
