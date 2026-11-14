@@ -718,4 +718,24 @@ fn version_reports_the_manager_lease_without_taking_it() {
         unknown["why"].as_str().is_some_and(|w| w.contains("lease")),
         "{unknown:#}"
     );
+
+    // A named config that does not exist is unknown too: the default data
+    // directory is not that Fleet's, and its lease says nothing of it.
+    let missing = env.root.join("missing.toml");
+    let out = installed(
+        &env,
+        &["--config", missing.to_str().unwrap(), "version", "--json"],
+    )
+    .output()
+    .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let named: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let named = &named["manager"];
+    assert!(named["held"].is_null(), "{named:#}");
+    assert!(
+        named["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("missing.toml")),
+        "{named:#}"
+    );
 }

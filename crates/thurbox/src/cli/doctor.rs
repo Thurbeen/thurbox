@@ -602,6 +602,32 @@ mod tests {
         );
     }
 
+    /// A remote Fleet too old to report its manager is a warning to update
+    /// it, never "not running".
+    #[test]
+    fn doctor_warns_when_a_remote_fleet_does_not_report_its_manager() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "case \"$1\" in\n\
+             runtime) echo '{\"hosts\":[\"local\"]}' ;;\n\
+             *) echo '{\"version\":\"9.9.9\",\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[]}' ;;\n\
+             esac",
+        );
+        let facts = crate::paths::with_path(remote.path(), || FleetFacts::read(&remote.link));
+        let findings = facts.findings(true);
+        let manager = findings
+            .iter()
+            .find(|f| f.key == "fleet-manager")
+            .expect("a fleet-manager row");
+        assert_eq!(manager.level, Level::Warn, "{}", manager.detail);
+        assert!(
+            manager
+                .detail
+                .contains("does not report its manager — update Fleet"),
+            "{}",
+            manager.detail
+        );
+    }
+
     /// `doctor` lists the hosts Fleet defines, which are where a session can
     /// run, instead of thurbox's own `hosts.toml`.
     #[cfg(unix)]
