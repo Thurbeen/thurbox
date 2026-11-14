@@ -494,7 +494,7 @@
 ---@field name string
 ---@field transport string How it is reached: `local Fleet`, `ssh <destination>` or `wsl <distro>`.
 ---@field remote boolean It runs on another machine, whose folders thurbox does not read.
----@field state "connecting"|"up"|"down"|"unreachable"|"unknown" `up` while its manager holds the lease, `down` when none does.
+---@field state "connecting"|"up"|"down"|"unreachable"|"unknown"|"incompatible" `up` while its manager holds the lease, `down` when none does.
 ---@field why? string Why it is not up.
 ---@field home? string A remote Fleet's home directory on its machine, once it has said. Nil for a local Fleet.
 ---@field agents? thurbox.Agent[] Nil until this Fleet has said which harnesses it has.

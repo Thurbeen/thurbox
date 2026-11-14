@@ -51,6 +51,7 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | A remote Fleet's session panes: `fleet attach` and its stream over the link | implemented |
 | The new-session modal's Fleet step, then the chosen Fleet's places and agents; creation goes to that Fleet | implemented |
 | Browsing a remote Fleet's folders in the modal | planned |
+| A Fleet whose `fleet version --json` lacks `fleet/v1alpha1` is refused: no watch, no command | implemented |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
 ## Common setups

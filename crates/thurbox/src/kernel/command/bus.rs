@@ -130,7 +130,7 @@ impl CommandBus {
         let fleet = Some(fleets.in_force().name().to_string());
         Self {
             fleet,
-            ..Self::with_executor(Arc::new(Fleet { fleets }))
+            ..Self::with_executor(Arc::new(Fleet::new(fleets)))
         }
     }
 

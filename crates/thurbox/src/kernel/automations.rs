@@ -139,13 +139,14 @@ fn fire(
                 .and_then(|(link, task)| link.run(&["send", task, &automation.prompt], None))
                 .map(|()| format!("sent to {session}"))
         }
-        crate::config::automations::Action::Spawn { repo, agent } => {
-            spawn(fleet.in_force(), automation, repo, agent.as_deref()).map(|task| {
+        crate::config::automations::Action::Spawn { repo, agent } => fleet
+            .named(None)
+            .and_then(|link| spawn(link, automation, repo, agent.as_deref()))
+            .map(|task| {
                 let detail = format!("created {task}");
                 run.session = Some(task);
                 detail
-            })
-        }
+            }),
         crate::config::automations::Action::Exec { command, cwd, env } => {
             return exec(automation, command, cwd.as_deref(), env, run);
         }
@@ -396,6 +397,48 @@ mod tests {
         }
     }
 
+    /// A Fleet thurbox cannot speak to is refused here too: a due send and
+    /// a due spawn for it each fail, and nothing but `version` reaches it.
+    #[test]
+    fn a_fire_for_an_incompatible_fleet_sends_nothing() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "[ \"$1\" = version ] && exec echo '{\"version\":\"9.0.0\",\"apiVersions\":[\"fleet/v2\"]}'\n\
+             exit 1",
+        );
+        let repo = tempfile::tempdir().expect("repo");
+        let fleets = remote.link.clone().into();
+        let (send, spawn) = crate::paths::with_path(remote.path(), || {
+            let send = fire(
+                &fleets,
+                &automation(crate::config::automations::Action::Send {
+                    session: "review".into(),
+                }),
+            );
+            let spawn = fire(
+                &fleets,
+                &automation(crate::config::automations::Action::Spawn {
+                    repo: repo.path().to_path_buf(),
+                    agent: None,
+                }),
+            );
+            (send, spawn)
+        });
+        for run in [&send, &spawn] {
+            assert_eq!(
+                run.status,
+                crate::config::automations::RunStatus::Error,
+                "{}",
+                run.detail
+            );
+            assert!(run.detail.contains("incompatible"), "{}", run.detail);
+        }
+        let calls = remote.calls();
+        assert!(
+            calls.iter().all(|call| call.ends_with("version --json")),
+            "{calls:?}"
+        );
+    }
+
     /// A send and a spawn reach Fleet through its link: the spawn's Task on
     /// stdin, then the prompt, as one word, to the session it made.
     #[test]
@@ -403,6 +446,7 @@ mod tests {
         let remote = crate::fleet_link::testing::Remote::new(
             "here=$(dirname \"$0\")\n\
              case \"$1\" in\n\
+             version) echo '{\"apiVersions\":[\"fleet/v1alpha1\"]}' ;;\n\
              apply) cat > \"$here/applied.json\" ;;\n\
              send) printf '%s\\n' \"$2=$3\" >> \"$here/sent\" ;;\n\
              esac",

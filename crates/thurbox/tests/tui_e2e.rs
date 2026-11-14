@@ -6889,7 +6889,7 @@ fn a_deletion_fleet_never_finishes_comes_back_marked_stuck() {
     write_script(
         &profile.bin.join("fleet"),
         &format!(
-            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{task}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  *) exit 1 ;;\nesac\n"
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{task}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n"
         ),
     );
     let mut tui = Tui::spawn(&profile, 40, 120);

@@ -336,6 +336,9 @@ pub enum FleetState {
     Unreachable,
     /// It answers, but cannot say whether its manager runs.
     Unknown,
+    /// It answers, but does not speak the API thurbox writes its Tasks in:
+    /// nothing more is asked of it.
+    Incompatible,
 }
 
 impl FleetState {
@@ -347,6 +350,7 @@ impl FleetState {
             Self::Down => "down",
             Self::Unreachable => "unreachable",
             Self::Unknown => "unknown",
+            Self::Incompatible => "incompatible",
         }
     }
 }

@@ -85,6 +85,17 @@ local function chosen_fleet()
   return nil
 end
 
+--- Why the chosen Fleet is not taken: one thurbox cannot speak to answers
+--- nothing more, so its places and agents never come. With one Fleet the
+--- Fleet step is skipped, so the place step says it instead.
+local function refusal()
+  local fleet = chosen_fleet()
+  if fleet and fleet.state == "incompatible" then
+    return fleet.name .. " is " .. (fleet.why or "incompatible: update Fleet")
+  end
+  return nil
+end
+
 --- Every place the chosen Fleet defines, `local` first when it does; `nil`
 --- until that Fleet has answered, which is pending, not empty.
 local function hosts()
@@ -507,7 +518,9 @@ end
 --- the row is spent either way and the modal does not change height as messages
 --- come and go.
 local function message_row(flow)
-  local text = flow.message
+  -- Every step says why its Fleet is refused, so a flow past the place step
+  -- when the refusal came is not left waiting on what will never come.
+  local text = refusal() or flow.message
   return {
     type = "text",
     len = 1,
@@ -565,6 +578,7 @@ local FLEET_STATES = {
   unreachable = "○ unreachable",
   connecting = "◌ connecting…",
   unknown = "? unknown",
+  incompatible = "⊘ incompatible",
 }
 
 --- What the row under the cursor says beyond its state: why a Fleet is not
@@ -638,7 +652,10 @@ end
 
 local function render_host(flow)
   local labels = host_labels()
-  if hosts() == nil then
+  local refused = refusal()
+  if refused then
+    labels = { refused }
+  elseif hosts() == nil then
     labels = { "Asking " .. (flow.fleet or "Fleet") .. " for its places…" }
   end
   -- Fleet's answer replaces the list under an open step, and can shorten it.
@@ -1184,6 +1201,13 @@ local function render_field(title, label, field, flow, placeholder)
 end
 
 local function render_agent(flow)
+  -- A refused Fleet sends no agents: only why, and the way out.
+  if refusal() then
+    return frame("Coding Agent", 4, {
+      message_row(flow),
+      modal.footer({ { "esc", "cancel" } }, nil),
+    }, flow)
+  end
   if not agents_known() then
     return frame("Coding Agent", 5, {
       {
@@ -1788,6 +1812,11 @@ return {
           save(flow)
           return true
         end
+        if chosen.state == "incompatible" then
+          flow.message = chosen.name .. " is " .. (chosen.why or "incompatible: update Fleet")
+          save(flow)
+          return true
+        end
         flow.fleet = chosen.name
         flow.remote = chosen.remote == true
         flow.step = "host"
@@ -1800,6 +1829,12 @@ return {
 
     if flow.step == "host" then
       if name == "enter" then
+        local refused = refusal()
+        if refused then
+          flow.message = refused
+          save(flow)
+          return true
+        end
         local chosen = (hosts() or {})[flow.host_index]
         if not chosen then
           -- Fleet has not answered yet, or defines no place: nothing to run on.

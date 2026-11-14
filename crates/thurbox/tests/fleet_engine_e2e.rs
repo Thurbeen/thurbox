@@ -244,6 +244,35 @@ impl Run {
 }
 
 #[cfg(unix)]
+/// `dir`, which holds a stand-in `ssh`, first on this process's `PATH` until
+/// the guard drops, and one test at a time. The library starts `ssh` by
+/// name from the process's `PATH`, so a child's own environment cannot
+/// carry it; nextest gives each test a process of its own, and the lock
+/// keeps a plain `cargo test`, whose tests share one, from interleaving.
+struct PathGuard {
+    saved: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+fn fake_ssh_first(dir: &Path) -> PathGuard {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = std::env::var_os("PATH");
+    let mut dirs = vec![dir.to_path_buf()];
+    dirs.extend(std::env::split_paths(&saved.clone().unwrap_or_default()));
+    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+    PathGuard { saved, _lock: lock }
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        match self.saved.take() {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+}
+
 fn make_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -362,8 +391,9 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
         store.refresh_if_due();
         store.current().error.is_some()
     });
+    // The first thing asked of a Fleet is its version.
     let error = store.current().error.clone().unwrap();
-    assert!(error.contains("fleet watch"), "{error}");
+    assert!(error.contains("fleet version"), "{error}");
 }
 
 fn fleet_bus(program: &Path) -> CommandBus {
@@ -1147,10 +1177,7 @@ fn the_link_reaches_a_fleet_over_ssh() {
     )
     .expect("ssh");
     make_executable(&ssh);
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = vec![ssh_bin];
-    dirs.extend(std::env::split_paths(&path));
-    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+    let _path = fake_ssh_first(&ssh_bin);
 
     let link = FleetLink::of(
         "devbox",
@@ -1352,10 +1379,7 @@ fn every_listed_fleet_is_followed_in_one_list() {
     )
     .expect("ssh");
     make_executable(&ssh);
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = vec![ssh_bin];
-    dirs.extend(std::env::split_paths(&path));
-    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+    let _path = fake_ssh_first(&ssh_bin);
 
     let local = FleetLink::of(
         "laptop",
@@ -1650,10 +1674,7 @@ fn each_command_goes_to_its_sessions_fleet() {
     )
     .expect("ssh");
     make_executable(&ssh);
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = vec![ssh_bin];
-    dirs.extend(std::env::split_paths(&path));
-    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+    let _path = fake_ssh_first(&ssh_bin);
 
     let local = FleetLink::of(
         "laptop",
@@ -1817,10 +1838,7 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     )
     .expect("ssh");
     make_executable(&ssh);
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut dirs = vec![ssh_bin];
-    dirs.extend(std::env::split_paths(&path));
-    std::env::set_var("PATH", std::env::join_paths(dirs).expect("PATH"));
+    let _path = fake_ssh_first(&ssh_bin);
     let over_ssh = FleetLink::of(
         "box",
         &FleetDef {
@@ -1903,4 +1921,106 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     until("the agent answers after the link came back", || {
         screen(&mut store, &mut terminals).contains("pong-again")
     });
+}
+
+/// A Fleet that does not speak the API thurbox writes its Tasks in is
+/// refused once its `fleet version --json` says so: the list shows it as
+/// incompatible, its watch is never started, and a command for one of its
+/// sessions is refused here. Nothing but `version` is ever sent to it.
+#[test]
+fn a_fleet_thurbox_cannot_speak_to_is_refused() {
+    use thurbox::fleet_link::{FleetLink, Fleets};
+    use thurbox::kernel::snapshot::fleet::FleetWatches;
+    use thurbox::session::settings::{FleetDef, FleetTransport};
+    let dir = tempfile::Builder::new()
+        .prefix("fleet-v2-")
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .expect("dir");
+    let root = dir.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let log = root.join("ssh.log");
+    let fleet = root.join("fleet");
+    std::fs::write(
+        &fleet,
+        "#!/bin/sh\n[ \"$1\" = version ] || exit 1\n\
+         echo '{\"version\":\"9.0.0\",\"apiVersions\":[\"fleet/v2\"],\"harnesses\":[\"claude\"]}'\n",
+    )
+    .expect("fleet");
+    make_executable(&fleet);
+    let ssh = ssh_bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; *) break ;; esac; done\n\
+             [ \"$1\" = box ] || {{ echo \"ssh: connect to host $1 port 22: No route to host\" >&2; exit 255; }}\n\
+             shift\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             eval \"exec $*\"\n",
+            log = log.display(),
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let _path = fake_ssh_first(&ssh_bin);
+    let link = FleetLink::of(
+        "box",
+        &FleetDef {
+            transport: FleetTransport::Ssh {
+                ssh: "box".into(),
+                ssh_opts: Vec::new(),
+            },
+            program: fleet.to_string_lossy().into_owned(),
+            config: None,
+        },
+    );
+
+    // A Fleet that cannot be reached at all is unreachable, never
+    // incompatible: only an answer says which API a Fleet speaks.
+    let gpu = FleetLink::of(
+        "gpu",
+        &FleetDef {
+            transport: FleetTransport::Ssh {
+                ssh: "gpu".into(),
+                ssh_opts: Vec::new(),
+            },
+            program: fleet.to_string_lossy().into_owned(),
+            config: None,
+        },
+    );
+    let source = FleetWatches::new(
+        "box",
+        vec![
+            FleetWatch::with_manager(link.clone()),
+            FleetWatch::spawn(gpu),
+        ],
+    );
+    let mut store = SnapshotStore::with_source(Box::new(source), &Default::default());
+    until("box is shown incompatible, gpu unreachable", || {
+        store.refresh_if_due();
+        store.current().error.as_deref().is_some_and(|e| {
+            e.contains("box: incompatible")
+                && e.contains("fleet/v2")
+                && e.contains("gpu: the Fleet gpu cannot be reached")
+        })
+    });
+    let error = store.current().error.clone().unwrap_or_default();
+    assert!(!error.contains("gpu: incompatible"), "{error}");
+    let mut bus = CommandBus::fleet(Fleets::from(link));
+    let refused = run_command(
+        &mut bus,
+        Command::Send {
+            session: "box:review".into(),
+            text: "hello".into(),
+        },
+    )
+    .expect_err("box speaks another API");
+    assert!(refused.contains("incompatible"), "{refused}");
+    std::thread::sleep(Duration::from_millis(500));
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    assert!(
+        calls.lines().all(|call| call.ends_with("version --json")),
+        "only version is asked of an incompatible Fleet: {calls}"
+    );
 }
