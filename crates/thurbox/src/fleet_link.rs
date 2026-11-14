@@ -4,9 +4,10 @@
 //! `doctor`'s probes — is built here, so a Fleet on another machine is a
 //! launcher on the link rather than a change at each call site.
 //!
-//! The launcher is the runtime's ([`crate::shell::launch`]): each word
-//! POSIX-quoted for the remote shell, and ssh hardened (`BatchMode`,
-//! `ConnectTimeout`, `ServerAlive*`) and multiplexed (`ControlMaster`). The
+//! The launcher is the runtime's: over ssh ([`crate::shell::launch`]) each
+//! word POSIX-quoted for the remote shell, and ssh hardened (`BatchMode`,
+//! `ConnectTimeout`, `ServerAlive*`) and multiplexed (`ControlMaster`);
+//! through WSL each word as it is, with `wsl.exe --exec`. The
 //! link adds only the Fleet's `--config <path>`, before the verb, and changes
 //! no stream: stdin, stdout, stderr
 //! and the exit status are the remote `fleet`'s, so a JSON answer, a watch's
@@ -106,7 +107,7 @@ impl FleetLink {
             words.extend(["--config", config.as_str()]);
         }
         words.extend(args);
-        crate::shell::launch(self.launcher.as_ref(), &self.program, &words)
+        self.build(&self.program, &words)
     }
 
     /// `argv` (a program Fleet named, such as an attach's stream) on the
@@ -117,7 +118,24 @@ impl FleetLink {
             .split_first()
             .ok_or("the stream's argv names no program")?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        Ok(crate::shell::launch(self.launcher.as_ref(), program, &args))
+        Ok(self.build(program, &args))
+    }
+
+    /// `program` with `args` on the Fleet's machine: the one place a call
+    /// becomes a process. Through WSL the words go through `wsl.exe --exec`
+    /// as they are: without it `wsl.exe` hands the line to a shell, which
+    /// would keep the quotes [`crate::shell::launch`] writes for ssh, so a
+    /// path with a space would name another program. Over ssh, and on this
+    /// machine, that launch is the rule.
+    fn build(&self, program: &str, args: &[&str]) -> Command {
+        match &self.launcher {
+            Some(launcher @ HostLauncher::Wsl { .. }) => {
+                let mut command = launcher.command();
+                command.arg("--exec").arg(program).args(args);
+                command
+            }
+            launcher => crate::shell::launch(launcher.as_ref(), program, args),
+        }
     }
 
     /// Run `fleet <args>` with `input` on its stdin (none: stdin is closed),
@@ -346,6 +364,53 @@ mod tests {
         assert_eq!(
             argv(&link.command(&["send", "review", "it's done"])),
             ["/opt/fleet", "send", "review", "it's done"]
+        );
+    }
+
+    /// Through WSL every word reaches the distro as it is: `wsl.exe --exec`,
+    /// no shell and no quoting, so a path with a space names the program it
+    /// says. Over ssh the remote shell re-splits the line, so there each word
+    /// is quoted. Every call goes through one of these two: `command` (the
+    /// verbs, the watch, `run`) and `launch` (an attach's stream).
+    #[test]
+    fn a_wsl_fleet_gets_each_word_unquoted_through_exec() {
+        let link = FleetLink::of(
+            "ubuntu",
+            &FleetDef {
+                transport: FleetTransport::Wsl {
+                    wsl: "Ubuntu".into(),
+                },
+                program: "/opt/my tools/fleet".into(),
+                config: Some("/etc/fleet/a b.toml".into()),
+            },
+        );
+        let after_exec = |argv: Vec<String>| {
+            assert_eq!(argv[0], "wsl.exe");
+            assert_eq!(&argv[1..3], ["-d", "Ubuntu"]);
+            let exec = argv.iter().position(|a| a == "--exec").expect("--exec");
+            argv[exec + 1..].to_vec()
+        };
+        assert_eq!(
+            after_exec(argv(&link.command(&["send", "review", "it's done"]))),
+            [
+                "/opt/my tools/fleet",
+                "--config",
+                "/etc/fleet/a b.toml",
+                "send",
+                "review",
+                "it's done"
+            ]
+        );
+        let stream = link
+            .launch(&[
+                "/srv/my apps/runtime-mux".into(),
+                "view".into(),
+                "w 1".into(),
+            ])
+            .expect("a stream");
+        assert_eq!(
+            after_exec(argv(&stream)),
+            ["/srv/my apps/runtime-mux", "view", "w 1"]
         );
     }
 
