@@ -152,7 +152,7 @@ jobs:
           # otherwise be suppressed as "no shipped artifact changed" — no tag, no
           # binaries, no channel pushes — and the `ui` commit scope cannot separate
           # a pane fix from a website one, so the type gate will not catch it either.
-          SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
+          SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|packaging/|scripts/install\.(sh|ps1)$|scripts/ci/release-archive\.sh$|\.github/workflows/cd\.yml$)'
 
           # Version tags only: the `media` release's tag
           # (scripts/demo/publish-media.sh) also sits on main, and diffing from
@@ -309,46 +309,29 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --locked
 
-      - name: Build release binary
+      # Every program the archive ships: scripts/ci/release-archive.sh lists
+      # them, and CI's `install-e2e` job installs that archive on a clean
+      # machine.
+      - name: Build release binaries
         shell: bash
         env:
           THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.version }}
         run: |
+          bins=()
+          for bin in $(scripts/ci/release-archive.sh --binaries); do bins+=(--bin "$bin"); done
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release -p thurbox --target ${{ matrix.target }}
+            cross build --release --target ${{ matrix.target }} "${bins[@]}"
           else
-            cargo build --release -p thurbox --target ${{ matrix.target }}
+            cargo build --release --target ${{ matrix.target }} "${bins[@]}"
           fi
 
-      # Unix archive: .tar.gz with the bare binaries + LICENSE.
-      - name: Create archive (Unix)
-        if: runner.os != 'Windows'
+      # A .tar.gz, or a .zip for Windows, which install.ps1 extracts with the
+      # built-in Expand-Archive (no tar dependency).
+      - name: Create archive
+        shell: bash
         run: |
-          VERSION="${{ needs.check-release.outputs.version }}"
-          TARGET="${{ matrix.target }}"
-          ARCHIVE_NAME="thurbox-${VERSION}-${TARGET}.tar.gz"
-
-          # Stage LICENSE next to the binaries so a single `tar czf` ships all
-          # three. (`tar --append` cannot operate on a gzip archive, so the old
-          # two-step append silently omitted LICENSE.) No `|| true`: a packaging
-          # failure must fail the job.
-          cp LICENSE "target/$TARGET/release/"
-          cd target/$TARGET/release
-          tar czf "../../../$ARCHIVE_NAME" thurbox thurbox-cli LICENSE
-          cd ../../..
-
-      # Windows archive: .zip with the .exe binaries + LICENSE. install.ps1
-      # extracts this with the built-in Expand-Archive (no tar dependency).
-      - name: Create archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = "${{ needs.check-release.outputs.version }}"
-          $target = "${{ matrix.target }}"
-          $archive = "thurbox-$version-$target.zip"
-          $rel = "target/$target/release"
-          Compress-Archive -Force -DestinationPath $archive -Path `
-            "$rel/thurbox.exe", "$rel/thurbox-cli.exe", "LICENSE"
+          scripts/ci/release-archive.sh "${{ needs.check-release.outputs.version }}" \
+            "${{ matrix.target }}" "target/${{ matrix.target }}/release"
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

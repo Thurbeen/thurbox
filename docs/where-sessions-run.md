@@ -60,7 +60,9 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 
 Status: implemented.
 
-1. Install `fleet`, `runtime-mux`, a multiplexer and a coding agent.
+1. Run the installer, `scripts/install.sh` (`install.ps1` on Windows). It
+   installs thurbox, `fleet` and `runtime-mux` together. Also install a
+   multiplexer and a coding agent.
 2. Run `fleet init`.
 3. Start thurbox. thurbox starts `fleet up` when no manager runs.
 

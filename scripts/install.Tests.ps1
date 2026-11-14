@@ -75,6 +75,15 @@ Describe 'install.ps1 source' {
     }
 }
 
+Describe 'The shipped programs' {
+    It 'are the ones the release archive packs' {
+        $packer = Get-Content -Raw (Join-Path $PSScriptRoot 'ci/release-archive.sh')
+        $m = [regex]::Match($packer, 'BINARIES=\(([^)]*)\)')
+        $m.Success | Should -BeTrue
+        $Binaries -join ' ' | Should -Be ($m.Groups[1].Value.Trim() -split '\s+' -join ' ')
+    }
+}
+
 Describe 'Get-Target' {
     BeforeAll {
         $script:SavedArch = $env:PROCESSOR_ARCHITECTURE
@@ -168,8 +177,8 @@ Describe 'Install-Archive' {
             param([string]$Dir, [string]$Payload)
             $src = Join-Path $Dir 'zip-src'
             New-Item -ItemType Directory -Path $src -Force | Out-Null
-            foreach ($name in 'thurbox.exe', 'thurbox-cli.exe') {
-                Set-Content -Path (Join-Path $src $name) -Value $Payload -NoNewline
+            foreach ($name in $Binaries) {
+                Set-Content -Path (Join-Path $src "$name.exe") -Value $Payload -NoNewline
             }
             $zip = Join-Path $Dir 'release.zip'
             Compress-Archive -Path (Join-Path $src '*') -DestinationPath $zip -Force
@@ -188,10 +197,11 @@ Describe 'Install-Archive' {
         Remove-Item -Recurse -Force $script:Work -ErrorAction SilentlyContinue
     }
 
-    It 'installs into an empty directory' {
+    It 'installs every program the release ships into an empty directory' {
         Install-Archive -ZipPath $script:Zip -Destination $script:Dest
-        Get-Content -Raw (Join-Path $script:Dest 'thurbox.exe') | Should -Be 'new'
-        Get-Content -Raw (Join-Path $script:Dest 'thurbox-cli.exe') | Should -Be 'new'
+        foreach ($name in $Binaries) {
+            Get-Content -Raw (Join-Path $script:Dest "$name.exe") | Should -Be 'new'
+        }
     }
 
     It 'replaces an existing install and leaves no backup behind' {
@@ -234,6 +244,29 @@ Describe 'Install-Archive' {
             $second = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
             { Install-Archive -ZipPath $script:Zip -Destination $script:Dest } |
                 Should -Throw "*in use by thurbox (PID *$($first.Id)*Close it and run the installer again*"
+        }
+        finally {
+            foreach ($p in @($first, $second) | Where-Object { $_ }) {
+                Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                $p.WaitForExit()
+            }
+        }
+    }
+
+    It 'names a running Fleet manager when its backup is still running too' -Skip:(-not $script:OnWindows) {
+        # `fleet up` runs as long as sessions do, so it is the program an
+        # update most often finds running.
+        $exe = Join-Path $script:Dest 'fleet.exe'
+        $ping = Join-Path $env:SystemRoot 'System32\PING.EXE'
+        Copy-Item $ping $exe
+        $first = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
+        $second = $null
+        try {
+            Install-Archive -ZipPath $script:Zip -Destination $script:Dest
+            Copy-Item $ping $exe -Force
+            $second = Start-Process -FilePath $exe -ArgumentList '-n', '60', '127.0.0.1' -WindowStyle Hidden -PassThru
+            { Install-Archive -ZipPath $script:Zip -Destination $script:Dest } |
+                Should -Throw "*in use by fleet (PID *$($first.Id)*Close it and run the installer again*"
         }
         finally {
             foreach ($p in @($first, $second) | Where-Object { $_ }) {
