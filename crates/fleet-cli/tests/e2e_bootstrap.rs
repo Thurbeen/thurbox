@@ -616,6 +616,53 @@ fn init_writes_the_config_and_no_starter_workspace() {
         .stderr_has("runtime-mux");
 }
 
+/// A home reached through a symlink is an ordinary home: `/home` is one on
+/// Fedora Atomic, and macOS's `/var` is one. `init` writes there.
+#[cfg(unix)]
+#[test]
+fn init_writes_a_config_under_a_symlinked_ancestor() {
+    let env = Env::without_tools("init-symlinked-home");
+    let real = env.root.join("real-home");
+    fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, env.root.join("home")).unwrap();
+    let config = env.root.join("home/.config/fleet/config.toml");
+    wait(
+        installed(&env, &["--config", config.to_str().unwrap(), "init"])
+            .spawn()
+            .unwrap(),
+    )
+    .ok();
+    let text = fs::read_to_string(real.join(".config/fleet/config.toml")).unwrap();
+    assert!(text.contains("[runtimes.mux]"), "{text}");
+}
+
+/// A link where `init` would write is still refused: it is never an
+/// invitation to write its target.
+#[cfg(unix)]
+#[test]
+fn init_refuses_a_symlinked_config() {
+    let env = Env::without_tools("init-symlinked-config");
+    let dir = env.root.join("cfg");
+    fs::create_dir_all(&dir).unwrap();
+    let target = env.root.join("elsewhere.toml");
+    std::os::unix::fs::symlink(&target, dir.join("config.toml")).unwrap();
+    wait(
+        installed(
+            &env,
+            &[
+                "--config",
+                dir.join("config.toml").to_str().unwrap(),
+                "init",
+            ],
+        )
+        .spawn()
+        .unwrap(),
+    )
+    .code(1)
+    .stderr_has("refusing a symlink");
+    assert!(!target.exists());
+}
+
 /// Two inits racing write one config, never two halves.
 #[test]
 fn concurrent_init_writes_one_config() {

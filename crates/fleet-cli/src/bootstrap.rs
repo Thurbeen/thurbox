@@ -19,20 +19,19 @@ pub fn absolute(path: &Path) -> Result<PathBuf, String> {
     std::path::absolute(path).map_err(|e| e.to_string())
 }
 
-/// Refuse a symlink anywhere on the config's path, ancestors included: a
-/// link is never an invitation to write its target.
+/// Refuse a symlink at a path `init` writes: a link is never an invitation
+/// to write its target. Its ancestors are where the user keeps their files,
+/// and a link among them is ordinary layout (`/home` on Fedora Atomic, `/var`
+/// on macOS, a dotfiles manager's `~/.config`), so they are not checked.
 fn checked(path: &Path) -> Result<(), String> {
-    for parent in path.ancestors() {
-        match fs::symlink_metadata(parent) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(format!("refusing a symlink at {}", parent.display()));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", parent.display())),
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err(format!("refusing a symlink at {}", path.display()))
         }
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
     }
-    Ok(())
 }
 
 /// The config `init` writes for `config_path`, with its store at

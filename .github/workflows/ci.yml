@@ -141,10 +141,13 @@ jobs:
             install_sh:
               - 'scripts/install.sh'
               - 'scripts/install.bats'
+              # The shipped list the suite checks the installer against.
+              - 'scripts/ci/release-archive.sh'
               - '.github/workflows/ci.yml'
             install_ps:
               - 'scripts/install.ps1'
               - 'scripts/install.Tests.ps1'
+              - 'scripts/ci/release-archive.sh'
               - '.github/workflows/ci.yml'
             # A release installed on a clean machine: the installers, what packs
             # the archive they fetch, what builds it, and the manifests that

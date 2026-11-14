@@ -142,16 +142,17 @@
 }
 
 
-@test "do_install makes every v3 program executable" {
+@test "do_install makes every shipped program executable" {
   tmpdir=$(mktemp -d)
   mkdir -p "$tmpdir/src" "$tmpdir/dest"
-  for bin in thurbox thurbox-cli fleet runtime-mux workspace-git; do
+  shipped=$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries)
+  for bin in $shipped; do
     printf '#!/bin/sh\n' > "$tmpdir/src/$bin"
     chmod -x "$tmpdir/src/$bin"
   done
   tar -czf "$tmpdir/archive.tar.gz" -C "$tmpdir/src" .
   TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; do_install '$tmpdir/archive.tar.gz' '$tmpdir/dest'"
-  for bin in thurbox thurbox-cli fleet runtime-mux workspace-git; do
+  for bin in $shipped; do
     [ -x "$tmpdir/dest/$bin" ]
   done
   rm -rf "$tmpdir"
@@ -173,5 +174,19 @@
   run sh -c "TEST_TMPDIR=1 NO_COLOR=1 DOWNLOAD_URL='file://$tmpdir' . '${BATS_TEST_DIRNAME}/install.sh'; get_binary v9.9.9 x86_64-unknown-linux-musl '$tmpdir/work'"
   [ "$status" -eq 0 ]
   [ "$(cat "$tmpdir/work/binary.tar.gz")" = "payload" ]
+  rm -rf "$tmpdir"
+}
+
+@test "show_success points at fleet init only when fleet was installed" {
+  tmpdir=$(mktemp -d)
+  touch "$tmpdir/thurbox" "$tmpdir/thurbox-cli"
+  run sh -c "TEST_TMPDIR=1 NO_COLOR=1 . '${BATS_TEST_DIRNAME}/install.sh'; show_success '$tmpdir' 2>&1"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"fleet init"* ]]
+  [[ "$output" == *"no Fleet"* ]]
+  touch "$tmpdir/fleet"
+  run sh -c "TEST_TMPDIR=1 NO_COLOR=1 . '${BATS_TEST_DIRNAME}/install.sh'; show_success '$tmpdir' 2>&1"
+  [[ "$output" == *"fleet init"* ]]
+  [[ "$output" != *"no Fleet"* ]]
   rm -rf "$tmpdir"
 }

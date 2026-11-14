@@ -199,6 +199,22 @@ function Install-Archive {
     }
 }
 
+# --- Next steps -------------------------------------------------------------
+# `fleet init` only when the release shipped Fleet: a 2.x release has none.
+function Show-NextSteps {
+    param([string]$Dir)
+    Write-Host "`nNext steps" -ForegroundColor Magenta
+    Write-Step '* Install psmux (the Windows multiplexer): https://github.com/psmux/psmux'
+    Write-Step '* Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, ...)'
+    if (Test-Path -LiteralPath (Join-Path $Dir 'fleet.exe')) {
+        Write-Step '* Set up Fleet:      fleet init'
+    } else {
+        Write-Warn 'This release has no Fleet. thurbox v3 needs a 3.x release: $env:THURBOX_VERSION = "v3.x.y"'
+    }
+    Write-Step '* Check the setup:   thurbox-cli doctor'
+    Write-Step '* Launch the TUI:    thurbox'
+}
+
 # --- Main -------------------------------------------------------------------
 function Invoke-Install {
     Show-Banner
@@ -253,12 +269,7 @@ function Invoke-Install {
 
     Write-Warn 'Windows support is experimental for now - expect rough edges and please report issues.'
 
-    Write-Host "`nNext steps" -ForegroundColor Magenta
-    Write-Step '* Install psmux (the Windows multiplexer): https://github.com/psmux/psmux'
-    Write-Step '* Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, ...)'
-    Write-Step '* Set up Fleet:      fleet init'
-    Write-Step '* Check the setup:   thurbox-cli doctor'
-    Write-Step '* Launch the TUI:    thurbox'
+    Show-NextSteps -Dir $InstallDir
     Write-Host ''
     Write-Ok 'Installation complete! Happy hacking.'
 }

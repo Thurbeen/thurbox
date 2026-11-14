@@ -93,8 +93,8 @@ its harness: it refuses a Task that sets `spec.model`. Give the model in the
 harness's own configuration instead.
 
 The config is yours once written. A repeated `init` validates it and keeps
-it as it is; a malformed config is an error, never replaced. A symlink at or
-above the config's path is refused. Initializers serialize with an OS lock,
+it as it is; a malformed config is an error, never replaced. A symlink at the
+config's path is refused; a symlinked directory above it is not. Initializers serialize with an OS lock,
 so two concurrent `init` runs write one config.
 
 ### Resource commands

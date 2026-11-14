@@ -27,6 +27,10 @@ BeforeAll {
     # Dot-source so the helper functions land in this scope; the
     # THURBOX_PS_TEST guard keeps Invoke-Install from firing.
     . $script:ScriptPath
+    # The one list of shipped programs, as scripts/ci/release-archive.sh packs it.
+    $packer = Get-Content -Raw (Join-Path $PSScriptRoot 'ci/release-archive.sh')
+    $m = [regex]::Match($packer, 'BINARIES=\(([^)]*)\)')
+    $script:Shipped = @($m.Groups[1].Value.Trim() -split '\s+')
 }
 
 AfterAll {
@@ -69,6 +73,7 @@ Describe 'install.ps1 source' {
         @{ Name = 'Install-Archive' }
         @{ Name = 'Invoke-Install' }
         @{ Name = 'Show-Banner' }
+        @{ Name = 'Show-NextSteps' }
     ) {
         Get-Command -Name $Name -CommandType Function -ErrorAction SilentlyContinue |
             Should -Not -BeNullOrEmpty
@@ -77,10 +82,34 @@ Describe 'install.ps1 source' {
 
 Describe 'The shipped programs' {
     It 'are the ones the release archive packs' {
-        $packer = Get-Content -Raw (Join-Path $PSScriptRoot 'ci/release-archive.sh')
-        $m = [regex]::Match($packer, 'BINARIES=\(([^)]*)\)')
-        $m.Success | Should -BeTrue
-        $Binaries -join ' ' | Should -Be ($m.Groups[1].Value.Trim() -split '\s+' -join ' ')
+        $script:Shipped.Count | Should -BeGreaterThan 1
+        $Binaries -join ' ' | Should -Be ($script:Shipped -join ' ')
+    }
+}
+
+Describe 'Show-NextSteps' {
+    BeforeEach {
+        $script:Dir = Join-Path ([System.IO.Path]::GetTempPath()) ('thurbox-test-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:Dir -Force | Out-Null
+        $script:Printed = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { $script:Printed.Add([string]$Object) }
+    }
+
+    AfterEach {
+        Remove-Item -Recurse -Force $script:Dir -ErrorAction SilentlyContinue
+    }
+
+    It 'points at fleet init when fleet was installed' {
+        Set-Content -Path (Join-Path $script:Dir 'fleet.exe') -Value ''
+        Show-NextSteps -Dir $script:Dir
+        ($script:Printed -join "`n") | Should -Match 'fleet init'
+        ($script:Printed -join "`n") | Should -Not -Match 'no Fleet'
+    }
+
+    It 'says a 3.x release is needed when the release has no fleet' {
+        Show-NextSteps -Dir $script:Dir
+        ($script:Printed -join "`n") | Should -Not -Match 'fleet init'
+        ($script:Printed -join "`n") | Should -Match 'no Fleet'
     }
 }
 
@@ -177,7 +206,7 @@ Describe 'Install-Archive' {
             param([string]$Dir, [string]$Payload)
             $src = Join-Path $Dir 'zip-src'
             New-Item -ItemType Directory -Path $src -Force | Out-Null
-            foreach ($name in $Binaries) {
+            foreach ($name in $script:Shipped) {
                 Set-Content -Path (Join-Path $src "$name.exe") -Value $Payload -NoNewline
             }
             $zip = Join-Path $Dir 'release.zip'
@@ -199,7 +228,7 @@ Describe 'Install-Archive' {
 
     It 'installs every program the release ships into an empty directory' {
         Install-Archive -ZipPath $script:Zip -Destination $script:Dest
-        foreach ($name in $Binaries) {
+        foreach ($name in $script:Shipped) {
             Get-Content -Raw (Join-Path $script:Dest "$name.exe") | Should -Be 'new'
         }
     }

@@ -204,7 +204,11 @@ show_success() {
   printf '\n%b\n' "${C_BOLD}${C_MAGENTA}Next steps${C_RESET}" >&2
   step "• Install tmux >= 3.2"
   step "• Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, …)"
-  step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
+  if [ -f "$1/fleet" ]; then
+    step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
+  else
+    warn "This release has no Fleet. thurbox v3 needs a 3.x release: VERSION=v3.x.y"
+  fi
   step "• Check the setup:   ${C_CYAN}thurbox-cli doctor${C_RESET}"
   step "• Launch the TUI:    ${C_CYAN}thurbox${C_RESET}"
 }
