@@ -295,13 +295,15 @@ local function ask(flow)
   -- Only while the field has focus: it holds its starting directory the whole
   -- time now, and a flow picking from memory must not pay for a listing.
   -- A remote Fleet's listing is read on its place, through Fleet, and its
-  -- `~` is that machine's home.
+  -- `~` is that machine's home. The directory part is split off first and
+  -- only then made the home: a bare `~` names the home itself, not its
+  -- parent.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
-  if flow.remote then
-    typed = expand_remote_home(flow, typed)
-  end
   if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
+    if flow.remote then
+      dir = expand_remote_home(flow, dir)
+    end
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
     store.want_browse = nil

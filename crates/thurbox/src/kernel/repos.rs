@@ -637,8 +637,17 @@ fn ask_place(
 
 /// The subdirectories of `dir` on a remote Fleet's `place`
 /// (`fleet runtime browse`), each marked when it is a git work tree.
+///
+/// A bare `~` is a home not known here: the runtime is asked with no
+/// directory, which it answers with its own home, since it takes only an
+/// absolute one.
 fn remote_listing(link: &crate::fleet_link::FleetLink, place: &str, dir: &str) -> Listing {
-    match ask_place(link, &["runtime", "browse", place, dir, "--json"], "browse") {
+    let args: &[&str] = if dir == "~" {
+        &["runtime", "browse", place, "--json"]
+    } else {
+        &["runtime", "browse", place, dir, "--json"]
+    };
+    match ask_place(link, args, "browse") {
         Ok(answer) => Listing::Ready(
             answer["entries"]
                 .as_array()
@@ -903,14 +912,19 @@ mod tests {
         crate::paths::with_path(remote.path(), || {
             let mut store = super::RepoStore::with_fleets(std::slice::from_ref(&remote.link));
             store.request_listing("devbox/local", "/srv");
+            store.request_listing("devbox/local", "~");
             store.request_listing("devbox/mux/vm", "/srv");
             store.request_branches("devbox/local\0/srv/app");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 store.poll();
-                let done = [("devbox/local", "/srv"), ("devbox/mux/vm", "/srv")]
-                    .iter()
-                    .all(|(h, d)| !matches!(store.listing(h, d), Some(super::Listing::Pending)))
+                let done = [
+                    ("devbox/local", "/srv"),
+                    ("devbox/local", "~"),
+                    ("devbox/mux/vm", "/srv"),
+                ]
+                .iter()
+                .all(|(h, d)| !matches!(store.listing(h, d), Some(super::Listing::Pending)))
                     && !matches!(
                         store.branches("devbox/local\0/srv/app"),
                         Some(super::BranchListing::Pending)
@@ -944,6 +958,21 @@ mod tests {
         });
         assert!(
             remote.called("runtime browse local /srv --json"),
+            "{:?}",
+            remote.calls()
+        );
+        // A home not known here is the runtime's own default: `~` itself is
+        // never sent, since a runtime takes only an absolute directory.
+        assert!(
+            remote.called("runtime browse local --json"),
+            "{:?}",
+            remote.calls()
+        );
+        assert!(
+            !remote
+                .calls()
+                .iter()
+                .any(|c| c.contains("browse local '~'")),
             "{:?}",
             remote.calls()
         );

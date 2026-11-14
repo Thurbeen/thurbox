@@ -702,6 +702,20 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     press(&host, &world, "enter");
     press(&host, &world, "tab");
     assert!(drawn(&host, &world).contains("/home/me/"));
+    // A typed `~` lists box's home, not its parent: the directory part is
+    // split off first and only then made box's home.
+    for (typed, back) in [("~", 1), ("~/", 2), ("~/pro", 5)] {
+        type_text(&host, &world, typed);
+        drawn(&host, &world);
+        assert_eq!(
+            host.shared_string("want_browse").as_deref(),
+            Some("box/local\0/home/me"),
+            "{typed}"
+        );
+        for _ in 0..back {
+            press(&host, &world, "backspace");
+        }
+    }
     type_text(&host, &world, "~/app");
     press(&host, &world, "enter");
     assert!(
