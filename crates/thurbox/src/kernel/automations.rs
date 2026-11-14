@@ -10,6 +10,8 @@
 
 use std::path::Path;
 
+use crate::fleet_link::FleetLink;
+
 /// How much of an exec's output a run keeps, from its end.
 const TAIL_CHARS: usize = 4096;
 
@@ -47,6 +49,7 @@ pub struct Fired {
 /// another, with Fleet at `fleet`. Runs left marked running past their
 /// deadline are recorded as timed out first.
 pub fn tick(fleet: &Path, now: u64) -> Result<Vec<Fired>, String> {
+    let fleet = local(fleet);
     let claimed = crate::config::automations::update(|all| {
         let mut claimed = Vec::new();
         for automation in &mut all.automations {
@@ -62,7 +65,7 @@ pub fn tick(fleet: &Path, now: u64) -> Result<Vec<Fired>, String> {
     })?;
     Ok(claimed
         .into_iter()
-        .map(|automation| finish(fleet, &automation, now))
+        .map(|automation| finish(&fleet, &automation, now))
         .collect())
 }
 
@@ -81,12 +84,17 @@ pub fn run_now(fleet: &Path, name: &str, now: u64) -> Result<Fired, String> {
         automation.start_run(now);
         Ok(automation.clone())
     })?;
-    Ok(finish(fleet, &automation, now))
+    Ok(finish(&local(fleet), &automation, now))
+}
+
+/// The Fleet `program` runs on this machine.
+fn local(program: &Path) -> FleetLink {
+    FleetLink::local(program.to_string_lossy())
 }
 
 /// Run a claimed fire and record how it went.
 fn finish(
-    fleet: &Path,
+    fleet: &FleetLink,
     automation: &crate::config::automations::Automation,
     started_at: u64,
 ) -> Fired {
@@ -116,7 +124,7 @@ fn finish(
 
 /// What a fire did; its start and end are set by the caller.
 fn fire(
-    fleet: &Path,
+    fleet: &FleetLink,
     automation: &crate::config::automations::Automation,
 ) -> crate::config::automations::Run {
     let mut run = crate::config::automations::Run {
@@ -130,7 +138,8 @@ fn fire(
     let done = match &automation.action {
         crate::config::automations::Action::Send { session } => {
             run.session = Some(session.clone());
-            fleet_run(fleet, &["send", session, &automation.prompt], None)
+            fleet
+                .run(&["send", session, &automation.prompt], None)
                 .map(|()| format!("sent to {session}"))
         }
         crate::config::automations::Action::Spawn { repo, agent } => {
@@ -158,7 +167,7 @@ fn fire(
 /// named after the automation and the second it fired, so each fire makes a
 /// session of its own.
 fn spawn(
-    fleet: &Path,
+    fleet: &FleetLink,
     automation: &crate::config::automations::Automation,
     repo: &Path,
     agent: Option<&str>,
@@ -185,13 +194,12 @@ fn spawn(
         },
         "spec": spec,
     });
-    fleet_run(
-        fleet,
+    fleet.run(
         &["apply", "--create-only", "-f", "-"],
         Some(&task.to_string()),
     )?;
     if !automation.prompt.is_empty() {
-        fleet_run(fleet, &["send", &task_name, &automation.prompt], None)?;
+        fleet.run(&["send", &task_name, &automation.prompt], None)?;
     }
     Ok(task_name)
 }
@@ -369,36 +377,82 @@ fn tail(text: &str) -> String {
         .collect()
 }
 
-/// Run `fleet <args>` with `input` on its stdin; its error when it fails.
-fn fleet_run(fleet: &Path, args: &[&str], input: Option<&str>) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(fleet)
-        .args(args)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start fleet {}: {e}", args[0]))?;
-    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-        stdin
-            .write_all(input.as_bytes())
-            .map_err(|e| format!("fleet {}: {e}", args[0]))?;
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    fn automation(
+        action: crate::config::automations::Action,
+    ) -> crate::config::automations::Automation {
+        crate::config::automations::Automation {
+            name: "nightly".into(),
+            enabled: true,
+            trigger: "cron:0 3 * * *".into(),
+            timezone: None,
+            prompt: "it's time; run `make`".into(),
+            action,
+            timeout_secs: None,
+            created_at: 0,
+            last_run_at: None,
+            next_run_at: None,
+            runs: Vec::new(),
+        }
     }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("fleet {}: {e}", args[0]))?;
-    if out.status.success() {
-        return Ok(());
+
+    /// A send and a spawn reach Fleet through its link: the spawn's Task on
+    /// stdin, then the prompt, as one word, to the session it made.
+    #[test]
+    fn a_fire_reaches_fleet_through_its_link() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "here=$(dirname \"$0\")\n\
+             case \"$1\" in\n\
+             apply) cat > \"$here/applied.json\" ;;\n\
+             send) printf '%s\\n' \"$2=$3\" >> \"$here/sent\" ;;\n\
+             esac",
+        );
+        let repo = tempfile::tempdir().expect("repo");
+        let (send, spawn) = crate::paths::with_path(remote.path(), || {
+            let send = fire(
+                &remote.link,
+                &automation(crate::config::automations::Action::Send {
+                    session: "review".into(),
+                }),
+            );
+            let spawn = fire(
+                &remote.link,
+                &automation(crate::config::automations::Action::Spawn {
+                    repo: repo.path().to_path_buf(),
+                    agent: None,
+                }),
+            );
+            (send, spawn)
+        });
+        assert_eq!(
+            send.status,
+            crate::config::automations::RunStatus::Success,
+            "{}",
+            send.detail
+        );
+        assert_eq!(
+            spawn.status,
+            crate::config::automations::RunStatus::Success,
+            "{}",
+            spawn.detail
+        );
+        let task = spawn.session.expect("the session it made");
+        let applied: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(remote.dir().join("remote/applied.json")).expect("applied"),
+        )
+        .expect("a Task on stdin");
+        assert_eq!(applied["metadata"]["name"], task.as_str());
+        assert_eq!(
+            std::fs::read_to_string(remote.dir().join("remote/sent")).expect("sent"),
+            format!("review=it's time; run `make`\n{task}=it's time; run `make`\n")
+        );
+        assert!(
+            remote.called("apply --create-only -f -"),
+            "{:?}",
+            remote.calls()
+        );
     }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let why = stderr
-        .lines()
-        .find_map(|line| line.strip_prefix("error: "))
-        .unwrap_or(stderr.trim());
-    Err(format!("fleet {}: {why}", args[0]))
 }

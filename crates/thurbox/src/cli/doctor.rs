@@ -167,20 +167,25 @@ pub(super) struct FleetFacts {
 
 impl FleetFacts {
     pub(super) fn read(program: &str) -> Self {
-        let version =
-            bounded_output(program, &["version", "--json"], PROBE_TIMEOUT).and_then(|out| {
-                if out.status.success() {
-                    serde_json::from_slice(&out.stdout)
-                        .map_err(|e| format!("{program} version --json answered no JSON: {e}"))
-                } else {
-                    Err(format!(
-                        "{program} version --json: {}",
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    ))
-                }
-            });
-        let hosts = bounded_output(program, &["runtime", "hosts", "--json"], PROBE_TIMEOUT)
-            .and_then(|out| {
+        Self::read_through(&crate::fleet_link::FleetLink::local(program))
+    }
+
+    /// [`Self::read`], of the Fleet `link` reaches.
+    fn read_through(link: &crate::fleet_link::FleetLink) -> Self {
+        let program = link.program();
+        let version = bounded_output(link, &["version", "--json"], PROBE_TIMEOUT).and_then(|out| {
+            if out.status.success() {
+                serde_json::from_slice(&out.stdout)
+                    .map_err(|e| format!("{program} version --json answered no JSON: {e}"))
+            } else {
+                Err(format!(
+                    "{program} version --json: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            }
+        });
+        let hosts =
+            bounded_output(link, &["runtime", "hosts", "--json"], PROBE_TIMEOUT).and_then(|out| {
                 if out.status.success() {
                     serde_json::from_slice(&out.stdout).map_err(|e| {
                         format!("{program} runtime hosts --json answered no JSON: {e}")
@@ -338,16 +343,17 @@ impl FleetFacts {
 /// hang `doctor`, `config show` or `version`.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// `program args`'s output, or why there is none: it could not start, or it
+/// `fleet args`'s output, or why there is none: it could not start, or it
 /// ran past `timeout` and was stopped.
 fn bounded_output(
-    program: &str,
+    link: &crate::fleet_link::FleetLink,
     args: &[&str],
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, String> {
     use std::process::Stdio;
-    let mut child = std::process::Command::new(program)
-        .args(args)
+    let program = link.program();
+    let mut child = link
+        .command(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -397,6 +403,27 @@ fn fleet_config_path() -> Option<(std::path::PathBuf, &'static str)> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// `doctor`'s probes reach Fleet through its link.
+    #[test]
+    fn doctor_probes_fleet_through_its_link() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "case \"$1\" in\n\
+             runtime) echo '{\"hosts\":[\"local\"]}' ;;\n\
+             *) echo '{\"version\":\"9.9.9\",\"harnesses\":[\"claude\"]}' ;;\n\
+             esac",
+        );
+        let facts =
+            crate::paths::with_path(remote.path(), || FleetFacts::read_through(&remote.link));
+        assert_eq!(facts.version.expect("version")["version"], "9.9.9");
+        assert_eq!(facts.hosts.expect("hosts")["hosts"], json!(["local"]));
+        assert!(remote.called("version --json"), "{:?}", remote.calls());
+        assert!(
+            remote.called("runtime hosts --json"),
+            "{:?}",
+            remote.calls()
+        );
+    }
 
     /// `doctor` lists the hosts Fleet defines, which are where a session can
     /// run, instead of thurbox's own `hosts.toml`.
@@ -464,7 +491,7 @@ mod tests {
         std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
         let started = std::time::Instant::now();
         let out = bounded_output(
-            &stuck.to_string_lossy(),
+            &crate::fleet_link::FleetLink::local(stuck.to_string_lossy()),
             &["version"],
             std::time::Duration::from_millis(300),
         );

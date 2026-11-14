@@ -155,6 +155,11 @@ crate graph and `runtime-mux`'s module rules.
   `order` and `session_model` (the session list's model, with its memo),
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
   panes.
+- **`fleet_link`** — `FleetLink`, the one place a `fleet …` call becomes a
+  process: the kernel's commands, watch, manager, attach and automations and
+  `doctor`'s probes all go through it, on this machine or through a `shell`
+  launcher (ssh, WSL), with stdin, stdout and exit codes unchanged. Nothing
+  else in `kernel` or `cli` starts Fleet.
 - **`cli/`** — `thurbox-cli` subcommands (the `thurbox-cli` skill).
 
 ### Event Loop (`src/main.rs` + `src/coordinator/`)

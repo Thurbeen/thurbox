@@ -11,9 +11,7 @@
 //! Only sessions are Fleet's. The interface's settings and its repository
 //! memory are files of thurbox's ([`super::execute::local`]).
 
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command as Process, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc::Sender;
 
 use serde_json::json;
@@ -23,8 +21,8 @@ use super::execute::Outcome;
 use super::Command;
 
 pub(super) struct Fleet {
-    /// The `fleet` binary: a name on `PATH` or a path.
-    pub(super) program: PathBuf,
+    /// The Fleet's command line.
+    pub(super) link: crate::fleet_link::FleetLink,
 }
 
 impl super::Executor for Fleet {
@@ -228,8 +226,9 @@ impl Fleet {
 
     /// `fleet <args>`'s JSON answer.
     fn json(&self, args: &[&str]) -> Result<serde_json::Value, String> {
-        let out = Process::new(&self.program)
-            .args(args)
+        let out = self
+            .link
+            .command(args)
             .stdin(Stdio::null())
             .output()
             .map_err(|e| format!("could not start fleet {}: {e}", args[0]))?;
@@ -246,8 +245,9 @@ impl Fleet {
 
     /// `fleet get task <name>`: the Task, or `None` when there is none.
     fn get(&self, name: &str) -> Result<Option<serde_json::Value>, String> {
-        let out = Process::new(&self.program)
-            .args(["get", "task", name])
+        let out = self
+            .link
+            .command(&["get", "task", name])
             .stdin(Stdio::null())
             .output()
             .map_err(|e| format!("could not start fleet get: {e}"))?;
@@ -267,34 +267,7 @@ impl Fleet {
     /// Run `fleet <args>`, with `input` on its stdin, and answer its error
     /// when it exits non-zero.
     fn run(&self, args: &[&str], input: Option<&str>) -> Result<(), String> {
-        let mut child = Process::new(&self.program)
-            .args(args)
-            .stdin(if input.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("could not start fleet {}: {e}", args[0]))?;
-        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
-            stdin
-                .write_all(input.as_bytes())
-                .map_err(|e| format!("fleet {}: {e}", args[0]))?;
-        }
-        let out = child
-            .wait_with_output()
-            .map_err(|e| format!("fleet {}: {e}", args[0]))?;
-        if out.status.success() {
-            return Ok(());
-        }
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let why = stderr
-            .lines()
-            .find_map(|line| line.strip_prefix("error: "))
-            .unwrap_or(stderr.trim());
-        Err(format!("fleet {}: {why}", args[0]))
+        self.link.run(args, input)
     }
 }
 
@@ -434,6 +407,92 @@ fn push_char(out: &mut String, c: char, reserved: impl Fn(char) -> bool) {
 #[cfg(test)]
 mod tests {
     use super::{task_name, workspace_url, Choice};
+
+    /// Every command the executor runs reaches Fleet through its link: the
+    /// reads a creation checks against (`runtime hosts`, `version`), the
+    /// Task on stdin, free text as one word, a rename, a delete, and a
+    /// confirmation's `get`, whose exit 3 still reads as a Task gone.
+    #[cfg(unix)]
+    #[test]
+    fn every_command_reaches_fleet_through_its_link() {
+        use super::super::{Command, Executor};
+        let remote = crate::fleet_link::testing::Remote::new(
+            "here=$(dirname \"$0\")\n\
+             case \"$1\" in\n\
+             runtime) echo '{\"hosts\":[\"local\"]}' ;;\n\
+             version) echo '{\"harnesses\":[\"claude\"]}' ;;\n\
+             apply) cat > \"$here/applied.json\" ;;\n\
+             send) printf '%s' \"$3\" > \"$here/sent\" ;;\n\
+             get) exit 3 ;;\n\
+             esac",
+        );
+        let repo = tempfile::tempdir().expect("repo");
+        let fleet = super::Fleet {
+            link: remote.link.clone(),
+        };
+        let (progress, _) = std::sync::mpsc::channel();
+        let run = |command: Command| fleet.execute(&command, 1, &progress).map(|_| ());
+        crate::paths::with_path(remote.path(), || {
+            run(Command::Create {
+                name: "review".into(),
+                repo: repo.path().display().to_string(),
+                agent: Some("claude".into()),
+                host: None,
+                worktree: Some(false),
+                branch: None,
+                base: None,
+                extras: Vec::new(),
+            })
+            .expect("create");
+            let text = "it's \"done\"; $HOME `x`";
+            run(Command::Send {
+                session: "review".into(),
+                text: text.into(),
+            })
+            .expect("send");
+            run(Command::Rename {
+                session: "review".into(),
+                name: "audit".into(),
+            })
+            .expect("rename");
+            run(Command::Delete {
+                session: "review".into(),
+                force: false,
+            })
+            .expect("delete");
+            let guarded = run(Command::Guarded {
+                inner: Box::new(Command::Delete {
+                    session: "review".into(),
+                    force: false,
+                }),
+                session: "review".into(),
+                backend_id: None,
+                cwd: None,
+                member_dirs: Vec::new(),
+            });
+            assert_eq!(guarded, Err("confirmation target changed".to_string()));
+            assert_eq!(
+                std::fs::read_to_string(remote.dir().join("remote/sent")).expect("sent"),
+                text
+            );
+        });
+        let applied: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(remote.dir().join("remote/applied.json")).expect("applied"),
+        )
+        .expect("a Task on stdin");
+        assert_eq!(applied["metadata"]["name"], "review");
+        for call in [
+            "runtime hosts --json",
+            "version --json",
+            "apply --create-only -f -",
+            "send review",
+            "label task review thurbox.dev/name=audit",
+            "delete task review",
+            "get task review",
+        ] {
+            assert!(remote.called(call), "{call}: {:?}", remote.calls());
+        }
+    }
 
     /// A worktree names its branch, the session's by default, and its base
     /// when one was chosen; the directory as it is takes neither.

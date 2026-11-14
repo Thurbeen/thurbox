@@ -269,7 +269,7 @@ telemetry = { use = ["session"] }
 # syntax check passes all of them) and `config` (the interface directory and
 # its `ui.json` overrides). Both are kernel-owned surfaces asked about from
 # outside.
-cli = { use = ["session", "paths", "notifications", "ui_control", "theme"], path_only = [
+cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "fleet_link"], path_only = [
   "kernel", "backend", "config::file", "config::hosts", "config::automations",
   "config::interface_state", "config::settings", "config::themes",
   "update::self_update", "update::version_check",
@@ -288,11 +288,15 @@ cli = { use = ["session", "paths", "notifications", "ui_control", "theme"], path
 # through the backend contract and paints its vt100 screen. Those crossings
 # are path-only, as `cli`'s are, so every one into the side-effect layer is
 # visible at its call site.
-kernel = { use = ["session", "paths", "git", "notifications", "theme"], path_only = [
+kernel = { use = ["session", "paths", "git", "notifications", "theme", "fleet_link"], path_only = [
   "agent::fetch", "backend", "config::hosts", "config::automations",
   "config::interface_state", "config::settings", "config::themes",
   "update::self_update", "update::version_check",
 ] }
+# The one way to a Fleet's command line (ADR-41): every `fleet` call the
+# kernel and the CLI make becomes a process here, on this machine or through
+# `shell`'s launchers, so neither of them launches anything itself.
+fleet_link = { use = ["shell"] }
 # Leaf utilities.
 paths = { use = [] }
 ui_control = { use = ["paths"] }
