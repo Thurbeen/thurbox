@@ -702,8 +702,14 @@ mod tests {
     use super::*;
 
     /// Every call the source makes of Fleet goes through its link: the
-    /// watch, the manager, and the `version` and `runtime hosts` reads, each logged by a
-    /// stand-in `ssh` in front of a Fleet only that `ssh` can reach.
+    /// watch, the manager, and the `version` and `runtime hosts` reads, each
+    /// logged by a stand-in `ssh` in front of a Fleet only that `ssh` can
+    /// reach.
+    ///
+    /// The manager is run by itself and waited for rather than through
+    /// [`FleetWatch::with_manager`]: that worker starts `fleet up` again
+    /// every [`MANAGER_CHECK`], and one outliving the test would do so after
+    /// the stand-in `ssh` left `PATH`.
     #[cfg(unix)]
     #[test]
     fn every_call_of_the_source_goes_through_its_link() {
@@ -716,13 +722,15 @@ mod tests {
              esac",
         );
         crate::paths::with_path(remote.path(), || {
-            let mut source = FleetWatch::start(remote.link.clone(), true);
+            let (tx, _rx) = channel();
+            let data = tempfile::tempdir().expect("data");
+            assert_eq!(manage(&remote.link, data.path(), &tx), Ok(Some(LEASE_HELD)));
+            let mut source = FleetWatch::start(remote.link.clone(), false);
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let mut read = SourceRead::default();
             while read.harnesses.is_none()
                 || read.hosts.is_none()
                 || !remote.called("watch --json --since 0")
-                || !remote.called("up")
             {
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -740,13 +748,11 @@ mod tests {
                 read.hosts,
                 Some(vec!["local".to_string(), "devbox".to_string()])
             );
-            assert!(remote.called("version --json"), "{:?}", remote.calls());
-            assert!(
-                remote.called("runtime hosts --json"),
-                "{:?}",
-                remote.calls()
-            );
+            drop(source);
         });
+        for call in ["up", "version --json", "runtime hosts --json"] {
+            assert!(remote.called(call), "{call}: {:?}", remote.calls());
+        }
     }
 
     /// A session over several repositories spans every directory the runtime
