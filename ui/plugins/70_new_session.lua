@@ -518,7 +518,9 @@ end
 --- the row is spent either way and the modal does not change height as messages
 --- come and go.
 local function message_row(flow)
-  local text = flow.message
+  -- Every step says why its Fleet is refused, so a flow past the place step
+  -- when the refusal came is not left waiting on what will never come.
+  local text = refusal() or flow.message
   return {
     type = "text",
     len = 1,
@@ -1199,7 +1201,7 @@ local function render_field(title, label, field, flow, placeholder)
 end
 
 local function render_agent(flow)
-  if not agents_known() then
+  if not agents_known() and not refusal() then
     return frame("Coding Agent", 5, {
       {
         type = "text",

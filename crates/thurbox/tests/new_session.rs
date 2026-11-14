@@ -534,6 +534,43 @@ fn a_sole_incompatible_fleet_is_refused_on_the_place_step() {
     assert!(host.drain_commands().is_empty());
 }
 
+/// A Fleet refused after the flow left the place step says so on the step
+/// the flow is on: the agent step shows the refusal, not a wait for agents
+/// that will never come.
+#[test]
+fn a_fleet_refused_later_shows_the_refusal_on_the_agent_step() {
+    let host = host();
+    let mut world = World::default();
+    let mut only = fleet(
+        "laptop",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host()],
+        &[],
+    );
+    only.agents = None;
+    world.snapshot.fleets = vec![only];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "down"); // /src/notes
+    press(&host, &world, "enter");
+    type_text(&host, &world, "notes");
+    press(&host, &world, "enter");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Asking Fleet for its agents"), "{screen}");
+
+    world.snapshot.fleets[0].state = FleetState::Incompatible;
+    world.snapshot.fleets[0].why = Some("incompatible: fleet 9.0.0 speaks fleet/v2".into());
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("laptop is incompatible: fleet 9.0.0 speaks fleet/v2"),
+        "{screen}"
+    );
+    assert!(!screen.contains("Asking Fleet"), "{screen}");
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty());
+}
+
 /// With several Fleets, the Fleet step comes first: each Fleet, how it is
 /// reached and whether it is up, with why for the one under the cursor. An
 /// unreachable Fleet is not taken. The places and agents that follow are

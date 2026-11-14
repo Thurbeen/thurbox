@@ -320,6 +320,9 @@ impl SnapshotSource for FleetWatch {
                     self.lost &= error.is_some();
                     self.watch_error = error;
                 }
+                // Incompatible is final: nothing said after replaces it.
+                Update::Lost(_) | Update::State(..)
+                    if self.fleet.state == FleetState::Incompatible => {}
                 Update::Lost(why) => {
                     self.lost = true;
                     self.watch_error = Some(why);
@@ -343,7 +346,12 @@ impl SnapshotSource for FleetWatch {
                     self.fleet.why = why;
                 }
                 Update::Home(home) => self.fleet.home = Some(home),
-                Update::Incompatible(why) => self.watch_error = Some(why),
+                Update::Incompatible(why) => {
+                    self.lost = false;
+                    self.fleet.state = FleetState::Incompatible;
+                    self.fleet.why = Some(why.clone());
+                    self.watch_error = Some(why);
+                }
             }
         }
         // The interface's own file, read again only when this process wrote
@@ -1203,6 +1211,40 @@ mod tests {
         assert_eq!(rows[1].why.as_deref(), Some("no distro"));
         let any = places_from(&serde_json::json!({"places": null}), "this machine");
         assert_eq!(any, [HostRow::local("this machine")]);
+    }
+
+    /// A Fleet that first could not be asked, then answers that it speaks
+    /// another API, is incompatible: the unreachable it was meanwhile does
+    /// not stand over that answer.
+    #[cfg(unix)]
+    #[test]
+    fn incompatible_after_a_failed_first_probe_stays_incompatible() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "here=$(dirname \"$0\")\n\
+             [ \"$1\" = version ] || exit 1\n\
+             [ -e \"$here/asked\" ] || { touch \"$here/asked\"; echo 'error: not yet' >&2; exit 1; }\n\
+             echo '{\"version\":\"9.0.0\",\"apiVersions\":[\"fleet/v2\"]}'",
+        );
+        crate::paths::with_path(remote.path(), || {
+            let mut source = FleetWatch::spawn(remote.link.clone());
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut published = None;
+            while published != Some(FleetState::Incompatible) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{published:?}: {:?}",
+                    remote.calls()
+                );
+                if let Some(read) = source.poll() {
+                    published = read.fleets.first().map(|fleet| fleet.state);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            if let Some(read) = source.poll() {
+                assert_eq!(read.fleets[0].state, FleetState::Incompatible);
+            }
+        });
     }
 
     /// Opening the place picker asks nothing of a Fleet not yet admitted,
