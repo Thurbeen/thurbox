@@ -73,7 +73,9 @@ when the laptop sleeps.
 1. On box, install `fleet`, `runtime-mux`, `tmux` and a coding agent.
 2. On box, run `fleet init`.
 3. On box, install a user systemd unit that runs `fleet up`.
-   thurbox never starts `fleet up` on a remote Fleet.
+   thurbox never starts `fleet up` on a remote Fleet. A user service does not
+   read your login `PATH`: set `Environment=PATH` to the directories that hold
+   `fleet`, `runtime-mux`, `tmux` and your coding agents.
 
    ```ini
    # ~/.config/systemd/user/fleet.service
@@ -81,6 +83,7 @@ when the laptop sleeps.
    Description=Fleet manager
 
    [Service]
+   Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
    ExecStart=%h/.cargo/bin/fleet up
    Restart=on-failure
    RestartSec=15
