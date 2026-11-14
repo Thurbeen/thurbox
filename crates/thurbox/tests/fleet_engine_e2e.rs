@@ -781,7 +781,7 @@ fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
 fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
-    let ticket = store.request_refresh_awaiting(vec!["Made".into()]);
+    let ticket = store.request_refresh_awaiting(vec!["local:made".into()]);
     // A watch that answers late: past the second a quiet source is given.
     std::thread::sleep(Duration::from_millis(2_000));
     store.refresh_if_due();
@@ -1429,5 +1429,51 @@ fn every_listed_fleet_is_followed_in_one_list() {
         ids(&mut store),
         ["box:audit", "box:review", "laptop:review"],
         "still no row is dropped"
+    );
+}
+
+/// A creation is found by the id its Task will have in the Fleet the
+/// commands go to, never by its name: with `laptop:review` listed and `box`
+/// in force, creating `review` awaits and reports `box:review`, not the
+/// laptop's session of the same name.
+#[test]
+fn a_creation_is_awaited_by_its_fleet_qualified_id() {
+    use thurbox::fleet_link::FleetLink;
+    use thurbox::session::settings::FleetDef;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
+    let fleet_row = |fleet: &str, task: &str| {
+        thurbox::kernel::snapshot::fleet::row_of(
+            &FleetLink::of(fleet, &FleetDef::default()),
+            &json!({"metadata": {"name": task}}),
+        )
+    };
+    tx.send(SourceRead {
+        sessions: vec![fleet_row("laptop", "review")],
+        ..Default::default()
+    })
+    .unwrap();
+    store.refresh_if_due();
+    let bus = CommandBus::fleet(FleetLink::of("box", &FleetDef::default()));
+    let id = bus
+        .created_id("Review")
+        .expect("a Fleet bus names what it creates");
+    assert_eq!(id, "box:review");
+    let ticket = store.request_refresh_awaiting(vec![id.clone()]);
+    store.refresh_if_due();
+    assert!(
+        !store.fresh_since(ticket),
+        "laptop's session of the same name is not the one created"
+    );
+    tx.send(SourceRead {
+        sessions: vec![fleet_row("laptop", "review"), fleet_row("box", "review")],
+        ..Default::default()
+    })
+    .unwrap();
+    store.refresh_if_due();
+    assert!(store.fresh_since(ticket));
+    assert_eq!(
+        store.current().session(&id).and_then(|r| r.fleet()),
+        Some("box")
     );
 }

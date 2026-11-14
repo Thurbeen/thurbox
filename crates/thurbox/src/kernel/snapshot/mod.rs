@@ -428,7 +428,7 @@ pub struct SnapshotStore {
     /// it: what [`Self::request_refresh`]'s ticket counts.
     source_reads: u64,
     source_asked: Instant,
-    /// The names of the sessions the last refresh awaits: see
+    /// The ids of the sessions the last refresh awaits: see
     /// [`Self::request_refresh_awaiting`].
     awaited: Vec<String>,
     /// Sessions deleted here that the source may still list: see
@@ -577,8 +577,9 @@ impl SnapshotStore {
         self.gone.insert(id);
     }
 
-    /// [`Self::request_refresh`], for commands that created sessions named
-    /// `created`. The ticket is fresh once a row of each name is published,
+    /// [`Self::request_refresh`], for commands that created the sessions
+    /// whose ids are `created` (`box:review`: a name another Fleet's session
+    /// can share). The ticket is fresh once a row of each id is published,
     /// or 10 seconds after the request: a source answers when it sees a
     /// write, which can be later than the second a quiet source is given.
     pub fn request_refresh_awaiting(&mut self, created: Vec<String>) -> u64 {
@@ -608,7 +609,7 @@ impl SnapshotStore {
                 || self
                     .awaited
                     .iter()
-                    .all(|name| self.current.sessions.iter().any(|row| &row.name == name));
+                    .all(|id| self.current.session(id).is_some());
         }
         self.source_reads >= ticket || asked >= SOURCE_SETTLE
     }
