@@ -136,6 +136,17 @@ pub struct CrateRule {
 pub struct ModuleRestricted {
     pub paths: Vec<String>,
     pub allowed: Vec<String>,
+    /// The module paths the rule binds, each with every module under it;
+    /// every module when empty.
+    #[serde(default)]
+    pub applies_to: Vec<String>,
+    /// Files, relative to `src/`, the rule leaves free, whatever they reach.
+    #[serde(default)]
+    pub allowed_files: Vec<String>,
+    /// Judge what a module names itself: a path through the crate's own
+    /// module that re-exports another crate's item is that module's.
+    #[serde(default)]
+    pub direct: bool,
     /// Judge production code only: a test may name what it pins.
     #[serde(default)]
     pub production_only: bool,
@@ -164,6 +175,10 @@ pub struct ModuleRule {
     /// the crossing stays visible at each site.
     #[serde(default)]
     pub path_only: Vec<String>,
+    /// The external crates the module may name itself, if it is limited:
+    /// `std`, `core` and `alloc` are always allowed.
+    #[serde(default)]
+    pub external: Option<Vec<String>>,
 }
 
 impl ModuleRule {
@@ -681,6 +696,8 @@ struct CrateIndex {
     renames: BTreeMap<String, String>,
     /// The module path of every file walked.
     file_modules: BTreeSet<Vec<String>>,
+    /// Every source file, relative to `src/`.
+    files: BTreeSet<String>,
     /// Modules a `#[cfg(test)] mod x;` declares: test code, file and all.
     test_modules: BTreeSet<Vec<String>>,
 }
@@ -706,6 +723,7 @@ impl CrateIndex {
             methods: Vec::new(),
             lib_doc: String::new(),
             file_modules: BTreeSet::new(),
+            files: BTreeSet::new(),
             test_modules: BTreeSet::new(),
             renames: c
                 .deps
@@ -739,6 +757,7 @@ impl CrateIndex {
                     continue;
                 }
             };
+            idx.files.insert(src_file(&rel));
             parsed_files.push((file, rel, parsed));
         }
         let modules = module_paths(&src, &parsed_files);
@@ -765,8 +784,13 @@ impl CrateIndex {
                     cfg_use: false,
                     tests: 0,
                     sites: 0,
+                    attrs_seen: HashSet::new(),
                 };
                 walker.scope();
+                // A file's own `#![..]` attributes, `#![cfg(..)]` included.
+                for a in &parsed.attrs {
+                    walker.visit_attribute(a);
+                }
                 walker.items(&parsed.items);
             }
         }
@@ -970,6 +994,8 @@ struct Walker<'a> {
     tests: u32,
     /// References recorded so far in this file.
     sites: u32,
+    /// The attributes already read, by where they start.
+    attrs_seen: HashSet<(usize, usize)>,
 }
 
 impl Walker<'_> {
@@ -998,6 +1024,34 @@ impl Walker<'_> {
         self.tests += test;
         walk(self);
         self.tests -= test;
+    }
+
+    /// A reference to a path no source spells: a `cfg` name or a `static mut`.
+    fn synthetic(&mut self, segments: Vec<String>, span: proc_macro2::Span) {
+        let location = self.location(span);
+        let site = self.next_site();
+        self.idx.refs.push(Ref {
+            module: self.module.clone(),
+            segments,
+            global: true,
+            macro_call: false,
+            location,
+            test: self.tests > 0,
+            in_use: false,
+            site,
+        });
+    }
+
+    fn cfg_names(&mut self, tokens: proc_macro2::TokenStream, span: proc_macro2::Span) {
+        for t in tokens {
+            match t {
+                proc_macro2::TokenTree::Ident(i) => {
+                    self.synthetic(vec!["#cfg".to_string(), i.to_string()], span);
+                }
+                proc_macro2::TokenTree::Group(g) => self.cfg_names(g.stream(), span),
+                _ => {}
+            }
+        }
     }
 
     fn next_site(&mut self) -> u32 {
@@ -1129,7 +1183,30 @@ impl<'ast> Visit<'ast> for Walker<'_> {
         }
     }
 
-    fn visit_attribute(&mut self, _: &'ast syn::Attribute) {}
+    /// A `cfg` predicate reads as `#cfg::<name>` for each name in it, so a
+    /// restriction can keep a build target's `cfg` out of a module. Nothing
+    /// else in an attribute is a reference.
+    fn visit_attribute(&mut self, a: &'ast syn::Attribute) {
+        // Every item's attributes are read in `visit_item`, and syn's own walk
+        // reaches some of them again: each attribute counts once.
+        let start = a.pound_token.span.start();
+        if !self.attrs_seen.insert((start.line, start.column)) {
+            return;
+        }
+        if let syn::Meta::List(list) = &a.meta
+            && (list.path.is_ident("cfg") || list.path.is_ident("cfg_attr"))
+        {
+            self.cfg_names(list.tokens.clone(), a.pound_token.span);
+        }
+    }
+
+    fn visit_item_static(&mut self, i: &'ast syn::ItemStatic) {
+        // A `static mut` reads as the path `#static_mut`.
+        if !matches!(i.mutability, syn::StaticMutability::None) {
+            self.synthetic(vec!["#static_mut".to_string()], i.static_token.span);
+        }
+        visit::visit_item_static(self, i);
+    }
 
     fn visit_item(&mut self, i: &'ast Item) {
         let test = item_attrs(i).iter().any(is_cfg_test);
@@ -1140,6 +1217,13 @@ impl<'ast> Visit<'ast> for Walker<'_> {
                 self.idx.test_modules.insert(path);
             }
             self.tests += 1;
+        }
+        // Read here for every kind of item, whether or not its own visitor
+        // walks its attributes: inside the item's test scope, so a test-only
+        // item's own `cfg` is test code, and in the declaring module, which a
+        // module's attributes belong to.
+        for a in item_attrs(i) {
+            self.visit_attribute(a);
         }
         // A `type` alias is a name for its target, as an import is: a path
         // through the alias reaches what it names.
@@ -1289,6 +1373,9 @@ impl<'ast> Visit<'ast> for Walker<'_> {
     }
 
     fn visit_macro(&mut self, m: &'ast syn::Macro) {
+        if m.path.is_ident("cfg") {
+            self.cfg_names(m.tokens.clone(), m.bang_token.span);
+        }
         let segments: Vec<String> = m
             .path
             .segments
@@ -1687,6 +1774,11 @@ impl<'a> Resolver<'a> {
                 out.push(path.clone());
                 for (g, gg) in &scope.globs {
                     for base in self.resolve(idx, &module, g, *gg, false, false, depth + 1) {
+                        // Read locally, another crate's items a glob brings
+                        // in are the module's: `path` itself already is.
+                        if self.local && base.first() != path.first() {
+                            continue;
+                        }
                         let through: Vec<String> = base
                             .into_iter()
                             .chain(std::iter::once(name.clone()))
@@ -1883,6 +1975,7 @@ fn check_sources(
     let allowed_libs: BTreeSet<String> = rule.deps.iter().map(|d| lib_name(d)).collect();
     let workspace_libs: BTreeSet<String> = ws.crates.iter().map(|c| c.lib.clone()).collect();
     let mut graph = (!rule.modules.is_empty()).then(|| ModuleGraph::new(rule));
+    let needs_local = graph.is_some() || rule.restricted.iter().any(|x| x.direct);
     // Each restriction's hits, keyed by source site so a file two targets
     // include counts once: the file relative to `src/`, the site, the path.
     let mut hits: Vec<BTreeMap<(String, u32), (String, String)>> =
@@ -1903,6 +1996,26 @@ fn check_sources(
         // A target's root (`lib`, `main`, a binary) is judged under its own
         // name: an exempt root keeps no module rule, but a restriction still
         // binds it.
+        // What the module names itself, as far as this crate's own modules
+        // go: a module re-exporting another crate's item is what was reached.
+        // The module graph, `direct` restrictions and `external` read it.
+        let local_paths = if needs_local {
+            local.budget.set(RESOLVE_BUDGET);
+            local.exhausted.set(false);
+            let found = local.resolve(idx, &r.module, &r.segments, r.global, r.macro_call, true, 0);
+            if local.exhausted.get() {
+                // A partial answer could miss a reach, so it is reported.
+                v.push(violation(
+                    "unresolvable",
+                    &idx.name,
+                    &r.location,
+                    format!("{} exceeds the resolution budget", r.segments.join("::")),
+                ));
+            }
+            found
+        } else {
+            Vec::new()
+        };
         let from = match graph.as_ref() {
             Some(g) => g.node_of(&r.module),
             // No module rules: each top-level module is judged by its name.
@@ -1914,17 +2027,56 @@ fn check_sources(
                 .then(|| target_name(&r.module))
         });
         if let Some(from) = from {
+            let module = without_target(&r.module);
+            let file = src_file(&r.location);
             for (x, found) in rule.restricted.iter().zip(&mut hits) {
-                if x.allowed.iter().any(|a| a == from) || x.production_only && r.test {
+                if x.allowed.iter().any(|a| a == from)
+                    || x.production_only && r.test
+                    || x.allowed_files.contains(&file)
+                    || !x.applies_to.is_empty()
+                        && !x.applies_to.iter().any(|a| {
+                            let a: Vec<&str> = a.split("::").collect();
+                            module.len() >= a.len() && module.iter().zip(&a).all(|(m, a)| m == a)
+                        })
+                {
                     continue;
                 }
-                if let Some(p) = paths
+                let judged = if x.direct { &local_paths } else { &paths };
+                if let Some(p) = judged
                     .iter()
                     .find(|p| x.paths.iter().any(|f| starts_with(p, f)))
                 {
                     found
                         .entry((r.location.clone(), r.site))
                         .or_insert_with(|| (src_file(&r.location), p.join("::")));
+                }
+            }
+        }
+        // A module limited to some external crates names no other itself.
+        if let Some(external) = graph
+            .as_ref()
+            .and_then(|g| g.node_of(&r.module))
+            .and_then(|n| rule.modules.get(n))
+            .and_then(|m| m.external.as_ref())
+        {
+            for p in &local_paths {
+                let root = p[0].as_str();
+                let is_extern =
+                    idx.externs.contains(root) || idx.renames.values().any(|l| l == root);
+                if root != idx.lib
+                    && is_extern
+                    && !["std", "core", "alloc"].contains(&root)
+                    && !external.iter().any(|e| e == root)
+                {
+                    v.push(violation(
+                        "module-external",
+                        &idx.name,
+                        &r.location,
+                        format!(
+                            "names {}, and {root} is not among the crates its rule lists",
+                            p.join("::")
+                        ),
+                    ));
                 }
             }
         }
@@ -1962,8 +2114,10 @@ fn check_sources(
                     ));
                 }
                 let std_like = ["std", "core", "alloc"].contains(&root);
+                // A synthetic path (`#cfg::..`, `#static_mut`) names no crate.
                 if root != idx.lib
                     && !std_like
+                    && !root.starts_with('#')
                     && !workspace_libs.contains(root)
                     && !rule.external.iter().any(|e| lib_name(e) == root)
                 {
@@ -2019,22 +2173,8 @@ fn check_sources(
                 }
             }
         }
-        // The module graph reads each path as far as this crate's own modules
-        // go: a module re-exporting another crate's item is what was reached.
         if let Some(graph) = graph.as_mut() {
-            local.budget.set(RESOLVE_BUDGET);
-            local.exhausted.set(false);
-            let paths = local.resolve(idx, &r.module, &r.segments, r.global, r.macro_call, true, 0);
-            if local.exhausted.get() {
-                // A partial answer could miss an edge, so it is reported.
-                v.push(violation(
-                    "unresolvable",
-                    &idx.name,
-                    &r.location,
-                    format!("{} exceeds the resolution budget", r.segments.join("::")),
-                ));
-            }
-            for path in paths {
+            for path in &local_paths {
                 if path[0] == idx.lib {
                     graph.record(r, &path[1..], &path.join("::"));
                 }
@@ -2071,6 +2211,16 @@ fn check_sources(
                         format!("reaches {shown}: {}", x.why),
                     ));
                 }
+            }
+        }
+        for f in &x.allowed_files {
+            if !idx.files.contains(f) {
+                v.push(violation(
+                    "module-restricted-stale",
+                    &idx.name,
+                    "architecture.toml",
+                    format!("{f} is freed from {} but is no file", x.paths.join(", ")),
+                ));
             }
         }
         for e in &x.exceptions {

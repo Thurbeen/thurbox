@@ -104,8 +104,8 @@ forbidden_methods = [
 # Sessions on a terminal multiplexer, local or on a host over ssh or wsl.exe.
 # Knows nothing of thurbox: what it needs from settings and from where
 # thurbox keeps its files is passed in (`MuxSettings`, `HostsConfig`). Its
-# module rules follow; the boundary's shape (the adapters are peers, only the
-# factory names one) is crates/runtime-mux/tests/architecture_rules.rs.
+# module rules follow, then the boundary's shape: the adapters are peers, only
+# the factory names one, and the route and the contract know no launcher.
 [crates.runtime-mux]
 role = "component"
 deps = ["term-stream"]
@@ -183,6 +183,76 @@ rmux = { use = [
   "tmux_compat::control_mode", "tmux_compat::server", "tmux_compat::transport",
 ] }
 
+# The adapters are peers: none reaches another, and the protocol helper they
+# share reaches none, test code included. A quirk of one multiplexer is a body
+# in its own adapter, never a branch in code the other runs. Only the factory
+# names an adapter.
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::tmux"]
+allowed = ["tmux", "wiring"]
+why = "only the factory names an adapter, and the adapters are peers"
+
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::psmux"]
+allowed = ["psmux", "wiring"]
+why = "only the factory names an adapter, and the adapters are peers"
+
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::rmux"]
+allowed = ["rmux", "wiring"]
+why = "only the factory names an adapter, and the adapters are peers"
+
+# Nothing reaches the factory but the `runtime-mux` program's composition
+# root, as an embedder's does: every other module is handed the registry it
+# builds.
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::wiring"]
+allowed = ["wiring", "main"]
+why = "only a composition root builds the registry"
+
+# A specific multiplexer is named only where one is chosen: the route grammar
+# and its defaults (`host`), whether a binary is installed (`preflight`), the
+# factory, and the one adapter that is it. A multiplexer with no adapter is
+# not one the factory may serve. A test may name the one it pins.
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::host::multiplexer::Multiplexer::Tmux"]
+allowed = ["host", "preflight", "wiring", "tmux"]
+production_only = true
+why = "a multiplexer is chosen by the route, the factory and its own adapter"
+
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::host::multiplexer::Multiplexer::Psmux"]
+allowed = ["host", "preflight", "wiring", "psmux"]
+production_only = true
+why = "a multiplexer is chosen by the route, the factory and its own adapter"
+
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::host::multiplexer::Multiplexer::Rmux"]
+allowed = ["host", "preflight", "wiring", "rmux"]
+production_only = true
+why = "a multiplexer is chosen by the route, the factory and its own adapter"
+
+[[crates.runtime-mux.restricted]]
+paths = ["runtime_mux::host::multiplexer::Multiplexer::Herdr"]
+allowed = ["host", "preflight"]
+production_only = true
+why = "no adapter serves Herdr, so the factory may not"
+
+# The route and the contract are the same for every host OS, launcher and
+# multiplexer (docs/runtime/runtime-mux.md): they reach no launcher, no host
+# entry and no adapter, and decide nothing by the OS this build is for. A test
+# simulates the other OS through `shell::simulate_local`.
+[[crates.runtime-mux.restricted]]
+paths = [
+  "runtime_mux::shell", "runtime_mux::host::host_def", "runtime_mux::hosts",
+  "runtime_mux::tmux", "runtime_mux::psmux", "runtime_mux::rmux", "runtime_mux::tmux_compat",
+  "#cfg::windows", "#cfg::unix",
+]
+allowed = []
+applies_to = ["host::route", "contract"]
+production_only = true
+why = "the route and the contract know no launcher, adapter or build OS"
+
 # Makes a runtime's workspaces from git URLs: a worktree per URL, work
 # preserved on release (docs/runtime/README.md, "workspace-git"). A runtime
 # runs its program where its files belong; no crate links it.
@@ -196,9 +266,9 @@ deps = []
 role = "component"
 deps = []
 
-# The interface. Its module rules follow; checks particular to thurbox (the
-# runtime gateways, session purity, atomic writes, the kernel's workers) are
-# crates/thurbox/tests/architecture_rules.rs.
+# The interface. Its module rules follow, then its restrictions: the runtime
+# gateways, session purity, the kernel's workers, concrete backends, multiplexer
+# naming and atomic writes.
 # Transitional: thurbox links the runtime directly until Fleet drives the
 # runtimes (step 5 of the v3 migration), when this edge goes.
 [crates.thurbox]
@@ -216,7 +286,14 @@ governed = ["agent", "config", "update"]
 # path, never an import, so the crossing stays visible at each call site.
 [crates.thurbox.modules]
 # Pure data: the dependency sink. No crate-internal references at all.
-session = { use = [] }
+# It names only data formats and value types of other crates: a palette in
+# `ratatui` colours is a rendering decision, a `tokio` handle or a `rusqlite`
+# row someone else's runtime. The host model, the hyperlink table and
+# `SessionId` are the runtime's, which `session` re-exports.
+session = { use = [], external = [
+  "chrono", "chrono_tz", "cron", "runtime_mux", "serde", "serde_json", "toml",
+  "toml_edit", "unicode_width", "uuid",
+] }
 # The downloads plugins and the updater make, and keyboard input. Never a
 # session backend: the multiplexer runtime (`backend`) is reached through its
 # own module. Every file is a module of its own, so a grant names what it
@@ -256,7 +333,7 @@ update = { use = [] }
 backend = { use = ["session", "paths", "config::hosts"] }
 git = { use = ["session", "paths", "shell"] }
 # The theme presets and the user's overrides, in `ratatui` colours: data, but
-# rendering data, which `session_is_pure_data` keeps out of the sink.
+# rendering data, which `session`'s `external` list keeps out of the sink.
 theme = { use = [] }
 # The interface's diagnostic-log bridge (ADR-38), built by `coordinator`,
 # which hands it the identity it exports under. The settings come from
@@ -321,6 +398,60 @@ notifications = { use = ["session", "paths", "shell"] }
 # `session` only for the `ClipboardProvider` setting; writes to the tty and
 # never reaches into agent or the interface.
 clipboard = { use = ["paths", "session"] }
+
+# The modules that may name `runtime_mux` itself: the `backend` gateway, and
+# the ones re-exporting a runtime type as their own: the shell grammar
+# (`shell`), the host model and `SessionId` (`session`), the data directory and
+# binary lookup (`paths`), the hosts loader (`config::hosts`) and the TOML
+# reader (`config::file`). Everyone else reaches the runtime through them, so
+# the module rules see each crossing.
+[[crates.thurbox.restricted]]
+paths = ["runtime_mux"]
+allowed = ["backend", "shell", "session", "paths", "config::hosts", "config::file"]
+direct = true
+why = "reach the runtime through crate::backend or the module re-exporting it"
+
+# `session` is the dependency sink and pure data: it holds no process state,
+# in its tests either, and reads no environment. Settings are passed in by
+# whoever loaded them, and an environment variable is read by the caller.
+[[crates.thurbox.restricted]]
+paths = ["std::sync::OnceLock", "std::sync::LazyLock", "std::thread_local", "#static_mut"]
+allowed = []
+applies_to = ["session"]
+why = "session holds no process state"
+
+[[crates.thurbox.restricted]]
+paths = ["std::env"]
+allowed = []
+applies_to = ["session"]
+production_only = true
+why = "session reads no environment; its caller does"
+
+# The kernel's two runtime stores start a thread only in a worker's own file:
+# the store and the paint side never block, so a job that reaches the world
+# without a worker shows up here rather than as a frozen frame.
+[[crates.thurbox.restricted]]
+paths = ["std::thread"]
+allowed = []
+applies_to = ["kernel::snapshot", "kernel::terminal"]
+allowed_files = [
+  "kernel/snapshot/fleet.rs", "kernel/snapshot/git.rs",
+  "kernel/terminal/attach.rs", "kernel/terminal/shells.rs",
+  # A stream pane's reader: one per pane, as the backend's own.
+  "kernel/terminal/stream_pane.rs",
+]
+production_only = true
+why = "move it into the worker that owns it"
+
+# Only the snapshot store's git worker reaches `git`, so a slow `git` delays a
+# stat and never a frame.
+[[crates.thurbox.restricted]]
+paths = ["thurbox::git"]
+allowed = []
+applies_to = ["kernel::snapshot"]
+allowed_files = ["kernel/snapshot/git.rs"]
+production_only = true
+why = "only the git worker reaches git"
 
 # What of the runtime a consumer must never reach by name: one multiplexer's
 # adapter, or the protocol grammar only some multiplexers speak. Every verb a

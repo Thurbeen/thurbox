@@ -10,7 +10,7 @@
 //! it needs are there (`preflight`) and `hosts.toml` (`hosts`).
 //!
 //! Consumers name the contract; only the registry's factory names an adapter.
-//! `tests/architecture_rules.rs` holds each module to that. The crate knows
+//! Its rules in `crates/architecture.toml` hold each module to that. The crate knows
 //! nothing of the program embedding it: the settings it honours and where that
 //! program keeps its data are passed in ([`MuxSettings`],
 //! [`hosts::HostsConfig`]).

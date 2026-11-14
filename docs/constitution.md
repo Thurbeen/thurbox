@@ -300,9 +300,8 @@ of the program embedding it: the settings it honours and where that program
 keeps its data are passed in (`MuxSettings`, `HostsConfig`). Inside it, the
 module rules in `crates/architecture.toml` give every module under
 `crates/runtime-mux/src/` one entry naming what it may reference, and
-`arch-rules` checks them; that file is the one copy of the graph.
-`crates/runtime-mux/tests/architecture_rules.rs` checks the boundary's shape
-over those rules.
+`arch-rules` checks them; that file is the one copy of the graph, and its
+`[[crates.runtime-mux.restricted]]` entries hold the boundary's shape.
 
 Only the factory, `wiring`, names an adapter, and no module of the runtime
 reaches the factory: the `runtime-mux` program's `main.rs` calls it, as an
@@ -326,7 +325,7 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | 9. Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
 | 10. Tag-based versioning | `build.rs` + `cd.yml` (thurbox); `cog bump` in `cd.yml` (Fleet) | `.github/workflows/cd.yml` |
 | 11. Credentials stay put | Code review | All |
-| T1. Module isolation | `crates/architecture.toml` checked by `arch-rules`, + `crates/thurbox/tests/architecture_rules.rs` | thurbox |
+| T1. Module isolation | `crates/architecture.toml` checked by `arch-rules` | thurbox |
 | T2. Plugin-kernel rules | `tests/kernel_mvp.rs` + `thurbox.yml` (selene) + `.luarc.json` (luals) | thurbox |
 | T3. Backend-first model | Code review | thurbox |
 | T4. Logging off stdout | Code review | thurbox |
@@ -336,4 +335,4 @@ build OS ([a host's platform](runtime/runtime-mux.md#a-hosts-platform)).
 | F4. One writer per field | `arch-rules` (permitted status writers) | Fleet |
 | R1. A runtime knows no Task | The protocol's schema | Every runtime |
 | R2. Idempotent by key | `fleet runtime check`, run by `crates/fleet-cli/tests/e2e_runtime_exec.rs` | runtime-mux, `examples/runtimes/tmux.sh` |
-| R3. runtime-mux module isolation | `crates/architecture.toml` checked by `arch-rules`, + `crates/runtime-mux/tests/architecture_rules.rs` | runtime-mux |
+| R3. runtime-mux module isolation | `crates/architecture.toml` checked by `arch-rules` | runtime-mux |

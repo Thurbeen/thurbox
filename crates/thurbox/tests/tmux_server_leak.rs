@@ -330,9 +330,8 @@ const GUARD_TYPE: &str = "TmuxServer";
 ///
 /// Read off the source rather than by running it: the leak only shows up on a
 /// machine where the suite runs inside a thurbox pane, and a run that does leak
-/// still passes every assertion it makes. Comments are stripped first, the way
-/// `tests/architecture_rules.rs` strips them before extracting references — a
-/// rule read off raw text is satisfied by prose.
+/// still passes every assertion it makes. Comments are stripped first: a rule
+/// read off raw text is satisfied by prose.
 #[test]
 fn the_guard_scopes_every_socket_it_pins() {
     let src = std::fs::read_to_string(workspace_root().join(GUARD)).expect("read the guard");

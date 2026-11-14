@@ -97,7 +97,7 @@ lua-api:
 
 # Architecture-rule + doc checks.
 arch:
-    cargo test --test architecture_rules
+    cargo nextest run -p arch-rules
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 # Install the non-Nix dev tools (fallback when not using the flake).

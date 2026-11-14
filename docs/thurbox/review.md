@@ -53,7 +53,7 @@ adapter, and only a composition root names backend::wiring (thurbox's
 restrictions in the same file). A new module fails arch-rules
 until its rules entry is declared, and every entry, coordinator's too, is
 checked. The runtime behind backend is crates/runtime-mux, held to its module
-rules in crates/architecture.toml and its own tests/architecture_rules.rs: the
+rules and restrictions in crates/architecture.toml: the
 adapters are peers, only its wiring names one, and it reads nothing of thurbox -
 the settings and data directory it needs are passed in.
 

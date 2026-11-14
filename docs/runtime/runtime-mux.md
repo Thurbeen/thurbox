@@ -54,8 +54,7 @@ independent choices. The route carries the place and the multiplexer. The OS is
   never the build OS or the multiplexer's name.
 - Every adapter is registered on every machine and every host. Which ones are
   installed is `Multiplexer::available_on`.
-- `tests/architecture_rules.rs`
-  (`the_route_and_the_contract_know_no_launcher_adapter_or_build_os`) keeps
+- A restriction in `crates/architecture.toml` keeps
   the route and the contract free of launchers, host entries, adapters and
   `cfg(windows)`. Tests simulate the other OS through `shell::simulate_local`.
 
