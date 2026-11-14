@@ -255,6 +255,16 @@ image = "agent-base"
   `localWhy` saying why. With the fake `[runtime]`, `places` is `null`.
 - `fleet runtime hosts --json` lists the place ids a Task may name, `local` first
   and then each other place. thurbox's new-session flow reads it.
+- `fleet runtime browse <place> [dir] --json` reads a place's folders
+  through its runtime's `browse` verb: `{"dir", "entries": [{name, repo}]}`,
+  each subdirectory of `dir` by name, `repo` true on the top of a git work
+  tree. Without `dir` it reads the place's home. `fleet runtime branches
+  <place> <repo> --json` reads a repository's branches there through
+  `branches`: `{"names", "default"}`. `<place>` is `local` or
+  `<runtime>/<place>`. Both only read, and a place the config does not
+  define, a runtime whose manifest does not offer the verb, and a directory
+  the runtime cannot read are errors that say why
+  ([browse and branches](../runtime/README.md#browse-and-branches)).
 
 A second Fleet installation on the same runtime needs a distinct
 `keyPrefix`. Store and config must remain separate paths.

@@ -244,6 +244,39 @@ impl ExecProgram {
         }
     }
 
+    /// `browse` at this program's place: the subdirectories of `dir`, the
+    /// place's home when `None`. Unknown when the runtime's manifest does
+    /// not offer the verb, which is then not asked.
+    pub fn browse(&self, dir: Option<&str>) -> Observation<Browsed> {
+        bind(self.offers("browse"), |()| {
+            let fields = match dir {
+                Some(dir) => json!({ "dir": dir }),
+                None => json!({}),
+            };
+            self.send("browse", fields)
+        })
+    }
+
+    /// `branches` at this program's place: the branches of the repository
+    /// at `repo`, and its default. Unknown when the runtime's manifest does
+    /// not offer the verb, which is then not asked.
+    pub fn branches(&self, repo: &str) -> Observation<BranchesRead> {
+        bind(self.offers("branches"), |()| {
+            self.send("branches", json!({ "repo": repo }))
+        })
+    }
+
+    /// Whether the runtime's manifest offers the optional `verb`.
+    fn offers(&self, verb: &str) -> Observation<()> {
+        bind(self.manifest(), |m| {
+            if m.verbs.iter().any(|v| v == verb) {
+                Observation::Known(())
+            } else {
+                Observation::unknown(format!("runtime {} does not offer {verb}", self.name))
+            }
+        })
+    }
+
     /// A known answer of verb's shape `T`, or Unknown.
     fn ask<T: DeserializeOwned>(&self, verb: &str, request: Value) -> Observation<T> {
         match self.call(verb, &request) {
@@ -304,6 +337,41 @@ pub struct Manifest {
     /// Each place the request asked about, from protocol version 2.
     #[serde(default)]
     pub places: Vec<PlaceReport>,
+}
+
+/// A `browse` answer (docs/runtime/README.md, "Browse and branches").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Browsed {
+    /// The subdirectories of `dir`, by name.
+    Listing {
+        dir: String,
+        entries: Vec<BrowseEntry>,
+    },
+    /// The runtime could not read the directory.
+    Failed { why: String },
+}
+
+/// One subdirectory a `browse` lists: `repo` when it is the top of a git
+/// work tree.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+pub struct BrowseEntry {
+    pub name: String,
+    pub repo: bool,
+}
+
+/// A `branches` answer (docs/runtime/README.md, "Browse and branches").
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BranchesRead {
+    /// Each local and `origin/*` branch, and the one a new branch starts
+    /// from by default.
+    Branches {
+        names: Vec<String>,
+        default: Option<String>,
+    },
+    /// The runtime could not read the repository.
+    Failed { why: String },
 }
 
 /// The manifest's `workspace`: the URL schemes the runtime handles, and

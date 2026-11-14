@@ -2883,3 +2883,138 @@ fn copilot_reports_its_state_through_the_plugin_fleet_passes_at_launch() {
     end_agent(&sockets, &work);
     assert_eq!(snapshot(&hooks, &[]), before, "the user's hooks changed");
 }
+
+/// `fleet runtime browse` reads a place's folders through its runtime's
+/// `browse` verb: `local` and its id `mux/local` alike, the subdirectories
+/// by name, a git work tree marked. `fleet runtime branches` lists a
+/// repository's branches there with its default. Both only read.
+#[test]
+fn fleet_runtime_browse_and_branches_read_a_place_through_its_runtime() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("browse");
+    let env = mux_env("runtime-browse", &program, &sockets);
+    let dir = env.root.join("folders");
+    fs::create_dir_all(dir.join("plain")).expect("plain");
+    fs::create_dir_all(dir.join("repo")).expect("repo");
+    fs::write(dir.join("notes.txt"), "a file").expect("file");
+    let repo = dir.join("repo");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+    );
+    git(&repo, &["branch", "feat"]);
+    let want = serde_json::json!({
+        "dir": dir.display().to_string(),
+        "entries": [{"name": "plain", "repo": false}, {"name": "repo", "repo": true}],
+    });
+    for place in ["local", "mux/local"] {
+        let run = env.fleet(&["runtime", "browse", place, dir.to_str().unwrap(), "--json"]);
+        run.ok();
+        assert_eq!(run.json(), want, "{place}");
+    }
+    // With no directory, the place's home: the `HOME` the runtime runs
+    // with, the test's root, which holds `folders`.
+    let run = env.fleet(&["runtime", "browse", "local", "--json"]);
+    run.ok();
+    let home = run.json();
+    assert_eq!(home["dir"], env.root.display().to_string(), "{home}");
+    assert!(
+        home["entries"]
+            .as_array()
+            .is_some_and(|e| e.contains(&serde_json::json!({"name": "folders", "repo": false}))),
+        "{home}"
+    );
+    let text = env.fleet(&["runtime", "browse", "local", dir.to_str().unwrap()]);
+    text.ok().stdout_has("plain/").stdout_has("repo/  (git)");
+
+    let run = env.fleet(&[
+        "runtime",
+        "branches",
+        "local",
+        repo.to_str().unwrap(),
+        "--json",
+    ]);
+    run.ok();
+    assert_eq!(
+        run.json(),
+        serde_json::json!({"names": ["feat", "main"], "default": "main"})
+    );
+    env.fleet(&["runtime", "branches", "local", repo.to_str().unwrap()])
+        .ok()
+        .stdout_has("* main");
+
+    // What the runtime refuses is an error, with its why.
+    let missing = dir.join("absent");
+    env.fleet(&[
+        "runtime",
+        "browse",
+        "local",
+        missing.to_str().unwrap(),
+        "--json",
+    ])
+    .code(1)
+    .stderr_has("absent");
+    env.fleet(&[
+        "runtime",
+        "branches",
+        "local",
+        dir.join("plain").to_str().unwrap(),
+    ])
+    .code(1)
+    .stderr_has("no git repository");
+    // A place the config does not define is refused by name.
+    env.fleet(&["runtime", "browse", "mux/devbox", dir.to_str().unwrap()])
+        .code(1)
+        .stderr_has("no place mux/devbox");
+}
+
+/// A runtime whose manifest does not offer `browse` or `branches` is refused
+/// by name, and is not asked.
+#[test]
+fn a_runtime_without_browse_is_refused_by_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut env = Env::new("runtime-no-browse");
+    let log = env.root.join("calls");
+    let program = env.root.join("runtime.sh");
+    fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\necho \"$1\" >> '{}'\necho '{{\"known\":{{\"protocol\":2,\"verbs\":[\"manifest\",\"start\",\"inspect\",\"stop\"],\"places\":[{{\"name\":\"local\",\"platform\":\"posix\",\"dynamic\":false,\"ready\":true}}]}}}}'\n",
+            log.display()
+        ),
+    )
+    .expect("runtime");
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("chmod");
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.bare]\nprogram = '{}'\n",
+            program.display()
+        ),
+    )
+    .expect("config");
+    let home = env.root.to_string_lossy().into_owned();
+    env.set_var("HOME", &home);
+    env.fleet(&["runtime", "browse", "local", "/", "--json"])
+        .code(1)
+        .stderr_has("runtime bare does not offer browse");
+    env.fleet(&["runtime", "branches", "local", "/", "--json"])
+        .code(1)
+        .stderr_has("runtime bare does not offer branches");
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        calls.lines().all(|verb| verb == "manifest"),
+        "only the manifest is asked: {calls}"
+    );
+}
