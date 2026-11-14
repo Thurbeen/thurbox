@@ -458,12 +458,44 @@ pub fn load_rules(path: &Path) -> Result<Rules, String> {
     toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Every code a [`Violation`] can carry. docs/constitution.md's table of what
+/// `arch-rules` checks names each one, and a test holds it to that.
+pub const CODES: &[&str] = &[
+    "cli-method",
+    "cycle",
+    "missing-clippy-guard",
+    "missing-crate",
+    "missing-probe",
+    "module-cycle",
+    "module-edge",
+    "module-external",
+    "module-governed-grant",
+    "module-restricted",
+    "module-restricted-stale",
+    "module-ungoverned",
+    "module-unknown",
+    "module-unused",
+    "pure-external",
+    "pure-io",
+    "reexport-edge",
+    "restricted",
+    "restricted-scope",
+    "status-writer",
+    "undeclared-dev-edge",
+    "undeclared-edge",
+    "ungoverned-crate",
+    "unparsable",
+    "unreadable",
+    "unresolvable",
+];
+
 fn violation(
     code: &'static str,
     krate: &str,
     location: impl Into<String>,
     detail: impl Into<String>,
 ) -> Violation {
+    debug_assert!(CODES.contains(&code), "{code} is not in CODES");
     Violation {
         code,
         krate: krate.to_string(),

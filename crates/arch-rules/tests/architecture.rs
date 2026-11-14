@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use arch_rules::{Violation, Workspace, check, check_uncached, load_rules};
+use arch_rules::{CODES, Violation, Workspace, check, check_uncached, load_rules};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
@@ -2721,5 +2721,27 @@ fn a_renamed_workspace_dependency_is_the_crate_it_names() {
         "renamed-workspace-dep",
         &[("fixture.toml", root), ("crates/fx-ctl/fixture.toml", ctl)],
         &[("undeclared-edge", "fx-ctl")],
+    );
+}
+
+/// Every code the checker can report is in the constitution's table of what
+/// `arch-rules` checks, so a new check cannot land without its row.
+#[test]
+fn every_violation_code_is_in_the_constitution() {
+    let constitution = fs::read_to_string(repo_root().join("docs/constitution.md"))
+        .expect("read the constitution");
+    let start = constitution
+        .find("### What `arch-rules` checks")
+        .expect("the constitution has the table");
+    let section = &constitution[start..];
+    let section = &section[..section[4..].find("\n#").map_or(section.len(), |i| i + 4)];
+    let missing: Vec<&str> = CODES
+        .iter()
+        .copied()
+        .filter(|code| !section.contains(&format!("`{code}`")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "add these to docs/constitution.md: {missing:?}"
     );
 }
