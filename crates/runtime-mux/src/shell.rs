@@ -394,7 +394,7 @@ impl HostLauncher {
 ///
 /// Over ssh the tokens are re-split by the host's login shell, so each one is
 /// POSIX-quoted to arrive intact (a simple token passes unchanged); through
-/// WSL they go as they are, with `wsl.exe --exec`;
+/// WSL the same quoted line is one argument of `wsl.exe --exec sh -lc`;
 /// a native-Windows host's shell is not POSIX, see [`launch_on_windows`].
 /// Nothing is added: a multiplexer's own flags — tmux's `-L <socket>` among
 /// them — are its adapter's to write, so a launcher carries any adapter's
@@ -406,13 +406,24 @@ pub fn launch(launcher: Option<&HostLauncher>, program: &str, args: &[&str]) -> 
             cmd.args(args);
             cmd
         }
-        // `--exec` runs the program with no shell, so each word arrives as
-        // it is: without it `wsl.exe` hands the line to the distro's shell,
-        // which keeps the quotes `posix_quote` writes in a word holding a
-        // space, and `/my tools/x` would name another program.
+        // The command line goes to a login `sh` as one argument of
+        // `--exec`, which hands it over verbatim: inside it each word is
+        // POSIX-quoted, so `/my tools/x` names that program, and the login
+        // shell reads `~/.profile`, so a `PATH` set there (`~/.cargo/bin`)
+        // still finds it (`host_path` reads the same `sh -l`). Without
+        // `--exec`, `wsl.exe` hands the line to the distro's shell, which
+        // keeps those quotes; with the bare program after `--exec`, no
+        // shell would set that `PATH`.
         Some(launcher @ HostLauncher::Wsl { .. }) => {
+            let line: Vec<String> = std::iter::once(&program)
+                .chain(args)
+                .map(|word| posix_quote(word))
+                .collect();
             let mut cmd = launcher.command();
-            cmd.arg("--exec").arg(program).args(args);
+            cmd.arg("--exec")
+                .arg("sh")
+                .arg("-lc")
+                .arg(format!("exec {}", line.join(" ")));
             cmd
         }
         Some(launcher) => {

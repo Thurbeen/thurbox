@@ -446,12 +446,9 @@ mod tests {
             .copied()
             .chain([
                 "--exec",
-                "tmux",
-                "-L",
-                "thurbox",
-                "has-session",
-                "-t",
-                "thurbox",
+                "sh",
+                "-lc",
+                "exec tmux -L thurbox has-session -t thurbox",
             ])
             .collect();
         assert_eq!(args, expected);

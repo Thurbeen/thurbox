@@ -370,41 +370,42 @@ mod tests {
         );
     }
 
-    /// Through WSL every word reaches the distro as it is: `wsl.exe --exec`,
-    /// no shell and no quoting, so a path with a space names the program it
-    /// says. Over ssh the remote shell re-splits the line, so there each word
-    /// is quoted. Every call goes through one of these two: `command` (the
-    /// verbs, the watch, `run`) and `launch` (an attach's stream).
+    /// Through WSL the command line reaches a login `sh` as one argument
+    /// of `wsl.exe --exec`, verbatim: each word inside it quoted, so a path
+    /// with a space names the program it says, and `~/.profile` read, so a
+    /// bare `fleet` on a `PATH` set there still resolves. Every call goes
+    /// through it: `command` (the verbs, the watch, `run`) and `launch` (an
+    /// attach's stream).
     #[test]
-    fn a_wsl_fleet_gets_each_word_unquoted_through_exec() {
-        let link = FleetLink::of(
-            "ubuntu",
-            &FleetDef {
-                transport: FleetTransport::Wsl {
-                    wsl: "Ubuntu".into(),
+    fn a_wsl_fleet_gets_one_quoted_line_for_a_login_shell() {
+        let wsl = |program: &str, config: Option<&str>| {
+            FleetLink::of(
+                "ubuntu",
+                &FleetDef {
+                    transport: FleetTransport::Wsl {
+                        wsl: "Ubuntu".into(),
+                    },
+                    program: program.into(),
+                    config: config.map(str::to_string),
                 },
-                program: "/opt/my tools/fleet".into(),
-                config: Some("/etc/fleet/a b.toml".into()),
-            },
-        );
+            )
+        };
         let after_exec = |argv: Vec<String>| {
             assert_eq!(argv[0], "wsl.exe");
             assert_eq!(&argv[1..3], ["-d", "Ubuntu"]);
             let exec = argv.iter().position(|a| a == "--exec").expect("--exec");
             argv[exec + 1..].to_vec()
         };
+        let spaced = wsl("/opt/my tools/fleet", Some("/etc/fleet/a b.toml"));
         assert_eq!(
-            after_exec(argv(&link.command(&["send", "review", "it's done"]))),
+            after_exec(argv(&spaced.command(&["send", "review", "it's done"]))),
             [
-                "/opt/my tools/fleet",
-                "--config",
-                "/etc/fleet/a b.toml",
-                "send",
-                "review",
-                "it's done"
+                "sh",
+                "-lc",
+                "exec '/opt/my tools/fleet' --config '/etc/fleet/a b.toml' send review 'it'\\''s done'"
             ]
         );
-        let stream = link
+        let stream = spaced
             .launch(&[
                 "/srv/my apps/runtime-mux".into(),
                 "view".into(),
@@ -413,7 +414,12 @@ mod tests {
             .expect("a stream");
         assert_eq!(
             after_exec(argv(&stream)),
-            ["/srv/my apps/runtime-mux", "view", "w 1"]
+            ["sh", "-lc", "exec '/srv/my apps/runtime-mux' view 'w 1'"]
+        );
+        // A bare name is left for the login shell's `PATH` to find.
+        assert_eq!(
+            after_exec(argv(&wsl("fleet", None).command(&["version", "--json"]))),
+            ["sh", "-lc", "exec fleet version --json"]
         );
     }
 
