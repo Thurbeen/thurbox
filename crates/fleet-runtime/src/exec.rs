@@ -52,10 +52,11 @@ pub const REQUIRED_VERBS: &[&str] = &["manifest", "start", "inspect", "stop"];
 const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
 /// The calls one port operation can make: `spawn` is a `start`, and nothing
-/// makes more than two. A call to a runtime whose version this process does
-/// not know yet is a `manifest` first; the operations that already ask the
-/// manifest learn it there.
-const MAX_CALLS_PER_OPERATION: u32 = 2;
+/// makes more than three. A call to a runtime whose version this process
+/// does not know yet is a `manifest` first; the operations that already ask
+/// the manifest learn it there. A restart on another host is the most: the
+/// manifest, the signal file's length through `exec`, then `start`.
+const MAX_CALLS_PER_OPERATION: u32 = 3;
 
 /// How long one capture answers the screen probe: a session's screen rules
 /// are for a view, so a screen this recent is current enough, and a sweep
@@ -68,6 +69,23 @@ pub const SCREEN_REUSE: Duration = Duration::from_secs(2);
 /// so neither the newest report nor the line between the two is cut.
 const PLACE_READ_BEFORE: u64 = 256 * 1024;
 const PLACE_READ_AFTER: u64 = 512 * 1024;
+
+/// The `sh` script that reads a place's signal file, `$1` (`~`-rooted), in
+/// two parts split by [`RESTART_SPLIT`]: the end of what it held before the
+/// offset `$2`, and the end of what came after. Each part is a byte range
+/// computed from the file's length first: `tail -c +N` seeks to it, and a
+/// read never scans more of the file than the two ranges.
+fn place_read_script() -> String {
+    format!(
+        "f=\"$HOME/${{1#\\~/}}\"; [ -e \"$f\" ] || exit 3; n=$(wc -c < \"$f\"); \
+         o=${{2:-0}}; [ \"$n\" -lt \"$o\" ] && o=0; \
+         s=$((o > {PLACE_READ_BEFORE} ? o - {PLACE_READ_BEFORE} : 0)); \
+         [ \"$o\" -gt \"$s\" ] && tail -c +$((s + 1)) \"$f\" | head -c $((o - s)); \
+         printf '\\n{RESTART_SPLIT}\\n'; \
+         a=$((n - o > {PLACE_READ_AFTER} ? n - {PLACE_READ_AFTER} : o)); \
+         tail -c +$((a + 1)) \"$f\" | head -c {PLACE_READ_AFTER}"
+    )
+}
 
 /// What a restart learns of the length of the session's signal file on
 /// another host.
@@ -819,13 +837,7 @@ impl ExecRuntime {
         // the end of what came after, whose last state is the session's. A
         // file shorter than `since` was made again: all of it came after.
         // Exit 3 is a file never written.
-        let script = format!(
-            "f=\"$HOME/${{1#\\~/}}\"; [ -e \"$f\" ] || exit 3; n=$(wc -c < \"$f\"); \
-             o=${{2:-0}}; [ \"$n\" -lt \"$o\" ] && o=0; \
-             head -c \"$o\" \"$f\" | tail -c {PLACE_READ_BEFORE}; \
-             printf '\\n{RESTART_SPLIT}\\n'; \
-             tail -c +$((o + 1)) \"$f\" | tail -c {PLACE_READ_AFTER}"
-        );
+        let script = place_read_script();
         let offset = since.map(|o| o.to_string()).unwrap_or_default();
         let fold = |text: &str| {
             let (before, after) = text.split_once(RESTART_SPLIT).unwrap_or(("", text));
@@ -2023,6 +2035,70 @@ mod tests {
         .expect("script");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         ExecProgram::new("test", script.to_string_lossy())
+    }
+
+    /// A read of a place's signal file costs its two bounded ranges, never
+    /// the whole file: a file of 16 GiB, mostly a hole, around a restart
+    /// offset in its middle, reads at once, under `exec`'s cap, with the
+    /// newest report last.
+    #[cfg(unix)]
+    #[test]
+    fn a_place_signal_read_never_scans_the_whole_file() {
+        use std::io::{Seek, SeekFrom, Write};
+        let home = std::env::temp_dir().join(format!("fleet-exec-read-{}", std::process::id()));
+        let dir = home.join("signals");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("k.jsonl");
+        let mut f = std::fs::File::create(&path).expect("file");
+        let half: u64 = 8 * 1024 * 1024 * 1024;
+        f.write_all(b"{\"at\":1,\"state\":\"idle\"}\n")
+            .expect("old");
+        f.seek(SeekFrom::Start(half)).expect("seek");
+        f.write_all(b"\n").expect("line");
+        let offset = f.stream_position().expect("offset");
+        f.seek(SeekFrom::Start(2 * half)).expect("seek");
+        f.write_all(b"\n{\"at\":2,\"state\":\"working\"}\n")
+            .expect("new");
+        drop(f);
+        let started = Instant::now();
+        let mut spec = Spec::new("sh", Duration::from_secs(30))
+            .args(["-c", &place_read_script(), "sh", "~/signals/k.jsonl"])
+            .arg(offset.to_string());
+        spec.env
+            .push(("HOME".into(), home.to_string_lossy().into_owned()));
+        let out = fleet_exec::run(&spec);
+        let took = started.elapsed();
+        let _ = std::fs::remove_dir_all(&home);
+        let Outcome::Exited {
+            code: Some(0),
+            stdout,
+            ..
+        } = out
+        else {
+            panic!("the read failed: {}", out.failure());
+        };
+        assert!(took < Duration::from_secs(2), "the read took {took:?}");
+        assert!(stdout.len() < 1024 * 1024, "{} bytes", stdout.len());
+        let text = String::from_utf8_lossy(&stdout);
+        let (before, after) = text.split_once(RESTART_SPLIT).expect("the split");
+        let r = Reported::fold_restarted(before, after);
+        assert_eq!(r.state, Some(State::Working));
+    }
+
+    /// A restart on another host is three calls: the manifest, the file's
+    /// length through `exec`, then `start`. The lease covers all three.
+    #[test]
+    fn the_operation_bound_covers_a_remote_restart() {
+        let mut rt = ExecProgram::new("mux", "runtime-mux");
+        rt.call_timeout = Duration::from_secs(10);
+        rt.workspace_timeout = Duration::from_millis(1);
+        let runtime = ExecRuntime::new(BTreeMap::from([("mux/box".to_string(), rt)]));
+        let three = fleet_exec::worst_case(Duration::from_secs(10)) * 3;
+        assert!(
+            u128::from(runtime.operation_bound()) >= three.as_millis(),
+            "{} ms",
+            runtime.operation_bound()
+        );
     }
 
     #[test]

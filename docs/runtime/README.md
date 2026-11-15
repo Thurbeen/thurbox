@@ -365,7 +365,12 @@ Fleet:  runtime exec: the end of <that file> ──▶ fold ──▶ session st
   whole.
 - One read takes the last 256 KiB before that length, for the prompts and
   the conversation, and the last 512 KiB after it, for the state. Both stay
-  under `exec`'s 1 MiB cap, so the newest report is never cut.
+  under `exec`'s 1 MiB cap, so the newest report is never cut. Each range is
+  computed from the file's length first and read by seeking to it, so a
+  read never scans the whole file.
+- A restart on a remote place is three runtime calls: the manifest, the
+  length through `exec`, then `start`. The manager's lease covers three
+  calls per operation.
 - When the length read does not answer, Fleet starts nothing and asks
   again on the next pass. When the runtime cannot read the file at all (no
   `exec`, or a place where `exec` fails, such as native Windows), Fleet
