@@ -48,7 +48,7 @@ poster: asciinema records the real TUI and agg rasterises the cast. Doom is a **
 [`thurbox-doom`](https://github.com/Thurbeen/thurbox-doom) into the throwaway
 interface directory, seeds the `program` grant the settings modal would have written
 (trust is a decision made *in* a running interface, so there is deliberately no CLI
-for it), and presses `f7`. Everything the clip keeps is timed from that press, so
+for it), and presses `f5`. Everything the clip keeps is timed from that press, so
 read the phase comments before changing any of the numbers — including which frame
 becomes the poster, since Doom flashes the whole view red when the player is hit.
 
