@@ -55,7 +55,7 @@
 //!
 //! ```compile_fail
 //! // ...nor the telemetry exporter.
-//! use fleet_telemetry::Telemetry;
+//! use otel_env::Telemetry;
 //! ```
 //!
 //! The positive control: the port types it decides over are in scope.

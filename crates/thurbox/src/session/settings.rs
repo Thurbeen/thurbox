@@ -69,9 +69,6 @@ pub struct Settings {
     /// copy-on-select on.
     #[serde(default)]
     pub clipboard: ClipboardSettings,
-    /// OpenTelemetry settings (`[telemetry]` table). Off by default.
-    #[serde(default)]
-    pub telemetry: TelemetrySettings,
     /// The Fleets that manage sessions (`[fleets.<name>]` tables). None
     /// listed: the one on this machine, [`IMPLIED_FLEET`] ([`Self::fleets`]).
     #[serde(default, deserialize_with = "fleet_names")]
@@ -90,20 +87,8 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
     ("remote", "thurbox lists no sessions through other hosts"),
     ("features.soft_delete", "Fleet deletes a session at once"),
     (
-        "telemetry.configure_agents",
-        "Fleet's harness profiles configure the agents",
-    ),
-    (
-        "telemetry.export_thurbox_metrics",
-        "thurbox exports no session metrics",
-    ),
-    (
-        "telemetry.export_session_events",
-        "thurbox exports no session events",
-    ),
-    (
-        "telemetry.per_session",
-        "thurbox exports no session metrics",
+        "telemetry",
+        "the standard OTEL_* environment variables configure telemetry",
     ),
     (
         "audit_retention_days",
@@ -346,68 +331,6 @@ impl Settings {
     /// of [`Self::fleets`] by name.
     pub fn fleet_in_force(&self) -> (String, FleetDef) {
         self.fleets().swap_remove(0)
-    }
-}
-
-/// OpenTelemetry for the interface itself (`[telemetry]` table): its own
-/// WARN-and-above diagnostic logs, bridged to an OTLP collector (ADR-38).
-/// The agents' telemetry is Fleet's: thurbox spawns no agent (ADR-41).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TelemetrySettings {
-    /// Master switch.
-    #[serde(default)]
-    pub enabled: bool,
-    /// OTLP base URL (`OTEL_EXPORTER_OTLP_ENDPOINT`).
-    #[serde(default = "default_otlp_endpoint")]
-    pub endpoint: String,
-    /// OTLP protocol (`OTEL_EXPORTER_OTLP_PROTOCOL`).
-    #[serde(default = "default_otlp_protocol")]
-    pub protocol: String,
-    /// OTLP request headers (`OTEL_EXPORTER_OTLP_HEADERS`), e.g. a hosted
-    /// backend's auth token.
-    #[serde(default)]
-    pub headers: std::collections::BTreeMap<String, String>,
-    /// Bridge the interface's own WARN-and-above `tracing` events to the
-    /// collector (ADR-38). Restart-only: the subscriber is built once, at
-    /// boot. Off by default — it serves debugging thurbox itself.
-    #[serde(default)]
-    pub export_diagnostic_logs: bool,
-}
-
-fn default_otlp_endpoint() -> String {
-    "http://localhost:4318".into()
-}
-fn default_otlp_protocol() -> String {
-    "http/protobuf".into()
-}
-
-impl Default for TelemetrySettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            endpoint: default_otlp_endpoint(),
-            protocol: default_otlp_protocol(),
-            headers: Default::default(),
-            export_diagnostic_logs: false,
-        }
-    }
-}
-
-impl TelemetrySettings {
-    /// Whether the interface bridges its diagnostic logs to the collector.
-    pub fn exports_diagnostic_logs(&self) -> bool {
-        self.enabled && self.export_diagnostic_logs
-    }
-
-    /// Whether the interface's diagnostic-log bridge, built once at boot,
-    /// would be built differently from `other`. The rest of the table is live.
-    fn diagnostic_bridge_differs(&self, other: &Self) -> bool {
-        let on = self.exports_diagnostic_logs();
-        on != other.exports_diagnostic_logs()
-            || (on
-                && (self.endpoint != other.endpoint
-                    || self.protocol != other.protocol
-                    || self.headers != other.headers))
     }
 }
 
@@ -702,14 +625,6 @@ pub const FIELDS: &[Field] = &[
     field!(Live, clipboard),
     // The engine's source and executor are chosen once, at boot (ADR-41).
     field!(NextLaunch, fleets),
-    // Feeds only the diagnostic-log bridge, built once at boot (ADR-38), so
-    // only a change to how that bridge would be built needs a restart.
-    Field {
-        key: "telemetry",
-        applies: Applies::NextLaunch,
-        differs: |a, b| a.telemetry.diagnostic_bridge_differs(&b.telemetry),
-        take: |into, from| into.telemetry = from.telemetry.clone(),
-    },
 ];
 
 impl Settings {
@@ -745,7 +660,6 @@ impl Default for Settings {
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),
-            telemetry: TelemetrySettings::default(),
             fleets: BTreeMap::new(),
         }
     }
@@ -997,26 +911,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_diagnostic_log_bridge_makes_telemetry_restart_only() {
-        let off = Settings::default();
-        let mut moved = off.clone();
-        moved.telemetry.enabled = true;
-        moved.telemetry.endpoint = "http://collector:4318".into();
-        assert!(
-            !off.restart_only_differs(&moved),
-            "spawns and ticks read [telemetry] live"
-        );
-
-        let mut bridged = moved.clone();
-        bridged.telemetry.export_diagnostic_logs = true;
-        assert!(moved.restart_only_differs(&bridged));
-
-        let mut elsewhere = bridged.clone();
-        elsewhere.telemetry.endpoint = "http://other:4318".into();
-        assert!(bridged.restart_only_differs(&elsewhere));
-    }
-
-    #[test]
     fn every_feature_flag_is_classified_restart_or_live() {
         // Destructuring WITHOUT `..` makes a newly-added feature flag fail to
         // compile here until it is explicitly classified below — the safety net
@@ -1105,7 +999,6 @@ mod tests {
              perf_hud = false\nmouse = false\nnotifications = false\n\
              version_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
-             [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n\
              [fleets.box]\nprogram = \"/opt/fleet\"\n",
         )
         .unwrap();

@@ -136,8 +136,9 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
         assert!(span.resource.contains_key("service.version"), "{span:#?}");
     }
 
-    // A reconcile pass is a child of its command, an object's reconcile a
-    // child of its pass, and an effect a child of its object's reconcile.
+    // A reconcile pass is a child of its command. An object's reconcile is
+    // in the object's own trace and links to its pass, and an effect is a
+    // child of its object's reconcile.
     let reconciles = named(&spans, "reconcile Task");
     assert!(!reconciles.is_empty(), "{:#?}", names(&spans));
     let first = reconciles[0];
@@ -149,7 +150,7 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
     assert!(first.attrs.contains_key("fleet.outcome"), "{first:#?}");
     let pass = spans
         .iter()
-        .find(|s| s.span_id == first.parent)
+        .find(|s| first.links.contains(&s.span_id))
         .expect("the object's pass");
     assert_eq!(pass.name, "reconcile pass");
     let command = spans
@@ -157,7 +158,13 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
         .find(|s| s.span_id == pass.parent)
         .expect("the pass's command");
     assert_eq!(command.name, "fleet reconcile");
-    assert_eq!(command.trace_id, first.trace_id);
+    assert_eq!(command.trace_id, pass.trace_id);
+    // Every reconcile of the Task, over every command, is one trace.
+    assert!(
+        reconciles.iter().all(|r| r.trace_id == first.trace_id),
+        "{reconciles:#?}"
+    );
+    assert_ne!(first.trace_id, command.trace_id);
 
     for (kind, outcome) in [
         ("spawn", "spawned"),
@@ -420,4 +427,30 @@ fn a_spawned_session_does_not_inherit_the_managers_otel_identity() {
         ],
         "the Task's own OTEL_*, and none of the manager's"
     );
+}
+
+/// A caller's TRACEPARENT, as thurbox passes it, makes the command's root
+/// span its child; a malformed one is ignored and the command is a root.
+#[test]
+fn a_command_joins_the_trace_its_caller_names_in_traceparent() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-traceparent");
+    exporting(&mut env, &collector.endpoint);
+    env.set_var(
+        "TRACEPARENT",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    );
+    env.apply(task("t1", true)).ok();
+    env.set_var("TRACEPARENT", "not a traceparent");
+    env.fleet(&["get", "Task", "t1"]).ok();
+
+    let spans = collector.spans();
+    let apply = named(&spans, "fleet apply");
+    assert_eq!(apply.len(), 1, "{:#?}", names(&spans));
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    assert_eq!(hex(&apply[0].trace_id), "4bf92f3577b34da6a3ce929d0e0e4736");
+    assert_eq!(hex(&apply[0].parent), "00f067aa0ba902b7");
+    let get = named(&spans, "fleet get");
+    assert_eq!(get.len(), 1, "{:#?}", names(&spans));
+    assert!(get[0].parent.is_empty(), "{:#?}", get[0]);
 }

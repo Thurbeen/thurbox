@@ -31,6 +31,8 @@ pub struct Span {
     pub trace_id: Vec<u8>,
     pub span_id: Vec<u8>,
     pub parent: Vec<u8>,
+    /// The span ids of the spans it links to.
+    pub links: Vec<Vec<u8>>,
     pub error: bool,
     pub attrs: Attrs,
     pub resource: Attrs,
@@ -90,6 +92,7 @@ impl Collector {
                             trace_id: s.trace_id,
                             span_id: s.span_id,
                             parent: s.parent_span_id,
+                            links: s.links.iter().map(|l| l.span_id.clone()).collect(),
                             error: s.status.is_some_and(|st| st.code == 2),
                             attrs: attrs(&s.attributes),
                             resource: resource.clone(),

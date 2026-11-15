@@ -136,10 +136,24 @@ const MUX_NESTING_ENV: &[&str] = &[
 
 /// Remove the multiplexer-nesting env vars (see [`MUX_NESTING_ENV`]) from `cmd`
 /// so a multiplexer subcommand never inherits an outer pane's target context.
+/// The telemetry variables go too: the server a subcommand starts hands its
+/// environment to every window, and the caller's `OTEL_*` identity and
+/// `TRACEPARENT` are not a session's (docs/observability.md).
 pub(crate) fn strip_mux_nesting_env(cmd: &mut Command) {
     for var in MUX_NESTING_ENV {
         cmd.env_remove(var);
     }
+    for (var, _) in std::env::vars_os() {
+        if is_telemetry_var(&var.to_string_lossy()) {
+            cmd.env_remove(var);
+        }
+    }
+}
+
+/// Whether `var` configures or carries telemetry for the process that holds
+/// it: an `OTEL_*` variable, or W3C trace context.
+fn is_telemetry_var(var: &str) -> bool {
+    var.starts_with("OTEL_") || var == "TRACEPARENT" || var == "TRACESTATE"
 }
 
 impl TmuxTransport {
@@ -477,6 +491,21 @@ mod tests {
                 removed.contains(&var.to_string()),
                 "expected nesting env `{var}` to be removed"
             );
+        }
+    }
+
+    #[test]
+    fn only_the_telemetry_variables_are_telemetry() {
+        for var in [
+            "OTEL_SERVICE_NAME",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "TRACEPARENT",
+            "TRACESTATE",
+        ] {
+            assert!(is_telemetry_var(var), "{var}");
+        }
+        for var in ["PATH", "HOTEL_X", "TRACEPARENTS", "TMUX_TMPDIR"] {
+            assert!(!is_telemetry_var(var), "{var}");
         }
     }
 

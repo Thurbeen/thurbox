@@ -213,11 +213,19 @@ impl ExecProgram {
     }
 
     fn call_raw(&self, verb: &str, request: Vec<u8>) -> Answer {
+        let call = crate::telemetry::Call::start(&self.name, verb);
+        let answer = self.answer(verb, request);
+        call.end(matches!(answer, Answer::Known(_)));
+        answer
+    }
+
+    fn answer(&self, verb: &str, request: Vec<u8>) -> Answer {
         let mut spec = Spec::new(&self.program, self.timeout(verb))
             .args(&self.args)
             .arg(verb)
             .stdin(request);
         spec.output_limit = Some(ANSWER_CAP);
+        crate::telemetry::carry(&mut spec);
         let out = fleet_exec::run(&spec);
         let Outcome::Exited {
             code: Some(0),

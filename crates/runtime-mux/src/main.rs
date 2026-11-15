@@ -23,13 +23,40 @@ fn main() {
         }
         return;
     }
+    // Each verb is one span, `runtime-mux VERB`, under the caller's
+    // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
+    // A view runs as long as a viewer watches, so it records nothing.
+    let telemetry =
+        otel_env::init("runtime-mux", env!("CARGO_PKG_VERSION"), &[]).unwrap_or_else(|why| {
+            eprintln!("warning: telemetry is off: {why}");
+            otel_env::Telemetry::default()
+        });
+    let answer = {
+        let root = otel_env::root(
+            "runtime-mux",
+            format!("runtime-mux {verb}"),
+            vec![otel_env::KeyValue::new("runtime.verb", verb.clone())],
+        );
+        let answer = serve(&verb);
+        let known = answer.get("known").is_some();
+        root.set(otel_env::KeyValue::new(
+            "runtime.outcome",
+            if known { "known" } else { "unknown" },
+        ));
+        if !known {
+            root.fail("unknown".into());
+        }
+        answer
+    };
+    telemetry.shutdown();
+    println!("{answer}");
+}
+
+/// Answer one protocol verb with the request on stdin.
+fn serve(verb: &str) -> serde_json::Value {
     let mut request = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut request) {
-        println!(
-            "{}",
-            serde_json::json!({ "unknown": { "why": format!("cannot read the request: {e}") } })
-        );
-        return;
+        return serde_json::json!({ "unknown": { "why": format!("cannot read the request: {e}") } });
     }
     let socket = std::env::var(SOCKET_ENV)
         .ok()
@@ -42,7 +69,7 @@ fn main() {
     // first clone, setup steps), so it holds only its key's lock, never the
     // server's. A stop that releases the workspace takes the key's lock
     // first, then the server's: no call takes them the other way round.
-    let key_lock = match verb.as_str() {
+    let key_lock = match verb {
         "workspace" => true,
         "stop" => released(&request),
         _ => false,
@@ -52,10 +79,7 @@ fn main() {
         if let Some(key) = request_key(&request) {
             match take(&format!("runtime-mux-{socket}.key-{key}.lock")) {
                 Ok(file) => _key_turn = Some(file),
-                Err(answer) => {
-                    println!("{answer}");
-                    return;
-                }
+                Err(answer) => return answer,
             }
         }
     }
@@ -65,13 +89,10 @@ fn main() {
     // A shell call makes the key's shell window the way a start makes its
     // agent's, so it takes the same turn.
     // A pause stops the process as a stop does.
-    if matches!(verb.as_str(), "start" | "stop" | "shell" | "pause") {
+    if matches!(verb, "start" | "stop" | "shell" | "pause") {
         match take(&format!("runtime-mux-{socket}.lock")) {
             Ok(file) => server_turn = Some(file),
-            Err(answer) => {
-                println!("{answer}");
-                return;
-            }
+            Err(answer) => return answer,
         }
     }
     let pauses = pauses(&socket);
@@ -83,13 +104,13 @@ fn main() {
     let answer = protocol::serve_with(
         registry.default_backend().as_ref(),
         &pauses,
-        &verb,
+        verb,
         &request,
         &view_argv(&settings),
         &mut || drop(server_turn.take()),
     );
     registry.shutdown_all();
-    println!("{answer}");
+    answer
 }
 
 /// The lock file `name`, or the Unknown answer when it cannot be taken.

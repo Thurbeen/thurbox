@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 fleet-api.workspace = true
 fleet-exec.workspace = true
+opentelemetry.workspace = true
+otel-env.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 term-stream.workspace = true

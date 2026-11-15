@@ -203,9 +203,16 @@ impl Workspaces {
         }
     }
 
-    /// One `workspace-git <verb>` call.
+    /// One `workspace-git <verb>` call, under the current span: its root
+    /// span joins this call's trace, and it names itself.
     fn call(&self, verb: &str, request: &Value) -> Result<Value, Call> {
-        let mut child = Command::new(&self.program)
+        let mut cmd = Command::new(&self.program);
+        cmd.env_remove("OTEL_SERVICE_NAME")
+            .env_remove(otel_env::TRACEPARENT);
+        if let Some(parent) = otel_env::traceparent() {
+            cmd.env(otel_env::TRACEPARENT, parent);
+        }
+        let mut child = cmd
             .arg(verb)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -1,0 +1,23 @@
+[package]
+name = "otel-env"
+description = "OpenTelemetry export from the standard OTEL_* variables, the same in every program: off unless they name a collector."
+version = "0.0.0-dev"
+# thurbox and runtime-mux depend on it, so it builds on their edition and
+# MSRV as well as Fleet's.
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/Thurbeen/thurbox"
+publish = false
+
+[dependencies]
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+
+[features]
+# The logs signal, for the one program that records logs: thurbox.
+logs = ["opentelemetry/logs", "opentelemetry_sdk/logs", "opentelemetry-otlp/logs"]
+
+[lints]
+workspace = true

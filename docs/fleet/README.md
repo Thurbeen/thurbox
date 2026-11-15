@@ -210,7 +210,7 @@ running:
 | --- | --- |
 | [architecture.md](architecture.md) | The crates, their boundaries and ports, persistence, workspaces, views |
 | [contracts.md](contracts.md) | What each part guarantees, and which tests hold it to that |
-| [configuration.md](configuration.md) | `fleet init`, `fleet up`, every `fleet.toml` field, the environment file, OpenTelemetry export |
+| [configuration.md](configuration.md) | `fleet init`, `fleet up`, every `fleet.toml` field, the environment file |
 | [integration.md](integration.md) | `fleet integration`: the hooks Fleet installs for an agent that takes none at launch |
 | [plugins.md](plugins.md) | Write a plugin: a new kind and its controller, step by step, with a working example |
 | [signal-contract.md](signal-contract.md) | For an agent vendor: how an agent reports its state through `fleet signal` |

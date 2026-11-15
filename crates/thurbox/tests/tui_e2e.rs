@@ -833,10 +833,10 @@ fn a_signal_restores_the_terminal_before_exiting() {
 
 // --- diagnostic logs over OTLP ---------------------------------------------
 
-/// `export_diagnostic_logs` bridges the interface's own `tracing` events to the
-/// collector, at WARN and above only, while the file log keeps everything
-/// (ADR-38, issue #1465 phase 3). The WARN comes from the interface's first
-/// read of a `settings.toml` with a key it does not know.
+/// The standard OTEL_* variables bridge the interface's own `tracing` events
+/// to the collector, at WARN and above only, while the file log keeps
+/// everything (ADR-38, docs/observability.md). The WARN comes from the
+/// interface's first read of a `settings.toml` with a key it does not know.
 #[test]
 fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
@@ -847,19 +847,18 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     let settings = profile.path("config/settings.toml");
     let mut seeded = std::fs::read_to_string(&settings).expect("read settings");
     seeded.insert_str(0, "stray_key = 1\n");
-    seeded.push_str(&format!(
-        "\n[telemetry]\nenabled = true\nendpoint = \"{}\"\nexport_diagnostic_logs = true\n",
-        collector.endpoint()
-    ));
     std::fs::write(&settings, seeded).expect("write settings");
 
     let mut tui = Tui::spawn_with(&profile, 24, 80, |cmd| {
-        // A suite run inside a session with [telemetry] on inherits these.
+        // A suite run where telemetry is on inherits these.
         for (key, _) in std::env::vars() {
             if key.starts_with("OTEL_") {
                 cmd.env_remove(key);
             }
         }
+        cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint());
+        cmd.env("OTEL_TRACES_EXPORTER", "none");
+        cmd.env("OTEL_METRICS_EXPORTER", "none");
     });
     tui.wait_for("No sessions yet");
 

@@ -91,10 +91,29 @@ fn answer(verb: &str, request: &[u8]) -> Value {
 
 fn main() {
     let verb = std::env::args().nth(1).unwrap_or_default();
-    let mut request = Vec::new();
-    let out = match std::io::stdin().read_to_end(&mut request) {
-        Ok(_) => answer(&verb, &request),
-        Err(e) => unknown(format!("cannot read the request: {e}")),
+    // Each call is one span, `workspace-git VERB`, under the caller's
+    // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
+    let telemetry =
+        otel_env::init("workspace-git", env!("CARGO_PKG_VERSION"), &[]).unwrap_or_else(|why| {
+            eprintln!("warning: telemetry is off: {why}");
+            otel_env::Telemetry::default()
+        });
+    let out = {
+        let root = otel_env::root(
+            "workspace-git",
+            format!("workspace-git {verb}"),
+            vec![otel_env::KeyValue::new("workspace.verb", verb.clone())],
+        );
+        let mut request = Vec::new();
+        let out = match std::io::stdin().read_to_end(&mut request) {
+            Ok(_) => answer(&verb, &request),
+            Err(e) => unknown(format!("cannot read the request: {e}")),
+        };
+        if out.get("unknown").is_some() {
+            root.fail("unknown".into());
+        }
+        out
     };
+    telemetry.shutdown();
     println!("{out}");
 }
