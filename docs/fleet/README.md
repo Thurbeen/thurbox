@@ -74,12 +74,13 @@ until it has its row here.
 
 | Kind | What it is for | Who writes the spec | Who writes the status |
 | --- | --- | --- | --- |
-| [Task](resources/task.md) | One agent session doing one brief on one place. | You, with `fleet apply`; `fleet amend` appends to `amendments`. ConversationController, for a chat thread that starts a Task. | TaskController, except the fields in [Who owns a Task's status](#who-owns-a-tasks-status). |
+| [Task](resources/task.md) | One agent session doing one brief on one place. | You, with `fleet apply`; `fleet amend` appends to `amendments`. ConversationController, for a chat thread that starts a Task. CronTaskController, at each scheduled time. | TaskController, except the fields in [Who owns a Task's status](#who-owns-a-tasks-status). |
 | [TaskConfig](resources/task-config.md) | Execution defaults that Tasks share: harness, place, model, environment, idle pause. | You, with `fleet apply`. | Nobody: it has no controller. |
 | [EnvProvider](resources/env-provider.md) | Environment values for a launch: stored data, a file or a command. | You, with `fleet apply`. | Nobody: it has no controller. |
 | [ChangeRequest](resources/change-request.md) | A mirror of one change on a forge (a pull or merge request), numbered so that a reader diffs it with one integer. | The worker, with `fleet declare --change-request URL`; or you, with `fleet apply`. | ChangeRequestController. |
 | [Conversation](resources/conversation.md) | A mirror of one chat thread, and the Task that the thread is tied to. | The account's listener, with `fleet gateway receive`; GatewayController, for a thread that Fleet opens; or you, with `fleet apply`. | ConversationController. The listener spools deliveries on `received`. |
 | [Listener](resources/listener.md) | The inbound health of one chat account. | The manager, one per `[gateway.accounts]` entry, or `fleet gateway receive` at a first beat. `fleet apply` refuses it. | ListenerController. The listener records `beats`, `refused` and `beatRevision`. |
+| [CronTask](resources/cron-task.md) | A Task created from a template at each time of a cron schedule, like a Kubernetes CronJob. | You, with `fleet apply`. | CronTaskController. |
 | [Plugin kinds](resources/plugin-kinds.md) | Kinds that a registered plugin defines and reconciles. [Write a plugin](plugins.md) shows how. | You, with `fleet apply`; the plugin, through its plan. | The plugin, as `plugin/<name>`, through the manager. |
 
 A Session is not a kind. It is the running agent that a Task owns, from
@@ -110,6 +111,7 @@ effect.
 | [ForgeController](controllers/forge.md) | A Task's `status.declared`, and the ChangeRequests it names. | Relays new review feedback into the Task's inbox. Takes a draft out of draft when its ready policy holds. | Task `status.forge`; inbox entries. |
 | [ConversationController](controllers/gateway.md#conversationcontroller) | A Conversation's spool; the thread through the gateway port; its tied Task. | Numbers new messages, creates the Task that a thread starts, posts a refusal or a busy notice. Deletes the object when its retention ends. | Conversation status; a new Task. |
 | [ListenerController](controllers/gateway.md#listenercontroller) | A Listener's beats and refusals; the account through the gateway port. | Says whether the account's listener is alive. Deletes the object when the account leaves the config. | Listener status. |
+| [CronTaskController](controllers/cron-task.md) | A CronTask; the Tasks that carry its uid label. | Creates a Task at each scheduled time, unless the CronTask is suspended, the time is past its deadline, or its policy forbids it. Deletes the Concluded Tasks beyond its history limit. | CronTask status; a new Task. |
 | [GatewayController](controllers/gateway.md#gatewaycontroller) | A Task tied to a Conversation; its child Tasks. | Relays the thread into the Task's inbox. Posts the worker's declarations, logs and reactions to the thread. | Task `status.gateway`; inbox entries. |
 | [Plugin controller](controllers/plugin.md) | The objects of a plugin kind. | Asks the plugin program what to probe and what to plan. A pure gate admits the plan. | The plugin kind's status, as `plugin/<name>`. |
 

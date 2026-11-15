@@ -184,6 +184,16 @@ pub enum Action {
         name: String,
         uid: String,
     },
+    /// Delete a Task a CronTask created, through the store, fenced on its
+    /// `uid`: only a Task carrying the CronTask's uid label, and only while
+    /// it is Concluded unless `running` (the Replace policy). Its finalizer
+    /// then releases its session. CronTaskController asks.
+    RetireScheduled {
+        name: String,
+        uid: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        running: bool,
+    },
     /// Remove the thread's directory `path` on `host`, through the runtime
     /// port: only the directory the manager recorded making for the thread,
     /// and only while no Task names it. ConversationController asks, as a
@@ -232,6 +242,7 @@ impl Action {
             Action::React { .. } => "react",
             Action::DeleteTask { .. } => "deleteTask",
             Action::RemoveDir { .. } => "removeDir",
+            Action::RetireScheduled { .. } => "retireScheduled",
         }
     }
 }

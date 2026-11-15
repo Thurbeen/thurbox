@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::change_request::{self, ChangeRequestSpec};
 use crate::config::{ENV_PROVIDER, EnvProviderSpec, EnvSource, TASK_CONFIG, TaskConfigSpec};
 use crate::conversation::{self, ConversationSpec};
+use crate::cron_task::{self, CronTaskSpec};
 use crate::gateway::ConversationRef;
 use crate::kinds::is_served;
 use crate::listener::{self, ListenerSpec};
@@ -52,6 +53,13 @@ pub fn validate_object(obj: &Object) -> Result<(), StoreError> {
     }
     validate_kind(&obj.kind)?;
     validate_name(&obj.metadata.name)?;
+    // Each Task it creates is named `<name>-<minutes since the epoch>`.
+    if obj.kind == cron_task::KIND && obj.metadata.name.len() > 240 {
+        return Err(StoreError::Invalid(format!(
+            "name {:?}: a CronTask's name is at most 240 characters, so its Tasks' names fit",
+            obj.metadata.name
+        )));
+    }
     for o in &obj.metadata.owner_references {
         validate_name(&o.name)?;
     }
@@ -106,6 +114,7 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
             let s: ListenerSpec = typed(kind, spec)?;
             return validate_name(&s.account);
         }
+        cron_task::KIND => return validate_cron_task_spec(spec),
         _ => {}
     }
     let s: TaskSpec = typed(kind, spec)?;
@@ -184,6 +193,35 @@ pub fn validate_amendments(s: &TaskSpec) -> Result<(), StoreError> {
         }
     }
     Ok(())
+}
+
+/// A CronTask's schedule parses, its limits fit, and its template is a Task
+/// `fleet apply` would take, with none of the labels only a controller sets.
+fn validate_cron_task_spec(spec: &Value) -> Result<(), StoreError> {
+    let s: CronTaskSpec = typed(cron_task::KIND, spec)?;
+    cron_task::Schedule::parse(&s.schedule).map_err(StoreError::Invalid)?;
+    if s.history_limit
+        .is_some_and(|n| n > cron_task::MAX_HISTORY_LIMIT)
+    {
+        return Err(StoreError::Invalid(format!(
+            "spec.historyLimit: at most {}",
+            cron_task::MAX_HISTORY_LIMIT
+        )));
+    }
+    if s.starting_deadline_seconds == Some(0) {
+        return Err(StoreError::Invalid(
+            "spec.startingDeadlineSeconds: leave it out, or give at least 1".into(),
+        ));
+    }
+    for label in s.template.metadata.labels.keys() {
+        if cron_task::is_controller_label(label) || conversation::is_controller_label(label) {
+            return Err(StoreError::Invalid(format!(
+                "spec.template.metadata.labels: {label} is set only by a controller"
+            )));
+        }
+    }
+    validate_spec(task::KIND, &s.template.spec)
+        .map_err(|e| StoreError::Invalid(format!("spec.template.spec: {e}")))
 }
 
 /// A Task's spec is fixed once created, like a Pod's: only `dispatch` and
@@ -273,6 +311,9 @@ pub fn validate_status(kind: &str, status: &Value) -> Result<(), StoreError> {
         listener::KIND => serde_json::from_value::<listener::ListenerStatus>(status.clone())
             .map(|_| ())
             .map_err(|e| StoreError::Invalid(format!("Listener status: {e}"))),
+        cron_task::KIND => serde_json::from_value::<cron_task::CronTaskStatus>(status.clone())
+            .map(|_| ())
+            .map_err(|e| StoreError::Invalid(format!("CronTask status: {e}"))),
         _ => Err(StoreError::Invalid(
             "passive configuration has no status".into(),
         )),

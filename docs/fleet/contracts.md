@@ -39,6 +39,12 @@ the `Plugins` port's one `call`. A pure gate admits plans before leased status
 writes and atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the
 host.
 
+The [CronTask controller](controllers/cron-task.md) creates a Task at each
+scheduled time of a CronTask, intent before the create and receipt after,
+under a key and a name that the scheduled time fixes. It adopts a Task that
+carries its uid and never creates a second one. `e2e_cron_task` holds it
+to that, on the file store with a test clock.
+
 The [Gateway controller](controllers/gateway.md) is three controllers over
 the `Gateway` port in `fleet_api::gateway`. The `fleet-gateway` adapter
 crate depends on no Fleet crate but `fleet-api` and `fleet-exec`, and has a
@@ -90,8 +96,9 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   check is per crate, and fleet-api, which defines them, may name every
   one. Only fleet-controllers names `FieldManager::TaskController`,
   `FieldManager::ChangeRequestController`, `FieldManager::ForgeController`,
-  `FieldManager::GatewayController`, `FieldManager::ConversationController`
-  and `FieldManager::ListenerController`, only fleet-api and fleet-controllers
+  `FieldManager::GatewayController`, `FieldManager::ConversationController`,
+  `FieldManager::ListenerController` and `FieldManager::CronTaskController`,
+  only fleet-api and fleet-controllers
   name `FieldManager::Plugin`; only fleet-manager's `result` and `declare`
   verbs name `FieldManager::Worker`, only fleet-manager's `send` and
   `amend` verbs (and the store that checks them) name `FieldManager::Cli`,
@@ -818,6 +825,12 @@ refused.
   controller for the Conversation of a thread Fleet opened, and
   `receive_event` takes the Gateway controller for Fleet's own opening post
   there, a delivery whose `verified` is `fleet`, and nothing else.
+  `create_fenced` also takes the CronTask's controller for the Task a
+  scheduled time starts, the one create that may carry the
+  `crontask.fleet.dev/` labels, which no other create or spec update sets or
+  changes. `retire_scheduled_task`, under the lease, deletes such a Task
+  only with its `uid` and its CronTask's uid label, and only once it is
+  Concluded unless the CronTask's policy is `Replace`.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the

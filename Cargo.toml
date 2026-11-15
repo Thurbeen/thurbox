@@ -47,6 +47,9 @@ opentelemetry_sdk = { version = "0.33.1", default-features = false, features = [
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client"] }
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "metrics"] }
 prost = "0.14.4"
+# CronTask schedules: five-field cron, evaluated in UTC by fleet-api.
+croner = "4.0.3"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 
 
 [workspace.lints.rust]
