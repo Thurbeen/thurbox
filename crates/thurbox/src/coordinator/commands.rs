@@ -217,29 +217,15 @@ impl App {
 
     /// `Command::Shell`: a companion shell beside a session's agent.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
-        let seen = self
-            .shells
-            .records
-            .get(session)
-            .map(|record| record.pane.clone());
-        self.open_shell(session, seen);
-    }
-
-    /// Open `session`'s companion shell. `seen` is the shell pane the row
-    /// records now, which the answer is matched against.
-    pub(crate) fn open_shell(&mut self, session: &str, seen: Option<String>) {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        // Resolved from the snapshot rather than the live
-        // `Session`: an adopted one carries no cwd of its own.
-        let cwd = self
-            .snapshots
-            .current()
-            .session(session)
-            .and_then(|row| self.terminals.launch_cwd(row));
-        if let Err(e) =
-            self.terminals
-                .open_shell(session, rows, cols, cwd.as_deref(), seen.as_deref())
-        {
+        let Some(row) = self.snapshots.current().session(session).cloned() else {
+            self.report(
+                format!("could not open a shell: no session {session}"),
+                Level::Error,
+            );
+            return;
+        };
+        if let Err(e) = self.terminals.open_shell(&row, rows, cols) {
             self.report(format!("could not open a shell: {e}"), Level::Error);
         }
     }

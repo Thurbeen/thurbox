@@ -19,7 +19,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
@@ -290,9 +289,6 @@ pub struct Terminals {
     /// first asker. `RefCell` because every reader takes `&self` on the UI
     /// thread.
     rows_cache: RefCell<HashMap<String, CachedRows>>,
-    /// Kept beside the backends because a pane needs more than a connection: a
-    /// remote session's launch directory is resolved against its `HostDef`.
-    hosts: crate::session::HostRegistry,
     live: HashMap<String, Live>,
     /// Backends whose control-mode connection has been opened. Readying is
     /// blocking (an ssh connect for a remote host), so it happens once, lazily,
@@ -321,13 +317,8 @@ pub struct Terminals {
     /// exact cost the group gating exists to avoid.
     printing_version: u64,
     shelling: HashMap<String, shells::Shelling>,
-    /// The shell pane each session's record names, as the loop keeps it: what
-    /// a worker's answer is matched against.
-    recorded_shells: HashMap<String, String>,
     shelled: (Sender<shells::Shelled>, Receiver<shells::Shelled>),
     shell_results: Vec<ShellResult>,
-    /// When a saved shell whose re-adopt proved nothing may be tried again.
-    readopt_retry: HashMap<String, std::time::Instant>,
     /// The runtime the interface runs on, so a worker can enter it.
     ///
     /// Adopting a pane wires its reader and writer as tokio tasks, which need a
@@ -413,18 +404,14 @@ impl Terminals {
 
     /// Terminals over the process's registry. How that set is assembled — and
     /// why nothing is readied when it is — is the composition root's, not the
-    /// kernel's; the hosts are the same cached read of `hosts.toml` it was
-    /// built from. `settings` are the ones the process loaded: what a pane keeps
+    /// kernel's. `settings` are the ones the process loaded: what a pane keeps
     /// and how long a hidden one stays resident are fixed for its lifetime.
     pub fn with_registry(
         backends: std::sync::Arc<crate::backend::BackendRegistry>,
         settings: &crate::session::settings::Settings,
     ) -> Self {
-        let hosts = crate::config::hosts::cached_registry().0.clone();
-
         Self {
             backends,
-            hosts,
             live: HashMap::new(),
             ready: RefCell::new(std::collections::HashSet::new()),
             meta: HashMap::new(),
@@ -432,10 +419,8 @@ impl Terminals {
             printing: std::collections::HashSet::new(),
             printing_version: 0,
             shelling: HashMap::new(),
-            recorded_shells: HashMap::new(),
             shelled: std::sync::mpsc::channel(),
             shell_results: Vec::new(),
-            readopt_retry: HashMap::new(),
             attach: attach::Attach::new(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             programs: HashMap::new(),
@@ -780,46 +765,6 @@ impl Terminals {
                 })
             })
             .collect()
-    }
-
-    /// Where a session's companion shell opens: its workspace, as Fleet
-    /// reports it.
-    pub fn launch_cwd(&self, row: &super::snapshot::SessionRow) -> Option<PathBuf> {
-        row.cwd.clone()
-    }
-
-    /// The session behind `surface` and the host it runs on, for a session on
-    /// an `ssh:`/`wsl:` backend; `None` for a local one or an unknown surface.
-    ///
-    /// The companion shell shares its session's host, so either surface of a
-    /// remote session answers.
-    pub fn remote_host_of(
-        &self,
-        surface: &str,
-        snapshot: &Snapshot,
-    ) -> Option<(String, crate::session::HostDef)> {
-        let (id, _) = split_surface(surface);
-        let row = snapshot.session(id)?;
-        let host = self.hosts.get(row.remote_host.as_deref()?)?;
-        Some((row.id.clone(), host.clone()))
-    }
-
-    /// The pane id of a session's companion shell, once it has one.
-    ///
-    /// Read by the loop so the id can be **persisted**: a shell lives in its own
-    /// tmux window (`tbsh-…`), so it outlives the interface — but the fact that
-    /// this session had one lives only in the `Session` object, which does not.
-    /// Without persisting it, restarting thurbox (or a session) forgets the shell
-    /// you had open and leaves its window orphaned, and the next `shell` key
-    /// spawns a second one beside it. v1 keeps `shell_backend_id` on the row for
-    /// exactly this reason.
-    pub fn shell_pane_id(&self, session: &str) -> Option<String> {
-        self.live
-            .get(session)?
-            .session
-            .shell_pane
-            .as_ref()
-            .map(|pane| pane.backend_id().to_string())
     }
 
     /// Whether a session has a shell pane open.
@@ -1319,7 +1264,6 @@ mod tests {
             Arc::new(crate::backend::registry::inert()),
             &crate::session::settings::Settings::default(),
         );
-        terminals.hosts = Default::default();
         let snapshot = Snapshot {
             sessions: (0..10)
                 .map(|i| row(&format!("offline-{i}"), "ssh:offline:tmux", Some("%1")))
@@ -1962,37 +1906,5 @@ mod tests {
             &crate::session::settings::Settings::default(),
         );
         assert_eq!(terminals.millis_since_output("nope"), None);
-    }
-
-    #[test]
-    fn a_single_repository_session_opens_its_shell_in_that_repository() {
-        let terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        let mut row = row("s1", "local:tmux", Some("%1"));
-        row.cwd = Some(PathBuf::from("/src/alpha"));
-        row.member_dirs = vec![PathBuf::from("/src/alpha")];
-        assert_eq!(
-            terminals.launch_cwd(&row),
-            Some(PathBuf::from("/src/alpha"))
-        );
-    }
-
-    #[test]
-    fn a_workspace_that_cannot_be_named_falls_back_to_the_recorded_directory() {
-        // No agent session id means no workspace path, and a shell in the
-        // primary repository still beats one wherever tmux happened to be.
-        let terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        let mut row = row("s1", "local:tmux", Some("%1"));
-        row.cwd = Some(PathBuf::from("/src/alpha"));
-        row.member_dirs = vec![PathBuf::from("/src/alpha"), PathBuf::from("/src/beta")];
-        assert_eq!(
-            terminals.launch_cwd(&row),
-            Some(PathBuf::from("/src/alpha"))
-        );
     }
 }

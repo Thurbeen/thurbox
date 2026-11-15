@@ -60,6 +60,38 @@ impl Iterator for Quiet {
     }
 }
 
+/// A shell's stream as a stream pane hands it over: a blank first snapshot,
+/// which is what gives a shell its grid, then nothing until the harness drops.
+fn shell_stream(
+    adopted: crate::backend::AdoptedSession,
+    rows: u16,
+    cols: u16,
+) -> crate::backend::AdoptedSession {
+    let blank = crate::backend::contract::PaneSnapshot {
+        cols,
+        rows,
+        cursor: (0, 0),
+        normal: Vec::new(),
+        alternate: None,
+    };
+    crate::backend::AdoptedSession {
+        output: Box::new(
+            std::iter::once(crate::backend::PaneChunk::Snapshot(Box::new(blank)))
+                .chain(adopted.output),
+        ),
+        ..adopted
+    }
+}
+
+/// Wait until `session`'s shell holds its grid.
+fn wait_for_the_shells_grid(session: &crate::backend::Session) {
+    let shell = session.shell_pane.as_ref().expect("a shell");
+    assert!(
+        shell.wait_resident(std::time::Duration::from_secs(5)),
+        "the shell's first snapshot never landed"
+    );
+}
+
 /// Input nobody reads: what a pane is *sent* is not what these are about.
 struct Discard;
 
@@ -366,14 +398,26 @@ impl Harness {
             cols,
             AGENT_PANE,
             &backend,
-            HashMap::new(),
             None,
             1000,
         )
         .expect("adopt the agent pane");
-        session
-            .ensure_shell_pane(rows, cols, None)
-            .expect("open the companion shell");
+        let shell = crate::backend::Session::shell_over(
+            shell_stream(
+                backend
+                    .adopt(SHELL_PANE, rows, cols, None)
+                    .expect("open the companion shell"),
+                rows,
+                cols,
+            ),
+            &backend,
+            SHELL_PANE,
+            rows,
+            cols,
+            1000,
+        );
+        session.install_shell_over(shell, Arc::clone(&backend));
+        wait_for_the_shells_grid(&session);
 
         let mut terminals = Terminals::with_registry(
             std::sync::Arc::new(crate::backend::registry::inert()),
@@ -948,17 +992,23 @@ async fn a_replacement_shell_takes_its_own_first_frame_size() {
     .await
     .expect("the old shell to exit");
     let row = super::tests::row(&harness.id, "local:tmux", Some(AGENT_PANE));
-    harness
-        .terminals
-        .record_shell(&harness.id, Some(SHELL_PANE.to_string()));
     let snapshot = crate::kernel::snapshot::Snapshot {
         sessions: vec![row],
         ..Default::default()
     };
-    harness
-        .terminals
-        .open_shell(&harness.id, HEIGHT, WIDTH, None, Some(SHELL_PANE))
-        .unwrap();
+    let backend: Arc<dyn crate::backend::SessionBackend> = harness.backend.clone();
+    harness.terminals.start_shell(&harness.id, move || {
+        let adopted = shell_stream(
+            backend
+                .adopt(SHELL_PANE, HEIGHT, WIDTH, None)
+                .map_err(|e| e.to_string())?,
+            HEIGHT,
+            WIDTH,
+        );
+        let shell =
+            crate::backend::Session::shell_over(adopted, &backend, SHELL_PANE, HEIGHT, WIDTH, 1000);
+        Ok((shell, backend))
+    });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             harness.terminals.collect_shells(&snapshot);
@@ -970,6 +1020,7 @@ async fn a_replacement_shell_takes_its_own_first_frame_size() {
     })
     .await
     .expect("the replacement shell to land");
+    wait_for_the_shells_grid(&harness.terminals.live[&harness.id].session);
     harness.print(true, "REPLACEMENT");
     let after = harness.frame(&arrangement, WIDTH, HEIGHT);
     assert_eq!(harness.grid(true), (rect.height, rect.width));
@@ -993,7 +1044,6 @@ async fn a_grid_that_never_arrives_does_not_stall_any_frame() {
         80,
         AGENT_PANE,
         &backend,
-        HashMap::new(),
         1000,
     )
     .expect("adopt");

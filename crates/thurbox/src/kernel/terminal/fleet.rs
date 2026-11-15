@@ -1,5 +1,6 @@
-//! A Fleet session's pane (ADR-41): the terminal stream `fleet attach
-//! <task> --json` names, opened as a [stream pane](super::stream_pane).
+//! A Fleet session's panes (ADR-41): the terminal stream `fleet attach
+//! <task> --json` names, and its companion shell, the one `fleet shell <task>
+//! --json` names, each opened as a [stream pane](super::stream_pane).
 //!
 //! The pane's backend is the stream itself, not one of the registry's
 //! multiplexers: a resize goes up as a `resize` frame, and everything a
@@ -23,8 +24,7 @@ pub(super) const BACKEND: &str = crate::kernel::snapshot::fleet::BACKEND;
 /// the Task's stream, and open it on that Fleet's machine: the argv names
 /// paths there, so it runs through the same link (over ssh, with no pty, so
 /// the stream's frames stay 8-bit clean). Input it refuses is said on
-/// `notices`. The companion shell is a window of `shell`, the multiplexer on
-/// the Task's machine: a stream opens no windows.
+/// `notices`.
 pub(super) fn open(
     link: &crate::fleet_link::FleetLink,
     task: &str,
@@ -32,35 +32,68 @@ pub(super) fn open(
     cols: u16,
     scrollback: usize,
     notices: Notices,
-    shell: Option<Arc<dyn crate::backend::SessionBackend>>,
 ) -> Result<crate::backend::Session, String> {
-    let argv = attach_argv(link, task)?;
+    let argv = stream_argv(link, "attach", task)?;
     let (adopted, upstream) = adopt_with_upstream(link.launch(&argv)?, rows, cols, Some(notices))
         .map_err(|e| format!("the stream pane: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
-    let mut session = crate::backend::Session::adopt_io(
+    Ok(crate::backend::Session::adopt_io(
         task.to_string(),
         rows,
         cols,
         task,
         &backend,
         adopted,
-        HashMap::new(),
         scrollback,
-    );
-    if let Some(shell) = shell {
-        session.set_shell_backend(shell);
-    }
-    Ok(session)
+    ))
 }
 
-/// The argv `fleet attach <task> --json` answers: `{"stream": {"argv": […]}}`.
-fn attach_argv(link: &crate::fleet_link::FleetLink, task: &str) -> Result<Vec<String>, String> {
+/// Open `task`'s companion shell at `rows` × `cols`, as [`open`] opens its
+/// pane: the stream `fleet shell` names, run through the same link. The
+/// runtime keeps the shell, on the Task's place: a second open finds the one
+/// there, and Fleet's release of the Task closes it. The backend that comes
+/// back is the stream's way up, which the shell's input and resize take.
+pub(super) fn open_shell(
+    link: &crate::fleet_link::FleetLink,
+    task: &str,
+    rows: u16,
+    cols: u16,
+    scrollback: usize,
+    notices: Notices,
+) -> Result<
+    (
+        crate::backend::pane::ShellPane,
+        Arc<dyn crate::backend::SessionBackend>,
+    ),
+    String,
+> {
+    let argv = stream_argv(link, "shell", task)?;
+    let (adopted, upstream) = adopt_with_upstream(link.launch(&argv)?, rows, cols, Some(notices))
+        .map_err(|e| format!("the shell's stream: {e}"))?;
+    let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
+    let shell = crate::backend::Session::shell_over(
+        adopted,
+        &backend,
+        &super::shell_surface(task),
+        rows,
+        cols,
+        scrollback,
+    );
+    Ok((shell, backend))
+}
+
+/// The argv `fleet <verb> <task> --json` answers, `attach` or `shell`:
+/// `{"stream": {"argv": […]}}`.
+fn stream_argv(
+    link: &crate::fleet_link::FleetLink,
+    verb: &str,
+    task: &str,
+) -> Result<Vec<String>, String> {
     let out = link
-        .command(&["attach", task, "--json"])
+        .command(&[verb, task, "--json"])
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|e| format!("could not start fleet attach: {e}"))?;
+        .map_err(|e| format!("could not start fleet {verb}: {e}"))?;
     if let Some(why) = link.unreachable(&out) {
         return Err(why);
     }
@@ -70,10 +103,10 @@ fn attach_argv(link: &crate::fleet_link::FleetLink, task: &str) -> Result<Vec<St
             .lines()
             .find_map(|line| line.strip_prefix("error: "))
             .unwrap_or(stderr.trim());
-        return Err(format!("fleet attach: {why}"));
+        return Err(format!("fleet {verb}: {why}"));
     }
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("fleet attach answered no JSON: {e}"))?;
+        .map_err(|e| format!("fleet {verb} answered no JSON: {e}"))?;
     let argv: Vec<String> = answer["stream"]["argv"]
         .as_array()
         .into_iter()
@@ -81,7 +114,7 @@ fn attach_argv(link: &crate::fleet_link::FleetLink, task: &str) -> Result<Vec<St
         .filter_map(|arg| arg.as_str().map(str::to_string))
         .collect();
     if argv.is_empty() {
-        return Err(format!("fleet attach answered no stream: {answer}"));
+        return Err(format!("fleet {verb} answered no stream: {answer}"));
     }
     Ok(argv)
 }
@@ -298,13 +331,29 @@ mod tests {
             "[ \"$1 $2 $3\" = 'attach review --json' ] || exit 1\n\
              echo '{\"stream\":{\"argv\":[\"runtime-mux\",\"view\",\"w 1\"]}}'",
         );
-        let argv = crate::paths::with_path(remote.path(), || attach_argv(&remote.link, "review"))
-            .expect("the stream's argv");
+        let argv = crate::paths::with_path(remote.path(), || {
+            stream_argv(&remote.link, "attach", "review")
+        })
+        .expect("the stream's argv");
         assert_eq!(argv, ["runtime-mux", "view", "w 1"]);
         assert!(
             remote.called("attach review --json"),
             "{:?}",
             remote.calls()
         );
+    }
+
+    /// The companion shell is asked of the Fleet through its link too.
+    #[test]
+    fn a_shell_goes_through_the_link() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "[ \"$1 $2 $3\" = 'shell review --json' ] || exit 1\n\
+             echo '{\"stream\":{\"argv\":[\"runtime-mux\",\"view\",\"--pane\",\"%7\"]}}'",
+        );
+        let argv = crate::paths::with_path(remote.path(), || {
+            stream_argv(&remote.link, "shell", "review")
+        })
+        .expect("the shell stream's argv");
+        assert_eq!(argv, ["runtime-mux", "view", "--pane", "%7"]);
     }
 }

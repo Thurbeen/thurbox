@@ -18,7 +18,7 @@ development checkout never touches your real setup.
 
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
-| `~/.config/thurbox/hosts.toml` | TOML | you | startup | ssh machines + local WSL distros for the companion shell; places replace it ([Where sessions run](../where-sessions-run.md)) |
+| `~/.config/thurbox/hosts.toml` | TOML | you | startup | ssh machines + local WSL distros; no session reads it, and places replace it ([Where sessions run](../where-sessions-run.md)) |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
@@ -26,7 +26,7 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli plugin` | on each `plugin` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
 | `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugin settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring plugin chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
 | `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. One that exists but cannot be read or parsed is never replaced, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
-| `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order, the companion shell) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens, the manual session order and one record per companion shell (its multiplexer's route, its pane, its window's stamp). Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
+| `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens and the manual session order. Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
@@ -208,9 +208,9 @@ multiplexer reports a closed window (tmux does; psmux and RMUX need polling).
 
 A Fleet session's terminal is its runtime's: `runtime-mux` starts it on this
 platform's default multiplexer (`tmux` on POSIX, `psmux` on native Windows).
-Nothing in thurbox chooses another one for a session. A `hosts.toml` entry's
-`multiplexer` names that host's preference for the companion shell (`Ctrl+T`)
-opened there. Names are `tmux`, `psmux`, `rmux`, and `herdr`.
+Nothing in thurbox chooses another one for a session, nor for its companion
+shell (`Ctrl+T`), which the runtime opens beside it. Names are `tmux`,
+`psmux`, `rmux`, and `herdr`.
 
 The resolved choice is a session's **route**. One parser (`session::Route`)
 reads it, and every route names its multiplexer:
@@ -276,8 +276,8 @@ checks its `rmux -V` banner instead: its `#{version}` is the tmux
 compatibility version, not the RMUX release.
 
 RMUX is a Rust terminal multiplexer with a tmux-compatible command interface.
-It never changes the platform defaults: a host's `multiplexer = "rmux"` opens
-that host's companion shells on it. Install it separately on that machine,
+It never changes the platform defaults. Install it separately on the machine
+that runs it,
 following its
 [installation guide](https://github.com/Helvesec/rmux/tree/v0.10.0#installation).
 For example, `cargo install rmux --locked` installs the latest published
@@ -712,9 +712,8 @@ a place.
   other, `shell` included, is refused by name: Fleet would run a program
   named as the agent.
 - A rename sets the Task's `thurbox.dev/name` label (`fleet label`). The
-  manual order and each session's companion shell pane are `interface.json`.
-  A saved shell is re-adopted on the multiplexer it was opened on; a host's
-  `multiplexer` in `hosts.toml` applies to the shells opened after it.
+  manual order is `interface.json`. A companion shell is the runtime's,
+  opened through `fleet shell`: thurbox records none.
 - Fleet revives a session whose terminal is lost. An automation is `thurbox-cli automation`'s,
   in `automations.json`. A todo is a Fleet Task that is not dispatched
   (`fleet apply`). Settings are `settings.toml`; the
@@ -974,7 +973,7 @@ User-set (read by thurbox):
 |----------|----------|
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | config/data roots |
 | `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `interface.json` names none |
-| `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`). For a remote/WSL session the pane uses the **host's** `$SHELL` as an interactive login shell (the SSH-login environment), not the local one. |
+| `SHELL` | not read by thurbox for the `Ctrl+T` companion shell: the runtime opens it at the session's place with that place's own shell (`runtime-mux`: its `$SHELL`, else `/bin/sh`). |
 | `RUST_LOG` | log filter for `thurbox.log` |
 | `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/thurbox/performance.md`. |
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |

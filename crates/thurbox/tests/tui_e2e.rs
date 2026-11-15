@@ -6932,16 +6932,29 @@ fn in_the_shell(tui: &mut Tui, command: &str, marker: &str) {
     tui.wait_for(marker);
 }
 
-/// The id of each companion shell window on `profile`'s server.
+/// The id of each companion shell window on the server of `profile`'s
+/// Fleet's runtime, where `fleet shell` opens it.
 fn shell_windows(profile: &Profile) -> Vec<String> {
-    let windows = profile
-        .server
-        .tmux(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
+    let windows = runtime_tmux(
+        profile,
+        &["list-windows", "-a", "-F", "#{window_id} #{window_name}"],
+    );
     String::from_utf8_lossy(&windows.stdout)
         .lines()
         .filter(|line| line.contains(" tbs-"))
         .filter_map(|line| line.split_whitespace().next().map(str::to_string))
         .collect()
+}
+
+/// `tmux <args>` on the server of `profile`'s Fleet's runtime.
+fn runtime_tmux(profile: &Profile, args: &[&str]) -> std::process::Output {
+    Command::new("tmux")
+        .env("TMUX_TMPDIR", profile.server.tmpdir())
+        .env_remove("TMUX")
+        .args(["-L", "runtime-mux"])
+        .args(args)
+        .output()
+        .expect("run tmux")
 }
 
 /// A restarted interface on `profile`, its agent pane attached.
@@ -6959,10 +6972,10 @@ fn restart(profile: &Profile) -> Tui {
 
 #[test]
 fn the_companion_shell_is_readopted_after_a_restart() {
-    // The shell outlives the interface in its own window. A restarted
-    // interface finds it again from the file it recorded it in: the variable
-    // the first interface's shell set is still set, and no second shell
-    // window is made.
+    // The shell outlives the interface in its own window on the runtime's
+    // server. A restarted interface asks `fleet shell` again and the runtime
+    // opens the same shell: the variable the first interface's shell set is
+    // still set, and no second shell window is made.
     let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
         return;
     };
@@ -6976,49 +6989,9 @@ fn the_companion_shell_is_readopted_after_a_restart() {
 }
 
 #[test]
-fn a_recorded_pane_id_now_held_by_another_window_is_not_adopted() {
-    // A restarted server reissues pane ids. The record names a pane that an
-    // unrelated window holds now, stamped by no shell of this session: it is
-    // left alone, and raising the tab opens a shell of the session's own.
-    let Some((_profile, mut tui)) = shell_session_prepared(
-        |profile| {
-            let made = profile.server.tmux(&[
-                "new-session",
-                "-d",
-                "-s",
-                "unrelated",
-                "-P",
-                "-F",
-                "#{pane_id}",
-                "sh -c 'echo UNRELATED-WINDOW; exec sleep 600'",
-            ]);
-            let pane = String::from_utf8_lossy(&made.stdout).trim().to_string();
-            assert!(pane.starts_with('%'), "an unrelated pane: {made:?}");
-            std::fs::write(
-                profile.path("config/interface.json"),
-                format!(
-                    r#"{{"shells":{{"probe":{{"route":"local:tmux","pane":"{pane}","stamp":"another-session"}}}}}}"#
-                ),
-            )
-            .expect("a record naming it");
-        },
-        plain_shell,
-    ) else {
-        return;
-    };
-    in_the_shell(&mut tui, "echo tb-own-\"\"shell", "tb-own-shell");
-    assert!(
-        !tui.frame().contains("UNRELATED-WINDOW"),
-        "the unrelated window was adopted:\n{}",
-        tui.frame()
-    );
-    assert!(tui.quit().success());
-}
-
-#[test]
 fn deleting_the_task_closes_its_companion_shell() {
     // A shell outlives the interface, not its session: once Fleet deletes
-    // the Task, its shell window goes and its record with it.
+    // the Task, the runtime's stop closes its shell window.
     let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
         return;
     };
@@ -7039,11 +7012,6 @@ fn deleting_the_task_closes_its_companion_shell() {
             .output();
         tui.session_row("probe").is_none() && shell_windows(&profile).is_empty()
     });
-    tui.wait_until("its record dropped", |_| {
-        !std::fs::read_to_string(profile.path("config/interface.json"))
-            .unwrap_or_default()
-            .contains("\"probe\"")
-    });
     assert!(tui.quit().success());
 }
 
@@ -7059,7 +7027,7 @@ fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
     assert!(tui.quit().success());
     let shells = shell_windows(&profile);
     assert_eq!(shells.len(), 1, "one shell window to close");
-    profile.server.tmux(&["kill-window", "-t", &shells[0]]);
+    runtime_tmux(&profile, &["kill-window", "-t", &shells[0]]);
 
     let mut tui = restart(&profile);
     in_the_shell(&mut tui, "echo tb-second-\"\"shell", "tb-second-shell");

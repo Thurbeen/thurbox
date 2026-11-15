@@ -294,23 +294,6 @@ impl vt100::Callbacks for TermSignals {
 /// rendering is unaffected.
 pub type SessionParser = vt100::Parser<TermSignals>;
 
-/// Stamp a freshly spawned window with the session that owns it.
-///
-/// Best-effort and logged rather than propagated: a window that could not be
-/// stamped is still a perfectly good window, and resolves by name for as long
-/// as it is the only one with that name — which is what every window did
-/// before ADR-25.
-fn stamp(
-    backend: &Arc<dyn SessionBackend>,
-    backend_id: &str,
-    session_id: SessionId,
-    role: WindowRole,
-) {
-    if let Err(e) = backend.stamp_window(backend_id, &session_id.to_string(), role) {
-        debug!(session_id = %session_id, "could not stamp the window: {e:#}");
-    }
-}
-
 /// Internal bundle of I/O handles before wiring.
 struct SessionIo {
     output: PaneOutput,
@@ -1009,8 +992,6 @@ pub struct Session {
     /// `attention_at > attention_ack_at`.
     attention_ack_at: u64,
     pub shell_pane: Option<ShellPane>,
-    /// Session environment variables, passed to shell pane spawns.
-    env: HashMap<String, String>,
     /// True for a **placeholder** session: a persisted remote session whose host
     /// is currently unreachable, so it has no live backend pane / reader / writer
     /// (its `input_tx` is a dead channel and its `parser` holds a static "host
@@ -1030,19 +1011,6 @@ impl std::ops::Deref for Session {
         &self.wired
     }
 }
-
-/// A saved shell pane the server's listing proves is gone: the one re-adopt
-/// failure that may erase the pane's record.
-#[derive(Debug)]
-pub struct ShellGone(pub String);
-
-impl std::fmt::Display for ShellGone {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "shell pane {} is gone", self.0)
-    }
-}
-
-impl std::error::Error for ShellGone {}
 
 impl Session {
     /// Whether the backend reports this session's pane as exited.
@@ -1082,7 +1050,6 @@ impl Session {
         cols: u16,
         backend_id: &str,
         backend: &Arc<dyn SessionBackend>,
-        env: HashMap<String, String>,
         seed: Option<Vec<u8>>,
         scrollback: usize,
     ) -> Result<Self> {
@@ -1105,7 +1072,6 @@ impl Session {
             cols,
             SessionIo::adopted(adopted, backend_id),
             backend,
-            env,
             scrollback,
         ))
     }
@@ -1124,7 +1090,6 @@ impl Session {
         backend_id: &str,
         backend: &Arc<dyn SessionBackend>,
         adopted: AdoptedSession,
-        env: HashMap<String, String>,
         scrollback: usize,
     ) -> Self {
         let mut info = PaneInfo::new(name);
@@ -1133,7 +1098,7 @@ impl Session {
             resident: false,
             ..SessionIo::adopted(adopted, backend_id)
         };
-        Self::wire_io(info, rows, cols, io, backend, env, scrollback)
+        Self::wire_io(info, rows, cols, io, backend, scrollback)
     }
 
     /// [`Self::adopt`] for a session nobody is looking at: no history is
@@ -1149,7 +1114,6 @@ impl Session {
         cols: u16,
         backend_id: &str,
         backend: &Arc<dyn SessionBackend>,
-        env: HashMap<String, String>,
         scrollback: usize,
     ) -> Result<Self> {
         // Only the title and modes, not `None`: `None` is the backend capturing
@@ -1182,7 +1146,6 @@ impl Session {
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
-            env,
             placeholder: false,
         })
     }
@@ -1312,7 +1275,6 @@ impl Session {
         cols: u16,
         io: SessionIo,
         backend: &Arc<dyn SessionBackend>,
-        env: HashMap<String, String>,
         scrollback: usize,
     ) -> Self {
         let (wired, signals) = Self::wire_up(rows, cols, io, backend, "Session", scrollback);
@@ -1325,7 +1287,6 @@ impl Session {
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
-            env,
             placeholder: false,
         }
     }
@@ -1341,7 +1302,6 @@ impl Session {
         rows: u16,
         cols: u16,
         backend: &Arc<dyn SessionBackend>,
-        env: HashMap<String, String>,
         scrollback: usize,
     ) -> Self {
         info.backend_id = None;
@@ -1390,7 +1350,6 @@ impl Session {
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
-            env,
             placeholder: true,
         }
     }
@@ -1749,11 +1708,6 @@ impl Session {
         Ok(self.backend.pane_pid(&self.wired.backend_id)?)
     }
 
-    /// Run the companion shell on `backend` rather than on the agent's own.
-    pub fn set_shell_backend(&mut self, backend: Arc<dyn SessionBackend>) {
-        self.shell_backend = Some(backend);
-    }
-
     /// The backend the companion shell runs on.
     fn shell_backend(&self) -> &Arc<dyn SessionBackend> {
         self.shell_backend.as_ref().unwrap_or(&self.backend)
@@ -1805,155 +1759,42 @@ impl Session {
         debug!("Session detached");
     }
 
-    /// Lazily spawn a companion shell pane.
-    ///
-    /// `cwd` is the directory the shell starts in — the caller passes the
-    /// session's *launch* cwd (the multi-repo symlink workspace when there is
-    /// one, so the shell lands where the agent does), falling back to the
-    /// primary repo (`info.cwd`) when `None`. The command is the backend's
-    /// [`WindowLifecycle::default_shell`](crate::WindowLifecycle::default_shell). The window name uses the `tbs-` prefix
-    /// to distinguish from the agent's `tb-` windows.
-    ///
-    /// A shell whose stream has ended is replaced rather than kept: nothing
-    /// else lets go of it while the agent beside it runs on, and once its grid
-    /// has been dropped off screen there is no pane left to rebuild it from —
-    /// the tab would stay blank for good. Not when the agent's stream ended
-    /// too: that is the connection going, and the session is re-attached whole,
-    /// its still-running shell included, so a new one would orphan it.
-    pub fn ensure_shell_pane(
-        &mut self,
+    /// A companion shell over a stream the caller opened, `adopted`, whose
+    /// input, resize and detach go through `backend`: the shell a session's
+    /// runtime keeps, which the caller found again or had it open. Built off
+    /// the loop; installed with [`Self::install_shell_over`].
+    pub fn shell_over(
+        adopted: AdoptedSession,
+        backend: &Arc<dyn SessionBackend>,
+        backend_id: &str,
         rows: u16,
         cols: u16,
-        cwd: Option<&std::path::Path>,
-    ) -> Result<()> {
-        if let Some(open) = self.shell_open_task(rows, cols, cwd) {
-            let shell = open()?;
-            self.install_shell(shell);
-        }
-        Ok(())
+        scrollback: usize,
+    ) -> ShellPane {
+        // Without its grid until the stream's first snapshot, as an agent's
+        // stream pane (`adopt_io`): that snapshot is the shell's screen, with
+        // what it showed before this view came. A stream with no screen keeper
+        // sends a blank one.
+        let io = SessionIo {
+            resident: false,
+            ..SessionIo::adopted(adopted, backend_id)
+        };
+        let (wired, _) = Self::wire_up(rows, cols, io, backend, "Shell", scrollback);
+        ShellPane { wired }
     }
 
-    /// Decide whether to open a shell, without contacting the backend.
-    /// Run the returned task on a worker with the tokio runtime entered.
-    pub fn shell_open_task(
-        &self,
-        rows: u16,
-        cols: u16,
-        cwd: Option<&std::path::Path>,
-    ) -> Option<impl FnOnce() -> Result<ShellPane> + Send + 'static> {
-        if let Some(shell) = &self.shell_pane {
-            if !shell.has_exited() || self.has_exited() {
-                return None;
-            }
-        }
-        let backend = Arc::clone(self.shell_backend());
-        let separate = self.shell_backend.is_some();
-        let window_name = crate::identity::shell_window_name(&self.info.name);
-        let id = self.info.id;
-        let env = self.env.clone();
-        let cwd = cwd
-            .or(self.info.cwd.as_deref())
-            .map(std::path::Path::to_path_buf);
-        let scrollback = self.wired.residency.scrollback;
-        Some(move || {
-            // A shell on a backend of its own is the first use of that backend
-            // here: nothing attached through it has readied it.
-            if separate {
-                backend.ensure_ready()?;
-            }
-            let shell_cmd = backend.default_shell();
-            let spawned = backend.spawn(
-                &window_name,
-                &shell_cmd,
-                &[],
-                cwd.as_deref(),
-                &env,
-                rows,
-                cols,
-            )?;
-            let mut io = SessionIo::spawned(spawned);
-            // The shell can print before the backend connects its output reader.
-            // Its first view needs the complete screen, including that prefix.
-            io.resident = !backend.capabilities().supports_snapshots;
-            let (wired, _) = Self::wire_up(rows, cols, io, &backend, "Shell", scrollback);
-            stamp(&backend, &wired.backend_id, id, WindowRole::Shell);
-            Ok(ShellPane { wired })
-        })
+    /// Install `shell`, a [`Self::shell_over`] answer, with `backend` as the
+    /// one its input, resize and detach go through. It replaces a shell
+    /// already there.
+    pub fn install_shell_over(&mut self, shell: ShellPane, backend: Arc<dyn SessionBackend>) {
+        self.shell_backend = Some(backend);
+        self.install_shell(shell);
     }
 
     /// Install a worker's answer after its owner has checked it is still wanted.
     pub fn install_shell(&mut self, shell: ShellPane) {
         self.info.shell_backend_id = Some(shell.backend_id.clone());
         self.shell_pane = Some(shell);
-    }
-
-    /// Re-adopt an existing shell pane from a backend_id (for restore on restart).
-    ///
-    /// Fails for a pane the backend's listing does not have. `adopt` itself
-    /// does not: its capture is best-effort and tmux accepts `refresh-client
-    /// -A` for any id, so a window that went while the interface was away
-    /// would come back as a shell that never prints, never ends, and keeps the
-    /// next toggle from spawning a real one. Asked of the listing and not of
-    /// the pane, because `display-message -t` answers a missing pane with the
-    /// current one. A backend with no listing adopts as before.
-    pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
-        let stamp = self.info.id.to_string();
-        let shell = self.shell_adopt_task(backend_id, &stamp, rows, cols)()?;
-        self.install_shell(shell);
-        Ok(())
-    }
-
-    /// Prepare re-adoption without contacting the backend. The task checks
-    /// that the window holding `backend_id` is still the shell stamped
-    /// `stamp`, then wires it on a worker with the runtime entered.
-    /// Re-adopt a saved shell pane. Fails with [`ShellGone`] only when the
-    /// server's listing proves the pane is not there; any other failure (a
-    /// host that does not answer, an ambiguous listing) proves nothing.
-    pub fn shell_adopt_task(
-        &self,
-        backend_id: &str,
-        stamp: &str,
-        rows: u16,
-        cols: u16,
-    ) -> impl FnOnce() -> Result<ShellPane> + Send + 'static {
-        let backend = Arc::clone(self.shell_backend());
-        let separate = self.shell_backend.is_some();
-        let backend_id = backend_id.to_string();
-        let stamp = stamp.to_string();
-        let name = self.info.name.clone();
-        let scrollback = self.wired.residency.scrollback;
-        move || {
-            if separate {
-                backend.ensure_ready()?;
-            }
-            // The window must still be this session's shell: a restarted
-            // server reissues pane ids, and an id alone would adopt whatever
-            // window holds it now.
-            let placed = backend.locate(crate::contract::Owner {
-                session_id: &stamp,
-                name: &name,
-                agent_pane: "",
-                shell_pane: &backend_id,
-            })?;
-            match &placed.shell {
-                crate::contract::Located::At(pane) if *pane == backend_id => {}
-                // The listing could not say: nothing is proved gone.
-                crate::contract::Located::Unknown => {
-                    anyhow::bail!("shell pane {backend_id} could not be located")
-                }
-                _ => return Err(ShellGone(backend_id).into()),
-            }
-            let adopted = backend.adopt(&backend_id, rows, cols, None)?;
-            let (wired, _) = Self::wire_up(
-                rows,
-                cols,
-                SessionIo::adopted(adopted, &backend_id),
-                &backend,
-                "Shell",
-                scrollback,
-            );
-            Ok(ShellPane { wired })
-        }
     }
 
     /// Kill the shell pane if it exists.
@@ -2012,7 +1853,6 @@ impl Session {
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
             shell_pane: None,
-            env: HashMap::new(),
             placeholder: false,
         };
         (session, input_rx)

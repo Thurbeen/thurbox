@@ -531,15 +531,9 @@ pub const WINDOW_ROLE_OPTION: &str = "@thurbox_role";
 ///   ever, and the editor cannot be reopened (measured on a live session
 ///   2026-09-11).
 ///
-/// The shell only gets half of that today, and deliberately so for now: `off`
-/// makes its death *reportable*, and nothing reports it. `Session::has_exited`
-/// reads the agent's pane alone, `ShellPane`'s own flag has no reader anywhere,
-/// and `ensure_shell_pane` returns early on a slot that is already filled — so
-/// typing `exit` in a `Ctrl+T` shell still leaves a frozen grid that `Ctrl+T`
-/// will not replace. That is what it did before this too, by accident rather
-/// than by design. Dropping the shell pane when its reader ends is the fix, and
-/// it is a different change from this one: it decides what happens to a pane the
-/// user is looking at, where this only decides whether tmux tells anyone.
+/// A shell's window takes `off`: a shell that exits takes its window with it,
+/// so the runtime's next `shell` call opens a new one, and a view whose shell
+/// stream ended asks for it again.
 ///
 /// Stated per window because `remain-on-exit` is a window option that cannot be
 /// set for a session (see [`SESSION_OPTS`]) — and stated even when the answer is

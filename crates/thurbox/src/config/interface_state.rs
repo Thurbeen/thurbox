@@ -1,18 +1,16 @@
 //! What the interface remembers between runs that is no setting a user
-//! writes by hand: the theme last chosen, the editor `Ctrl+O` opens, the
-//! manual order of the session list and each session's companion shell, kept
-//! in `interface.json` beside `settings.toml`.
+//! writes by hand: the theme last chosen, the editor `Ctrl+O` opens and the
+//! manual order of the session list, kept in `interface.json` beside
+//! `settings.toml`.
 //!
-//! The order and the shells are the interface's own: Fleet keeps Tasks, and
-//! neither the order a person sorted them in nor the shell window an
-//! interface opened beside one is a fact about a Task.
+//! The order is the interface's own: Fleet keeps Tasks, and the order a
+//! person sorted them in is no fact about a Task.
 //!
 //! Plain JSON, rewritten whole and atomically on each change, under a lock
 //! every process takes ([`crate::paths`]'s file lock), so two writers never
 //! lose each other's change. A file that is missing or unreadable is the
 //! defaults: losing a remembered theme is not worth refusing to start over.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -21,8 +19,8 @@ use crate::session::settings::EditorMode;
 
 const FILE: &str = "interface.json";
 
-/// Moves on every update this process makes, so a reader of the order or the
-/// shells (the snapshot) reads the file again only when it changed.
+/// Moves on every update this process makes, so a reader of the order (the
+/// snapshot) reads the file again only when it changed.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The remembered values. Every field is optional, so a file written by a
@@ -40,23 +38,6 @@ pub struct InterfaceState {
     /// not named sorts after every one that is.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
-    /// Each session's companion shell, by session id: it outlives the
-    /// interface in a window of its own and is adopted again by the next one.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub shells: BTreeMap<String, ShellRecord>,
-}
-
-/// Where one companion shell is, and how to know it again.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ShellRecord {
-    /// The qualified route of the multiplexer it runs on (`local:tmux`,
-    /// `wsl:ubuntu:tmux`).
-    pub route: String,
-    /// Its pane on that multiplexer. A restarted server can reissue the id.
-    pub pane: String,
-    /// The id its window is stamped with: a pane is adopted again only where
-    /// the window still carries it, never because the id came back.
-    pub stamp: String,
 }
 
 /// The state as stored, or the defaults when there is none to read.
