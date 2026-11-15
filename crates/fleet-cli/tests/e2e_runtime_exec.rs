@@ -525,6 +525,15 @@ fn a_default_runtime_without_a_local_place_loads_and_local_names_nothing() {
     env.apply(json!([first, last, on_twice]))
         .code(1)
         .stderr_has(why);
+    // A Task with no host and no configRef takes the default TaskConfig's,
+    // whether it comes in the same batch or before.
+    let default = support::object("TaskConfig", "default", json!({"host": "vm/sandbox"}));
+    let mut plain = support::task("t8", true);
+    plain["spec"].as_object_mut().expect("spec").remove("host");
+    env.apply(json!([default, plain])).ok();
+    let mut later = plain.clone();
+    later["metadata"]["name"] = json!("t9");
+    env.apply(later).ok();
 }
 
 /// `fleet runtime places`: each configured place with what its runtime's

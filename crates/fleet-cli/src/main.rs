@@ -2133,33 +2133,32 @@ fn cmd_apply(
     }
     // `local` naming no place is refused here, by name: the runtime would
     // only read the place as unreachable. The host is the manager's rule
-    // (`effective_host`); a TaskConfig not there yet leaves it untold. Of
+    // (`effective_host`), from the TaskConfig the manager resolves: the
+    // one `configRef` names, else `default`. A named TaskConfig not there
+    // yet leaves it untold; with no `default`, the host is `local`. Of
     // several of one name in the batch, the last is the one stored.
     let on_local = |obj: &Object| {
         if obj.kind != fleet_api::task::KIND {
             return false;
         }
-        let config_host = match obj
-            .spec
-            .get("host")
-            .is_none()
-            .then(|| obj.spec["configRef"]["name"].as_str())
-        {
-            Some(Some(name)) => {
-                let config = objs
-                    .iter()
-                    .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
-                    .cloned()
-                    .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
-                        Observation::Known(found) => found,
-                        Observation::Unknown { .. } => None,
-                    });
-                match config {
-                    Some(config) => config.spec["host"].as_str().map(str::to_string),
-                    None => return false,
-                }
+        let named = obj.spec["configRef"]["name"].as_str();
+        let config_host = if obj.spec.get("host").is_some() {
+            None
+        } else {
+            let name = named.unwrap_or(fleet_api::config::DEFAULT_TASK_CONFIG);
+            let config = objs
+                .iter()
+                .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
+                .cloned()
+                .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
+                    Observation::Known(found) => found.filter(|o| !o.is_deleting()),
+                    Observation::Unknown { .. } => None,
+                });
+            match config {
+                Some(config) => config.spec["host"].as_str().map(str::to_string),
+                None if named.is_some() => return false,
+                None => None,
             }
-            _ => None,
         };
         fleet_api::task::effective_host(&obj.spec, config_host.as_deref())
             == fleet_api::task::LOCAL_HOST

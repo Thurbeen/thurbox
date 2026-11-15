@@ -1514,3 +1514,46 @@ fn a_stop_closes_every_shell_window_of_the_key() {
     );
     assert!(windows(&rt).is_empty(), "{:?}", windows(&rt));
 }
+
+#[test]
+fn a_pause_cut_short_before_the_shell_closed_is_not_paused_until_a_pause_finishes_it() {
+    use std::os::unix::fs::MetadataExt;
+    let Some(mut rt) = Runtime::new() else { return };
+    let home = tempfile::tempdir().expect("home");
+    shell_env(&mut rt, home.path());
+    started(&rt.start("sh.cut", &["sleep", "300"]));
+    let shell = json!({"protocol": 2, "place": local(), "key": "sh.cut"});
+    assert!(rt.call("shell", shell)["known"]["stream"].is_object());
+    // As a pause cut short after the agent's window went: its mark is
+    // written, and the key's shell still runs.
+    let listed = runtime_tmux(
+        &rt,
+        &["list-windows", "-a", "-F", "#{window_id} #{window_name}"],
+    );
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    let agent = listed
+        .lines()
+        .find_map(|l| l.split_once(" tb-").map(|(id, _)| id.to_string()))
+        .unwrap_or_else(|| panic!("no agent window in {listed}"));
+    let killed = runtime_tmux(&rt, &["kill-window", "-t", &agent]);
+    assert!(killed.status.success(), "{killed:?}");
+    let uid = std::fs::metadata(rt.server.tmpdir()).expect("tmpdir").uid();
+    let marks = rt.server.tmpdir().join(format!("tmux-{uid}"));
+    std::fs::write(
+        marks.join(format!("runtime-mux-{SOCKET}.paused-sh.cut")),
+        "",
+    )
+    .expect("the mark");
+
+    let inspected = rt.inspect("sh.cut");
+    assert!(
+        inspected.get("unknown").is_some(),
+        "a shell still runs, so the pause has not finished: {inspected}"
+    );
+    assert_eq!(
+        rt.call("pause", json!({"protocol": 1, "key": "sh.cut"}))["known"],
+        "paused"
+    );
+    assert!(windows(&rt).is_empty(), "{:?}", windows(&rt));
+    assert_eq!(rt.inspect("sh.cut")["known"], "paused");
+}

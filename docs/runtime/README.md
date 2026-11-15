@@ -223,14 +223,21 @@ and the processor time of an idle agent
 - The runtime knows no harness and no conversation: the argv that resumes
   the conversation is Fleet's, in the `start` that follows.
 
-`runtime-mux` writes a mark for the key, an empty file
-`runtime-mux-<socket>.paused-<key>` beside the server's lock, and then stops
-the process and the key's shell as a `stop` does. A pause takes the
-server's lock, as a start and a stop do. `inspect` answers `paused` for a
-key with a mark and no window. A `start` removes the mark after it makes
-the window, and a `stop` removes it after it stops the process. The mark is
-in the private directory tmux keeps the socket in, so it goes when that
-directory goes, as the server's windows do.
+`runtime-mux` pauses a key in three steps:
+
+1. It closes the key's shell.
+2. It writes a mark for the key, an empty file
+   `runtime-mux-<socket>.paused-<key>` beside the server's lock.
+3. It stops the agent's window.
+
+A pause takes the server's lock, as a start and a stop do. While the
+agent's window is there, it answers for the key, so a pause cut short
+before step 3 reads as running. `inspect` answers `paused` for a key with a
+mark, no agent window and no shell. A mark with a shell left answers
+Unknown, and the next pause closes the shell. A `start` removes the mark
+after it makes the window, and a `stop` removes it after it stops the
+process. The mark is in the private directory tmux keeps the socket in, so
+it goes when that directory goes, as the server's windows do.
 
 ### Places (protocol version 2)
 

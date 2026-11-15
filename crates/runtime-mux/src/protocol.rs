@@ -743,17 +743,21 @@ fn start(backend: &dyn SessionBackend, pauses: &Pauses, request: Start) -> Value
 }
 
 /// The key's window, else its pause mark: a window answers for the key while
-/// it is there, so a pause that has not stopped it yet reads as running.
+/// it is there, so a pause that has not stopped it yet reads as running. A
+/// mark is a pause only once the key's shell is closed too ([`paused`]).
 fn inspect(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
-    match locate(backend, key) {
-        Err(why) => unknown(why),
-        Ok(Located::Unknown) => unknown("several windows answer to the key"),
-        Ok(Located::Absent) => match pauses.holds(key) {
-            Ok(true) => known(json!("paused")),
+    let placed = match backend.locate(owner(&name_of(key))) {
+        Ok(placed) => placed,
+        Err(e) => return unknown(e),
+    };
+    match placed.agent {
+        Located::Unknown => unknown("several windows answer to the key"),
+        Located::Absent => match pauses.holds(key) {
+            Ok(true) => paused(&placed.shell),
             Ok(false) => known(json!("none")),
             Err(why) => unknown(why),
         },
-        Ok(Located::At(pane)) => match exited(backend, &pane) {
+        Located::At(pane) => match exited(backend, &pane) {
             Err(why) => unknown(why),
             Ok(None) => known(json!({ "running": { "id": pane } })),
             Ok(Some(code)) => known(json!({ "exited": { "id": pane, "code": code } })),
@@ -777,30 +781,43 @@ fn stop(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
     }
 }
 
-/// Stops the key's process as [`stop`] does, and keeps the key: the mark
-/// goes first, so no answer between the two reads the key as gone. A stop
-/// that fails leaves the mark, and the window, while it is there, still
-/// answers for the key.
+/// A marked key with no agent window: paused once no shell of the key is
+/// left, else a pause cut short, which the next `pause` finishes.
+fn paused(shell: &Located) -> Value {
+    match shell {
+        Located::Absent => known(json!("paused")),
+        _ => unknown("a pause has not finished: the key's shell still runs"),
+    }
+}
+
+/// Stops the key's process as [`stop`] does, and keeps the key. The shells
+/// close first and the agent's window last, with the mark between them: a
+/// pause cut short at any step leaves either the agent's window, which
+/// answers for the key while it is there, or a finished pause. A mark with
+/// a shell left, as an older order could leave, is finished here.
 fn pause(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
-    match locate(backend, key) {
-        Err(why) => unknown(why),
-        Ok(Located::Unknown) => unknown("several windows answer to the key"),
+    let agent = match locate(backend, key) {
+        Err(why) => return unknown(why),
+        Ok(Located::Unknown) => return unknown("several windows answer to the key"),
         Ok(Located::Absent) => match pauses.holds(key) {
-            Ok(true) => known(json!("paused")),
-            Ok(false) => known(json!("none")),
-            Err(why) => unknown(why),
+            Ok(true) => None,
+            Ok(false) => return known(json!("none")),
+            Err(why) => return unknown(why),
         },
-        Ok(Located::At(_)) => {
-            if let Err(why) = pauses.mark(key) {
-                return unknown(why);
-            }
-            let stopped = end(backend, key);
-            if stopped.get("known").is_none() {
-                return stopped;
-            }
-            known(json!("paused"))
+        Ok(Located::At(pane)) => Some(pane),
+    };
+    if let Err(e) = close_shells(backend, key) {
+        return unknown(e);
+    }
+    if let Some(pane) = agent {
+        if let Err(why) = pauses.mark(key) {
+            return unknown(why);
+        }
+        if let Err(e) = backend.kill(&pane) {
+            return unknown(e);
         }
     }
+    known(json!("paused"))
 }
 
 /// The key's agent window and every shell window of the key, gone.
@@ -814,17 +831,22 @@ fn end(backend: &dyn SessionBackend, key: &str) -> Value {
             Err(e) => return unknown(e),
         },
     };
-    let shell = window_name_for(WindowRole::Shell, &name_of(key));
-    let windows = match backend.discover() {
-        Ok(windows) => windows,
-        Err(e) => return unknown(e),
-    };
-    for window in windows.iter().filter(|w| w.name == shell) {
-        if let Err(e) = backend.kill(&window.backend_id) {
-            return unknown(e);
-        }
+    match close_shells(backend, key) {
+        Ok(()) => stopped,
+        Err(e) => unknown(e),
     }
-    stopped
+}
+
+/// Every window named as the key's shell, gone.
+fn close_shells(backend: &dyn SessionBackend, key: &str) -> Result<(), String> {
+    let shell = window_name_for(WindowRole::Shell, &name_of(key));
+    let windows = backend.discover().map_err(|e| e.to_string())?;
+    for window in windows.iter().filter(|w| w.name == shell) {
+        backend
+            .kill(&window.backend_id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// The pane holding `key`: `None` when none does.

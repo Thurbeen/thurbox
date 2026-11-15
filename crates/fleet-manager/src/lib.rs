@@ -1819,6 +1819,16 @@ impl Manager<'_> {
         }
     }
 
+    /// Whether the store holds a private launch for `obj`. A store that
+    /// keeps none holds none.
+    fn launch_saved(&self, obj: &Object) -> Result<bool, StoreError> {
+        match self.store.launch(obj) {
+            Ok(launch) => Ok(launch.is_some()),
+            Err(StoreError::Unsupported(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn reconcile_task(
         &self,
         obj: &Object,
@@ -1833,10 +1843,12 @@ impl Manager<'_> {
             fleet_api::validate::typed(task::KIND, &obj.status)?
         };
         // The default TaskConfig is taken at a Task's first launch only: one
-        // that launched without it keeps that launch.
+        // that launched without it keeps that launch. A launch frozen from
+        // it is kept even when it went before the launch reached status.
         let needs_launch = spec.config_ref.is_some()
             || !spec.env.is_empty()
             || st.execution.is_some()
+            || (!obj.is_deleting() && spec.dispatch && self.launch_saved(obj)?)
             || (st.session.is_none()
                 && st.intents.is_empty()
                 && !obj.is_deleting()

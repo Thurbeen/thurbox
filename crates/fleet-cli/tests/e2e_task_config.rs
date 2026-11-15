@@ -353,3 +353,29 @@ fn all_references_are_validated_before_any_provider_command_runs() {
         "invalid reference must be detected before command execution"
     );
 }
+
+#[test]
+fn a_launch_frozen_from_the_default_config_is_kept_when_the_config_goes_before_its_status() {
+    let e = Env::new("config-default-crash");
+    e.apply(object(
+        "TaskConfig",
+        "default",
+        json!({"pauseAfterMs": 60000}),
+    ))
+    .ok();
+    e.apply(task("t1", true)).ok();
+    // One pass freezes the private launch, then records it in status.
+    e.fleet(&["reconcile", "--max-passes", "1"]).ok();
+    assert_eq!(e.status("t1")["execution"]["pauseAfterMs"], 60000);
+    // As a manager stopped between those two writes: the private launch is
+    // saved, the status is not. Then the default goes.
+    let path = e.object_path("Task", "t1");
+    let mut obj: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj["status"].as_object_mut().unwrap().remove("execution");
+    std::fs::write(&path, obj.to_string()).unwrap();
+    e.fleet(&["delete", "taskconfig", "default"]).ok();
+    e.reconcile().ok();
+    let st = e.status("t1");
+    assert_eq!(st["execution"]["pauseAfterMs"], 60000, "{st:#}");
+}
