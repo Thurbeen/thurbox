@@ -57,6 +57,36 @@ teardown() {
   kill -0 "$OTHER"
 }
 
+@test "a fleet up on the sandbox's default config, found through XDG_CONFIG_HOME, is stopped" {
+  [ -r /proc/self/environ ] || skip "no /proc to read a process's environment"
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin" "$ROOT/home/.config"
+  printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  # No FLEET_CONFIG: the first launch's `fleet init` wrote the per-user file.
+  env -u FLEET_CONFIG XDG_CONFIG_HOME="$ROOT/home/.config" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  : > "$ROOT/data/fleet-up-$OTHER.log"
+  _tbx_stop_fleet "$ROOT"
+  sleep 0.2
+  run ! kill -0 "$OTHER"
+}
+
+@test "a fleet up on a default config outside the sandbox is left alone" {
+  [ -r /proc/self/environ ] || skip "no /proc to read a process's environment"
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  env -u FLEET_CONFIG XDG_CONFIG_HOME="${BATS_TEST_TMPDIR}/elsewhere/.config" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  : > "$ROOT/data/fleet-up-$OTHER.log"
+  _tbx_stop_fleet "$ROOT"
+  kill -0 "$OTHER"
+}
+
 @test "a profile made before 3.0 gets a Fleet config the new fleet reads" {
   mkdir -p "$ROOT/fleet"
   printf 'version = 1\n\n[starter]\nworkspace = "starter"\n' > "$ROOT/fleet/config.toml"

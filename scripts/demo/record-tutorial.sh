@@ -159,10 +159,13 @@ mkdir -p "$CFG_DIR"
 tbx_sandbox_runtime
 unset FLEET_CONFIG
 
+# The teardown runs before the link goes: it stops the `fleet up` the first
+# launch started, which it knows as the sandbox's by an XDG_CONFIG_HOME that
+# resolves through that link.
 cleanup() {
     tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
-    if [ -L "$HOME_LINK" ]; then rm -f "$HOME_LINK"; fi
     tbx_sandbox_teardown
+    if [ -L "$HOME_LINK" ]; then rm -f "$HOME_LINK"; fi
 }
 trap cleanup EXIT INT TERM
 
@@ -392,8 +395,8 @@ shot session-name
 send Enter; sleep 2
 shot branch-name
 
-# 11 — the agent. Skipped when only one agent is defined; a fresh install seeds
-# the built-in registry, so it is not.
+# 11 — the agent. Skipped with one harness or none; Fleet ships several, so it
+# is not.
 send Enter; sleep 2
 shot agent-picker
 
