@@ -147,7 +147,7 @@ breadcrumb: 'Configuration'
             feature flags apply immediately; the
             <code>[notifications]</code>
             knobs, the
-            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            <code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             feature flags, and the write-once scalars take effect on the next launch and the toast says so.
             A change to
             <code>[fleets]</code>
@@ -386,7 +386,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
             via mtime poll: the UI-panel feature flags apply immediately, while the
             <code>[notifications]</code>
             knobs, the
-            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            <code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             feature flags, and the write-once scalars take effect on the next launch.
           </p>
           <div class="info-box">
@@ -454,7 +454,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
             A complete <code>settings.toml</code> showing every knob at its default &mdash; copy
             this and uncomment what you want to change (the UI-panel feature flags apply live; the
             <code>[notifications]</code> knobs, the
-            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            <code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             flags, and the write-once scalars take effect on the next launch):
           </p>
           <pre data-title="settings.toml"><code class="language-toml">config_version = 1
@@ -466,7 +466,6 @@ two_panel_min_cols    = 80     # width below which only the terminal renders
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
-automations   = true
 shell_pane    = true
 perf_hud      = true
 mouse         = true
@@ -487,7 +486,7 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             &mdash; <code>version_check</code> and <code>auto_update</code> included, which both
             reach the network.
             <code>shell_pane</code> and <code>perf_hud</code> apply
-            <strong>live</strong> on save; <code>automations</code>, <code>mouse</code>,
+            <strong>live</strong> on save; <code>mouse</code>,
             <code>notifications</code>, <code>version_check</code> and <code>auto_update</code>, and
             the write-once scalars, wait for the next launch. Data is never touched, so re-enabling a
             flag is lossless.
@@ -509,11 +508,6 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td><code>automations</code></td>
-                <td><code>true</code></td>
-                <td>the interface's own firing of due automations, every 15 seconds. <code>thurbox-cli automation tick</code> from an OS timer fires them with no interface open</td>
-              </tr>
               <tr>
                 <td><code>shell_pane</code></td>
                 <td><code>true</code></td>
@@ -553,11 +547,6 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             </tbody>
           </table>
           <p>
-            <code>automations = false</code>
-            is the one flag with teeth beyond the UI: it also stops the TUI from firing due
-            schedules (explicit
-            <code>thurbox-cli automation</code>
-            commands still work).
             <code>mouse = false</code>
             skips terminal mouse capture entirely, so the terminal keeps its native mouse behavior.
             <code>notifications = false</code>

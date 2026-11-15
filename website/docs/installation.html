@@ -315,13 +315,7 @@ nix profile install github:Thurbeen/thurbox          # install into your profile
             <code>homeManagerModules.default</code>
             offers the same
             <code>programs.thurbox</code>
-            options under Home Manager. The only other option,
-            <code>programs.thurbox.automations.enable</code>
-            , sets up the user timer from
-            <code>packaging/systemd</code>
-            (or the launchd agent from
-            <code>packaging/launchd</code>
-            under Home Manager on macOS) so automations keep firing after a reboot.
+            options under Home Manager.
           </p>
           <p>
             A flake build isn't a release. It reports its version as
@@ -608,9 +602,7 @@ nix profile remove thurbox      # Nix, installed with nix profile install</code>
             <code>sudo nixos-rebuild switch</code>
             or
             <code>home-manager switch</code>
-            . If you had turned on
-            <code>automations.enable</code>
-            , the rebuild removes the timer too. The store copy stays until
+            . The store copy stays until
             <code>nix-collect-garbage</code>
             .
           </p>

@@ -178,18 +178,11 @@ fleet delete ─▶ release session ◀── Concluded ◀───┘</code></
     Using Fleet, start a session per crate of this repository, and send each one a prompt to
     refactor its crate. Then list the Tasks.
   </li>
-  <li>
-    Create a nightly automation that sends &ldquo;triage new issues&rdquo; to the
-    <code>triage</code>
-    session on weekdays at 09:00.
-  </li>
 </ul>
 <p>
   The commands the agent reaches for are <code>fleet apply --create-only</code>,
-  <code>fleet send</code>, <code>fleet list task</code> and
-  <code>thurbox-cli automation create</code>. Fleet has no schedule kind, so a recurring send or
-  spawn is a Thurbox automation, which fires through <code>fleet send</code> and
-  <code>fleet apply</code>. The
+  <code>fleet send</code> and <code>fleet list task</code>. To schedule work, a cron job or a
+  systemd timer calls <code>fleet apply</code> or <code>fleet send</code>. The
   <a href="recipes.html">recipes</a>
   page has the same thing written as bash, if you would rather commit a script.
 </p>

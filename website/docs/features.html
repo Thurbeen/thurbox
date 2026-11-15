@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Features — Thurbox Docs'
-description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, several Fleets and places, automations, and a headless CLI.'
+description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, several Fleets and places, and a headless CLI.'
 currentPage: 'features'
 breadcrumb: 'Features'
 ---
@@ -73,11 +73,6 @@ breadcrumb: 'Features'
                 <td>Info panel</td>
                 <td>installable</td>
                 <td><a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a></td>
-              </tr>
-              <tr>
-                <td><a href="#automations">Automations</a></td>
-                <td>installable</td>
-                <td><a href="https://github.com/Thurbeen/thurbox-automations" target="_blank" rel="noopener">thurbox-automations</a></td>
               </tr>
               <tr>
                 <td>CPU / RAM gauges</td>
@@ -187,41 +182,6 @@ breadcrumb: 'Features'
             its harness. See
             <a href="agents.html">Agents</a>.
           </p>
-
-                    <h2 id="automations">
-            Automations
-            <a href="#automations" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Named, scheduled runs. An automation fires on a schedule and either
-            <strong>sends</strong> a prompt to a session (<code>fleet send</code>),
-            <strong>spawns</strong> a new session and prompts it, or
-            <strong>runs a shell command</strong> headlessly with no agent at all.
-          </p>
-          <ul>
-            <li>
-              Schedules are one-shot (<code>at:</code>) or recurring cron, with friendly
-              <code>hourly</code> / <code>daily</code> / <code>weekdays</code> / <code>weekly</code>
-              presets and an optional timezone.
-            </li>
-            <li>
-              Automations are Thurbox's own: one file, <code>automations.json</code> beside
-              <code>settings.toml</code>, holds each definition and its recent runs. Fleet has no
-              schedule kind.
-            </li>
-            <li>
-              The interface fires due runs every 15 seconds while it runs. For firing with no
-              interface open, run <code>thurbox-cli automation tick</code> from an OS timer (a cron
-              line or a systemd timer). A run is claimed in the file under a lock before it starts,
-              so two firers never fire one occurrence twice.
-            </li>
-            <li>
-              Scriptable headlessly with
-              <code>thurbox-cli automation create/list/show/edit/remove/run/tick</code>.
-            </li>
-          </ul>
-
-          
 
                     <h2 id="git-worktrees">
             Git Worktrees
@@ -587,19 +547,11 @@ transport = { wsl = "Ubuntu" }</code></pre>
           </div>
           <pre data-title="settings.toml"><code class="language-toml">[features]
 shell_pane = true     # Ctrl+T per-session shell
-automations = true    # the interface fires due automations
 mouse = true          # mouse capture: clicks, wheel, drag-select, hover
 notifications = true  # OS desktop alerts when a session needs attention
 perf_hud = true       # F12 live counters
 version_check = true  # GitHub update check (makes a network call)
 auto_update = true    # download+verify+replace the binaries on startup (never across a major)</code></pre>
-          <p>
-            <code>automations = false</code>
-            is the flag with teeth beyond the interface: it also stops the interface firing due
-            schedules (explicit
-            <code>thurbox-cli automation</code>
-            commands still work).
-          </p>
           <p>
             You don't have to hand-edit the file: press
             <code>Ctrl+,</code>
@@ -688,7 +640,7 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
           <p>
             <code>thurbox-cli</code> keeps what is the interface's own: <code>config</code>,
             <code>doctor</code>, <code>version</code>, <code>update</code>, <code>plugin</code>,
-            <code>ui</code>, <code>schema</code>, <code>automation</code>, <code>editor</code>,
+            <code>ui</code>, <code>schema</code>, <code>editor</code>,
             <code>notify</code> and <code>perf</code>.
             <code>thurbox-cli --help</code> lists them.
           </p>

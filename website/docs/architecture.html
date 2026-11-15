@@ -277,7 +277,7 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
               <tr>
                 <td><code>session/</code></td>
                 <td>
-                  Plain data types: <code>SessionState</code>, the settings, automation schedules,
+                  Plain data types: <code>SessionState</code>, the settings,
                   diffs and plugin specs. No logic beyond pure helpers.
                 </td>
               </tr>
@@ -285,7 +285,7 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
                 <td><code>fleet_link</code></td>
                 <td>
                   Every <code>fleet</code> call thurbox makes: the commands, the watch, the manager,
-                  an attach, an automation's fire and <code>doctor</code>'s probes. A Fleet on another
+                  an attach and <code>doctor</code>'s probes. A Fleet on another
                   machine is a launcher on the link (ssh or WSL), not a change at each call site.
                 </td>
               </tr>
@@ -304,9 +304,9 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
               <tr>
                 <td><code>cli/</code></td>
                 <td>
-                  Headless automation (
+                  The headless
                   <code>thurbox-cli</code>
-                  binary). The interface's own files: config, plugins, automations, the editor,
+                  binary. The interface's own files: config, plugins, the editor,
                   notifications. Sessions are driven by Fleet's <code>fleet</code>.
                 </td>
               </tr>
@@ -338,7 +338,7 @@ coordinator &larr; main's body: the loop, the workers, the chrome</pre>
             Every session is a Fleet Task, so Fleet's store holds the sessions, and every Thurbox
             instance follows it through <code>fleet watch</code>. Thurbox keeps no database. Its own
             state is plain files: <code>interface.json</code> (theme, editor, the session order, each
-            companion shell's pane), <code>automations.json</code>, <code>bookmarks.json</code> and
+            companion shell's pane), <code>bookmarks.json</code> and
             <code>settings.toml</code>. A write that two instances can race takes a file lock.
           </p>
 

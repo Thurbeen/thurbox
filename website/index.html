@@ -357,10 +357,6 @@ footer: true
               <span>A Review tab: the session's diff against its base branch, with notes sent to the agent.</span>
             </li>
             <li>
-              <a href="https://github.com/Thurbeen/thurbox-automations">thurbox-automations</a>
-              <span>Run, switch on or off, create and edit scheduled automations, and see why a run failed.</span>
-            </li>
-            <li>
               <a href="https://github.com/Thurbeen/thurbox-auto-continue">thurbox-auto-continue</a>
               <span>When a Claude Code session hits its usage limit, waits for the reset and continues.</span>
             </li>
@@ -443,22 +439,6 @@ footer: true
                 The agents are Fleet's harness profiles: the agent picker offers what
                 <code>fleet version --json</code> lists. Adding an agent is adding a profile to
                 Fleet, not a change to thurbox.
-              </p>
-            </div>
-          </a>
-          <a href="docs/features.html#automations" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x21BB;</div>
-              <h3>Automations</h3>
-              <p>
-                Named, scheduled agent runs &mdash; one-shot or recurring cron. On schedule they
-                <strong>send</strong>
-                a prompt to a session,
-                <strong>spawn</strong>
-                a fresh one, or run a plain shell command. The interface fires them, and
-                <code>thurbox-cli automation tick</code> from an OS timer fires them
-                <strong>whether or not thurbox is open</strong>
-                .
               </p>
             </div>
           </a>
@@ -693,11 +673,6 @@ Ctrl+,  Settings</pre>
               <li>
                 Using Fleet, start a session per crate of this repository, and send each one a
                 prompt to refactor its crate.
-              </li>
-              <li>
-                Create a nightly automation that sends &ldquo;triage new issues&rdquo; to the
-                <code>triage</code>
-                session on weekdays at 09:00.
               </li>
             </ul>
             <p class="ask-card__more">

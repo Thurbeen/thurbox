@@ -32,31 +32,12 @@ test('homepage does not promote performance', () => {
   assert.doesNotMatch(text(home), /benchmark|five-way|frames a second|% of one core|Herdr/i);
 });
 
-test('plugin catalog lists Automations with its repository, install command and current requirements', () => {
-  const repo = 'https://github.com/Thurbeen/thurbox-automations';
-  const card = built('plugins.html')
-    .querySelectorAll('[data-plugin]')
-    .find((c) => c.querySelector('h2 a')?.getAttribute('href') === repo);
-  assert.ok(card, 'a catalog card links to the thurbox-automations repository');
-  assert.equal(card.getAttribute('data-badge'), 'official');
-  assert.equal(
-    text(parse(card.querySelector('pre').innerHTML)).trim(),
-    'thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-automations',
-  );
-  const copy = text(card);
-  assert.match(copy, /run history|recent runs/i);
-  assert.match(copy, /2\.56\.5/);
-  assert.match(copy, /2\.57\.0/, 'names the release that brought create and edit');
-  assert.doesNotMatch(copy, /need a release with/i, 'create and edit have shipped');
-  const gif = card.querySelector('img').getAttribute('src');
-  assert.equal(gif, 'https://raw.githubusercontent.com/Thurbeen/thurbox-automations/main/media/demo.gif');
-});
-
-test('features page points automations at their pane', () => {
-  const features = built('docs/features.html');
-  const repo = 'https://github.com/Thurbeen/thurbox-automations';
-  assert.ok(features.querySelector(`a[href="${repo}"]`), 'links the automations pane');
-  assert.doesNotMatch(text(features), /No pane, but they still fire/);
+test('the site names no thurbox automations', () => {
+  for (const path of pages()) {
+    const page = built(path);
+    assert.doesNotMatch(text(page), /automations?\.json|thurbox-cli automation|thurbox-automations/i, `${path} names automations`);
+    assert.ok(!page.querySelector('a[href*="thurbox-automations"]'), `${path} links the automations pane`);
+  }
 });
 
 const retiredFleet = [
@@ -136,7 +117,7 @@ test('plugin catalog lists Fleet Lens in place of the Fleet v1 extension', () =>
 test('homepage links each official plugin from the interface section, and stays light on commands', () => {
   const home = built('index.html');
   const section = home.querySelector('#customizable');
-  const plugins = ['info-panel', 'code-review', 'automations', 'auto-continue', 'fleetlens', 'doom'];
+  const plugins = ['info-panel', 'code-review', 'auto-continue', 'fleetlens', 'doom'];
   for (const name of plugins) {
     const repo = `https://github.com/Thurbeen/thurbox-${name}`;
     const link = section.querySelector(`a[href="${repo}"]`);
