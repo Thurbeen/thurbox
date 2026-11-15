@@ -158,7 +158,10 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
   assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
   const fit = home.querySelector('#how-they-fit');
-  assert.ok(fit.querySelector('img[src="assets/overview.svg"]'), 'how they fit shows the overview');
+  const flow = text(fit.querySelector('figure.flow'));
+  for (const word of ['thurbox', 'Fleet laptop', 'Fleet box', 'ssh', 'WSL', 'runtime-mux', 'local']) {
+    assert.match(flow, new RegExp(word), `the overview reads "${word}" as text`);
+  }
   assert.doesNotMatch(text(fit), / \./, 'no space before a period');
 });
 

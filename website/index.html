@@ -10,11 +10,8 @@ footer: true
     <section class="hero section">
       <div class="container">
         <h1>
-          Fleet
-          <span class="hero-headline-tail"
-            ><span class="hero-amp" aria-hidden="true">+</span>
-            <span class="hero-headline-phrase">thurbox</span></span
-          >
+          Orchestrate
+          <span class="hero-headline-phrase">agents</span>
         </h1>
         <p class="subtitle">
           <strong>Fleet</strong> runs your coding agents and keeps them running.
@@ -174,15 +171,64 @@ thurbox</code></pre>
           thurbox follows one or more Fleets, on this machine or over ssh or WSL; each Fleet's
           runtime runs the sessions at a place.
         </p>
-        <p class="how-they-fit__diagram">
-          <img
-            src="assets/overview.svg"
-            alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place"
-            width="1100"
-            height="520"
-            loading="lazy"
-          />
-        </p>
+        <!-- The overview as real words: the same content as assets/overview.svg,
+             which the README keeps because GitHub renders no custom HTML. -->
+        <figure class="flow" aria-labelledby="flow-title">
+          <figcaption class="flow__title" id="flow-title">One interface, several Fleets</figcaption>
+          <div class="flow__grid">
+            <div class="flow__node flow__node--ui">
+              <h3 class="flow__name">thurbox</h3>
+              <p>One list of sessions from every Fleet in <code>settings.toml</code>.</p>
+              <p class="flow__dim"><kbd>Ctrl+N</kbd> picks a Fleet, a place, a repository.</p>
+            </div>
+            <ol class="flow__lanes">
+            <li class="flow__lane">
+              <span class="flow__wire"><span class="flow__label">fleet</span></span>
+              <div class="flow__node flow__node--fleet">
+                <h3 class="flow__name"><span class="flow__sigil" aria-hidden="true"></span>Fleet laptop</h3>
+                <p>on this machine</p>
+                <p class="flow__dim">thurbox starts <code>fleet up</code></p>
+              </div>
+              <span class="flow__wire"><span class="flow__label">start</span></span>
+              <div class="flow__node">
+                <h3 class="flow__name">runtime-mux</h3>
+                <p>tmux &middot; psmux</p>
+                <p class="flow__dim">keeps it alive</p>
+              </div>
+              <span class="flow__wire"><span class="flow__label">runs</span></span>
+              <div class="flow__node flow__node--place">
+                <h3 class="flow__name">local</h3>
+                <p>the laptop</p>
+                <p class="flow__dim">a coding agent</p>
+              </div>
+            </li>
+            <li class="flow__lane flow__lane--remote">
+              <span class="flow__wire"><span class="flow__label">ssh &middot; WSL</span></span>
+              <div class="flow__node flow__node--fleet">
+                <h3 class="flow__name"><span class="flow__sigil" aria-hidden="true"></span>Fleet box</h3>
+                <p>on another machine</p>
+                <p class="flow__dim">a systemd unit runs <code>fleet up</code></p>
+              </div>
+              <span class="flow__wire"><span class="flow__label">start</span></span>
+              <div class="flow__node">
+                <h3 class="flow__name">runtime-mux</h3>
+                <p>tmux &middot; psmux</p>
+                <p class="flow__dim">keeps it alive</p>
+              </div>
+              <span class="flow__wire"><span class="flow__label">runs</span></span>
+              <div class="flow__node flow__node--place">
+                <h3 class="flow__name">local</h3>
+                <p>box</p>
+                <p class="flow__dim">a coding agent</p>
+              </div>
+            </li>
+            </ol>
+          </div>
+          <p class="flow__note">
+            <strong>A session is a Task of one Fleet.</strong> It keeps running when thurbox quits. A
+            Fleet that cannot be reached keeps its rows, marked unreachable.
+          </p>
+        </figure>
       </div>
     </section>
 

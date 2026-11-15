@@ -34,18 +34,11 @@
   z-index: 1;
 }
 
-/* Press Start 2P is 1em per character, so "FLEET + THURBOX" needs 15em of
-   line: below 640px the second name takes a line of its own instead. */
 .hero h1 {
-  font-size: clamp(1.5rem, 5vw, 3rem);
+  font-size: clamp(1.4rem, 4.4vw, 3.2rem);
   margin-bottom: var(--space-lg);
   letter-spacing: 0.01em;
   animation: flicker 4.5s infinite steps(1);
-}
-
-.hero-amp {
-  color: var(--text-muted);
-  text-shadow: none;
 }
 
 .hero-headline-phrase {
@@ -54,10 +47,6 @@
 }
 
 @media (max-width: 639px) {
-  .hero-headline-tail {
-    display: block;
-  }
-
   .get-started {
     padding: var(--space-md);
   }
@@ -272,13 +261,229 @@
   border-top: 1px solid var(--border-light);
 }
 
-.how-they-fit__diagram {
+/* The overview, drawn in the doom style of assets/overview.svg: a metal frame
+   round an ember grid. It is a dark card in both palettes, as the SVG is, so
+   its colours are its own rather than the page's. */
+.flow {
+  --flow-bg: #0e0606;
+  --flow-panel: linear-gradient(#2a1517, #140a0b);
+  --flow-edge: #5e5457;
+  --flow-hot: #d0301c;
+  --flow-red: #ff5a40;
+  --flow-ink: #efe2e0;
+  --flow-dim: #c4adab;
+  --flow-cyan: #00d9ff;
+
   margin: var(--space-xl) 0 0;
+  padding: var(--space-lg);
+  border: 10px solid #2b2527;
+  outline: 1px solid #9a9093;
+  background:
+    linear-gradient(90deg, #2c0c0a 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(#2c0c0a 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--flow-bg);
+  color: var(--flow-ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 
-.how-they-fit__diagram img {
+.flow__title {
+  font-family: var(--font-display);
+  font-size: clamp(0.9rem, 2.4vw, 1.4rem);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--flow-red);
+  margin-bottom: var(--space-lg);
+}
+
+.flow__grid {
+  display: grid;
+  grid-template-columns: 1fr 3fr;
+  gap: var(--space-md);
+}
+
+.flow__lanes {
+  display: grid;
+  gap: var(--space-md);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.flow__lane {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 4.5rem 1fr 4.5rem 1fr;
+  align-items: center;
+}
+
+.flow__node {
+  background: var(--flow-panel);
+  border: 2px solid var(--flow-edge);
+  box-shadow:
+    inset 2px 2px 0 rgb(255, 255, 255, 0.16),
+    inset -2px -2px 0 rgb(0, 0, 0, 0.6);
+  padding: var(--space-md);
+  min-width: 0;
+}
+
+.flow__node--ui,
+.flow__lane:first-child .flow__node--place {
+  border-color: var(--flow-hot);
+}
+
+.flow__node p {
+  margin: 0;
+  color: var(--flow-ink);
+}
+
+.flow__node p + p {
+  margin-top: var(--space-xs);
+}
+
+.flow__node code,
+.flow__node kbd {
+  color: var(--flow-red);
+  background: none;
+  font-size: inherit;
+  padding: 0;
+}
+
+.flow .flow__dim {
+  color: var(--flow-dim);
+  font-size: var(--text-xs);
+}
+
+.flow__name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0 0 var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--flow-red);
+}
+
+.flow__sigil {
+  width: 1.2em;
+  height: 1.2em;
+  flex: none;
+  border: 2px solid #7a1a12;
+  border-radius: var(--radius-round);
+  background: radial-gradient(circle, #ff3b24 0 18%, transparent 22%);
+}
+
+/* A wire: a dark track with a dashed glowing line on it, its label above. */
+.flow__wire {
+  position: relative;
+  height: 4px;
+  background: repeating-linear-gradient(90deg, #ff3b24 0 8px, transparent 8px 18px), #6a1a14;
+}
+
+.flow__lane--remote .flow__wire:first-child {
+  background:
+    repeating-linear-gradient(90deg, var(--flow-cyan) 0 6px, transparent 6px 12px), #003a45;
+}
+
+.flow__label {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: #ff6a50;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.flow__lane--remote .flow__wire:first-child .flow__label {
+  color: var(--flow-cyan);
+}
+
+.flow__note {
+  margin: var(--space-lg) 0 0;
+  padding: var(--space-md);
+  border: 2px solid var(--flow-edge);
+  background: linear-gradient(#3a3335, #1c1819);
+  color: var(--flow-ink);
+}
+
+.flow__note strong {
   display: block;
-  width: 100%;
+  color: #ff3b24;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .flow__wire {
+    animation: flow-march 1.6s linear infinite;
+  }
+
+  .flow__sigil {
+    animation: flow-pulse 4s ease-in-out infinite;
+  }
+}
+
+@keyframes flow-march {
+  to {
+    background-position: 36px 0;
+  }
+}
+
+@keyframes flow-pulse {
+  50% {
+    box-shadow: 0 0 8px #ff2a1a;
+  }
+}
+
+/* Narrow: the flow stacks, and each wire turns vertical between its boxes. */
+@media (max-width: 767px) {
+  .flow {
+    padding: var(--space-md);
+    border-width: 6px;
+  }
+
+  .flow__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .flow__lanes {
+    gap: var(--space-lg);
+  }
+
+  .flow__lane {
+    grid-template-columns: 1fr;
+  }
+
+  .flow__wire {
+    justify-self: center;
+    width: 4px;
+    height: 2.5rem;
+    background: repeating-linear-gradient(180deg, #ff3b24 0 8px, transparent 8px 18px), #6a1a14;
+  }
+
+  .flow__lane--remote .flow__wire:first-child {
+    background:
+      repeating-linear-gradient(180deg, var(--flow-cyan) 0 6px, transparent 6px 12px), #003a45;
+  }
+
+  .flow__label {
+    inset: 50% auto auto 12px;
+    transform: translateY(-50%);
+    text-align: left;
+  }
+
+  @keyframes flow-march {
+    to {
+      background-position: 0 36px;
+    }
+  }
 }
 
 /* ---- Back to top ---- */
