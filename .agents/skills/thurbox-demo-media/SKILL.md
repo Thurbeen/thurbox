@@ -55,8 +55,11 @@ becomes the poster, since Doom flashes the whole view red when the player is hit
 **The onboarding tutorial's screenshots are a third recorder.**
 `scripts/demo/record-tutorial.sh` writes `media/tutorial/*.png` — one still per
 step of `docs/thurbox/tutorial.md`, taken by driving the real TUI through the
-creation flow. The profile starts with **zero sessions and an empty repo
-memory**, because the tutorial's subject is a first launch. thurbox runs in a
+creation flow. The profile starts with **zero sessions, an empty repo
+memory and no Fleet config**, because the tutorial's subject is a first launch:
+the first frame shows the notice of the `fleet init` thurbox ran itself.
+`TEXT_DIR=<dir>` also keeps each frame as plain text, to check a re-record
+against the prose without opening the PNGs. thurbox runs in a
 detached tmux session, `tmux send-keys` presses the real chords, and each still
 is a `capture-pane -e` dump replayed through agg. `HOME` is a short symlink into
 the sandbox (`/tmp/tutorial-home`) with the XDG roots under it, because the repo

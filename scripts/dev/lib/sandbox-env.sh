@@ -201,9 +201,25 @@ tbx_fleet_session() {
 # _tbx_fleet_is_ours <pid> <root> — whether that process runs on the Fleet
 # config tbx_sandbox_fleet wrote under <root>. Without /proc nothing tells, so
 # the caller's `fleet up` check is all there is.
+# A manager is this sandbox's when its config is: the sandbox's FLEET_CONFIG,
+# or, with none set, the per-user file under an XDG_CONFIG_HOME inside the
+# sandbox (what the first launch's `fleet init` writes, as the tutorial
+# recorder runs it). Resolved, since that home can be a symlink into the root.
 _tbx_fleet_is_ours() { # <pid> <root>
     [ -r "/proc/$1/environ" ] || return 0
-    tr '\0' '\n' < "/proc/$1/environ" | grep -qxF "FLEET_CONFIG=$2/fleet/config.toml"
+    _tbx_env=$(tr '\0' '\n' < "/proc/$1/environ")
+    if printf '%s\n' "$_tbx_env" | grep -q '^FLEET_CONFIG='; then
+        printf '%s\n' "$_tbx_env" | grep -qxF "FLEET_CONFIG=$2/fleet/config.toml"
+        return
+    fi
+    _tbx_xdg=$(printf '%s\n' "$_tbx_env" | sed -n 's/^XDG_CONFIG_HOME=//p' | head -n 1)
+    [ -n "$_tbx_xdg" ] || return 1
+    _tbx_xdg=$(readlink -f "$_tbx_xdg" 2>/dev/null || printf '%s' "$_tbx_xdg")
+    _tbx_root=$(readlink -f "$2" 2>/dev/null || printf '%s' "$2")
+    case "$_tbx_xdg/" in
+        "$_tbx_root"/*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # _tbx_stop_fleet <root> — stop the `fleet up` thurbox started for the sandbox

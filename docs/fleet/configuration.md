@@ -187,18 +187,19 @@ written `<runtime>/<place>`, and a Task names one in `spec.host`
 version = 1
 
 [data]
-dir = "store"
+dir = "/home/me/.local/share/fleet/store-v1"
 
 [runtimes.mux]
 program = "runtime-mux"
 callTimeoutMs = 10000
-keyPrefix = "fleet"
+keyPrefix = "f0123456789abcdef01234567"
 ```
 
-This is what `fleet init` writes, with an instance-specific `keyPrefix`:
-`runtime-mux` and nothing else. A runtime with no `places` table has one
-place, `local`, so this config has one place, `mux/local`, also named
-`local`: this machine.
+This is the runtime part of what `fleet init` writes: an absolute store
+path, a `keyPrefix` derived from the config's path, and `runtime-mux` and
+nothing else. `init` also writes the three shipped `[forge.readyPolicies]`.
+A runtime with no `places` table has one place, `local`, so this config has
+one place, `mux/local`, also named `local`: this machine.
 Fleet never falls back to another runtime. With no multiplexer on the
 machine, the first start fails, naming the missing binary, and the Task's
 `Spawned` condition says so. Another runtime is opt-in: add its table.
