@@ -604,7 +604,10 @@ a place.
   uses fails the report when it does not answer; another listed Fleet only
   warns. Each check of a Fleet names it (`fleet` in `--json`), and `fleets`
   lists each Fleet with `transport`, `in_force` and `unreachable`. The
-  multiplexer is checked only when a listed Fleet runs on this machine.
+  multiplexer is checked only when a listed Fleet runs on this machine. A
+  `hosts.toml` an earlier thurbox left in the config directory is a warning
+  (`hosts-toml`): nothing reads it, and its fix is to list each machine's
+  Fleet under `[fleets]`.
   `thurbox-cli config show` and `thurbox-cli version --json` report the Fleet
   in use under `fleet`, with Fleet's data directory.
 - A `fleet up` the interface started runs in a process group of its own and

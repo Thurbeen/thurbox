@@ -9,8 +9,7 @@ disposable profiles on the host.
 
 The three harnesses provision a host, or point at one, for testing thurbox and
 its runtimes on it. They differ only in *where the host comes from*. They share
-`e2e/lib/e2e-common.sh` (colour logging, the PASS/FAIL contract and the
-`[[hosts]]` emitter).
+`e2e/lib/e2e-common.sh` (colour logging and the PASS/FAIL contract).
 
 | Script | Target host | Ephemeral? | Deps | In CI? |
 |---|---|---|---|---|
