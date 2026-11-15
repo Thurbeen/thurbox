@@ -143,27 +143,29 @@ runtime-mux: runtime-mux workspace ──TRACEPARENT──▶ workspace-git make
 The identity attributes are the object's `fleet.kind`, `fleet.name`,
 `fleet.uid` and `fleet.generation`. `KIND` in `effect KIND` is one of
 `spawn`, `brief`, `deliver`, `release`, `revive`, `pause`, `resume`,
-`markReady`, `materialize` and `cleanWorkspace`. `VERB` is a runtime
+`markReady`, `materialize` and `cleanWorkspace` for a Task, and `create`
+and `retireScheduled` for a CronTask. `VERB` is a runtime
 protocol verb ([runtimes](runtime/README.md#the-runtime-protocol)) or a
 `workspace-git` verb (`make`, `release`, `discard`, `inspect`).
 
 | Span | Outcome values |
 | --- | --- |
 | `reconcile KIND` | `changed`, `unchanged`, `conflict`, `error`, `leaseLost` |
-| `effect KIND` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `revived`, `paused`, `resumed`, `markedReady`, `moved`, `materialized`, `deleted`, `workspaceBusy`, `failed`, `trustUnmapped`, `unknown` |
+| `effect KIND` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `revived`, `paused`, `resumed`, `markedReady`, `moved`, `materialized`, `created`, `deleted`, `workspaceBusy`, `failed`, `trustUnmapped`, `unknown` |
 | `forge poll` | `known`, `absent`, `timeout`, `incomplete`, `throttled`, `unreadable`, `notLoggedIn`, `refused`, `unavailable` |
 | `runtime VERB`, `runtime-mux VERB` | `known`, `unknown` |
 
 The `fleet.controller` values are `TaskController`, `ForgeController`,
-`ChangeRequestController`, `ConversationController`, `ListenerController`
-and `GatewayController`.
+`ChangeRequestController`, `ConversationController`, `ListenerController`,
+`CronTaskController` and `GatewayController`.
 
 These spans have the error status: a command with a non-zero exit, a
 reconcile that fails, a runtime call that answers Unknown, and a
 `runtime-mux` or `workspace-git` call that answers Unknown.
 
 The Conversation and Gateway controllers' effects, gateway calls and Task
-creation have no span.
+creation by `fleet apply` have no span. A CronTask's Task creation is the
+`effect create` span.
 
 ## Metrics
 

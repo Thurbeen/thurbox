@@ -470,8 +470,10 @@ fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
     let started = Instant::now();
     env.fleet(&["version", "--json"]).ok();
     let took = started.elapsed();
+    // The 2-second bound took 2.0 s here; the call bound takes about 0.2 s.
+    // 1.5 s tells them apart with room for a loaded runner.
     assert!(
-        took < Duration::from_millis(1000),
+        took < Duration::from_millis(1500),
         "the command took {took:?} with a stalled collector"
     );
     drop(silent);

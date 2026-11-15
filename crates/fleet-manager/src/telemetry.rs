@@ -331,7 +331,17 @@ pub(crate) fn effect(
     effect: &Effect,
     perform: impl FnOnce() -> Observation<EffectOutcome>,
 ) -> Observation<EffectOutcome> {
-    let kind = effect_kind(effect);
+    effect_named(obj, effect_kind(effect), perform)
+}
+
+/// Perform one effect of kind `kind` as the span `effect KIND`, and count it
+/// by outcome: an effect planned outside an [`Effect`], as a CronTask's
+/// create is.
+pub(crate) fn effect_named(
+    obj: &Object,
+    kind: &'static str,
+    perform: impl FnOnce() -> Observation<EffectOutcome>,
+) -> Observation<EffectOutcome> {
     let mut attributes = identity(obj);
     attributes.push(KeyValue::new("fleet.effect", kind));
     let span = Current::start(format!("effect {kind}"), attributes);
