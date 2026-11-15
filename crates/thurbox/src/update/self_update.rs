@@ -47,11 +47,21 @@ use crate::update::version_check::{current_version, decide_update, fetch_release
 /// `scripts/install.sh`); the per-release directory is `<base>/v{version}/`.
 const RELEASE_BASE: &str = "https://github.com/Thurbeen/thurbox/releases/download";
 
-/// The binaries shipped in a release archive, replaced in place on update.
+/// The binaries shipped in a release archive, replaced in place on update:
+/// `BINARIES` in `scripts/ci/release-archive.sh`, which packs the archive (a
+/// test holds the two lists equal). All of them, because thurbox runs `fleet`,
+/// Fleet runs `runtime-mux` and runtime-mux runs `workspace-git`: an update
+/// that left one behind would pair programs from two releases.
 ///
 /// Stems, not file names: the archive and the install directory both spell them
 /// with the platform's executable suffix, which [`install_binaries`] appends.
-const BINARIES: [&str; 2] = ["thurbox", "thurbox-cli"];
+const BINARIES: [&str; 5] = [
+    "thurbox",
+    "thurbox-cli",
+    "fleet",
+    "runtime-mux",
+    "workspace-git",
+];
 
 /// Outcome of an update attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -545,6 +555,11 @@ fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> 
 /// second rename moves the backup straight back.
 #[cfg(windows)]
 fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> {
+    // A program the install lacked has nothing to move aside.
+    if !dest.exists() {
+        std::fs::rename(staged, dest).map_err(|e| replace_failed(dest, e))?;
+        return Ok(None);
+    }
     let backup = backup_path(dest)?;
     std::fs::rename(dest, &backup).map_err(|e| replace_failed(dest, e))?;
     if let Err(e) = std::fs::rename(staged, dest) {
@@ -591,16 +606,17 @@ fn backup_path(dest: &Path) -> Result<PathBuf, String> {
 /// directory, and a suffix-blind version looked for a `thurbox` that is in
 /// neither, reporting the archive as missing it (issue #1172).
 ///
-/// Returns the names actually replaced (binaries absent from either side are
-/// skipped). Unit-testable: takes plain dirs, no network.
+/// A program the install directory lacks is added, not skipped: the archive is
+/// the same verified one, and thurbox cannot start a session without `fleet`
+/// and the programs it runs. Returns the names installed. Unit-testable: takes
+/// plain dirs, no network.
 fn install_binaries(
     extract_dir: &Path,
     install_dir: &Path,
     exe_suffix: &str,
 ) -> Result<Vec<String>, String> {
-    // Phase 1: stage every binary present both in the archive and on disk.
+    // Phase 1: stage every binary the archive ships.
     let mut staged: Vec<(PathBuf, PathBuf, String)> = Vec::new(); // (staged, dest, name)
-    let mut skipped: Vec<String> = Vec::new();
     for stem in BINARIES {
         let name = format!("{stem}{exe_suffix}");
         let src = extract_dir.join(&name);
@@ -611,11 +627,6 @@ fn install_binaries(
         if std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0) == 0 {
             return Err(format!("extracted `{name}` is empty"));
         }
-        if !dest.exists() {
-            // e.g. thurbox-cli not co-located next to the running thurbox.
-            skipped.push(name);
-            continue;
-        }
         let s = match stage_binary(&src, &dest) {
             Ok(s) => s,
             Err(e) => {
@@ -625,20 +636,20 @@ fn install_binaries(
         };
         staged.push((s, dest, name));
     }
-    if staged.is_empty() {
-        return Err("no installed binaries to replace in the install directory".to_string());
-    }
     // Phase 2: commit staged files back-to-back (`commit_binary` says how). A
-    // failure puts back every binary already swapped, so the install is never
-    // left on two versions at once.
-    let mut committed: Vec<(&Path, Option<PathBuf>)> = Vec::new();
+    // failure puts back every binary already swapped and removes every one it
+    // added, so the install is never left on two versions at once.
+    let mut committed: Vec<(&Path, Option<PathBuf>, bool)> = Vec::new();
     for (i, (s, dest, _)) in staged.iter().enumerate() {
+        let added = !dest.exists();
         match commit_binary(s, dest) {
-            Ok(backup) => committed.push((dest, backup)),
+            Ok(backup) => committed.push((dest, backup, added)),
             Err(e) => {
-                for (dest, backup) in committed.into_iter().rev() {
+                for (dest, backup, added) in committed.into_iter().rev() {
                     if let Some(backup) = backup {
                         let _ = std::fs::rename(backup, dest);
+                    } else if added {
+                        let _ = std::fs::remove_file(dest);
                     }
                 }
                 discard_staged(&staged[i..]);
@@ -646,14 +657,7 @@ fn install_binaries(
             }
         }
     }
-    let replaced = staged.into_iter().map(|(_, _, name)| name).collect();
-    if !skipped.is_empty() {
-        tracing::warn!(
-            "auto-update: skipped {} (not in install dir)",
-            skipped.join(", ")
-        );
-    }
-    Ok(replaced)
+    Ok(staged.into_iter().map(|(_, _, name)| name).collect())
 }
 
 /// Remove staged `.new` files an update will not commit, so the next one does
@@ -1263,19 +1267,29 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
     }
 
     #[cfg(unix)]
+    /// An install that predates a program (only `thurbox` and `thurbox-cli`
+    /// beside each other) gains every program the release ships: thurbox
+    /// cannot start a session without `fleet` and the two it runs.
     #[test]
-    fn install_binaries_skips_binaries_absent_from_install_dir() {
+    fn install_binaries_adds_the_programs_the_install_lacks() {
         let install = tempfile::TempDir::new().unwrap();
         let extract = tempfile::TempDir::new().unwrap();
         for name in BINARIES {
             std::fs::write(extract.path().join(name), b"NEW").unwrap();
         }
-        // Only `thurbox` is installed; `thurbox-cli` is not co-located.
-        std::fs::write(install.path().join("thurbox"), b"OLD").unwrap();
+        for name in ["thurbox", "thurbox-cli"] {
+            std::fs::write(install.path().join(name), b"OLD").unwrap();
+        }
 
         let replaced = install_binaries(extract.path(), install.path(), "").unwrap();
-        assert_eq!(replaced, vec!["thurbox".to_string()]);
-        assert!(!install.path().join("thurbox-cli").exists());
+        assert_eq!(replaced.len(), BINARIES.len(), "{replaced:?}");
+        for name in BINARIES {
+            assert_eq!(
+                std::fs::read(install.path().join(name)).unwrap(),
+                b"NEW",
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1418,6 +1432,64 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
+    /// A failed update removes the programs it had added, so the install is
+    /// not left with `fleet` from the new release beside the old thurbox.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_commit_removes_the_programs_it_added() {
+        let install = tempfile::TempDir::new().unwrap();
+        let extract = tempfile::TempDir::new().unwrap();
+        for name in BINARIES {
+            std::fs::write(extract.path().join(name), b"NEW").unwrap();
+        }
+        for name in ["thurbox", "thurbox-cli"] {
+            std::fs::write(install.path().join(name), b"OLD").unwrap();
+        }
+        // A non-empty directory where the last program goes: no rename lands.
+        let blocked = install.path().join(BINARIES[BINARIES.len() - 1]);
+        std::fs::create_dir_all(blocked.join("x")).unwrap();
+
+        install_binaries(extract.path(), install.path(), "").unwrap_err();
+        for name in &BINARIES[2..BINARIES.len() - 1] {
+            assert!(
+                !install.path().join(name).exists(),
+                "{name} stayed after the failed update"
+            );
+        }
+    }
+
+    /// The Windows shape of the same: a later program held open, and the
+    /// programs the install lacked are gone again after the failure.
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_commit_removes_the_programs_it_added_on_windows() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let install = tempfile::TempDir::new().unwrap();
+        let extract = tempfile::TempDir::new().unwrap();
+        for stem in BINARIES {
+            std::fs::write(extract.path().join(format!("{stem}.exe")), "NEW").unwrap();
+        }
+        let last = format!("{}.exe", BINARIES[BINARIES.len() - 1]);
+        for name in ["thurbox.exe", "thurbox-cli.exe", last.as_str()] {
+            std::fs::write(install.path().join(name), "OLD").unwrap();
+        }
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ
+            .open(install.path().join(&last))
+            .unwrap();
+
+        install_binaries(extract.path(), install.path(), ".exe").unwrap_err();
+        for stem in &BINARIES[2..BINARIES.len() - 1] {
+            let name = format!("{stem}.exe");
+            assert!(
+                !install.path().join(&name).exists(),
+                "{name} stayed after the failed update"
+            );
+        }
+    }
+
     /// Hashing is in process, so an empty `PATH` — a machine with neither
     /// `sha256sum` nor `shasum`, which is every native Windows one — must still
     /// verify. Emptying `PATH` is how the platform that shipped issue #1182
@@ -1467,6 +1539,42 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         .unwrap();
     }
 
+    /// The programs a release archive ships: `BINARIES` in
+    /// `scripts/ci/release-archive.sh`, which packs every archive.
+    fn shipped() -> Vec<String> {
+        let packer = include_str!("../../../../scripts/ci/release-archive.sh");
+        let list = packer
+            .lines()
+            .find_map(|l| l.strip_prefix("BINARIES=("))
+            .and_then(|l| l.strip_suffix(')'))
+            .expect("release-archive.sh declares BINARIES=(...)");
+        list.split_whitespace().map(str::to_string).collect()
+    }
+
+    /// The updater replaces what the release ships, so a v3 install's `fleet`,
+    /// `runtime-mux` and `workspace-git` move with thurbox.
+    #[test]
+    fn the_updater_replaces_every_program_the_release_ships() {
+        assert_eq!(BINARIES.to_vec(), shipped());
+    }
+
+    /// An update on an install of every shipped program leaves none of them on
+    /// the old version.
+    #[cfg(unix)]
+    #[test]
+    fn an_update_moves_every_shipped_program_to_the_new_release() {
+        let feed = Feed::new(&["2.85.0", "2.84.2"], "2.84.2");
+        let outcome = feed.update("2.84.2", false).unwrap();
+        assert!(
+            matches!(outcome, UpdateOutcome::Updated { .. }),
+            "{outcome:?}"
+        );
+        for name in shipped() {
+            let installed = std::fs::read_to_string(feed.install.path().join(&name)).unwrap();
+            assert_eq!(installed, "2.85.0", "{name} stayed on {installed}");
+        }
+    }
+
     /// A release feed on disk, served to the real updater over `file://`.
     ///
     /// Each release gets the archive for this platform and a checksums file, the
@@ -1492,8 +1600,8 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 let stage = root.path().join("stage").join(version);
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::create_dir_all(&stage).unwrap();
-                for name in BINARIES {
-                    std::fs::write(stage.join(name), version).unwrap();
+                for name in shipped() {
+                    std::fs::write(stage.join(&name), version).unwrap();
                 }
                 let archive = archive_name(version, target);
                 let ok = Command::new("tar")
@@ -1501,7 +1609,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                     .arg(dir.join(&archive))
                     .arg("-C")
                     .arg(&stage)
-                    .args(BINARIES)
+                    .args(shipped())
                     .status()
                     .unwrap()
                     .success();
@@ -1522,8 +1630,8 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 serde_json::to_string(&list).unwrap(),
             )
             .unwrap();
-            for name in BINARIES {
-                std::fs::write(install.path().join(name), installed).unwrap();
+            for name in shipped() {
+                std::fs::write(install.path().join(&name), installed).unwrap();
             }
             Self {
                 root,
@@ -1544,11 +1652,14 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             perform_update_from(&self.feed(), current, self.install.path(), force)
         }
 
-        fn installed(&self) -> Vec<String> {
-            BINARIES
+        /// The version every installed program now names, or `None` when
+        /// they disagree.
+        fn installed(&self) -> Option<String> {
+            let versions: std::collections::BTreeSet<String> = shipped()
                 .iter()
                 .map(|n| std::fs::read_to_string(self.install.path().join(n)).unwrap())
-                .collect()
+                .collect();
+            (versions.len() == 1).then(|| versions.into_iter().next().unwrap())
         }
     }
 
@@ -1565,7 +1676,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             if let UpdateOutcome::Updated { to, .. } = &outcome {
                 assert_eq!(to, "2.84.1", "force={force}");
             }
-            assert_eq!(feed.installed(), ["2.84.1", "2.84.1"], "force={force}");
+            assert_eq!(feed.installed().as_deref(), Some("2.84.1"), "force={force}");
         }
         assert_eq!(
             feed.update("2.84.1", false).unwrap(),
@@ -1595,7 +1706,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             },
             "the 2.x is taken and 3.x still reported"
         );
-        assert_eq!(feed.installed(), ["2.84.2", "2.84.2"]);
+        assert_eq!(feed.installed().as_deref(), Some("2.84.2"));
     }
 
     #[cfg(unix)]
@@ -1607,7 +1718,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             matches!(outcome, UpdateOutcome::Updated { .. }),
             "{outcome:?}"
         );
-        assert_eq!(feed.installed(), ["2.84.2", "2.84.2"]);
+        assert_eq!(feed.installed().as_deref(), Some("2.84.2"));
     }
 
     #[test]

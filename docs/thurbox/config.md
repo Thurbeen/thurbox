@@ -503,14 +503,17 @@ release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
 dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
 depend on the local `PATH`), extracts it
 (`tar`, or PowerShell's `Expand-Archive` for Windows' zip), and atomically
-replaces the installed `thurbox`/`thurbox-cli`
-binaries in place — mirroring `scripts/install.sh`. The download is verified
+replaces every installed program the release ships (`thurbox`, `thurbox-cli`,
+`fleet`, `runtime-mux`, `workspace-git`) in place — mirroring `scripts/install.sh`.
+The download is verified
 **before** any installed file is touched, so a failed/corrupt download leaves
 the current binaries untouched; the whole step runs before the TUI takes the
 terminal and is best-effort (any failure is logged and startup continues on
 the current version). The replaced binary takes effect on the **next launch**
 (the running process keeps its open file), so the TUI shows an "Updated to
-vX.Y.Z — restart to apply" status line. `thurbox-cli update` performs the
+vX.Y.Z — restart thurbox and any running `fleet up` to apply" status line: a
+running Fleet manager keeps the program it started from, and it outlives the
+interface. `thurbox-cli update` performs the
 same update on demand (with `--force` to bypass the up-to-date and dev-build
 guards — never the major line); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a
@@ -527,9 +530,9 @@ process keeps its old image until the next launch, as on Unix. A thurbox still
 running from the last update's backup — a `thurbox-cli.exe` that has not
 exited — keeps that file, so the next update moves the binary to
 `.thurbox.exe.1.old` (and so on) instead, and deletes every backup nothing runs
-from any more. The two binaries are committed together: if either cannot be
-swapped, the one already swapped is put back from its backup, so a failed update
-normally leaves the TUI and CLI on the version they had. The
+from any more. The programs are committed together: if one cannot be
+swapped, those already swapped are put back from their backups, so a failed
+update normally leaves every program on the version it had. The
 put-back is best effort: if it is refused too — say a process has just started
 from the new binary — that binary stays on the new version, and the update
 fails with an error saying it may be partial. Re-running `install.ps1` over a

@@ -52,9 +52,14 @@ pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
                 ("from", from.clone()),
                 ("to", to.clone()),
                 ("updated", "true".to_string()),
-                ("note", "restart thurbox to apply".to_string()),
+                (
+                    "note",
+                    "restart thurbox and any running `fleet up` to apply".to_string(),
+                ),
             ];
-            let mut summary = format!("Updated {from} → {to}. Restart thurbox to apply.");
+            let mut summary = format!(
+                "Updated {from} → {to}. Restart thurbox and any running `fleet up` to apply."
+            );
             if let Some(next) = &next_major {
                 let note = next_major_note(next);
                 fields.push(("next major", note.clone()));

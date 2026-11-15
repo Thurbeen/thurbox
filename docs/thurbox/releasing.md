@@ -8,13 +8,14 @@ its own binaries on startup.
 
 ## The rule that matters
 
-> **Never remove `thurbox` or `thurbox-cli` from a release archive.**
+> **Never remove a program the updater replaces from a release archive.**
 
 The updater in the *already installed* binary decides what to install, and it
 hard-fails on a known binary that is missing from the tarball:
 
     // src/update/self_update.rs
-    const BINARIES: [&str; 2] = ["thurbox", "thurbox-cli"];
+    const BINARIES: [&str; 5] =
+        ["thurbox", "thurbox-cli", "fleet", "runtime-mux", "workspace-git"];
     // …
     if !src.exists() {
         return Err(format!("release archive is missing `{name}`"));
@@ -27,26 +28,27 @@ work, permanently, on every install already out there**, with the only trace in
 `thurbox.log`. There is no way to push a fix to a client whose updater has
 stopped running, so this mistake cannot be corrected by a later release.
 
-Renaming what a binary *does* is fine. Renaming or dropping the file is not.
+Every 2.x updater names `thurbox` and `thurbox-cli`; one built from this tree
+names all five programs a v3 archive ships. Renaming what a binary *does* is
+fine. Renaming or dropping the file is not.
 
-## Adding a binary is safe, and also invisible
+## Adding a binary
 
-Three properties, all verified in the code, make an added binary inert for
-existing installs:
+What an added binary does to existing installs:
 
 1. The updater only looks for the names in its own `BINARIES`, so an unknown
-   extra file in the archive is ignored.
-2. Even for a *known* name, it skips a binary that is not already on disk
-   (`if !dest.exists() { skipped.push(..); continue; }`). The updater replaces
-   binaries; it never introduces one.
+   extra file in the archive is ignored by every updater already shipped.
+2. 2.x updaters skip a known name that is not already on disk, so they never
+   introduce a binary. An updater built from this tree installs every name in
+   its `BINARIES`, present or not: a v3 install that lacks `fleet`,
+   `runtime-mux` or `workspace-git` cannot start a session, and the archive is
+   the same verified one.
 3. Every distribution channel names binaries explicitly — Homebrew
    (`bin.install`), both AUR PKGBUILDs, winget (`NestedInstallerFiles`), and both
    installers. Only Chocolatey globs, because it auto-shims every `.exe`.
 
-The consequence worth stating plainly: **auto-update will never deliver a new
-binary to anyone.** A user acquires one by re-running an installer or their
-package manager. That is a feature for an opt-in interface and a trap if you
-expect a new tool to reach the existing population.
+So a binary added to `BINARIES` reaches existing v3 installs on their next
+update. One added only to the archive reaches nobody until they reinstall.
 
 ## Maintenance releases
 
