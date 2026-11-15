@@ -2787,6 +2787,65 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
     assert_eq!(task["spec"]["host"], "mux/box");
 }
 
+/// A typed `~` on a place elsewhere is that place's home, which its own
+/// `~` listing names: until it has, any `~…` asks for `~` first, and then
+/// both the listing and the remembered path are under that home.
+#[cfg(unix)]
+#[test]
+fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
+    let stub = StubFleet::new("[\"local\",\"mux/box\"]");
+    let link = thurbox::fleet_link::FleetLink::local(stub.program.to_string_lossy());
+    let host = host();
+    let mut world = World {
+        repos: RepoStore::with_fleets(&[link]),
+        ..World::default()
+    };
+    let mux_box = HostRow {
+        name: "mux/box".into(),
+        detail: "a mux place".into(),
+        backend: "mux/box".into(),
+        ready: Some(true),
+        why: None,
+    };
+    world.snapshot.fleets = vec![fleet(
+        "local",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host(), mux_box],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    serve(&host, &mut world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "~/app/");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0~"),
+        "the home is asked for first"
+    );
+    serve(&host, &mut world);
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0/home/box/app"),
+        "then `~/app` is listed under it"
+    );
+    press(&host, &world, "backspace");
+    press(&host, &world, "enter");
+    let commands = host.drain_commands();
+    assert!(
+        matches!(
+            &commands[..],
+            [Command::Bookmark { host, path, .. }]
+                if host == "local/mux/box" && path == "/home/box/app"
+        ),
+        "{commands:?}"
+    );
+}
+
 /// A place that cannot list a repository's branches says why in the
 /// dialog, in the place's own words.
 #[cfg(unix)]

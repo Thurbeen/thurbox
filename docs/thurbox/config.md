@@ -608,9 +608,11 @@ a place.
   `<fleet>/<place>`.
   On a remote Fleet's own `local`, the path field starts at that machine's
   home: `$HOME` there, read once over the Fleet's link and given 15
-  seconds, like `doctor`'s probes. A typed `~` is that home. On any other
-  place, or when the home cannot be read, the field starts empty, and
-  browsing it lists the home the place's runtime names. Browsing (`tab`)
+  seconds, like `doctor`'s probes. On any other place, or when the home
+  cannot be read, the field starts empty, and browsing it lists the home
+  the place's runtime names. A typed `~` is that home: a `~/…` is listed
+  and remembered under it, and until the place has named it, the field asks
+  for `~` first. Browsing (`tab`)
   lists that place's folders through `fleet runtime browse <place> <dir>
   --json` over the Fleet's link, a git work tree marked. A listing is
   cached for 5 seconds, and a slow one shows as pending, never as empty.

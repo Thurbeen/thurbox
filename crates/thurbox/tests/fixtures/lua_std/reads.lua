@@ -26,6 +26,7 @@ return {
       tostring(thurbox.bookmarks.rows),
       tostring(thurbox.browse.host),
       tostring(thurbox.browse.dir),
+      tostring(thurbox.browse.home),
       tostring(thurbox.browse.loading),
       tostring(thurbox.browse.error),
       tostring(thurbox.browse.entries),

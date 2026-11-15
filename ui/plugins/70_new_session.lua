@@ -244,11 +244,19 @@ end
 
 --- The home of the place's machine, or nil while it is not known here.
 ---
---- Known only for a remote Fleet's own `local`: its Fleet said. Any other
---- place elsewhere names its home when its `~` is browsed.
+--- A remote Fleet's own `local` has the home its Fleet said. Any place
+--- elsewhere has the home its runtime named when its `~` was listed, which
+--- the kernel keeps per place.
 local function remote_home(flow)
   local fleet = flow.remote and flow.place == "" and chosen_fleet()
-  return fleet and fleet.home or nil
+  if fleet and fleet.home then
+    return fleet.home
+  end
+  local listing = browse()
+  if listing.host == flow.host and listing.home then
+    return listing.home
+  end
+  return nil
 end
 
 --- How the chosen place is named in the flow's words: a place of this
@@ -323,6 +331,11 @@ local function ask(flow)
     local dir = pathpicker.split_typed(typed)
     if flow.elsewhere then
       dir = expand_remote_home(flow, dir)
+      -- A home not known yet is asked for first: the runtime takes only an
+      -- absolute directory, and its answer to `~` names the home.
+      if dir:sub(1, 1) == "~" then
+        dir = "~"
+      end
     end
     store.want_browse = (flow.host or "") .. "\0" .. dir
   else
@@ -2235,6 +2248,10 @@ return {
           flow.folder_index = 1
           flow.step = "new_folder"
           flow.browse = false
+        elseif flow.elsewhere and path:sub(1, 1) == "~" and not remote_home(flow) then
+          -- Saved as typed it would be refused: the home is still being
+          -- asked for, through the listing the field already wants.
+          flow.message = "asking " .. place_label(flow) .. " for its home…"
         elseif path ~= "" and not untouched(flow) then
           path = expand_remote_home(flow, path)
           -- Validated on the target machine, not here: a missing path is refused

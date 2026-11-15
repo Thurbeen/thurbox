@@ -580,6 +580,13 @@ impl LuaHost {
             // A remote place's `~` is published as the home the runtime
             // listed, so an entry joined to it is an absolute path there.
             let shown = store.resolved_dir(host, dir).unwrap_or(dir);
+            // Kept for every later listing of the place, so a typed `~/…`
+            // there is expanded to the home its runtime named.
+            if let Some(home) = store.resolved_dir(host, "~") {
+                browse
+                    .set("home", home.to_string())
+                    .map_err(|e| e.to_string())?;
+            }
             browse
                 .set("dir", shown.to_string())
                 .map_err(|e| e.to_string())?;

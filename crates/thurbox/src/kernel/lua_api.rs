@@ -593,6 +593,9 @@ pub static BROWSE: Class = Class {
     fields: &[
         leaf("host", "string"),
         leaf("dir", "string"),
+        leaf("home", "string").opt().doc(
+            "The home `host`'s runtime named when its `~` was listed: a typed `~` there is this. Nil until it has been listed.",
+        ),
         leaf("loading", "boolean"),
         leaf("error", "string").opt(),
         field("entries", Ty::List(&BROWSE_ENTRY)),

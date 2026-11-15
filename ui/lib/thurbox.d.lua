@@ -606,6 +606,7 @@
 ---@class (exact) thurbox.Browse
 ---@field host string
 ---@field dir string
+---@field home? string The home `host`'s runtime named when its `~` was listed: a typed `~` there is this. Nil until it has been listed.
 ---@field loading boolean
 ---@field error? string
 ---@field entries thurbox.BrowseEntry[]
