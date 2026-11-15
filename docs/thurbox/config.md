@@ -14,6 +14,65 @@ Dev builds (version `0.0.0-dev`) use `thurbox-dev` in place of
 `thurbox` in every path below, plus a `thurbox-dev` tmux socket, so a
 development checkout never touches your real setup.
 
+## A working setup
+
+Three files decide where sessions run and which agents they run. On a new
+machine you write none of them: the first `thurbox` runs `fleet init`, which
+writes the first one, and the other two are optional.
+
+**Fleet's config** (`~/.config/fleet/config.toml`, `%APPDATA%\fleet\config.toml`
+on Windows) names the runtimes and their places. This is the part of what
+`fleet init` writes that matters here:
+
+```toml
+version = 1
+
+[data]
+dir = "/home/me/.local/share/fleet/store-v1"
+
+[runtimes.mux]
+program = "runtime-mux"
+callTimeoutMs = 10000
+keyPrefix = "f0123456789abcdef01234567"
+```
+
+A runtime with no `places` table has one place, `local`: this machine,
+named `mux/local`. Every session runs in a place.
+[Runtimes and their places](../fleet/configuration.md#runtimes-and-their-places)
+owns the rest of this file.
+
+**`settings.toml` `[fleets]`** (`~/.config/thurbox/settings.toml`) lists the
+Fleets thurbox follows. Leave it out to use `fleet` on this machine. To add a
+Fleet on another machine, list every Fleet you use:
+
+```toml
+[fleets.laptop]
+transport = "local"
+
+[fleets.box]
+transport = { ssh = "me@box" }
+program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+```
+
+[`[fleets]`](#fleets--the-fleets-that-manage-sessions) has every key, and
+[Where sessions run](../where-sessions-run.md) the setups they allow.
+
+**Agents** are Fleet's harness profiles. Fleet ships profiles for Claude Code,
+Codex, opencode and the others in [agents.md](agents.md). A session can run
+any of them whose CLI is installed where it runs. To add an agent, put a
+profile beside Fleet's config, in `harnesses/<name>.toml`:
+
+```toml
+name = "aider"         # the name the new-session modal offers
+program = "aider"      # found on PATH where the session runs
+authority = "none"     # it has no status hooks
+```
+
+The [profile format](../fleet/controllers/task.md#profile-format) has the
+launch, resume and status keys. `fleet init` lists the agents it finds on
+PATH, and `thurbox-cli doctor` checks the whole setup, with a fix for each
+failing check.
+
 ## Files at a glance
 
 | File | Format | Edited by | Read | Purpose |
@@ -94,8 +153,8 @@ the right knob:
 
 | I want to… | Edit | Section |
 |------------|------|---------|
-| Add a coding agent, pin a model | Fleet's harness profiles | [Agents](#agents) |
-| Run sessions on a remote machine or in a WSL distro | Fleet's config, or `[fleets]` in `settings.toml` (planned) | [Where sessions run](../where-sessions-run.md) |
+| Add a coding agent, pin a model | Fleet's harness profiles | [A working setup](#a-working-setup) |
+| Follow a Fleet on another machine or in a WSL distro | `[fleets]` in `settings.toml` | [`[fleets]`](#fleets--the-fleets-that-manage-sessions) |
 | Turn a whole TUI feature on/off (mouse, notifications…) | `settings.toml` `[features]` | [`[features]`](#features--whole-feature-switches) |
 | Tune scrollback, panel breakpoints, git polling | `settings.toml` | [settings.toml](#settingstoml) |
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
