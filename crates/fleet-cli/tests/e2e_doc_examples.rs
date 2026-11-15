@@ -218,6 +218,12 @@ fn the_example_plugin_retries_a_failed_write() {
     let dir = env.root.join("files");
     let blocked = dir.join("hello.txt");
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("read-only");
+    let probe = dir.join(".probe");
+    if fs::write(&probe, "").is_ok() {
+        let _ = fs::remove_file(&probe);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("restore");
+        return; // running as root: the mode does not refuse the write
+    }
     let hello = examples(include_str!(
         "../../../docs/fleet/resources/plugin-kinds.md"
     ))
