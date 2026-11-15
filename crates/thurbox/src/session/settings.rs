@@ -691,8 +691,7 @@ pub const FIELDS: &[Field] = &[
     field!(Live, features.shell_pane),
     field!(Live, features.perf_hud),
     // Capture is an escape already sent, the notifier is a thread already
-    // started (or not), the heartbeat is armed once, and the update work ran
-    // at startup.
+    // started (or not), and the update work ran at startup.
     field!(NextLaunch, features.mouse),
     field!(NextLaunch, features.notifications),
     field!(NextLaunch, features.version_check),

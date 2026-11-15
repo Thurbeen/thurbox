@@ -788,9 +788,26 @@ honored as the fallback when no command is set.
 
 ## Scheduling work
 
-thurbox schedules nothing of its own. To run work on a timer, have cron or a
-systemd timer run `fleet apply -f task.yaml` to start a Task, or
-`fleet send TASK TEXT` to prompt a session that already runs.
+thurbox schedules nothing of its own. Run work on a timer with cron or a
+systemd timer, in one of two ways:
+
+- Start a new Task each tick. Applying the same manifest again changes
+  nothing (`Unchanged`), so give each Task a fresh name. `fleet apply`
+  reads JSON, from a file or from `-`:
+
+  ```bash
+  jq --arg n "nightly-$(date +%Y%m%d%H%M)" '.metadata.name = $n' task.json \
+    | fleet apply --create-only -f -
+  ```
+
+- Prompt a long-lived Task each tick: `fleet send TASK TEXT`.
+
+An earlier thurbox fired its automations from a tmux window,
+`automation-heartbeat`, and could install a `thurbox-automations.timer`
+systemd unit. Both keep running a command that no longer exists, and
+`thurbox-cli doctor` reports each one. Remove them with
+`tmux -L thurbox kill-window -t thurbox:automation-heartbeat` and
+`systemctl --user disable --now thurbox-automations.timer`.
 
 ---
 

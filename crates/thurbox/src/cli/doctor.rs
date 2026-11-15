@@ -114,6 +114,10 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
     findings.extend(retired_automations_finding(
         crate::config::file::path("automations.json").as_deref(),
     ));
+    findings.extend(heartbeat_finding(&LocalServer::of_this_instance()));
+    findings.extend(automation_timer_finding(
+        automation_timer_state().as_deref(),
+    ));
     // Sessions of a Fleet on another machine run in that machine's
     // multiplexer: this one needs none unless a Fleet runs here.
     if listed.iter().any(|(_, def)| def.transport.is_local()) {
@@ -171,11 +175,125 @@ fn retired_automations_finding(path: Option<&std::path::Path>) -> Option<Finding
                 .into(),
         )
         .fix(format!(
-            "schedule the work with a cron job or systemd timer that runs `fleet apply -f \
-             task.yaml` or `fleet send TASK TEXT`, then delete {}",
+            "schedule the work with a cron job or systemd timer that applies a Task under a \
+             fresh name each tick (`jq --arg n \"nightly-$(date +%Y%m%d%H%M)\" '.metadata.name = \
+             $n' task.json | fleet apply --create-only -f -`) or runs `fleet send TASK TEXT` to a long-lived \
+             Task, then delete {}",
             path.display()
         )),
     )
+}
+
+/// The window an earlier thurbox kept on its tmux server to fire automations.
+const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
+
+/// The systemd user timer an earlier thurbox shipped for the same purpose.
+const AUTOMATION_TIMER: &str = "thurbox-automations.timer";
+
+/// This instance's local tmux server, as a `tmux` command names it: the
+/// socket, and the socket directory when thurbox chooses it rather than an
+/// inherited `TMUX_TMPDIR`.
+struct LocalServer {
+    socket: String,
+    tmpdir: Option<String>,
+}
+
+impl LocalServer {
+    fn of_this_instance() -> Self {
+        let inherited = std::env::var_os("TMUX_TMPDIR").is_some_and(|d| !d.is_empty());
+        LocalServer {
+            socket: crate::backend::instance::local_socket_name(),
+            tmpdir: (!inherited)
+                .then(crate::backend::instance::local_socket_dir_report)
+                .flatten(),
+        }
+    }
+
+    /// `tmux …` against this server, as a person would type it.
+    fn command_line(&self, args: &str) -> String {
+        let env = self
+            .tmpdir
+            .as_ref()
+            .map(|d| format!("TMUX_TMPDIR={d} "))
+            .unwrap_or_default();
+        format!("{env}tmux -L {} {args}", self.socket)
+    }
+
+    /// Every window on the server as `session:window`. `None` when there is
+    /// no server or tmux could not be asked: nothing to report either way.
+    fn windows(&self) -> Option<String> {
+        let mut cmd = std::process::Command::new("tmux");
+        cmd.args(["-L", &self.socket, "list-windows", "-a", "-F"])
+            .arg("#{session_name}:#{window_name}")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some(dir) = &self.tmpdir {
+            cmd.env("TMUX_TMPDIR", dir);
+        }
+        let out = cmd.output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// A warning for a keeper window an earlier thurbox armed: it runs the gone
+/// `thurbox-cli automation tick` every minute until it is killed. `None`
+/// when the server has none.
+fn heartbeat_finding(server: &LocalServer) -> Option<Finding> {
+    heartbeat_in(server, server.windows().as_deref())
+}
+
+fn heartbeat_in(server: &LocalServer, windows: Option<&str>) -> Option<Finding> {
+    let target = windows?.lines().find(|line| {
+        line.rsplit_once(':')
+            .is_some_and(|(_, w)| w == HEARTBEAT_WINDOW)
+    })?;
+    Some(
+        Finding::new(
+            "automation-heartbeat",
+            Level::Warn,
+            format!(
+                "the tmux window {target} an earlier thurbox armed still runs \
+                 `thurbox-cli automation tick`, a command this thurbox no longer has"
+            ),
+        )
+        .fix(server.command_line(&format!("kill-window -t {target}"))),
+    )
+}
+
+/// What `systemctl --user is-enabled` answers for the old timer, or `None`
+/// when it could not be asked. Only Linux had the timer.
+fn automation_timer_state() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let out = std::process::Command::new("systemctl")
+        .args(["--user", "is-enabled", AUTOMATION_TIMER])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A warning for the old systemd timer while it is enabled: it runs the
+/// gone `thurbox-cli automation tick` every minute.
+fn automation_timer_finding(state: Option<&str>) -> Option<Finding> {
+    (state? == "enabled").then(|| {
+        Finding::new(
+            "automation-timer",
+            Level::Warn,
+            format!(
+                "{AUTOMATION_TIMER} is enabled and runs `thurbox-cli automation tick`, a \
+                 command this thurbox no longer has"
+            ),
+        )
+        .fix(format!(
+            "systemctl --user disable --now {AUTOMATION_TIMER}, then remove its unit files \
+             from ~/.config/systemd/user"
+        ))
+    })
 }
 
 /// Whether the multiplexer every local session's window is made of is there.
@@ -606,6 +724,47 @@ mod tests {
         );
         let fix = finding.fix.expect("a fix");
         assert!(fix.contains(&path.display().to_string()), "{fix}");
+        // A timer re-applying one manifest makes one Task: the same name and
+        // contents answer `Unchanged`. Each tick needs a fresh name.
+        assert!(fix.contains("fleet apply --create-only -f -"), "{fix}");
+        assert!(fix.contains("$(date +%Y%m%d%H%M)"), "{fix}");
+        assert!(fix.contains("fleet send TASK TEXT"), "{fix}");
+    }
+
+    /// The keeper window is found on any session and named with the command
+    /// that kills it; a server without one, or none at all, reports nothing.
+    #[test]
+    fn a_left_over_heartbeat_window_is_a_warning_with_its_fix() {
+        let server = LocalServer {
+            socket: "thurbox".into(),
+            tmpdir: Some("/data/tmux".into()),
+        };
+        assert!(heartbeat_in(&server, None).is_none(), "no server");
+        assert!(heartbeat_in(&server, Some("thurbox:tb-a\n")).is_none());
+        let finding = heartbeat_in(
+            &server,
+            Some("thurbox:tb-a\nthurbox:automation-heartbeat\n"),
+        )
+        .expect("a finding");
+        assert_eq!(finding.key, "automation-heartbeat");
+        assert_eq!(finding.level, Level::Warn);
+        assert_eq!(
+            finding.fix.as_deref(),
+            Some("TMUX_TMPDIR=/data/tmux tmux -L thurbox kill-window -t thurbox:automation-heartbeat")
+        );
+    }
+
+    /// Only an enabled timer is reported, with the command that stops it.
+    #[test]
+    fn an_enabled_automation_timer_is_a_warning_with_its_fix() {
+        for quiet in [None, Some("disabled"), Some("not-found"), Some("")] {
+            assert!(automation_timer_finding(quiet).is_none(), "{quiet:?}");
+        }
+        let finding = automation_timer_finding(Some("enabled")).expect("a finding");
+        assert_eq!(finding.key, "automation-timer");
+        assert!(finding.fix.is_some_and(
+            |f| f.contains("systemctl --user disable --now thurbox-automations.timer")
+        ),);
     }
 
     /// A Fleet's facts with every field given, for the cases below.

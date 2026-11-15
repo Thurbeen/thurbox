@@ -1313,6 +1313,37 @@ fn thurbox_keeps_no_automations() {
         .find(|c| c["key"] == "automations-json")
         .unwrap_or_else(|| panic!("no automations-json check: {report}"));
     assert_eq!(check["level"], "warn", "{check}");
+
+    // A keeper window an earlier thurbox armed runs the gone `automation
+    // tick` every minute until something kills it: doctor names it and says
+    // how.
+    let armed = profile.server.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "thurbox",
+        "-n",
+        "automation-heartbeat",
+        "sleep 300",
+    ]);
+    assert!(armed.status.success(), "{armed:?}");
+    let doctor = cli(&["--json", "doctor"]);
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).expect("doctor JSON");
+    let check = report["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|c| c["key"] == "automation-heartbeat")
+        .unwrap_or_else(|| panic!("no automation-heartbeat check: {report}"));
+    assert_eq!(check["level"], "warn", "{check}");
+    let fix = check["fix"].as_str().expect("a fix");
+    assert!(
+        fix.contains(&format!(
+            "tmux -L {} kill-window -t thurbox:automation-heartbeat",
+            profile.server.socket()
+        )),
+        "{fix}"
+    );
 }
 
 #[test]

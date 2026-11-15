@@ -59,6 +59,7 @@ by `fleet result`, never the state of its terminal.
 
 ## Recurring work
 
-thurbox schedules nothing of its own. A recurring send or Task is a cron job
-or systemd timer that runs `fleet send` or `fleet apply -f task.yaml`
+thurbox schedules nothing of its own. A recurring Task is a cron job or
+systemd timer that applies a JSON manifest under a fresh name each tick, and a
+recurring prompt is one that runs `fleet send TASK TEXT` to a long-lived Task
 ([features.md](features.md#scheduling-work)).

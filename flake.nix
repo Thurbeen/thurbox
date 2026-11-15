@@ -35,6 +35,11 @@
 
       # The modules install the package. thurbox configures everything else
       # itself, in files it owns, so the modules manage no config.
+      removedAutomations = ''
+        thurbox schedules nothing of its own any more. Run work on a timer with
+        a systemd timer or cron job that applies a Task under a fresh name, or
+        runs `fleet send TASK TEXT`.
+      '';
       options =
         { lib, pkgs, ... }:
         {
@@ -61,6 +66,9 @@
           cfg = config.programs.thurbox;
         in
         {
+          imports = [
+            (lib.mkRemovedOptionModule [ "programs" "thurbox" "automations" ] removedAutomations)
+          ];
           options.programs.thurbox = options { inherit lib pkgs; };
           config = lib.mkIf cfg.enable { environment.systemPackages = [ cfg.package ]; };
         };
@@ -76,6 +84,9 @@
           cfg = config.programs.thurbox;
         in
         {
+          imports = [
+            (lib.mkRemovedOptionModule [ "programs" "thurbox" "automations" ] removedAutomations)
+          ];
           options.programs.thurbox = options { inherit lib pkgs; };
           config = lib.mkIf cfg.enable {
             home.packages = [ cfg.package ];

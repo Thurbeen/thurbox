@@ -443,7 +443,7 @@ why = "only the git worker reaches git"
 
 # What of the runtime a consumer must never reach by name: one multiplexer's
 # adapter, or the protocol grammar only some multiplexers speak. Every verb a
-# consumer needs (lifecycle, pane I/O, status, the heartbeat) goes through the
+# consumer needs (lifecycle, pane I/O, status) goes through the
 # contract. The `backend` gateway re-exports them, and nothing else may.
 [[crates.thurbox.restricted]]
 paths = ["runtime_mux::tmux", "runtime_mux::psmux", "runtime_mux::rmux", "runtime_mux::tmux_compat"]
