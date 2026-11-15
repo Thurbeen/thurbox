@@ -613,20 +613,14 @@ mod tests {
             "{:?}",
             cmd.get_program()
         );
-        assert_eq!(
-            argv,
-            [
-                "-d",
-                "Ubuntu",
-                "--cd",
-                "/",
-                "-e",
-                "sh",
-                "-c",
-                &format!("{path}{FLEET_PROBE}"),
-                "sh"
-            ],
-        );
+        // `wsl.exe` is given a neutral `--cd /` only from a Unix machine
+        // (`shell::wsl_command`).
+        let mut want = vec!["-d".to_string(), "Ubuntu".to_string()];
+        if cfg!(unix) {
+            want.extend(["--cd".to_string(), "/".to_string()]);
+        }
+        want.extend(["-e", "sh", "-c", &format!("{path}{FLEET_PROBE}"), "sh"].map(String::from));
+        assert_eq!(argv, want);
     }
 
     #[test]

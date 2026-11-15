@@ -230,11 +230,13 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            argv[..6],
-            ["-d", "Ubuntu", "--cd", "/", "-e", "sh"],
-            "{argv:?}"
-        );
+        // `--cd /` only from a Unix machine (`shell::wsl_command`).
+        let enter: &[&str] = if cfg!(unix) {
+            &["-d", "Ubuntu", "--cd", "/", "-e", "sh"]
+        } else {
+            &["-d", "Ubuntu", "-e", "sh"]
+        };
+        assert_eq!(argv[..enter.len()], *enter, "{argv:?}");
         assert_eq!(
             argv[argv.len() - 5..],
             ["tmux", "-L", "thurbox-dev", "-C", "attach"]
