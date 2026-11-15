@@ -1,7 +1,7 @@
 # Task resource
 
 A Task is one agent session doing one brief. TaskController spawns the
-session on the host the Task names, sends the brief once, delivers what is
+session on the place the Task names, sends the brief once, delivers what is
 queued in the Task's inbox, records the worker's answer, and deletes the
 session when the Task is deleted. The guarantees behind each step are in
 [the contracts](../contracts.md). Read the
@@ -36,7 +36,7 @@ except `dispatch` and `forge`. `amendments` grows only through
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `harness` | unless inherited | The agent harness, such as `claude-code`, passed to the runtime as is. |
-| `host` | no | The runtime host the session runs on. Default `local`. |
+| `host` | no | The place the session runs on: `<runtime>/<place>`, or `local`, the default runtime's `local` place. Default `local`. |
 | `model` | no | The model the harness runs. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |

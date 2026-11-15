@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" role="img" aria-labelledby="title desc">
+<title id="title">One reconcile</title>
+<desc id="desc">One pass of a controller over one object. Observe: the manager reads the object&#x27;s spec and status from the store, then probes the outside world through a port, and each answer is Known or Unknown. Compare: the pure controller compares spec, status and observations and returns a plan. Act: the manager writes the planned status with each effect&#x27;s intent, runs the effect through a port, then writes the receipt. The next pass starts again from the store.</desc>
+<style>
+  svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .orchestration{fill:#edf3f8} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  .lane{stroke:#a9b8c6;stroke-width:1.5;stroke-dasharray:5 5}
+  @media (prefers-color-scheme: light) { .background{fill:#fff} .ink{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a} .pure{fill:#173b2d} .orchestration{fill:#1d2a36} .adapter{fill:#202a33} .process{fill:#493517} .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} .lane{stroke:#4a5b6b} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker></defs>
+<rect class="background" width="960" height="560" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+<text x="30" y="36" font-size="21" font-weight="700">One reconcile: observe, compare, act</text>
+<text x="30" y="61" font-size="14">The manager holds the lease and does the I/O. The controller only decides.</text>
+<g class="box">
+<rect class="adapter" x="30" y="120" width="270" height="104" rx="8"/>
+<rect class="adapter" x="345" y="120" width="270" height="104" rx="8"/>
+<rect class="pure" x="660" y="120" width="270" height="104" rx="8"/>
+<rect class="process" x="30" y="330" width="270" height="104" rx="8"/>
+<rect class="process" x="345" y="330" width="270" height="104" rx="8"/>
+<rect class="process" x="660" y="330" width="270" height="104" rx="8"/>
+</g>
+<text x="46" y="148" font-size="16" font-weight="650">1 · Read</text>
+<text x="46" y="172" font-size="14">spec and status of one object</text>
+<text x="46" y="191" font-size="14">from the store</text>
+<text x="361" y="148" font-size="16" font-weight="650">2 · Observe</text>
+<text x="361" y="172" font-size="14">probe through a port:</text>
+<text x="361" y="191" font-size="14">runtime, forge, gateway, plugin</text>
+<text x="361" y="210" font-size="14">each answer Known or Unknown</text>
+<text x="676" y="148" font-size="16" font-weight="650">3 · Compare (controller)</text>
+<text x="676" y="172" font-size="14">spec vs status vs observations</text>
+<text x="676" y="191" font-size="14">returns a Plan; no I/O</text>
+<text x="46" y="358" font-size="16" font-weight="650">6 · Record the receipt</text>
+<text x="46" y="382" font-size="14">what the effect did,</text>
+<text x="46" y="401" font-size="14">under the same key</text>
+<text x="361" y="358" font-size="16" font-weight="650">5 · Act</text>
+<text x="361" y="382" font-size="14">the manager runs the effect</text>
+<text x="361" y="401" font-size="14">through a port</text>
+<text x="676" y="358" font-size="16" font-weight="650">4 · Persist the intent</text>
+<text x="676" y="382" font-size="14">write the planned status and</text>
+<text x="676" y="401" font-size="14">the effect&#x27;s intent (CAS,</text>
+<text x="676" y="420" font-size="14">fenced by the lease)</text>
+<text x="30" y="106" font-size="15" font-weight="700" class="muted">observe</text>
+<text x="660" y="106" font-size="15" font-weight="700" class="muted">compare</text>
+<text x="30" y="460" font-size="15" font-weight="700" class="muted">act: intent before effect, receipt after</text>
+<path class="arrow" d="M300 172 H341"/>
+<path class="arrow" d="M615 172 H656"/>
+<path class="arrow" d="M795 224 V326"/>
+<path class="arrow" d="M660 382 H619"/>
+<path class="arrow" d="M345 382 H304"/>
+<path class="arrow" d="M165 330 V228"/>
+<text x="175" y="282" font-size="13" class="muted">next pass</text>
+<text x="30" y="500" font-size="14">Unknown never means absent: an Unknown answer keeps the last status, and the controller waits for a Known one.</text>
+<text x="30" y="520" font-size="14">A crash between 4 and 6 leaves an intent with no receipt. An unsafe effect (Spawn) is looked up by</text>
+<text x="30" y="540" font-size="14">its key before it acts again; a safe one (CleanWorkspace) runs again after a wait.</text>
+</g>
+</svg>

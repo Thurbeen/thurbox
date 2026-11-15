@@ -11,15 +11,10 @@ resource fields, state machine and controller interface.
 
 ## What is served
 
-| Kind | Role | Status written by |
-| --- | --- | --- |
-| `Task` | one agent session doing one brief | TaskController; the worker writes `status.result` and `status.declared`; ForgeController writes `status.forge`; GatewayController writes `status.gateway`; an inbox append carrying `answers` writes `status.answered` |
-| `TaskConfig` | reusable execution defaults | nobody (passive data) |
-| `EnvProvider` | stored data and explicit file/command environment sources | nobody (passive data) |
-| `ChangeRequest` | one mirrored change on a forge | ChangeRequestController |
-| `Conversation` | the mirror of one chat thread | ConversationController; the account's listener, through `fleet gateway receive`, spools deliveries on `status.received` |
-| `Listener` | the inbound health of one chat account | ListenerController; the account's listener, through `fleet gateway receive`, writes `beats`, `refused` and `beatRevision` |
-| Plugin-defined | a registered external controller’s resource | `plugin/<name>`, including reserved host bookkeeping |
+[Resource kinds](README.md#resource-kinds) lists every kind, who writes its
+spec and who writes its status.
+[`kinds::status_owner`](../../crates/fleet-api/src/kinds.rs) is the rule
+the store enforces on each status field.
 
 Kinds not built in or registered by a plugin are refused on write as `unknown
 kind "X"`. A Task spec
@@ -44,31 +39,22 @@ the `Plugins` port's one `call`. A pure gate admits plans before leased status
 writes and atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the
 host.
 
-The [Gateway controller](controllers/gateway.md) is built
-in four steps. The first: the `Gateway` port in
-`fleet_api::gateway`, with the `[gateway]` section's types, its validation
-and the pure admission function; the `fleet-gateway` adapter crate,
-depending on no Fleet crate but `fleet-api` and `fleet-exec`, with a
-file-backed fake
-that models every `capabilities` combination; the `[gateway]` config,
-loaded and validated by the CLI, each route's brief read with it, whose
-accounts are opened before a manager run so the lease outlasts the port's
-worst case; the `Conversation` and `Listener` kinds with their controllers
-([the mirror](#the-conversation-mirror)); and the `fleet gateway receive`,
-`account` and `status` verbs. The second: ConversationController's
-admission, Task creation under the workspace precondition, busy notice and
-refusal post. The third: `GatewayController`, the third controller over the
-Task, which owns `status.gateway`, keeps the tie to the Conversation its
-labels name, relays the thread into the inbox under a cursor and a child's
-words into its parent's inbox, from `gateway/` sources ([talking in a
-conversation](#talking-in-a-conversation)); `status.answered`, written only
-by an inbox append that carries `answers`; and the parent labels, which the
-store checks at creation. The fourth: posting. GatewayController plans
-`Post`, `Open`, `Receive`, `Log` and `React` actions; the manager performs
-`Post`, `Open`, `Log` and `React` through the `Gateway` port and `Receive`
-through the store, and writes a receipt under each key.
-`e2e_gateway_post`, `e2e_gateway_logs` and `e2e_gateway_reactions` hold it
-to that.
+The [Gateway controller](controllers/gateway.md) is three controllers over
+the `Gateway` port in `fleet_api::gateway`. The `fleet-gateway` adapter
+crate depends on no Fleet crate but `fleet-api` and `fleet-exec`, and has a
+file-backed fake that models every `capabilities` combination. The CLI
+loads and validates the `[gateway]` config, and opens its accounts before a
+manager run so that the lease outlasts the port's worst case.
+ConversationController keeps [the mirror](#the-conversation-mirror),
+admits a thread and creates its Task under the workspace precondition.
+ListenerController judges an account's listener. GatewayController owns
+`status.gateway`, relays the thread into the inbox under a cursor and a
+child's words into its parent's inbox ([talking in a
+conversation](#talking-in-a-conversation)), and plans `Post`, `Open`,
+`Receive`, `Log` and `React` actions. The manager performs `Post`, `Open`,
+`Log` and `React` through the `Gateway` port and `Receive` through the
+store, and writes a receipt under each key. `e2e_gateway_post`,
+`e2e_gateway_logs` and `e2e_gateway_reactions` hold it to that.
 
 ## Crates and the allowed graph
 
