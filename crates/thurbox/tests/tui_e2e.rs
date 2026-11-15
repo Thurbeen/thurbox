@@ -3396,6 +3396,48 @@ fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
     assert!(status.success(), "exit must be clean: {status:?}");
 }
 
+/// Starts a program on its first frame and draws its pane. The program spells
+/// its line with `%s`, so the line is on screen only once the program has run.
+const PAINTER: &str = r#"return {
+  name = "painter",
+  slot = "sessions",
+  order = 5,
+  capabilities = { "program" },
+  render = function()
+    if not state.started then
+      state.started = true
+      command("program", {
+        text = "hello",
+        repo = "sh",
+        args = { "-c", "printf 'PROGRAM-%s\\n' DREW; sleep 60" },
+      })
+    end
+    return { type = "surface", program = "hello" }
+  end,
+}"#;
+
+/// A plugin's program pane shows what its program prints.
+#[test]
+fn a_program_pane_draws_what_its_program_prints() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let interface = interface_plus("91_painter.lua", PAINTER);
+    let profile = Profile::new();
+    trust(
+        &profile,
+        interface.path(),
+        "plugins/91_painter.lua",
+        PAINTER,
+    );
+    let mut tui = Tui::spawn_with(&profile, 30, 100, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("PROGRAM-DREW");
+    assert!(tui.quit().success());
+}
+
 // --- a live session ---------------------------------------------------------
 
 fn git(dir: &Path, args: &[&str]) {
