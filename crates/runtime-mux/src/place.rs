@@ -12,8 +12,10 @@
 //! ```
 
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -28,10 +30,29 @@ pub const LOCAL: &str = "local";
 /// The bound on one probe of a place: an ssh connect, a login shell and a
 /// `command -v`. ssh's own `ConnectTimeout` (5 s) ends an unreachable one
 /// first.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What a probe keeps of a stream.
 const PROBE_OUTPUT: u64 = 64 * 1024;
+
+/// How long a place's login `PATH`, read once, is used from the cache on
+/// disk before it is read again. Each `runtime-mux` call is a process of its
+/// own, and reading it costs an ssh connection and two login shells.
+const PATH_CACHE_TTL: Duration = Duration::from_secs(600);
+
+/// Where the place's `PATH` is cached: a directory only this user can write
+/// to, and the prefix of the file names in it. Set once by the program.
+static CACHE: OnceLock<(PathBuf, String)> = OnceLock::new();
+
+/// Cache each place's login `PATH` in `dir`, under names starting with
+/// `prefix`.
+pub fn keep_cache_in(dir: PathBuf, prefix: String) {
+    let _ = CACHE.set((dir, prefix));
+}
+
+/// Where the place's assets are copied, under its home: one directory per
+/// key ([`copy_assets`]).
+const ASSETS_DIR: &str = ".local/state/fleet/assets";
 
 /// A place as a request names it: the name, and its table from Fleet's
 /// config.
@@ -167,15 +188,79 @@ struct Ran {
     stderr: String,
 }
 
+/// The cache file of `host`'s `PATH`, and the line that says which
+/// launcher and `path_prepend` it was read with: a place whose table
+/// changed is read again.
+fn cache_file(host: &HostDef) -> Option<(PathBuf, String)> {
+    let (dir, prefix) = CACHE.get()?;
+    let file = dir.join(format!("{prefix}{}.path", host.name));
+    let identity = format!("{:?} {:?}", HostLauncher::for_host(host), host.path_prepend);
+    Some((file, identity.replace('\n', " ")))
+}
+
+/// What the place's probe says ([`crate::host_path`]), within `budget`: the
+/// answer this process has, else a fresh one from the cache on disk, else a
+/// probe bounded by `budget`, which the cache then keeps.
+fn env(host: &HostDef, budget: Duration) -> Option<crate::host_path::HostEnv> {
+    let cached = cache_file(host);
+    if let Some((file, identity)) = &cached {
+        let fresh = std::fs::metadata(file)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|at| SystemTime::now().duration_since(at).ok())
+            .is_some_and(|age| age < PATH_CACHE_TTL);
+        let text = std::fs::read_to_string(file).ok().filter(|_| fresh);
+        if let Some(env) = text.as_deref().and_then(|text| {
+            let (first, rest) = text.split_once('\n')?;
+            (first == identity).then(|| crate::host_path::parse_probe(rest))?
+        }) {
+            crate::host_path::remember(host, env.clone());
+            return Some(env);
+        }
+    }
+    let env = crate::host_path::env_within(host, budget)?;
+    if let Some((file, identity)) = cached {
+        // A cache that cannot be written costs the next call a probe.
+        let tmp = file.with_extension("path.tmp");
+        let text = format!("{identity}\n{}", crate::host_path::render(&env));
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &file);
+        }
+    }
+    Some(env)
+}
+
+/// Read the place's `PATH` now, within the probe's budget, so the backend's
+/// own commands find it without a probe of their own.
+pub fn warm(host: &HostDef) {
+    if host.platform() == Platform::Posix {
+        let _ = env(host, PROBE_TIMEOUT);
+    }
+}
+
+/// The place's `PATH` as an `sh` assignment, read within `budget`:
+/// `path_prepend` alone when the login `PATH` was not read in time.
+fn assignment(host: &HostDef, budget: Duration) -> String {
+    let env = env(host, budget);
+    crate::host_path::plan(&host.path_prepend, env.as_ref())
+        .map(|plan| crate::host_path::shell_assignment(&plan))
+        .unwrap_or_default()
+}
+
 /// `script` through `sh -c` on the place, with the place's `PATH`
-/// ([`crate::host_path`]), `args` as its positional parameters. `Err` when
-/// it did not finish in time or could not start.
-fn run_script(host: &HostDef, script: &str, args: &[&str]) -> Result<Ran, String> {
-    let path = crate::host_path::assignment_for(host).unwrap_or_default();
+/// ([`crate::host_path`]), `args` as its positional parameters, all of it
+/// by `deadline`. `Err` when it did not finish in time or could not start.
+fn run_script(
+    host: &HostDef,
+    script: &str,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<Ran, String> {
+    let path = assignment(host, left(deadline));
     let mut words = vec!["sh"];
     words.extend_from_slice(args);
     let cmd = HostLauncher::for_host(host).shell_c_args(&format!("{path}{script}"), &words);
-    run_bounded(cmd, PROBE_TIMEOUT).map(|(code, stdout, stderr)| Ran {
+    run_bounded(cmd, left(deadline)).map(|(code, stdout, stderr)| Ran {
         ok: code == Some(0),
         unreached: matches!(host.kind, HostKind::Ssh) && code == Some(255),
         stdout,
@@ -187,13 +272,18 @@ fn run_script(host: &HostDef, script: &str, args: &[&str]) -> Result<Ran, String
 /// not reach it, its multiplexer is missing or too old, or `fleet` is not on
 /// its `PATH`, so its agents' hooks cannot report. Each reason names the
 /// command that fixes it.
-pub fn readiness(host: &HostDef, backend: &dyn SessionBackend) -> Result<(), String> {
+pub fn readiness(
+    host: &HostDef,
+    backend: &dyn SessionBackend,
+    deadline: Instant,
+) -> Result<(), String> {
     let name = &host.name;
     if host.platform() == Platform::Posix {
         let ran = run_script(
             host,
             "command -v fleet >/dev/null 2>&1 || echo @missing",
             &[],
+            deadline,
         )
         .map_err(|why| {
             format!(
@@ -232,6 +322,7 @@ pub fn missing_program(host: &HostDef, program: &str) -> Option<String> {
         host,
         "command -v \"$1\" >/dev/null 2>&1 || echo @missing",
         &[program],
+        Instant::now() + PROBE_TIMEOUT,
     ) {
         Err(why) => Some(format!("place {name:?} did not answer: {why}")),
         Ok(ran) if !ran.ok => Some(format!(
@@ -246,11 +337,14 @@ pub fn missing_program(host: &HostDef, program: &str) -> Option<String> {
 }
 
 /// `argv` on the place, in `dir` when given, with the place's `PATH`: what
-/// `exec` runs there. Only a POSIX place has the `sh` it runs through.
+/// `exec` runs there. The `PATH` is read by `deadline`, the command's own,
+/// and when it is not, only `path_prepend` leads it. Only a POSIX place has
+/// the `sh` it runs through.
 pub fn exec_command(
     host: &HostDef,
     argv: &[String],
-    dir: Option<&std::path::Path>,
+    dir: Option<&Path>,
+    deadline: Instant,
 ) -> Result<Command, String> {
     if host.platform() != Platform::Posix {
         return Err(format!(
@@ -258,7 +352,7 @@ pub fn exec_command(
             host.name
         ));
     }
-    let path = crate::host_path::assignment_for(host).unwrap_or_default();
+    let path = assignment(host, left(deadline));
     let dir = dir
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -314,6 +408,7 @@ pub fn workspace(host: &HostDef, urls: &[String]) -> Workspace {
         host,
         "for d; do [ -d \"$d\" ] || printf '@missing %s\\n' \"$d\"; done",
         &args,
+        Instant::now() + PROBE_TIMEOUT,
     ) {
         Ok(ran) => ran,
         Err(why) => return Workspace::Unknown(format!("place {name:?} did not answer: {why}")),
@@ -328,6 +423,68 @@ pub fn workspace(host: &HostDef, urls: &[String]) -> Workspace {
         return Workspace::Failed(format!("{missing} is not a directory on place {name:?}"));
     }
     Workspace::Dirs(dirs)
+}
+
+/// The time left until `deadline`.
+fn left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+/// The place's own copy of the asset directory `local`, for the session
+/// under `key`: `local` copied, whole, to `~/.local/state/fleet/assets/<key>`
+/// on the place, replacing what an earlier start left there. Its absolute
+/// path on the place, which the caller names in place of `local`.
+pub fn copy_assets(host: &HostDef, key: &str, local: &Path) -> Result<String, String> {
+    let name = &host.name;
+    if host.platform() != Platform::Posix {
+        return Err(format!(
+            "place {name:?}: copying the harness's files to a native-Windows place is not supported yet"
+        ));
+    }
+    let home = env(host, PROBE_TIMEOUT)
+        .and_then(|env| env.home)
+        .ok_or_else(|| format!("place {name:?}: its home could not be read"))?;
+    let remote = format!("{}/{ASSETS_DIR}/{key}", home.trim_end_matches('/'));
+    let mut tar = Command::new("tar")
+        .arg("-C")
+        .arg(local)
+        .args(["-cf", "-", "."])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cannot run tar: {e}"))?;
+    let mut copy = HostLauncher::for_host(host).shell_c_args(
+        "rm -rf \"$1\" && mkdir -p \"$1\" && tar -xf - -C \"$1\"",
+        &["sh", &remote],
+    );
+    copy.stdin(tar.stdout.take().map_or_else(Stdio::null, Stdio::from));
+    let ran = run_piped(copy, PROBE_TIMEOUT);
+    let _ = tar.wait();
+    match ran {
+        Ok((Some(0), _, _)) => Ok(remote),
+        Ok((_, _, stderr)) => Err(format!(
+            "place {name:?}: the harness's files were not copied to {remote}: {}",
+            last_line(&stderr)
+        )),
+        Err(why) => Err(format!(
+            "place {name:?}: copying the harness's files: {why}"
+        )),
+    }
+}
+
+/// Remove the key's copy of the assets on the place, if one is there. Best
+/// effort: a copy left behind is replaced by the key's next start.
+pub fn remove_assets(host: &HostDef, key: &str) {
+    if host.platform() != Platform::Posix {
+        return;
+    }
+    let _ = run_script(
+        host,
+        &format!("rm -rf \"$HOME/{ASSETS_DIR}/$1\""),
+        &[key],
+        Instant::now() + PROBE_TIMEOUT,
+    );
 }
 
 /// A URL path's `%XX` escapes decoded; `None` when one is malformed or the
@@ -368,8 +525,13 @@ fn run_bounded(
     mut cmd: Command,
     timeout: Duration,
 ) -> Result<(Option<i32>, String, String), String> {
+    cmd.stdin(Stdio::null());
+    run_piped(cmd, timeout)
+}
+
+/// [`run_bounded`] with the stdin `cmd` already has.
+fn run_piped(mut cmd: Command, timeout: Duration) -> Result<(Option<i32>, String, String), String> {
     let mut child = cmd
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

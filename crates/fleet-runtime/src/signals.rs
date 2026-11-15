@@ -67,6 +67,31 @@ impl FileSignals {
     }
 }
 
+impl FileSignals {
+    /// Keep `at` as when the session under `key` on another host was last
+    /// started: its file there is the place's, which Fleet does not write,
+    /// so the restart is kept here instead.
+    pub fn mark_started(&self, key: &str, at: fleet_api::Millis) -> io::Result<()> {
+        let path = self
+            .started_path(key)
+            .ok_or_else(|| io::Error::other("the session key is not a plain name"))?;
+        let tmp = path.with_extension("started.tmp");
+        fs::write(&tmp, at.to_string())?;
+        fs::rename(&tmp, &path)
+    }
+
+    /// When the session under `key` on another host was last started, as
+    /// [`FileSignals::mark_started`] kept it.
+    pub fn started(&self, key: &str) -> Option<fleet_api::Millis> {
+        let path = self.started_path(key)?;
+        fs::read_to_string(path).ok()?.trim().parse().ok()
+    }
+
+    fn started_path(&self, key: &str) -> Option<PathBuf> {
+        self.path(key).map(|p| p.with_extension("started"))
+    }
+}
+
 /// Append `signal` to `file` as one line, in one write, so lines from hooks
 /// running at once never interleave.
 pub fn append(file: &Path, signal: &Signal) -> io::Result<()> {

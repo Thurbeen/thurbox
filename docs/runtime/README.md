@@ -313,11 +313,22 @@ request.place ──▶ local ─────────▶ this machine's mult
   when its launcher reaches it without a prompt, `fleet` is on its `PATH`,
   and its multiplexer answers at tmux 3.2 or newer, or psmux 3.3.8 or newer.
   `why` names what is missing and the command that shows or fixes it.
-  `manifest` probes each place on a thread of its own.
+- `manifest` probes each place on a thread of its own, and waits 8 s for
+  all of them together. A place that has not answered by then is not
+  ready: its probe timed out. Fleet asks a Task's runtime about the Task's
+  own place only, so a place that does not answer never holds up a Task on
+  another.
 - A remote place's commands get its `PATH`: `path_prepend`, then the place's
   login `PATH`, then the launcher's ([runtime-mux.md](runtime-mux.md)).
-  `start` looks for the agent on that `PATH` first, and answers `failed`
-  when it is not there.
+  The login `PATH` is read once and cached for 10 minutes beside the locks.
+  `exec` reads it inside its own deadline, and runs with `path_prepend`
+  alone when it cannot. `start` looks for the agent on that `PATH` first,
+  and answers `failed` when it is not there.
+- A `start` whose `env` names `FLEET_ASSET_DIR`, a directory on this
+  machine, copies it to `~/.local/state/fleet/assets/<key>` on the place.
+  Every word of `argv` and every value of `env` that names the directory
+  names the copy instead, so a harness's hook file, such as pi's extension,
+  is the place's own. A `stop` removes the copy.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
   run on the place. A pause mark of a remote key stays on this machine.
 - A remote place's workspace is a directory already on the place: each URL
@@ -343,11 +354,14 @@ Fleet:  runtime exec: tail -c 1MiB <that file> ──▶ fold ──▶ session 
 - Fleet reads the file's last MiB through the runtime's `exec`, over the
   connection the runtime has to the place. A file not written yet is a
   session that reported nothing. An `exec` that fails is Unknown.
-- Before a revive or a resume, Fleet appends its restart mark to the file
-  through `exec`. When that fails, Fleet starts nothing and asks again on the
-  next pass.
+- Before a revive or a resume, Fleet keeps the restart's time in its own
+  data, `<data dir>/signals/<key>.started`, and writes nothing on the place.
+  A state reported before that time is the previous process's: readiness
+  and trust wait for the new process's own report. The place's clock must
+  agree with Fleet's.
 - The runtime writes no signal line and knows nothing of their format. A
-  runtime without `exec` leaves a remote session's state Unknown.
+  runtime without `exec` still starts, stops and revives the session, and
+  its state stays Unknown.
 
 #### The shell
 

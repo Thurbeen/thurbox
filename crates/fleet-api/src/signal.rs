@@ -181,6 +181,27 @@ impl Reported {
         r
     }
 
+    /// [`Reported::fold`] of a file whose agent was started again at
+    /// `since`, a time Fleet keeps rather than a line in the file: a state
+    /// reported before it is the previous process's, so until a later one
+    /// the state is [`State::Started`]. Prompts and the conversation are
+    /// kept, as a `Started` line keeps them.
+    pub fn fold_since(text: &str, since: Option<Millis>) -> Reported {
+        let mut r = Reported::fold(text);
+        let Some(since) = since else {
+            return r;
+        };
+        r.state = Some(State::Started);
+        for line in text.lines() {
+            if let Ok(s) = serde_json::from_str::<Signal>(line)
+                && s.at >= since
+            {
+                r.state = Some(s.state);
+            }
+        }
+        r
+    }
+
     /// What the agent is doing, when it reported anything.
     pub fn activity(&self) -> Option<Activity> {
         match self.state? {
@@ -236,6 +257,26 @@ pub trait Signals {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_restart_hides_the_states_reported_before_it() {
+        let text = [
+            json!({"at": 1, "state": "idle", "conversation": "c1"}),
+            json!({"at": 5, "state": "working"}),
+        ]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect::<String>();
+        let r = Reported::fold_since(&text, Some(10));
+        assert_eq!(r.state, Some(State::Started));
+        assert!(!r.reported());
+        assert_eq!(r.conversation.as_deref(), Some("c1"));
+        assert_eq!(
+            Reported::fold_since(&text, Some(5)).state,
+            Some(State::Working)
+        );
+        assert_eq!(Reported::fold_since(&text, None), Reported::fold(&text));
+    }
 
     #[test]
     fn the_last_state_wins_and_every_prompt_is_kept() {

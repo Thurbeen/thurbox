@@ -195,6 +195,57 @@ fn a_place_runtime_mux_cannot_serve_is_reported_not_ready_with_why() {
     }
 }
 
+/// A place reached over an ssh that never answers: its proxy sleeps, and
+/// the place's own `ConnectTimeout`, which wins over runtime-mux's 5 s,
+/// gives up only after 30 s.
+fn silent_place(name: &str) -> Value {
+    json!({"name": name, "config": {
+        "kind": "ssh",
+        "destination": "silent.invalid",
+        "ssh_opts": ["-F", "/dev/null", "-o", "ProxyCommand=sleep 60",
+                     "-o", "ConnectTimeout=30"],
+    }})
+}
+
+/// `exec`'s deadline starts with the call: a place whose `PATH` cannot be
+/// read spends the command's time, not time of its own before it.
+#[test]
+fn a_remote_exec_answers_by_its_deadline() {
+    let Some(rt) = Runtime::new() else { return };
+    let started = Instant::now();
+    let answer = rt.call(
+        "exec",
+        json!({"protocol": 2, "place": silent_place("silent"), "in": "host",
+               "argv": ["true"], "timeoutMs": 2000}),
+    );
+    let took = started.elapsed();
+    assert!(answer["known"]["timedOut"].is_object(), "{answer}");
+    assert!(took < Duration::from_secs(6), "took {took:?}: {answer}");
+}
+
+/// A place that does not answer costs `manifest` a bounded wait, well
+/// inside Fleet's 15 s bound on a call, and leaves `local` its report.
+#[test]
+fn a_silent_place_does_not_hold_up_the_manifest() {
+    let Some(rt) = Runtime::new() else { return };
+    let started = Instant::now();
+    let answer = rt.call(
+        "manifest",
+        json!({"protocol": 2, "places": [local(), silent_place("silent")]}),
+    );
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(12), "took {took:?}: {answer}");
+    let places = answer["known"]["places"].as_array().expect("places");
+    assert_eq!(places[0]["ready"], true, "{answer}");
+    assert_eq!(places[1]["ready"], false, "{answer}");
+    assert!(
+        places[1]["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("timed out")),
+        "{answer}"
+    );
+}
+
 /// On a remote place, a `git+` workspace and the verbs that read this
 /// machine's disk or server are refused by name, before any connection.
 #[test]

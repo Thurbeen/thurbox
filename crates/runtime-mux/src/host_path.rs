@@ -268,6 +268,54 @@ fn cached_env(host: &HostDef) -> Option<HostEnv> {
     env
 }
 
+/// What `host`'s probe said, within `timeout`: the answer this process
+/// already has, else a probe bounded by `timeout`, whose answer is kept. A
+/// probe that runs out of time is not kept, so a later call with more time
+/// asks again.
+pub fn env_within(host: &HostDef, timeout: Duration) -> Option<HostEnv> {
+    let key = host.backend_name();
+    if let Some(hit) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit;
+    }
+    if cfg!(test) {
+        return None;
+    }
+    let env = run_bounded(
+        HostLauncher::for_host(host).shell_c(&probe_script(&host.path_prepend)),
+        timeout.min(PROBE_TIMEOUT),
+    )
+    .and_then(|out| parse_probe(&out))?;
+    remember(host, env.clone());
+    Some(env)
+}
+
+/// Keep `env` as what `host`'s probe said, for the rest of the process: an
+/// answer read from somewhere else than a probe, such as a cache on disk.
+pub fn remember(host: &HostDef, env: HostEnv) {
+    if let Ok(mut c) = cache().lock() {
+        c.insert(host.backend_name(), Some(env));
+    }
+}
+
+/// `env` as the probe prints it, which [`parse_probe`] reads back.
+pub fn render(env: &HostEnv) -> String {
+    let mut out = String::new();
+    if let Some(home) = &env.home {
+        out.push_str(&format!("@home {home}\n"));
+    }
+    out.push_str(&format!("@base {}\n", env.base.join(":")));
+    if let Some(sh) = &env.sh_login {
+        out.push_str(&format!("@sh {}\n", sh.join(":")));
+    }
+    if let Some(shell) = &env.shell_login {
+        out.push_str(&format!("@shell {}\n", shell.join(":")));
+    }
+    for mux in &env.multiplexers {
+        out.push_str(&format!("@mux {}\n", mux.name()));
+    }
+    out
+}
+
 /// What a host's probe last said about its multiplexers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MuxProbe {
@@ -454,6 +502,18 @@ fn run_bounded(mut cmd: std::process::Command, timeout: Duration) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rendered_answer_reads_back_as_it_was() {
+        let env = HostEnv {
+            home: Some("/home/me".into()),
+            base: vec!["/usr/bin".into(), "/bin".into()],
+            shell_login: Some(vec!["/home/me/.local/bin".into()]),
+            sh_login: None,
+            multiplexers: vec![Multiplexer::Tmux],
+        };
+        assert_eq!(parse_probe(&render(&env)), Some(env));
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()

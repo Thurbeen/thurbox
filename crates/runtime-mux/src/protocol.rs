@@ -150,6 +150,12 @@ pub fn serve_with(
     let place = place.as_ref();
     // What reads or writes this machine's disk does not serve a remote place
     // yet: it would answer about the wrong machine.
+    // The backend's commands lead with the place's login `PATH`: read it,
+    // or take it from the cache, before the first of them. `exec` reads it
+    // inside its own deadline.
+    if let Some(host) = place.filter(|_| verb != "exec") {
+        crate::place::warm(host);
+    }
     if let Some(host) = place.filter(|_| matches!(verb, "attach" | "shell" | "browse" | "branches"))
     {
         return unknown(format!(
@@ -163,6 +169,9 @@ pub fn serve_with(
         "pause" => parse(request).map(|r: Keyed| pause(backend, pauses, &r.key)),
         "stop" => parse(request).map(|r: Stop| {
             let stopped = stop(backend, pauses, &r.key);
+            if let (Some(host), Some(_)) = (place, stopped.get("known")) {
+                crate::place::remove_assets(host, &r.key);
+            }
             if !r.release || stopped.get("known").is_none() {
                 return stopped;
             }
@@ -393,25 +402,16 @@ fn check_place(place: Option<&Value>) -> Result<Option<HostDef>, String> {
     crate::place::parse(&place)
 }
 
-/// Whether a process can run at `place` now: its backend's multiplexer is
-/// there and, on a remote place, the place answers and has `fleet`.
-fn ready(backends: &Backends, place: Value) -> Result<&'static str, String> {
-    let place: Place = serde_json::from_value(place).map_err(|e| format!("bad place: {e}"))?;
-    let host = crate::place::parse(&place)?;
-    let local = if cfg!(windows) { "windows" } else { "posix" };
-    let platform = host.as_ref().map_or(local, |h| h.platform().name());
-    let backend = backends(host.as_ref())?;
-    match &host {
-        Some(host) => crate::place::readiness(host, backend.as_ref())?,
-        None => backend.check_available().map_err(|e| e.to_string())?,
-    }
-    Ok(platform)
-}
+/// How long `manifest` waits for the places' readiness, all of them
+/// together: well inside Fleet's bound on a call (15 s unless configured),
+/// so one place that does not answer leaves the others their report.
+const READINESS_BUDGET: Duration = Duration::from_secs(8);
 
 /// The manifest's `places`: each place the request asks about, or `local`
 /// when it asks about none, with whether this program can run a process
-/// there now. Each place is probed on a thread of its own, so a slow one
-/// costs its own probe and no other's.
+/// there now. Each place is probed on a thread of its own, and every probe
+/// shares [`READINESS_BUDGET`]: a place whose probe has not answered by
+/// then is not ready, and its probe is left to end on its own.
 fn places(backends: &Backends, request: &[u8]) -> Vec<Value> {
     let asked: Vec<Value> = serde_json::from_slice::<Value>(request)
         .ok()
@@ -422,46 +422,59 @@ fn places(backends: &Backends, request: &[u8]) -> Vec<Value> {
     } else {
         asked
     };
+    let deadline = Instant::now() + READINESS_BUDGET;
     let local = if cfg!(windows) { "windows" } else { "posix" };
-    std::thread::scope(|scope| {
-        let probes: Vec<_> = asked
-            .into_iter()
-            .map(|place| {
-                let name = place
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let platform = place
-                    .get("config")
-                    .and_then(|c| c.get("platform"))
-                    .and_then(Value::as_str)
-                    .filter(|p| matches!(*p, "posix" | "windows"))
-                    .unwrap_or(local)
-                    .to_string();
-                (name, platform, scope.spawn(move || ready(backends, place)))
-            })
-            .collect();
-        probes
-            .into_iter()
-            .map(|(name, platform, probe)| {
-                let ready = probe
-                    .join()
-                    .unwrap_or_else(|_| Err("the readiness probe panicked".into()));
-                let platform = ready.as_ref().map_or(platform, |p| (*p).to_string());
-                let mut report = json!({
-                    "name": name,
-                    "platform": platform,
-                    "dynamic": false,
-                    "ready": ready.is_ok(),
-                });
-                if let Err(why) = ready {
-                    report["why"] = json!(why);
+    let (tx, rx) = mpsc::channel();
+    let mut reports: Vec<Value> = asked
+        .into_iter()
+        .enumerate()
+        .map(|(i, place)| {
+            let name = place
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let parsed = serde_json::from_value::<Place>(place)
+                .map_err(|e| format!("bad place: {e}"))
+                .and_then(|place| crate::place::parse(&place));
+            let platform = match &parsed {
+                Ok(Some(host)) => host.platform().name(),
+                _ => local,
+            };
+            match parsed.and_then(|host| Ok((backends(host.as_ref())?, host))) {
+                Ok((backend, host)) => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let ready = match &host {
+                            Some(host) => {
+                                crate::place::readiness(host, backend.as_ref(), deadline)
+                            }
+                            None => backend.check_available().map_err(|e| e.to_string()),
+                        };
+                        let _ = tx.send((i, ready));
+                    });
+                    json!({ "name": name, "platform": platform, "dynamic": false, "ready": false,
+                            "why": format!("place {name:?}: its readiness probe timed out after {} s", READINESS_BUDGET.as_secs()) })
                 }
-                report
-            })
-            .collect()
-    })
+                Err(why) => json!({ "name": name, "platform": platform, "dynamic": false,
+                                    "ready": false, "why": why }),
+            }
+        })
+        .collect();
+    drop(tx);
+    while let Ok((i, ready)) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        let report = &mut reports[i];
+        match ready {
+            Ok(()) => {
+                report["ready"] = json!(true);
+                if let Some(map) = report.as_object_mut() {
+                    map.remove("why");
+                }
+            }
+            Err(why) => report["why"] = json!(why),
+        }
+    }
+    reports
 }
 
 /// A request as its verb's shape, with every key it names checked.
@@ -770,6 +783,12 @@ fn start(
     {
         return known(json!({ "failed": { "why": why } }));
     }
+    let mut request = request;
+    if let Some(host) = place {
+        if let Err(why) = place_assets(host, &mut request) {
+            return known(json!({ "failed": { "why": why } }));
+        }
+    }
     let name = name_of(&request.key);
     let spec = WindowSpec {
         owner: owner(&name),
@@ -795,6 +814,32 @@ fn start(
     }
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
 }
+
+/// A start on a remote place with the files Fleet names as
+/// `FLEET_ASSET_DIR` on this machine, such as a harness's hook extension:
+/// the directory is copied to the place, and every word of `argv` and every
+/// value of `env` that names it names the copy instead. A directory that is
+/// not on this machine is left as it is: it may already be the place's.
+fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
+    let Some(local) = request
+        .env
+        .get(ASSET_DIR_ENV)
+        .filter(|dir| !dir.is_empty() && std::path::Path::new(dir.as_str()).is_dir())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let remote = crate::place::copy_assets(host, &request.key, std::path::Path::new(&local))?;
+    for word in request.argv.iter_mut().chain(request.env.values_mut()) {
+        if word.contains(&local) {
+            *word = word.replace(&local, &remote);
+        }
+    }
+    Ok(())
+}
+
+/// The variable Fleet names its harness asset directory in.
+const ASSET_DIR_ENV: &str = "FLEET_ASSET_DIR";
 
 /// The key's window, else its pause mark: a window answers for the key while
 /// it is there, so a pause that has not stopped it yet reads as running. A
@@ -1042,13 +1087,17 @@ fn capture(backend: &dyn SessionBackend, request: Capture) -> Value {
 /// place the group killed is the launcher's: a command there that ignores
 /// its closed connection can outlive the deadline.
 fn exec(place: Option<&HostDef>, request: Exec) -> Value {
+    // The deadline starts here: on a remote place, reading its `PATH` is
+    // part of the command's time.
+    let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
     let cap = request
         .output_cap
         .unwrap_or(DEFAULT_OUTPUT_CAP)
         .min(MAX_OUTPUT_CAP);
     let mut command = match place {
         Some(host) => {
-            match crate::place::exec_command(host, &request.argv, request.dir.as_deref()) {
+            match crate::place::exec_command(host, &request.argv, request.dir.as_deref(), deadline)
+            {
                 Ok(command) => command,
                 Err(why) => return known(json!({ "failed": { "why": why } })),
             }
@@ -1103,7 +1152,6 @@ fn exec(place: Option<&HostDef>, request: Exec) -> Value {
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
-    let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),

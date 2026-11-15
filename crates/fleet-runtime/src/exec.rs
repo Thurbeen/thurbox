@@ -678,11 +678,14 @@ impl ExecRuntime {
                 prompts: Vec::new(),
                 conversation: None,
             };
-            let marked = if spec.host == LOCAL_HOST {
-                crate::signals::append(std::path::Path::new(&file), &mark)
-                    .map_err(|e| e.to_string())
-            } else {
-                self.mark_on_place(&spec.host, &file, &mark)
+            // On another host the file is the place's: the restart is kept
+            // in Fleet's own data, so a start never waits on writing there.
+            let marked = match &self.signals {
+                Some(signals) if spec.host != LOCAL_HOST => signals
+                    .mark_started(&spec.key, mark.at)
+                    .map_err(|e| e.to_string()),
+                _ => crate::signals::append(std::path::Path::new(&file), &mark)
+                    .map_err(|e| e.to_string()),
             };
             if let Err(e) = marked {
                 return Observation::unknown(format!(
@@ -764,6 +767,7 @@ impl ExecRuntime {
         let Some(file) = signals.file(&session.host, &session.key) else {
             return Observation::unknown("the session key is not a plain name");
         };
+        let since = signals.started(&session.key);
         // The tail of the file, as the local read takes it; exit 3 is a
         // file the agent never wrote.
         let script = format!(
@@ -776,8 +780,10 @@ impl ExecRuntime {
                     code: Some(0),
                     stdout,
                     ..
-                } => Observation::Known(Reported::fold(&stdout)),
-                Executed::Exited { code: Some(3), .. } => Observation::Known(Reported::default()),
+                } => Observation::Known(Reported::fold_since(&stdout, since)),
+                Executed::Exited { code: Some(3), .. } => {
+                    Observation::Known(Reported::fold_since("", since))
+                }
                 Executed::Exited { stderr, .. } => Observation::unknown(format!(
                     "cannot read the signal file on {}: {}",
                     session.host,
@@ -793,22 +799,6 @@ impl ExecRuntime {
                 )),
             },
         )
-    }
-
-    /// Append `signal` to `file` on `host`, through the runtime's `exec`.
-    fn mark_on_place(&self, host: &str, file: &str, signal: &Signal) -> Result<(), String> {
-        let line = serde_json::to_string(signal).map_err(|e| e.to_string())?;
-        let script =
-            "f=\"$HOME/${1#\\~/}\"; mkdir -p \"${f%/*}\" && printf '%s\\n' \"$2\" >> \"$f\"";
-        match self.exec_on(host, &["sh", "-c", script, "sh", file, &line]) {
-            Observation::Known(Executed::Exited { code: Some(0), .. }) => Ok(()),
-            Observation::Known(Executed::Exited { stderr, .. }) => {
-                Err(stderr.lines().next().unwrap_or("printf failed").to_string())
-            }
-            Observation::Known(Executed::Failed { why }) => Err(why),
-            Observation::Known(Executed::TimedOut { .. }) => Err("timed out".into()),
-            Observation::Unknown { why, .. } => Err(why),
-        }
     }
 
     /// The session's identity: the key's, which outlives each process a

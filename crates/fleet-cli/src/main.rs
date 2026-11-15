@@ -1657,6 +1657,9 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
         let mut hosts = BTreeMap::new();
         for place in config.places() {
             let mut rt = exec_program(config, &place.runtime);
+            // Its manifest asks about its own place only: a Task on one
+            // place never waits on another's probe.
+            rt.places = vec![place.place.clone()];
             rt.place = place.place;
             if place.local {
                 hosts.insert(config::LOCAL.to_string(), rt.clone());
@@ -1891,6 +1894,7 @@ fn cmd_doctor(
         }
         for place in config.places() {
             let mut program = exec_program(config, &place.runtime);
+            program.places = vec![place.place.clone()];
             program.place = place.place;
             let answer = fleet_runtime::exec::reach(&program);
             checks.push(doctor::runtime(&place.id, &place.runtime, answer));

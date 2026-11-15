@@ -3775,3 +3775,186 @@ fn an_ssh_place_reports_its_readiness_and_refuses_a_git_workspace() {
     );
     assert!(status["session"].is_null(), "{status:#}");
 }
+
+/// A Task on one place asks the runtime's manifest about that place only:
+/// a place that does not answer never holds up a Task on `local`.
+#[test]
+fn a_local_task_asks_about_no_other_place() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("place-alone");
+    let (mut env, log) = logged_env("runtime-mux-place-alone", &program, &sockets);
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.silent]\nkind = \"ssh\"\ndestination = \"silent.invalid\"\nssh_opts = [\"-F\", \"/dev/null\", \"-o\", \"ProxyCommand=sleep 60\"]\n"
+        ),
+    )
+    .expect("config");
+    waiting_task(&mut env);
+    assert_eq!(env.status("t1")["sessionState"], "Running");
+    let local = json!([{"name": "local", "config": {}}]);
+    let manifests: Vec<Value> = calls(&log)
+        .into_iter()
+        .filter(|(v, _)| v == "manifest")
+        .map(|(_, r)| r)
+        .collect();
+    assert!(!manifests.is_empty());
+    for request in manifests {
+        assert_eq!(request["places"], local, "{request}");
+    }
+}
+
+/// pi as Fleet starts it: it loads the extension `-e` names, which must be
+/// a file on its own machine, and reports through `fleet`.
+const PI: &str = r#"#!/bin/sh
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+ext=
+while [ $# -gt 0 ]; do [ "$1" = -e ] && ext=$2; shift; done
+if [ -f "$ext" ]; then printf '%s\n' "$ext" > "$PWD/extension"; fi
+printf '%s' "$FLEET_ASSET_DIR" > "$PWD/asset-dir"
+fleet signal idle
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-pi\"}"
+  fleet signal idle
+done
+"#;
+
+/// A harness whose hooks are a file Fleet writes, pi's extension, runs on an
+/// ssh place with the place's copy of that file: the asset directory is
+/// copied under the place's home and every path naming it is rewritten.
+/// A stop removes the copy.
+#[test]
+fn a_pi_task_on_an_ssh_place_loads_its_extension_from_the_place() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("ssh-pi");
+    let remote = Sockets::new("ssh-pi-place");
+    let mut env = mux_env("runtime-mux-ssh-pi", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    let bin = env.root.join("place-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let pi = bin.join("pi");
+    fs::write(&pi, PI).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}",
+            sshd.place("box", &[&bin, fleet_dir])
+        ),
+    )
+    .expect("config");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&path));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("pi");
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on the prompt hook's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let copies = home.join(".local/state/fleet/assets");
+    let extension = fs::read_to_string(work.join("extension"))
+        .unwrap_or_else(|_| panic!("pi found no extension file: {:?}", starts(&work)));
+    assert!(
+        Path::new(extension.trim()).starts_with(&copies),
+        "the extension is the place's copy: {extension}"
+    );
+    let assets = fs::read_to_string(work.join("asset-dir")).expect("FLEET_ASSET_DIR");
+    assert!(Path::new(&assets).starts_with(&copies), "{assets}");
+    assert!(Path::new(&assets).join("fleet-pi.ts").is_file(), "{assets}");
+
+    let key = format!(
+        "fleet.{}",
+        env.get("t1")["metadata"]["uid"].as_str().expect("uid")
+    );
+    let place = json!({"name": "box", "config": toml_place(&sshd, &[&bin, fleet_dir])});
+    let stopped = mux_call(
+        &program,
+        &sockets,
+        "stop",
+        &json!({"protocol": 2, "place": place, "key": key}),
+    );
+    assert_eq!(stopped, json!({"known": "stopped"}));
+    assert!(!Path::new(&assets).exists(), "a stop removes the copy");
+}
+
+/// A runtime on a remote place that does not offer `exec` still revives a
+/// lost session: the restart is marked in Fleet's own data, and nothing is
+/// written on the place. What the agent reports there stays Unknown.
+#[test]
+fn a_lost_session_on_a_place_without_exec_is_revived() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("ssh-noexec");
+    let remote = Sockets::new("ssh-noexec-place");
+    let mut env = mux_env("runtime-mux-ssh-noexec", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    // runtime-mux with `exec` taken out of its manifest and refused.
+    let wrapper = env.root.join("no-exec.sh");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nreq=$(cat)\ncase $1 in\n  exec) echo '{{\"unknown\":{{\"why\":\"no exec here\"}}}}' ;;\n  manifest) printf '%s' \"$req\" | '{p}' \"$@\" | sed 's/\"exec\",//' ;;\n  *) printf '%s' \"$req\" | exec '{p}' \"$@\" ;;\nesac\n",
+            p = program.display()
+        ),
+    )
+    .expect("wrapper");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let bin = env.root.join("place-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, CLAUDE).expect("harness");
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let cfg = fs::read_to_string(&env.config)
+        .expect("config")
+        .replace(&*program.to_string_lossy(), &wrapper.to_string_lossy());
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}",
+            sshd.place("box", &[&bin, fleet_dir])
+        ),
+    )
+    .expect("config");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&path));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "started on the place", |_| !starts(&work).is_empty());
+    let listed = remote.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    remote.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    reconcile_until(&env, "revived without exec", |_| starts(&work).len() >= 2);
+}

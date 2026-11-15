@@ -109,6 +109,11 @@ fn serve(verb: &str) -> serde_json::Value {
         }
     }
     let pauses = pauses(&server);
+    // Each remote place's login `PATH` is cached beside the locks, so a call
+    // does not read it again over ssh.
+    if let (Ok(dir), prefix) = private_dir() {
+        runtime_mux::place::keep_cache_in(dir, format!("{prefix}runtime-mux-{socket}@"));
+    }
     let settings = MuxSettings {
         socket: Some(socket),
         ..MuxSettings::default()

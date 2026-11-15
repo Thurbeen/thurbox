@@ -1962,6 +1962,12 @@ impl Manager<'_> {
                         dir.to_string(),
                     );
                 }
+                if let Some(dir) = profiles.assets() {
+                    spawn.env.insert(
+                        fleet_api::harness::ASSET_DIR_ENV.to_string(),
+                        dir.to_string(),
+                    );
+                }
             }
         }
         self.perform_plan(obj, plan, lease, ttl, report)
