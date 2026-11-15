@@ -1043,6 +1043,25 @@ fn a_long_place_list_scrolls_inside_a_short_screen() {
         screen.contains("cannot be reached"),
         "no reason at all:\n{screen}"
     );
+    // The reason gives up its lines before the list gives up a row: twenty
+    // rows inside the border, footer and message row leave the list 19 and
+    // the reason one.
+    let lines: Vec<&str> = screen.lines().collect();
+    let listed = lines
+        .iter()
+        .filter(|l| l.contains("mux/place-") || l.contains("this machine"))
+        .count();
+    assert_eq!(listed, 19, "the list gave up rows to the reason:\n{screen}");
+    let cursor = lines
+        .iter()
+        .position(|l| l.contains("▸ mux/place-19"))
+        .expect(&screen);
+    assert!(lines[cursor + 1].contains("cannot be reached"), "{screen}");
+    assert_eq!(
+        lines[cursor + 2].trim_matches(|c: char| c == '│' || c.is_whitespace()),
+        "",
+        "the reason takes one line:\n{screen}"
+    );
 }
 
 /// A reason longer than the reason area keeps the area at its four lines,
