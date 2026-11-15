@@ -72,7 +72,6 @@ done
 log "Building thurbox (dev) ..."
 cargo build --bin thurbox --bin thurbox-cli --bin fleet --bin runtime-mux >&2
 THURBOX_BIN="$REPO_ROOT/target/debug/thurbox"
-CLI_BIN="$REPO_ROOT/target/debug/thurbox-cli"
 export THURBOX_BIN
 [ -x "$THURBOX_BIN" ] || die "dev binary not found at $THURBOX_BIN"
 
@@ -177,7 +176,7 @@ git -C "$DEMO_REPO" -c user.email=ui@thurbox -c user.name=ui add -A
 git -C "$DEMO_REPO" -c user.email=ui@thurbox -c user.name=ui commit -q -m "init sample project"
 DEMO_BASE_BRANCH=$(git -C "$DEMO_REPO" symbolic-ref --short HEAD)
 
-# --- Seed sessions + an automation -------------------------------------------
+# --- Seed sessions ------------------------------------------------------------
 # Isolation tripwire: the sessions are Tasks in the store FLEET_CONFIG names, so
 # a FLEET_CONFIG outside the sandbox would seed — and screenshot — your real
 # Fleet. Abort before any write.
@@ -236,14 +235,6 @@ git -C "$REVIEW_WT" -c user.email=ui@thurbox -c user.name=ui \
     commit -q -m "feat: add greeting + checked arithmetic"
 tbx_fleet_session review "$REVIEW_WT" "$(harness_for "$review_agent")" \
     || die "creating session 'review' failed"
-
-# Automations no longer have a pane, so nothing below is screenshotted. One is
-# seeded anyway: search reads past it, and empty state is a less honest thing to
-# review than a populated one.
-log "Seeding an automation"
-"$CLI_BIN" automation create --name "nightly-triage" --trigger daily \
-    --time "09:00" --repo "$DEMO_REPO" \
-    --prompt "Triage failing CI and summarize blockers" >/dev/null 2>&1 || true
 
 # --- Persist the TUI theme so the launched TUI starts in it ------------------
 printf '{"theme": "%s"}\n' "$DEMO_THEME" > "$CFG_DIR/interface.json"

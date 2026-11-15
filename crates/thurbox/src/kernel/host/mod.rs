@@ -303,8 +303,7 @@ pub enum Capability {
     ///
     /// The verbs listed in [`crate::kernel::command::Command::requires`]:
     /// `send` and `dispatch` put words in an agent's mouth, `create`, `fork` and
-    /// `restart` launch one, an automation is typed or run by the heartbeat, a
-    /// force `delete` removes a worktree nothing restores, and `plugin` rewrites
+    /// `restart` launch one, a force `delete` removes a worktree nothing restores, and `plugin` rewrites
     /// a file of the interface. A pane holding none of these can still ask the
     /// user through the bundled confirmation, which words the change itself and
     /// issues it only on their `y`.
@@ -336,9 +335,7 @@ impl Capability {
         match self {
             Capability::Run => "runs programs and reads their output",
             Capability::Program => "runs a program you interact with",
-            Capability::Sessions => {
-                "starts, types into and deletes sessions, runs automations, edits the interface"
-            }
+            Capability::Sessions => "starts, types into and deletes sessions, edits the interface",
             Capability::Files => "reads the files in a session's directory",
         }
     }

@@ -69,8 +69,6 @@ struct State {
     calls: Vec<String>,
     /// Hook reports not yet drained by an attached interface.
     hook_events: Vec<(String, String)>,
-    /// What the heartbeat runs, while one is kept.
-    heartbeat: Option<String>,
     refuse_kill: bool,
     fail_discover_on: Option<usize>,
     discovers: usize,
@@ -812,33 +810,6 @@ impl StatusChannel for RecordingBackend {
 
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
         std::mem::take(&mut self.state.lock().unwrap().hook_events)
-    }
-
-    fn ensure_heartbeat(
-        &self,
-        program: &Path,
-        args: &[String],
-        every: std::time::Duration,
-    ) -> thurbox::backend::contract::BackendResult<()> {
-        let command = std::iter::once(program.display().to_string())
-            .chain(args.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut state = self.lock(format!("ensure_heartbeat {command} {}s", every.as_secs()))?;
-        state.heartbeat.get_or_insert(command);
-        Ok(())
-    }
-
-    fn heartbeat_running(&self) -> thurbox::backend::contract::BackendResult<bool> {
-        Ok(self.lock("heartbeat_running".into())?.heartbeat.is_some())
-    }
-
-    fn stop_heartbeat(&self) -> thurbox::backend::contract::BackendResult<bool> {
-        Ok(self
-            .lock("stop_heartbeat".into())?
-            .heartbeat
-            .take()
-            .is_some())
     }
 }
 

@@ -316,8 +316,6 @@ globals:
     property: read-only
   thurbox.agents:
     property: read-only
-  thurbox.settings.features.automations:
-    property: read-only
   thurbox.settings.features.shell_pane:
     property: read-only
   thurbox.settings.features.perf_hud:
@@ -369,8 +367,6 @@ globals:
   thurbox.hosts:
     property: read-only
   thurbox.fleets:
-    property: read-only
-  thurbox.automations:
     property: read-only
   thurbox.commands:
     property: read-only

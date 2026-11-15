@@ -1,4 +1,3 @@
-pub mod automation;
 pub mod hook_status;
 pub mod plugin_spec;
 pub mod review;
@@ -10,7 +9,6 @@ pub mod settings;
 pub use runtime_mux::SessionId;
 pub use runtime_mux::{host_def, hyperlink, multiplexer, platform, route};
 
-pub use automation::{parse_hhmm, preset_to_cron, AutomationSchedule, SchedulePreset};
 pub use hook_status::{SessionState, WORKING_QUIET_MS};
 pub use host_def::{HostDef, HostKind, HostRegistry};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};

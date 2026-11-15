@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use thurbox::kernel::host::{LuaHost, Published, RenderContext};
 use thurbox::kernel::lua_api::{self, Class, Ty, API, API_ROOT};
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::snapshot::{AutomationRow, GitState, HostRow, RunRow, SessionRow, Snapshot};
+use thurbox::kernel::snapshot::{GitState, HostRow, SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
@@ -220,32 +220,6 @@ fn box_place() -> HostRow {
 fn full() -> Snapshot {
     Snapshot {
         sessions: vec![row("lead")],
-        automations: vec![AutomationRow {
-            id: 1,
-            name: "nightly".into(),
-            schedule: "0 3 * * *".into(),
-            action: "spawn".into(),
-            enabled: true,
-            last_outcome: Some("success".into()),
-            last_detail: Some("ok".into()),
-            runs: vec![RunRow {
-                id: 1,
-                started_at: 1,
-                status: "success".into(),
-                detail: "ok".into(),
-                session: Some("lead".into()),
-            }],
-            timezone: Some("UTC".into()),
-            session: Some("lead".into()),
-            repo: Some("/repo".into()),
-            branch: Some("b".into()),
-            base: Some("main".into()),
-            agent: Some("claude".into()),
-            command: Some("true".into()),
-            last_run_at: Some(1),
-            next_run_at: Some(2),
-            ..AutomationRow::default()
-        }],
         repos: vec![thurbox::kernel::snapshot::RepoRow {
             path: "/repo".into(),
             name: "thurbox".into(),

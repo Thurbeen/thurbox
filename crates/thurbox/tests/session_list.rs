@@ -1242,8 +1242,8 @@ fn a_pending_jump_loses_to_the_users_own_cursor_move() {
 #[test]
 fn only_a_create_this_interface_made_is_subscribed_to() {
     // `session.created` fires for every row that appears, whoever made it —
-    // subscribing to it would let a `thurbox-cli session create`, an automation
-    // or a second instance take the keyboard out from under the user.
+    // subscribing to it would let a `thurbox-cli session create` or a second
+    // instance take the keyboard out from under the user.
     let host = host();
     let index = host.index_of(PLUGIN).expect("no sessions plugin");
     let events = &host.plugins[index].events;

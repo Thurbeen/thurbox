@@ -131,7 +131,6 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
         "notifications.also_on_waiting",
         "Fleet reports no finished state",
     ),
-    ("notifications.on_automation_failure", "nothing raised it"),
     ("fleet", "the Fleets are listed as [fleets.<name>]"),
 ];
 
@@ -413,14 +412,10 @@ impl TelemetrySettings {
 }
 
 /// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
-/// feature's UI and blocks its keybinding; disabling `automations` also stops
-/// the TUI firing schedules. Data and `thurbox-cli` surfaces stay fully
-/// functional regardless, so re-enabling a flag is lossless.
+/// feature's UI and blocks its keybinding. Data and `thurbox-cli` surfaces stay
+/// fully functional regardless, so re-enabling a flag is lossless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeatureFlags {
-    /// The TUI firing the automations' schedules (`automations.json`).
-    #[serde(default = "default_true")]
-    pub automations: bool,
     /// Per-session shell pane toggle (Ctrl+T).
     #[serde(default = "default_true")]
     pub shell_pane: bool,
@@ -615,7 +610,6 @@ fn default_true() -> bool {
 impl Default for FeatureFlags {
     fn default() -> Self {
         Self {
-            automations: true,
             shell_pane: true,
             perf_hud: true,
             mouse: true,
@@ -697,11 +691,9 @@ pub const FIELDS: &[Field] = &[
     field!(Live, features.shell_pane),
     field!(Live, features.perf_hud),
     // Capture is an escape already sent, the notifier is a thread already
-    // started (or not), the heartbeat is armed once, and the update work ran
-    // at startup.
+    // started (or not), and the update work ran at startup.
     field!(NextLaunch, features.mouse),
     field!(NextLaunch, features.notifications),
-    field!(NextLaunch, features.automations),
     field!(NextLaunch, features.version_check),
     field!(NextLaunch, features.auto_update),
     // The dispatcher thread is started once with the backend it resolved.
@@ -843,7 +835,7 @@ mod tests {
     fn absent_features_table_enables_everything() {
         let s: Settings = toml::from_str("").unwrap();
         assert_eq!(s.features, FeatureFlags::default());
-        assert!(s.features.shell_pane && s.features.automations);
+        assert!(s.features.shell_pane && s.features.mouse);
     }
 
     #[test]
@@ -856,7 +848,6 @@ mod tests {
     fn partial_features_override_keeps_other_flags_enabled() {
         let s: Settings = toml::from_str("[features]\nshell_pane = false").unwrap();
         assert!(!s.features.shell_pane);
-        assert!(s.features.automations);
         assert!(s.features.perf_hud);
         assert!(s.features.mouse);
     }
@@ -1033,7 +1024,6 @@ mod tests {
         // omission in `restart_only_differs` (which would wrongly toast "applied
         // live"). Each binding is consumed by `cases`, so none goes unused.
         let FeatureFlags {
-            automations,
             shell_pane,
             perf_hud,
             mouse,
@@ -1045,7 +1035,6 @@ mod tests {
         // compile-time guard (an unused binding would otherwise be the only
         // warning, not an error).
         let _ = (
-            automations,
             shell_pane,
             perf_hud,
             mouse,
@@ -1061,8 +1050,7 @@ mod tests {
             |f| f.shell_pane = !f.shell_pane,
             |f| f.perf_hud = !f.perf_hud,
         ];
-        let restart: [fn(&mut FeatureFlags); 5] = [
-            |f| f.automations = !f.automations,
+        let restart: [fn(&mut FeatureFlags); 4] = [
             |f| f.mouse = !f.mouse,
             |f| f.notifications = !f.notifications,
             |f| f.version_check = !f.version_check,
@@ -1113,7 +1101,7 @@ mod tests {
             "config_version = 2\nscrollback_lines = 1\n\
              hidden_terminal_secs = 1\nstream_panes = true\ntwo_panel_min_cols = 1\n\
              git_poll_secs = 1\n\
-             [features]\nautomations = false\nshell_pane = false\n\
+             [features]\nshell_pane = false\n\
              perf_hud = false\nmouse = false\nnotifications = false\n\
              version_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\

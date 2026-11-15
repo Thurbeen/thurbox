@@ -21,7 +21,7 @@
 mod bus;
 mod execute;
 mod fleet;
-pub(crate) use fleet::{dir_url, task_name};
+pub(crate) use fleet::task_name;
 
 pub use bus::{CommandBus, InFlight, Phase};
 
@@ -593,7 +593,6 @@ impl Command {
             "message" => Self::parse_message(args),
             "plugin" => Self::parse_plugin(args),
             "set" => Self::parse_setting(args),
-            // Tasks and automations name a numeric id, not a session.
             // Creation names a repository, not a session.
             "create" => Self::parse_create(args),
             "bookmark" => Self::parse_bookmark(args),

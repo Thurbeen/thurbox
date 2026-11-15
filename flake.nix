@@ -33,18 +33,13 @@
           rev = self.shortRev or self.dirtyShortRev or null;
         };
 
-      # The modules install the package and, on request, the opt-in automation
-      # timer from packaging/systemd. That timer is the only thing thurbox needs
-      # a service manager for; everything else it configures itself, in files it
-      # owns, so the modules manage no config.
-      automationTimer = {
-        OnBootSec = "1min";
-        OnUnitActiveSec = "1min";
-        AccuracySec = "15s";
-        Persistent = true;
-      };
-      automationTick = package: "${package}/bin/thurbox-cli automation tick";
-
+      # The modules install the package. thurbox configures everything else
+      # itself, in files it owns, so the modules manage no config.
+      removedAutomations = ''
+        thurbox schedules nothing of its own any more. Run work on a timer with
+        a systemd timer or cron job that applies a Task under a fresh name, or
+        runs `fleet send TASK TEXT`.
+      '';
       options =
         { lib, pkgs, ... }:
         {
@@ -55,11 +50,6 @@
             defaultText = lib.literalExpression "thurbox.packages.\${pkgs.system}.default";
             description = "The thurbox package to install.";
           };
-          automations.enable = lib.mkEnableOption ''
-            a user timer (systemd, or launchd under Home Manager on macOS) that
-            runs `thurbox-cli automation tick` every minute, so automations fire after a reboot without the TUI having
-            been opened
-          '';
         };
     in
     {
@@ -76,26 +66,11 @@
           cfg = config.programs.thurbox;
         in
         {
+          imports = [
+            (lib.mkRemovedOptionModule [ "programs" "thurbox" "automations" ] removedAutomations)
+          ];
           options.programs.thurbox = options { inherit lib pkgs; };
-          config = lib.mkIf cfg.enable (
-            lib.mkMerge [
-              { environment.systemPackages = [ cfg.package ]; }
-              (lib.mkIf cfg.automations.enable {
-                systemd.user.services.thurbox-automations = {
-                  description = "Fire due thurbox automations (headless)";
-                  serviceConfig = {
-                    Type = "oneshot";
-                    ExecStart = automationTick cfg.package;
-                  };
-                };
-                systemd.user.timers.thurbox-automations = {
-                  description = "Fire due thurbox automations every minute";
-                  timerConfig = automationTimer;
-                  wantedBy = [ "timers.target" ];
-                };
-              })
-            ]
-          );
+          config = lib.mkIf cfg.enable { environment.systemPackages = [ cfg.package ]; };
         };
 
       homeManagerModules.default =
@@ -109,40 +84,12 @@
           cfg = config.programs.thurbox;
         in
         {
+          imports = [
+            (lib.mkRemovedOptionModule [ "programs" "thurbox" "automations" ] removedAutomations)
+          ];
           options.programs.thurbox = options { inherit lib pkgs; };
           config = lib.mkIf cfg.enable {
             home.packages = [ cfg.package ];
-            # Home Manager also runs on macOS, where the timer is the launchd
-            # agent from packaging/launchd instead.
-            systemd.user = lib.mkIf (cfg.automations.enable && pkgs.stdenv.hostPlatform.isLinux) {
-              services.thurbox-automations = {
-                Unit.Description = "Fire due thurbox automations (headless)";
-                Service = {
-                  Type = "oneshot";
-                  ExecStart = automationTick cfg.package;
-                };
-              };
-              timers.thurbox-automations = {
-                Unit.Description = "Fire due thurbox automations every minute";
-                Timer = automationTimer;
-                Install.WantedBy = [ "timers.target" ];
-              };
-            };
-            launchd.agents.thurbox-automations =
-              lib.mkIf (cfg.automations.enable && pkgs.stdenv.hostPlatform.isDarwin)
-                {
-                  enable = true;
-                  config = {
-                    Label = "dev.thurbox.automations";
-                    ProgramArguments = [
-                      "${cfg.package}/bin/thurbox-cli"
-                      "automation"
-                      "tick"
-                    ];
-                    StartInterval = 60;
-                    RunAtLoad = true;
-                  };
-                };
           };
         };
     }
@@ -220,8 +167,9 @@
           default = thurbox;
         };
 
-        # Evaluates the NixOS module with everything on and renders the unit it
-        # adds; `nix flake check` alone only checks that the module is a function.
+        # Evaluates the NixOS module with thurbox enabled and checks it installs
+        # the package; `nix flake check` alone only checks that the module is a
+        # function.
         checks = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           nixos-module =
             let
@@ -230,19 +178,20 @@
                 modules = [
                   self.nixosModules.default
                   {
-                    programs.thurbox = {
-                      enable = true;
-                      automations.enable = true;
+                    programs.thurbox.enable = true;
+                    fileSystems."/" = {
+                      device = "none";
+                      fsType = "tmpfs";
                     };
-                    fileSystems."/".device = "none";
                     boot.loader.grub.enable = false;
                     system.stateVersion = "25.11";
                   }
                 ];
               };
+              installed = builtins.elem nixos.config.programs.thurbox.package nixos.config.environment.systemPackages;
             in
-            pkgs.writeText "thurbox-automations.service"
-              nixos.config.systemd.user.units."thurbox-automations.service".text;
+            assert pkgs.lib.assertMsg installed "the NixOS module does not install thurbox";
+            pkgs.writeText "thurbox-nixos-module" "installed\n";
         };
 
         apps.default = {

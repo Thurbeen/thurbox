@@ -441,7 +441,7 @@ fn url_path(path: &str) -> String {
 
 /// `<scheme>://<dir>`, with the bytes a URL reads apart (`%`, `?`, `#` and
 /// whitespace) percent-encoded, as the runtime decodes them.
-pub(crate) fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
+fn dir_url(scheme: &str, dir: &std::path::Path) -> String {
     let mut url = format!("{scheme}://");
     for c in url_path(&dir.to_string_lossy()).chars() {
         push_char(&mut url, c, |c| {

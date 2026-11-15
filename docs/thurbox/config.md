@@ -89,7 +89,6 @@ failing check.
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
-| `~/.config/thurbox/automations.json` | JSON | `thurbox-cli automation` (or you) | each tick and each command | every automation: its trigger, action and prompt, its last and next run, and its 20 most recent runs. Rewritten whole under a lock every process takes (`automations.json.lock`); a file that does not parse is an error, never an empty list |
 
 `settings.toml` reloads **live**: the TUI checks its mtime about once per
 second and applies edits without a restart. A successful edit shows a toast;
@@ -105,7 +104,7 @@ restart.
 `settings.toml` can also be edited from the TUI: **`Ctrl+,`** (alt `F6`)
 opens a **Settings panel** listing every knob. It writes the file back
 **preserving its comments**, and feature flags that gate UI panels apply
-**live** on save; the rest (`mouse`, `notifications`, `automations`,
+**live** on save; the rest (`mouse`, `notifications`,
 `version_check`, `auto_update`, the three editable `[notifications]` knobs,
 and the scalars) take effect on the next launch — the panel marks those rows
 with `⟳` and toasts a restart note. The panel exposes only the three
@@ -329,7 +328,6 @@ git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 [features]
 shell_pane    = true
 perf_hud      = true
-automations   = true
 mouse         = true
 notifications = true
 version_check = true           # on by default (1.0): makes a network call
@@ -413,7 +411,7 @@ startup, so a change applies on the next launch.
 Switch off behaviour that reaches outside the interface. All default to
 `true`, `version_check` and `auto_update` included, which both reach the
 network. `shell_pane`,
-and `perf_hud` apply **live** on save; `automations`,
+and `perf_hud` apply **live** on save;
 `mouse`, `notifications`, `version_check` and `auto_update` take effect on
 the next launch. Data is never touched, so re-enabling a flag is lossless.
 
@@ -427,26 +425,22 @@ The panes for code review and the info panel are plugins
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)),
 switched on and off from the Interface tab like any other pane.
 
-Seven keys are **retired**, because nothing read them: the top-level
+Six keys are **retired**, because nothing read them: the top-level
 `three_panel_min_cols`, `[features]` `file_viewer`, `info_panel`,
-`code_review` and `global_search`, and `[notifications]` `also_on_waiting`
-and `on_automation_failure`. A file that sets one still loads and passes
-`thurbox-cli config validate`; startup names each as no longer read, and a
-save from the settings panel removes it.
+`code_review` and `global_search`, and `[notifications]` `also_on_waiting`.
+A file that sets one still loads and passes `thurbox-cli config validate`;
+startup names each as no longer read, and a save from the settings panel
+removes it.
 
 | Key | Default | Controls |
 |-----|---------|----------|
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
 | `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters, frame/tick timing and the per-pane cost table (see `docs/thurbox/performance.md`) |
-| `automations` | `true` | the interface firing due automations while it runs (the CLI, `automation tick` included, stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 | `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update` |
 
-`automations = false` stops the interface firing due automations; nothing
-fires unless an OS timer runs `thurbox-cli automation tick` or someone runs
-`automation run`. Every other `thurbox-cli automation` command still works.
 Disabling
 `shell_pane` hides existing shell panes but never kills their
 processes. `mouse = false` skips terminal mouse capture entirely, so
@@ -592,9 +586,8 @@ a place.
 - A command for a session (send, rename, delete, and the check a confirmed
   delete makes) goes to that session's own Fleet, named by its id. A
   creation goes to the Fleet the new-session modal picked. A bare Task name
-  and an automation's spawn go to the Fleet in force: the only one listed,
-  or the first by name when several are. An automation's send goes to its
-  session's Fleet. A session of a Fleet `settings.toml` does not list is
+  goes to the Fleet in force: the only one listed, or the first by name when
+  several are. A session of a Fleet `settings.toml` does not list is
   refused by name. `thurbox-cli doctor` names the Fleet in force.
 - The new-session modal asks for the Fleet first when several are listed,
   and skips that step when one is. Each Fleet shows how it is reached
@@ -627,11 +620,11 @@ a place.
   writes its Tasks in, is refused: it shows as `incompatible`, the session
   list's error says `<fleet>: incompatible: …`, its watch, manager and
   places are never asked for, and a command or creation for it fails
-  without sending anything but that `version`; an automation's send or
-  spawn too. `doctor` applies the same rule. The `version` probe waits 5
-  seconds, or 15 for a Fleet on another machine, and is then stopped. A
-  Fleet that does not answer, in time or at all, is not refused: it is
-  unreachable (`the Fleet <name> did not answer …`), and is asked again.
+  without sending anything but that `version`. `doctor` applies the same
+  rule. The `version` probe waits 5 seconds, or 15 for a Fleet on another
+  machine, and is then stopped. A Fleet that does not answer, in time or at
+  all, is not refused: it is unreachable (`the Fleet <name> did not answer
+  …`), and is asked again.
 - A Fleet that cannot be asked (its `ssh` exits 255) makes a command fail
   with that reason. The check a confirmed delete makes never reads it as a
   Task that is gone: only Fleet's own answer (exit 3) says so.
@@ -710,8 +703,7 @@ a place.
 - A rename sets the Task's `thurbox.dev/name` label (`fleet label`). The
   manual order is `interface.json`. A companion shell is the runtime's,
   opened through `fleet shell`: thurbox records none.
-- Fleet revives a session whose terminal is lost. An automation is `thurbox-cli automation`'s,
-  in `automations.json`. A todo is a Fleet Task that is not dispatched
+- Fleet revives a session whose terminal is lost. A todo is a Fleet Task that is not dispatched
   (`fleet apply`). Settings are `settings.toml`; the
   repositories and folders the creation flow remembers are `bookmarks.json`.
 - A Task's terminal is the stream `fleet attach` names, opened as a stream
@@ -836,8 +828,8 @@ thurbox-cli notify --test   # fire a sample notification to confirm it works
 
 ### Scripted notifications
 
-`notify send` delivers one notification through the same backend, for an Exec
-automation, a CI job or an orchestration script:
+`notify send` delivers one notification through the same backend, for a timer,
+a CI job or an orchestration script:
 
 ```bash
 thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
@@ -864,8 +856,8 @@ thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
   notification to reach the desktop. `thurbox-cli notify` shows the backend the
   current environment resolves to.
 
-An Exec automation that wants an alert on failure runs `thurbox-cli notify
-send` itself.
+A timer that wants an alert on failure runs `thurbox-cli notify send`
+itself.
 
 ## Session status
 
@@ -978,16 +970,6 @@ User-set (read by thurbox):
 | `THURBOX_UI_DIR` | the interface directory to load instead of `<config dir>/ui`, e.g. a checkout's `ui/` ([plugins.md](plugins.md)) |
 | `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
 | `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside, which decides how a copy reaches the Windows clipboard |
-
-Set **by** thurbox into every `exec` automation's command, on top of the
-firer's environment and the automation's own variables:
-
-| Variable | Set into the command |
-|----------|----------------------|
-| `THURBOX_AUTOMATION_NAME` | the automation's name |
-
-It runs in its own directory, or your home directory — never in whatever
-directory the firer was started in.
 
 Set **at build time** (not runtime):
 

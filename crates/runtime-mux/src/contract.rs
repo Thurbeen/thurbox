@@ -932,9 +932,8 @@ pub trait PaneIo: Send + Sync {
     }
 }
 
-/// Status delivery and the heartbeat, behind the contract (docs/runtime/runtime-mux.md): a hook's
-/// state recorded on a pane and read back, and the one heartbeat window the
-/// server keeps. Where the backend has no status channel
+/// Status delivery, behind the contract (docs/runtime/runtime-mux.md): a hook's
+/// state recorded on a pane and read back. Where the backend has no status channel
 /// ([`Self::hook_signal_command`] is `None`), recording and listing
 /// are refused.
 pub trait StatusChannel: Send + Sync {
@@ -974,24 +973,6 @@ pub trait StatusChannel: Send + Sync {
     /// `thurbox-cli session signal` would have. Empty when nothing changed or
     /// nothing is attached.
     fn take_hook_state_events(&self) -> Vec<(String, String)>;
-
-    /// Keep `program args…` running every `every` on this backend's machine,
-    /// with no interface attached — the automation heartbeat. Infrastructure,
-    /// not a session: [`WindowLifecycle::discover`] never lists it. Idempotent: a no-op
-    /// when it is already running.
-    fn ensure_heartbeat(
-        &self,
-        program: &Path,
-        args: &[String],
-        every: std::time::Duration,
-    ) -> BackendResult<()>;
-
-    /// Whether the heartbeat [`Self::ensure_heartbeat`] keeps is running. `Err`
-    /// when the backend could not be asked.
-    fn heartbeat_running(&self) -> BackendResult<bool>;
-
-    /// Stop the heartbeat. Returns whether there was one to stop.
-    fn stop_heartbeat(&self) -> BackendResult<bool>;
 }
 
 /// What a backend's multiplexer can do, as one value: the facts consumers

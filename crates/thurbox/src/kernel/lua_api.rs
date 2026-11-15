@@ -34,9 +34,11 @@
 /// API 5 removes the `file_viewer`, `global_search`, `info_panel` and
 /// `code_review` feature flags: no pane read them, and `settings.toml` no
 /// longer holds them.
+/// API 6 removes `thurbox.automations` and the `automations` feature flag:
+/// thurbox schedules nothing of its own.
 /// Additions never bump it: a plugin reads a newer field defensively, as it
 /// reads any optional one.
-pub const API: u32 = 5;
+pub const API: u32 = 6;
 
 /// The prefix of the session meta keys published as `session.meta`.
 ///
@@ -403,69 +405,6 @@ pub static FLEET: Class = Class {
     ],
 };
 
-pub static AUTOMATION_RUN: Class = Class {
-    name: "thurbox.AutomationRun",
-    doc: &[],
-    exact: true,
-    fields: &[
-        leaf("id", "integer"),
-        leaf("started_at", "integer").doc("Unix millis."),
-        leaf(
-            "status",
-            "\"running\"|\"success\"|\"error\"|\"skipped\"|\"timed_out\"",
-        ),
-        leaf("detail", "string").doc(
-            "What the run reported: the error, the skip reason or an exec's output tail. The only log a run keeps.",
-        ),
-        leaf("session", "string")
-            .opt()
-            .doc("The session it sent to or spawned, when it recorded one."),
-    ],
-};
-
-pub static AUTOMATION: Class = Class {
-    name: "thurbox.Automation",
-    doc: &[],
-    exact: true,
-    fields: &[
-        leaf("id", "integer"),
-        leaf("name", "string"),
-        leaf("schedule", "string").doc("The cron expression, or `once`."),
-        leaf("action", "\"send\"|\"spawn\"|\"exec\""),
-        leaf("enabled", "boolean"),
-        leaf("last_outcome", "string").opt(),
-        leaf("last_detail", "string").opt(),
-        field("runs", Ty::List(&AUTOMATION_RUN)).doc("The ten most recent, newest first."),
-        leaf("trigger", "string").doc(
-            "`cron:<expr>` or `at:<unix_millis>`: what an edit's `trigger` takes back unchanged.",
-        ),
-        leaf("timezone", "string")
-            .opt()
-            .doc("IANA name; nil is the system's own."),
-        leaf("prompt", "string")
-            .doc("What a send or spawn types; an exec automation runs `command` and ignores it."),
-        leaf("session", "string")
-            .opt()
-            .doc("A send's target session."),
-        leaf("repo", "string").opt().doc("A spawn's repository."),
-        leaf("branch", "string")
-            .opt()
-            .doc("A spawn's worktree branch."),
-        leaf("base", "string").opt(),
-        leaf("agent", "string").opt(),
-        leaf("extra_repos", "integer").doc("Further repositories a multi-repo spawn spans."),
-        leaf("command", "string")
-            .opt()
-            .doc("An exec automation's command line."),
-        leaf("created_at", "integer").doc("Unix millis."),
-        leaf("updated_at", "integer"),
-        leaf("last_run_at", "integer").opt(),
-        leaf("next_run_at", "integer")
-            .opt()
-            .doc("Nil while disabled, and once a schedule has no future occurrence."),
-    ],
-};
-
 pub static IN_FLIGHT: Class = Class {
     name: "thurbox.InFlight",
     doc: &["A command this interface accepted but has not finished."],
@@ -475,9 +414,9 @@ pub static IN_FLIGHT: Class = Class {
         leaf("kind", "string"),
         leaf("session", "string"),
         leaf("phase", "string"),
-        leaf("subject", "string").opt().doc(
-            "A `create`'s repository name, a `bookmark` write's path as issued, or an `automation`'s `#<id>` (a create's name).",
-        ),
+        leaf("subject", "string")
+            .opt()
+            .doc("A `create`'s repository name, or a `bookmark` write's path as issued."),
         leaf("host", "string")
             .opt()
             .doc("The machine a creation will land on; nil for this one."),
@@ -591,7 +530,6 @@ pub static FEATURES: Class = Class {
     doc: &[],
     exact: true,
     fields: &[
-        leaf("automations", "boolean"),
         leaf("shell_pane", "boolean"),
         leaf("perf_hud", "boolean"),
         leaf("mouse", "boolean"),
@@ -940,7 +878,6 @@ pub static API_ROOT: Class = Class {
         field("fleets", Ty::List(&FLEET)).doc(
             "Every Fleet `settings.toml` lists, by name, each with its own agents and places.",
         ),
-        field("automations", Ty::List(&AUTOMATION)),
         field("commands", Ty::List(&IN_FLIGHT)),
         field("diffs", Ty::Map(&DIFF)),
         field("links", Ty::MapOfLists(&LINK)).doc(
@@ -986,8 +923,6 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&AGENT),
     Item::Class(&HOST),
     Item::Class(&FLEET),
-    Item::Class(&AUTOMATION_RUN),
-    Item::Class(&AUTOMATION),
     Item::Class(&IN_FLIGHT),
     Item::Class(&SEARCH_HIT),
     Item::Class(&SEARCH_ANSWER),

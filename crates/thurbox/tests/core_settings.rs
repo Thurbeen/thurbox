@@ -571,7 +571,6 @@ fn a_file_setting_a_dropped_key_still_loads() {
                 shell_pane = false\n\
                 [notifications]\n\
                 also_on_waiting = true\n\
-                on_automation_failure = true\n\
                 sound = false\n";
     write_settings(body);
 
@@ -586,7 +585,6 @@ fn a_file_setting_a_dropped_key_still_loads() {
         "features.info_panel",
         "features.code_review",
         "notifications.also_on_waiting",
-        "notifications.on_automation_failure",
     ] {
         assert!(
             warnings

@@ -258,11 +258,9 @@ pub fn pane_io(backend: &dyn SessionBackend) {
     );
 }
 
-/// Status delivery and the heartbeat, for a backend that has a status
-/// channel: a state recorded on a pane is what the headless listing reads back
-/// for that pane and no other, and the hook command it hands out can be
-/// spliced into a hook file. The heartbeat is kept, found, never listed as a
-/// session, and stopped — once.
+/// Status delivery, for a backend that has a status channel: a state recorded
+/// on a pane is what the headless listing reads back for that pane and no
+/// other, and the hook command it hands out can be spliced into a hook file.
 pub fn status(backend: &dyn SessionBackend) {
     let env = HashMap::new();
     let open = |owner: &'static str| {
@@ -307,34 +305,6 @@ pub fn status(backend: &dyn SessionBackend) {
         backend.record_hook_state("%999999", "done").is_err(),
         "a state recorded on no pane reported success"
     );
-
-    let program = std::path::Path::new("/bin/true");
-    let args = ["automation".to_string(), "tick".to_string()];
-    let every = std::time::Duration::from_secs(60);
-    assert!(!backend.heartbeat_running().expect("asked"));
-    backend
-        .ensure_heartbeat(program, &args, every)
-        .expect("ensure_heartbeat");
-    backend
-        .ensure_heartbeat(program, &args, every)
-        .expect("ensure_heartbeat again");
-    assert!(backend.heartbeat_running().expect("asked"));
-    let names: Vec<String> = backend
-        .discover()
-        .expect("discover")
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
-    assert!(
-        names.iter().all(|name| name.starts_with("tb")),
-        "the heartbeat is not a session: {names:?}"
-    );
-    assert!(
-        backend.stop_heartbeat().expect("stop"),
-        "there was one to stop"
-    );
-    assert!(!backend.heartbeat_running().expect("asked"));
-    assert!(!backend.stop_heartbeat().expect("stop"), "stopped twice");
 
     for pane in [reporting, quiet] {
         backend.kill(&pane).expect("kill");

@@ -231,28 +231,6 @@ specifically for `perf` / `flamegraph` workflows.
 
 ---
 
-## ADR-8b: Automations fire with or without the interface
-
-**Choice**: Automations live in `automations.json` beside `settings.toml`
-(`config::automations`). Two firers share the file: the interface ticks every
-15 seconds while it runs (`kernel::automations`), and `thurbox-cli automation
-tick` is the same tick for an OS timer (the units in `packaging/systemd` and
-`packaging/launchd`). A fire is claimed in the file, under the file lock,
-before it runs, and its outcome is written after. A run still marked running
-past its deadline is recorded as timed out by the next tick. What a fire does
-to a session goes through Fleet's command line.
-
-**Why**: a schedule must keep firing with no interface open, and Fleet has no
-schedule kind. Claim-first gives at-most-once semantics: a crash loses a run
-rather than firing it twice, the right default for agent prompts.
-
-**Rejected**:
-
-- *A bespoke long-running daemon* — duplicates what an OS timer already
-  provides; more moving parts.
-
----
-
 ## ADR-9: Flat session list (no project grouping)
 
 **Choice**: There is no "project" entity above sessions: each session picks
@@ -310,11 +288,10 @@ does not send control-mode commands.
   `pane_path`, `pane_pid(s)`, `pane_ids`, `is_dead`, `kill`, `shutdown`;
 - `PaneIo` (ADR-30) — a pane by its id, as a keyboard and a screen:
   `send_text`, `send_key`, `capture`, `text_before_cursor`;
-- `StatusChannel` — hook status and the heartbeat
-  ([status channel](../runtime/runtime-mux.md#status-channel-and-heartbeat)):
+- `StatusChannel` — hook status
+  ([status channel](../runtime/runtime-mux.md#status-channel)):
   `hook_signal_command`, `record_hook_state`, `hook_states`,
-  `take_hook_state_events`, `ensure_heartbeat`, `heartbeat_running`,
-  `stop_heartbeat`.
+  `take_hook_state_events`.
 
 `Capabilities` holds the flags consumers branch on, each answered by the
 adapter for its own multiplexer: `needs_liveness_poll`, `supports_snapshots`
@@ -603,14 +580,14 @@ server does not know expands to nothing and reads as off; when only
 
 ## ADR-15: Headless CLI as Separate Binary
 
-**Choice**: Headless automation lives in a separate binary
-(`thurbox-cli`). It exposes `automation`, `editor`, `config`, `version`,
+**Choice**: The headless commands live in a separate binary
+(`thurbox-cli`). It exposes `editor`, `config`, `version`,
 `update`, `notify`, `perf`, `plugin`, `ui`, `schema` and `doctor` as
 subcommands (`thurbox-cli --help`), printing JSON results. Sessions are not
 among them: they are Fleet's, driven through Fleet's own command line
 (ADR-41).
 
-**Why**: A separate binary keeps scripting/automation out of the
+**Why**: A separate binary keeps scripting out of the
 TUI's event loop. The `cli` module never reaches a backend adapter
 (`crates/architecture.toml`), so it can operate without a terminal UI.
 

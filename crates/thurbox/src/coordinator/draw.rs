@@ -942,7 +942,6 @@ impl App {
             update_available: self.updates.available(),
             session: session.as_deref(),
             session_count: snapshot.sessions.len(),
-            automation_count: snapshot.automations.len(),
             focus_label: &focus_label,
             message,
             progress: progress.as_deref(),

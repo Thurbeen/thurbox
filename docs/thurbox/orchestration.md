@@ -8,8 +8,8 @@ adds on top.
 
 ## Every Task is a session in the list
 
-The interface follows `fleet watch`. A Task that a script, an agent or an
-automation creates shows up in the session list within a tick. A Task that
+The interface follows `fleet watch`. A Task that a script, an agent or a
+timer creates shows up in the session list within a tick. A Task that
 names a parent with its `gateway.fleet.dev/parent` label nests under that
 parent, so a lead's workers sit under the lead. The link is informational:
 deleting a lead deletes none of its workers.
@@ -57,8 +57,9 @@ wait, and read the Task again when the wait ends: a timeout is not evidence
 that the agent finished. A worker's outcome is its `status.result`, written
 by `fleet result`, never the state of its terminal.
 
-## Automations
+## Recurring work
 
-Fleet has no schedule kind. A recurring send or spawn is a thurbox
-automation (`thurbox-cli automation`), which fires through `fleet send` and
-`fleet apply` ([features.md](features.md#automations)).
+thurbox schedules nothing of its own. A recurring Task is a cron job or
+systemd timer that applies a JSON manifest under a fresh name each tick, and a
+recurring prompt is one that runs `fleet send TASK TEXT` to a long-lived Task
+([features.md](features.md#scheduling-work)).

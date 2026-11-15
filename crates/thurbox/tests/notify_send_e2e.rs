@@ -35,7 +35,7 @@ impl Instance {
         std::fs::write(
             root.path().join("config/settings.toml"),
             format!(
-                "[features]\nautomations = false\nversion_check = false\nauto_update = false\n\
+                "[features]\nversion_check = false\nauto_update = false\n\
                  {features}\n[notifications]\n{notifications}\n"
             ),
         )
@@ -75,8 +75,6 @@ impl Instance {
             "THURBOX_SOCKET_FOR",
             "THURBOX_SESSION",
             "THURBOX_SESSION_ID",
-            "THURBOX_AUTOMATION_ID",
-            "THURBOX_AUTOMATION_NAME",
         ] {
             cmd.env_remove(var);
         }
@@ -231,7 +229,7 @@ fn notify_send_delivers_through_the_configured_backend() {
     assert_eq!(shown[0].body, "Inspect the run log");
 }
 
-/// An Exec automation, a hook or a heartbeat may run without
+/// A hook or a timer may run without
 /// `DBUS_SESSION_BUS_ADDRESS`; the per-user bus at `XDG_RUNTIME_DIR/bus` is
 /// still found.
 #[cfg(target_os = "linux")]
@@ -420,7 +418,7 @@ fn a_late_failure_keeps_a_newer_hold() {
 
     std::fs::write(
         instance.path("config/settings.toml"),
-        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n\
+        "[features]\nversion_check = false\nauto_update = false\n\
          [notifications]\nbackend = 'dbus'\nsound = false\n",
     )
     .expect("switch to dbus");

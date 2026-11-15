@@ -287,23 +287,6 @@ impl crate::backend::StatusChannel for Stream {
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-
-    fn ensure_heartbeat(
-        &self,
-        _: &Path,
-        _: &[String],
-        _: std::time::Duration,
-    ) -> crate::backend::BackendResult<()> {
-        Err(refused("keep a heartbeat"))
-    }
-
-    fn heartbeat_running(&self) -> crate::backend::BackendResult<bool> {
-        Ok(false)
-    }
-
-    fn stop_heartbeat(&self) -> crate::backend::BackendResult<bool> {
-        Ok(false)
-    }
 }
 
 impl crate::backend::SessionBackend for Stream {

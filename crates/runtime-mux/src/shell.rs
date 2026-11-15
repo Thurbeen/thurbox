@@ -596,36 +596,6 @@ impl HostShell {
         }
     }
 
-    /// A window command running `program args…` every `every_secs` forever,
-    /// output discarded: the automation heartbeat keeper.
-    ///
-    /// On Windows the loop is a PowerShell script handed to `powershell.exe`
-    /// explicitly ([`powershell_launcher`]), since psmux runs a window command
-    /// in whichever shell it resolves — `cmd.exe` on a server started over
-    /// ssh. One argv token either way, which on psmux also dodges its
-    /// trailing-token handling.
-    pub fn heartbeat_loop(
-        self,
-        program: &str,
-        args: &[String],
-        every_secs: u64,
-    ) -> Result<String, CommandLineTooLong> {
-        let argv = std::iter::once(program)
-            .chain(args.iter().map(String::as_str))
-            .map(|a| self.quote(a))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let secs = every_secs.max(1);
-        match self {
-            Self::Posix => Ok(format!(
-                "while true; do {argv} >/dev/null 2>&1; sleep {secs}; done"
-            )),
-            Self::PowerShell => powershell_launcher(&format!(
-                "while ($true) {{ & {argv} *> $null; Start-Sleep {secs} }}"
-            )),
-        }
-    }
-
     /// The program a bare shell pane runs: on this machine (`remote` false)
     /// its own `$SHELL` or `%COMSPEC%`; on a host one that exists there by
     /// construction — `/bin/sh` (the local `$SHELL` may not be installed

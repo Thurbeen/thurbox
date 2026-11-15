@@ -1517,46 +1517,6 @@ impl<M: TmuxCompatible> Server<M> {
         Ok(())
     }
 
-    /// The thurbox session on this server, created when it is not there — as
-    /// the backend would create it, peers racing to included, and only once
-    /// the backend agrees its binary may start one. No session config: the
-    /// keeper needs none, and every spawn or attach applies it.
-    fn ensure_heartbeat_session(&self) -> Result<()> {
-        let exists = || self.session_exists();
-        if exists() || self.found_after_all()? {
-            return Ok(());
-        }
-        self.check_available()?;
-        let mut args = vec!["new-session", "-d", "-s", &self.session];
-        args.extend_from_slice(M::BOOTSTRAP_SIZE_ARGS);
-        let out = self
-            .mux_command(&args)?
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| {
-                self.transport.launch_failure(
-                    &format!("Failed to run {} command", M::MULTIPLEXER.name()),
-                    e,
-                )
-            })?;
-        if !out.status.success() && !exists() {
-            bail!(
-                "{} new-session (heartbeat) {}",
-                self.transport.mux(),
-                mux_failure(&out, self.transport.is_ssh())
-            );
-        }
-        // As `ensure_session_configured` waits after creating one: a server
-        // whose `new-session -d` returns before the session answers would
-        // refuse the keeper's `new-window`.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        Ok(())
-    }
-
     /// Run a tmux command and return its stdout (used before control mode is available).
     fn tmux_output(&self, args: &[&str]) -> Result<String> {
         let output = self.run_tmux(args)?;
@@ -2090,9 +2050,8 @@ impl<M: TmuxCompatible> Server<M> {
     /// **without** starting control mode.
     ///
     /// Shared by [`ensure_ready`](Self::ensure_ready) (which then starts control
-    /// mode) and the headless spawn paths ([`create_local_window`],
-    /// [`StatusChannel::ensure_heartbeat`]) that drive tmux via one-shot commands and
-    /// must not open a control-mode connection.
+    /// mode) and the headless spawn path ([`create_local_window`]) that drives
+    /// tmux via one-shot commands and must not open a control-mode connection.
     pub(crate) fn ensure_session_configured(&self) -> Result<()> {
         for attempt in 1..M::COLD_START_ATTEMPTS {
             match self.ensure_session_configured_once() {
@@ -3961,99 +3920,6 @@ impl<M: TmuxCompatible> StatusChannel for Server<M> {
             String::from_utf8_lossy(&body.stdout).trim(),
         ))
     }
-
-    /// A detached window, not `tb-` prefixed so [`Self::discover`] ignores
-    /// it. The live window also keeps the server alive, so spawn-only
-    /// automations work with no other sessions. Asked of the backend serving
-    /// this machine's default multiplexer: `check_available` decides whether
-    /// its binary may start a server at all (an old psmux may not).
-    fn ensure_heartbeat(
-        &self,
-        program: &Path,
-        args: &[String],
-        every: std::time::Duration,
-    ) -> crate::contract::BackendResult<()> {
-        // A probe nobody answered is not a reason to stop arming: readying the
-        // session below either starts the server or fails with its own error.
-        if self.heartbeat_running().unwrap_or(false) {
-            return Ok(());
-        }
-        self.ensure_heartbeat_session()?;
-        let loop_cmd = heartbeat_loop_command(self.platform, program, args, every)?;
-        let out = self
-            .mux_command(&[
-                "new-window",
-                "-d",
-                "-t",
-                &self.session,
-                "-n",
-                HEARTBEAT_WINDOW,
-                &loop_cmd,
-            ])?
-            .output()
-            .map_err(|e| {
-                self.transport
-                    .launch_failure("Failed to create automation heartbeat window", e)
-            })?;
-        // Asked again rather than believed: the status may be a failing user
-        // hook's and not this window's — see the same read in
-        // `create_local_window`. There is no `-P` answer to trust here, so the
-        // listing is what says whether the window exists.
-        if !out.status.success() && !self.heartbeat_running()? {
-            return Err(anyhow::anyhow!(
-                "{} new-window (heartbeat) {}",
-                self.transport.mux(),
-                mux_failure(&out, self.transport.is_ssh())
-            )
-            .into());
-        }
-        debug!("Armed automation heartbeat keeper window on {}", self.name);
-        Ok(())
-    }
-
-    /// No server, or no session on it, is a heartbeat not running. Any other
-    /// failed listing is an unanswered question (`listing_is_absence`).
-    fn heartbeat_running(&self) -> crate::contract::BackendResult<bool> {
-        let out = self
-            .mux_command(&["list-windows", "-t", &self.session, "-F", "#{window_name}"])?
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| {
-                self.transport.launch_failure(
-                    &format!("Failed to run {} command", M::MULTIPLEXER.name()),
-                    e,
-                )
-            })?;
-        if !out.status.success() {
-            if listing_output_is_absence::<M>(self.transport.is_ssh(), &out) {
-                return Ok(false);
-            }
-            return Err(anyhow::anyhow!(
-                "{} list-windows (heartbeat) {}",
-                self.transport.mux(),
-                mux_failure(&out, self.transport.is_ssh())
-            )
-            .into());
-        }
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .any(|w| w == HEARTBEAT_WINDOW))
-    }
-
-    /// Automations stop firing headlessly until something arms it again —
-    /// which any `automation` write does, so this is a pause, not a removal.
-    fn stop_heartbeat(&self) -> crate::contract::BackendResult<bool> {
-        if !self.heartbeat_running()? {
-            return Ok(false);
-        }
-        let target = format!("{}:{HEARTBEAT_WINDOW}", self.session);
-        match self.run_tmux(&["kill-window", "-t", &target]) {
-            Ok(_) => Ok(true),
-            Err(e) if typed_absence(&e) => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    }
 }
 
 impl<M: TmuxCompatible> SessionBackend for Server<M> {
@@ -4491,24 +4357,6 @@ fn pane_answer_field(raw: &str, n: usize) -> Option<String> {
         .nth(n)
         .filter(|field| !field.is_empty())
         .map(str::to_string)
-}
-
-/// Window name for the headless automation heartbeat keeper. Deliberately NOT
-/// `tb-` prefixed so [`Server::discover`](WindowLifecycle::discover) ignores it — it is
-/// infrastructure, not a session.
-const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
-
-/// The keeper's loop, as the window command, in the shell of the machine the
-/// server runs on ([`crate::shell::HostShell::heartbeat_loop`]).
-fn heartbeat_loop_command(
-    platform: Platform,
-    program: &Path,
-    args: &[String],
-    every: std::time::Duration,
-) -> Result<String> {
-    crate::shell::HostShell::for_platform(platform)
-        .heartbeat_loop(&program.display().to_string(), args, every.as_secs())
-        .context("the automation heartbeat")
 }
 
 /// What [`Server::pane_state_seed`] asks `display-message` for: the six mouse
@@ -7462,8 +7310,8 @@ done
 
     /// tmux prints `error connecting to` for a socket it cannot open while a
     /// server is alive behind it — another user's, or a stale one. That is a
-    /// question nobody answered, so status and the heartbeat must say so
-    /// rather than report no states and no heartbeat.
+    /// question nobody answered, so status must say so rather than report no
+    /// states.
     #[cfg(unix)]
     #[test]
     fn a_socket_that_cannot_be_opened_is_no_answer() {
@@ -7474,10 +7322,6 @@ done
         ] {
             let backend = answering_mux(dir.path(), "", refused);
             assert!(backend.hook_states().is_err(), "hook_states: {refused}");
-            assert!(
-                backend.heartbeat_running().is_err(),
-                "heartbeat_running: {refused}"
-            );
         }
         for absent in [
             "error connecting to /tmp/tmux-1/thurbox-test (No such file or directory)",
@@ -7485,22 +7329,7 @@ done
         ] {
             let backend = answering_mux(dir.path(), "", absent);
             assert_eq!(backend.hook_states().unwrap(), Vec::new(), "{absent}");
-            assert!(!backend.heartbeat_running().unwrap(), "{absent}");
         }
-    }
-
-    /// A kill that failed is not "there was none to stop".
-    #[cfg(unix)]
-    #[test]
-    fn a_heartbeat_that_could_not_be_killed_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let backend = answering_mux(
-            dir.path(),
-            HEARTBEAT_WINDOW,
-            "error connecting to /tmp/tmux-1/thurbox-test (Permission denied)",
-        );
-        assert!(backend.heartbeat_running().unwrap());
-        assert!(backend.stop_heartbeat().is_err());
     }
 
     /// The headless status poll reads an empty listing as "every pane quiet",
@@ -8147,37 +7976,5 @@ ERROR: something ps printed
         assert!(parser.screen().contents().contains("line1"));
         parser.screen_mut().set_scrollback(0);
         assert!(parser.screen().contents().contains("line10"));
-    }
-
-    /// The Windows keeper names its interpreter, like every psmux window: a
-    /// server started over Windows OpenSSH would otherwise hand the loop to
-    /// `cmd.exe` and the keeper window would close at once.
-    #[test]
-    fn the_windows_heartbeat_loop_runs_in_named_powershell() {
-        use base64::Engine as _;
-        let program = heartbeat_loop_command(
-            Platform::Windows,
-            Path::new("C:\\bin\\thurbox-cli.exe"),
-            &["automation".to_string(), "tick".to_string()],
-            std::time::Duration::from_secs(30),
-        )
-        .expect("the keeper fits a Windows command line");
-        let encoded = program
-            .strip_prefix("powershell.exe -NoLogo -EncodedCommand ")
-            .expect("an explicit PowerShell launch");
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .expect("base64");
-        let units: Vec<u16> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        assert_eq!(
-            String::from_utf16(&units).expect("UTF-16LE"),
-            "while ($true) { & 'C:\\bin\\thurbox-cli.exe' 'automation' 'tick' *> $null; \
-             Start-Sleep 30 }"
-        );
     }
 }

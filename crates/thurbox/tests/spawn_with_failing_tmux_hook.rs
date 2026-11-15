@@ -1,5 +1,4 @@
-//! A user hook on the tmux server cannot cost thurbox a window it created —
-//! an agent's, or the automation heartbeat keeper's.
+//! A user hook on the tmux server cannot cost thurbox a window it created.
 //!
 //! tmux hands a command-mode client the exit status of the last `run-shell` its
 //! command list triggered — hooks included. An `after-new-window` hook left
@@ -187,50 +186,5 @@ fn the_id_kept_from_a_hooked_spawn_still_names_the_window() {
         stamp, SESSION_ID,
         "the session stamp must have landed on that window, or nothing finds it \
          again"
-    );
-}
-
-/// The heartbeat keeper is created by the same command on the same server, and
-/// reads the same status.
-///
-/// It asks for no `-P` answer, so there is no pane id to weigh and the listing
-/// is what says whether the window exists. Covered separately for that reason:
-/// the pane-id tests above cannot reach this branch, so it could regress while
-/// they stayed green.
-#[test]
-fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
-    if !have_tmux() {
-        eprintln!("skipping: tmux is not installed");
-        return;
-    }
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let _server = server_with_a_dead_hook(dir.path());
-
-    // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
-    // and the window holding it — exists whether or not the path resolves.
-    let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
-        &Default::default(),
-    ));
-    let armed = thurbox::backend::StatusChannel::ensure_heartbeat(
-        &backend,
-        &dir.path().join("thurbox-cli"),
-        &["automation".to_string(), "tick".to_string()],
-        std::time::Duration::from_secs(60),
-    );
-    let names = window_names();
-    let running =
-        thurbox::backend::StatusChannel::heartbeat_running(&backend).expect("the server answers");
-
-    if let Err(e) = armed {
-        panic!("a heartbeat window tmux created was reported as a failure because a user hook exited non-zero: {e:#}");
-    }
-    assert!(
-        names.iter().any(|n| n == "automation-heartbeat"),
-        "the keeper's window must be on the server: {names:?}"
-    );
-    assert!(
-        running,
-        "the keeper must read as armed, or the next automation write arms a second one"
     );
 }

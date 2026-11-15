@@ -1350,7 +1350,7 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
     }
 
     /// Start `exe` and keep it running, so Windows holds its image mapped the
-    /// way it does for a `thurbox-cli.exe` the heartbeat or a hook started.
+    /// way it does for a `thurbox-cli.exe` a hook started.
     #[cfg(windows)]
     fn run_from(exe: &Path) -> Running {
         let child = Command::new(exe)

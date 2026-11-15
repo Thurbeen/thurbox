@@ -222,62 +222,6 @@ impl SessionRow {
     }
 }
 
-/// One recorded run of an automation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RunRow {
-    pub id: i64,
-    pub started_at: i64,
-    pub status: String,
-    /// What the run reported: the error, the skip reason, or an exec's output
-    /// tail. The only log an automation run keeps.
-    pub detail: String,
-    /// The session the run sent to or spawned, when it recorded one.
-    pub session: Option<String>,
-}
-
-/// An automation, flattened for rendering.
-///
-/// The first fields summarise; the rest are the definition itself, so a pane
-/// can show when it fires and edit it rather than only list it.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct AutomationRow {
-    pub id: i64,
-    pub name: String,
-    pub schedule: String,
-    pub action: String,
-    pub enabled: bool,
-    /// Outcome of the most recent run, when there has been one.
-    pub last_outcome: Option<String>,
-    pub last_detail: Option<String>,
-    /// Recent runs, newest first — what you look at a scheduler for.
-    pub runs: Vec<RunRow>,
-    /// The schedule as `cron:<expr>` or `at:<unix_millis>`: what an edit's
-    /// `trigger` takes back unchanged.
-    pub trigger: String,
-    /// IANA name; `None` is the system's own.
-    pub timezone: Option<String>,
-    /// What a send or spawn types; an exec automation runs `command` and
-    /// ignores it.
-    pub prompt: String,
-    /// A send's target session.
-    pub session: Option<String>,
-    /// A spawn's repository, worktree branch, base and agent.
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub base: Option<String>,
-    pub agent: Option<String>,
-    /// How many further repositories a multi-repo spawn spans.
-    pub extra_repos: usize,
-    /// An exec automation's command line.
-    pub command: Option<String>,
-    /// Unix millis, as stored.
-    pub created_at: u64,
-    pub updated_at: u64,
-    pub last_run_at: Option<u64>,
-    /// `None` while disabled, and once a schedule has no future occurrence.
-    pub next_run_at: Option<u64>,
-}
-
 /// Something a session can be created against.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepoRow {
@@ -393,7 +337,6 @@ pub struct Snapshot {
     pub hosts: Option<Vec<HostRow>>,
     /// Every Fleet thurbox lists, by name, with its own agents and places.
     pub fleets: Vec<FleetRow>,
-    pub automations: Vec<AutomationRow>,
     /// Epoch milliseconds this snapshot represents. Readable by plugins so
     /// they can render staleness.
     pub taken_at_ms: i64,

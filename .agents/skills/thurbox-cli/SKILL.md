@@ -1,6 +1,6 @@
 ---
 name: thurbox-cli
-description: The thurbox-cli binary: its subcommands (automation, editor, config, version, update, notify and notify send, perf, plugin, ui, schema, doctor), its output formats and exit codes. Use when changing or driving thurbox-cli. Sessions are Fleet Tasks, driven with `fleet`.
+description: The thurbox-cli binary: its subcommands (editor, config, version, update, notify and notify send, perf, plugin, ui, schema, doctor), its output formats and exit codes. Use when changing or driving thurbox-cli. Sessions are Fleet Tasks, driven with `fleet`.
 ---
 
 # thurbox-cli
@@ -14,7 +14,6 @@ thurbox-cli. thurbox-cli covers the interface's own files and a running interfac
 
 | Subcommand | What it does |
 | --- | --- |
-| `automation …` | scheduled send, spawn and exec runs in `automations.json`; the interface ticks while it runs, `automation tick` from an OS timer |
 | `editor get/set/mode` | the editor `Ctrl+O` opens, in `interface.json` |
 | `config validate/show` | strict parse of every config file; the effective configuration and where each value comes from |
 | `version [--check]`, `update [--force]` | the running version; the newest release of this major line |

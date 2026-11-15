@@ -10,7 +10,7 @@
 //! can confirm end-to-end that a banner/toast actually appears.
 //!
 //! `notify send` delivers one notification of the caller's own, from a script
-//! or an Exec automation, with an optional dedupe key.
+//! or a timer, with an optional dedupe key.
 
 use std::time::Duration;
 
@@ -44,8 +44,8 @@ pub fn run(args: NotifyArgs, settings: &Settings) -> Result<CommandOutput, Comma
 /// `notify` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Action {
-    /// Deliver one notification now, e.g. from a script or an Exec
-    /// automation. Exits 1 when delivery fails.
+    /// Deliver one notification now, e.g. from a script or a timer. Exits 1
+    /// when delivery fails.
     Send(SendArgs),
 }
 
@@ -73,7 +73,7 @@ const MAX_MIN_INTERVAL_SECS: u64 = 365 * 24 * 60 * 60;
 
 /// How long a send waits for the backend. The toast and macOS paths wait on a
 /// child process, and one that never returns must not hold up the script or
-/// the automation that sent it.
+/// the timer that sent it.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What became of a send.

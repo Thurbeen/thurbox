@@ -327,7 +327,7 @@ and takes no input, and the message band says why, once per failure.
 
 | Global | What it is |
 |---|---|
-| `thurbox` | Everything readable: sessions, tasks, automations, repos, agents, hosts, theme, registry, diffs, links |
+| `thurbox` | Everything readable: sessions, tasks, repos, agents, hosts, theme, registry, diffs, links |
 | `command(kind, opts)` | The only way to change anything. Enqueues and returns |
 | `state` | Private to your plugin. Survives a reload; **not** a restart |
 | `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
@@ -827,7 +827,7 @@ whole list, with each payload, is `thurbox-cli plugin events` and the last
 section of `F1`.
 
 The kernel **derives** these by diffing the snapshot, so a session made by
-`fleet apply`, an automation or a second thurbox fires the same `session.created`
+`fleet apply`, a timer or a second thurbox fires the same `session.created`
 as one the creation flow made. The `session.post_*` names are the exception and
 the reason there are two spellings: they fire only for an operation *this*
 interface performed, with that operation's facts. Subscribe to

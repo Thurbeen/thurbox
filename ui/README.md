@@ -421,8 +421,8 @@ These are the ones that cost real time.
 - **`run` is nil until the user trusts the file.** Declaring
   `capabilities = { "run" }` does not grant it. Check `if not run then` and draw
   something honest; do not call it and hope.
-- **`send`, `create`, `fork`, `restart`, `dispatch`, `automation`, `plugin` and a
-  force `delete` need `sessions`; `open` needs `run`.** Without
+- **`send`, `create`, `fork`, `restart`, `dispatch`, `plugin` and a force
+  `delete` need `sessions`; `open` needs `run`.** Without
   the grant the command is refused and `command.failed` says why. `files` is nil
   until the file is granted `files`. Check `thurbox.granted.sessions` before
   offering a key that would only be refused.
