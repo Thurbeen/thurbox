@@ -1058,12 +1058,9 @@ mod tests {
         assert_eq!(cmd.get_program(), "ssh");
         let script = encoded_script(&cmd);
         assert!(script.contains("($env:USERPROFILE + '/bin')"), "{script}");
-        assert!(
-            script.contains("$s.WorkingDirectory = 'C:/work'"),
-            "{script}"
-        );
-        assert!(script.contains("Get-Command -Name 'fleet'"), "{script}");
-        assert!(script.contains("$line = 'signal-read'"), "{script}");
+        assert!(script.contains("$s.WorkingDirectory='C:/work'"), "{script}");
+        assert!(script.contains("Get-Command 'fleet'"), "{script}");
+        assert!(script.contains("$v=@('signal-read')"), "{script}");
     }
 
     /// A Windows place's readiness looks each program up on its `Path`.
