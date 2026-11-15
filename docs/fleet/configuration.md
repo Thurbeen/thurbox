@@ -529,7 +529,7 @@ check a minimum client version.
 The [adapter truth tables](controllers/change-request.md#adapter-truth-tables)
 give each field's mapping.
 
-Fleet ships these four. A forge protocol for adding your own is in progress.
+Fleet ships these four.
 
 ### `[plugins]` section
 

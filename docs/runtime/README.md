@@ -384,7 +384,7 @@ request.place ──▶ local ─────────▶ this machine's mult
   `workspace-git`. The workspaces are under
   `~/.local/share/runtime-mux/workspaces` on the place. A `git+` URL gets a
   worktree there, on the key's own branch, with the same `#ref`, preserved
-  refs and retention as on `local` ([workspace-git](#workspace-git-the-default-for-git-urls)). The
+  refs and retention as on `local` ([workspace-git](#workspace-git-the-shipped-workspace-provider)). The
   config's `preserve.days` and its setup and teardown steps apply on the
   place too; its `root` and `program` are this machine's only.
 - `browse` and `branches` read the place's folders and repositories with
