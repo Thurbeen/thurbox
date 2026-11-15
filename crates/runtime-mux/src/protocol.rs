@@ -918,16 +918,11 @@ const ASSET_DIR_ENV: &str = "FLEET_ASSET_DIR";
 /// `fleet signal` reads a profile's payload fields from.
 const HARNESS_DIR_ENV: &str = "FLEET_HARNESS_DIR";
 
-/// A start on a remote POSIX place with `FLEET_HARNESS_DIR` naming a
+/// A start on a remote place with `FLEET_HARNESS_DIR` naming a
 /// directory on this machine: the user's profiles are copied to the place
 /// and the variable names the copy, so `fleet signal` there reads the
-/// profile's own payload fields (its conversation, its prompt). On a place
-/// they cannot be copied to, the variable is left as it is: `fleet signal`
-/// falls back to the bundled profile, as before.
+/// profile's own payload fields (its conversation, its prompt).
 fn place_profiles(host: &HostDef, request: &mut Start) -> Result<(), String> {
-    if host.platform() != crate::Platform::Posix {
-        return Ok(());
-    }
     let Some(local) = request
         .env
         .get(HARNESS_DIR_ENV)
@@ -1328,11 +1323,10 @@ mod tests {
         }
     }
 
-    /// A launch that names no file of Fleet's asset directory starts on any
-    /// place, a native-Windows one included; one that names a file is
-    /// refused there, by why, since the files cannot be copied to it yet.
+    /// A launch that names no file of Fleet's asset directory copies
+    /// nothing, on any place, a native-Windows one included.
     #[test]
-    fn a_windows_place_refuses_only_a_launch_that_needs_the_asset_files() {
+    fn a_launch_that_names_no_asset_file_copies_nothing() {
         let assets = tempfile::tempdir().expect("an asset dir");
         let dir = assets.path().to_string_lossy().into_owned();
         let windows = HostDef {
@@ -1341,18 +1335,14 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..HostDef::default()
         };
-        let start = |argv: &[&str]| Start {
+        let mut bare = Start {
             key: "k.one".into(),
-            argv: argv.iter().map(|a| a.to_string()).collect(),
+            argv: vec!["codex".into()],
             env: HashMap::from([(ASSET_DIR_ENV.to_string(), dir.clone())]),
             dir: None,
         };
-        let mut bare = start(&["codex"]);
         assert_eq!(place_assets(&windows, &mut bare), Ok(()));
         assert_eq!(bare.argv, ["codex"]);
-        let mut pi = start(&["pi", "-e", &format!("{dir}/fleet-pi.ts")]);
-        let why = place_assets(&windows, &mut pi).unwrap_err();
-        assert!(why.contains("native-Windows"), "{why}");
     }
 
     #[test]

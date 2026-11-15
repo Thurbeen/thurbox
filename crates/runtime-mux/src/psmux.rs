@@ -212,6 +212,20 @@ impl TmuxCompatible for Psmux {
         String::new()
     }
 
+    /// The values go to a file in the user's own temp directory on the
+    /// server's machine, over the stdin of the command that writes it; the
+    /// window's script names only the file.
+    fn private_env(
+        server: &Server<Self>,
+        env: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>> {
+        if env.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let file = stash_env(&server.located_transport(), env)?;
+        Ok(HashMap::from([(ENV_FILE.to_string(), file)]))
+    }
+
     fn window_command(
         _server: &Server<Self>,
         window_name: &str,
@@ -464,6 +478,80 @@ fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
 const EXIT_REPORT: &str =
     "; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli session exited";
 
+/// The key [`TmuxCompatible::private_env`] hands a psmux window's script in
+/// place of the environment: the file that holds it. Not a valid variable
+/// name, so it never names one.
+const ENV_FILE: &str = "=runtime-mux-env-file";
+
+/// Writes the base64 of a UTF-8 JSON object, read from stdin, to a new file
+/// in the user's temp directory, and prints its path. That directory is in
+/// the user's profile, which only the user, SYSTEM and Administrators can
+/// read. Base64 keeps the bytes clear of the console's code page.
+const STASH_SCRIPT: &str = "$ErrorActionPreference = 'Stop'\n\
+    $b = [Console]::In.ReadToEnd().Trim()\n\
+    $p = Join-Path ([IO.Path]::GetTempPath()) ('runtime-mux-env-' + [guid]::NewGuid().ToString('N') + '.json')\n\
+    [IO.File]::WriteAllText($p, [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)))\n\
+    [Console]::Out.Write($p)";
+
+/// What the stash of `env` sends: the command, which carries no value, and
+/// its stdin.
+fn stash_request(
+    transport: &crate::tmux_compat::transport::TmuxTransport,
+    env: &HashMap<String, String>,
+) -> (Command, Vec<u8>) {
+    let json = serde_json::to_vec(env).unwrap_or_default();
+    let input = base64::engine::general_purpose::STANDARD.encode(json);
+    (
+        transport.powershell_command(STASH_SCRIPT),
+        input.into_bytes(),
+    )
+}
+
+/// `env` written to a private file on the server's machine
+/// ([`STASH_SCRIPT`]): its path there.
+fn stash_env(
+    transport: &crate::tmux_compat::transport::TmuxTransport,
+    env: &HashMap<String, String>,
+) -> Result<String> {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let (mut cmd, input) = stash_request(transport, env);
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("cannot write the window's environment")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(&input)
+            .context("cannot send the window's environment")?;
+    }
+    let out = child
+        .wait_with_output()
+        .context("cannot write the window's environment")?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || path.is_empty() {
+        bail!(
+            "the window's environment was not written: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(path)
+}
+
+/// The PowerShell that sets the window's environment from the file `file`
+/// and removes it, stopping the window if it cannot.
+fn env_loader(file: &str) -> String {
+    format!(
+        "$ErrorActionPreference = 'Stop'; $f = {}; \
+         (Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties | \
+         ForEach-Object {{ Set-Item -LiteralPath ('Env:' + $_.Name) -Value $_.Value }}; \
+         Remove-Item -LiteralPath $f; $ErrorActionPreference = 'Continue'; ",
+        powershell_quote(file)
+    )
+}
+
 /// Build the PowerShell script a psmux window runs: set the env vars, then
 /// launch the agent — and, in an agent window, report its exit
 /// ([`EXIT_REPORT`]).
@@ -472,9 +560,11 @@ const EXIT_REPORT: &str =
 /// process — so they are folded into the script itself (`Set-Item Env:K
 /// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). Quoting is
 /// PowerShell **single** quotes (`''` = literal `'`), so an env value — the
-/// session name in `THURBOX_SESSION_NAME` included — arrives exactly: it is a
-/// literal inside the encoded script and never rides a command line. An
-/// argument does ride one, which [`windows_native_arg`] spells.
+/// session name in `THURBOX_SESSION_NAME` included — arrives exactly. The
+/// script is the window's command line, which any process can read, so
+/// `Server` hands it the [`ENV_FILE`] its values went to instead
+/// ([`TmuxCompatible::private_env`]), and the script loads that file. An
+/// argument does ride the line, which [`windows_native_arg`] spells.
 ///
 /// The script is not what the window runs: psmux runs a single-string window
 /// command through the shell it resolves, which is `cmd.exe` on a server
@@ -492,7 +582,11 @@ fn psmux_window_powershell(
     let mut pairs: Vec<_> = env.iter().collect();
     pairs.sort();
     for (k, v) in pairs {
-        ps.push_str(&format!("Set-Item Env:{k} {}; ", powershell_quote(v)));
+        if k == ENV_FILE {
+            ps.push_str(&env_loader(v));
+        } else {
+            ps.push_str(&format!("Set-Item Env:{k} {}; ", powershell_quote(v)));
+        }
     }
     ps.push_str(&format!("& {}", powershell_quote(command)));
     for a in args {
@@ -1115,6 +1209,62 @@ impl PsmuxPaste {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of every `-EncodedCommand` in `argv`, decoded.
+    fn decoded(argv: &[String]) -> String {
+        argv.iter()
+            .flat_map(|a| a.split(' '))
+            .filter_map(|word| base64::engine::general_purpose::STANDARD.decode(word).ok())
+            .map(|bytes| {
+                let units: Vec<u16> = bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
+                    .collect();
+                String::from_utf16_lossy(&units)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A psmux window's environment is in no process's arguments, here or
+    /// on the place: the stash command carries none of it (its values go on
+    /// stdin), and the window's program names only the file they went to.
+    #[test]
+    fn a_psmux_windows_environment_is_in_no_argv() {
+        let secret = "s3cret-value-42";
+        let env = HashMap::from([("SECRET_TOKEN".to_string(), secret.to_string())]);
+        let transport = crate::tmux_compat::transport::TmuxTransport::remote(
+            crate::shell::HostLauncher::Ssh {
+                destination: "me@winbox".into(),
+                ssh_opts: vec![],
+            },
+            "psmux",
+        )
+        .with_shell(crate::shell::HostShell::PowerShell);
+        let (stash, input) = stash_request(&transport, &env);
+        let argv: Vec<String> = std::iter::once(stash.get_program())
+            .chain(stash.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let text = format!("{argv:?}{}", decoded(&argv));
+        assert!(!text.contains(secret), "{text}");
+        let sent = base64::engine::general_purpose::STANDARD
+            .decode(&input)
+            .expect("base64");
+        assert!(String::from_utf8_lossy(&sent).contains(secret));
+
+        let file = "C:/Users/me/AppData/Local/Temp/runtime-mux-env-x.json";
+        let private = HashMap::from([(ENV_FILE.to_string(), file.to_string())]);
+        let program = psmux_window_program("tb-k-agent", "claude", &[], &private).expect("program");
+        let script = decoded(std::slice::from_ref(&program));
+        assert!(
+            script.contains(file) && script.contains("Remove-Item"),
+            "{script}"
+        );
+        assert!(!format!("{program}{script}").contains(secret));
+    }
     use crate::StatusChannel;
     #[cfg(unix)]
     use crate::{PaneIo, WindowLifecycle};

@@ -194,6 +194,20 @@ pub trait TmuxCompatible: Send + Sync + 'static {
             .collect()
     }
 
+    /// The environment a new window is built with, from the `env` it is
+    /// asked for: as it is, for a multiplexer whose window command keeps it
+    /// out of every process's arguments. psmux's carries it in its
+    /// command, so it puts the values in a private file first.
+    fn private_env(
+        _server: &Server<Self>,
+        env: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>>
+    where
+        Self: Sized,
+    {
+        Ok(env.clone())
+    }
+
     /// The command a new window runs, as a control-mode `new-window` line
     /// carries it — or why the server could not run it.
     fn window_command(
@@ -1034,7 +1048,7 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// The transport, carrying the socket directory the server was found in —
     /// what a control-mode client is started over.
-    fn located_transport(&self) -> TmuxTransport {
+    pub(crate) fn located_transport(&self) -> TmuxTransport {
         self.host_transport().with_socket_dir(self.socket_dir())
     }
 
@@ -4869,7 +4883,8 @@ impl<M: TmuxCompatible> Server<M> {
         if let Some(dir) = cwd {
             tmux.args(["-c", &dir.to_string_lossy()]);
         }
-        M::push_window_program(&mut tmux, window_name, command, args, env)?;
+        let env = M::private_env(self, env)?;
+        M::push_window_program(&mut tmux, window_name, command, args, &env)?;
 
         // Chained into the same command list as the creation, not sent after
         // it — `birth_options` has the measurement. This path passes `-d`, so
@@ -4902,6 +4917,7 @@ impl<M: TmuxCompatible> Server<M> {
         // The command, its quoting and how the environment reaches it are the
         // multiplexer's: tmux takes joined trailing tokens and `-e`, psmux one
         // folded token.
+        let env = &M::private_env(self, env)?;
         let shell_cmd = M::window_command(self, window_name, command, args, env)?;
         let cwd_part = match cwd {
             Some(dir) => format!(" -c {}", M::quote(&dir.to_string_lossy())),

@@ -320,8 +320,11 @@ distro = "Ubuntu-24.04"
   the command that shows or fixes it.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
   run on the place. A harness's hook files, such as pi's extension, are
-  copied to the place at each start that names them. A native-Windows place
-  refuses such a start: it runs only harnesses whose hooks are inline.
+  copied to the place at each start that names them.
+- A native-Windows place (`multiplexer = "psmux"`) runs the same verbs
+  through PowerShell, and Fleet reads its agents' state there with the
+  place's own `fleet`. `browse`, `branches` and workspace setup steps need
+  `sh`, and are refused there by name.
 - A Task asks the runtime about its own place only. A place that does not
   answer is reported not ready after 8 s, and never holds up a Task on
   another place.

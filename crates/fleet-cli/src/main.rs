@@ -242,6 +242,20 @@ enum Command {
         /// is read from stdin when stdin is not a terminal.
         payload: Option<String>,
     },
+    /// Print a session's signal file on this machine, for the Fleet that
+    /// reads it through a runtime's exec: the end of what it held before
+    /// SINCE, a split line, then the end of what came after. Exits 3 when
+    /// the file is not there.
+    #[command(hide = true)]
+    SignalRead {
+        /// Print only the file's length in bytes, 0 when it is not there.
+        #[arg(long)]
+        length: bool,
+        /// The file, `~`-rooted on another host than Fleet's.
+        file: PathBuf,
+        /// The byte offset a restart left the file at.
+        since: Option<u64>,
+    },
     /// A raw interactive command as a terminal stream on stdin and stdout:
     /// what `fleet attach` wraps a runtime's `tty` answer in.
     TermBridge {
@@ -529,6 +543,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
             payload.as_deref(),
             cli.config.clone(),
         );
+    }
+    if let Command::SignalRead {
+        length,
+        file,
+        since,
+    } = &cli.command
+    {
+        return cmd_signal_read(*length, file, *since);
     }
     if let Command::TermBridge { argv } = &cli.command {
         return fleet_runtime::bridge::serve(argv, std::io::stdin(), std::io::stdout())
@@ -995,6 +1017,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         } => cmd_watch(store, since, once, poll_ms, json),
         Command::Version { .. }
         | Command::Signal { .. }
+        | Command::SignalRead { .. }
         | Command::Runtime { .. }
         | Command::Integration { .. }
         | Command::Doctor { .. }
@@ -1105,6 +1128,34 @@ fn cmd_signal(
     }
     fleet_runtime::signals::append(&file, &signal)
         .map_err(|e| fail(format!("{}: {e}", file.display())))
+}
+
+/// `fleet signal-read`: what Fleet reads of a session's signal file on
+/// another host, through the runtime's exec there.
+fn cmd_signal_read(length: bool, file: &Path, since: Option<u64>) -> Result<(), Failure> {
+    use std::io::Write;
+    let shown = || file.display().to_string();
+    let bytes = if length {
+        let n = fleet_runtime::signals::file_length(file)
+            .map_err(|e| fail(format!("{}: {e}", shown())))?;
+        format!("{n}\n").into_bytes()
+    } else {
+        match fleet_runtime::signals::read_split(file, since)
+            .map_err(|e| fail(format!("{}: {e}", shown())))?
+        {
+            Some(bytes) => bytes,
+            None => {
+                return Err(Failure {
+                    code: exit::NOT_FOUND,
+                    message: format!("{} is not there", shown()),
+                    hint: None,
+                });
+            }
+        }
+    };
+    std::io::stdout()
+        .write_all(&bytes)
+        .map_err(|e| fail(format!("stdout: {e}")))
 }
 
 /// The `fleet gateway` verbs: each reads the `[gateway]` section and calls

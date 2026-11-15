@@ -336,7 +336,7 @@ request.place ──▶ local ─────────▶ this machine's mult
   every value of `env` that names the directory names the copy instead, so
   a harness's hook file, such as pi's extension, is the place's own. A
   `stop` removes the copy. A launch that names none of its files copies
-  nothing. A native-Windows place refuses a launch that needs the files.
+  nothing.
 - A `start` whose `env` names `FLEET_HARNESS_DIR`, the user's harness
   profiles on this machine, copies it to
   `~/.local/state/fleet/harnesses/<key>` on a POSIX place and names the
@@ -363,6 +363,20 @@ request.place ──▶ local ─────────▶ this machine's mult
   view builds that place's backend and reads the pane through its control
   connection over ssh or `wsl.exe`, as the other verbs do.
 - A call whose place does not answer is Unknown, and names the place.
+- A native-Windows place (`multiplexer = "psmux"` or
+  `platform = "windows"`) runs its commands through an encoded PowerShell
+  script, with `path_prepend` first on its `Path`.
+  - Its readiness looks for `fleet` with `Get-Command`.
+  - `exec` and `workspace` start the program as `launch_on_windows` does.
+  - A copy of Fleet's files goes through `tar.exe`, which Windows has had
+    since Windows 10 1803.
+  - `browse`, `branches` and a workspace's setup and teardown steps read the
+    place with `sh`, so they answer `failed` there and say why.
+  - A window's environment goes, over the stdin of one PowerShell command,
+    to a new file in the user's own temp directory. The window's script
+    names only that file: it loads it, deletes it, then starts the program.
+    So no value is in any process's arguments. A psmux server on this
+    machine does the same.
 - WSL stops a distro, and every process in it, soon after its last
   `wsl.exe` client exits. Each `runtime-mux` call is such a client. So a
   `start` or a `shell` on a WSL place also starts one waiter: a detached
@@ -378,16 +392,18 @@ machine. On a place other than `local`:
 
 ```text
 place:  hook ─fleet signal─▶ ~/.local/state/fleet/signals/<key>.jsonl
-Fleet:  runtime exec: the end of <that file> ──▶ fold ──▶ session state
+Fleet:  runtime exec: fleet signal-read <that file> ──▶ fold ──▶ session state
 ```
 
 - Fleet passes `FLEET_SIGNAL_FILE=~/.local/state/fleet/signals/<key>.jsonl`.
   The `fleet` on the place expands `~` to its home and makes the directory.
 - Fleet reads the file through the runtime's `exec`, over the connection
-  the runtime has to the place. A file not written yet is a session that
-  reported nothing. An `exec` that fails is Unknown.
+  the runtime has to the place: `exec` runs `fleet signal-read <file>
+  [<length>]`, so the place's own `fleet` reads it, on POSIX and on Windows
+  alike. A file not written yet is a session that reported nothing. An
+  `exec` that fails is Unknown.
 - Before a revive or a resume, Fleet reads the file's length through
-  `exec` and keeps it in its own data, `<data dir>/signals/<key>.started`.
+  `exec` (`fleet signal-read --length <file>`) and keeps it in its own data, `<data dir>/signals/<key>.started`.
   It writes nothing on the place. A state in the file before that length is
   the previous process's: readiness and trust wait for the new process's
   own report. No time is compared, so the place's clock need not agree with

@@ -501,6 +501,63 @@ pub fn launch_on_windows(
     Ok(cmd)
 }
 
+/// A PowerShell script that runs `program` with `args` on a Windows host as
+/// [`launch_on_windows`] does, in `dir` when given, with `path_prepend` put
+/// first on its `Path`, after `prelude`: statements of the caller's own,
+/// such as making the directory a copy goes to. A `~` leading an entry of
+/// `path_prepend` is the user's profile directory.
+pub fn windows_program_script<S: AsRef<str>>(
+    program: &str,
+    args: &[S],
+    dir: Option<&str>,
+    path_prepend: &[String],
+    prelude: &str,
+) -> String {
+    let mut script = String::from("$ProgressPreference = 'SilentlyContinue'\n");
+    script.push_str(&windows_path_prepend(path_prepend));
+    script.push_str(prelude);
+    let extra = dir
+        .map(|d| format!("$s.WorkingDirectory = {}\n", powershell_quote(d)))
+        .unwrap_or_default();
+    script.push_str(&start_process_script(
+        &powershell_quote(program),
+        args,
+        &extra,
+    ));
+    script
+}
+
+/// The PowerShell statement that puts `dirs` first on `$env:Path`, empty
+/// for none. A leading `~` is `$env:USERPROFILE`.
+pub fn windows_path_prepend(dirs: &[String]) -> String {
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = dirs
+        .iter()
+        .map(|d| match d.strip_prefix('~') {
+            Some(rest) => format!("($env:USERPROFILE + {})", powershell_quote(rest)),
+            None => powershell_quote(d),
+        })
+        .collect();
+    format!(
+        "$env:Path = (@({}) -join ';') + ';' + $env:Path\n",
+        items.join(", ")
+    )
+}
+
+/// `powershell.exe -NoProfile -EncodedCommand <script>` on this machine.
+pub fn local_powershell(script: &str) -> Command {
+    use base64::Engine as _;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut cmd = Command::new("powershell.exe");
+    off_the_terminal(&mut cmd);
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        .arg(base64::engine::general_purpose::STANDARD.encode(utf16));
+    strip_telemetry_env(&mut cmd);
+    cmd
+}
+
 /// PowerShell that starts the program `file_name` (a PowerShell expression)
 /// with `args`, waits for it and exits with its status. The arguments are one
 /// command line quoted for the C runtime ([`windows_arg_quote`]) rather than
