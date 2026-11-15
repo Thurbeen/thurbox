@@ -1426,10 +1426,8 @@ without waiting and paints blank until it lands.
 Installing the snapshot moves the output generation and triggers a repaint, so
 the first nonblank frame is current. A host that stopped answering
 cannot stall a paint; the request is repeated only after two seconds without
-an answer. Companion shell creation and re-adoption likewise run on workers.
-On a backend with ordered snapshots, a new companion shell also starts dormant.
-Its first paint restores the complete screen, including output written before
-its reader connected; it need not print again after a resize.
+an answer. A companion shell likewise opens on a worker, through `fleet
+shell`.
 Only an answer for the same live attachment and shell slot is installed, and
 the shell id is remembered or forgotten when that answer lands. Repeated
 shell commands share one in-flight request per live attachment and observed

@@ -1923,6 +1923,139 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     });
 }
 
+/// A session of a Fleet on another machine has a companion shell: `fleet
+/// shell` and the stream it names both run over that Fleet's ssh, and the
+/// shell opens on that machine, in the Task's directory. thurbox keeps no
+/// route of its own to the machine.
+#[test]
+fn a_remote_fleets_companion_shell_opens_on_its_machine_through_fleet_shell() {
+    use thurbox::fleet_link::FleetLink;
+    use thurbox::session::settings::{FleetDef, FleetTransport};
+    let Some(bin) = fleet_bin() else { return };
+    let runtime_mux = bin.with_file_name("runtime-mux");
+    if !runtime_mux.is_file() || !bin.with_file_name("workspace-git").is_file() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no runtime-mux or workspace-git binary beside fleet in CI, where this test must run"
+        );
+        eprintln!(
+            "skipping: build runtime-mux and workspace-git (`cargo build -p runtime-mux -p workspace-git`)"
+        );
+        return;
+    }
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let sockets = Sockets::new();
+    let fleet = Fleet::with(
+        bin,
+        &format!(
+            "[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n",
+            runtime_mux.display()
+        ),
+        &format!("TMUX_TMPDIR='{}' SHELL=/bin/sh", sockets.0.display()),
+    );
+    let harness_dir = fleet.root.path().join("bin");
+    std::fs::create_dir_all(&harness_dir).expect("bin");
+    let harness = harness_dir.join("claude");
+    std::fs::write(&harness, "#!/bin/sh\nexec sleep 600\n").expect("harness");
+    make_executable(&harness);
+    let work = fleet.root.path().join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    let work = work.canonicalize().expect("canonical work");
+    let mut t1 = task("t1");
+    t1["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    t1["spec"]["dispatch"] = json!(true);
+    fleet.apply(t1);
+    fleet.run(&["reconcile"]).ok();
+
+    // "box": this Fleet, reached only through a stand-in ssh that logs each
+    // remote command line.
+    let root = fleet.root.path();
+    let ssh_bin = root.join("ssh-bin");
+    std::fs::create_dir_all(&ssh_bin).expect("ssh-bin");
+    let log = root.join("ssh.log");
+    let ssh = ssh_bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; *) break ;; esac; done\n\
+             printf '%s\\n' \"$*\" >> '{log}'\n\
+             [ \"$1\" = box ] || {{ echo 'ssh: connect to host box port 22: No route to host' >&2; exit 255; }}\n\
+             shift\n\
+             eval \"exec $*\"\n",
+            log = log.display(),
+        ),
+    )
+    .expect("ssh");
+    make_executable(&ssh);
+    let _path = fake_ssh_first(&ssh_bin);
+    let over_ssh = FleetLink::of(
+        "box",
+        &FleetDef {
+            transport: FleetTransport::Ssh {
+                ssh: "box".into(),
+                ssh_opts: Vec::new(),
+            },
+            program: fleet.program.to_string_lossy().into_owned(),
+            config: None,
+        },
+    );
+
+    let mut store = store_of(FleetWatch::spawn(over_ssh.clone()));
+    until("the Task has its session", || {
+        store.refresh_if_due();
+        store
+            .current()
+            .session("box:t1")
+            .is_some_and(|row| row.key.is_some())
+    });
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let _entered = runtime.enter();
+    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
+    terminals.attach_fleet_through(over_ssh);
+    until("the session's pane is attached", || {
+        store.refresh_if_due();
+        terminals.sync(store.current(), 24, 80);
+        terminals.is_attached("box:t1")
+    });
+
+    let row = store.current().session("box:t1").cloned().expect("the row");
+    terminals
+        .open_shell(&row, 24, 80)
+        .expect("a shell is asked for");
+    until("the companion shell opens", || {
+        store.refresh_if_due();
+        terminals.sync(store.current(), 24, 80);
+        terminals.has_shell("box:t1")
+    });
+    let shell = thurbox::kernel::terminal::shell_surface("box:t1");
+    assert!(
+        terminals.send(&shell, b"pwd > shell-pwd\r".to_vec()),
+        "the shell takes input"
+    );
+    let out = work.join("shell-pwd");
+    until("the shell runs in the Task's directory on box", || {
+        store.refresh_if_due();
+        terminals.sync(store.current(), 24, 80);
+        std::fs::read_to_string(&out).is_ok_and(|text| !text.is_empty())
+    });
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap().trim(),
+        work.display().to_string()
+    );
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    assert!(
+        calls.lines().any(|c| c.contains(" shell t1 --json")),
+        "the shell was asked of box's Fleet: {calls}"
+    );
+}
+
 /// A Fleet that does not speak the API thurbox writes its Tasks in is
 /// refused once its `fleet version --json` says so: the list shows it as
 /// incompatible, its watch is never started, and a command for one of its

@@ -1,6 +1,6 @@
 ---
 name: thurbox-remote-hosts
-description: Remote SSH and WSL hosts in thurbox: the hosts.toml schema (runtime-mux's) and WSL discovery, how a picked host reaches Fleet, and why thurbox reads this machine only and runs only companion shells on a host. Use when working on remote/WSL/Windows hosts in thurbox or on hosts.toml. The transport, psmux and the failure classifiers are crates/runtime-mux's.
+description: Remote SSH and WSL hosts in thurbox: the hosts.toml schema (runtime-mux's) and WSL discovery, how a picked host reaches Fleet, and why thurbox reads this machine only; companion shells open through Fleet. Use when working on remote/WSL/Windows hosts in thurbox or on hosts.toml. The transport, psmux and the failure classifiers are crates/runtime-mux's.
 ---
 
 # Thurbox remote SSH and WSL hosts
@@ -29,11 +29,9 @@ itself reads this machine only:
 - **Diffs, git stats and plugin runs** refuse a session on another machine
   (`src/kernel/diff.rs`, `SessionRow::workspace_reachable`,
   `kernel::runs::command_for`).
-- **Companion shells** (`Ctrl+T`). A Fleet session's shell runs on the
-  multiplexer of the `hosts.toml` host its Fleet host is named as, on that
-  host's default route (`Terminals::shell_route`,
-  `src/kernel/terminal/shells.rs`). No such host means no shell. This is the
-  one place thurbox reads `hosts.toml`.
+- **Companion shells** (`Ctrl+T`) open through `fleet shell` on the
+  session's own Fleet, over its link, at the session's place
+  (`src/kernel/terminal/shells.rs`). They read no `hosts.toml`.
 - **Image drops** onto a remote session are refused with a message
   (`holds_a_remote_image_paste`, `src/coordinator/input.rs`).
 

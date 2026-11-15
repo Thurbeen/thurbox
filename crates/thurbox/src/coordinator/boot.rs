@@ -218,8 +218,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         &startup_settings,
     );
     startup.snapshot_open_ms = phase.elapsed().as_millis() as u64;
-    let mut shells = crate::coordinator::ShellBook::load();
-    let unmatchable = shells.take_unmatchable();
 
     let phase = Instant::now();
     let themes = Themes::load(thurbox::config::interface_state::load().theme.as_deref());
@@ -254,12 +252,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             let mut terminals = terminals(std::sync::Arc::clone(&backends), &startup_settings);
             for link in &links {
                 terminals.attach_fleet_through(link.clone());
-            }
-            for (session, record) in &unmatchable {
-                terminals.kill_shell_window(&record.route, &record.pane, &record.stamp, session);
-            }
-            for (session, record) in &shells.records {
-                terminals.record_shell(session, Some(record.pane.clone()));
             }
             terminals
         },
@@ -306,7 +298,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         click_targets: Vec::new(),
         last_area: Rect::new(0, 0, 0, 0),
         screen_size: crossterm::terminal::size().unwrap_or((80, 24)),
-        shells,
         selected_text: None,
         copy_after_paint: false,
         hovered: None,
@@ -417,9 +408,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let result = app.run(terminal);
     restore_terminal();
-    // The last frame is drawn: the shells still queued for saving are
-    // written now, so a clean exit loses none of them.
-    app.shells.finish();
     // Each backend's connection comes down at once rather than one after
     // another as the registry's last owner drops it.
     drop(app);

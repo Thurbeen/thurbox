@@ -64,7 +64,7 @@ the frame changed by itself. The perf HUD is the deliberate exception: its
 counters move every iteration, so it says so.
 
 Everything that touches the world runs on a worker and publishes back (rule 5):
-`kernel::terminal` (attach, shell open and re-adoption — the sharpest teeth,
+`kernel::terminal` (attach and shell open — the sharpest teeth,
 since a down host runs out its ssh timeout and adopting a pane needs the runtime
 *entered* on the worker),
 `kernel::command`, `kernel::diff`, `kernel::metrics` (three cadences, one published

@@ -542,8 +542,8 @@ documents each field inline:
 Each host becomes a route named `ssh:<name>` / `wsl:<name>`. A session
 created on it is a Task whose `spec.host` is `<name>`, which must be a host
 Fleet's own config defines: Fleet runs the agent there. thurbox's own use of
-the host is the companion shell (see *Shell Pane Toggle*), which runs in a
-window of the host's multiplexer. For **SSH**, thurbox shells out to the
+the host is none: the companion shell opens through Fleet (see *Shell Pane
+Toggle*). For **SSH**, thurbox shells out to the
 system `ssh` binary, so authentication, keys, and connection multiplexing
 come from your `~/.ssh/config` — thurbox never handles credentials. A **WSL
 distro** is reached with `wsl.exe -d <distro>` (no credentials, no network),
@@ -1857,9 +1857,17 @@ modes and puts them back on detach.
 
 ## Shell Pane Toggle
 
-`Ctrl+T` (or `F8`) toggles between the agent session and a shell pane
-(plain bash/zsh) for the active session. The shell runs in a
-separate tmux pane alongside the agent pane.
+`Ctrl+T` (or `F8`) toggles between the agent session and a shell pane for
+the active session. The shell is the stream `fleet shell` names on the
+session's own Fleet: the runtime opens it at the session's place, in the
+directory the agent is in, and keeps it in a window beside the agent's.
+thurbox keeps no record of it and no route to the place:
+
+- a restarted interface raising the tab gets the same shell back, what it
+  typed and set included;
+- Fleet's release of the Task closes it;
+- a Fleet on another machine opens it there, over the same link as the
+  agent's pane.
 
 Unlike the other readline-shadowing `Ctrl+<letter>` chords (`Ctrl+B`/`D`/`E`/
 `F`/`O`/`P`/`R`/`S`/`U`/`W`), `Ctrl+T` is **not** passed through to the agent PTY
@@ -1875,16 +1883,10 @@ other panel toggles' F-keys.
 - Input reaches the pane the surface names, `<id>#shell` or the bare id.
 - **A shell that has ended is replaced.** `exit`, or its window closing from
   outside, ends the shell's stream while the agent runs on; the next raise of
-  the tab spawns a fresh shell rather than showing the dead one, whose grid —
-  once dropped off screen after `hidden_terminal_secs` — has no pane left to be
-  rebuilt from and would stay blank. For the same reason a restart does not
-  re-adopt a recorded shell id the multiplexer's listing no longer has.
-- **Remote/WSL sessions**: the shell pane opens the host user's own
-  interactive **login shell** — the same environment an `ssh <host>` login
-  gives you (rc files, prompt, aliases, `PATH`), not a bare `/bin/sh`. It
-  bootstraps through the always-present `/bin/sh -l` (which exports `$SHELL`)
-  and then `exec "$SHELL" -l`, falling back to `/bin/sh -l` if `$SHELL` is
-  unset. A psmux (Windows SSH) host keeps its native `powershell` pane.
+  the tab asks `fleet shell` again, and the runtime opens a new shell rather
+  than showing the dead one.
+- **The program** is the place's own shell, as the runtime picks it
+  (`runtime-mux`: `$SHELL`, else `/bin/sh`; `%COMSPEC%` on Windows).
 
 ### The shell is a surface, not a second view of the agent
 
@@ -1906,34 +1908,25 @@ else's arrangement.
 
 ### Where the shell runs, and how a restart finds it
 
-A Fleet session's agent pane is the stream `fleet attach` names (ADR-41), and
-a stream opens no windows. The shell is therefore a window of thurbox's own
-multiplexer on the Task's machine: this machine's for a local Task, else the
-route of the `hosts.toml` host the Fleet host is named as, so a WSL host keeps
-its `wsl:` place. Every shell operation (open, adopt, resize, hide, kill) goes
-to that multiplexer, and every agent operation goes to the stream.
+A Fleet session's agent pane is the stream `fleet attach` names (ADR-41). Its
+shell is the stream `fleet shell` names, asked of the same Fleet over the same
+link: the runtime opens the shell at the session's place, in a window beside
+the agent's ([the shell](../runtime/README.md#the-shell)). Every shell
+operation (input, resize, hide) goes up that stream, and every agent
+operation goes up the agent's.
 
-The shell outlives the interface in its window. The interface keeps one record
-per shell, in `interface.json` under the session's id: the route of its
-multiplexer, its pane and the id its window is stamped with. The loop holds the
-records in memory, and a worker's answer is matched against the record in
-memory. One worker writes each change, a session at a time, into the file as
-it is then, under the lock every writer of the file takes, so the loop never
-waits on that lock and two interfaces on one config directory keep each
-other's shells. A clean exit writes what is still queued after the last
-frame.
+The shell belongs to the session's key in the runtime, not to the interface,
+so thurbox keeps no record of it:
 
-- **A restart adopts it again**, once the agent's pane is attached, so what ran
-  in the shell is still there. Only a window that still carries the recorded
-  stamp on the recorded route is adopted: a restarted server reissues pane ids,
-  and an id alone would adopt whatever window holds it now.
-- **A pane that went** while the interface was closed (a multiplexer restart, a
-  kill from outside) is not adopted: raising the Shell tab opens a new one. A
-  pane found gone is remembered for its session until that session's record
-  changes.
-- **Deleting the Task closes its shell.** When a session leaves the snapshot,
-  its shell window is killed (again only where the stamp still matches) and
-  its record dropped. Closing the interface keeps every shell.
+- **A restart finds it again.** Raising the Shell tab asks `fleet shell`, and
+  the runtime answers the shell already there, so what ran in it is still
+  there.
+- **A shell that went** while the interface was closed (its window killed from
+  outside, a multiplexer restart) is not there to find: the runtime opens a new
+  one.
+- **Deleting the Task closes its shell.** Fleet's release stops the key, and
+  the runtime's stop closes the key's shell windows. Closing the interface
+  keeps every shell.
 
 ---
 

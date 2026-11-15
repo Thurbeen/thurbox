@@ -460,12 +460,8 @@ struct App {
     /// `Event::Resize`.
     ///
     /// Cached because `terminal::size()` is a syscall and its two consumers run
-    /// on every iteration of a loop that polls every 10 ms — `readopt_shells`
-    /// already refused to pay it per iteration, and this extends the same
-    /// reasoning to the attach seed size.
+    /// on every iteration of a loop that polls every 10 ms.
     screen_size: (u16, u16),
-    /// The companion shells this interface knows (`coordinator::ShellBook`).
-    shells: coordinator::ShellBook,
     /// The text under the current selection, read while the frame that painted
     /// it is still in hand.
     ///

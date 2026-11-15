@@ -231,8 +231,8 @@ impl Terminals {
         // no host, so there is nothing to resolve one from. Recorded as an open
         // question rather than guessed at.
         let backend = Arc::clone(self.backends.default_backend());
-        // This local-only spawn still runs inline; companion shells can target
-        // remote hosts and use their own worker path.
+        // This local-only spawn still runs inline; a companion shell opens
+        // through Fleet, on a worker of its own.
         if let Err(e) = backend.ensure_ready() {
             return Err(format!("could not reach the local multiplexer: {e:#}"));
         }

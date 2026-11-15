@@ -144,7 +144,7 @@ identity = { use = ["contract"] }
 instance = { use = ["host", "settings"] }
 # The pane machinery every backend's stream is wired into: the reader loop,
 # the vt100 parser, the signals it raises.
-pane = { use = ["contract", "hyperlink", "identity", "osc8", "output_wake", "session_id"] }
+pane = { use = ["contract", "hyperlink", "osc8", "output_wake", "session_id"] }
 osc8 = { use = ["hyperlink"] }
 output_wake = { use = [] }
 # A container of backends. Knows the contract and nothing that builds one.
@@ -366,7 +366,7 @@ cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "flee
 # are path-only, as `cli`'s are, so every one into the side-effect layer is
 # visible at its call site.
 kernel = { use = ["session", "paths", "git", "notifications", "theme", "fleet_link"], path_only = [
-  "agent::fetch", "backend", "config::hosts", "config::automations",
+  "agent::fetch", "backend", "config::automations",
   "config::interface_state", "config::settings", "config::themes",
   "update::self_update", "update::version_check",
 ] }

@@ -188,16 +188,13 @@ impl Terminals {
         let scrollback = self.scrollback;
         let runtime = self.runtime.clone();
         let notices = super::stream_pane::Notices::new(self.input_notices.0.clone(), &row.name);
-        let shell = self
-            .shell_route(row.remote_host.as_deref())
-            .and_then(|route| self.backend_on(&route));
         self.attach
             .attaching
             .insert(session.clone(), super::fleet::BACKEND.to_string());
         std::thread::spawn(move || {
             // The pane's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
-            let result = super::fleet::open(&link, &task, rows, cols, scrollback, notices, shell);
+            let result = super::fleet::open(&link, &task, rows, cols, scrollback, notices);
             let _ = tx.send(Attached {
                 session,
                 pane: key,
@@ -271,14 +268,7 @@ impl Terminals {
                             super::stream_pane::adopt_reporting(&argv, rows, cols, notices, &name)
                                 .map_err(|e| format!("the stream pane: {e}"))?;
                         return Ok(crate::backend::Session::adopt_io(
-                            name,
-                            rows,
-                            cols,
-                            &pane,
-                            &backend,
-                            adopted,
-                            HashMap::new(),
-                            scrollback,
+                            name, rows, cols, &pane, &backend, adopted, scrollback,
                         ));
                     }
                     // Nothing is looking at it yet, so where the grid can be had
@@ -286,26 +276,13 @@ impl Terminals {
                     // which was a round trip per pane on every start.
                     if lazy && backend.capabilities().supports_snapshots {
                         return crate::backend::Session::adopt_dormant(
-                            name,
-                            rows,
-                            cols,
-                            &pane,
-                            &backend,
-                            HashMap::new(),
-                            scrollback,
+                            name, rows, cols, &pane, &backend, scrollback,
                         )
                         .map_err(|e| e.to_string());
                     }
                     let seed = backend.capture_history(&pane).ok();
                     crate::backend::Session::adopt(
-                        name,
-                        rows,
-                        cols,
-                        &pane,
-                        &backend,
-                        HashMap::new(),
-                        seed,
-                        scrollback,
+                        name, rows, cols, &pane, &backend, seed, scrollback,
                     )
                     .map_err(|e| e.to_string())
                 })

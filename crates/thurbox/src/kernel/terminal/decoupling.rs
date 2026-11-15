@@ -366,14 +366,21 @@ impl Harness {
             cols,
             AGENT_PANE,
             &backend,
-            HashMap::new(),
             None,
             1000,
         )
         .expect("adopt the agent pane");
-        session
-            .ensure_shell_pane(rows, cols, None)
-            .expect("open the companion shell");
+        let shell = crate::backend::Session::shell_over(
+            backend
+                .adopt(SHELL_PANE, rows, cols, None)
+                .expect("open the companion shell"),
+            &backend,
+            SHELL_PANE,
+            rows,
+            cols,
+            1000,
+        );
+        session.install_shell_over(shell, Arc::clone(&backend));
 
         let mut terminals = Terminals::with_registry(
             std::sync::Arc::new(crate::backend::registry::inert()),
@@ -948,17 +955,19 @@ async fn a_replacement_shell_takes_its_own_first_frame_size() {
     .await
     .expect("the old shell to exit");
     let row = super::tests::row(&harness.id, "local:tmux", Some(AGENT_PANE));
-    harness
-        .terminals
-        .record_shell(&harness.id, Some(SHELL_PANE.to_string()));
     let snapshot = crate::kernel::snapshot::Snapshot {
         sessions: vec![row],
         ..Default::default()
     };
-    harness
-        .terminals
-        .open_shell(&harness.id, HEIGHT, WIDTH, None, Some(SHELL_PANE))
-        .unwrap();
+    let backend: Arc<dyn crate::backend::SessionBackend> = harness.backend.clone();
+    harness.terminals.start_shell(&harness.id, move || {
+        let adopted = backend
+            .adopt(SHELL_PANE, HEIGHT, WIDTH, None)
+            .map_err(|e| e.to_string())?;
+        let shell =
+            crate::backend::Session::shell_over(adopted, &backend, SHELL_PANE, HEIGHT, WIDTH, 1000);
+        Ok((shell, backend))
+    });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             harness.terminals.collect_shells(&snapshot);
@@ -993,7 +1002,6 @@ async fn a_grid_that_never_arrives_does_not_stall_any_frame() {
         80,
         AGENT_PANE,
         &backend,
-        HashMap::new(),
         1000,
     )
     .expect("adopt");

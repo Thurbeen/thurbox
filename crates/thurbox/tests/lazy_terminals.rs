@@ -792,7 +792,6 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
 mod remote {
     use super::*;
 
-    use std::collections::HashMap;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
@@ -947,7 +946,6 @@ mod remote {
             80,
             &pane,
             &backend,
-            HashMap::new(),
             thurbox::session::settings::Settings::default().scrollback_lines,
         )
         .expect("adopt");
@@ -1059,7 +1057,6 @@ mod remote {
             80,
             &pane,
             &backend,
-            HashMap::new(),
             thurbox::session::settings::Settings::default().scrollback_lines,
         )
         .expect("adopt");
