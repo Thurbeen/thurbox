@@ -4132,3 +4132,71 @@ fn revive_on_a_skewed_place(name: &str, pad: usize, wrap: Option<&Wrap>) {
     append(&skewed_idle());
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }
+
+/// [`STUB_AGENT`] on a place: it records the profile directory it was
+/// given, and reports its conversation in a field only its user profile
+/// names.
+const PLACE_STUB_AGENT: &str = r#"#!/bin/sh
+printf '%s' "$FLEET_HARNESS_DIR" > "$PWD/harness-dir"
+printf '%s' '{"thread_x":"conv-custom"}' | fleet signal idle
+exec sleep 300
+"#;
+
+/// A harness that is a user profile runs on an ssh place with the place's
+/// copy of the profiles: `fleet signal` there reads the profile's own
+/// payload fields, so the conversation it names is reported.
+#[test]
+fn a_user_profile_reports_its_conversation_from_an_ssh_place() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("ssh-profile");
+    let remote = Sockets::new("ssh-profile-place");
+    let mut env = mux_env("runtime-mux-ssh-profile", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    let harnesses = env.config.parent().unwrap().join("harnesses");
+    fs::create_dir_all(&harnesses).expect("harnesses dir");
+    fs::write(
+        harnesses.join("stub.toml"),
+        STUB_PROFILE.replace("session_id", "thread_x"),
+    )
+    .expect("profile");
+    let bin = env.root.join("place-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let agent = bin.join("stub-agent");
+    fs::write(&agent, PLACE_STUB_AGENT).expect("agent");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&agent, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}",
+            sshd.place("box", &[&bin, fleet_dir])
+        ),
+    )
+    .expect("config");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&path));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("stub");
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"].as_object_mut().unwrap().remove("brief");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "the profile's conversation reported", |env| {
+        env.get("t1")["status"]["conversation"] == "conv-custom"
+    });
+    let dir = fs::read_to_string(work.join("harness-dir")).expect("FLEET_HARNESS_DIR");
+    assert!(
+        Path::new(&dir).starts_with(home.join(".local/state/fleet/harnesses")),
+        "the place's copy of the profiles: {dir}"
+    );
+    assert!(Path::new(&dir).join("stub.toml").is_file(), "{dir}");
+}

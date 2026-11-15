@@ -336,6 +336,12 @@ request.place ──▶ local ─────────▶ this machine's mult
   a harness's hook file, such as pi's extension, is the place's own. A
   `stop` removes the copy. A launch that names none of its files copies
   nothing. A native-Windows place refuses a launch that needs the files.
+- A `start` whose `env` names `FLEET_HARNESS_DIR`, the user's harness
+  profiles on this machine, copies it to
+  `~/.local/state/fleet/harnesses/<key>` on a POSIX place and names the
+  copy, so `fleet signal` there reads the profile's own payload fields.
+- A `start`'s `dir` is absolute by the place's rules, not by this
+  machine's: `/…` on a POSIX place, a drive or UNC path on a Windows one.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
   run on the place. A pause mark of a remote key stays on this machine.
 - A remote place's workspace is a directory already on the place: each URL

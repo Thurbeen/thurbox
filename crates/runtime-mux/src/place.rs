@@ -50,9 +50,11 @@ pub fn keep_cache_in(dir: PathBuf, prefix: String) {
     let _ = CACHE.set((dir, prefix));
 }
 
-/// Where the place's assets are copied, under its home: one directory per
-/// key ([`copy_assets`]).
-const ASSETS_DIR: &str = ".local/state/fleet/assets";
+/// Where the place's copies of Fleet's files are made, under its home: one
+/// directory per key ([`copy_dir`]), for the harness asset files and for
+/// the user's harness profiles.
+pub const ASSETS_DIR: &str = ".local/state/fleet/assets";
+pub const HARNESSES_DIR: &str = ".local/state/fleet/harnesses";
 
 /// A place as a request names it: the name, and its table from Fleet's
 /// config.
@@ -433,11 +435,12 @@ fn left(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
 }
 
-/// The place's own copy of the asset directory `local`, for the session
-/// under `key`: `local` copied, whole, to `~/.local/state/fleet/assets/<key>`
-/// on the place, replacing what an earlier start left there. Its absolute
-/// path on the place, which the caller names in place of `local`.
-pub fn copy_assets(host: &HostDef, key: &str, local: &Path) -> Result<String, String> {
+/// The place's own copy of the directory `local`, for the session under
+/// `key`: `local` copied, whole, to `~/<under>/<key>` on the place
+/// ([`ASSETS_DIR`], [`HARNESSES_DIR`]), replacing what an earlier start left
+/// there. Its absolute path on the place, which the caller names in place
+/// of `local`.
+pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<String, String> {
     let name = &host.name;
     if host.platform() != Platform::Posix {
         return Err(format!(
@@ -447,7 +450,7 @@ pub fn copy_assets(host: &HostDef, key: &str, local: &Path) -> Result<String, St
     let home = env(host, PROBE_TIMEOUT)
         .and_then(|env| env.home)
         .ok_or_else(|| format!("place {name:?}: its home could not be read"))?;
-    let remote = format!("{}/{ASSETS_DIR}/{key}", home.trim_end_matches('/'));
+    let remote = format!("{}/{under}/{key}", home.trim_end_matches('/'));
     let mut tar = Command::new("tar")
         .arg("-C")
         .arg(local)
@@ -476,15 +479,16 @@ pub fn copy_assets(host: &HostDef, key: &str, local: &Path) -> Result<String, St
     }
 }
 
-/// Remove the key's copy of the assets on the place, if one is there. Best
-/// effort: a copy left behind is replaced by the key's next start.
+/// Remove the key's copies of Fleet's files on the place, if any are
+/// there. Best effort: a copy left behind is replaced by the key's next
+/// start.
 pub fn remove_assets(host: &HostDef, key: &str) {
     if host.platform() != Platform::Posix {
         return;
     }
     let _ = run_script(
         host,
-        &format!("rm -rf \"$HOME/{ASSETS_DIR}/$1\""),
+        &format!("rm -rf \"$HOME/{ASSETS_DIR}/$1\" \"$HOME/{HARNESSES_DIR}/$1\""),
         &[key],
         Instant::now() + PROBE_TIMEOUT,
     );

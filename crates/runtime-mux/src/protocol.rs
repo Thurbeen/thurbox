@@ -556,9 +556,8 @@ impl Validate for Start {
         if self.argv.first().is_none_or(|program| program.is_empty()) {
             return Err("argv names no program".into());
         }
-        if self.dir.as_ref().is_some_and(|dir| !dir.is_absolute()) {
-            return Err("dir must be an absolute path".into());
-        }
+        // The directory is the place's: `start` checks it by the place's
+        // rules ([`absolute_on`]).
         Ok(())
     }
 }
@@ -783,6 +782,12 @@ fn start(
     {
         return known(json!({ "failed": { "why": why } }));
     }
+    let platform = place.map_or(crate::Platform::local(), HostDef::platform);
+    if let Some(dir) = &request.dir {
+        if !absolute_on(&dir.to_string_lossy(), platform) {
+            return unknown("dir must be an absolute path");
+        }
+    }
     let mut request = request;
     if let Some(host) = place {
         if let Err(why) = place_assets(host, &mut request) {
@@ -815,6 +820,23 @@ fn start(
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
 }
 
+/// Whether `dir` is absolute on a machine of `platform`, read as a string:
+/// this machine's own path rules are not the place's. On POSIX a path
+/// starts at `/`; on Windows at a drive (`C:\`, `C:/`) or a UNC share.
+fn absolute_on(dir: &str, platform: crate::Platform) -> bool {
+    match platform {
+        crate::Platform::Posix => dir.starts_with('/'),
+        crate::Platform::Windows => {
+            let b = dir.as_bytes();
+            let drive = b.len() >= 3
+                && b[0].is_ascii_alphabetic()
+                && b[1] == b':'
+                && matches!(b[2], b'\\' | b'/');
+            drive || dir.starts_with("\\\\") || dir.starts_with("//")
+        }
+    }
+}
+
 /// A start on a remote place whose launch names a file of the directory
 /// Fleet passes as `FLEET_ASSET_DIR`, such as pi's hook extension: the
 /// directory is copied to the place, and every word of `argv` and every
@@ -823,6 +845,7 @@ fn start(
 /// that is not on this machine is left as it is: it may already be the
 /// place's.
 fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
+    place_profiles(host, request)?;
     let Some(local) = request
         .env
         .get(ASSET_DIR_ENV)
@@ -839,7 +862,12 @@ fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
     if !named {
         return Ok(());
     }
-    let remote = crate::place::copy_assets(host, &request.key, std::path::Path::new(&local))?;
+    let remote = crate::place::copy_dir(
+        host,
+        &request.key,
+        std::path::Path::new(&local),
+        crate::place::ASSETS_DIR,
+    )?;
     for word in request.argv.iter_mut().chain(request.env.values_mut()) {
         if word.contains(&local) {
             *word = word.replace(&local, &remote);
@@ -850,6 +878,38 @@ fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
 
 /// The variable Fleet names its harness asset directory in.
 const ASSET_DIR_ENV: &str = "FLEET_ASSET_DIR";
+
+/// The variable Fleet names the user's harness profiles directory in, which
+/// `fleet signal` reads a profile's payload fields from.
+const HARNESS_DIR_ENV: &str = "FLEET_HARNESS_DIR";
+
+/// A start on a remote POSIX place with `FLEET_HARNESS_DIR` naming a
+/// directory on this machine: the user's profiles are copied to the place
+/// and the variable names the copy, so `fleet signal` there reads the
+/// profile's own payload fields (its conversation, its prompt). On a place
+/// they cannot be copied to, the variable is left as it is: `fleet signal`
+/// falls back to the bundled profile, as before.
+fn place_profiles(host: &HostDef, request: &mut Start) -> Result<(), String> {
+    if host.platform() != crate::Platform::Posix {
+        return Ok(());
+    }
+    let Some(local) = request
+        .env
+        .get(HARNESS_DIR_ENV)
+        .filter(|dir| !dir.is_empty() && std::path::Path::new(dir.as_str()).is_dir())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let remote = crate::place::copy_dir(
+        host,
+        &request.key,
+        std::path::Path::new(&local),
+        crate::place::HARNESSES_DIR,
+    )?;
+    request.env.insert(HARNESS_DIR_ENV.to_string(), remote);
+    Ok(())
+}
 
 /// The key's window, else its pause mark: a window answers for the key while
 /// it is there, so a pause that has not stopped it yet reads as running. A
@@ -1208,6 +1268,30 @@ fn kill_tree(child: &mut std::process::Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start's directory is checked by the rules of the place it runs
+    /// on, whatever machine this program runs on: a POSIX path for a POSIX
+    /// place (an ssh host, a WSL distro), a drive or UNC path for Windows.
+    #[test]
+    fn a_directory_is_absolute_by_its_places_rules() {
+        use crate::Platform::{Posix, Windows};
+        for (dir, platform, absolute) in [
+            ("/home/me/project", Posix, true),
+            ("home/me", Posix, false),
+            ("C:\\Users\\me", Posix, false),
+            ("C:\\Users\\me", Windows, true),
+            ("C:/Users/me", Windows, true),
+            ("\\\\server\\share\\x", Windows, true),
+            ("/home/me", Windows, false),
+            ("Users\\me", Windows, false),
+        ] {
+            assert_eq!(
+                absolute_on(dir, platform),
+                absolute,
+                "{dir} on {platform:?}"
+            );
+        }
+    }
 
     /// A launch that names no file of Fleet's asset directory starts on any
     /// place, a native-Windows one included; one that names a file is
