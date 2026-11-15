@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Recipes — Thurbox Docs'
-description: 'Worked recipes: VEGA, a Task that dispatches worker Tasks, and a session per package of a monorepo from one script.'
+description: 'Worked recipes: VEGA, a Task that dispatches worker Tasks, a nightly review on a CronTask, and a session per package of a monorepo from one script.'
 currentPage: 'recipes'
 breadcrumb: 'Recipes'
 ---
@@ -58,6 +58,34 @@ fleet status task vega --json       # its state</code></pre>
   the list as they start. Thurbox runs <code>fleet up</code> for you; with Fleet alone, run it
   yourself.
 </p>
+
+<h2 id="nightly">
+  A nightly review
+  <a href="#nightly" class="heading-anchor">#</a>
+</h2>
+<p>
+  A <a href="fleet/resources/cron-task.html">CronTask</a> runs the same brief on a schedule: at
+  each time it creates a new Task from its template, and Thurbox shows each one as a session.
+</p>
+<pre data-title="nightly-review.json"><code class="language-json">{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "CronTask",
+  "metadata": {"name": "nightly-review"},
+  "spec": {
+    "schedule": "0 3 * * 1-5",
+    "concurrencyPolicy": "Forbid",
+    "template": {
+      "spec": {
+        "harness": "claude",
+        "brief": "Review what landed today and report what needs attention.",
+        "workspace": ["git+file:///home/me/app"],
+        "dispatch": true
+      }
+    }
+  }
+}</code></pre>
+<pre><code class="language-bash">fleet apply -f nightly-review.json
+fleet list crontask</code></pre>
 
 <h2 id="monorepo">
   A session per package of a monorepo

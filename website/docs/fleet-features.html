@@ -74,6 +74,16 @@ breadcrumb: 'Fleet features'
   question the Task declared. A worker reports its outcome with <code>fleet result</code>.
 </p>
 
+<h2 id="scheduled-tasks">
+  Scheduled Tasks
+  <a href="#scheduled-tasks" class="heading-anchor">#</a>
+</h2>
+<p>
+  A <a href="fleet/resources/cron-task.html">CronTask</a> creates a Task at each time of a cron
+  schedule, from a Task template: a nightly review, a weekly dependency update, a check every
+  hour. Its controller keeps a short history and skips a run whose time has passed.
+</p>
+
 <h2 id="headless-cli">
   Headless CLI
   <a href="#headless-cli" class="heading-anchor">#</a>
