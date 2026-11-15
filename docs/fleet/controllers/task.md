@@ -18,7 +18,7 @@ that decision through the store and runtime ports.
 ## One run
 
 1. A person applies a Task. `dispatch: false` keeps it Pending.
-2. A caller runs `fleet reconcile`. For a dispatched Task on a reachable host,
+2. A caller runs `fleet reconcile`. For a dispatched Task on a reachable place,
    the controller plans a spawn under a deterministic session key.
 3. The manager persists the intent, runs the effect and persists its receipt.
    Later passes recover ambiguous effects by their keys.

@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 714" role="img" aria-labelledby="title desc">
+<title id="title">A Task from apply to a change request</title>
+<desc id="desc">A sequence diagram with eight lanes: you, the store, the Task controller, the runtime on the place, the agent, the ChangeRequest controller, the Forge controller and the forge. You apply a dispatched Task. The Task controller freezes its execution, makes the workspace, spawns the session and sends the brief once the agent signals it is ready. The agent opens a change and declares it, which creates a ChangeRequest. The ChangeRequest controller mirrors the change, the Forge controller relays review news into the Task&#x27;s inbox, and the Task controller delivers it. The agent records its result, the Task concludes, and the Forge controller marks the draft ready. Deleting the Task releases the session.</desc>
+<style>
+  svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .orchestration{fill:#edf3f8} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  .lane{stroke:#a9b8c6;stroke-width:1.5;stroke-dasharray:5 5}
+  @media (prefers-color-scheme: light) { .background{fill:#fff} .ink{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a} .pure{fill:#173b2d} .orchestration{fill:#1d2a36} .adapter{fill:#202a33} .process{fill:#493517} .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} .lane{stroke:#4a5b6b} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker></defs>
+<rect class="background" width="1120" height="714" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+<text x="30" y="36" font-size="21" font-weight="700">A Task from fleet apply to a ChangeRequest</text>
+<text x="30" y="61" font-size="14">Each arrow is one step; a controller&#x27;s arrow is an effect or a status write the manager performs for it.</text>
+<text x="75" y="92" font-size="14" font-weight="650" text-anchor="middle">You</text>
+<path class="lane" d="M75 116 V694"/>
+<text x="213" y="92" font-size="14" font-weight="650" text-anchor="middle">Store</text>
+<path class="lane" d="M213 116 V694"/>
+<text x="351" y="92" font-size="14" font-weight="650" text-anchor="middle">Task</text>
+<text x="351" y="109" font-size="12" text-anchor="middle" class="muted">controller</text>
+<path class="lane" d="M351 116 V694"/>
+<text x="489" y="92" font-size="14" font-weight="650" text-anchor="middle">Runtime</text>
+<text x="489" y="109" font-size="12" text-anchor="middle" class="muted">on the place</text>
+<path class="lane" d="M489 116 V694"/>
+<text x="627" y="92" font-size="14" font-weight="650" text-anchor="middle">Agent</text>
+<text x="627" y="109" font-size="12" text-anchor="middle" class="muted">the worker</text>
+<path class="lane" d="M627 116 V694"/>
+<text x="765" y="92" font-size="14" font-weight="650" text-anchor="middle">ChangeRequest</text>
+<text x="765" y="109" font-size="12" text-anchor="middle" class="muted">controller</text>
+<path class="lane" d="M765 116 V694"/>
+<text x="903" y="92" font-size="14" font-weight="650" text-anchor="middle">Forge</text>
+<text x="903" y="109" font-size="12" text-anchor="middle" class="muted">controller</text>
+<path class="lane" d="M903 116 V694"/>
+<text x="1041" y="92" font-size="14" font-weight="650" text-anchor="middle">Forge</text>
+<text x="1041" y="109" font-size="12" text-anchor="middle" class="muted">GitHub, GitLab, …</text>
+<path class="lane" d="M1041 116 V694"/>
+<path class="arrow" d="M79 144 H207"/>
+<rect class="background" x="80" y="124" width="247" height="17" rx="3"/>
+<text x="83" y="137" font-size="12.5">1. fleet apply Task (dispatch: true)</text>
+<path class="arrow" d="M347 178 H219"/>
+<rect class="background" x="218" y="158" width="261" height="17" rx="3"/>
+<text x="221" y="171" font-size="12.5">2. freeze the launch: status.execution</text>
+<path class="arrow" d="M355 212 H483"/>
+<rect class="background" x="356" y="192" width="234" height="17" rx="3"/>
+<text x="359" y="205" font-size="12.5">3. Materialize: make the workspace</text>
+<path class="arrow" d="M355 246 H483"/>
+<rect class="background" x="356" y="226" width="240" height="17" rx="3"/>
+<text x="359" y="239" font-size="12.5">4. Spawn: start → Spawning, Spawned</text>
+<path class="arrow" d="M493 280 H621"/>
+<rect class="background" x="494" y="260" width="234" height="17" rx="3"/>
+<text x="497" y="273" font-size="12.5">5. the agent starts in its session</text>
+<path class="arrow" d="M623 314 H357"/>
+<rect class="background" x="356" y="294" width="240" height="17" rx="3"/>
+<text x="359" y="307" font-size="12.5">6. fleet signal: the agent is ready</text>
+<path class="arrow" d="M355 348 H483"/>
+<rect class="background" x="356" y="328" width="240" height="17" rx="3"/>
+<text x="359" y="341" font-size="12.5">7. Brief: input the brief → Briefed</text>
+<path class="arrow" d="M623 382 H219"/>
+<rect class="background" x="218" y="362" width="254" height="17" rx="3"/>
+<text x="221" y="375" font-size="12.5">8. fleet declare --change-request URL</text>
+<path class="arrow" d="M769 416 H1035"/>
+<rect class="background" x="770" y="396" width="281" height="17" rx="3"/>
+<text x="773" y="409" font-size="12.5">9. read the change → ChangeRequest status</text>
+<path class="arrow" d="M899 450 H219"/>
+<rect class="background" x="218" y="430" width="254" height="17" rx="3"/>
+<text x="221" y="443" font-size="12.5">10. status.forge; review news → inbox</text>
+<path class="arrow" d="M355 484 H483"/>
+<rect class="background" x="356" y="464" width="274" height="17" rx="3"/>
+<text x="359" y="477" font-size="12.5">11. deliver the inbox entry to the agent</text>
+<path class="arrow" d="M623 518 H219"/>
+<rect class="background" x="218" y="498" width="274" height="17" rx="3"/>
+<text x="221" y="511" font-size="12.5">12. fleet result shipped → status.result</text>
+<path class="arrow" d="M347 552 H219"/>
+<rect class="background" x="218" y="532" width="261" height="17" rx="3"/>
+<text x="221" y="545" font-size="12.5">13. phase Concluded; the session stays</text>
+<path class="arrow" d="M907 586 H1035"/>
+<rect class="background" x="836" y="566" width="267" height="17" rx="3"/>
+<text x="839" y="579" font-size="12.5">14. MarkReady: draft → ready for review</text>
+<path class="arrow" d="M79 620 H207"/>
+<rect class="background" x="80" y="600" width="227" height="17" rx="3"/>
+<text x="83" y="613" font-size="12.5">15. fleet delete Task → Releasing</text>
+<path class="arrow" d="M355 654 H483"/>
+<rect class="background" x="356" y="634" width="301" height="17" rx="3"/>
+<text x="359" y="647" font-size="12.5">16. Release: stop the session; finalizer off</text>
+</g>
+</svg>

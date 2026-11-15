@@ -9,12 +9,17 @@ Fleet's documentation is the `docs/fleet/` directory of this repository; the
 [overview](../../../docs/README.md) says how it sits beside thurbox's and the
 runtimes'. Start from the document that owns the subject:
 
+- [The Fleet index](../../../docs/fleet/README.md) owns the model, the
+  table of resource kinds, the table of controllers, the reconcile rules
+  and the walkthrough. A new kind gets a row there and a page under
+  `docs/fleet/resources/`; `crates/fleet-api/tests/docs_index.rs` fails
+  until the row exists.
 - [Architecture](../../../docs/fleet/architecture.md) owns components,
   boundaries, ports and execution flow.
-- [Controllers](../../../docs/fleet/README.md) indexes each controller's page
-  under `docs/fleet/controllers/`: its resource, interface and state machine.
-- [Resources](../../../docs/fleet/README.md) indexes the pages under
-  `docs/fleet/resources/`, which own manifest fields and semantics.
+- Each page under `docs/fleet/controllers/` owns one controller: its
+  resource, interface and state machine.
+- Each page under `docs/fleet/resources/` owns one kind's manifest fields
+  and semantics.
 - [Configuration](../../../docs/fleet/configuration.md) owns user
   configuration.
 - [Contracts](../../../docs/fleet/contracts.md) owns integration guarantees

@@ -1,11 +1,9 @@
 # Fleet architecture
 
-Fleet is a Rust command-line program that persists Tasks, ChangeRequests
-and the other resource kinds, and drives their controllers. A Task contains
-the execution inputs for one agent session: harness, host, workspace, brief
-and expected outputs; the worker reports its own result. A ChangeRequest
-mirrors one change on a forge, read through a Forge port and numbered so
-consumers diff it by one cursor.
+Fleet is a Rust command-line program that persists resources and drives
+their controllers. [The Fleet index](README.md) explains the model, each
+resource kind and each controller. This page explains the crates and ports
+that carry them out.
 
 ![Execution flow: CLI calls the manager; the manager uses the pure controller, store and runtime ports; the runtime starts bounded processes through fleet-exec](architecture.svg)
 
@@ -50,14 +48,8 @@ mutations, and only the manager performs the mark-ready effect.
 
 ## Desired state, observations and effects
 
-The [controller index](README.md#controllers) links the controller
-guides. The
-[Task controller documentation](controllers/task.md) defines
-the [resource](resources/task.md),
-[state machine](controllers/task.md#task-state-machine) and
-[interface](controllers/task.md#task-controller-interface).
-
-One reconcile of a due Task follows this protocol:
+[One reconcile](README.md#one-reconcile) shows the loop that every
+controller follows. One reconcile of a due Task follows this protocol:
 
 ```text
 read Task + resourceVersion
@@ -70,12 +62,10 @@ read Task + resourceVersion
   -> remove finalizer if requested
 ```
 
-The controller owns Task status except `status.result`, written through the
-worker verb, and `status.inbox`, which nobody owns: `fleet send` appends to
-it and the controller's delivery write removes from it, each through a
-typed store mutation that changes nothing else. `fleet amend`, and a
-plugin's `amends[]` verb, append to `spec.amendments` and queue the
-amendment's inbox entry in one such mutation. A status conflict before an
+[Who owns a Task's status](README.md#who-owns-a-tasks-status) lists the
+writer of each status field. `fleet amend`, and a plugin's `amends[]` verb,
+append to `spec.amendments` and queue the amendment's inbox entry in one
+typed store mutation. A status conflict before an
 effect drops the plan and retries from fresh state. A receipt conflict
 rereads the object and retries the receipt write, preserving concurrent
 worker changes. Expired or superseded leases refuse controller writes. An
