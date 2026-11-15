@@ -113,9 +113,9 @@ breadcrumb: 'Keybindings'
   is listed. The place step offers the Fleet's <code>local</code> at once and adds the places that
   Fleet names. On the repo step <kbd>Space</kbd> ticks a repository and
   <kbd>Alt</kbd>+<kbd>W</kbd> gives it a worktree of its own; <kbd>&rarr;</kbd> lists the worktrees
-  a repository already has. The two branch steps appear only with a worktree. Worktrees are made on
-  this machine only, so a directory with no repository, or a Fleet on another machine, is refused
-  one. The agent step offers the chosen Fleet's harnesses and is skipped when it offers one.
+  a repository already has. The two branch steps appear only with a worktree. On a Fleet on another
+  machine the repo step browses that machine's folders, and the runtime makes the worktree there. A
+  directory with no repository is refused one. The agent step offers the chosen Fleet's harnesses and is skipped when it offers one.
 </p>
 <table>
   <thead>

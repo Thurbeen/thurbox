@@ -107,7 +107,7 @@ transport = "local"
 
 [fleets.box]
 transport = { ssh = "me@box" }
-program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
 ```
 
 [Where sessions run](docs/where-sessions-run.md) explains Fleets and places and

@@ -251,8 +251,8 @@ breadcrumb: 'Features'
             as a worktree of your checkout itself: its branches are your own, and a commit made in
             the session is in your repository at once (<code>git worktree list</code> shows it).
             No mapping is needed: the URL is the whole request. A directory that is no git repository, such as the installed interface,
-            is refused a worktree and runs as it is. Worktrees are made on this machine only: a
-            session of a Fleet on another machine runs in the directory it names there.
+            is refused a worktree and runs as it is. On a Fleet on another machine, the runtime
+            makes the worktree there, from that machine's branches.
           </p>
           <ul>
             <li>
@@ -289,7 +289,7 @@ transport = "local"                     # the default
 
 [fleets.box]
 transport = { ssh = "me@box" }
-program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
 
 [fleets.ubuntu]
 transport = { wsl = "Ubuntu" }</code></pre>
@@ -327,8 +327,10 @@ transport = { wsl = "Ubuntu" }</code></pre>
               another machine, run <code>fleet init</code> there once
             </li>
             <li>
-              For a Fleet on another machine, the new-session flow takes an absolute path on that
-              machine, or a clone URL that the runtime clones there
+              For a Fleet on another machine, the new-session flow browses that machine's folders
+              and branches through its Fleet (<code>fleet runtime browse</code>,
+              <code>fleet runtime branches</code>), and takes a clone URL that the runtime clones
+              there
             </li>
             <li>
               <code>thurbox-cli doctor</code> checks each listed Fleet and says which one cannot be

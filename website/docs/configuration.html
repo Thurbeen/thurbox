@@ -237,7 +237,7 @@ program = "fleet"                       # the default: a name on PATH or a path
 
 [fleets.box]
 transport = { ssh = "me@box", ssh_opts = ["-p", "2222"] }
-program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
 config = "/home/me/.config/fleet/config.toml"   # optional: `fleet --config &lt;path&gt;`
 
 [fleets.ubuntu]
@@ -266,7 +266,7 @@ transport = { wsl = "Ubuntu" }</code></pre>
                 <td>
                   the <code>fleet</code> program on that machine. ssh runs it with that machine's
                   non-login <code>PATH</code>, so give a full path when <code>fleet</code> is in
-                  <code>~/.cargo/bin</code>
+                  <code>~/.local/bin</code>, where the install script puts it
                 </td>
               </tr>
               <tr>
@@ -330,7 +330,8 @@ transport = { wsl = "Ubuntu" }</code></pre>
               On box, install a user systemd unit that runs <code>fleet up</code>. A user service
               does not read your login <code>PATH</code>: set <code>Environment=PATH</code> to the
               directories that hold <code>fleet</code>, <code>runtime-mux</code>, tmux and your
-              coding agents.
+              coding agents. The unit below assumes the install script's
+              <code>~/.local/bin</code>; adjust both paths for another install location.
             </li>
             <li>
               On the laptop, add a <code>[fleets.box]</code> table with
@@ -342,8 +343,8 @@ transport = { wsl = "Ubuntu" }</code></pre>
 Description=Fleet manager
 
 [Service]
-Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.cargo/bin/fleet up
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/fleet up
 Restart=on-failure
 RestartSec=15
 
@@ -354,9 +355,10 @@ systemctl --user enable --now fleet.service</code></pre>
           <p>
             Each ssh call uses <code>BatchMode</code> and a shared connection, so authentication
             comes from your <code>~/.ssh/config</code> and agent; Thurbox never handles
-            credentials. In the new-session modal, a repository on box is a path you type (it starts
-            at box's home, and <code>~</code> is that home) or a clone URL, which the runtime clones
-            there. Worktrees (<code>Alt+W</code>) are made on this machine only.
+            credentials. In the new-session modal you browse box's folders, starting at box's home
+            (<code>~</code> is that home), pick a remembered repository, or paste a clone URL, which
+            the runtime clones there. <code>Alt+W</code> gives a repository a worktree there: its
+            base branch comes from box's branches, and the runtime makes the worktree on box.
           </p>
 
           <h3 id="fleet-wsl">A Fleet in WSL</h3>
