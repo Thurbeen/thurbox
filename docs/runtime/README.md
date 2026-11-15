@@ -92,14 +92,16 @@ a pane kept after its program exits is how `inspect` reports the code; a
 two starts of one key make one window: they hold a kernel lock on a file in
 the private directory tmux keeps the socket in (`<TMUX_TMPDIR or
 /tmp>/tmux-<uid>`, made `0700` when missing and refused when another user
-can write to it), opened without truncating or following a link. `exec` runs `in: host` only, on this
-machine, and kills the command's process group at the deadline. It reads
+can write to it), opened without truncating or following a link. A remote
+place's server has locks of its own, named after the place, so a slow place
+never holds up a start on this machine. `exec` runs `in: host` only, on the
+request's place, and kills the command's process group at the deadline. It reads
 each stream to its end and keeps `outputCap` bytes, so a long output does
 not change how the command ends; a child that left the group and holds a
 stream open does not hold the answer past the deadline. The `runtime-mux`
-program serves this machine only; the crate's ssh and WSL hosts
-([runtime-mux.md](runtime-mux.md)) serve thurbox, which links it. It makes
-workspaces by running `workspace-git` on this machine
+program serves this machine and remote places over ssh and WSL
+([runtime-mux's places](#runtime-muxs-places)). It makes workspaces on this
+machine by running `workspace-git` there
 ([its workspaces](#runtime-muxs-workspaces)). A workspace call takes a lock
 of its key only, never the server's lock: a first clone or a long setup step
 does not hold up a start or a stop of another key. A stop that releases a
@@ -154,12 +156,9 @@ What Fleet's `exec` kind does with the answers:
   `manifest` declares `pause`. On any other runtime, whether a session is
   paused stays Unknown, and Unknown never pauses.
 
-Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`.
-Fleet reads it directly on a local host, so a local runtime needs nothing for
-signals. A session on another host gets no file: reading one back through the
-runtime's `exec` is not implemented, so what Fleet would learn from it, such as
-an idle agent or a delivered prompt, stays Unknown, and Unknown never
-concludes.
+Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`
+([signals on a remote place](#signals-on-a-remote-place)). Fleet reads it
+directly on `local`, so a local runtime needs nothing for signals.
 
 `fleet runtime check -- <program> [args]` is the conformance suite. It prints
 one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
@@ -241,10 +240,7 @@ it goes when that directory goes, as the server's windows do.
 
 ### Places (protocol version 2)
 
-**Status**: the request's `place`, the manifest's `places` and places in
-Fleet's config are implemented, and so are `browse` and `branches`
-([browse and branches](#browse-and-branches)), and so is
-[`shell`](#the-shell). `signals` is planned. The decision is
+The decision is
 [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes).
 
 A place is where a runtime runs a process: this machine, an ssh host, a WSL
@@ -296,31 +292,62 @@ Each request names the Task's place, with its table from
 Fleet's config. A version 1 runtime serves only `local`, with no config: Fleet
 sends it nothing for another place, and that place stays Unknown.
 
-`runtime-mux` answers both versions. A version 1 request runs at `local`. It
-serves `local` alone, with an empty config: a version 2 request naming
-another place, or a config for `local`, answers Unknown, and `manifest`
-reports such a place not ready. `local` is ready when the multiplexer
-answers; otherwise `why` names it. Its `platform` is the machine's.
+#### runtime-mux's places
 
-A new optional verb, planned:
+`runtime-mux` answers both versions. A version 1 request runs at `local`,
+this machine, which takes no config. Any other place is a remote place: a
+machine over ssh (`kind = "ssh"`) or a WSL distro (`kind = "wsl"`), with the
+keys of [its table](../fleet/configuration.md#remote-places-on-runtime-mux).
 
-| Verb | Request (besides `protocol`, `place`) | Known answer |
-| --- | --- | --- |
-| `signals` | `key`, `from` (a byte offset) | `{"lines": {"text", "next"}}`: the signal file's lines from `from`, and the offset to ask from next |
+```text
+request.place ──▶ local ─────────▶ this machine's multiplexer
+              └─▶ kind = "ssh" ──▶ ssh <destination> tmux -L runtime-mux …
+              └─▶ kind = "wsl" ──▶ wsl.exe -d <distro> tmux -L runtime-mux …
+```
 
-- **`signals`.** The runtime sets `FLEET_SIGNAL_FILE` to a file on the place
-  and reads it back for Fleet. Fleet asks from the last `next` it got. A
-  place without the verb keeps today's rule: what the file would say stays
-  Unknown.
-- **A restart on a remote place.** Fleet cannot append its restart marker to
-  a file on the place. Before it starts a new process under a key, it asks
-  `signals` and records the `next` offset with the restart. Only lines after
-  that offset describe the new process, so readiness and trust wait for its
-  own report. When a runtime that declares `signals` answers Unknown, Fleet
-  starts nothing and asks again on the next pass. A runtime without `signals`
-  restarts all the same, and the session's state stays Unknown, as on any
-  remote place without the verb. The runtime writes no signal line and stays
-  ignorant of their format.
+- `runtime-mux` refuses a place with an unknown key, a missing `kind`, an
+  `ssh` place without a `destination`, or a config for `local`. It answers
+  Unknown and names what is wrong, and `manifest` reports the place not
+  ready.
+- `local` is ready when the multiplexer answers. A remote place is ready
+  when its launcher reaches it without a prompt, `fleet` is on its `PATH`,
+  and its multiplexer answers at tmux 3.2 or newer, or psmux 3.3.8 or newer.
+  `why` names what is missing and the command that shows or fixes it.
+  `manifest` probes each place on a thread of its own.
+- A remote place's commands get its `PATH`: `path_prepend`, then the place's
+  login `PATH`, then the launcher's ([runtime-mux.md](runtime-mux.md)).
+  `start` looks for the agent on that `PATH` first, and answers `failed`
+  when it is not there.
+- `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
+  run on the place. A pause mark of a remote key stays on this machine.
+- A remote place's workspace is a directory already on the place: each URL
+  is `file://`, and `runtime-mux` checks that the directory is there. A
+  `git+` URL answers `failed`: cloning on a remote place is not supported
+  yet. A release removes nothing on the place.
+- `attach`, `shell`, `browse` and `branches` answer Unknown on a remote
+  place: they read this machine's disk or server, and are not supported
+  there yet.
+
+#### Signals on a remote place
+
+An agent's hooks run on its place, and they cannot reach a file on Fleet's
+machine. On a place other than `local`:
+
+```text
+place:  hook ─fleet signal─▶ ~/.local/state/fleet/signals/<key>.jsonl
+Fleet:  runtime exec: tail -c 1MiB <that file> ──▶ fold ──▶ session state
+```
+
+- Fleet passes `FLEET_SIGNAL_FILE=~/.local/state/fleet/signals/<key>.jsonl`.
+  The `fleet` on the place expands `~` to its home and makes the directory.
+- Fleet reads the file's last MiB through the runtime's `exec`, over the
+  connection the runtime has to the place. A file not written yet is a
+  session that reported nothing. An `exec` that fails is Unknown.
+- Before a revive or a resume, Fleet appends its restart mark to the file
+  through `exec`. When that fails, Fleet starts nothing and asks again on the
+  next pass.
+- The runtime writes no signal line and knows nothing of their format. A
+  runtime without `exec` leaves a remote session's state Unknown.
 
 #### The shell
 

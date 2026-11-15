@@ -99,8 +99,11 @@ file, and the bundled profile or the default names apply.
 ## Limits
 
 - One `fleet signal` run writes one line of at most 4 KiB.
-- Fleet reads the signal file only for a session on its own machine. For a
-  session on another host, the state stays Unknown.
+- For a session on another place, `FLEET_SIGNAL_FILE` is
+  `~/.local/state/fleet/signals/<key>.jsonl`. The `fleet` on that place
+  expands `~` to its home and makes the directory. Fleet reads the file
+  through the runtime's `exec`. A place without `fleet` on its `PATH`
+  reports nothing, and the state stays Unknown.
 
 ## Examples
 

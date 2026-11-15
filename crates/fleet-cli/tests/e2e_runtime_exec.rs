@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use support::Env;
 
 /// Says why a test skips, outside CI. Under `CI` a missing runtime-mux, tmux,
-/// jq, perl or flock is a failure instead: CI's Nextest job provides them, and this
+/// jq, perl, flock or sshd is a failure instead: CI's Nextest job provides them, and this
 /// file is the only check of the runtime protocol there, so a skip would pass
 /// it green. The Fleet job, which has none of them, excludes this binary.
 fn missing(what: &str) {
@@ -594,8 +594,9 @@ fn the_places_are_listed_with_their_readiness() {
     assert!(gone["why"].is_string(), "{places:#}");
 }
 
-/// A Task on a place names it with its config in each request; runtime-mux
-/// serves `local` alone, so the Task waits and nothing starts.
+/// A Task on a place names it with its config in each request. The place
+/// `devbox` is an ssh port nothing listens on, so the Task waits, nothing
+/// starts, and the status says the place cannot be reached.
 #[test]
 fn a_task_on_a_place_passes_its_config_to_the_runtime() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
@@ -603,11 +604,16 @@ fn a_task_on_a_place_passes_its_config_to_the_runtime() {
     };
     let sockets = Sockets::new("place-config");
     let (env, log) = logged_env("runtime-place-config", &program, &sockets);
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a free port")
+        .port()
+        .to_string();
     let cfg = fs::read_to_string(&env.config).expect("config");
     fs::write(
         &env.config,
         format!(
-            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@devbox\"\n"
+            "{cfg}\n[runtimes.mux.places.local]\n\n[runtimes.mux.places.devbox]\nkind = \"ssh\"\ndestination = \"me@127.0.0.1\"\nssh_opts = [\"-F\", \"/dev/null\", \"-p\", \"{closed}\"]\n"
         ),
     )
     .expect("config");
@@ -616,7 +622,11 @@ fn a_task_on_a_place_passes_its_config_to_the_runtime() {
     env.apply(json!([task])).ok();
     env.reconcile();
     let calls = calls(&log);
-    let devbox = json!({"name": "devbox", "config": {"kind": "ssh", "destination": "me@devbox"}});
+    let devbox = json!({"name": "devbox", "config": {
+        "kind": "ssh",
+        "destination": "me@127.0.0.1",
+        "ssh_opts": ["-F", "/dev/null", "-p", closed],
+    }});
     let starts: Vec<&Value> = calls
         .iter()
         .filter(|(v, _)| v == "start")
@@ -3432,4 +3442,336 @@ fn a_stalled_collector_never_times_out_a_runtime_call() {
         "the start answered within the deadline: {status:#}"
     );
     drop(stalled);
+}
+
+/// A private `sshd` on `127.0.0.1`, run as this user, for one test: the
+/// place it serves is this machine reached over real ssh, with a home of its
+/// own (`home`) and a `TMUX_TMPDIR` of its own, so nothing Fleet reads on
+/// this side is where the place writes.
+struct Sshd {
+    child: std::process::Child,
+    port: u16,
+    key: PathBuf,
+}
+
+impl Drop for Sshd {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Sshd {
+    fn start(dir: &Path, home: &Path, sockets: &Sockets) -> Option<Sshd> {
+        let Some(program) = ["/usr/sbin/sshd", "/usr/bin/sshd"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+        else {
+            missing("no sshd; install openssh-server");
+            return None;
+        };
+        fs::create_dir_all(dir).expect("sshd dir");
+        fs::create_dir_all(home).expect("place home");
+        for name in ["host", "user"] {
+            let made = Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(dir.join(name))
+                .status()
+                .expect("ssh-keygen");
+            assert!(made.success(), "ssh-keygen {name}");
+        }
+        fs::copy(dir.join("user.pub"), dir.join("authorized_keys")).expect("authorized_keys");
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("a free port")
+            .port();
+        let config = dir.join("sshd_config");
+        fs::write(
+            &config,
+            format!(
+                "Port {port}\nListenAddress 127.0.0.1\nHostKey {d}/host\nPidFile {d}/sshd.pid\n\
+                 AuthorizedKeysFile {d}/authorized_keys\nStrictModes no\nUsePAM no\n\
+                 PasswordAuthentication no\nKbdInteractiveAuthentication no\n\
+                 SetEnv HOME={h} TMUX_TMPDIR={s}\n",
+                d = dir.display(),
+                h = home.display(),
+                s = sockets.0.display()
+            ),
+        )
+        .expect("sshd_config");
+        let log = fs::File::create(dir.join("sshd.log")).expect("sshd log");
+        let child = Command::new(&program)
+            .args(["-D", "-e", "-f"])
+            .arg(&config)
+            .stderr(log)
+            .spawn()
+            .expect("sshd");
+        let sshd = Sshd {
+            child,
+            port,
+            key: dir.join("user"),
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let up = Command::new("ssh")
+                .args(sshd.opts())
+                .args(["127.0.0.1", "true"])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if up {
+                return Some(sshd);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "sshd did not come up: {}",
+                fs::read_to_string(dir.join("sshd.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// The ssh options that reach it, and nothing from the operator's
+    /// `~/.ssh`.
+    fn opts(&self) -> Vec<String> {
+        [
+            "-F",
+            "/dev/null",
+            "-p",
+            &self.port.to_string(),
+            "-i",
+            &self.key.to_string_lossy(),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    /// The place's table in Fleet's config: this sshd, with `path` in front
+    /// of the place's login `PATH`.
+    fn place(&self, name: &str, path: &[&Path]) -> String {
+        let quoted = |items: Vec<String>| {
+            items
+                .iter()
+                .map(|s| format!("'{s}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "\n[runtimes.mux.places.{name}]\nkind = \"ssh\"\ndestination = \"127.0.0.1\"\nssh_opts = [{}]\npath_prepend = [{}]\n",
+            quoted(self.opts()),
+            quoted(path.iter().map(|p| p.display().to_string()).collect())
+        )
+    }
+}
+
+/// A Task on an ssh place runs its agent there: the agent starts on the
+/// place's server, not this machine's, with the place's `path_prepend`; its
+/// brief is typed through the place's server; and what its hooks report on
+/// the place, through the file Fleet passes as `FLEET_SIGNAL_FILE`, reaches
+/// Fleet over the same ssh. `list` and `capture` name the key there, and a
+/// stop ends it there.
+#[test]
+fn a_task_on_an_ssh_place_runs_there_and_reports_its_state() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("ssh-local");
+    let remote = Sockets::new("ssh-place");
+    let mut env = mux_env("runtime-mux-ssh", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    // The agent and `fleet` are on the place's PATH only through the place's
+    // `path_prepend`: this side's PATH names neither.
+    let bin = env.root.join("place-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}",
+            sshd.place("box", &[&bin, fleet_dir])
+        ),
+    )
+    .expect("config");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&path));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed on the prompt hook's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    // The file Fleet passed is the place's, under its home.
+    let file = fs::read_to_string(work.join("signal-file")).expect("FLEET_SIGNAL_FILE");
+    let on_place = file
+        .strip_prefix("~/")
+        .map(|rest| home.join(rest))
+        .unwrap_or_else(|| panic!("a file on the place, under its home: {file:?}"));
+    assert!(on_place.is_file(), "the agent reported to {file:?}");
+    reconcile_until(&env, "idle, as its hooks report on the place", |env| {
+        env.get("t1")["status"]["sessionState"] == "Idle"
+    });
+    assert_eq!(env.get("t1")["status"]["conversation"], "conv-1");
+    assert_eq!(env.get("t1")["status"]["session"]["host"], "mux/box");
+
+    // The window is on the place's server; this machine's has none.
+    let listed = remote.tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    assert!(
+        listed.lines().any(|l| l == work.to_string_lossy()),
+        "the agent's pane is on the place: {listed:?}"
+    );
+    let here = sockets.tmux(&["list-panes", "-a"]);
+    assert!(
+        here.stdout.is_empty(),
+        "nothing runs on this machine's server"
+    );
+
+    // The verbs that go through the backend reach the place.
+    let place = json!({"name": "box", "config": toml_place(&sshd, &[&bin, fleet_dir])});
+    let key = format!(
+        "fleet.{}",
+        env.get("t1")["metadata"]["uid"].as_str().expect("uid")
+    );
+    let listed = mux_call(
+        &program,
+        &sockets,
+        "list",
+        &json!({"protocol": 2, "place": place}),
+    );
+    assert!(
+        listed["known"]["keys"]
+            .as_array()
+            .is_some_and(|k| k.iter().any(|k| *k == key.as_str())),
+        "{listed}"
+    );
+    let screen = mux_call(
+        &program,
+        &sockets,
+        "capture",
+        &json!({"protocol": 2, "place": place, "key": key}),
+    );
+    assert!(screen["known"]["screen"]["text"].is_string(), "{screen}");
+
+    // A stop ends the process on the place.
+    let stopped = mux_call(
+        &program,
+        &sockets,
+        "stop",
+        &json!({"protocol": 2, "place": place, "key": key}),
+    );
+    assert_eq!(stopped, json!({"known": "stopped"}));
+    let inspected = mux_call(
+        &program,
+        &sockets,
+        "inspect",
+        &json!({"protocol": 2, "place": place, "key": key}),
+    );
+    assert_eq!(inspected, json!({"known": "none"}));
+}
+
+/// The place's table as Fleet sends it in a request.
+fn toml_place(sshd: &Sshd, path: &[&Path]) -> Value {
+    json!({
+        "kind": "ssh",
+        "destination": "127.0.0.1",
+        "ssh_opts": sshd.opts(),
+        "path_prepend": path.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+    })
+}
+
+/// `fleet runtime places` and `fleet doctor` say whether each ssh place can
+/// run a session, and why not, with the command that shows it; and a `git+`
+/// workspace on a remote place is refused by name, before any start.
+#[test]
+fn an_ssh_place_reports_its_readiness_and_refuses_a_git_workspace() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("ssh-ready");
+    let remote = Sockets::new("ssh-ready-place");
+    let env = mux_env("runtime-mux-ssh-ready", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    // A port nothing listens on: the place does not answer.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a free port")
+        .port();
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}\n[runtimes.mux.places.down]\nkind = \"ssh\"\ndestination = \"127.0.0.1\"\nssh_opts = [\"-F\", \"/dev/null\", \"-p\", \"{closed}\"]\n\n[runtimes.mux.places.odd]\nkind = \"ssh\"\ndestination = \"127.0.0.1\"\nruntime = \"mux\"\n",
+            sshd.place("box", &[fleet_dir])
+        ),
+    )
+    .expect("config");
+    let places = env.fleet(&["runtime", "places", "--json"]).ok().json();
+    let rows = places["places"].as_array().expect("places").clone();
+    let row = |id: &str| {
+        rows.iter()
+            .find(|r| r["place"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {places:#}"))
+            .clone()
+    };
+    assert_eq!(row("mux/box")["ready"], true, "{places:#}");
+    let down = row("mux/down");
+    assert_eq!(down["ready"], false, "{places:#}");
+    let why = down["why"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("cannot be reached") && why.contains("ssh -o BatchMode=yes"),
+        "{why}"
+    );
+    let odd = row("mux/odd");
+    assert_eq!(odd["ready"], false, "{places:#}");
+    assert!(
+        odd["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("unknown field `runtime`")),
+        "{places:#}"
+    );
+    // `fleet doctor` fails on the place that is down, and says why.
+    let doctor = env.fleet(&["doctor"]);
+    doctor
+        .code(1)
+        .stdout_has("mux/down")
+        .stdout_has("cannot be reached");
+
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"]["workspace"] = json!(["git+https://example.test/app.git"]);
+    env.apply(json!([task])).ok();
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    assert!(
+        status
+            .to_string()
+            .contains("not yet supported on a remote place"),
+        "{status:#}"
+    );
+    assert!(status["session"].is_null(), "{status:#}");
 }

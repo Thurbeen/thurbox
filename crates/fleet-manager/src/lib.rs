@@ -2120,9 +2120,10 @@ impl Manager<'_> {
             // The agent's own hooks report it; the runtime knows nothing of
             // it. A session that reported nothing yet has no activity.
             Probe::Activity { session } => {
-                let o = match self.signals {
-                    Some(s) => s.read(session),
-                    None => Observation::unknown("no signal port is configured"),
+                let o = match (rt.signals(session), self.signals) {
+                    (Some(o), _) => o,
+                    (None, Some(s)) => s.read(session),
+                    (None, None) => Observation::unknown("no signal port is configured"),
                 };
                 note("signals", o.why());
                 obs.activity = Some(match &o {

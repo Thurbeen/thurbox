@@ -2,9 +2,17 @@
 //! directory, on this machine.
 //!
 //! A session on the local host gets `<dir>/<key>.jsonl` and its hooks
-//! append to it through `fleet signal`. A session on any other host gets
-//! no file: reading one back there takes the runtime's `exec`, which this
-//! adapter does not have, so what Fleet would learn from it stays Unknown.
+//! append to it through `fleet signal`. A session on any other host gets a
+//! file on that host, under its home ([`place_file`]), which the `fleet`
+//! there appends to. This adapter cannot read it: the exec runtime reads it
+//! back through the runtime's `exec`, over the connection the runtime
+//! already has to the host.
+//!
+//! ```text
+//! local:  hook ─fleet signal─▶ <data>/signals/<key>.jsonl ◀─read── Fleet
+//! remote: hook ─fleet signal─▶ ~/.local/state/fleet/signals/<key>.jsonl
+//!                                    ◀─runtime exec (tail)── Fleet
+//! ```
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -17,6 +25,28 @@ use fleet_api::task::{LOCAL_HOST, SessionRef};
 /// The most of one file Fleet reads, from its end, so a runaway hook cannot
 /// stall a pass.
 const MAX_FILE: u64 = 8 * 1024 * 1024;
+
+/// Where a session on a host other than this machine reports, under the
+/// host's home: `fleet signal` there expands the `~/`, which this machine
+/// cannot, as it does not know that home.
+pub const PLACE_DIR: &str = "~/.local/state/fleet/signals";
+
+/// The file a session under `key` on another host reports to, as that
+/// host's `fleet signal` reads it; `None` for a key that is not a plain
+/// name.
+pub fn place_file(key: &str) -> Option<String> {
+    let plain = !key.is_empty() && !key.starts_with('.') && !key.contains(['/', '\\']);
+    plain.then(|| format!("{PLACE_DIR}/{key}.jsonl"))
+}
+
+/// `file` as `fleet signal` opens it: a leading `~/` is the user's home.
+pub fn expand_home(file: &Path) -> PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    match (file.to_string_lossy().strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => Path::new(&home).join(rest),
+        _ => file.to_path_buf(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FileSignals {
@@ -55,7 +85,7 @@ pub fn append(file: &Path, signal: &Signal) -> io::Result<()> {
 impl Signals for FileSignals {
     fn file(&self, host: &str, key: &str) -> Option<String> {
         if host != LOCAL_HOST {
-            return None;
+            return place_file(key);
         }
         self.path(key).map(|p| p.to_string_lossy().into_owned())
     }

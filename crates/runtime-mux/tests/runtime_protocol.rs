@@ -157,25 +157,71 @@ fn a_manifest_that_names_no_places_reports_local() {
     }
 }
 
+/// An ssh place nothing answers on, a place of a kind runtime-mux does not
+/// know and one with a key it does not take are each reported not ready,
+/// with why; `local` beside them stays ready.
 #[test]
-fn a_place_runtime_mux_does_not_serve_yet_is_reported_not_ready() {
+fn a_place_runtime_mux_cannot_serve_is_reported_not_ready_with_why() {
     let Some(rt) = Runtime::new() else { return };
-    let devbox = json!({"name": "devbox", "config": {"kind": "ssh", "destination": "me@devbox"}});
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a free port")
+        .port()
+        .to_string();
+    let down = json!({"name": "down", "config": {
+        "kind": "ssh", "destination": "127.0.0.1", "ssh_opts": ["-F", "/dev/null", "-p", closed],
+    }});
+    let vm = json!({"name": "vm", "config": {"kind": "vm"}});
+    let old =
+        json!({"name": "old", "config": {"kind": "ssh", "destination": "d", "runtime": "mux"}});
     let answer = rt.call(
         "manifest",
-        json!({"protocol": 2, "places": [local(), devbox]}),
+        json!({"protocol": 2, "places": [local(), down, vm, old]}),
     );
     let places = answer["known"]["places"].as_array().expect("places");
-    assert_eq!(places.len(), 2, "{answer}");
+    assert_eq!(places.len(), 4, "{answer}");
     assert_eq!(places[0]["ready"], true, "{answer}");
-    assert_eq!(places[1]["name"], "devbox", "{answer}");
-    assert_eq!(places[1]["ready"], false, "{answer}");
-    assert!(
-        places[1]["why"]
-            .as_str()
-            .is_some_and(|w| w.contains("local")),
-        "{answer}"
+    for (i, name, why) in [
+        (1, "down", "cannot be reached"),
+        (2, "vm", "unknown variant `vm`"),
+        (3, "old", "unknown field `runtime`"),
+    ] {
+        assert_eq!(places[i]["name"], name, "{answer}");
+        assert_eq!(places[i]["ready"], false, "{answer}");
+        assert!(
+            places[i]["why"].as_str().is_some_and(|w| w.contains(why)),
+            "{name}: {answer}"
+        );
+    }
+}
+
+/// On a remote place, a `git+` workspace and the verbs that read this
+/// machine's disk or server are refused by name, before any connection.
+#[test]
+fn a_remote_place_refuses_what_it_does_not_serve_yet() {
+    let Some(rt) = Runtime::new() else { return };
+    let devbox =
+        json!({"name": "devbox", "config": {"kind": "ssh", "destination": "me@devbox.invalid"}});
+    let made = rt.call(
+        "workspace",
+        json!({"protocol": 2, "place": devbox, "key": "w.one", "urls": ["git+https://example.test/app.git"]}),
     );
+    let why = made["known"]["failed"]["why"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("not yet supported on a remote place"),
+        "{made}"
+    );
+    for verb in ["attach", "shell", "browse", "branches"] {
+        let answer = rt.call(
+            verb,
+            json!({"protocol": 2, "place": devbox, "key": "w.one", "repo": "/r"}),
+        );
+        let why = answer["unknown"]["why"].as_str().unwrap_or_default();
+        assert!(
+            why.contains("not yet supported on a remote place"),
+            "{verb}: {answer}"
+        );
+    }
 }
 
 #[test]

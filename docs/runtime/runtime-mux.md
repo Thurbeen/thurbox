@@ -24,9 +24,11 @@ launch prefix differs.
 - `ssh` uses the system binary and `~/.ssh/config` for keys, agents and
   multiplexing. WSL needs no credentials.
 - A host is a `HostDef` in a `HostRegistry` the embedder hands the factory
-  (`wiring::for_hosts`). No embedder hands it one today: thurbox registers
-  this machine's adapters only (`wiring::local_only`), and ssh and WSL
-  places are planned.
+  (`wiring::for_hosts`). The `runtime-mux` program builds one from the
+  request's place (`place::parse`), with the keys of its table in Fleet's
+  config ([runtime-mux's places](README.md#runtime-muxs-places)). A remote
+  place's server runs on the program's socket, `runtime-mux`, unless the
+  place names another.
 - Each host gets one backend per adapter, keyed by its route
   (`ssh:<host>:<mux>`, `wsl:<distro>:<mux>`, `wiring`).
 - A host backend is registered, not connected. It connects on first use, on a

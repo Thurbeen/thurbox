@@ -1096,8 +1096,15 @@ fn cmd_signal(
             Profiles::bundled().with(user).get(&h).payload
         });
     let signal = Signal::from_hook_with(now, state, payload.as_ref(), &fields);
-    fleet_runtime::signals::append(std::path::Path::new(&file), &signal)
-        .map_err(|e| fail(format!("{}: {e}", Path::new(&file).display())))
+    // A session on another host than Fleet's reports to a file under that
+    // host's home, `~/…`, whose directory the first report makes.
+    let on_place = file.to_string_lossy().starts_with("~/");
+    let file = fleet_runtime::signals::expand_home(Path::new(&file));
+    if on_place && let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| fail(format!("{}: {e}", dir.display())))?;
+    }
+    fleet_runtime::signals::append(&file, &signal)
+        .map_err(|e| fail(format!("{}: {e}", file.display())))
 }
 
 /// The `fleet gateway` verbs: each reads the `[gateway]` section and calls

@@ -27,7 +27,7 @@ use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Attach, Place, PlaceReport, Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::session::uid_of_session_key;
 use fleet_api::signal::{Reported, Signal, Signals, State};
-use fleet_api::task::{SessionRef, Workspace, url_scheme};
+use fleet_api::task::{LOCAL_HOST, SessionRef, Workspace, url_scheme};
 use fleet_api::workspace::WorkspaceRef;
 use fleet_exec::{Outcome, Spec};
 use serde::Deserialize;
@@ -61,6 +61,10 @@ const MAX_CALLS_PER_OPERATION: u32 = 2;
 /// are for a view, so a screen this recent is current enough, and a sweep
 /// every second does not run a capture per session every second.
 pub const SCREEN_REUSE: Duration = Duration::from_secs(2);
+
+/// The most of a signal file on another host Fleet reads, from its end: one
+/// `exec` answer keeps 1 MiB of a stream.
+const PLACE_READ: u64 = 1024 * 1024;
 
 /// The bound on a `workspace` call when `[runtimes.<name>]` names none:
 /// a first clone of a repository can take minutes.
@@ -674,7 +678,13 @@ impl ExecRuntime {
                 prompts: Vec::new(),
                 conversation: None,
             };
-            if let Err(e) = crate::signals::append(std::path::Path::new(&file), &mark) {
+            let marked = if spec.host == LOCAL_HOST {
+                crate::signals::append(std::path::Path::new(&file), &mark)
+                    .map_err(|e| e.to_string())
+            } else {
+                self.mark_on_place(&spec.host, &file, &mark)
+            };
+            if let Err(e) = marked {
                 return Observation::unknown(format!(
                     "cannot mark the restart in the signal file: {e}"
                 ));
@@ -742,11 +752,62 @@ impl ExecRuntime {
         })
     }
 
-    /// What the agent's hooks reported through `fleet signal`.
+    /// What the agent's hooks reported through `fleet signal`: the file on
+    /// this machine, or on the session's host through the runtime's `exec`.
     fn reported(&self, session: &SessionRef) -> Observation<Reported> {
-        match &self.signals {
-            Some(signals) => signals.read(session),
-            None => Observation::unknown("no signal port: what the agent reports is not read"),
+        let Some(signals) = &self.signals else {
+            return Observation::unknown("no signal port: what the agent reports is not read");
+        };
+        if session.host == LOCAL_HOST {
+            return signals.read(session);
+        }
+        let Some(file) = signals.file(&session.host, &session.key) else {
+            return Observation::unknown("the session key is not a plain name");
+        };
+        // The tail of the file, as the local read takes it; exit 3 is a
+        // file the agent never wrote.
+        let script = format!(
+            "f=\"$HOME/${{1#\\~/}}\"; [ -e \"$f\" ] || exit 3; tail -c {PLACE_READ} \"$f\""
+        );
+        bind(
+            self.exec_on(&session.host, &["sh", "-c", &script, "sh", &file]),
+            |ran| match ran {
+                Executed::Exited {
+                    code: Some(0),
+                    stdout,
+                    ..
+                } => Observation::Known(Reported::fold(&stdout)),
+                Executed::Exited { code: Some(3), .. } => Observation::Known(Reported::default()),
+                Executed::Exited { stderr, .. } => Observation::unknown(format!(
+                    "cannot read the signal file on {}: {}",
+                    session.host,
+                    stderr.lines().next().unwrap_or("tail failed")
+                )),
+                Executed::Failed { why } => Observation::unknown(format!(
+                    "cannot read the signal file on {}: {why}",
+                    session.host
+                )),
+                Executed::TimedOut { .. } => Observation::unknown(format!(
+                    "reading the signal file on {} timed out",
+                    session.host
+                )),
+            },
+        )
+    }
+
+    /// Append `signal` to `file` on `host`, through the runtime's `exec`.
+    fn mark_on_place(&self, host: &str, file: &str, signal: &Signal) -> Result<(), String> {
+        let line = serde_json::to_string(signal).map_err(|e| e.to_string())?;
+        let script =
+            "f=\"$HOME/${1#\\~/}\"; mkdir -p \"${f%/*}\" && printf '%s\\n' \"$2\" >> \"$f\"";
+        match self.exec_on(host, &["sh", "-c", script, "sh", file, &line]) {
+            Observation::Known(Executed::Exited { code: Some(0), .. }) => Ok(()),
+            Observation::Known(Executed::Exited { stderr, .. }) => {
+                Err(stderr.lines().next().unwrap_or("printf failed").to_string())
+            }
+            Observation::Known(Executed::Failed { why }) => Err(why),
+            Observation::Known(Executed::TimedOut { .. }) => Err("timed out".into()),
+            Observation::Unknown { why, .. } => Err(why),
         }
     }
 
@@ -779,6 +840,12 @@ impl Runtime for ExecRuntime {
             .max()
             .unwrap_or_default();
         u64::try_from(longest.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// A session on another host than this machine reports to a file
+    /// there, read through the runtime's `exec`.
+    fn signals(&self, session: &SessionRef) -> Option<Observation<Reported>> {
+        (session.host != LOCAL_HOST).then(|| self.reported(session))
     }
 
     fn host(&self, host: &str) -> Observation<bool> {

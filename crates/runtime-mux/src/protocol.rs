@@ -23,19 +23,19 @@ use serde_json::{json, Value};
 
 use crate::contract::{Located, Owner, SessionBackend, WindowRole, WindowSpec};
 use crate::identity::window_name_for;
+use crate::place::Place;
 use crate::workspace::{Workspaces, SCHEMES};
+use crate::HostDef;
+
+pub use crate::place::LOCAL;
 
 /// The newest protocol version this program speaks, which its manifest
 /// names. Version 2 carries a place on each request.
 pub const PROTOCOL: u64 = 2;
 
 /// Every version it answers. A version 1 request names no place and runs at
-/// `local`, the one place this program serves.
+/// `local`, this machine.
 pub const PROTOCOLS: &[u64] = &[1, 2];
-
-/// The one place this program serves: this machine
-/// (docs/runtime/README.md, "Places").
-pub const LOCAL: &str = "local";
 
 /// The verbs it answers, `manifest` first.
 pub const VERBS: &[&str] = &[
@@ -85,24 +85,30 @@ fn unknown(why: impl std::fmt::Display) -> Value {
     json!({ "unknown": { "why": why.to_string() } })
 }
 
-/// The answer to `verb` with `request`, the JSON read from stdin. `view` is
-/// the argv that runs this program's `view` against the same server, which
-/// `attach` answers with the key after it.
-pub fn serve(
-    backend: &dyn SessionBackend,
-    pauses: &Pauses,
-    verb: &str,
-    request: &[u8],
-    view: &[String],
-) -> Value {
-    serve_with(backend, pauses, verb, request, view, &mut || {})
+/// The backend serving a place: this machine's for `None`, else the one on
+/// the host the place names, or why there is none.
+pub type Backends<'a> =
+    dyn Fn(Option<&HostDef>) -> Result<std::sync::Arc<dyn SessionBackend>, String> + Sync + 'a;
+
+/// The place a request runs at, parsed: `None` for `local`, for a version 1
+/// request, and for a request [`serve_with`] refuses, which it answers
+/// Unknown itself. The caller builds the backend and the locks for it.
+pub fn place_of(request: &[u8]) -> Option<HostDef> {
+    let request: Value = serde_json::from_slice(request).ok()?;
+    if request.get("protocol").and_then(Value::as_u64) != Some(2) {
+        return None;
+    }
+    check_place(request.get("place")).ok().flatten()
 }
 
-/// [`serve`], with `process_done` called once a releasing stop has stopped
-/// the process and before it releases the workspace: the caller lets go of
-/// the server's lock there, so a slow teardown holds only its key.
+/// The answer to `verb` with `request`, the JSON read from stdin. `backends`
+/// gives the backend of the request's place. `view` is the argv that runs
+/// this program's `view` against the same server, which `attach` answers
+/// with the key after it. `process_done` is called once a releasing stop
+/// has stopped the process and before it releases the workspace: the caller
+/// lets go of the server's lock there, so a slow teardown holds only its key.
 pub fn serve_with(
-    backend: &dyn SessionBackend,
+    backends: &Backends,
     pauses: &Pauses,
     verb: &str,
     request: &[u8],
@@ -116,29 +122,43 @@ pub fn serve_with(
             "protocol": PROTOCOL,
             "verbs": VERBS,
             "workspace": { "schemes": SCHEMES, "survivesStop": true },
-            "places": places(backend, request),
+            "places": places(backends, request),
         }));
     }
     let request: Value = match serde_json::from_slice(request) {
         Ok(value) => value,
         Err(e) => return unknown(format!("the request is not JSON: {e}")),
     };
-    match request.get("protocol").and_then(Value::as_u64) {
-        Some(1) => {}
-        Some(2) => {
-            if let Err(why) = check_place(request.get("place")) {
-                return unknown(why);
-            }
-        }
+    let place = match request.get("protocol").and_then(Value::as_u64) {
+        Some(1) => None,
+        Some(2) => match check_place(request.get("place")) {
+            Ok(place) => place,
+            Err(why) => return unknown(why),
+        },
         Some(other) => {
             return unknown(format!(
                 "protocol {other} is not served; this runtime speaks {PROTOCOLS:?}"
             ))
         }
         None => return unknown("the request names no protocol"),
+    };
+    let backend = match backends(place.as_ref()) {
+        Ok(backend) => backend,
+        Err(why) => return unknown(why),
+    };
+    let backend = backend.as_ref();
+    let place = place.as_ref();
+    // What reads or writes this machine's disk does not serve a remote place
+    // yet: it would answer about the wrong machine.
+    if let Some(host) = place.filter(|_| matches!(verb, "attach" | "shell" | "browse" | "branches"))
+    {
+        return unknown(format!(
+            "{verb} is not yet supported on a remote place ({:?})",
+            host.name
+        ));
     }
     let result = match verb {
-        "start" => parse(request).map(|r| start(backend, pauses, r)),
+        "start" => parse(request).map(|r| start(backend, place, pauses, r)),
         "inspect" => parse(request).map(|r: Keyed| inspect(backend, pauses, &r.key)),
         "pause" => parse(request).map(|r: Keyed| pause(backend, pauses, &r.key)),
         "stop" => parse(request).map(|r: Stop| {
@@ -147,6 +167,11 @@ pub fn serve_with(
                 return stopped;
             }
             process_done();
+            // A remote place's workspace is a directory already there,
+            // which a release never removes: nothing was made.
+            if place.is_some() {
+                return stopped;
+            }
             match Workspaces::load().and_then(|w| w.release(&r.key)) {
                 Ok(()) => stopped,
                 Err(why) => unknown(format!(
@@ -154,14 +179,23 @@ pub fn serve_with(
                 )),
             }
         }),
-        "workspace" => parse(request).map(|r: Workspace| match Workspaces::load() {
-            Ok(workspaces) => workspaces.make(&r.key, &r.urls),
-            Err(why) => known(json!({ "failed": { "why": why } })),
+        "workspace" => parse(request).map(|r: Workspace| match place {
+            Some(host) => match crate::place::workspace(host, &r.urls) {
+                crate::place::Workspace::Dirs(dirs) => {
+                    known(json!({ "made": { "dirs": dirs, "adopted": false } }))
+                }
+                crate::place::Workspace::Failed(why) => known(json!({ "failed": { "why": why } })),
+                crate::place::Workspace::Unknown(why) => unknown(why),
+            },
+            None => match Workspaces::load() {
+                Ok(workspaces) => workspaces.make(&r.key, &r.urls),
+                Err(why) => known(json!({ "failed": { "why": why } })),
+            },
         }),
         "list" => Ok(list(backend, pauses)),
         "input" => parse(request).map(|r| input(backend, r)),
         "capture" => parse(request).map(|r| capture(backend, r)),
-        "exec" => parse(request).map(exec),
+        "exec" => parse(request).map(|r: Exec| exec(place, r)),
         "attach" => parse(request).map(|r: Keyed| attach(backend, &r.key, view)),
         "shell" => parse(request).map(|r: Keyed| shell(backend, &r.key, view)),
         "browse" => parse(request).map(browse),
@@ -350,47 +384,35 @@ fn git_out(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// A place as a request names it: the name, and its table from Fleet's
-/// config.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Place {
-    name: String,
-    #[serde(default)]
-    config: serde_json::Map<String, Value>,
-}
-
-/// Why this program cannot run a request at `place`, if it cannot: it serves
-/// `local` alone, which takes no config.
-fn serves(place: &Place) -> Result<(), String> {
-    if place.name != LOCAL {
-        return Err(format!(
-            "place {:?}: runtime-mux serves only {LOCAL:?}, this machine",
-            place.name
-        ));
-    }
-    if !place.config.is_empty() {
-        return Err(format!(
-            "place {LOCAL:?} takes no config; runtime-mux cannot use {:?}",
-            place.config.keys().collect::<Vec<_>>()
-        ));
-    }
-    Ok(())
-}
-
-/// A version 2 request's `place`, checked: every request but `manifest`
-/// names one.
-fn check_place(place: Option<&Value>) -> Result<(), String> {
+/// A version 2 request's `place`, checked and parsed: every request but
+/// `manifest` names one. `None` is `local`.
+fn check_place(place: Option<&Value>) -> Result<Option<HostDef>, String> {
     let place = place.ok_or("a version 2 request names its place")?;
     let place: Place =
         serde_json::from_value(place.clone()).map_err(|e| format!("bad place: {e}"))?;
-    serves(&place)
+    crate::place::parse(&place)
+}
+
+/// Whether a process can run at `place` now: its backend's multiplexer is
+/// there and, on a remote place, the place answers and has `fleet`.
+fn ready(backends: &Backends, place: Value) -> Result<&'static str, String> {
+    let place: Place = serde_json::from_value(place).map_err(|e| format!("bad place: {e}"))?;
+    let host = crate::place::parse(&place)?;
+    let local = if cfg!(windows) { "windows" } else { "posix" };
+    let platform = host.as_ref().map_or(local, |h| h.platform().name());
+    let backend = backends(host.as_ref())?;
+    match &host {
+        Some(host) => crate::place::readiness(host, backend.as_ref())?,
+        None => backend.check_available().map_err(|e| e.to_string())?,
+    }
+    Ok(platform)
 }
 
 /// The manifest's `places`: each place the request asks about, or `local`
 /// when it asks about none, with whether this program can run a process
-/// there now.
-fn places(backend: &dyn SessionBackend, request: &[u8]) -> Vec<Value> {
+/// there now. Each place is probed on a thread of its own, so a slow one
+/// costs its own probe and no other's.
+fn places(backends: &Backends, request: &[u8]) -> Vec<Value> {
     let asked: Vec<Value> = serde_json::from_slice::<Value>(request)
         .ok()
         .and_then(|r| r.get("places").and_then(Value::as_array).cloned())
@@ -400,30 +422,46 @@ fn places(backend: &dyn SessionBackend, request: &[u8]) -> Vec<Value> {
     } else {
         asked
     };
-    let platform = if cfg!(windows) { "windows" } else { "posix" };
-    asked
-        .into_iter()
-        .map(|place| {
-            let name = place
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let ready = serde_json::from_value::<Place>(place.clone())
-                .map_err(|e| format!("bad place: {e}"))
-                .and_then(|place| serves(&place))
-                .and_then(|()| backend.check_available().map_err(|e| e.to_string()));
-            let mut report = json!({
-                "name": name,
-                "platform": platform,
-                "dynamic": false,
-                "ready": ready.is_ok(),
-            });
-            if let Err(why) = ready {
-                report["why"] = json!(why);
-            }
-            report
-        })
-        .collect()
+    let local = if cfg!(windows) { "windows" } else { "posix" };
+    std::thread::scope(|scope| {
+        let probes: Vec<_> = asked
+            .into_iter()
+            .map(|place| {
+                let name = place
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let platform = place
+                    .get("config")
+                    .and_then(|c| c.get("platform"))
+                    .and_then(Value::as_str)
+                    .filter(|p| matches!(*p, "posix" | "windows"))
+                    .unwrap_or(local)
+                    .to_string();
+                (name, platform, scope.spawn(move || ready(backends, place)))
+            })
+            .collect();
+        probes
+            .into_iter()
+            .map(|(name, platform, probe)| {
+                let ready = probe
+                    .join()
+                    .unwrap_or_else(|_| Err("the readiness probe panicked".into()));
+                let platform = ready.as_ref().map_or(platform, |p| (*p).to_string());
+                let mut report = json!({
+                    "name": name,
+                    "platform": platform,
+                    "dynamic": false,
+                    "ready": ready.is_ok(),
+                });
+                if let Err(why) = ready {
+                    report["why"] = json!(why);
+                }
+                report
+            })
+            .collect()
+    })
 }
 
 /// A request as its verb's shape, with every key it names checked.
@@ -695,10 +733,19 @@ impl Pauses {
     }
 }
 
-fn start(backend: &dyn SessionBackend, pauses: &Pauses, request: Start) -> Value {
+fn start(
+    backend: &dyn SessionBackend,
+    place: Option<&HostDef>,
+    pauses: &Pauses,
+    request: Start,
+) -> Value {
     // The one Known failure: nothing can have started without the binary.
     if let Err(e) = backend.check_available() {
-        return known(json!({ "failed": { "why": e.to_string() } }));
+        let why = match place {
+            Some(host) => format!("place {:?}: {e}", host.name),
+            None => e.to_string(),
+        };
+        return known(json!({ "failed": { "why": why } }));
     }
     match locate(backend, &request.key) {
         Err(why) => return unknown(why),
@@ -715,6 +762,13 @@ fn start(backend: &dyn SessionBackend, pauses: &Pauses, request: Start) -> Value
             }
         },
         Ok(Located::Absent) => {}
+    }
+    // On a remote place the agent is looked for on the place's `PATH` before
+    // its window is made: a window whose program is missing dies at once,
+    // and its pane says less than this does.
+    if let Some(why) = place.and_then(|host| crate::place::missing_program(host, &request.argv[0]))
+    {
+        return known(json!({ "failed": { "why": why } }));
     }
     let name = name_of(&request.key);
     let spec = WindowSpec {
@@ -980,24 +1034,38 @@ fn capture(backend: &dyn SessionBackend, request: Capture) -> Value {
     }}))
 }
 
-/// One bounded command on this machine: its process group is killed past the
-/// deadline, and once it exits, and each stream is kept up to the cap. The
-/// answer comes by the deadline even when a child that left the group holds
-/// a stream open: what was read by then is the output.
-fn exec(request: Exec) -> Value {
+/// One bounded command at the place, on this machine or through the
+/// place's launcher (ssh, `wsl.exe`): its process group here is killed past
+/// the deadline, and once it exits, and each stream is kept up to the cap.
+/// The answer comes by the deadline even when a child that left the group
+/// holds a stream open: what was read by then is the output. On a remote
+/// place the group killed is the launcher's: a command there that ignores
+/// its closed connection can outlive the deadline.
+fn exec(place: Option<&HostDef>, request: Exec) -> Value {
     let cap = request
         .output_cap
         .unwrap_or(DEFAULT_OUTPUT_CAP)
         .min(MAX_OUTPUT_CAP);
-    let mut command = Command::new(&request.argv[0]);
+    let mut command = match place {
+        Some(host) => {
+            match crate::place::exec_command(host, &request.argv, request.dir.as_deref()) {
+                Ok(command) => command,
+                Err(why) => return known(json!({ "failed": { "why": why } })),
+            }
+        }
+        None => {
+            let mut command = Command::new(&request.argv[0]);
+            command.args(&request.argv[1..]);
+            if let Some(dir) = &request.dir {
+                command.current_dir(dir);
+            }
+            command
+        }
+    };
     command
-        .args(&request.argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(dir) = &request.dir {
-        command.current_dir(dir);
-    }
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = match command.spawn() {
