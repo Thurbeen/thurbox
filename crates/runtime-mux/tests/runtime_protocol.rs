@@ -1246,3 +1246,271 @@ fn branches_defaults_to_origins_default() {
         json!({"names": ["main", "origin/master", "origin/trunk"], "default": "origin/master"})
     );
 }
+
+/// The names of the key windows on the runtime's own server, leaving out
+/// the window a new server starts with.
+fn windows(rt: &Runtime) -> Vec<String> {
+    let out = Command::new("tmux")
+        .env("TMUX_TMPDIR", rt.server.tmpdir())
+        .env_remove("TMUX")
+        .args(["-L", SOCKET, "list-windows", "-a", "-F", "#{window_name}"])
+        .output()
+        .expect("run tmux");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|name| name.starts_with("tb"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A stream `argv` run as a view runs it, killed when dropped.
+struct Stream {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    frames: std::sync::mpsc::Receiver<term_stream::Down>,
+}
+
+impl Stream {
+    /// The stream, sized once its hello came and past its first screen,
+    /// within one deadline. A stream that ends or stalls first fails the
+    /// test, and the drop kills it.
+    fn open(argv: &[String]) -> Stream {
+        use std::sync::mpsc::RecvTimeoutError;
+        use term_stream::{Down, Size, Up};
+        let mut child = Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("run the stream");
+        let stdin = child.stdin.take().expect("stdin");
+        let mut stdout = child.stdout.take().expect("stdout");
+        let (tx, frames) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(Some(frame)) = term_stream::read::<Down>(&mut stdout) {
+                if tx.send(frame).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut stream = Stream {
+            child,
+            stdin,
+            frames,
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut sized = false;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match stream.frames.recv_timeout(left) {
+                Ok(Down::Hello(_)) if !sized => {
+                    stream.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+                    sized = true;
+                }
+                Ok(Down::Snapshot(_)) if sized => return stream,
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => panic!("no first screen within 30 s"),
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("the stream ended before its first screen")
+                }
+            }
+        }
+    }
+
+    fn send(&mut self, frame: &term_stream::Up) {
+        term_stream::write(&mut self.stdin, frame).expect("send a frame");
+    }
+
+    fn type_text(&mut self, text: &str) {
+        self.send(&term_stream::Up::Input(text.as_bytes().to_vec()));
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The text of `file` once it has some, within ten seconds.
+fn read_when_written(file: &std::path::Path) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        if !text.is_empty() || Instant::now() >= deadline {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A runtime-mux call that opens a shell runs `/bin/sh` with a home of the
+/// test's own: never the operator's shell, never the real home.
+fn shell_env(rt: &mut Runtime, home: &std::path::Path) {
+    rt.env.push(("SHELL".into(), "/bin/sh".into()));
+    rt.env.push(("HOME".into(), home.display().to_string()));
+}
+
+#[test]
+fn the_manifest_names_the_shell_verb() {
+    let Some(rt) = Runtime::new() else { return };
+    let answer = rt.call("manifest", json!({"protocol": 2}));
+    let verbs = answer["known"]["verbs"].as_array().expect("verbs");
+    assert!(verbs.iter().any(|v| v == "shell"), "{answer}");
+}
+
+#[test]
+fn shell_of_a_key_no_process_holds_answers_none() {
+    let Some(rt) = Runtime::new() else { return };
+    let answer = rt.call(
+        "shell",
+        json!({"protocol": 2, "place": local(), "key": "no.one"}),
+    );
+    assert_eq!(answer["known"], "none", "{answer}");
+    assert!(windows(&rt).is_empty(), "no shell was opened");
+}
+
+#[test]
+fn shell_opens_a_shell_in_the_keys_directory_and_a_stop_closes_it() {
+    let Some(mut rt) = Runtime::new() else { return };
+    let home = tempfile::tempdir().expect("home");
+    shell_env(&mut rt, home.path());
+    let dir = tempfile::tempdir().expect("dir");
+    let dir_path = dir.path().canonicalize().expect("canonical dir");
+    started(&rt.call(
+        "start",
+        json!({"protocol": 2, "place": local(), "key": "sh.one",
+               "argv": ["sleep", "300"], "env": {}, "dir": dir_path}),
+    ));
+    let shell = || {
+        rt.call(
+            "shell",
+            json!({"protocol": 2, "place": local(), "key": "sh.one"}),
+        )
+    };
+
+    let answer = shell();
+    let argv: Vec<String> = serde_json::from_value(answer["known"]["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer}"));
+    assert_eq!(argv[1], "view", "{argv:?}");
+
+    let mut view = Stream::open(&argv);
+    view.type_text("pwd > shell-pwd; FLEET_MARK=typed-before\r");
+    let pwd = read_when_written(&dir_path.join("shell-pwd"));
+    drop(view);
+    assert_eq!(
+        pwd.trim(),
+        dir_path.display().to_string(),
+        "the shell runs in the directory the key's process is in"
+    );
+
+    // Idempotent by key: a second call opens the shell the first view typed
+    // into, which still holds the variable it set.
+    let again = shell();
+    assert_eq!(again["known"], answer["known"], "the shell is adopted");
+    let mut view = Stream::open(&argv);
+    view.type_text("printf %s \"$FLEET_MARK\" > shell-mark\r");
+    let mark = read_when_written(&dir_path.join("shell-mark"));
+    drop(view);
+    assert_eq!(mark, "typed-before", "the second call opens the same shell");
+    assert_eq!(
+        windows(&rt).len(),
+        2,
+        "one agent, one shell: {:?}",
+        windows(&rt)
+    );
+    // The key's agent is still the only key listed.
+    let list = rt.call("list", json!({"protocol": 2, "place": local()}));
+    assert_eq!(list["known"]["keys"], json!(["sh.one"]), "{list}");
+
+    assert_eq!(
+        rt.call(
+            "stop",
+            json!({"protocol": 2, "place": local(), "key": "sh.one"})
+        )["known"],
+        "stopped"
+    );
+    assert!(
+        windows(&rt).is_empty(),
+        "the stop closed the shell: {:?}",
+        windows(&rt)
+    );
+    assert_eq!(shell()["known"], "none");
+}
+
+/// `tmux <args>` on the runtime's own server.
+fn runtime_tmux(rt: &Runtime, args: &[&str]) -> std::process::Output {
+    Command::new("tmux")
+        .env("TMUX_TMPDIR", rt.server.tmpdir())
+        .env_remove("TMUX")
+        .args(["-L", SOCKET])
+        .args(args)
+        .output()
+        .expect("run tmux")
+}
+
+#[test]
+fn a_shell_whose_directory_is_gone_opens_where_the_server_says() {
+    let Some(mut rt) = Runtime::new() else { return };
+    // The server starts with one home, and the shell call runs with
+    // another: on a place that is another machine, the call's own disk and
+    // home say nothing about the place's.
+    let server_home = tempfile::tempdir().expect("server home");
+    let server_home_path = server_home.path().canonicalize().expect("canonical");
+    shell_env(&mut rt, &server_home_path);
+    let gone = tempfile::tempdir().expect("dir");
+    let gone_path = gone.path().canonicalize().expect("canonical dir");
+    started(&rt.call(
+        "start",
+        json!({"protocol": 2, "place": local(), "key": "sh.gone",
+               "argv": ["sleep", "300"], "env": {}, "dir": gone_path}),
+    ));
+    drop(gone);
+    let call_home = tempfile::tempdir().expect("call home");
+    shell_env(&mut rt, call_home.path());
+
+    let answer = rt.call(
+        "shell",
+        json!({"protocol": 2, "place": local(), "key": "sh.gone"}),
+    );
+    let argv: Vec<String> = serde_json::from_value(answer["known"]["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer}"));
+    let out = tempfile::tempdir().expect("out");
+    let file = out.path().join("pwd");
+    let mut view = Stream::open(&argv);
+    view.type_text(&format!("pwd > '{}'\r", file.display()));
+    let pwd = read_when_written(&file);
+    drop(view);
+    assert_eq!(
+        pwd.trim(),
+        server_home_path.display().to_string(),
+        "tmux falls back to the server's home, not the caller's"
+    );
+}
+
+#[test]
+fn a_stop_closes_every_shell_window_of_the_key() {
+    let Some(mut rt) = Runtime::new() else { return };
+    let home = tempfile::tempdir().expect("home");
+    shell_env(&mut rt, home.path());
+    started(&rt.start("sh.two", &["sleep", "300"]));
+    let shell = json!({"protocol": 2, "place": local(), "key": "sh.two"});
+    assert!(rt.call("shell", shell.clone())["known"]["stream"].is_object());
+    // A second window of the same name, as a crash between two calls could
+    // leave: the key's shell is ambiguous now.
+    let name = windows(&rt)
+        .into_iter()
+        .find(|name| name.starts_with("tbs-"))
+        .expect("the shell window");
+    let made = runtime_tmux(&rt, &["new-window", "-d", "-n", &name, "sleep 300"]);
+    assert!(made.status.success(), "{made:?}");
+    assert_eq!(windows(&rt).len(), 3, "{:?}", windows(&rt));
+
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "sh.two"}))["known"],
+        "stopped",
+        "an ambiguous shell does not wedge the stop"
+    );
+    assert!(windows(&rt).is_empty(), "{:?}", windows(&rt));
+}

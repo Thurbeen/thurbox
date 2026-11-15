@@ -46,6 +46,7 @@ pub const VERBS: &[&str] = &[
     "capture",
     "exec",
     "attach",
+    "shell",
     "workspace",
     "browse",
     "branches",
@@ -151,6 +152,7 @@ pub fn serve_with(
         "capture" => parse(request).map(|r| capture(backend, r)),
         "exec" => parse(request).map(exec),
         "attach" => parse(request).map(|r: Keyed| attach(backend, &r.key, view)),
+        "shell" => parse(request).map(|r: Keyed| shell(backend, &r.key, view)),
         "browse" => parse(request).map(browse),
         "branches" => parse(request).map(branches),
         other => Err(format!("unknown verb {other:?}")),
@@ -677,16 +679,32 @@ fn inspect(backend: &dyn SessionBackend, key: &str) -> Value {
     }
 }
 
+/// Stops the key's process and closes its [`shell`], which belongs to the
+/// key and would otherwise outlive it: `list` names agents only. Every
+/// window named as the key's shell goes, so two of them, which `shell`
+/// answers Unknown for, never keep a stop from concluding: nothing but this
+/// program makes windows on its socket, so the name alone is the key's.
 fn stop(backend: &dyn SessionBackend, key: &str) -> Value {
-    match locate(backend, key) {
-        Err(why) => unknown(why),
-        Ok(Located::Unknown) => unknown("several windows answer to the key"),
+    let stopped = match locate(backend, key) {
+        Err(why) => return unknown(why),
+        Ok(Located::Unknown) => return unknown("several windows answer to the key"),
         Ok(Located::Absent) => known(json!("stopped")),
         Ok(Located::At(pane)) => match backend.kill(&pane) {
             Ok(()) => known(json!("stopped")),
-            Err(e) => unknown(e),
+            Err(e) => return unknown(e),
         },
+    };
+    let shell = window_name_for(WindowRole::Shell, &name_of(key));
+    let windows = match backend.discover() {
+        Ok(windows) => windows,
+        Err(e) => return unknown(e),
+    };
+    for window in windows.iter().filter(|w| w.name == shell) {
+        if let Err(e) = backend.kill(&window.backend_id) {
+            return unknown(e);
+        }
     }
+    stopped
 }
 
 /// The pane holding `key`: `None` when none does.
@@ -710,6 +728,58 @@ fn attach(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
             known(json!({ "stream": { "argv": argv } }))
         }
     }
+}
+
+/// A shell in the directory the key's process is in, viewed like
+/// [`attach`]: the key's shell window, opened on the first call and found
+/// again by the next, so a view that leaves and comes back finds what it
+/// typed. Its program is the machine's shell; its directory, the agent's
+/// current one as the server reads it, which the server itself falls back
+/// from (to its home) when it is gone: nothing here reads this machine's
+/// disk, which need not be the place's. It closes with its program, or at
+/// the key's [`stop`].
+fn shell(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
+    let placed = match backend.locate(owner(&name_of(key))) {
+        Ok(placed) => placed,
+        Err(e) => return unknown(e),
+    };
+    let agent = match placed.agent {
+        Located::Unknown => return unknown("several windows answer to the key"),
+        Located::Absent => return known(json!("none")),
+        Located::At(pane) => pane,
+    };
+    let pane = match placed.shell {
+        Located::Unknown => return unknown("several shell windows answer to the key"),
+        Located::At(pane) => pane,
+        Located::Absent => {
+            let cwd = backend
+                .pane_state(&agent)
+                .ok()
+                .and_then(|state| state.foreground_cwd)
+                .map(PathBuf::from);
+            let name = name_of(key);
+            let program = backend.default_shell();
+            let spec = WindowSpec {
+                owner: owner(&name),
+                role: WindowRole::Shell,
+                command: &program,
+                args: &[],
+                cwd: cwd.as_deref(),
+                env: &HashMap::new(),
+            };
+            match backend.create_window(&spec) {
+                Ok(pane) => pane.as_str().to_string(),
+                // The window may have been made: the next call finds it.
+                Err(e) => return unknown(e),
+            }
+        }
+    };
+    let argv: Vec<&str> = view
+        .iter()
+        .map(String::as_str)
+        .chain(["--pane", &pane])
+        .collect();
+    known(json!({ "stream": { "argv": argv } }))
 }
 
 fn list(backend: &dyn SessionBackend) -> Value {

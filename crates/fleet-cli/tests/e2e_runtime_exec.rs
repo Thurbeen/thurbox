@@ -163,6 +163,9 @@ fn runtime_mux_passes_the_conformance_suite() {
         .stdout_has("ok   browse: a missing directory answers failed")
         .stdout_has("ok   branches: lists a repository's branches and its default")
         .stdout_has("ok   branches: a directory that is no repository answers failed")
+        .stdout_has("ok   shell: a key no process holds answers none")
+        .stdout_has("ok   shell: a running key answers how to open its shell, on each call")
+        .stdout_has("ok   shell: a stop leaves nothing to open")
         .stdout_has("speaks runtime protocol 2");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
 }

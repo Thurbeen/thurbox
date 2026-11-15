@@ -34,6 +34,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
 | `workspace` | no | `{key, urls}` → one directory per URL, as the process sees it ([workspaces](#workspaces)) |
 | `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream ([the terminal stream](#the-terminal-stream)) |
+| `shell` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a shell beside the key's process, on its place ([the shell](#the-shell)) |
 | `browse` | no | a directory's subdirectories on the place, each marked when it is a git checkout ([browse and branches](#browse-and-branches)) |
 | `branches` | no | a repository's branches on the place and its default ([browse and branches](#browse-and-branches)) |
 
@@ -77,6 +78,7 @@ Unknown.
 | `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground", "title"}}`, or `"none"`; `title` is the one the program set (OSC 0 or 2), and a runtime that cannot read it omits it |
 | `exec` | `argv`, `in` (`host`), `dir`, `timeoutMs`, `outputCap` | `{"exited": {"code", "stdout", "stderr"}}`, `{"timedOut": {"stdout", "stderr"}}` or `{"failed": {"why"}}` |
 | `attach` | `key` | `{"stream": {"argv"}}`, `{"tty": {"argv"}}`, or `"none"` when no process holds the key |
+| `shell` | `key` | `{"stream": {"argv"}}`, `{"tty": {"argv"}}`, or `"none"` when no process holds the key ([the shell](#the-shell)) |
 | `workspace` | `key`, `urls` | `{"made": {"dirs", "adopted"}}`, `{"unsupported": {"url"}}` or `{"failed": {"why"}}` ([Workspaces](#workspaces)) |
 
 `runtime-mux` answers every verb above. It runs its windows on a tmux
@@ -181,7 +183,11 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
 - with `branches` declared: a repository with the branches `main` and
   `feat` lists both, in any order, with `main` as its default, and a directory inside a
   checkout answers `failed`. The check makes the repository with this
-  machine's `git`.
+  machine's `git`;
+- with `shell` declared: a key no process holds answers `none`, a running
+  key answers a `stream` or a `tty` argv on two calls in a row, and after a
+  stop the key answers `none`. The check does not open the shell, so it
+  does not prove that the second call reaches the same one.
 
 The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
 `crates/fleet-cli/tests/e2e_runtime_exec.rs`, against `runtime-mux` and against
@@ -194,8 +200,8 @@ stops with a kernel lock in tmux's private socket directory, taken with
 
 **Status**: the request's `place`, the manifest's `places` and places in
 Fleet's config are implemented, and so are `browse` and `branches`
-([browse and branches](#browse-and-branches)). `signals` and `shell` are
-planned. The decision is
+([browse and branches](#browse-and-branches)), and so is
+[`shell`](#the-shell). `signals` is planned. The decision is
 [ADR-42](../thurbox/architecture.md#adr-42-hosts-belong-to-runtimes).
 
 A place is where a runtime runs a process: this machine, an ssh host, a WSL
@@ -253,12 +259,11 @@ another place, or a config for `local`, answers Unknown, and `manifest`
 reports such a place not ready. `local` is ready when the multiplexer
 answers; otherwise `why` names it. Its `platform` is the machine's.
 
-New optional verbs, planned:
+A new optional verb, planned:
 
 | Verb | Request (besides `protocol`, `place`) | Known answer |
 | --- | --- | --- |
 | `signals` | `key`, `from` (a byte offset) | `{"lines": {"text", "next"}}`: the signal file's lines from `from`, and the offset to ask from next |
-| `shell` | `key` | `{"stream": {"argv"}}` or `{"tty": {"argv"}}`: a shell in the key's directory on its place, opened like `attach` |
 
 - **`signals`.** The runtime sets `FLEET_SIGNAL_FILE` to a file on the place
   and reads it back for Fleet. Fleet asks from the last `next` it got. A
@@ -273,8 +278,31 @@ New optional verbs, planned:
   restarts all the same, and the session's state stays Unknown, as on any
   remote place without the verb. The runtime writes no signal line and stays
   ignorant of their format.
-- **`shell`.** thurbox's companion shell on a remote place opens through
-  Fleet with this answer. thurbox keeps no ssh launcher of its own.
+
+#### The shell
+
+`shell` answers how to open an interactive shell beside the key's process:
+on its place, in the directory the process is in. The answer has the shapes
+of [`attach`](#the-runtimes-attach), and its argv runs where the view runs.
+thurbox's companion shell for a session on another machine opens with it,
+so thurbox needs no route of its own to the place. Fleet does not ask it
+yet.
+
+- `"none"` when no process holds the key, as `attach` answers.
+- The shell belongs to the key. A second call opens the same shell, so a
+  view that leaves and comes back finds what it typed. A `stop` of the key
+  closes it.
+
+`runtime-mux` opens the shell in a window of its own, beside the key's, on
+the same server. Its program is the machine's shell (`$SHELL`, else
+`/bin/sh`; `%COMSPEC%` on Windows). Its directory is the one the key's
+process is in now, as the multiplexer reads it. When that directory is
+gone, the multiplexer starts the shell in its own home. `runtime-mux` reads
+nothing about the directory from its own disk, which need not be the
+place's. The answer is a `stream`: `runtime-mux view` on the shell's pane.
+The window closes when the shell exits, and the next call opens a new one.
+`list` does not name the shell. A `stop` closes every window named as the
+key's shell, so two of them never keep a stop from concluding.
 
 #### Browse and branches
 

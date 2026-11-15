@@ -1379,7 +1379,74 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
     if verbs.iter().any(|v| v == "branches") {
         cases.extend(check_branches(program, protocol, &key("branches")));
     }
+    if verbs.iter().any(|v| v == "shell") {
+        cases.extend(check_shell(program, protocol, &key("shell")));
+    }
     cases
+}
+
+/// The shell rules a runtime that declares `shell` holds to: how to open a
+/// shell for a key a process holds, on each call; `none` for a key nothing
+/// holds, as `attach` answers, and after a stop. That a second call reaches
+/// the same shell is not checked here: it needs a view typing into the
+/// answer, and a check runs processes only bounded, through `fleet-exec`.
+fn check_shell(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
+    let shell =
+        |k: &str| program.ask::<Attached>("shell", program.request(protocol, json!({ "key": k })));
+    let stop =
+        |k: &str| program.ask::<Stopped>("stop", program.request(protocol, json!({ "key": k })));
+    let absent = match shell(&format!("{key}-absent")) {
+        Observation::Known(Attached::None) => Ok(()),
+        other => Err(format!("answered {other:?}, not none")),
+    };
+    let opened = (|| {
+        match program.ask::<Started>(
+            "start",
+            program.request(
+                protocol,
+                json!({ "key": key, "argv": ["sleep", "300"], "env": {} }),
+            ),
+        ) {
+            Observation::Known(Started::Started { .. }) => {}
+            other => return Err(format!("start answered {other:?}")),
+        }
+        let first = match shell(key) {
+            Observation::Known(Attached::Stream { argv } | Attached::Tty { argv })
+                if !argv.is_empty() =>
+            {
+                argv
+            }
+            other => return Err(format!("answered {other:?}, not a stream or a tty argv")),
+        };
+        match shell(key) {
+            Observation::Known(Attached::Stream { argv } | Attached::Tty { argv })
+                if !argv.is_empty() =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "the second call answered {other:?} after {first:?}"
+            )),
+        }
+    })();
+    let stopped = match (stop(key), shell(key)) {
+        (Observation::Known(Stopped::Stopped), Observation::Known(Attached::None)) => Ok(()),
+        (stopped, shell) => Err(format!("stop {stopped:?}, then shell {shell:?}")),
+    };
+    vec![
+        Case {
+            name: "shell: a key no process holds answers none",
+            result: absent,
+        },
+        Case {
+            name: "shell: a running key answers how to open its shell, on each call",
+            result: opened,
+        },
+        Case {
+            name: "shell: a stop leaves nothing to open",
+            result: stopped,
+        },
+    ]
 }
 
 /// A directory of the check's own under the temporary directory, made anew.

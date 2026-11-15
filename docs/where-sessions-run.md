@@ -52,6 +52,8 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | The new-session modal's Fleet step, then the chosen Fleet's places and agents; creation goes to that Fleet | implemented |
 | The modal browses a remote Fleet's folders and lists a repository's branches there, through Fleet | implemented |
 | A Fleet whose `fleet version --json` lacks `fleet/v1alpha1` is refused: no watch, no command | implemented |
+| The runtime protocol's `shell` verb opens a shell beside a session on its place; `runtime-mux` answers it | implemented |
+| A remote Fleet's companion shell through Fleet's `shell`, and `hosts.toml` retired | planned |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
 ## Common setups
