@@ -22,7 +22,10 @@ label and the time. The manager performs each create and each delete.
 4. Otherwise it decides about that time. It creates the Task, or it skips
    the time and says why in the `Skipped` condition.
 5. It deletes the Concluded Tasks beyond `historyLimit`, oldest first.
-6. It sets `notBefore` to the next scheduled time.
+6. It sets `notBefore` to the next scheduled time. While a create or a
+   delete is in flight, the first attempt included, it sets `notBefore`
+   to one minute later at most, so a create that never lands is retried
+   long before the next scheduled time.
 
 When the manager was down for several scheduled times, the controller
 decides only about the latest one. It drops the earlier ones, as a
@@ -147,6 +150,9 @@ writes. The controller answers it from the Task listing:
   for `Forbid`.
 - A create that the store refused three times is given up, with the
   receipt `Failed`.
+- A delete keeps the permission it was decided with. A history delete
+  stays Concluded-only on every retry, so it never removes a Task that a
+  person reopened with `fleet amend` meanwhile.
 - A create whose outcome is Unknown is tried again every minute, with no
   limit: Fleet never reads Unknown as absence, so it never drops the create.
   While it waits it counts as a running Task, so under `Forbid` it holds

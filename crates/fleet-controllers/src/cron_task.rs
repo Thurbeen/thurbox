@@ -373,8 +373,9 @@ impl Pass<'_, '_> {
                 self.recovering = true;
                 continue;
             }
-            // A retry: look again soon if this attempt fails too.
-            self.recovering |= record.attempts > 0;
+            // Look again soon, the first attempt included: should this one
+            // never land, the next look is within a minute, not a period.
+            self.recovering = true;
             self.plan_create(&key, &record.task);
         }
     }
@@ -408,6 +409,7 @@ impl Pass<'_, '_> {
                 task: name.to_string(),
                 scheduled: Some(at),
                 unknowns: 0,
+                running: false,
             },
         );
     }
@@ -435,14 +437,10 @@ impl Pass<'_, '_> {
     }
 
     /// Write the retire's intent and ask the manager to delete the Task.
+    /// `running` is fixed by the first intent: a retry keeps it.
     fn plan_retire(&mut self, name: &str, uid: &str, running: bool) {
         let key = cron_task::retire_key(uid);
-        let action = Action::RetireScheduled {
-            name: name.to_string(),
-            uid: uid.to_string(),
-            running,
-        };
-        let intent = self.intent(action.name());
+        let intent = self.intent("retireScheduled");
         let record = self
             .st
             .effects
@@ -454,10 +452,16 @@ impl Pass<'_, '_> {
                 task: name.to_string(),
                 scheduled: None,
                 unknowns: 0,
+                running,
             });
         record.intent = intent;
         record.receipt = None;
         record.attempts += 1;
+        let action = Action::RetireScheduled {
+            name: name.to_string(),
+            uid: uid.to_string(),
+            running: record.running,
+        };
         self.effects.push(Effect { key, action });
     }
 
@@ -520,8 +524,7 @@ impl Pass<'_, '_> {
                 ) {
                     continue;
                 }
-                let running = !self.task(&record.task).is_some_and(concluded);
-                self.plan_retire(&record.task, &uid, running);
+                self.plan_retire(&record.task, &uid, record.running);
                 self.recovering = true;
             } else {
                 self.recover(&key, EffectOutcome::Deleted);

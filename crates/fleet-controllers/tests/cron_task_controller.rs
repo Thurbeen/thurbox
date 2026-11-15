@@ -129,3 +129,57 @@ fn attention_of(status: &Value) -> Option<(String, String)> {
             )
         })
 }
+
+/// The first create looks again soon, as a retry does: should it never land
+/// (the manager stops, or the store answers Unknown or no), the next look
+/// is within a minute, not at the next scheduled time.
+#[test]
+fn a_first_create_is_looked_at_again_within_a_minute() {
+    let obj = cron_task(json!({"observedGeneration": 1, "notBefore": T}));
+    let planned = reconcile(&obj, T);
+    assert!(
+        planned["effects"]["create/29913300"].is_object(),
+        "{planned:#}"
+    );
+    assert_eq!(planned["notBefore"], T + MINUTE, "{planned:#}");
+}
+
+/// A history delete keeps the permission it was decided with: a Task that a
+/// person reopened since is never deleted as if Replace had asked.
+#[test]
+fn a_history_delete_retried_keeps_its_concluded_only_permission() {
+    let obj = cron_task(json!({
+        "observedGeneration": 1,
+        "lastConsidered": T,
+        "notBefore": T + MINUTE,
+        "effects": {"retire/u-old": {
+            "intent": {"action": "retireScheduled", "at": T, "generation": 1},
+            "attempts": 1,
+            "task": "nightly-29911860"
+        }}
+    }));
+    let reopened: Object = serde_json::from_value(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Task",
+        "metadata": {"name": "nightly-29911860", "uid": "u-old", "generation": 2,
+                     "labels": {"crontask.fleet.dev/uid": "u1"}},
+        "spec": {"harness": "claude-code", "brief": "Review.", "workspace": []},
+        "status": {"phase": "Briefed"}
+    }))
+    .expect("a Task");
+    let plan = CronTaskController
+        .reconcile(&CronTaskInput {
+            object: &obj,
+            tasks: vec![&reopened],
+            now: T + MINUTE,
+        })
+        .expect("a plan");
+    for effect in &plan.effects {
+        if let fleet_api::plan::Action::RetireScheduled { running, .. } = &effect.action {
+            assert!(
+                !running,
+                "a history delete never asks to delete a running Task"
+            );
+        }
+    }
+}

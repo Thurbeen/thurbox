@@ -89,7 +89,7 @@ The CronTask controller writes all of the status.
 | `nextScheduleTime` | The next scheduled time. |
 | `notBefore` | When the manager reconciles the CronTask again. |
 | `active` | The names of this CronTask's Tasks that are not Concluded, and of the creates still pending. |
-| `effects` | Each create and each delete by key: its `intent`, written before the effect, and its `receipt`, written after. `task` names the Task, `scheduled` the time a create is for, and `unknowns` the attempts at a create whose outcome was never known. The controller keeps the newest 20 settled records. |
+| `effects` | Each create and each delete by key: its `intent`, written before the effect, and its `receipt`, written after. `task` names the Task, `scheduled` the time a create is for, `unknowns` the attempts at a create whose outcome was never known, and `running` whether a delete may remove a Task that is not Concluded (`Replace` only). The controller keeps the newest 20 settled records. |
 | `conditions` | `Scheduled`, `Skipped` and `NeedsAttention`. See [conditions](../controllers/cron-task.md#conditions). |
 
 ## Lifecycle

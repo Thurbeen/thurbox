@@ -124,6 +124,11 @@ pub struct EffectRecord {
     /// Unknown or never received. Only a Known outcome clears it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unknowns: u32,
+    /// For a delete: whether it may delete a Task that is not Concluded
+    /// (Replace). Fixed when the delete is decided and kept on every retry,
+    /// so a history delete never removes a Task a person reopened.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
