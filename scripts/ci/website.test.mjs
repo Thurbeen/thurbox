@@ -170,7 +170,17 @@ test('the docs sidebar gives Fleet and thurbox a group each', () => {
   for (const page of ['fleet-features.html', 'thurbox-features.html']) {
     assert.ok(moved.querySelector(`.docs-content a[href="${page}"]`), `docs/features.html links ${page}`);
   }
-  assert.ok(moved.querySelector('meta[http-equiv="refresh"]'), 'docs/features.html redirects');
+  // Every section of the old page goes to an id that exists on its new page.
+  const script = moved.querySelector('#features-moved').textContent;
+  const targets = [...script.matchAll(/'?([a-z-]+)'?: '([a-z-]+\.html)(?:#([a-z-]+))?'/g)];
+  const oldIds = ['agent-definitions', 'automations', 'customizable-interface', 'feature-flags', 'git-worktrees',
+    'global-search', 'headless-cli', 'inter-session-messages', 'mouse-navigation', 'os-notifications',
+    'parent-sessions', 'remote-ssh-sessions', 'responsive-ui', 'session-orchestration', 'session-persistence',
+    'themes', 'where-surfaces-live'];
+  assert.deepEqual(targets.map((m) => m[1]).sort(), oldIds);
+  for (const [, from, page, id] of targets) {
+    if (id) assert.ok(built(`docs/${page}`).querySelector(`[id="${id}"]`), `#${from} -> ${page}#${id} exists`);
+  }
   for (const page of ['fleet', 'fleet-install', 'fleet-commands', 'fleet-features', 'thurbox', 'thurbox-features']) {
     assert.ok(existsSync(`_site/docs/${page}.html`), `docs/${page}.html exists`);
   }

@@ -3,7 +3,6 @@ layout: docs.njk
 title: 'Features — Thurbox Docs'
 description: 'Features are on two pages: Fleet features and thurbox features.'
 breadcrumb: 'Features'
-redirect: 'fleet-features.html'
 ---
 <h1>Features</h1>
 <p>Features are on two pages, one per product:</p>
@@ -11,3 +10,30 @@ redirect: 'fleet-features.html'
   <li><a href="fleet-features.html">Fleet features</a>: sessions as Tasks, agents, worktrees, places, messages and the headless CLI.</li>
   <li><a href="thurbox-features.html">thurbox features</a>: the interface, the session list, search, themes and notifications.</li>
 </ul>
+<script id="features-moved">
+  // Each section of the old single page, and where it lives now. A link with
+  // no fragment, or with one not listed here, goes to Fleet's page.
+  (function () {
+    var moved = {
+      'agent-definitions': 'fleet-features.html#agent-definitions',
+      'git-worktrees': 'fleet-features.html#git-worktrees',
+      'headless-cli': 'fleet-features.html#headless-cli',
+      'inter-session-messages': 'fleet-features.html#inter-session-messages',
+      'session-orchestration': 'fleet-features.html#sessions-as-tasks',
+      'session-persistence': 'fleet-features.html#sessions-as-tasks',
+      automations: 'fleet-features.html',
+      'remote-ssh-sessions': 'thurbox-features.html#several-fleets',
+      'customizable-interface': 'thurbox-features.html#customizable-interface',
+      'where-surfaces-live': 'thurbox-features.html#where-surfaces-live',
+      'parent-sessions': 'thurbox-features.html#parent-sessions',
+      'global-search': 'thurbox-features.html#global-search',
+      'responsive-ui': 'thurbox-features.html#responsive-ui',
+      themes: 'thurbox-features.html#themes',
+      'os-notifications': 'thurbox-features.html#os-notifications',
+      'mouse-navigation': 'thurbox-features.html#mouse-navigation',
+      'feature-flags': 'thurbox-features.html#feature-flags',
+    };
+    var target = moved[location.hash.slice(1)] || 'fleet-features.html';
+    location.replace(target);
+  })();
+</script>
