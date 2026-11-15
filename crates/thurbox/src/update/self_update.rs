@@ -637,16 +637,19 @@ fn install_binaries(
         staged.push((s, dest, name));
     }
     // Phase 2: commit staged files back-to-back (`commit_binary` says how). A
-    // failure puts back every binary already swapped, so the install is never
-    // left on two versions at once.
-    let mut committed: Vec<(&Path, Option<PathBuf>)> = Vec::new();
+    // failure puts back every binary already swapped and removes every one it
+    // added, so the install is never left on two versions at once.
+    let mut committed: Vec<(&Path, Option<PathBuf>, bool)> = Vec::new();
     for (i, (s, dest, _)) in staged.iter().enumerate() {
+        let added = !dest.exists();
         match commit_binary(s, dest) {
-            Ok(backup) => committed.push((dest, backup)),
+            Ok(backup) => committed.push((dest, backup, added)),
             Err(e) => {
-                for (dest, backup) in committed.into_iter().rev() {
+                for (dest, backup, added) in committed.into_iter().rev() {
                     if let Some(backup) = backup {
                         let _ = std::fs::rename(backup, dest);
+                    } else if added {
+                        let _ = std::fs::remove_file(dest);
                     }
                 }
                 discard_staged(&staged[i..]);
@@ -1426,6 +1429,64 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
                 "{name} after the failed update"
             );
             assert!(!install.path().join(format!(".{name}.new")).exists());
+        }
+    }
+
+    /// A failed update removes the programs it had added, so the install is
+    /// not left with `fleet` from the new release beside the old thurbox.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_commit_removes_the_programs_it_added() {
+        let install = tempfile::TempDir::new().unwrap();
+        let extract = tempfile::TempDir::new().unwrap();
+        for name in BINARIES {
+            std::fs::write(extract.path().join(name), b"NEW").unwrap();
+        }
+        for name in ["thurbox", "thurbox-cli"] {
+            std::fs::write(install.path().join(name), b"OLD").unwrap();
+        }
+        // A non-empty directory where the last program goes: no rename lands.
+        let blocked = install.path().join(BINARIES[BINARIES.len() - 1]);
+        std::fs::create_dir_all(blocked.join("x")).unwrap();
+
+        install_binaries(extract.path(), install.path(), "").unwrap_err();
+        for name in &BINARIES[2..BINARIES.len() - 1] {
+            assert!(
+                !install.path().join(name).exists(),
+                "{name} stayed after the failed update"
+            );
+        }
+    }
+
+    /// The Windows shape of the same: a later program held open, and the
+    /// programs the install lacked are gone again after the failure.
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_commit_removes_the_programs_it_added_on_windows() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let install = tempfile::TempDir::new().unwrap();
+        let extract = tempfile::TempDir::new().unwrap();
+        for stem in BINARIES {
+            std::fs::write(extract.path().join(format!("{stem}.exe")), "NEW").unwrap();
+        }
+        let last = format!("{}.exe", BINARIES[BINARIES.len() - 1]);
+        for name in ["thurbox.exe", "thurbox-cli.exe", last.as_str()] {
+            std::fs::write(install.path().join(name), "OLD").unwrap();
+        }
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ
+            .open(install.path().join(&last))
+            .unwrap();
+
+        install_binaries(extract.path(), install.path(), ".exe").unwrap_err();
+        for stem in &BINARIES[2..BINARIES.len() - 1] {
+            let name = format!("{stem}.exe");
+            assert!(
+                !install.path().join(&name).exists(),
+                "{name} stayed after the failed update"
+            );
         }
     }
 
