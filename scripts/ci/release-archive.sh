@@ -7,6 +7,7 @@
 # Usage:
 #   scripts/ci/release-archive.sh <version> <target> <bin-dir> [out-dir]
 #   scripts/ci/release-archive.sh --binaries     # print the shipped programs
+#   scripts/ci/release-archive.sh --fleet-binaries  # print the ones Fleet needs
 #
 # Writes thurbox-<version>-<target>.tar.gz, or .zip for a Windows target (the
 # archive install.ps1 and the in-app updater expect), into out-dir (default:
@@ -18,14 +19,17 @@ set -euo pipefail
 # `workspace-git`, each found on PATH or beside its caller. A release that
 # leaves one out installs a thurbox that cannot start a session.
 BINARIES=(thurbox thurbox-cli fleet runtime-mux workspace-git)
+# The part of BINARIES Fleet runs headless, without thurbox: what the
+# installers' fleet-only mode installs. install.bats holds it to a subset.
+FLEET_BINARIES=(fleet runtime-mux workspace-git)
 
-if [ "${1:-}" = "--binaries" ]; then
-  printf '%s\n' "${BINARIES[@]}"
-  exit 0
-fi
+case "${1:-}" in
+  --binaries) printf '%s\n' "${BINARIES[@]}"; exit 0 ;;
+  --fleet-binaries) printf '%s\n' "${FLEET_BINARIES[@]}"; exit 0 ;;
+esac
 
 if [ "$#" -lt 3 ]; then
-  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 fi
 

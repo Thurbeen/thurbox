@@ -512,6 +512,12 @@ location (`~/.local/bin`) is user-writable; a system-wide install in a
 root-owned directory will fail the replace (logged, non-fatal). `version_check`
 and `auto_update` are independent — enable either or both.
 
+**A fleet-only install never updates itself.** The updater runs only in
+`thurbox` and `thurbox-cli`, and replaces the programs in their own directory.
+A fleet-only install (`install.sh --fleet-only`, `install.ps1 -FleetOnly`, or
+`THURBOX_FLEET_ONLY=1`) has neither, and Fleet has no updater, so nothing adds
+thurbox to it. To update it, run the installer again in the same mode.
+
 **Windows takes the same path, with two differences.** The release artifact
 is the `.zip` `install.ps1` extracts, so the
 unpacker is chosen by the archive's extension. And a rename cannot replace an

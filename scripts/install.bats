@@ -64,8 +64,8 @@
   grep -q "trap cleanup" "${BATS_TEST_DIRNAME}/install.sh"
 }
 
-@test "script is under 250 lines" {
-  [ "$(wc -l < "${BATS_TEST_DIRNAME}/install.sh")" -lt 250 ]
+@test "script is under 275 lines" {
+  [ "$(wc -l < "${BATS_TEST_DIRNAME}/install.sh")" -lt 275 ]
 }
 
 @test "script contains banner function" {
@@ -188,5 +188,105 @@
   run sh -c "TEST_TMPDIR=1 NO_COLOR=1 . '${BATS_TEST_DIRNAME}/install.sh'; show_success '$tmpdir' 2>&1"
   [[ "$output" == *"fleet init"* ]]
   [[ "$output" != *"no Fleet"* ]]
+  rm -rf "$tmpdir"
+}
+
+@test "Fleet's programs are some of the shipped ones" {
+  shipped=" $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries | tr '\n' ' ')"
+  fleet=$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --fleet-binaries)
+  [ -n "$fleet" ]
+  for bin in $fleet; do [[ "$shipped" == *" $bin "* ]]; done
+  [[ "$fleet" != *thurbox* ]]
+}
+
+@test "installs the Fleet programs the release archive names" {
+  expected=$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --fleet-binaries | tr '\n' ' ' | sed 's/ $//')
+  run sh -c "TEST_TMPDIR=1 . '${BATS_TEST_DIRNAME}/install.sh'; printf '%s' \"\$FLEET_BINARIES\""
+  [ "$output" = "$expected" ]
+}
+
+# A release of every shipped program for this machine, served from a directory
+# as DOWNLOAD_URL fetches it. Sets $assets and $dest.
+fake_release() {
+  tmpdir=$(mktemp -d)
+  assets="$tmpdir/www" dest="$tmpdir/bin"
+  mkdir -p "$tmpdir/src" "$assets/v9.9.9"
+  files="$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries) LICENSE"
+  for f in $files; do printf '#!/bin/sh\n' > "$tmpdir/src/$f"; done
+  target=$(TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; get_target \$(detect_platform)")
+  # Named members, as release-archive.sh packs them.
+  # shellcheck disable=SC2086 # one member per word
+  tar -czf "$assets/v9.9.9/thurbox-v9.9.9-$target.tar.gz" -C "$tmpdir/src" $files
+  (cd "$assets/v9.9.9" && sha256sum ./*.tar.gz | sed 's| \./| |' > thurbox-v9.9.9-checksums.txt)
+}
+
+# Sets $code and $log (stdout and stderr).
+run_installer() {
+  code=0
+  log=$(env NO_COLOR=1 VERSION=v9.9.9 DOWNLOAD_URL="file://$assets" INSTALL_DIR="$dest" "$@" 2>&1) || code=$?
+}
+
+installed() { find "$dest" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ' | sed 's/ $//'; }
+
+fleet_only_installed() {
+  [ "$code" -eq 0 ]
+  [ "$(installed)" = "$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --fleet-binaries | sort | tr '\n' ' ' | sed 's/ $//')" ]
+  for step in "fleet init" "fleet up" "fleet apply" "fleet doctor"; do
+    [[ "$log" == *"$step"* ]]
+  done
+  [[ "$log" != *"thurbox-cli"* ]]
+  [[ "$log" != *"Launch the TUI"* ]]
+}
+
+@test "--fleet-only installs only Fleet's programs and names only Fleet's steps" {
+  fake_release
+  run_installer sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
+  fleet_only_installed
+  rm -rf "$tmpdir"
+}
+
+@test "THURBOX_FLEET_ONLY=1 is the same as --fleet-only, and says it skipped thurbox" {
+  fake_release
+  run_installer THURBOX_FLEET_ONLY=1 sh "${BATS_TEST_DIRNAME}/install.sh"
+  fleet_only_installed
+  [[ "$log" == *"THURBOX_FLEET_ONLY is set"* ]]
+  rm -rf "$tmpdir"
+}
+
+@test "--fleet-only does not blame THURBOX_FLEET_ONLY" {
+  fake_release
+  run_installer THURBOX_FLEET_ONLY= sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
+  fleet_only_installed
+  [[ "$log" != *"THURBOX_FLEET_ONLY"* ]]
+  rm -rf "$tmpdir"
+}
+
+@test "THURBOX_FLEET_ONLY=0 is a full install" {
+  fake_release
+  run_installer THURBOX_FLEET_ONLY=0 sh "${BATS_TEST_DIRNAME}/install.sh"
+  [ "$code" -eq 0 ]
+  for bin in $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries); do
+    [ -x "$dest/$bin" ]
+  done
+  rm -rf "$tmpdir"
+}
+
+@test "a full install still installs every shipped program and names thurbox" {
+  fake_release
+  run_installer THURBOX_FLEET_ONLY= sh "${BATS_TEST_DIRNAME}/install.sh"
+  [ "$code" -eq 0 ]
+  for bin in $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries); do
+    [ -x "$dest/$bin" ]
+  done
+  [[ "$log" == *"thurbox-cli doctor"* ]]
+  rm -rf "$tmpdir"
+}
+
+@test "an unknown option fails before anything is installed" {
+  fake_release
+  run_installer sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-onyl
+  [ "$code" -ne 0 ]
+  [[ "$log" == *"--fleet-onyl"* ]]
+  [ ! -e "$dest" ]
   rm -rf "$tmpdir"
 }
