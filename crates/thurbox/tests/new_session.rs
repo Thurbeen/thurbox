@@ -209,13 +209,24 @@ fn painted(
     world: &World,
     hovered: Option<&Identity>,
 ) -> Option<(Buffer, Vec<Hit>)> {
+    painted_on(host, world, hovered, 120)
+}
+
+/// [`painted`] on a screen `screen_cols` wide: a float is told the screen's
+/// width, and one sized to its content may not outgrow it.
+fn painted_on(
+    host: &LuaHost,
+    world: &World,
+    hovered: Option<&Identity>,
+    screen_cols: u16,
+) -> Option<(Buffer, Vec<Hit>)> {
     publish_hovered(host, world, hovered);
     let index = index_of(host, PLUGIN);
     let rendered = host
         .render(
             index,
             RenderContext {
-                width: 120,
+                width: screen_cols,
                 height: 40,
                 focused: true,
                 elapsed: 0.0,
@@ -230,7 +241,7 @@ fn painted(
     let rows = float.rows.expect("the flow sizes its own height");
     let width = float
         .cols
-        .unwrap_or((120.0 * float.width_pct / 100.0) as u16);
+        .unwrap_or((f64::from(screen_cols) * float.width_pct / 100.0) as u16);
     let mut hits = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(width, rows)).expect("terminal");
     terminal
@@ -800,6 +811,137 @@ fn a_host_list_not_yet_published_shows_the_wait() {
     world.snapshot.hosts = Some(vec![local_host(), devbox()]);
     let screen = drawn(&host, &world);
     assert!(screen.contains("devbox"), "{screen}");
+}
+
+/// Two places as the maintainer's screenshot listed them: `local`, and a
+/// place whose runtime says why it cannot run a session, at length.
+fn places_of_two_lengths() -> Vec<HostRow> {
+    vec![
+        HostRow {
+            detail: "this machine (mux)".into(),
+            ready: Some(true),
+            ..HostRow::local("this machine")
+        },
+        HostRow {
+            name: "mux/nixos-hp".into(),
+            detail: "a mux place".into(),
+            backend: "mux/nixos-hp".into(),
+            ready: Some(false),
+            why: Some(NOT_READY_WHY.into()),
+        },
+    ]
+}
+
+const NOT_READY_WHY: &str = "place \"nixos-hp\": `fleet` is not on its PATH, \
+    so the runtime cannot start a session there; install Fleet on that machine";
+
+/// The cell column `needle` starts at on screen.
+fn column_of(buffer: &Buffer, needle: &str) -> u16 {
+    locate(buffer, needle).0
+}
+
+/// The place picker is a table: each column starts at one cell on every row,
+/// whatever the names' lengths; a row's status is short and whole, and the
+/// selected place's full reason reads under the list, wrapped to the modal,
+/// which fits the screen it opens on.
+#[test]
+fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
+    let frames: [(u16, &[&str]); 2] = [
+        (
+            80,
+            &[
+                "╭ Place ───────────────────────────────────────────────────╮",
+                "│  local         this machine (mux)  ● ready               │",
+                "│▸ mux/nixos-hp  a mux place         ○ not ready           │",
+                "│ place \"nixos-hp\": `fleet` is not on its PATH, so the     │",
+                "│ runtime cannot start a session there; install Fleet on   │",
+                "│ that machine                                             │",
+                "│                                                          │",
+                "│j/k navigate                         [ Select ] [ Cancel ]│",
+                "╰──────────────────────────────────────────────────────────╯",
+            ],
+        ),
+        (
+            48,
+            &[
+                "╭ Place ───────────────────────────────────────╮",
+                "│  local         this machine (mu…  ● ready    │",
+                "│▸ mux/nixos-hp  a mux place        ○ not ready│",
+                "│ place \"nixos-hp\": `fleet` is not on its PATH,│",
+                "│ so the runtime cannot start a session there; │",
+                "│ install Fleet on that machine                │",
+                "│                                              │",
+                "│j/k navigate             [ Select ] [ Cancel ]│",
+                "╰──────────────────────────────────────────────╯",
+            ],
+        ),
+    ];
+    for (screen_cols, frame) in frames {
+        let host = host();
+        let mut world = World::default();
+        world.snapshot.hosts = Some(places_of_two_lengths());
+        press(&host, &world, "ctrl+n");
+        press(&host, &world, "down");
+        let (buffer, _) = painted_on(&host, &world, None, screen_cols).expect("open");
+        let screen = screen_of(&buffer);
+        assert!(
+            buffer.area.width <= screen_cols,
+            "{screen_cols} cols: the modal is {} wide:\n{screen}",
+            buffer.area.width
+        );
+        let lines: Vec<&str> = screen.lines().collect();
+        let local = lines
+            .iter()
+            .position(|l| l.contains("local"))
+            .expect(&screen);
+        let place = lines
+            .iter()
+            .position(|l| l.contains("mux/nixos-hp"))
+            .expect(&screen);
+        // The detail column starts where the longest name ends, on both rows.
+        let detail = |row: usize, text: &str| {
+            let at = lines[row].find(text).unwrap_or_else(|| {
+                panic!("{screen_cols} cols: {text:?} not on row {row}:\n{screen}")
+            });
+            lines[row][..at].chars().count()
+        };
+        assert_eq!(
+            detail(local, "this"),
+            detail(place, "a mux"),
+            "{screen_cols} cols: the detail column wanders:\n{screen}"
+        );
+        assert!(
+            detail(place, "a mux") > detail(place, "mux/nixos-hp") + "mux/nixos-hp".len(),
+            "{screen_cols} cols: a name runs into its detail:\n{screen}"
+        );
+        // The status column too, and the status is whole.
+        assert_eq!(
+            column_of(&buffer, "● ready"),
+            column_of(&buffer, "○ not ready"),
+            "{screen_cols} cols: the status column wanders:\n{screen}"
+        );
+        assert!(
+            !lines[place].contains("not ready:"),
+            "{screen_cols} cols: the row carries the reason, cut:\n{screen}"
+        );
+        // The selected place's whole reason, wrapped under the list.
+        let below: String = lines[place + 1..]
+            .iter()
+            .map(|l| l.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            below.contains(
+                &NOT_READY_WHY
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            "{screen_cols} cols: the full reason is not under the list:\n{screen}"
+        );
+        assert_eq!(screen, frame.join("\n"), "{screen_cols} cols:\n{screen}");
+    }
 }
 
 /// A Fleet that defines no `local` host offers none.

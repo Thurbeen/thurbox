@@ -503,13 +503,14 @@ local function trail(flow)
   return table.concat(parts, " › ")
 end
 
---- The shared modal shell, with this flow's two constants folded in: every step
+--- The shared modal shell, with this flow's two constants folded in: a step
 --- is `MODAL_COLS` wide (`cols`, in cells — every row here is truncated against
---- `ROW_COLS`), and every step's title carries the breadcrumb trail, muted, so
---- the step says where you are without spending a row on it.
-local function frame(title, rows_height, children, flow)
+--- `ROW_COLS`) unless it sizes itself to a table (`picker_cols`), and every
+--- step's title carries the breadcrumb trail, muted, so the step says where
+--- you are without spending a row on it.
+local function frame(title, rows_height, children, flow, cols)
   return modal.frame(title, {
-    cols = MODAL_COLS,
+    cols = cols or MODAL_COLS,
     rows = rows_height,
     children = children,
     crumbs = trail(flow),
@@ -568,9 +569,99 @@ end
 
 -- ── The steps ──────────────────────────────────────────────────────────────
 
---- `text` padded with spaces to `width` cells, so a list's columns line up.
-local function pad(text, width)
-  return text .. string.rep(" ", math.max(1, width - widgets.len(text)))
+--- The cells between two columns of a table row.
+local GUTTER = 2
+
+--- Each column's width in a table of `rows` (lists of cells), measured in
+--- display columns so a wide glyph lines up too, and the width the widest
+--- row takes.
+local function measure(rows)
+  local widths = {}
+  for _, cells in ipairs(rows) do
+    for column, cell in ipairs(cells) do
+      widths[column] = math.max(widths[column] or 0, widgets.len(cell))
+    end
+  end
+  local natural = 0
+  for column, cells in ipairs(widths) do
+    natural = natural + cells + (column > 1 and GUTTER or 0)
+  end
+  return widths, natural
+end
+
+--- The rows of a picker laid out as a table: every column as wide as its
+--- widest cell, so a column starts at one cell on every row whatever the
+--- lengths around it. When the rows overrun `width`, column `flex` gives up
+--- the difference, its cells ellipsized; the other columns never move.
+local function table_labels(rows, width, flex)
+  local widths, natural = measure(rows)
+  if natural > width and widths[flex] then
+    widths[flex] = math.max(1, widths[flex] - (natural - width))
+  end
+  local labels = {}
+  for _, cells in ipairs(rows) do
+    local parts = {}
+    for column, cell in ipairs(cells) do
+      local fitted = widgets.truncate(cell, widths[column])
+      -- The last column is not padded: trailing spaces are nothing to align.
+      parts[column] = column < #cells and widgets.pad(fitted, widths[column]) or fitted
+    end
+    labels[#labels + 1] = widgets.truncate(table.concat(parts, string.rep(" ", GUTTER)), width)
+  end
+  return labels
+end
+
+--- `text` broken at spaces into lines at most `width` cells wide; a word wider
+--- than a line is ellipsized rather than cut silently.
+local function wrap(text, width)
+  local lines, line = {}, ""
+  for word in text:gmatch("%S+") do
+    word = widgets.truncate(word, width)
+    if line == "" then
+      line = word
+    elseif widgets.len(line) + 1 + widgets.len(word) <= width then
+      line = line .. " " .. word
+    else
+      lines[#lines + 1] = line
+      line = word
+    end
+  end
+  if line ~= "" then
+    lines[#lines + 1] = line
+  end
+  return lines
+end
+
+--- The most lines the reason under a picker takes; a longer one ends in `…`.
+local REASON_LINES = 4
+
+--- A picker sized to its table: as wide as its widest row needs, never
+--- narrower than the rest of the flow, never wider than the screen. Returns
+--- the modal's columns and the columns a row inside it gets: the modal's
+--- border and the `▸ ` marker.
+local function picker_cols(natural, flow)
+  local screen = flow.screen_cols or MODAL_COLS
+  local cols = math.min(math.max(MODAL_COLS, natural + 4), screen)
+  return cols, cols - 4
+end
+
+--- What the row under the cursor says beyond its own short status, under the
+--- list: wrapped to the modal, and as tall as the longest of `reasons`, so
+--- the modal keeps its size as the cursor moves.
+local function reason_rows(reasons, index, width)
+  local height = 0
+  for _, reason in ipairs(reasons) do
+    height = math.max(height, math.min(#wrap(reason, width), REASON_LINES))
+  end
+  local lines = wrap(reasons[index] or "", width)
+  if #lines > height then
+    lines[height] = widgets.truncate(lines[height] .. " …", width)
+  end
+  local text = {}
+  for line = 1, height do
+    text[line] = { { text = " " .. (lines[line] or ""), style = { fg = theme.muted } } }
+  end
+  return { type = "text", len = height, text = text }, height
 end
 
 --- A Fleet's state as its row shows it, short enough to fit beside its name.
@@ -587,9 +678,6 @@ local FLEET_STATES = {
 --- up, and for a remote one with no manager, what runs it (M4: thurbox never
 --- starts a manager on another machine).
 local function fleet_detail(fleet)
-  if not fleet then
-    return ""
-  end
   if fleet.state == "down" and fleet.remote then
     return "install the systemd unit (see doctor)"
   end
@@ -597,81 +685,76 @@ local function fleet_detail(fleet)
 end
 
 --- The Fleet picker: each listed Fleet, how it is reached, and its state.
-local function fleet_labels()
-  local labels = {}
-  for _, fleet in ipairs(fleets()) do
-    labels[#labels + 1] = pad(fleet.name, 12)
-      .. pad(fleet.transport or "", 18)
-      .. (FLEET_STATES[fleet.state] or fleet.state or "")
-  end
-  return labels
-end
-
 local function render_fleet(flow)
-  local labels = fleet_labels()
-  if flow.fleet_index > #labels then
-    flow.fleet_index = math.max(#labels, 1)
+  local rows, reasons = {}, {}
+  for _, fleet in ipairs(fleets()) do
+    rows[#rows + 1] =
+      { fleet.name, fleet.transport or "", FLEET_STATES[fleet.state] or fleet.state or "" }
+    reasons[#reasons + 1] = fleet_detail(fleet)
+  end
+  if flow.fleet_index > #rows then
+    flow.fleet_index = math.max(#rows, 1)
     save(flow)
   end
+  local _, natural = measure(rows)
+  local cols, row_cols = picker_cols(natural, flow)
+  local labels = table_labels(rows, row_cols, 2)
   local height = #labels
-  local detail = fleet_detail(fleets()[flow.fleet_index])
-  return frame("Fleet", height + 5, {
+  local reason, reason_height = reason_rows(reasons, flow.fleet_index, cols - 3)
+  return frame("Fleet", height + reason_height + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.fleet_index, height) },
-    {
-      type = "text",
-      len = 1,
-      text = {
-        {
-          { text = " " .. widgets.middle_truncate(detail, ROW_COLS), style = { fg = theme.muted } },
-        },
-      },
-    },
+    reason,
     message_row(flow),
     modal.footer({ { "j/k", "navigate" } }, "Select"),
-  }, flow)
+  }, flow, cols)
 end
 
---- Whether a place's runtime says it can run a session, as its row shows it.
+--- Whether a place's runtime says it can run a session, as its row shows it:
+--- short, since the row is a table cell. Why it cannot reads under the list.
 local function readiness(place)
   if place.ready == true then
-    return "  ● ready"
+    return "● ready"
   elseif place.ready == false then
-    return "  ○ not ready" .. (place.why and (": " .. place.why) or "")
+    return "○ not ready"
   end
   return ""
 end
 
 --- The place picker: each place the chosen Fleet defines, with the detail
---- that tells two apart. Fleet's `local` is offered only when Fleet defines
---- it.
-local function host_labels()
-  local labels = {}
-  for _, host in ipairs(hosts() or {}) do
-    labels[#labels + 1] = pad(host.name, 12) .. pad(host.detail or "", 24) .. readiness(host)
-  end
-  return labels
-end
-
+--- that tells two apart and whether its runtime can run a session. Fleet's
+--- `local` is offered only when Fleet defines it. A place is named as a
+--- Task names it, and as its session's row will: `local`, or
+--- `<runtime>/<place>`.
 local function render_host(flow)
-  local labels = host_labels()
+  local places = hosts() or {}
+  local rows, reasons = {}, {}
+  for _, place in ipairs(places) do
+    rows[#rows + 1] = { place.name, place.detail or "", readiness(place) }
+    reasons[#reasons + 1] = place.ready == false and (place.why or "") or ""
+  end
   local refused = refusal()
   if refused then
-    labels = { refused }
+    rows, reasons = { { refused } }, {}
   elseif hosts() == nil then
-    labels = { "Asking " .. (flow.fleet or "Fleet") .. " for its places…" }
+    rows = { { "Asking " .. (flow.fleet or "Fleet") .. " for its places…" } }
   end
   -- Fleet's answer replaces the list under an open step, and can shorten it.
-  if flow.host_index > #labels then
-    flow.host_index = math.max(#labels, 1)
+  if flow.host_index > #rows then
+    flow.host_index = math.max(#rows, 1)
     save(flow)
   end
+  local _, natural = measure(rows)
+  local cols, row_cols = picker_cols(natural, flow)
+  local labels = table_labels(rows, row_cols, 2)
   local height = #labels
+  local reason, reason_height = reason_rows(reasons, flow.host_index, cols - 3)
   local title = several_fleets() and flow.fleet and ("Place on " .. flow.fleet) or "Place"
-  return frame(title, height + 4, {
+  return frame(title, height + reason_height + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
+    reason,
     message_row(flow),
     modal.footer({ { "j/k", "navigate" } }, "Select"),
-  }, flow)
+  }, flow, cols)
 end
 
 local REPO_LIST_MAX = 10
@@ -1410,7 +1493,7 @@ local function move_selection(flow, step)
   if flow.step == "fleet" then
     flow.fleet_index = widgets.clamp(flow.fleet_index + step, #fleets())
   elseif flow.step == "host" then
-    flow.host_index = widgets.clamp(flow.host_index + step, #host_labels())
+    flow.host_index = widgets.clamp(flow.host_index + step, #(hosts() or {}))
   elseif flow.step == "repo" then
     flow.cursor = widgets.clamp((flow.cursor or 1) + step, #rows_for(flow))
   elseif flow.step == "agent" then
@@ -1559,6 +1642,8 @@ return {
     -- through five signatures, so a spinner can animate in any of them. Not
     -- saved: it belongs to this frame.
     flow.elapsed = ctx.elapsed
+    -- A float is told the screen: a picker sized to its table stays inside it.
+    flow.screen_cols = ctx.width
     flow.suggestion = flow.step == "repo" and flow.focus == "input" and suggestion_for(flow) or ""
 
     -- A path just added is selected, which is v1's select-or-add. The row cannot
