@@ -54,9 +54,11 @@ controller's labels.
 
 ![CronTask state machine: at each scheduled time the controller skips the time when the CronTask is suspended, when the deadline passed, or when Forbid finds a Task that runs; with Replace it deletes the running Task first; then it writes the intent, the manager creates the Task, and the receipt is written](cron-task.svg)
 
-First, the controller gives up each pending create that the limits in
-force no longer allow: the CronTask is suspended, or the create's scheduled
-time is past its deadline. Such a create never blocks a later time.
+First, the controller gives up each pending create that a fresh decision
+would refuse now: the CronTask is suspended, the create's scheduled time is
+past its deadline, or the policy is `Forbid` and another Task of this
+CronTask runs. Such a create never blocks a later time. A retry always
+obeys the spec in force, as a fresh decision does.
 
 At a scheduled time `T`, the controller applies these rules in order:
 
@@ -150,9 +152,15 @@ writes. The controller answers it from the Task listing:
   for `Forbid`.
 - A create that the store refused three times is given up, with the
   receipt `Failed`.
-- A delete keeps the permission it was decided with. A history delete
-  stays Concluded-only on every retry, so it never removes a Task that a
-  person reopened with `fleet amend` meanwhile.
+- A delete keeps the permission it was decided with, `running`. A retry
+  never widens it: a history delete stays Concluded-only, so it never
+  removes a Task that a person reopened with `fleet amend` meanwhile. Only
+  a newer `Replace` decision widens it. It is narrowed to Concluded-only
+  while the spec no longer says `Replace`.
+- A history delete that the store refused is decided again when the Task
+  is Concluded again and still past `historyLimit`.
+- A delete, like a create, brings `notBefore` within one minute, so one
+  that never lands is retried long before the next scheduled time.
 - A create whose outcome is Unknown is tried again every minute, with no
   limit: Fleet never reads Unknown as absence, so it never drops the create.
   While it waits it counts as a running Task, so under `Forbid` it holds

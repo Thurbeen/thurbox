@@ -321,13 +321,30 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Give up each pending create the limits in force now no longer allow:
-    /// the CronTask is suspended, or its scheduled time is past the deadline.
+    /// Give up each pending create the limits in force now no longer allow,
+    /// as a fresh decision would refuse it: the CronTask is suspended, the
+    /// scheduled time is past the deadline, or the policy is Forbid and
+    /// another Task of this CronTask runs.
     fn discard_stale_creates(&mut self) {
         for (key, record) in self.pending_creates() {
             let scheduled = record.scheduled.unwrap_or(record.intent.at);
             if self.spec.suspend {
                 self.give_up(&key, "the CronTask is suspended".into());
+                continue;
+            }
+            if self.spec.concurrency_policy == ConcurrencyPolicy::Forbid
+                && let Some((other, _)) = self
+                    .alive()
+                    .into_iter()
+                    .find(|(name, _)| *name != record.task)
+            {
+                self.cond(
+                    SKIPPED,
+                    ConditionStatus::True,
+                    "Forbidden",
+                    format!("Task {other} still runs"),
+                );
+                self.give_up(&key, format!("Forbid: Task {other} still runs"));
                 continue;
             }
             if let Some(deadline) = self.spec.starting_deadline_ms()
@@ -436,8 +453,12 @@ impl Pass<'_, '_> {
         });
     }
 
-    /// Write the retire's intent and ask the manager to delete the Task.
-    /// `running` is fixed by the first intent: a retry keeps it.
+    /// Write the retire's intent and ask the manager to delete the Task,
+    /// once per pass. `running` is the permission to delete a Task that is
+    /// not Concluded. Only a newer Replace decision widens the stored
+    /// permission; a retry passes the stored value back. Either way it is
+    /// narrowed while the spec no longer says Replace, so a delete never
+    /// removes running work the CronTask no longer asks to replace.
     fn plan_retire(&mut self, name: &str, uid: &str, running: bool) {
         let key = cron_task::retire_key(uid);
         let intent = self.intent("retireScheduled");
@@ -452,8 +473,10 @@ impl Pass<'_, '_> {
                 task: name.to_string(),
                 scheduled: None,
                 unknowns: 0,
-                running,
+                running: false,
             });
+        record.running = (record.running || running)
+            && self.spec.concurrency_policy == ConcurrencyPolicy::Replace;
         record.intent = intent;
         record.receipt = None;
         record.attempts += 1;
@@ -462,7 +485,11 @@ impl Pass<'_, '_> {
             uid: uid.to_string(),
             running: record.running,
         };
+        self.effects.retain(|e| e.key != key);
         self.effects.push(Effect { key, action });
+        // Look again soon: should this delete never land, it is retried
+        // within a minute, not at the next scheduled time.
+        self.recovering = true;
     }
 
     /// The Task a scheduled time starts: the template's spec, its labels and
@@ -525,7 +552,6 @@ impl Pass<'_, '_> {
                     continue;
                 }
                 self.plan_retire(&record.task, &uid, record.running);
-                self.recovering = true;
             } else {
                 self.recover(&key, EffectOutcome::Deleted);
             }
@@ -566,7 +592,20 @@ impl Pass<'_, '_> {
             .map(|t| (t.metadata.name.clone(), t.metadata.uid.clone()))
             .collect();
         for (name, uid) in old {
-            if !self.st.effects.contains_key(&cron_task::retire_key(&uid)) {
+            // A fresh decision: none was made, or the store refused the last
+            // one (the Task was reopened since). One still in flight is
+            // `settle_effects`' to retry.
+            let refused = self
+                .st
+                .effects
+                .get(&cron_task::retire_key(&uid))
+                .is_none_or(|r| {
+                    matches!(
+                        r.receipt.as_ref().map(|x| &x.outcome),
+                        Some(Observation::Known(EffectOutcome::Failed { .. }))
+                    )
+                });
+            if refused {
                 self.plan_retire(&name, &uid, false);
             }
         }
