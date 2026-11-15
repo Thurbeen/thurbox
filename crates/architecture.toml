@@ -32,7 +32,7 @@
 [crates.fleet-api]
 role = "pure"
 deps = []
-external = ["serde", "serde_json", "thiserror", "toml"]
+external = ["serde", "serde_json", "thiserror", "toml", "croner", "chrono"]
 probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-telemetry"]
 
 [crates.fleet-controllers]
@@ -552,7 +552,10 @@ clippy_guards = [
 # two kinds and are named by the controllers alone; `ConversationController`
 # is also the one creator of a conversation Task, through the manager's
 # fenced create, and the only writer that may set the
-# `gateway.fleet.dev/conversation` labels.
+# `gateway.fleet.dev/conversation` labels. `CronTaskController` owns a
+# CronTask's status, is named by the controllers alone, and is the one
+# creator of a scheduled Task and the one writer of its
+# `crontask.fleet.dev/` labels.
 [status_writers]
 "fleet_api::store::FieldManager::Plugin" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
@@ -561,6 +564,7 @@ clippy_guards = [
 "fleet_api::store::FieldManager::GatewayController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::ConversationController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::ListenerController" = ["fleet-api", "fleet-controllers"]
+"fleet_api::store::FieldManager::CronTaskController" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::Worker" = ["fleet-api", "fleet-manager"]
 "fleet_api::store::FieldManager::Apply" = ["fleet-api", "fleet-manager", "fleet-store"]
 "fleet_api::store::FieldManager::Cli" = ["fleet-api", "fleet-manager", "fleet-store"]

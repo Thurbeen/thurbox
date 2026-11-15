@@ -59,7 +59,8 @@ by `fleet result`, never the state of its terminal.
 
 ## Recurring work
 
-thurbox schedules nothing of its own. A recurring Task is a cron job or
-systemd timer that applies a JSON manifest under a fresh name each tick, and a
-recurring prompt is one that runs `fleet send TASK TEXT` to a long-lived Task
-([features.md](features.md#scheduling-work)).
+A recurring Task is a Fleet
+[CronTask](../fleet/resources/cron-task.md): it creates a Task from its
+template at each scheduled time. An outside timer that runs
+`fleet send TASK TEXT` still works for a recurring prompt to a long-lived
+Task ([features.md](features.md#scheduling-work)).

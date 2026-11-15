@@ -2074,6 +2074,7 @@ fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
         "changerequest" => fleet_api::change_request::KIND.to_string(),
         "conversation" => fleet_api::conversation::KIND.to_string(),
         "listener" => fleet_api::listener::KIND.to_string(),
+        "crontask" => fleet_api::cron_task::KIND.to_string(),
         _ => kind.to_string(),
     };
     if let Some(served) = store

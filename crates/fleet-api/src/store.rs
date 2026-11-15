@@ -37,6 +37,9 @@ pub enum FieldManager {
     /// The one controller for Listener; owns its status but the beats and
     /// refusals the receive verb records.
     ListenerController,
+    /// The one controller for CronTask; owns all of its status, and creates
+    /// and retires the Tasks its schedule starts.
+    CronTaskController,
     /// An account's listener program, through `fleet gateway receive`:
     /// creates Conversations and spools deliveries on them, and records
     /// beats and refusals on its Listener. Owns nothing and needs no lease.
@@ -56,6 +59,7 @@ impl FieldManager {
             FieldManager::Plugin(name) => return format!("plugin/{name}"),
             FieldManager::ConversationController => "conversation-controller",
             FieldManager::ListenerController => "listener-controller",
+            FieldManager::CronTaskController => "cron-task-controller",
             FieldManager::Listener(account) => return format!("listener/{account}"),
         }
         .into()
@@ -72,6 +76,7 @@ impl FieldManager {
                 | FieldManager::Plugin(_)
                 | FieldManager::ConversationController
                 | FieldManager::ListenerController
+                | FieldManager::CronTaskController
         )
     }
 }
@@ -199,6 +204,22 @@ pub trait Store {
         _lease: &LeaseToken,
     ) -> Result<DeleteOutcome, StoreError> {
         Err(StoreError::Unsupported("retire_conversation_task".into()))
+    }
+    /// Delete a Task a CronTask created: fenced on the Task's `uid` and the
+    /// lease, and refused unless the Task carries `cron_uid` as its
+    /// `crontask.fleet.dev/uid` label and, unless `running` (the Replace
+    /// policy), is Concluded. Only CronTaskController calls it. `NotFound`
+    /// when it is gone.
+    fn retire_scheduled_task(
+        &self,
+        _name: &str,
+        _uid: &str,
+        _cron_uid: &str,
+        _running: bool,
+        _by: FieldManager,
+        _lease: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError> {
+        Err(StoreError::Unsupported("retire_scheduled_task".into()))
     }
     /// Replace spec (and labels); bumps generation when spec changed.
     fn update_spec(

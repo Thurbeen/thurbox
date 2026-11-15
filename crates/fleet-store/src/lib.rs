@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fleet_api::conversation::{self, ConversationStatus, Spooled};
+use fleet_api::cron_task;
 use fleet_api::follow::ForgeStatus;
 use fleet_api::gateway::Delivery;
 use fleet_api::inbox::{DeliveryReceipt, InboxEntry};
@@ -884,6 +885,13 @@ impl Store for FileStore {
                     )));
                 }
             }
+            for label in [cron_task::NAME_LABEL, cron_task::UID_LABEL] {
+                if labels.get(label) != obj.metadata.labels.get(label) {
+                    return Err(StoreError::Forbidden(format!(
+                        "the label {label} is set only by the CronTask's controller when it creates the Task, and never changes"
+                    )));
+                }
+            }
             if kind == task::KIND {
                 talk::check_parent_unchanged(&obj.metadata.labels, &labels)
                     .map_err(|why| StoreError::Forbidden(format!("{}: {why}", obj.key())))?;
@@ -1234,6 +1242,57 @@ impl Store for FileStore {
         if obj.status["phase"].as_str() != Some("Concluded") {
             return Err(StoreError::Forbidden(format!(
                 "{} is not Concluded; a thread whose Task runs is not retired",
+                obj.key()
+            )));
+        }
+        self.mark_deleted(obj)
+    }
+
+    fn retire_scheduled_task(
+        &self,
+        name: &str,
+        uid: &str,
+        cron_uid: &str,
+        running: bool,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError> {
+        if !kinds::may_retire_scheduled_task(&by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not retire scheduled Tasks",
+                by.name()
+            )));
+        }
+        let _guard = self.lock()?;
+        self.check_lease(lease)?;
+        let obj = self.read_existing(task::KIND, name)?;
+        // A recreated Task under the same name has a new uid: the plan that
+        // named the old one removes nothing.
+        if obj.metadata.uid != uid {
+            return Err(StoreError::Conflict {
+                key: obj.key(),
+                expected: 0,
+                actual: obj.metadata.resource_version,
+            });
+        }
+        if obj
+            .metadata
+            .labels
+            .get(cron_task::UID_LABEL)
+            .map(String::as_str)
+            != Some(cron_uid)
+        {
+            return Err(StoreError::Forbidden(format!(
+                "{} was not created for this CronTask",
+                obj.key()
+            )));
+        }
+        if obj.is_deleting() {
+            return Ok(DeleteOutcome::Marked);
+        }
+        if !running && obj.status["phase"].as_str() != Some("Concluded") {
+            return Err(StoreError::Forbidden(format!(
+                "{} is not Concluded; history keeps a running Task",
                 obj.key()
             )));
         }
@@ -1614,6 +1673,12 @@ impl FileStore {
 /// created for, so only that thread's controller may set them.
 fn check_conversation_labels(obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
     for label in obj.metadata.labels.keys() {
+        if cron_task::is_controller_label(label) && !kinds::may_set_cron_task_labels(by) {
+            return Err(StoreError::Forbidden(format!(
+                "{}: the label {label} is set only by the CronTask's controller when it creates the Task",
+                obj.key()
+            )));
+        }
         if conversation::is_controller_label(label) && !kinds::may_set_conversation_labels(by) {
             return Err(StoreError::Forbidden(format!(
                 "{}: the label {label} is set only by the Conversation's controller when it creates the Task",

@@ -1,7 +1,7 @@
 //! Which kinds this build serves, and who may write what on each.
 
 use crate::store::FieldManager;
-use crate::{change_request, conversation, listener, task};
+use crate::{change_request, conversation, cron_task, listener, task};
 
 /// Every kind this build serves, in the order `fleet version` lists them.
 /// A plugin manifest may claim none of these names.
@@ -12,6 +12,7 @@ pub const BUILT_IN: &[&str] = &[
     change_request::KIND,
     conversation::KIND,
     listener::KIND,
+    cron_task::KIND,
 ];
 
 /// Whether this build stores and reconciles a kind.
@@ -26,6 +27,7 @@ pub fn controller_of(kind: &str) -> Option<FieldManager> {
         change_request::KIND => Some(FieldManager::ChangeRequestController),
         conversation::KIND => Some(FieldManager::ConversationController),
         listener::KIND => Some(FieldManager::ListenerController),
+        cron_task::KIND => Some(FieldManager::CronTaskController),
         _ => None,
     }
 }
@@ -49,6 +51,7 @@ pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
         conversation::KIND => Some(FieldManager::ConversationController),
         listener::KIND if listener::UNOWNED_FIELDS.contains(&field) => None,
         listener::KIND => Some(FieldManager::ListenerController),
+        cron_task::KIND => Some(FieldManager::CronTaskController),
         _ => None,
     }
 }
@@ -57,13 +60,16 @@ pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
 /// `Store::create_fenced` under the lease): `apply` for any kind; an
 /// account's listener, through the receive verb, for the Conversation of a
 /// thread it delivers for and for its own Listener; the Conversation's
-/// controller for the Task a thread starts; and the Gateway controller for
-/// the Conversation of a thread Fleet opened.
+/// controller for the Task a thread starts; the CronTask's controller for
+/// the Task a scheduled time starts; and the Gateway controller for the
+/// Conversation of a thread Fleet opened.
 pub fn may_create(kind: &str, by: &FieldManager) -> bool {
     match by {
         FieldManager::Apply => true,
         FieldManager::Listener(_) => matches!(kind, conversation::KIND | listener::KIND),
-        FieldManager::ConversationController => kind == task::KIND,
+        FieldManager::ConversationController | FieldManager::CronTaskController => {
+            kind == task::KIND
+        }
         FieldManager::GatewayController => kind == conversation::KIND,
         _ => false,
     }
@@ -74,6 +80,18 @@ pub fn may_create(kind: &str, by: &FieldManager) -> bool {
 /// afterwards.
 pub fn may_set_conversation_labels(by: &FieldManager) -> bool {
     *by == FieldManager::ConversationController
+}
+
+/// Who may set the `crontask.fleet.dev/name` and `-uid` labels on a Task it
+/// creates: the CronTask's controller only. Nobody changes them afterwards.
+pub fn may_set_cron_task_labels(by: &FieldManager) -> bool {
+    *by == FieldManager::CronTaskController
+}
+
+/// Who may delete a Task a CronTask created (`Store::retire_scheduled_task`):
+/// the CronTask's controller only.
+pub fn may_retire_scheduled_task(by: &FieldManager) -> bool {
+    *by == FieldManager::CronTaskController
 }
 
 /// Who may spool a delivery on a Conversation (`Store::receive_event`) and

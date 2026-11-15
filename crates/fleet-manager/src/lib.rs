@@ -25,7 +25,12 @@
 //! entries appended together. Whether a tied Task is due is judged from
 //! the sweep's Conversation listing, so a quiet tied Task costs nothing.
 //!
-//! The same sweep walks the ChangeRequests: each due one is observed through
+//! The same sweep walks the CronTasks: each due one is decided by
+//! CronTaskController from the Tasks carrying its uid label, and its plan
+//! creates the scheduled Task and retires old ones, intent before and
+//! receipt after, as the `cron_tasks` module says.
+//!
+//! It walks the ChangeRequests: each due one is observed through
 //! the Forge port and decided by ChangeRequestController, whose plan is one
 //! status write and, after retention, one fenced delete. There are no effects
 //! and no receipts on that side.
@@ -47,6 +52,7 @@
 //! The receive verb that fills the spool and records beats lives in
 //! [`verbs`] and needs no lease.
 
+mod cron_tasks;
 mod execution;
 pub mod plugins;
 mod telemetry;
@@ -425,6 +431,7 @@ impl Manager<'_> {
                 }
             }
             busy |= self.sweep_change_requests(lease, opts.lease_ttl, report)?;
+            busy |= self.sweep_cron_tasks(lease, opts.lease_ttl, report)?;
             let mut cache = GatewayCache::default();
             busy |= self.sweep_conversations(lease, opts.lease_ttl, report, &mut cache)?;
             busy |= self.sweep_listeners(lease, opts.lease_ttl, report, &mut cache)?;
@@ -2163,7 +2170,7 @@ impl Manager<'_> {
             } => self
                 .runtime
                 .resume(session, conversation.as_deref(), launch),
-            // The Forge, Conversation and Gateway controllers' effects,
+            // The Forge, Conversation, CronTask and Gateway controllers' effects,
             // performed by their own steps; TaskController never plans them.
             Action::MarkReady { .. }
             | Action::Post { .. }
@@ -2172,7 +2179,8 @@ impl Manager<'_> {
             | Action::Log { .. }
             | Action::React { .. }
             | Action::DeleteTask { .. }
-            | Action::RemoveDir { .. } => Observation::Known(EffectOutcome::Failed {
+            | Action::RemoveDir { .. }
+            | Action::RetireScheduled { .. } => Observation::Known(EffectOutcome::Failed {
                 why: format!("{} is not a Task controller effect", effect.action.name()),
             }),
         }
