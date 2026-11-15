@@ -2146,14 +2146,19 @@ fn cmd_apply(
                 Observation::Unknown { .. } => None,
             })
     };
-    // A Task with no harness and no `configRef` takes `default`'s. One
-    // whose `configRef` names a TaskConfig not there yet is checked at its
-    // launch.
+    // A Task with no harness and no `configRef` takes `default`'s, or the
+    // one its saved launch froze. One whose `configRef` names a TaskConfig
+    // not there yet is checked at its launch.
+    let launched = |obj: &Object| match store.get(fleet_api::task::KIND, &obj.metadata.name) {
+        Observation::Known(Some(stored)) => store.launch(&stored).is_ok_and(|l| l.is_some()),
+        _ => false,
+    };
     if let Some(obj) = objs.iter().find(|obj| {
         obj.kind == fleet_api::task::KIND
             && obj.spec.get("harness").is_none()
             && obj.spec.get("configRef").is_none()
             && task_config(obj).is_none_or(|c| c.spec["harness"].as_str().is_none())
+            && !launched(obj)
     }) {
         return Err(Failure {
             code: exit::ERROR,

@@ -419,3 +419,20 @@ fn a_task_with_no_configref_takes_its_harness_model_and_env_from_the_default_con
         );
     }
 }
+
+#[test]
+fn a_task_launched_with_the_default_harness_takes_updates_after_the_default_goes() {
+    let e = Env::new("config-default-gone");
+    let default = object("TaskConfig", "default", json!({"harness": "codex"}));
+    let mut t = task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("harness");
+    e.apply(json!([default, t.clone()])).ok();
+    e.reconcile().ok();
+    assert_eq!(e.status("t1")["execution"]["harness"], "codex");
+    e.fleet(&["delete", "taskconfig", "default"]).ok();
+    // Its saved launch holds the harness: a later update is not refused.
+    t["spec"]["dispatch"] = json!(false);
+    e.apply(t).ok();
+    assert_eq!(e.get("t1")["spec"]["dispatch"], false);
+    assert_eq!(e.status("t1")["execution"]["harness"], "codex");
+}
