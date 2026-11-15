@@ -1236,6 +1236,10 @@ is wrapped as `fleet term-bridge -- <argv>`, so a view only ever gets a
 stream. A Task with no session yet, a runtime that does not declare `attach`
 and a key the runtime holds no process under exit 3; an Unknown answer exits 4.
 Without `--json` the argv is printed one argument per line.
+`fleet shell TASK [--json]` is the same for an interactive shell beside the
+Task's session, on its place: Fleet asks the runtime's
+[`shell`](../runtime/README.md#the-shell) and answers as `fleet attach` does.
+A runtime that does not declare `shell` exits 3.
 `fleet term-bridge -- <argv>` is that bridge: it runs the command on a pty of
 its own through `fleet-exec` and relays it as the terminal stream on its stdin
 and stdout, until the view detaches or the command exits.
@@ -1341,7 +1345,9 @@ command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `e2e_runtime_exec` runs `fleet attach` against the reference script, whose
 `tty` answer comes back bridged, and against `runtime-mux`, whose stream a
 test view drives: snapshot, input, output, and a detach that leaves the
-agent running; it also drives `fleet term-bridge` on its own, and reads
+agent running. It runs `fleet shell` against `runtime-mux`, where a view
+types into the shell and finds it in the Task's directory, and against the
+reference script, which has no shell; it also drives `fleet term-bridge` on its own, and reads
 `fleet runtime hosts`, `fleet runtime places`, `fleet runtime browse` and
 `branches` (and their refusal when a runtime does not offer the verb), and
 the harnesses `fleet version` lists.
