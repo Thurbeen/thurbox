@@ -591,12 +591,18 @@ end
 
 --- The rows of a picker laid out as a table: every column as wide as its
 --- widest cell, so a column starts at one cell on every row whatever the
---- lengths around it. When the rows overrun `width`, column `flex` gives up
---- the difference, its cells ellipsized; the other columns never move.
-local function table_labels(rows, width, flex)
+--- lengths around it. When the rows overrun `width`, the columns in `shrink`
+--- give up the difference in that order, each down to one cell, their cells
+--- ellipsized. A column not in `shrink` (a row's status) is always whole.
+local function table_labels(rows, width, shrink)
   local widths, natural = measure(rows)
-  if natural > width and widths[flex] then
-    widths[flex] = math.max(1, widths[flex] - (natural - width))
+  for _, column in ipairs(shrink) do
+    local over = natural - width
+    if over > 0 and widths[column] then
+      local cut = math.min(over, math.max(0, widths[column] - 1))
+      widths[column] = widths[column] - cut
+      natural = natural - cut
+    end
   end
   local labels = {}
   for _, cells in ipairs(rows) do
@@ -645,23 +651,40 @@ local function picker_cols(natural, flow)
   return cols, cols - 4
 end
 
---- What the row under the cursor says beyond its own short status, under the
---- list: wrapped to the modal, and as tall as the longest of `reasons`, so
---- the modal keeps its size as the cursor moves.
-local function reason_rows(reasons, index, width)
+--- How many lines the reason under a picker wants: the longest of
+--- `reasons` wrapped to `width`, so the modal keeps its size as the cursor
+--- moves, and never more than `REASON_LINES`.
+local function reason_height(reasons, width)
   local height = 0
   for _, reason in ipairs(reasons) do
     height = math.max(height, math.min(#wrap(reason, width), REASON_LINES))
   end
+  return height
+end
+
+--- The rows a picker's list and its reason get on the screen. The modal's
+--- border, message row and footer take four; the list keeps every row it
+--- can, and the reason gives up its lines first, down to one. A list longer
+--- than its rows scrolls with the cursor (`selector_rows`), so no row is
+--- selectable without being drawn.
+local function picker_rows(count, wanted_reason, flow)
+  local avail = (flow.screen_rows or math.huge) - 4
+  local reason = math.min(wanted_reason, math.max(math.min(wanted_reason, 1), avail - count))
+  return math.max(1, math.min(count, avail - reason)), reason
+end
+
+--- What the row under the cursor says beyond its own short status, under the
+--- list: wrapped to the modal, on `height` lines; a longer one ends in `…`.
+local function reason_rows(reasons, index, width, height)
   local lines = wrap(reasons[index] or "", width)
-  if #lines > height then
+  if #lines > height and height > 0 then
     lines[height] = widgets.truncate(lines[height] .. " …", width)
   end
   local text = {}
   for line = 1, height do
     text[line] = { { text = " " .. (lines[line] or ""), style = { fg = theme.muted } } }
   end
-  return { type = "text", len = height, text = text }, height
+  return { type = "text", len = height, text = text }
 end
 
 --- A Fleet's state as its row shows it, short enough to fit beside its name.
@@ -698,10 +721,10 @@ local function render_fleet(flow)
   end
   local _, natural = measure(rows)
   local cols, row_cols = picker_cols(natural, flow)
-  local labels = table_labels(rows, row_cols, 2)
-  local height = #labels
-  local reason, reason_height = reason_rows(reasons, flow.fleet_index, cols - 3)
-  return frame("Fleet", height + reason_height + 4, {
+  local labels = table_labels(rows, row_cols, { 2, 1 })
+  local height, reason_lines = picker_rows(#labels, reason_height(reasons, cols - 3), flow)
+  local reason = reason_rows(reasons, flow.fleet_index, cols - 3, reason_lines)
+  return frame("Fleet", height + reason_lines + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.fleet_index, height) },
     reason,
     message_row(flow),
@@ -745,11 +768,11 @@ local function render_host(flow)
   end
   local _, natural = measure(rows)
   local cols, row_cols = picker_cols(natural, flow)
-  local labels = table_labels(rows, row_cols, 2)
-  local height = #labels
-  local reason, reason_height = reason_rows(reasons, flow.host_index, cols - 3)
+  local labels = table_labels(rows, row_cols, { 2, 1 })
+  local height, reason_lines = picker_rows(#labels, reason_height(reasons, cols - 3), flow)
+  local reason = reason_rows(reasons, flow.host_index, cols - 3, reason_lines)
   local title = several_fleets() and flow.fleet and ("Place on " .. flow.fleet) or "Place"
-  return frame(title, height + reason_height + 4, {
+  return frame(title, height + reason_lines + 4, {
     { type = "box", len = height, children = selector_rows(labels, flow.host_index, height) },
     reason,
     message_row(flow),
@@ -1644,6 +1667,7 @@ return {
     flow.elapsed = ctx.elapsed
     -- A float is told the screen: a picker sized to its table stays inside it.
     flow.screen_cols = ctx.width
+    flow.screen_rows = ctx.height
     flow.suggestion = flow.step == "repo" and flow.focus == "input" and suggestion_for(flow) or ""
 
     -- A path just added is selected, which is v1's select-or-add. The row cannot

@@ -220,6 +220,17 @@ fn painted_on(
     hovered: Option<&Identity>,
     screen_cols: u16,
 ) -> Option<(Buffer, Vec<Hit>)> {
+    painted_sized(host, world, hovered, screen_cols, 40)
+}
+
+/// [`painted_on`] on a screen `screen_rows` tall as well.
+fn painted_sized(
+    host: &LuaHost,
+    world: &World,
+    hovered: Option<&Identity>,
+    screen_cols: u16,
+    screen_rows: u16,
+) -> Option<(Buffer, Vec<Hit>)> {
     publish_hovered(host, world, hovered);
     let index = index_of(host, PLUGIN);
     let rendered = host
@@ -227,7 +238,7 @@ fn painted_on(
             index,
             RenderContext {
                 width: screen_cols,
-                height: 40,
+                height: screen_rows,
                 focused: true,
                 elapsed: 0.0,
                 frame: 0,
@@ -942,6 +953,97 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
         );
         assert_eq!(screen, frame.join("\n"), "{screen_cols} cols:\n{screen}");
     }
+}
+
+/// A name too long for its row never costs a row its status: the status
+/// column is always kept, the description gives up its cells first, and
+/// then the name is ellipsized. The Fleet picker keeps its state the same way.
+#[test]
+fn a_long_name_never_hides_a_pickers_status_column() {
+    let long = "mux/a-place-whose-name-runs-on-and-on-and-on-x";
+    assert_eq!(long.len(), 46);
+    let host = host();
+    let mut world = World::default();
+    let mut places = places_of_two_lengths();
+    places[1].name = long.into();
+    places[1].backend = long.into();
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    let (buffer, _) = painted_on(&host, &world, None, 60).expect("open");
+    let screen = screen_of(&buffer);
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(
+        lines[1].contains("local") && lines[1].contains("● ready"),
+        "{screen}"
+    );
+    assert!(
+        lines[2].contains("mux/a-place") && lines[2].contains("○ not ready"),
+        "{screen}"
+    );
+    assert!(
+        lines[2].contains('…'),
+        "the long name is ellipsized:\n{screen}"
+    );
+    assert_eq!(
+        column_of(&buffer, "● ready"),
+        column_of(&buffer, "○ not ready"),
+        "{screen}"
+    );
+
+    let host = self::host();
+    let mut world = World::default();
+    let mut fleets = three_fleets();
+    fleets[2].name = "a-fleet-whose-name-runs-on-and-on-and-on-and-on".into();
+    world.snapshot.fleets = fleets;
+    press(&host, &world, "ctrl+n");
+    let (buffer, _) = painted_on(&host, &world, None, 60).expect("open");
+    let screen = screen_of(&buffer);
+    assert!(screen.contains("Fleet"), "{screen}");
+    for state in ["○ Fleet not running", "○ unreachable", "● up"] {
+        assert!(screen.contains(state), "{state:?} is lost:\n{screen}");
+    }
+}
+
+/// More places than the screen has rows: the modal stays inside the screen,
+/// the list scrolls with the cursor, and the row the cursor is on is drawn.
+#[test]
+fn a_long_place_list_scrolls_inside_a_short_screen() {
+    let host = host();
+    let mut world = World::default();
+    let mut places = vec![places_of_two_lengths()[0].clone()];
+    for n in 1..20 {
+        places.push(HostRow {
+            name: format!("mux/place-{n:02}"),
+            detail: "a mux place".into(),
+            backend: format!("mux/place-{n:02}"),
+            ready: Some(false),
+            why: Some(NOT_READY_WHY.into()),
+        });
+    }
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    for _ in 0..19 {
+        press(&host, &world, "down");
+    }
+    let (buffer, _) = painted_sized(&host, &world, None, 80, 24).expect("open");
+    let screen = screen_of(&buffer);
+    assert!(
+        buffer.area.height <= 24,
+        "{} rows:\n{screen}",
+        buffer.area.height
+    );
+    assert!(
+        screen.lines().any(|l| l.contains("▸ mux/place-19")),
+        "the cursor's row is off screen:\n{screen}"
+    );
+    assert!(
+        screen.contains("[ Select ]"),
+        "the footer is lost:\n{screen}"
+    );
+    assert!(
+        screen.contains("not on its PATH"),
+        "no reason at all:\n{screen}"
+    );
 }
 
 /// A Fleet that defines no `local` host offers none.
