@@ -71,15 +71,42 @@ def reconcile(req):
         return {"plan": {"status": {**own(obj["status"]), "phase": "Unknown"}}}
     if seen["known"].get("content") == spec["content"]:
         return {"plan": {"status": {"phase": "Ready", "observedGeneration": generation}}}
-    write = {"key": f"write/{generation}", "request": {"name": spec["name"], "content": spec["content"]}}
-    # Look again in a second, to confirm the write, instead of after pollMs.
-    return {
-        "plan": {
-            "status": {"phase": "Writing", "observedGeneration": generation},
-            "effects": [write],
-            "notBefore": req["now"] + 1000,
-        }
-    }
+    key = write_key(obj["status"], generation)
+    write = {"key": key, "request": {"name": spec["name"], "content": spec["content"]}}
+    plan = {"status": {"phase": "Writing", "observedGeneration": generation}, "effects": [write]}
+    if not last_failed(obj["status"]):
+        # Look again in a second, to confirm the write. After a failed
+        # write, wait pollMs before the next attempt instead.
+        plan["notBefore"] = req["now"] + 1000
+    return {"plan": plan}
+
+
+def write_key(status, generation):
+    """The key of the next write: `write/<generation>/<attempt>`.
+
+    Fleet runs an effect key once. A key that has a receipt is spent, so a
+    file that drifted, or a write that failed, needs the next attempt's key.
+    A key with an intent and no receipt is still in flight: keep it, and
+    Fleet records its lost answer instead of running it twice.
+    """
+    prefix = f"write/{generation}/"
+    effects = (status or {}).get("effects", {})
+    attempts = {int(k[len(prefix):]): e for k, e in effects.items() if k.startswith(prefix)}
+    if not attempts:
+        return f"{prefix}1"
+    last = max(attempts)
+    if "receipt" not in attempts[last]:
+        return f"{prefix}{last}"
+    return f"{prefix}{last + 1}"
+
+
+def last_failed(status):
+    """Whether the newest write that has a receipt failed."""
+    done = [e for k, e in (status or {}).get("effects", {}).items() if k.startswith("write/") and "receipt" in e]
+    if not done:
+        return False
+    newest = max(done, key=lambda e: e["receipt"]["at"])
+    return "failed" in newest["receipt"]["outcome"]
 
 
 def own(status):

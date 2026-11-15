@@ -71,8 +71,10 @@ carries the same `id` and `ok: true`, with the call's payload. An answer with
 4. `reconcile` compares `spec.content` with the observation:
    - the same: the status is `{"phase": "Ready", "observedGeneration": N}`;
    - different: the status is `Writing`, with one effect,
-     `{"key": "write/<generation>", "request": {name, content}}`, and
-     `notBefore` one second later, to confirm the write;
+     `{"key": "write/<generation>/<attempt>", "request": {name, content}}`,
+     and `notBefore` one second later, to confirm the write. The attempt is
+     the last one in `status.effects`, while it has no receipt, else the
+     next one. After a failed write, the next attempt waits `pollMs`;
    - Unknown: the status is `Unknown`, and nothing is written. Unknown never
      means absent.
 5. `perform` writes the file and answers `{"outcome": {"done": {"bytes": N}}}`.
@@ -147,7 +149,7 @@ After the first pass, `hello.txt` exists and the status is:
   "phase": "Writing",
   "observedGeneration": 1,
   "effects": {
-    "write/1": {
+    "write/1/1": {
       "intent": {"at": 1730000000100, "generation": 1},
       "receipt": {"at": 1730000000500, "outcome": {"done": {"bytes": 18}}}
     }
@@ -168,14 +170,17 @@ How the status flows back:
 2. The manager writes each new effect's intent in the same write, then runs
    `perform`, then writes the receipt.
 3. An effect key with an intent is never performed again. To act again, use
-   a new key, as `write/<generation>` does.
+   a new key. `files.py` counts attempts in the key: after a failed write,
+   or when someone changes the file, the next pass writes under
+   `write/<generation>/<attempt + 1>`. While the last key has no receipt,
+   the plan repeats it, so one write is never run twice.
 4. A receipt whose answer was lost is `{"unknown": {"why": "LostAnswer"}}`.
    The next `reconcile` sees it in `object.status.effects` and decides.
 
 ## Step 5: change it and delete it
 
 Apply the object with new content. The generation becomes 2, the object is
-due at once, and the plan has the effect `write/2`.
+due at once, and the plan has the effect `write/2/1`.
 
 `fleet delete file hello` deletes the object at once, because `File`
 declares no finalizer. A kind with `finalizer: true` stays while deleting,

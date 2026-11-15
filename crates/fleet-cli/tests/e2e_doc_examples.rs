@@ -14,6 +14,7 @@ mod support;
 
 use serde_json::{Value, json};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use support::Env;
 
 const PLUGIN: &str = concat!(
@@ -94,6 +95,60 @@ fn every_resource_example_applies_as_written() {
     env.apply(listener[0].clone())
         .code(1)
         .stderr_has("created by the manager");
+
+    // This test stops at apply for the ChangeRequest and the Conversation:
+    // reconciling them reads gitlab.example.com through `glab` and Slack
+    // through `curl`, which a test must not reach. The fake forge and the
+    // fake platform take other URL and address shapes than the pages show;
+    // e2e_forge and e2e_gateway reconcile those kinds against the fakes.
+    // The Task, TaskConfig and EnvProvider examples settle in
+    // `the_task_examples_settle_under_the_fake_runtime`, and the plugin
+    // kind's in the plugin tests below.
+}
+
+#[test]
+fn the_task_examples_settle_under_the_fake_runtime() {
+    let env = Env::new("doc-task-examples");
+    for page in [
+        include_str!("../../../docs/fleet/resources/task.md"),
+        include_str!("../../../docs/fleet/resources/task-config.md"),
+        include_str!("../../../docs/fleet/resources/env-provider.md"),
+    ] {
+        for doc in examples(page) {
+            env.apply(doc).ok();
+        }
+    }
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]));
+
+    // The dispatched Task is spawned and briefed on `local`.
+    assert_eq!(env.status("design-305")["phase"], "Briefed");
+    // The Task that uses the TaskConfig is not dispatched: it waits. When it
+    // is, its EnvProvider's file source, /work/config/agent-env.json, is
+    // read on the manager, and a test cannot create that path; the
+    // resolution itself is held by e2e_task_config.
+    assert_eq!(env.status("review")["phase"], "Pending");
+    for (kind, name) in [("taskconfig", "reviewer"), ("envprovider", "project-env")] {
+        assert!(
+            env.fleet(&["get", kind, name]).ok().json()["status"].is_null(),
+            "{kind}/{name} has no controller and no status"
+        );
+    }
+
+    // The worker's answer concludes it.
+    env.fleet(&[
+        "result",
+        "design-305",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://github.com/example/app/pull/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("design-305")["phase"], "Concluded");
 }
 
 #[test]
@@ -117,8 +172,7 @@ fn the_example_plugin_writes_its_file_and_reports_ready() {
         hello["spec"]["content"].as_str().unwrap()
     );
     let st = env.fleet(&["get", "file", "hello"]).ok().json()["status"].clone();
-    assert_eq!(st["phase"], "Writing");
-    assert!(st["effects"]["write/1"]["receipt"]["outcome"]["done"].is_object());
+    assert!(st["effects"]["write/1/1"]["receipt"]["outcome"]["done"].is_object());
 
     env.expire_wait_of("File", "hello");
     env.reconcile().ok();
@@ -126,12 +180,22 @@ fn the_example_plugin_writes_its_file_and_reports_ready() {
     assert_eq!(st["phase"], "Ready", "{st:#}");
     assert_eq!(st["observedGeneration"], 1);
 
+    // The file drifts after Ready: the next pass writes it again, under a
+    // new key, since the first one already has its receipt.
+    fs::remove_file(&file).expect("drift");
+    env.expire_wait_of("File", "hello");
+    env.reconcile().ok();
+    assert_eq!(
+        fs::read_to_string(&file).expect("repaired"),
+        hello["spec"]["content"].as_str().unwrap()
+    );
+
     hello["spec"]["content"] = json!("Hello again.\n");
     env.apply(hello).ok();
     env.reconcile().ok();
     assert_eq!(fs::read_to_string(&file).unwrap(), "Hello again.\n");
     let st = env.fleet(&["get", "file", "hello"]).ok().json()["status"].clone();
-    assert!(st["effects"]["write/2"]["receipt"]["outcome"]["done"].is_object());
+    assert!(st["effects"]["write/2/1"]["receipt"]["outcome"]["done"].is_object());
 
     let mut bad = examples(include_str!(
         "../../../docs/fleet/resources/plugin-kinds.md"
@@ -143,4 +207,38 @@ fn the_example_plugin_writes_its_file_and_reports_ready() {
 
     env.fleet(&["delete", "file", "hello"]).ok();
     env.fleet(&["get", "file", "hello"]).code(3);
+}
+
+#[test]
+fn the_example_plugin_retries_a_failed_write() {
+    let env = plugin_env("doc-plugin-retry");
+    // A read-only directory: the plugin reads that the file is absent, and
+    // the first write fails.
+    let dir = env.root.join("files");
+    let blocked = dir.join("hello.txt");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).expect("read-only");
+    let hello = examples(include_str!(
+        "../../../docs/fleet/resources/plugin-kinds.md"
+    ))
+    .remove(0);
+    env.apply(hello.clone()).ok();
+    env.reconcile().ok();
+    let st = env.fleet(&["get", "file", "hello"]).ok().json()["status"].clone();
+    let failed = st["effects"]
+        .as_object()
+        .expect("effects")
+        .values()
+        .filter(|e| e["receipt"]["outcome"]["failed"].is_object())
+        .count();
+    // One bounded run may pass the one-second recheck and try again: each
+    // attempt has its own key and its own failed receipt.
+    assert!(failed >= 1, "{st:#}");
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("unblock");
+    env.expire_wait_of("File", "hello");
+    env.reconcile().ok();
+    assert_eq!(
+        fs::read_to_string(&blocked).expect("written on retry"),
+        hello["spec"]["content"].as_str().unwrap()
+    );
 }
