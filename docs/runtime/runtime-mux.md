@@ -28,7 +28,9 @@ launch prefix differs.
   request's place (`place::parse`), with the keys of its table in Fleet's
   config ([runtime-mux's places](README.md#runtime-muxs-places)). A remote
   place's server runs on the program's socket, `runtime-mux`, unless the
-  place names another.
+  place names another. `runtime-mux view --place <place>` builds the same
+  backend, so a view of a remote pane reads it through the place's control
+  connection.
 - Each host gets one backend per adapter, keyed by its route
   (`ssh:<host>:<mux>`, `wsl:<distro>:<mux>`, `wiring`).
 - A host backend is registered, not connected. It connects on first use, on a

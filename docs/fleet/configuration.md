@@ -314,6 +314,8 @@ distro = "Ubuntu-24.04"
 - `runtime-mux` refuses any other key, and names it.
 - The place needs `ssh -o BatchMode=yes <destination> true` to succeed,
   tmux 3.2 or newer (or psmux), and `fleet` and the agent on its `PATH`.
+  A `git+` workspace also needs `workspace-git` and `git` there, and a WSL
+  place needs `flock`.
   `fleet runtime places` and `fleet doctor` say which one is missing, with
   the command that shows or fixes it.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
@@ -323,11 +325,17 @@ distro = "Ubuntu-24.04"
 - A Task asks the runtime about its own place only. A place that does not
   answer is reported not ready after 8 s, and never holds up a Task on
   another place.
-- A workspace on a remote place is a directory already there, named as a
-  `file://` URL. `runtime-mux` refuses a `git+` URL there: it does not clone
-  on a remote place yet. A release removes nothing on the place.
-- `attach`, `shell`, `browse` and `branches` answer Unknown on a remote
-  place: they are not supported there yet.
+- A workspace on a remote place is made on the place by its own
+  `workspace-git`, under `~/.local/share/runtime-mux/workspaces`. A `git+`
+  URL names a repository as the place reaches it, and a `file://` URL a
+  directory on the place. A release removes the worktree there and keeps
+  its work as on `local`.
+- A WSL place stays running while its multiplexer's server runs:
+  `runtime-mux` keeps one `wsl.exe` waiter attached to it
+  ([runtime-mux's places](../runtime/README.md#runtime-muxs-places)).
+- `fleet attach`, `fleet shell`, `fleet runtime browse` and
+  `fleet runtime branches` read the place, so thurbox's new-session dialog
+  picks a folder and a branch there.
 
 A second Fleet installation on the same runtime needs a distinct
 `keyPrefix`. Store and config must remain separate paths.

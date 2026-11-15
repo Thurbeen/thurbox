@@ -351,10 +351,22 @@ fn mux_config(env: &Env) -> PathBuf {
 
 /// One verb of `runtime-mux` and its answer.
 fn mux_call(program: &Path, sockets: &Sockets, verb: &str, request: &Value) -> Value {
+    mux_call_env(program, sockets, verb, request, &[])
+}
+
+/// [`mux_call`] with `envs` set for the program.
+fn mux_call_env(
+    program: &Path,
+    sockets: &Sockets,
+    verb: &str,
+    request: &Value,
+    envs: &[(&str, &Path)],
+) -> Value {
     use std::io::Write;
     let out = Command::new(program)
         .arg(verb)
         .env("TMUX_TMPDIR", &sockets.0)
+        .envs(envs.iter().copied())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -3493,7 +3505,7 @@ impl Sshd {
                 "Port {port}\nListenAddress 127.0.0.1\nHostKey {d}/host\nPidFile {d}/sshd.pid\n\
                  AuthorizedKeysFile {d}/authorized_keys\nStrictModes no\nUsePAM no\n\
                  PasswordAuthentication no\nKbdInteractiveAuthentication no\n\
-                 SetEnv HOME={h} TMUX_TMPDIR={s}\n",
+                 SetEnv HOME={h} TMUX_TMPDIR={s} SHELL=/bin/sh\n",
                 d = dir.display(),
                 h = home.display(),
                 s = sockets.0.display()
@@ -3701,10 +3713,11 @@ fn toml_place(sshd: &Sshd, path: &[&Path]) -> Value {
 }
 
 /// `fleet runtime places` and `fleet doctor` say whether each ssh place can
-/// run a session, and why not, with the command that shows it; and a `git+`
-/// workspace on a remote place is refused by name, before any start.
+/// run a session, and why not, with the command that shows it. A place
+/// without `workspace-git` on its `PATH` is ready: it takes `file://`
+/// workspaces, and refuses a `git+` one by naming the program.
 #[test]
-fn an_ssh_place_reports_its_readiness_and_refuses_a_git_workspace() {
+fn an_ssh_place_reports_its_readiness() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
@@ -3716,6 +3729,11 @@ fn an_ssh_place_reports_its_readiness_and_refuses_a_git_workspace() {
         return;
     };
     let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    // A place with `fleet` and nothing else of the build on its PATH.
+    let fleet_only = env.root.join("fleet-only");
+    fs::create_dir_all(&fleet_only).expect("fleet-only");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fleet"), fleet_only.join("fleet"))
+        .expect("fleet link");
     // A port nothing listens on: the place does not answer.
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
@@ -3725,8 +3743,9 @@ fn an_ssh_place_reports_its_readiness_and_refuses_a_git_workspace() {
     fs::write(
         &env.config,
         format!(
-            "{cfg}\n[runtimes.mux.places.local]\n{}\n[runtimes.mux.places.down]\nkind = \"ssh\"\ndestination = \"127.0.0.1\"\nssh_opts = [\"-F\", \"/dev/null\", \"-p\", \"{closed}\"]\n\n[runtimes.mux.places.odd]\nkind = \"ssh\"\ndestination = \"127.0.0.1\"\nruntime = \"mux\"\n",
-            sshd.place("box", &[fleet_dir])
+            "{cfg}\n[runtimes.mux.places.local]\n{}{}\n[runtimes.mux.places.down]\nkind = \"ssh\"\ndestination = \"127.0.0.1\"\nssh_opts = [\"-F\", \"/dev/null\", \"-p\", \"{closed}\"]\n\n[runtimes.mux.places.odd]\nkind = \"ssh\"\ndestination = \"127.0.0.1\"\nruntime = \"mux\"\n",
+            sshd.place("box", &[fleet_dir]),
+            sshd.place("bare", &[&fleet_only])
         ),
     )
     .expect("config");
@@ -3760,20 +3779,57 @@ fn an_ssh_place_reports_its_readiness_and_refuses_a_git_workspace() {
         .code(1)
         .stdout_has("mux/down")
         .stdout_has("cannot be reached");
-
-    let mut task = support::task("t1", true);
-    task["spec"]["host"] = json!("mux/box");
-    task["spec"]["workspace"] = json!(["git+https://example.test/app.git"]);
-    env.apply(json!([task])).ok();
-    env.reconcile();
-    let status = env.get("t1")["status"].clone();
-    assert!(
-        status
-            .to_string()
-            .contains("not yet supported on a remote place"),
-        "{status:#}"
+    // A place without `workspace-git` is ready: a `file://` workspace is
+    // made there without it, and only a `git+` one is refused, by name.
+    assert_eq!(row("mux/bare")["ready"], true, "{places:#}");
+    let bare = json!({"name": "bare", "config": toml_place(&sshd, &[&fleet_only])});
+    let dir = env.root.join("on-the-place");
+    fs::create_dir_all(&dir).expect("dir");
+    let made = mux_call(
+        &program,
+        &sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": bare, "key": "k.file",
+                "urls": [format!("file://{}", dir.display())]}),
     );
-    assert!(status["session"].is_null(), "{status:#}");
+    assert_eq!(
+        made["known"]["made"]["dirs"],
+        json!([dir.display().to_string()]),
+        "{made}"
+    );
+    let released = mux_call(
+        &program,
+        &sockets,
+        "stop",
+        &json!({"protocol": 2, "place": bare, "key": "k.file", "release": true}),
+    );
+    assert_eq!(released, json!({"known": "stopped"}));
+    assert!(dir.is_dir(), "a file:// directory outlives its release");
+    // A key with a workspace recorded on the place is not released by a
+    // place that cannot run `workspace-git` now: its teardown cannot run.
+    let recorded = home.join(".local/share/runtime-mux/workspaces/k.made");
+    fs::create_dir_all(&recorded).expect("recorded");
+    fs::write(recorded.join(".fleet-workspace.json"), "{}").expect("record");
+    let held = mux_call(
+        &program,
+        &sockets,
+        "stop",
+        &json!({"protocol": 2, "place": bare, "key": "k.made", "release": true}),
+    );
+    let why = held["unknown"]["why"].as_str().unwrap_or_default();
+    assert!(why.contains("workspace-git"), "{held}");
+    assert!(recorded.is_dir(), "nothing was removed");
+    let refused = mux_call(
+        &program,
+        &sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": bare, "key": "k.git",
+                "urls": ["git+https://example.test/app.git"]}),
+    );
+    let why = refused["known"]["failed"]["why"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(why.contains("workspace-git"), "{refused}");
 }
 
 /// A Task on one place asks the runtime's manifest about that place only:
@@ -4199,4 +4255,390 @@ fn a_user_profile_reports_its_conversation_from_an_ssh_place() {
         "the place's copy of the profiles: {dir}"
     );
     assert!(Path::new(&dir).join("stub.toml").is_file(), "{dir}");
+}
+
+/// A runtime-mux environment with one ssh place, `mux/box`: the private
+/// [`Sshd`] whose sessions get `home` and the place's own tmux directory,
+/// and `bin` and the build's binaries (`fleet`, `workspace-git`) on the
+/// place's `PATH` only through its `path_prepend`.
+struct Placed {
+    env: Env,
+    program: PathBuf,
+    home: PathBuf,
+    sockets: Sockets,
+    remote: Sockets,
+    _sshd: Sshd,
+}
+
+impl Placed {
+    fn new(name: &str, claude: &str) -> Option<Placed> {
+        use std::os::unix::fs::PermissionsExt;
+        let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+            return None;
+        };
+        let sockets = Sockets::new(name);
+        let remote = Sockets::new(&format!("{name}-place"));
+        let mut env = mux_env(&format!("runtime-mux-{name}"), &program, &sockets);
+        let home = env.root.join("place-home");
+        let sshd = Sshd::start(&env.root.join("sshd"), &home, &remote)?;
+        let bin = env.root.join("place-bin");
+        fs::create_dir_all(&bin).expect("bin");
+        let harness = bin.join("claude");
+        fs::write(&harness, claude).expect("harness");
+        fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let cfg = fs::read_to_string(&env.config).expect("config");
+        fs::write(
+            &env.config,
+            format!(
+                "{cfg}\n[runtimes.mux.places.local]\n{}",
+                sshd.place("box", &[&bin, Self::build()])
+            ),
+        )
+        .expect("config");
+        let path = std::env::var("PATH").unwrap_or_default();
+        env.only_on_path(Path::new(&path));
+        Some(Placed {
+            env,
+            program,
+            home,
+            sockets,
+            remote,
+            _sshd: sshd,
+        })
+    }
+
+    /// The directory holding the build's `fleet` and `workspace-git`.
+    fn build() -> &'static Path {
+        Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap()
+    }
+
+    /// The pane directories on the place's server.
+    fn remote_panes(&self) -> Vec<String> {
+        let listed = self
+            .remote
+            .tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
+        String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+/// A `git+file` Task on an ssh place runs in a worktree that `workspace-git`
+/// makes on the place, under the place's own home, and its release removes
+/// the worktree there and keeps the uncommitted work as a preserved ref in
+/// the checkout, as on this machine.
+#[test]
+fn a_git_workspace_on_an_ssh_place_is_made_and_released_there() {
+    let Some(mut p) = Placed::new("ssh-git", CLAUDE) else {
+        return;
+    };
+    let src = p.env.root.join("src");
+    let bad = p.env.root.join("bad");
+    // runtime-mux's setup steps run on the place, in the worktree: one that
+    // succeeds, and one that leaves work and fails.
+    let config = p.env.root.join("runtime-mux.toml");
+    fs::write(
+        &config,
+        format!(
+            "[[workspace.setup]]\nmatch = 'git+file://{}'\nrun = ['echo ran >> setup.log']\n\n\
+             [[workspace.setup]]\nmatch = 'git+file://{}'\nrun = ['echo left > left.txt; exit 3']\n",
+            src.display(),
+            bad.display()
+        ),
+    )
+    .expect("runtime-mux config");
+    p.env
+        .set_var("RUNTIME_MUX_CONFIG", &config.to_string_lossy());
+    let env = &p.env;
+    fs::create_dir_all(&bad).expect("bad");
+    git(&bad, &["init", "-q", "-b", "main"]);
+    git(
+        &bad,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+    );
+    fs::create_dir_all(&src).expect("source");
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(
+        &src,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+    );
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"]["workspace"] = json!([format!("git+file://{}#main", src.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(env, "briefed in its worktree on the place", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let status = env.get("t1")["status"].clone();
+    let dir = PathBuf::from(
+        status["workspace"]["dirs"][0]
+            .as_str()
+            .unwrap_or_else(|| panic!("no workspace dirs: {status:#}")),
+    );
+    let root = p.home.join(".local/share/runtime-mux/workspaces");
+    assert!(
+        dir.starts_with(&root),
+        "{} under the place's {}",
+        dir.display(),
+        root.display()
+    );
+    assert!(dir.join(".git").is_file(), "a worktree: {status:#}");
+    assert_eq!(starts(&dir).len(), 1, "the agent started in the worktree");
+    assert!(
+        p.remote_panes().contains(&dir.display().to_string()),
+        "the agent's pane is on the place, in the worktree: {:?}",
+        p.remote_panes()
+    );
+    let branch = git(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let uid = env.get("t1")["metadata"]["uid"]
+        .as_str()
+        .expect("uid")
+        .to_string();
+    assert!(
+        branch.trim().ends_with(&uid),
+        "a branch of its own: {branch}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("setup.log")).unwrap_or_default(),
+        "ran\n",
+        "the setup step ran once, in the worktree on the place"
+    );
+
+    // A second call adopts the workspace and finds its setup finished.
+    let place = json!({"name": "box", "config": toml_place(&p._sshd, &[&env.root.join("place-bin"), Placed::build()])});
+    let again = mux_call_env(
+        &p.program,
+        &p.sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": place, "key": format!("fleet.{uid}"),
+                "urls": [format!("git+file://{}#main", src.display())]}),
+        &[("RUNTIME_MUX_CONFIG", &config)],
+    );
+    assert_eq!(again["known"]["made"]["adopted"], true, "{again}");
+    assert_eq!(
+        fs::read_to_string(dir.join("setup.log")).unwrap_or_default(),
+        "ran\n",
+        "an adopted workspace's finished setup does not run again"
+    );
+
+    // A failing step fails the call, and the work it left is preserved
+    // before the worktree goes.
+    let failed = mux_call_env(
+        &p.program,
+        &p.sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": place, "key": "k.bad",
+                "urls": [format!("git+file://{}#main", bad.display())]}),
+        &[("RUNTIME_MUX_CONFIG", &config)],
+    );
+    let why = failed["known"]["failed"]["why"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(why.contains("exit 3"), "{failed}");
+    let kept = preserved_refs(&bad);
+    assert_eq!(
+        kept.len(),
+        1,
+        "the failed setup's work is preserved: {kept:?}"
+    );
+    assert_eq!(
+        git(&bad, &["show", &format!("{}:left.txt", kept[0])]),
+        "left\n"
+    );
+    assert!(
+        !p.home
+            .join(".local/share/runtime-mux/workspaces/k.bad/bad")
+            .exists(),
+        "the failed workspace is gone from the place"
+    );
+
+    fs::write(dir.join("notes.txt"), "kept\n").expect("work");
+    env.fleet(&["delete", "task", "t1"]).ok();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1"));
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert!(
+        !dir.exists(),
+        "the release removed the worktree on the place"
+    );
+    let refs = preserved_refs(&src);
+    assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
+    assert_eq!(
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
+        "kept\n"
+    );
+}
+
+/// `fleet runtime browse` and `branches` on an ssh place read the place's
+/// folders and repositories: with no directory, the place's own home.
+#[test]
+fn browse_and_branches_read_an_ssh_place() {
+    let Some(p) = Placed::new("ssh-browse", CLAUDE) else {
+        return;
+    };
+    let env = &p.env;
+    let dir = env.root.join("folders");
+    fs::create_dir_all(dir.join("plain")).expect("plain");
+    fs::create_dir_all(dir.join("with space")).expect("spaced");
+    fs::create_dir_all(dir.join(".hidden")).expect("hidden");
+    fs::write(dir.join("notes.txt"), "a file").expect("file");
+    let repo = dir.join("repo");
+    fs::create_dir_all(&repo).expect("repo");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+    );
+    git(&repo, &["branch", "feat"]);
+    let run = env.fleet(&[
+        "runtime",
+        "browse",
+        "mux/box",
+        dir.to_str().unwrap(),
+        "--json",
+    ]);
+    run.ok();
+    assert_eq!(
+        run.json(),
+        json!({
+            "dir": dir.display().to_string(),
+            "entries": [
+                {"name": ".hidden", "repo": false},
+                {"name": "plain", "repo": false},
+                {"name": "repo", "repo": true},
+                {"name": "with space", "repo": false},
+            ],
+        })
+    );
+    // With no directory, the place's home: not this side's.
+    fs::create_dir_all(p.home.join("on-the-place")).expect("place dir");
+    let run = env.fleet(&["runtime", "browse", "mux/box", "--json"]);
+    run.ok();
+    let home = run.json();
+    assert_eq!(home["dir"], p.home.display().to_string(), "{home}");
+    assert!(
+        home["entries"]
+            .as_array()
+            .is_some_and(|e| e.contains(&json!({"name": "on-the-place", "repo": false}))),
+        "{home}"
+    );
+
+    let run = env.fleet(&[
+        "runtime",
+        "branches",
+        "mux/box",
+        repo.to_str().unwrap(),
+        "--json",
+    ]);
+    run.ok();
+    assert_eq!(
+        run.json(),
+        json!({"names": ["feat", "main"], "default": "main"})
+    );
+    env.fleet(&[
+        "runtime",
+        "browse",
+        "mux/box",
+        dir.join("absent").to_str().unwrap(),
+    ])
+    .code(1)
+    .stderr_has("absent");
+    env.fleet(&[
+        "runtime",
+        "branches",
+        "mux/box",
+        dir.join("plain").to_str().unwrap(),
+    ])
+    .code(1)
+    .stderr_has("no git repository");
+}
+
+/// `fleet attach` and `fleet shell` on an ssh place view the pane on the
+/// place's server: the view reads it through the place's control-mode
+/// connection over ssh, and what it types reaches the place.
+#[test]
+fn attach_and_shell_view_a_pane_on_an_ssh_place() {
+    use support::view::View;
+    use term_stream::{Down, Size, Up};
+    let Some(p) = Placed::new(
+        "ssh-attach",
+        "#!/bin/sh\necho ready-marker\nwhile IFS= read -r l; do echo \"pong-$l\"; done\n",
+    ) else {
+        return;
+    };
+    let env = &p.env;
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(env, "running on the place", |env| {
+        env.get("t1")["status"]["sessionState"] == "Running"
+    });
+
+    let answer = env.fleet(&["attach", "t1", "--json"]).ok().json();
+    let argv: Vec<String> = serde_json::from_value(answer["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
+    let mut view = View::argv(&argv);
+    assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
+    view.until_text("ready-marker");
+    view.send(&Up::Input(b"ping\r".to_vec()));
+    view.until_text("pong-ping");
+    view.send(&Up::Detach);
+    assert!(view.close().success());
+    // Nothing of it was on this machine's server.
+    assert!(p.sockets.tmux(&["list-panes", "-a"]).stdout.is_empty());
+
+    let answer = env.fleet(&["shell", "t1", "--json"]).ok().json();
+    let argv: Vec<String> = serde_json::from_value(answer["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
+    let mut view = View::argv(&argv);
+    assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
+    view.send(&Up::Input(b"echo \"$HOME\" > shell-home\r".to_vec()));
+    let out = work.join("shell-home");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs::read_to_string(&out).unwrap_or_default().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    view.send(&Up::Detach);
+    assert!(view.close().success());
+    assert_eq!(
+        fs::read_to_string(&out).unwrap_or_default().trim(),
+        p.home.display().to_string(),
+        "the shell runs on the place, in the Task's directory"
+    );
 }

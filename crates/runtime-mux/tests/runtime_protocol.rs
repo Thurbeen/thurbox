@@ -246,32 +246,35 @@ fn a_silent_place_does_not_hold_up_the_manifest() {
     );
 }
 
-/// On a remote place, a `git+` workspace and the verbs that read this
-/// machine's disk or server are refused by name, before any connection.
+/// A remote place that does not answer leaves a workspace, a browse and a
+/// branches call Unknown: none of them answers about this machine instead,
+/// and none is a failure the caller would act on.
 #[test]
-fn a_remote_place_refuses_what_it_does_not_serve_yet() {
+fn a_remote_place_that_does_not_answer_leaves_its_reads_unknown() {
     let Some(rt) = Runtime::new() else { return };
-    let devbox =
-        json!({"name": "devbox", "config": {"kind": "ssh", "destination": "me@devbox.invalid"}});
-    let made = rt.call(
-        "workspace",
-        json!({"protocol": 2, "place": devbox, "key": "w.one", "urls": ["git+https://example.test/app.git"]}),
-    );
-    let why = made["known"]["failed"]["why"].as_str().unwrap_or_default();
-    assert!(
-        why.contains("not yet supported on a remote place"),
-        "{made}"
-    );
-    for verb in ["attach", "shell", "browse", "branches"] {
-        let answer = rt.call(
-            verb,
-            json!({"protocol": 2, "place": devbox, "key": "w.one", "repo": "/r"}),
-        );
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a free port")
+        .port();
+    let down = json!({"name": "down", "config": {
+        "kind": "ssh",
+        "destination": "127.0.0.1",
+        "ssh_opts": ["-F", "/dev/null", "-p", closed.to_string()],
+    }});
+    for (verb, request) in [
+        (
+            "workspace",
+            json!({"key": "w.one", "urls": ["git+https://example.test/app.git"]}),
+        ),
+        ("browse", json!({})),
+        ("branches", json!({"repo": "/r"})),
+    ] {
+        let mut request = request;
+        request["protocol"] = json!(2);
+        request["place"] = down.clone();
+        let answer = rt.call(verb, request);
         let why = answer["unknown"]["why"].as_str().unwrap_or_default();
-        assert!(
-            why.contains("not yet supported on a remote place"),
-            "{verb}: {answer}"
-        );
+        assert!(why.contains("\"down\""), "{verb}: {answer}");
     }
 }
 

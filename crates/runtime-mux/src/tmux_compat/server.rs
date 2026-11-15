@@ -3719,6 +3719,11 @@ impl<M: TmuxCompatible> WindowLifecycle for Server<M> {
     /// it to the user's own interactive login shell via
     /// `remote_shell_pane_command` so the pane matches an `ssh <host>` login
     /// (rc files, prompt, aliases, `PATH`).
+    fn server_waiter(&self) -> Option<std::process::Command> {
+        self.located_transport()
+            .waiter_command(&self.socket(), "runtime-mux-waiter")
+    }
+
     fn default_shell(&self) -> String {
         crate::shell::HostShell::for_platform(self.platform)
             .default_shell(self.transport.is_remote())

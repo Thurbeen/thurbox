@@ -257,6 +257,23 @@ impl TmuxTransport {
         Ok(cmd)
     }
 
+    /// A client of the server on `socket` that waits on `channel` until the
+    /// server exits, under `flock -n` on a file beside the socket's
+    /// directory, so a second one exits at once. POSIX hosts only: `None`
+    /// on a Windows one.
+    pub fn waiter_command(&self, socket: &str, channel: &str) -> Option<Command> {
+        if self.shell == crate::shell::HostShell::PowerShell {
+            return None;
+        }
+        let script = format!(
+            "d={}; [ -d \"$d\" ] || mkdir -p -m 700 \"$d\"; \
+             TMUX_TMPDIR=$d; export TMUX_TMPDIR; \
+             exec flock -n \"$d/$2.waiter\" \"$1\" -L \"$2\" wait-for \"$3\"",
+            self.socket_dir.shell_expr(socket)
+        );
+        Some(self.shell_command(&script, &["sh", &self.mux, socket, channel]))
+    }
+
     /// `sh -c <script> <args…>` on the machine the multiplexer runs on — the
     /// first of `args` is `$0`. For the questions only a shell there can
     /// answer: where a directory resolves, which process has a socket bound.
@@ -329,6 +346,44 @@ impl TmuxTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A WSL server's waiter is one `flock`ed `wait-for` client, in the
+    /// distro, under the socket directory the server's own commands use; a
+    /// Windows host has none.
+    #[test]
+    fn a_waiter_waits_on_the_server_in_its_own_socket_directory() {
+        let wsl = TmuxTransport::remote(
+            HostLauncher::Wsl {
+                distro: "Ubuntu".into(),
+            },
+            "tmux",
+        )
+        .with_socket_dir(SocketDir::HostData {
+            app: "runtime-mux".into(),
+        });
+        let cmd = wsl.waiter_command("rm", "ch").expect("a POSIX waiter");
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(cmd.get_program().to_string_lossy().ends_with("wsl.exe"));
+        let script = &argv[argv.len() - 5];
+        assert!(
+            script.starts_with(&format!(
+                "d={};",
+                SocketDir::HostData {
+                    app: "runtime-mux".into()
+                }
+                .shell_expr("rm")
+            )) && script
+                .contains("exec flock -n \"$d/$2.waiter\" \"$1\" -L \"$2\" wait-for \"$3\""),
+            "{script}"
+        );
+        assert_eq!(argv[argv.len() - 4..], ["sh", "tmux", "rm", "ch"]);
+        let windows =
+            ssh("me@win", vec![], "psmux").with_shell(crate::shell::HostShell::PowerShell);
+        assert!(windows.waiter_command("rm", "ch").is_none());
+    }
 
     fn ssh(destination: &str, ssh_opts: Vec<String>, mux: &str) -> TmuxTransport {
         TmuxTransport::remote(

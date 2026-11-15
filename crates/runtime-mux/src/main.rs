@@ -5,10 +5,12 @@
 //! remote place the request names.
 //!
 //! `runtime-mux view [--socket S] [--tmux-tmpdir D] [--scrollback N]
-//! <key | --pane P>` is the
+//! [--place JSON] <key | --pane P>` is the
 //! other shape: one key's pane, or a pane by its id, as a terminal stream on
 //! stdin and stdout, for as long as the view stays. `attach` answers with it;
-//! thurbox's stream panes name the pane.
+//! thurbox's stream panes name the pane. With `--place`, the request's place
+//! as JSON, the pane is the remote place's, read through that place's
+//! backend over its launcher.
 
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -111,9 +113,7 @@ fn serve(verb: &str) -> serde_json::Value {
     let pauses = pauses(&server);
     // Each remote place's login `PATH` is cached beside the locks, so a call
     // does not read it again over ssh.
-    if let (Ok(dir), prefix) = private_dir() {
-        runtime_mux::place::keep_cache_in(dir, format!("{prefix}runtime-mux-{socket}@"));
-    }
+    keep_cache(&socket);
     let settings = MuxSettings {
         socket: Some(socket),
         ..MuxSettings::default()
@@ -131,7 +131,28 @@ fn serve(verb: &str) -> serde_json::Value {
     for registry in built.into_inner().unwrap_or_default() {
         registry.shutdown_all();
     }
+    // A WSL place's server lives only while a `wsl.exe` holds the distro up.
+    if let (Some(host), "start" | "shell") = (place.as_ref().filter(|h| h.is_wsl()), verb) {
+        let built = Mutex::new(Vec::new());
+        if let Some(waiter) = backend_for(&settings, Some(host), &built)
+            .ok()
+            .and_then(|backend| backend.server_waiter())
+        {
+            runtime_mux::place::run_detached(waiter);
+        }
+        for registry in built.into_inner().unwrap_or_default() {
+            registry.shutdown_all();
+        }
+    }
     answer
+}
+
+/// Cache each remote place's login `PATH` beside the locks of `socket`, so
+/// a call does not read it again over ssh.
+fn keep_cache(socket: &str) {
+    if let (Ok(dir), prefix) = private_dir() {
+        runtime_mux::place::keep_cache_in(dir, format!("{prefix}runtime-mux-{socket}@"));
+    }
 }
 
 /// The backend serving `place`: this machine's default multiplexer, or the
@@ -224,6 +245,7 @@ fn view(args: Vec<String>) -> Result<(), String> {
     let mut key = None;
     let mut pane = None;
     let mut scrollback = None;
+    let mut place = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -238,6 +260,12 @@ fn view(args: Vec<String>) -> Result<(), String> {
                         .map_err(|e| format!("--scrollback {lines}: {e}"))?,
                 );
             }
+            "--place" => {
+                let named = args.next().ok_or("--place takes the place as JSON")?;
+                let named: serde_json::Value =
+                    serde_json::from_str(&named).map_err(|e| format!("--place: {e}"))?;
+                place = protocol::check_place(Some(&named))?;
+            }
             "--tmux-tmpdir" => {
                 let dir = args.next().ok_or("--tmux-tmpdir takes a directory")?;
                 // Before any thread starts: tmux finds the socket there.
@@ -247,28 +275,46 @@ fn view(args: Vec<String>) -> Result<(), String> {
             other => return Err(format!("unexpected argument {other:?}")),
         }
     }
+    keep_cache(&socket);
     let defaults = MuxSettings::default();
     let settings = MuxSettings {
         socket: Some(socket),
         scrollback_lines: scrollback.unwrap_or(defaults.scrollback_lines),
         ..defaults
     };
-    let registry = runtime_mux::wiring::local_only(&settings);
-    let backend = registry.default_backend().clone();
+    if let Some(host) = &place {
+        runtime_mux::place::warm(host);
+    }
+    let built = Mutex::new(Vec::new());
+    let served = view_pane(&settings, place.as_ref(), &built, pane, key);
+    for registry in built.into_inner().unwrap_or_default() {
+        registry.shutdown_all();
+    }
+    served
+}
+
+/// The view of `pane`, or of the pane holding `key`, on the backend of
+/// `place`.
+fn view_pane(
+    settings: &MuxSettings,
+    place: Option<&HostDef>,
+    built: &Mutex<Vec<BackendRegistry>>,
+    pane: Option<String>,
+    key: Option<String>,
+) -> Result<(), String> {
+    let backend = backend_for(settings, place, built)?;
     let pane = match (pane, key) {
         (Some(pane), None) => pane,
         (None, Some(key)) => protocol::pane_of(backend.as_ref(), &key)?
             .ok_or_else(|| format!("no process holds key {key}"))?,
         _ => {
             return Err(
-                "usage: runtime-mux view [--socket S] [--tmux-tmpdir D] [--scrollback N] <key | --pane P>".into(),
+                "usage: runtime-mux view [--socket S] [--tmux-tmpdir D] [--scrollback N] [--place JSON] <key | --pane P>".into(),
             )
         }
     };
     backend.ensure_ready().map_err(|e| e.to_string())?;
-    let served = runtime_mux::view::serve(backend, &pane, std::io::stdin(), &mut std::io::stdout());
-    registry.shutdown_all();
-    served
+    runtime_mux::view::serve(backend, &pane, std::io::stdin(), &mut std::io::stdout())
 }
 
 /// The marks of the keys paused on `server` (a socket, and the remote place
@@ -288,8 +334,9 @@ fn lock(name: &str) -> std::io::Result<std::fs::File> {
     let (dir, prefix) = private_dir();
     let path = dir?.join(format!("{prefix}{name}"));
     let mut options = std::fs::OpenOptions::new();
-    // Appending never truncates.
-    options.create(true).append(true);
+    // Appending never truncates. Windows locks only a handle opened to read
+    // or write, and an append-only one is neither.
+    options.create(true).read(true).append(true);
     // A link at the name is refused.
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);

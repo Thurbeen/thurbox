@@ -835,6 +835,15 @@ pub trait WindowLifecycle: Send + Sync {
     /// the kill wanted.
     fn kill(&self, backend_id: &str) -> BackendResult<()>;
 
+    /// A command that stays connected to this backend's server until the
+    /// server exits, and only one of which runs per server: a second one
+    /// exits at once. A WSL place's server needs one running on Windows
+    /// to keep its distro up (`place::run_detached`). `None` for a
+    /// backend that has no such client.
+    fn server_waiter(&self) -> Option<std::process::Command> {
+        None
+    }
+
     /// Default shell command for companion shell panes: one that exists on
     /// the machine this backend's panes run on. Each backend answers for its
     /// own machine — the OS thurbox was built for is not that machine's once
