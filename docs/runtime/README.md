@@ -284,9 +284,10 @@ A new optional verb, planned:
 `shell` answers how to open an interactive shell beside the key's process:
 on its place, in the directory the process is in. The answer has the shapes
 of [`attach`](#the-runtimes-attach), and its argv runs where the view runs.
-thurbox's companion shell for a session on another machine opens with it,
-so thurbox needs no route of its own to the place. Fleet does not ask it
-yet.
+`fleet shell <task>` asks it, and bridges a `tty` answer as `fleet attach`
+does ([contracts](../fleet/contracts.md)). thurbox's companion shell for a
+session on another machine is to open with it, so thurbox needs no route of
+its own to the place.
 
 - `"none"` when no process holds the key, as `attach` answers.
 - The shell belongs to the key. A second call opens the same shell, so a

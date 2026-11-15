@@ -244,6 +244,12 @@ pub trait Runtime {
     fn attach(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
         Observation::Known(None)
     }
+    /// How to open an interactive shell beside `session`'s process, on its
+    /// place, in the shapes of [`Runtime::attach`]. Known(None): the runtime
+    /// offers no shell, or holds no process under the key.
+    fn shell(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
+        Observation::Known(None)
+    }
     /// Whether this runtime can pause a session and resume it. Fleet never
     /// pauses a session on a runtime that cannot.
     fn can_pause(&self) -> bool {

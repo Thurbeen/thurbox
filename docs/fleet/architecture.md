@@ -343,6 +343,8 @@ runtime side, the protocol and the terminal stream, is
   It asks the runtime's `attach` and wraps a `tty` answer in
   `fleet term-bridge`. thurbox opens the stream it names as a stream pane
   (`crates/thurbox/src/kernel/terminal/fleet.rs`), whose backend is the stream itself.
+- `fleet shell <task> --json`: the same for an interactive shell beside the
+  Task's session, on its place, from the runtime's `shell`.
 - thurbox starts `fleet up` when no manager holds the lease, and starts it
   again when it exits. A `fleet up` that exits with
   6 found the lease held, which is no error.

@@ -1720,6 +1720,82 @@ fn fleet_attach_streams_a_runtime_mux_session_and_a_detach_leaves_it_running() {
 }
 
 #[test]
+fn fleet_shell_opens_a_shell_in_the_tasks_directory_on_runtime_mux() {
+    use std::os::unix::fs::PermissionsExt;
+    use support::view::View;
+    use term_stream::{Down, Size, Up};
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("shell-mux");
+    let mut env = mux_env("shell-mux", &program, &sockets);
+    // The shell is `/bin/sh`, never the operator's own; `Env` gives it a
+    // home of the test's.
+    env.set_var("SHELL", "/bin/sh");
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let work = work.canonicalize().expect("canonical workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task, support::task("t2", false)])).ok();
+    env.reconcile().ok();
+
+    // A Task that never started has no shell to open.
+    env.fleet(&["shell", "t2", "--json"])
+        .code(3)
+        .stderr_has("no session");
+
+    let answer = env.fleet(&["shell", "t1", "--json"]).ok().json();
+    let argv: Vec<String> = serde_json::from_value(answer["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
+    assert_eq!(Path::new(&argv[0]), program, "{argv:?}");
+    assert_eq!(argv[1], "view", "{argv:?}");
+
+    let mut view = View::argv(&argv);
+    assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
+    view.send(&Up::Input(b"pwd > shell-pwd\r".to_vec()));
+    let out = work.join("shell-pwd");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fs::read_to_string(&out).unwrap_or_default().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    view.send(&Up::Detach);
+    assert!(view.close().success());
+    assert_eq!(
+        fs::read_to_string(&out).unwrap_or_default().trim(),
+        work.display().to_string(),
+        "the shell opens in the Task's directory"
+    );
+}
+
+#[test]
+fn fleet_shell_on_a_runtime_without_the_verb_exits_3() {
+    if tmux().is_none() {
+        return;
+    }
+    if Command::new("jq").arg("--version").output().is_err() {
+        missing("jq is not installed");
+        return;
+    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let sockets = Sockets::new("shell-none");
+    let mut env = mux_env("shell-none", &script, &sockets);
+    waiting_task(&mut env);
+    env.fleet(&["shell", "t1", "--json"])
+        .code(3)
+        .stderr_has("offers no shell");
+}
+
+#[test]
 fn term_bridge_relays_a_raw_command_as_a_stream() {
     use std::process::Stdio;
     use support::view::View;

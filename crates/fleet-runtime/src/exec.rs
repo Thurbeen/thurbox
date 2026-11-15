@@ -501,6 +501,26 @@ pub struct ExecRuntime {
 type CapturedScreen = Observation<Option<fleet_api::screen::Screen>>;
 
 impl ExecRuntime {
+    /// A verb answering how to open a stream on the key, `attach` or
+    /// `shell`, asked only when the runtime's manifest declares it.
+    fn opener(&self, verb: &str, session: &SessionRef) -> Observation<Option<Attach>> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        bind(rt.manifest(), |manifest| {
+            if !manifest.verbs.iter().any(|v| v == verb) {
+                return Observation::Known(None);
+            }
+            let request = json!({ "key": rt.key(&session.key) });
+            rt.send::<Attached>(verb, request).map(|a| match a {
+                Attached::Stream { argv } => Some(Attach::Stream { argv }),
+                Attached::Tty { argv } => Some(Attach::Tty { argv }),
+                Attached::None => None,
+            })
+        })
+    }
+
     /// `hosts` maps each host name a Task may give to the program serving it.
     pub fn new(hosts: BTreeMap<String, ExecProgram>) -> ExecRuntime {
         ExecRuntime {
@@ -1019,21 +1039,13 @@ impl Runtime for ExecRuntime {
     /// The runtime's `attach`, asked only when its manifest declares it: a
     /// runtime without the verb offers no live view.
     fn attach(&self, session: &SessionRef) -> Observation<Option<Attach>> {
-        let rt = match self.program(&session.host) {
-            Ok(rt) => rt,
-            Err(why) => return Observation::unknown(why),
-        };
-        bind(rt.manifest(), |manifest| {
-            if !manifest.verbs.iter().any(|v| v == "attach") {
-                return Observation::Known(None);
-            }
-            let request = json!({ "key": rt.key(&session.key) });
-            rt.send::<Attached>("attach", request).map(|a| match a {
-                Attached::Stream { argv } => Some(Attach::Stream { argv }),
-                Attached::Tty { argv } => Some(Attach::Tty { argv }),
-                Attached::None => None,
-            })
-        })
+        self.opener("attach", session)
+    }
+
+    /// The runtime's `shell`, asked only when its manifest declares it: a
+    /// runtime without the verb offers no shell.
+    fn shell(&self, session: &SessionRef) -> Observation<Option<Attach>> {
+        self.opener("shell", session)
     }
 
     /// Lost when the runtime holds the key but its process exited: a `stop`

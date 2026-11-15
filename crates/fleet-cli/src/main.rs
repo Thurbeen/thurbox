@@ -180,6 +180,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// The command that opens an interactive shell beside a Task's session,
+    /// on its place, as a terminal stream: as JSON with --json, else one
+    /// argument per line.
+    Shell {
+        task: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Follow the Tasks: one event per changed or deleted Task, as NDJSON
     /// with --json, until Ctrl-C or --once.
     Watch {
@@ -934,7 +942,16 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Attach { task, json } => {
             let signals = open_signals(&data_dir)?;
             let runtime = open_runtime(&config, &signals)?;
-            cmd_attach(store, runtime.as_ref(), &task, json)
+            cmd_open(store, &task, json, Opens::View, |session| {
+                runtime.attach(session)
+            })
+        }
+        Command::Shell { task, json } => {
+            let signals = open_signals(&data_dir)?;
+            let runtime = open_runtime(&config, &signals)?;
+            cmd_open(store, &task, json, Opens::Shell, |session| {
+                runtime.shell(session)
+            })
         }
         Command::Watch {
             since,
@@ -2141,14 +2158,25 @@ fn cmd_apply(
     Ok(())
 }
 
-/// `fleet attach`: the argv that opens the Task's terminal stream. A
-/// runtime's `tty` answer is a raw interactive command, which a view never
-/// sees: it runs under `fleet term-bridge`, so every view gets a stream.
-fn cmd_attach(
+/// What a stream that [`cmd_open`] answers opens.
+#[derive(Clone, Copy)]
+enum Opens {
+    /// The session's own terminal: `fleet attach`.
+    View,
+    /// A shell beside the session: `fleet shell`.
+    Shell,
+}
+
+/// `fleet attach` and `fleet shell`: the argv that opens a terminal stream
+/// on the Task's session, as `ask` answers it. A runtime's `tty` answer is
+/// a raw interactive command, which a view never sees: it runs under
+/// `fleet term-bridge`, so every view gets a stream.
+fn cmd_open(
     store: &dyn Store,
-    runtime: &dyn Runtime,
     task: &str,
     json_out: bool,
+    opens: Opens,
+    ask: impl FnOnce(&fleet_api::task::SessionRef) -> Observation<Option<fleet_api::runtime::Attach>>,
 ) -> Result<(), Failure> {
     use fleet_api::runtime::Attach;
     let obj = get(store, fleet_api::task::KIND, task)?;
@@ -2163,10 +2191,10 @@ fn cmd_attach(
         return Err(Failure {
             code: exit::NOT_FOUND,
             message: format!("Task/{task} has no session yet"),
-            hint: Some("an attach waits for the Task's spawn".into()),
+            hint: Some("a stream waits for the Task's spawn".into()),
         });
     };
-    let argv = match runtime.attach(&session) {
+    let argv = match ask(&session) {
         Observation::Known(Some(Attach::Stream { argv })) => argv,
         Observation::Known(Some(Attach::Tty { argv })) => {
             let fleet = std::env::current_exe()
@@ -2184,8 +2212,12 @@ fn cmd_attach(
             return Err(Failure {
                 code: exit::NOT_FOUND,
                 message: format!(
-                    "the runtime serving host {} offers no live view of Task/{task}",
-                    session.host
+                    "the runtime serving place {} offers no {} of Task/{task}",
+                    session.host,
+                    match opens {
+                        Opens::View => "live view",
+                        Opens::Shell => "shell",
+                    }
                 ),
                 hint: None,
             });
