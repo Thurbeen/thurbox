@@ -124,7 +124,6 @@ opencode read the one copy. Read the one your change touches:
 | `thurbox-testing` | Testing · Kernel and interface tests · Session-backend e2e harnesses |
 | `thurbox-performance` | Performance (render loop) |
 | `thurbox-release` | Release Process · Distribution Packages · Installation Script |
-| `thurbox-remote-hosts` | Remote SSH & WSL Sessions |
 | `thurbox-cli` | thurbox-cli and its subcommands |
 | `thurbox-session-status` | Session status (from Fleet) · OS notifications |
 | `thurbox-kernel` | Architecture (plugin kernel) · Writing an interface plugin |

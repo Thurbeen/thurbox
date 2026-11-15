@@ -77,7 +77,7 @@ fn bookmark(host: &str, path: &str, edit: &BookmarkEdit) -> Result<(), String> {
 /// Removal names a path that is already remembered — an absolute one, since the
 /// rows the flow offers come from the file — so it needs neither the
 /// filesystem nor the host. Done BEFORE the host is resolved, which is what lets
-/// a bookmark be forgotten after its host has been taken out of `hosts.toml`.
+/// a bookmark be forgotten after its host is no longer one Fleet lists.
 fn bookmark_remove(host: &str, path: &str) -> Result<(), String> {
     // Another host's paths were remembered as typed, so they are forgotten
     // as typed: this machine's home says nothing about that host's `~`.

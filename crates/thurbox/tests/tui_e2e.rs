@@ -1243,6 +1243,33 @@ fn stale_discovery_entries_do_not_hide_a_live_tui() {
     assert!(tui.quit().success());
 }
 
+/// thurbox reads no `hosts.toml` of its own: where a session runs is its
+/// Fleet's and its place's. Starting the interface seeds no such file, and
+/// `config show` and `config validate` name none.
+#[test]
+fn thurbox_keeps_no_hosts_toml() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    assert!(tui.quit().success());
+    assert!(
+        !profile.path("config/hosts.toml").exists(),
+        "the interface seeded a hosts.toml"
+    );
+    for args in [["config", "show"], ["config", "validate"]] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.arg("--json").args(args).output().expect("thurbox-cli");
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !text.contains("hosts_toml"),
+            "{args:?} names hosts.toml: {text}"
+        );
+    }
+    assert!(!profile.path("config/hosts.toml").exists());
+}
+
 #[test]
 fn search_cancel_has_the_same_effect_by_key_and_local_action() {
     let profile = Profile::new();
@@ -3104,16 +3131,6 @@ impl Drop for CutProgramInput {
 
 fn configured_host_run_profile() -> Profile {
     let profile = Profile::new();
-    std::fs::write(
-        profile.path("config/hosts.toml"),
-        r#"[[hosts]]
-name = "local"
-destination = "fixture-host"
-share_sessions = false
-ssh_opts = ["-o", "HostKeyAlias=fixture"]
-"#,
-    )
-    .expect("hosts");
     let script = profile.bin.join("ssh");
     std::fs::write(
         &script,
@@ -7854,8 +7871,7 @@ fn the_new_session_modal_creates_on_the_fleet_picked() {
 }
 
 /// The hosts the creation flow offers are the ones Fleet defines (`fleet
-/// runtime hosts --json`), not a `hosts.toml` of thurbox's: a host Fleet
-/// names is offered, and one only `hosts.toml` names is not.
+/// runtime hosts --json`).
 #[test]
 fn the_host_picker_lists_the_hosts_fleet_reports() {
     if !have_tmux() {
@@ -7869,23 +7885,10 @@ fn the_host_picker_lists_the_hosts_fleet_reports() {
     let fleet_toml = profile.path("fleet.toml");
     let config = std::fs::read_to_string(&fleet_toml).expect("fleet config");
     std::fs::write(&fleet_toml, second_runtime(&config, "fleetbox")).expect("a second host");
-    std::fs::write(
-        {
-            std::fs::create_dir_all(profile.path("config")).expect("config dir");
-            profile.path("config/hosts.toml")
-        },
-        "[[hosts]]\nname = \"onlyhoststoml\"\ndestination = \"nowhere.invalid\"\n",
-    )
-    .expect("a hosts.toml host");
     let mut tui = Tui::spawn(&profile, 40, 120);
     tui.wait_for("No sessions yet");
     tui.send(b"\x0e");
     tui.wait_for("fleetbox/local");
-    assert!(
-        !tui.frame().contains("onlyhoststoml"),
-        "a host only hosts.toml names is offered:\n{}",
-        tui.frame()
-    );
     assert!(tui.quit().success());
 }
 

@@ -3250,7 +3250,6 @@ dependencies = [
  "libc",
  "proptest",
  "serde",
- "serde_ignored",
  "serde_json",
  "tempfile",
  "term-stream",

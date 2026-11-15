@@ -34,7 +34,6 @@ can run a session on yet another machine.
 | place | Where a runtime runs a process: a machine, a WSL distro or a VM. Its name is `<runtime>/<place>`, such as `mux/wsl-dev`. |
 | `local` | The place on the Fleet's own machine. For Fleet "box", `local` is box, not the laptop. |
 | dynamic place | A place that makes a new machine, such as a VM, for each session. |
-| `hosts.toml` | thurbox's own file of ssh and WSL machines. No session reads it any more: the companion shell opens through Fleet. It goes away. |
 
 Older pages and Fleet's `spec.host` field use "host" for a place.
 
@@ -55,8 +54,23 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | The runtime protocol's `shell` verb opens a shell beside a session on its place; `runtime-mux` answers it | implemented |
 | `fleet shell <task>` names the stream that opens that shell | implemented |
 | Every session's companion shell opens through `fleet shell` on its Fleet, at the session's place, and the runtime keeps it | implemented |
-| `hosts.toml` retired | planned |
+| thurbox keeps no file of machines of its own: `hosts.toml` is retired | implemented |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
+
+## What thurbox does on another machine
+
+thurbox reaches another machine only through a Fleet. It keeps no file of
+machines of its own. For a session that runs on another machine:
+
+- The agent's pane is the stream `fleet attach` names, and the companion
+  shell (`Ctrl+T`) is the stream `fleet shell` names. Both run over the
+  session's Fleet link.
+- The new-session modal reads a remote Fleet's folders and branches through
+  that Fleet (`fleet runtime browse`, `fleet runtime branches`).
+- Diffs, git stats and plugin runs refuse the session. They read this
+  machine's disk (`SessionRow::workspace_reachable`).
+- An image dropped onto the session is refused with a message: the path
+  names a file on this machine only.
 
 ## Common setups
 

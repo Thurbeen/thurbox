@@ -413,7 +413,7 @@ pub enum PathKind {
     /// The config directory's anchor: `~/.config/thurbox/config.toml`.
     ///
     /// Nothing reads the *file*, but every config location is derived from
-    /// its path by `with_file_name`/`parent().join(..)` — `hosts.toml`,
+    /// its path by `with_file_name`/`parent().join(..)` —
     /// `settings.toml`, `themes.toml`, `ui/`, `ui.json`, `plugin-state.json`.
     /// So this is the single place the `thurbox` / `thurbox-dev` split enters
     /// for all of them.

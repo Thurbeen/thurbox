@@ -114,7 +114,7 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
 
     let key = ProgramKey::new(OWNER, PANE);
     let mut first = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     if let Err(e) = first.start_program(
@@ -160,7 +160,7 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
     // by its deterministic name.
     drop(first);
     let mut second = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let started_again = second.start_program(

@@ -878,7 +878,7 @@ fn asking_terminals_for_metadata_is_not_itself_a_change() {
     // times a second and invalidate every cached tree — the exact failure that
     // made the `store` write comparison worth 27%.
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
 
@@ -900,7 +900,7 @@ fn reading_attach_failures_is_not_itself_a_change() {
     // mistaken for a write. (`failures` takes `&self` today, so this also
     // guards the day someone needs it to sync something first — as `meta` does.)
     let terminals = thurbox::kernel::terminal::Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let settled = terminals.failed_version();

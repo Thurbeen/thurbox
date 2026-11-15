@@ -9,8 +9,7 @@ disposable profiles on the host.
 
 The three harnesses provision a host, or point at one, for testing thurbox and
 its runtimes on it. They differ only in *where the host comes from*. They share
-`e2e/lib/e2e-common.sh` (colour logging, the PASS/FAIL contract and the
-`[[hosts]]` emitter).
+`e2e/lib/e2e-common.sh` (colour logging and the PASS/FAIL contract).
 
 | Script | Target host | Ephemeral? | Deps | In CI? |
 |---|---|---|---|---|
@@ -28,14 +27,13 @@ when the two disagree either way round.
 `e2e/windows-vm.bats` drives those helpers with no VM, so the failing branch is
 exercised in CI (`just test-scripts`).
 
-Shared verbs across the trio: `ssh` (shell) · `hosts` (print the `hosts.toml`
-block) · `clean` (teardown). `e2e/linux-container.sh` and `e2e/windows-vm.sh`
+Shared verbs across the trio: `ssh` (shell) · `clean` (teardown). `e2e/linux-container.sh` and `e2e/windows-vm.sh`
 add `up` and `down`; `e2e/windows-vm.sh` and `e2e/real-host.sh` add
 host-specific extras (`deploy`, `test-suite`, `wait`, `wsl-setup`, …) — run a
 script with no args for its full usage.
 
 ```bash
-scripts/dev/e2e/linux-container.sh up      # then: … hosts
+scripts/dev/e2e/linux-container.sh up
 scripts/dev/e2e/windows-vm.sh up           # first run installs Windows (~10-20 min)
 scripts/dev/e2e/real-host.sh devbox check  # readiness probe on a real host
 ```

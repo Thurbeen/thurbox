@@ -55,39 +55,22 @@ pub mod instance {
     }
 }
 
-/// What fills the registry for a running process: the runtime's factory over
-/// the hosts in thurbox's `hosts.toml`. Only the composition roots may call it
+/// What fills the registry for a running process: the runtime's factory, for
+/// this machine's adapters. Only the composition roots may call it
 /// (`crates/architecture.toml`); every other consumer is handed the registry
 /// this builds.
 pub mod wiring {
     use crate::session::settings::Settings;
-    use crate::session::HostRegistry;
 
     pub use runtime_mux::wiring::{implements, AdapterFactory, BackendSpec};
 
     use super::{mux_settings, BackendRegistry};
 
-    /// The registry as a running interface needs it: one backend per adapter
-    /// on this machine and on every configured or discovered host, with this
-    /// platform's own multiplexer as the default.
-    ///
-    /// The `HostRegistry` comes back alongside because a pane needs more than
-    /// a connection — a remote session's launch directory resolves against its
-    /// `HostDef` — and both halves must come from the same read of
-    /// `hosts.toml`. The warnings are that read's, for callers that surface
-    /// them. `settings` are the ones the process loaded.
-    pub fn configured(settings: &Settings) -> (BackendRegistry, HostRegistry, Vec<String>) {
-        let (hosts, warnings) = crate::config::hosts::cached_registry();
-        (
-            runtime_mux::wiring::for_hosts(hosts, &mux_settings(settings)),
-            hosts.clone(),
-            warnings.clone(),
-        )
-    }
-
-    /// Every adapter for this machine and no host: what a command acting only
-    /// on a local row needs, without reading `hosts.toml` or discovering WSL
-    /// distros.
+    /// Every adapter for this machine, with this platform's own multiplexer
+    /// as the default: what the interface's own windows (plugin programs, the
+    /// stream panes' view) run on. A session's machine is its Fleet's and its
+    /// place's, which the runtime reaches. `settings` are the ones the process
+    /// loaded.
     pub fn local_only(settings: &Settings) -> BackendRegistry {
         runtime_mux::wiring::local_only(&mux_settings(settings))
     }

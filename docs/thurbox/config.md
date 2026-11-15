@@ -77,7 +77,6 @@ failing check.
 
 | File | Format | Edited by | Read | Purpose |
 |------|--------|-----------|------|---------|
-| `~/.config/thurbox/hosts.toml` | TOML | you | startup | ssh machines + local WSL distros; no session reads it, and places replace it ([Where sessions run](../where-sessions-run.md)) |
 | `~/.config/thurbox/settings.toml` | TOML | you + `Ctrl+,` panel | **live** (feature flags) / startup (rest) | tuning knobs + feature flags |
 | `~/.config/thurbox/themes.toml` | TOML | you | startup | custom theme palettes |
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
@@ -100,8 +99,8 @@ The `ui/` directory reloads live too, but on a **filesystem watcher**
 `settings.toml` the values that apply live are the `shell_pane` and
 `perf_hud` flags and `[clipboard]`; the restart-only values stay
 published through a write-once global (so they can't drift mid-frame),
-and the reload toast says when a restart is needed. `hosts.toml` (SSH
-backends register at startup) and `themes.toml` need a restart.
+and the reload toast says when a restart is needed. `themes.toml` needs a
+restart.
 
 `settings.toml` can also be edited from the TUI: **`Ctrl+,`** (alt `F6`)
 opens a **Settings panel** listing every knob. It writes the file back
@@ -135,8 +134,8 @@ checks, fail on any other
 production write, apart from an allow-list of logs, a cache, the control
 socket's privately staged files and the self-update's staged binary.
 
-The config files beside `config.toml` — `settings.toml`,
-`themes.toml` and `hosts.toml` — are
+The config files beside `config.toml` — `settings.toml` and
+`themes.toml` — are
 read and written by one loader, `config::file`. It seeds an absent file with
 its documented defaults, parses it reporting every unknown key as a warning,
 writes through `paths::write_atomically`, and on any failure (no path, a seed
@@ -193,75 +192,11 @@ command depends on a distribution, the package name is given and the link is
 tmux's own [install page](https://github.com/tmux/tmux/wiki/Installing) rather
 than a guessed invocation.
 
-## hosts.toml
+## Where sessions run
 
-Declares off-local hosts — **remote SSH machines** and **local WSL
-distros**. Each `[[hosts]]` entry registers a session backend named
-`ssh:<name>` (default kind) or `wsl:<name>`. Seeded fully commented-out
-(fresh installs are local-only for SSH). Malformed file → zero
-configured hosts, error shown.
-
-| Field | Required | Default | Purpose |
-|-------|----------|---------|---------|
-| `name` | yes | — | backend id `ssh:<name>` / `wsl:<name>`; what the host picker offers |
-| `kind` | no | `ssh` | transport: `ssh` (remote machine) or `wsl` (local distro) |
-| `destination` | for ssh | — | ssh target (`user@host` or `~/.ssh/config` alias) |
-| `distro` | no | `name` | WSL distro name (`kind = "wsl"` only) |
-| `ssh_opts` | no | `[]` | extra ssh flags, one token per element (ssh only) |
-| `socket` | no | `thurbox` | host `tmux -L` socket name. The socket file lives under the host's thurbox data dir, `~/.local/share/thurbox/tmux/tmux-<uid>/<socket>` — see [Where the tmux socket lives](#where-the-tmux-socket-lives) |
-| `session` | no | `thurbox` | host tmux session name |
-| `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
-| `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
-| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands and the panes they open on a POSIX host — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
-
-**The `PATH` on a host.** ssh and `wsl.exe` hand a command a
-non-login environment — `wsl.exe -e` skips the user's shell entirely, so
-not even `~/.zshenv` is read — which has none of `~/.local/bin`,
-`~/.cargo/bin`, nvm/fnm and the like. So thurbox reads the host's login
-`PATH` once per host and process (`$SHELL -lc`, the passwd shell when
-`$SHELL` is unset, and `/bin/sh -lc`; stdin closed, never `-i`, 5 s each
-under `timeout`, 15 s overall). The multiplexer commands (so a Homebrew
-tmux in `/opt/homebrew/bin`, which only a macOS login shell puts on the
-`PATH`, is found) and the panes they open
-run there on `path_prepend`, then the login shells' `PATH`, then the
-launcher's own (on WSL that includes the Windows `PATH` WSL appends unless
-`appendWindowsPath = false`), each directory once. A host whose shells cannot be read keeps
-the launcher's `PATH` with a warning in the log.
-
-**SSH** auth comes entirely from your `~/.ssh/config`; thurbox never
-handles credentials. **WSL** distros are reached with
-`wsl.exe -d <distro>` and need no config entry at all — they are
-**auto-discovered** (`wsl.exe -l -q`) and appear in the host picker
-automatically; add a `kind = "wsl"` entry only to override
-a default (e.g. `socket`). Discovery also works from *inside* a
-distro (interop puts `wsl.exe` on `PATH` there), and excludes the distro
-thurbox is itself running in: that one is this machine. An entry whose
-`distro` is that one is ignored with a startup warning, and an entry merely
-*named* after it is warned about. A distro needs its selected multiplexer
-(`tmux` >= 3.2 by default, or opt-in RMUX >= 0.10.0) and `git`. Host changes
-require a restart (the registry is read once and each host's `$HOME` is
-cached for the process lifetime).
-
-The new-session modal's place step names the place of the chosen Fleet a
-session runs on.
-Fleets and places are explained in
-[Where sessions run](../where-sessions-run.md).
-
-### Host platform
-
-A host's **platform** (`posix` or `windows`) is its operating system, and it is
-a choice of its own: not the multiplexer, not the way the host is reached, and
-not the OS thurbox itself runs on. It decides the host's shell and path
-semantics — PowerShell, `%USERPROFILE%` and no `/bin/sh` on Windows; `sh -c`,
-`$HOME` and `/bin/sh` as the server's `default-command` on POSIX — so a Windows
-thurbox driving a WSL distro pins `/bin/sh` there, and a Windows host on a
-multiplexer other than psmux still gets PowerShell.
-
-An entry that does not set `platform` is Windows when `multiplexer =
-"psmux"`, and POSIX otherwise. A WSL distro is POSIX
-whatever its entry says. What a multiplexer can do is not the platform's to
-say either: whether thurbox polls a backend for dead panes is whether that
-multiplexer reports a closed window (tmux does; psmux and RMUX need polling).
+thurbox keeps no file of machines of its own. The new-session modal's place
+step names the place of the chosen Fleet a session runs on. Fleets and places
+are explained in [Where sessions run](../where-sessions-run.md).
 
 ### Multiplexer choice and existing sessions
 
@@ -280,18 +215,11 @@ reads it, and every route names its multiplexer:
 | `ssh:<host>:<mux>`, `wsl:<distro>:<mux>` | that host | `<mux>` |
 
 Any other key, such as `local-tmux`, `tmux` or the empty key, names no route
-and is refused. The host picker carries a **host key**, `ssh:<host>` or
-`wsl:<distro>`, which names a machine only: `hosts.toml` resolves it, and the
-host's `multiplexer` (tmux by default) completes the route. A user never types
-a multiplexer to pick a host.
-
-A host name may not contain `:`, which separates it from the multiplexer in a
-route. `hosts.toml` ignores such an entry with a warning, and
-`config validate` fails naming it.
+and is refused.
 
 Which multiplexers work is what is **registered**, never the OS: every
 multiplexer an adapter implements (`tmux`, `psmux`, and `rmux`) is registered for
-this machine and for every host, whatever either's platform or preference — a
+this machine, whatever its platform — a
 binary that is not installed is reported by name when it is first needed.
 A route naming a multiplexer no adapter implements (`herdr` today)
 is refused by name, and is never driven with another binary.
@@ -735,7 +663,10 @@ a place.
   uses fails the report when it does not answer; another listed Fleet only
   warns. Each check of a Fleet names it (`fleet` in `--json`), and `fleets`
   lists each Fleet with `transport`, `in_force` and `unreachable`. The
-  multiplexer is checked only when a listed Fleet runs on this machine.
+  multiplexer is checked only when a listed Fleet runs on this machine. A
+  `hosts.toml` an earlier thurbox left in the config directory is a warning
+  (`hosts-toml`): nothing reads it, and its fix is to list each machine's
+  Fleet under `[fleets]`.
   `thurbox-cli config show` and `thurbox-cli version --json` report the Fleet
   in use under `fleet`, with Fleet's data directory.
 - A `fleet up` the interface started runs in a process group of its own and
@@ -1035,12 +966,12 @@ User-set (read by thurbox):
 | `SHELL` | not read by thurbox for the `Ctrl+T` companion shell: the runtime opens it at the session's place with that place's own shell (`runtime-mux`: its `$SHELL`, else `/bin/sh`). |
 | `RUST_LOG` | log filter for `thurbox.log` |
 | `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/thurbox/performance.md`. |
-| `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
+| `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Empty = unset. |
 | `TMUX_TMPDIR` | tmux's own: the directory its `tmux-<uid>/<socket>` goes under. When set, thurbox leaves it alone (test and sandbox tooling scope their servers with it); unset, thurbox sets it to `<data dir>/tmux` for every tmux command it runs — see [Where the tmux socket lives](#where-the-tmux-socket-lives). Empty = unset. |
 | `THURBOX_CONFIG_DIR`, `THURBOX_DATA_DIR` | move thurbox's config and data dirs — see [Relocating an instance](#relocating-an-instance-thurbox_data_dir) |
 | `THURBOX_UI_DIR` | the interface directory to load instead of `<config dir>/ui`, e.g. a checkout's `ui/` ([plugins.md](plugins.md)) |
 | `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
-| `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside. That distro is *this machine*, so it is never offered as a host and a `hosts.toml` entry pointing at it is ignored — see [hosts.toml](#hoststoml) |
+| `WSL_DISTRO_NAME` | set by WSL itself, not by you: it is how thurbox knows which distro it is running inside, which decides how a copy reaches the Windows clipboard |
 
 Set **by** thurbox into every `exec` automation's command, on top of the
 firer's environment and the automation's own variables:

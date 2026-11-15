@@ -8,8 +8,8 @@
 #
 # The three harnesses share one concept — "provision (or point at) a host, create
 # a session on it over the backend, assert it landed there" — so they share this
-# one library: colour logging, the PASS/FAIL result contract, a dependency-free
-# JSON field extractor (no python3) and the `[[hosts]]` TOML emitter. Each entrypoint keeps only its own provisioning.
+# one library: colour logging and the PASS/FAIL result contract. Each
+# entrypoint keeps only its own provisioning.
 #
 # Source it (don't execute) AFTER setting REPO_ROOT. Sourced only by the bash
 # e2e scripts, so bashisms (local, arrays) are fine.
@@ -43,18 +43,3 @@ fail() {
   return 1
 }
 
-# ---- hosts.toml [[hosts]] emitter ------------------------------------------
-
-# hosts_block NAME DESTINATION [SSH_OPTS_TOML] [MULTIPLEXER] — emit a `[[hosts]]`
-# block. SSH_OPTS_TOML is the verbatim TOML value for `ssh_opts` (a `[...]`
-# array); omit for none. MULTIPLEXER adds a `multiplexer = "…"` line (e.g. psmux
-# for a Windows host).
-hosts_block() {
-  local name="$1" dest="$2" ssh_opts="${3:-}" mux="${4:-}"
-  printf '[[hosts]]\n'
-  printf 'name = "%s"\n' "$name"
-  printf 'destination = "%s"\n' "$dest"
-  [ -n "$ssh_opts" ] && printf 'ssh_opts = %s\n' "$ssh_opts"
-  [ -n "$mux" ] && printf 'multiplexer = "%s"\n' "$mux"
-  return 0
-}

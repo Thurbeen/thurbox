@@ -12,7 +12,7 @@ pub use runtime_mux::{host_def, hyperlink, multiplexer, platform, route};
 
 pub use automation::{parse_hhmm, preset_to_cron, AutomationSchedule, SchedulePreset};
 pub use hook_status::{SessionState, WORKING_QUIET_MS};
-pub use host_def::{HostDef, HostKind, HostRegistry, WslRepairPlan};
+pub use host_def::{HostDef, HostKind, HostRegistry};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use multiplexer::{BackendChoice, Multiplexer};
 pub use platform::Platform;

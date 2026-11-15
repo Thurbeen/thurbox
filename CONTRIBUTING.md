@@ -39,8 +39,8 @@ Thurbox is agent-neutral, and so is the repo. [`AGENTS.md`](AGENTS.md) is the
 canonical guidance doc shared by coding agents. Keep repository instructions
 there so every agent reads the same source.
 
-The skills are checked in under `.agents/skills/`: eleven per-subsystem
-working references (`thurbox-testing`, `thurbox-kernel`, `thurbox-remote-hosts`,
+The skills are checked in under `.agents/skills/`: per-subsystem
+working references (`thurbox-testing`, `thurbox-kernel`, `thurbox-cli`,
 … — `AGENTS.md` indexes them) plus `ui-review`. They carry the
 detail that used to sit in `AGENTS.md`, so it stays an index and an agent loads
 only the subject it is working on. `.agents/skills/` is the agent-neutral home —

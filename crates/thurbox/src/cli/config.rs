@@ -119,11 +119,6 @@ fn validate_plugin_state() -> (Value, bool) {
 /// Validate every config file. Returns the full report plus the list of files
 /// that failed (empty = all valid).
 fn validate() -> (Value, Vec<String>) {
-    // Through the loader's own parse, so an entry the load refuses — a host
-    // name holding `:` — fails validation rather than vanishing silently.
-    let (hosts, hosts_ok) = validate_file(crate::config::hosts::hosts_config_path(), |c| {
-        crate::config::hosts::parse_hosts(c).map(|(_, warnings)| warnings)
-    });
     // A key thurbox retired is reported at startup, never a failure here: a v2
     // file stays valid.
     let (settings, settings_ok) = validate_file(
@@ -138,7 +133,6 @@ fn validate() -> (Value, Vec<String>) {
     let (plugin_state, plugin_state_ok) = validate_plugin_state();
 
     let failed: Vec<String> = [
-        ("hosts.toml", hosts_ok),
         ("settings.toml", settings_ok),
         ("themes.toml", themes_ok),
         ("ui.json", ui_ok),
@@ -151,7 +145,6 @@ fn validate() -> (Value, Vec<String>) {
 
     let report = json!({
         "valid": failed.is_empty(),
-        "hosts_toml": hosts,
         "settings_toml": settings,
         "themes_toml": themes,
         "ui_json": ui_json,
@@ -163,7 +156,6 @@ fn validate() -> (Value, Vec<String>) {
 /// Render `config validate` as a per-file status list.
 fn render_validate(report: &Value, failed: &[String]) -> String {
     let files = [
-        ("hosts.toml", "hosts_toml"),
         ("settings.toml", "settings_toml"),
         ("themes.toml", "themes_toml"),
         ("ui.json", "ui_json"),
@@ -254,8 +246,6 @@ fn show(settings: &crate::session::settings::Settings) -> Value {
 
     json!({
         "paths": {
-            "hosts_toml": crate::config::hosts::hosts_config_path()
-                .map(|p| p.display().to_string()),
             "settings_toml": crate::config::settings::settings_config_path()
                 .map(|p| p.display().to_string()),
             "themes_toml": crate::config::themes::themes_config_path()

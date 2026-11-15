@@ -7,7 +7,6 @@
 #
 # Usage:
 #   scripts/dev/e2e/linux-container.sh up        # build image + start container
-#   scripts/dev/e2e/linux-container.sh hosts     # print the hosts.toml block for manual TUI testing
 #   scripts/dev/e2e/linux-container.sh ssh       # open a shell on the container
 #   scripts/dev/e2e/linux-container.sh down      # remove the container
 #   scripts/dev/e2e/linux-container.sh clean     # remove container + all local state
@@ -37,26 +36,6 @@ ssh_remote() {
     root@localhost "$@"
 }
 
-# The ssh_opts array pointing at the container. Absolute paths only — thurbox
-# passes ssh_opts to `ssh` via Command (no shell ~ expansion).
-container_ssh_opts() {
-  cat <<EOF
-[
-  "-p", "$PORT",
-  "-i", "$KEY",
-  "-o", "IdentitiesOnly=yes",
-  "-o", "StrictHostKeyChecking=no",
-  "-o", "UserKnownHostsFile=/dev/null",
-  "-o", "LogLevel=ERROR",
-  "-o", "ControlMaster=auto",
-  "-o", "ControlPersist=10m",
-  "-o", "ServerAliveInterval=15",
-]
-EOF
-}
-
-# Emit the container's hosts.toml [[hosts]] block via the shared emitter.
-container_hosts_block() { hosts_block podman root@localhost "$(container_ssh_opts)"; }
 
 cmd_up() {
   command -v podman >/dev/null || die "podman not found"
@@ -96,12 +75,7 @@ EOF
   for _ in $(seq 1 20); do ssh_remote true 2>/dev/null && break; sleep 1; done
   ssh_remote true 2>/dev/null || die "container did not become reachable"
   log "ready: $(ssh_remote 'hostname; tmux -V' | tr '\n' ' ')"
-  echo
-  log "add this to ~/.config/thurbox-dev/hosts.toml for manual TUI testing:"
-  container_hosts_block
 }
-
-cmd_hosts() { container_hosts_block; }
 
 cmd_ssh() { ssh_remote "${@:-bash -l}"; }
 
@@ -118,7 +92,6 @@ cmd_clean() {
 
 case "${1:-}" in
   up)    cmd_up ;;
-  hosts) cmd_hosts ;;
   ssh)   shift; cmd_ssh "$@" ;;
   down)  cmd_down ;;
   clean) cmd_clean ;;

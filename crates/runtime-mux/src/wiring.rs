@@ -73,10 +73,8 @@ pub fn implements(mux: Multiplexer) -> bool {
     ADAPTERS.iter().any(|(implemented, _)| *implemented == mux)
 }
 
-/// The registry as a running interface needs it: one backend per adapter on
-/// this machine and on every host in `hosts` — the configured and discovered
-/// ones, as [`crate::hosts::cached_registry`] reads them — with this
-/// platform's own multiplexer as the default.
+/// One backend per adapter on this machine and on every host in `hosts`,
+/// with this platform's own multiplexer as the default.
 ///
 /// Backends are registered, never readied: registration is a map insert,
 /// where readying is a blocking connect (an ssh round trip for a remote
@@ -86,9 +84,7 @@ pub fn for_hosts(hosts: &HostRegistry, settings: &MuxSettings) -> BackendRegistr
     registry_from(ADAPTERS, hosts, settings)
 }
 
-/// Every adapter for this machine and no host: what a command acting only on
-/// a local row needs, without reading `hosts.toml` or discovering WSL
-/// distros.
+/// Every adapter for this machine and no host.
 pub fn local_only(settings: &MuxSettings) -> BackendRegistry {
     for_hosts(&HostRegistry::default(), settings)
 }

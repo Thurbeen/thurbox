@@ -17,9 +17,6 @@
 #
 # Verbs (any host):
 #   check           readiness probe: OS, git, tmux/psmux, agent CLI, WSL state
-#   hosts [name]    print the hosts.toml [[hosts]] block for this machine
-#   tui [name]      add the host to the persistent "lab" dev sandbox profile
-#                   and launch the TUI for manual testing
 #   ssh [cmd...]    interactive shell (or run a command) on the host
 #   clean           remove everything `test-suite` may have left on the host
 #
@@ -64,9 +61,6 @@ NEXTEST_ZIP_URL="https://get.nexte.st/${NEXTEST_VERSION}/windows"
 # never reach a real thurbox (release socket "thurbox") or a dev sandbox
 # session (socket "thurbox-dev") on the same machine.
 LAB_SOCKET="thurbox-lab-test"
-# ssh_opts for a regular/manual hosts.toml block (default socket + session, so
-# sessions land where a normal thurbox on this machine expects them).
-LAB_SSH_OPTS='["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ServerAliveInterval=15"]'
 
 usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; }
 
@@ -166,27 +160,6 @@ run_ps() {
   ssh_host "powershell -NoProfile -ExecutionPolicy Bypass -File $LAB_DIR/remote.ps1$qargs"
 }
 
-# Default hosts.toml block name: the alias, or the address part of user@addr,
-# sanitized to thurbox's name charset.
-block_name() {
-  local n="${1:-}"
-  if [ -z "$n" ]; then
-    n="${DEST##*@}"
-    n="${n//[^a-zA-Z0-9_-]/-}"
-  fi
-  printf '%s' "$n"
-}
-
-# hosts.toml [[hosts]] block for regular/manual use, via the shared emitter.
-lab_hosts_block() {
-  local name="$1" mux=""
-  [ "$HOST_OS" = windows ] && mux="psmux"
-  hosts_block "$name" "$DEST" "$LAB_SSH_OPTS" "$mux"
-  [ "$HOST_OS" = windows ] && \
-    printf '# worktrees_dir = "C:/Users/<user>/.local/share/thurbox/worktrees"\n'
-  return 0
-}
-
 # ---- check ---------------------------------------------------------------
 
 tmux_version_ok() { # "tmux 3.5a" / "psmux 3.3.6" → 0 if >= 3.2
@@ -245,30 +218,6 @@ EOF
   else
     fail "$FAILS missing requirement(s) — see above"
   fi
-}
-
-# ---- hosts / tui ---------------------------------------------------------
-
-cmd_hosts() {
-  detect_os
-  lab_hosts_block "$(block_name "${1:-}")"
-}
-
-cmd_tui() {
-  detect_os
-  local name cfg
-  name="$(block_name "${1:-}")"
-  cfg="$REPO_ROOT/target/dev-sandbox/lab/thurbox-config"
-  mkdir -p "$cfg"
-  if [ -f "$cfg/hosts.toml" ] && grep -q "name = \"$name\"" "$cfg/hosts.toml"; then
-    log "host '$name' already wired into the lab sandbox"
-  else
-    [ -f "$cfg/hosts.toml" ] || printf 'config_version = 1\n' > "$cfg/hosts.toml"
-    { echo; lab_hosts_block "$name"; } >> "$cfg/hosts.toml"
-    log "added host '$name' to $cfg/hosts.toml"
-  fi
-  log "launching the dev TUI (sandbox profile 'lab') — pick host '$name' when creating a session"
-  exec "$REPO_ROOT/scripts/dev/sandbox.sh" --profile lab
 }
 
 # ---- cleanup -------------------------------------------------------------
@@ -484,8 +433,6 @@ cmd_ssh() {
 
 case "$VERB" in
   check)      cmd_check ;;
-  hosts)      cmd_hosts "$@" ;;
-  tui)        cmd_tui "$@" ;;
   ssh)        cmd_ssh "$@" ;;
   clean)      cmd_clean ;;
   deploy)     cmd_deploy ;;

@@ -7,18 +7,16 @@
 //! registry that holds the adapters, and the adapters themselves — with the
 //! host model a route names (`host_def`, `route`, `multiplexer`, `platform`),
 //! how a command reaches a host (`shell`, `host_path`), whether the binaries
-//! it needs are there (`preflight`) and `hosts.toml` (`hosts`).
+//! it needs are there (`preflight`).
 //!
 //! Consumers name the contract; only the registry's factory names an adapter.
 //! Its rules in `crates/architecture.toml` hold each module to that. The crate knows
 //! nothing of the program embedding it: the settings it honours and where that
-//! program keeps its data are passed in ([`MuxSettings`],
-//! [`hosts::HostsConfig`]).
+//! program keeps its data are passed in ([`MuxSettings`]).
 
 pub mod contract;
 pub mod host;
 pub mod host_path;
-pub mod hosts;
 pub mod hyperlink;
 pub mod identity;
 pub mod instance;
@@ -36,7 +34,6 @@ pub mod settings;
 pub mod shell;
 pub mod tmux;
 pub mod tmux_compat;
-pub mod toml_file;
 pub mod view;
 pub mod wiring;
 pub mod workspace;
@@ -47,7 +44,7 @@ pub use contract::{
     Placed, SessionBackend, SpawnedSession, StatusChannel, WindowLifecycle, WindowRole, WindowSpec,
 };
 pub use host::{host_def, multiplexer, platform, route};
-pub use host_def::{HostDef, HostKind, HostRegistry, WslRepairPlan};
+pub use host_def::{HostDef, HostKind, HostRegistry};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use multiplexer::{BackendChoice, Multiplexer};
 pub use pane::{AppCopy, AppCopyRequest, PaneInfo, Session, SessionParser, TermSignals};

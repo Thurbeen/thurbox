@@ -23,10 +23,10 @@ launch prefix differs.
   the control connection's stdin, so only the attach crosses the launcher.
 - `ssh` uses the system binary and `~/.ssh/config` for keys, agents and
   multiplexing. WSL needs no credentials.
-- Hosts are declared in `hosts.toml` (`HostDef`, `HostRegistry`). WSL distros
-  are also discovered (`hosts::discover_wsl_hosts`, from `wsl.exe -l -q`). An
-  explicit entry of the same name wins. The distro in `$WSL_DISTRO_NAME` is
-  this machine (`HostDef::is_wsl_loopback`) and is never a host.
+- A host is a `HostDef` in a `HostRegistry` the embedder hands the factory
+  (`wiring::for_hosts`). No embedder hands it one today: thurbox registers
+  this machine's adapters only (`wiring::local_only`), and ssh and WSL
+  places are planned.
 - Each host gets one backend per adapter, keyed by its route
   (`ssh:<host>:<mux>`, `wsl:<distro>:<mux>`, `wiring`).
 - A host backend is registered, not connected. It connects on first use, on a
@@ -46,7 +46,7 @@ independent choices. The route carries the place and the multiplexer. The OS is
 `HostDef::platform` (`Posix` or `Windows`); this machine's is
 `shell::local_platform`.
 
-- `hosts.toml`'s `platform = "posix" | "windows"` declares it. Without it, a
+- A host entry's `platform = "posix" | "windows"` declares it. Without it, a
   host whose `multiplexer` is `psmux` is Windows and any other is POSIX. A WSL
   distro is always POSIX.
 - Each decision reads the dimension it is about. The pane's shell, the

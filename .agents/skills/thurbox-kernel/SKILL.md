@@ -122,8 +122,8 @@ crate graph and `runtime-mux`'s module rules.
 - **`backend`** — the session-backend boundary: the gateway to the
   multiplexer runtime, `crates/runtime-mux` (ADR-41), which it re-exports,
   and what thurbox injects into it (`mux_settings`: `settings.toml`'s
-  scrollback and the data directory; `wiring::configured`: the hosts of
-  `hosts.toml`).
+  scrollback and the data directory; `wiring::local_only`: this machine's
+  adapters).
 - **`session/`** — plain data: `SessionState` (`hook_status`, the one
   vocabulary every surface prints), the automation schedule, settings, `PluginSpec`/`PluginLock`/`PackageManifest`
   (`plugin_spec`, so the kernel and the CLI share one definition) and `review`;
@@ -312,7 +312,7 @@ preserving edits). A `./ui` beside the working directory is never picked on its
 own: editing a checkout's interface is an explicit `THURBOX_UI_DIR` (`just tui-ui`).
 Startup reports the directory whenever there is a question about it — an override
 is in force, the fallback was used, or this is a dev build. The user-copy path is
-derived from `paths::config_file()` like every other config path — `hosts.toml`, `settings.toml`, `themes.toml`, `ui.json` — so a **dev build reads
+derived from `paths::config_file()` like every other config path — `settings.toml`, `themes.toml`, `ui.json` — so a **dev build reads
 `~/.config/thurbox-dev/ui`** and cannot touch the release copy.
 `THURBOX_CONFIG_DIR` overrides that anchor. `config show` prints
 the resolved `ui_dir`/`ui_json` beside the rest. The resolved directory is

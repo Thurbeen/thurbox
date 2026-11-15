@@ -288,10 +288,9 @@ breadcrumb: 'Features'
               another machine, and a path typed for another host is remembered as typed
             </li>
             <li>
-              <code>~/.config/thurbox/hosts.toml</code>
-              belongs to runtime-mux: it says how to reach an SSH machine or a WSL distro (target,
-              ssh options, multiplexer). thurbox reads it to reattach a companion shell on such a
-              host
+              The agent's pane and its companion shell are the streams
+              <code>fleet attach</code> and <code>fleet shell</code> name, over the link to the
+              session's Fleet. thurbox keeps no file of machines of its own
             </li>
             <li>
               Connections go through your system
@@ -301,11 +300,6 @@ breadcrumb: 'Features'
               &mdash; thurbox never handles credentials
             </li>
           </ul>
-          <pre data-title="~/.config/thurbox/hosts.toml"><code class="language-toml">[[hosts]]
-name = "devbox"            # route "ssh:devbox"
-destination = "me@devbox"  # ssh target or a ~/.ssh/config alias
-ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
-# socket / session  — optional remote tmux -L / session-name overrides</code></pre>
 
                     <h2 id="parent-sessions">
             Parent Sessions (Lead / Worker)

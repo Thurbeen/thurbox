@@ -58,7 +58,7 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
 
     let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
 

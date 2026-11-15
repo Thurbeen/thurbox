@@ -227,7 +227,7 @@ instead.
 One family under `scripts/dev/e2e/` (`linux-container.sh` = ephemeral Podman,
 `windows-vm.sh` = ephemeral dockur Windows VM, `real-host.sh` = a machine you own)
 sharing `e2e/lib/e2e-common.sh` — colour logging, the PASS/FAIL contract
-(`E2E_JSON=1` for a machine-readable line) and the `[[hosts]]` emitter.
+(`E2E_JSON=1` for a machine-readable line).
 `scripts/dev/README.md` is the newcomer index.
 
 `windows-vm.sh test` checks runtime-mux's psmux hook-status gate (the

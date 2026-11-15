@@ -167,7 +167,7 @@ fn a_pane_name_that_could_not_be_a_window_is_a_load_error_not_a_missing_pane() {
 fn an_unstarted_program_surface_is_reported_as_such() {
     use thurbox::kernel::paint::{ProgramPaint, SurfaceProvider};
     let terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");
@@ -233,7 +233,7 @@ fn a_program_pane_paints_its_placeholder_rather_than_nothing() {
 #[test]
 fn a_key_for_an_absent_program_is_not_reported_as_delivered() {
     let terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");
@@ -284,7 +284,7 @@ fn keys_that_are_not_utf8_reach_the_command_intact() {
 #[test]
 fn a_program_surface_is_never_resolved_to_a_session() {
     let terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     // A well-formed program id resolves to nothing while nothing is running, and a
@@ -308,7 +308,7 @@ fn a_program_surface_is_never_resolved_to_a_session() {
 #[test]
 fn a_program_pane_is_absent_from_every_session_enumeration() {
     let terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let key = ProgramKey::new("plugins/91_watch.lua", "watch");

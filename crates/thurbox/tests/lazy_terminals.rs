@@ -329,7 +329,7 @@ async fn a_session_nobody_has_looked_at_holds_no_screen() {
     });
 
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let snap = snapshot(&pane);
@@ -411,7 +411,7 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     wait_for("the pane to start", || tmux_text(&pane).contains(""));
 
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     terminals.keep_hidden_for(Some(Duration::ZERO));
@@ -496,7 +496,7 @@ async fn the_rebuilt_terminal_is_the_one_that_was_never_dropped() {
     });
 
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let snap = snapshot(&pane);
@@ -563,7 +563,7 @@ async fn a_search_finds_history_in_a_session_nobody_is_looking_at() {
     });
 
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let snap = snapshot(&pane);
@@ -621,7 +621,7 @@ async fn a_session_off_screen_still_reports_its_title_and_its_output() {
     wait_for("the pane to start", || tmux_text(&pane).contains("ready"));
 
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let snap = snapshot(&pane);
@@ -670,7 +670,7 @@ async fn a_title_set_before_the_interface_attached_is_still_reported() {
     });
 
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let snap = snapshot(&pane);
@@ -730,7 +730,7 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
     ));
 
     let mut terminals = Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     let snap = snapshot(&pane);

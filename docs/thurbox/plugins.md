@@ -1372,29 +1372,14 @@ readout with no session, select local execution explicitly:
 run("quota", "quota-axi --json", { machine = "local", ttl = 60, timeout = 30 })
 ```
 
-For a configured or discovered host without a session, use its exact name
-from `thurbox.hosts`:
-
-```lua
-run("quota:devbox", "quota-axi --json --no-credential-refresh", {
-  machine = "host:devbox", ttl = 60, timeout = 30,
-})
-```
+A session on another machine, and `machine = "host:<name>"`, are refused
+with a `failed` answer: a plugin's program runs on this machine only, and
+never falls back to another one.
 
 **Account quotas are yours to fetch.** thurbox reads no agent credentials and
 calls no provider's API. A pane that draws quota windows asks the
 account-owning tool itself, with a `run` like the two above. [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
-does this with `quota-axi`, locally and on every configured host.
-
-This works with zero sessions and `share_sessions = false`. The command runs
-in the target user's home, with the environment supplied by its transport,
-using POSIX `sh` or Windows PowerShell according to `thurbox.hosts[].platform`.
-No local session config or authentication environment is injected. The name is
-not a session ID or a backend alias: `host:local` names a configured host named
-`local`; `host:ssh:devbox` is invalid. An unknown host produces a `failed`
-answer and never falls back to local execution. The host registry is loaded
-once per process; restart thurbox after changing `hosts.toml`. This API adds no
-host-config hot reload or CLI command.
+does this with `quota-axi`, locally.
 
 **Ask on every frame.** `run` does nothing while the answer is fresh *or while a
 run for that key is already going*, so asking is a map lookup rather than a

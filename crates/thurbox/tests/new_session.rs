@@ -240,9 +240,7 @@ fn painted(
                 Rect::new(0, 0, width, rows),
                 &rendered.node,
                 &thurbox::kernel::terminal::Terminals::with_registry(
-                    std::sync::Arc::new(
-                        thurbox::backend::wiring::configured(&Default::default()).0,
-                    ),
+                    std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
                     &Default::default(),
                 ),
                 &mut hits,
@@ -2711,9 +2709,7 @@ fn the_empty_session_list_names_the_chord_that_creates_one() {
                 Rect::new(0, 0, 30, 10),
                 &rendered.node,
                 &thurbox::kernel::terminal::Terminals::with_registry(
-                    std::sync::Arc::new(
-                        thurbox::backend::wiring::configured(&Default::default()).0,
-                    ),
+                    std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
                     &Default::default(),
                 ),
                 &mut Vec::new(),

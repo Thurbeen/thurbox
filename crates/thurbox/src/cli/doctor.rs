@@ -108,6 +108,9 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
             .fix("keep only the Fleets you use under [fleets] in settings.toml"),
         );
     }
+    findings.extend(retired_hosts_finding(
+        crate::config::file::path("hosts.toml").as_deref(),
+    ));
     // Sessions of a Fleet on another machine run in that machine's
     // multiplexer: this one needs none unless a Fleet runs here.
     if listed.iter().any(|(_, def)| def.transport.is_local()) {
@@ -129,6 +132,26 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
         ),
         _ => CommandOutput::new(json, human),
     })
+}
+
+/// A warning for a `hosts.toml` an earlier thurbox read, at `path`: nothing
+/// reads it any more, and saying so is all this does. `None` when there is
+/// no such file.
+fn retired_hosts_finding(path: Option<&std::path::Path>) -> Option<Finding> {
+    let path = path.filter(|path| path.is_file())?;
+    Some(
+        Finding::new(
+            "hosts-toml",
+            Level::Warn,
+            "hosts.toml is no longer read; list remote Fleets under [fleets] in settings.toml \
+             (see docs/where-sessions-run.md)"
+                .into(),
+        )
+        .fix(format!(
+            "list each machine's Fleet under [fleets] in settings.toml, then delete {}",
+            path.display()
+        )),
+    )
 }
 
 /// Whether the multiplexer every local session's window is made of is there.
@@ -513,6 +536,29 @@ impl FleetFacts {
 mod tests {
     use super::*;
 
+    /// A `hosts.toml` left by an earlier thurbox is reported as unread, with
+    /// the fix; none at all reports nothing.
+    #[test]
+    fn a_left_over_hosts_toml_is_a_warning_with_its_fix() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("hosts.toml");
+        assert!(
+            retired_hosts_finding(Some(&path)).is_none(),
+            "no file, no finding"
+        );
+        std::fs::write(&path, "[[hosts]]\nname = \"devbox\"\n").expect("hosts.toml");
+        let finding = retired_hosts_finding(Some(&path)).expect("a finding");
+        assert_eq!(finding.key, "hosts-toml");
+        assert_eq!(finding.level, Level::Warn);
+        assert_eq!(
+            finding.detail,
+            "hosts.toml is no longer read; list remote Fleets under [fleets] in settings.toml \
+             (see docs/where-sessions-run.md)"
+        );
+        let fix = finding.fix.expect("a fix");
+        assert!(fix.contains(&path.display().to_string()), "{fix}");
+    }
+
     /// A Fleet's facts with every field given, for the cases below.
     fn facts(
         local: bool,
@@ -651,7 +697,7 @@ mod tests {
     }
 
     /// `doctor` lists the hosts Fleet defines, which are where a session can
-    /// run, instead of thurbox's own `hosts.toml`.
+    /// run.
     #[cfg(unix)]
     #[test]
     fn doctor_reports_fleets_hosts() {

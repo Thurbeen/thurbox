@@ -315,7 +315,7 @@ impl TmuxCompatible for Psmux {
     /// psmux has no `TMUX_TMPDIR`-style socket directory — every `-L <name>`
     /// resolves machine-wide — and no `$TMUX` to find its server by, so the
     /// socket is baked into the command. The name is user-authored
-    /// (`hosts.toml`) yet spliced into JSON/JS/TOML hook text and tokenized by
+    /// (the host entry) yet spliced into JSON/JS/TOML hook text and tokenized by
     /// psmux unquoted, so it keeps only `[A-Za-z0-9._-]`: a violating name
     /// lands dark on a wrong socket rather than corrupting the shipped file.
     fn hook_signal_command(server: &Server<Self>) -> String {
@@ -999,7 +999,7 @@ pub fn psmux_quote(s: &str) -> String {
 /// every Windows login shell passes through, `launch_on_windows` runs it as an
 /// encoded PowerShell script: base64, then UTF-16, then base64 again, so a
 /// payload byte costs 32/9 chars (issue #1503). Sized for that rather than the
-/// bare line, since the socket name comes unvalidated from `hosts.toml`.
+/// bare line, since the socket name comes unvalidated from the host entry.
 const PASTE_CHUNK_BYTES: usize = (WINDOWS_CMD_LINE_MAX - PASTE_LINE_RESERVE) * 9 / 32;
 
 /// What an encoded `send-paste` line spends besides its payload: the
@@ -2379,7 +2379,7 @@ mod tests {
                 transport.is_remote() && Psmux::HOOK_STATUS
             );
         }
-        // The session name is user-authored hosts.toml text, quoted whole
+        // The session name is user-authored host entry text, quoted whole
         // rather than stripped of what psmux's tokenizer reads as escapes.
         assert_eq!(
             Psmux::hook_poll_command("a\"b\\c"),

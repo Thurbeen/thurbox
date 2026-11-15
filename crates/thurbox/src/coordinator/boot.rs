@@ -172,9 +172,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // and handed to each consumer: attach, the command workers and the startup
     // self-heal all see the same set of backends. Registration only — nothing
     // is connected until a session on a backend is attached or acted on.
-    let (backends, _hosts, _host_warnings) =
-        thurbox::backend::wiring::configured(&startup_settings);
-    let backends = std::sync::Arc::new(backends);
+    let backends = std::sync::Arc::new(thurbox::backend::wiring::local_only(&startup_settings));
 
     let mut startup_notices: Vec<String> = config_warnings;
 

@@ -1,8 +1,6 @@
 //! Remote-host definitions — pure data describing the off-local targets
 //! thurbox can run sessions on: SSH machines and local WSL distros.
 //!
-//! Loaded from `~/.config/thurbox/hosts.toml` by
-//! [`crate::hosts`] (and, for WSL, auto-discovered there too).
 //! Kept in `host`, the runtime's dependency sink, so the backends here and
 //! thurbox's `git` module (which runs it on the host for remote worktrees)
 //! depend on the same type.
@@ -16,44 +14,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Multiplexer, Platform, Route, Via};
-
-/// Whether `distro` is `current` — the WSL distro thurbox runs inside, as
-/// `path_lookup::current_wsl_distro` reads it — compared the way `wsl.exe -d` matches
-/// a distro name, case-insensitively.
-fn is_current_wsl_distro(distro: &str, current: Option<&str>) -> bool {
-    current.is_some_and(|d| d.eq_ignore_ascii_case(distro))
-}
-
-/// The row rewrites the one-time WSL repair owes, decided by the registry.
-///
-/// Pure data, and here rather than in `storage` or `agent` because both need
-/// to name it: `hosts::wsl_repair_plan` decides it from
-/// `hosts.toml`, and `storage` applies it — and `storage` may reference
-/// `session` but not `agent`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WslRepairPlan {
-    /// Backend names whose rows are this machine's own local rows, recorded as
-    /// remote by a loopback host, and which no host the registry serves claims.
-    pub to_local: Vec<String>,
-    /// Candidate backend names left alone because a host the registry still
-    /// serves registers under one of them, so the rows there cannot be told
-    /// apart from that host's own.
-    ///
-    /// A **final** verdict, reported only so the user can be told which rows
-    /// were left: those rows never become classifiable, so
-    /// `session_ops::repair_wsl_loopback_rows` retires the repair rather than
-    /// waiting for the claim to disappear — which would rewrite them on no
-    /// better evidence than this pass had.
-    pub withheld: Vec<String>,
-}
-
-impl WslRepairPlan {
-    /// Whether there are no rows to rewrite — which a plan that
-    /// [withheld](Self::withheld) every candidate also satisfies.
-    pub fn is_empty(&self) -> bool {
-        self.to_local.is_empty()
-    }
-}
 
 /// How thurbox reaches a host: over SSH, or into a local WSL distro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -123,10 +83,6 @@ pub struct HostDef {
     /// `~`-rooted; anything else is ignored.
     #[serde(default)]
     pub path_prepend: Vec<String>,
-    /// Parsed so an existing `hosts.toml` still loads; nothing reads it.
-    /// Fleet's harness profiles configure an agent's telemetry.
-    #[serde(default)]
-    pub otel_endpoint: Option<String>,
 }
 
 fn default_share_sessions() -> bool {
@@ -151,7 +107,6 @@ impl Default for HostDef {
             platform: None,
             share_sessions: true,
             path_prepend: Vec::new(),
-            otel_endpoint: None,
         }
     }
 }
@@ -184,55 +139,6 @@ impl HostDef {
     /// Only meaningful for [`HostKind::Wsl`].
     pub fn distro_name(&self) -> String {
         self.distro.clone().unwrap_or_else(|| self.name.clone())
-    }
-
-    /// Whether this host is a **loopback**: the WSL distro thurbox is itself
-    /// running inside.
-    ///
-    /// `wsl.exe -d <us>` from inside `<us>` lands back on this same machine —
-    /// the same tmux server and the same worktrees — so such a host is not
-    /// off-local at all: driving this machine's own sessions through
-    /// `wsl.exe` would send every attach and kill back to where it started.
-    ///
-    /// So a loopback is dropped at the registry — the one chokepoint every
-    /// caller shares — rather than guarded for at each use. A *sibling* distro
-    /// stays an ordinary host: reaching one from inside another is supported
-    /// (see `shell::wsl_command`), and only self-reference is the bug.
-    ///
-    /// `current` is the distro thurbox runs inside (`path_lookup::current_wsl_distro`),
-    /// passed in so this stays a fact about the entry and its argument.
-    pub fn is_wsl_loopback(&self, current: Option<&str>) -> bool {
-        self.is_wsl() && is_current_wsl_distro(&self.distro_name(), current)
-    }
-
-    /// Whether this host would **register under the loopback's backend name**
-    /// (`wsl:<us>`) while pointing `wsl.exe` at some other distro.
-    ///
-    /// A host is registered — and persisted in `sessions.backend_type` — under
-    /// its [`name`](Self::name), not its [`distro`](Self::distro). So
-    /// `name = "<us>"` with `distro = "<a sibling>"` is a working remote host
-    /// that writes rows spelled exactly like the ones the loopback bug wrote.
-    /// It is left **exactly as written** — nothing about it is wrong, and it is
-    /// the only outcome that never acts on the wrong machine.
-    ///
-    /// What that costs is the one-time repair, and only for that spelling: the
-    /// rows under it are two populations at once — local rows the bug
-    /// relabelled before the entry existed, and this host's own sibling rows
-    /// written after — and nothing in the database tells them apart.
-    /// Relabelling them all local would send the sibling's sessions at this
-    /// machine; moving them all onto the sibling would send this machine's at
-    /// the sibling. So the repair skips the name entirely and any mislabelled
-    /// local row under it stays mislabelled. That residue is the pre-existing
-    /// corruption left unhealed, not damage the repair does.
-    ///
-    /// This predicate is only the *warning*: what withholds the name is the
-    /// general rule that a candidate claimed by a host the registry serves
-    /// goes to [`WslRepairPlan::withheld`], and such an entry claims
-    /// `wsl:<us>` like any other host claims its own backend name.
-    pub fn shadows_current_wsl_distro(&self, current: Option<&str>) -> bool {
-        self.is_wsl()
-            && !self.is_wsl_loopback(current)
-            && is_current_wsl_distro(&self.name, current)
     }
 
     /// The host key this machine goes by, multiplexer unsaid: `ssh:<name>`
@@ -338,9 +244,8 @@ impl HostRegistry {
     ///
     /// The route's `ssh:`/`wsl:` prefix is **not** checked against the host's
     /// own [`kind`](HostDef::kind): `ssh:ubuntu` finds a host named `ubuntu`
-    /// even if it is a WSL distro. That is deliberate — a name is unique across
-    /// kinds (`hosts::load_all` dedupes by it), and the only way the two
-    /// disagree is a key written before the host's kind was changed, where
+    /// even if it is a WSL distro. A name is unique across kinds, so the two
+    /// disagree only for a key written before the host's kind was changed, and
     /// resolving to the host that now carries that name keeps it reachable.
     pub fn host_of(&self, route: &Route) -> Option<&HostDef> {
         self.get(route.host()?)
@@ -369,7 +274,7 @@ impl HostRegistry {
             let routable = !host.name.contains(':');
             if !routable {
                 warnings.push(format!(
-                    "hosts.toml: host '{}' is ignored: a host name may not contain ':', \
+                    "host '{}' is ignored: a host name may not contain ':', \
                      which separates it from the multiplexer in a session's route",
                     host.name
                 ));
@@ -687,7 +592,7 @@ mod tests {
         assert_eq!(host_of("ssh:nope:tmux"), None);
     }
 
-    /// A host key names no multiplexer: `hosts.toml` gives it, so a user
+    /// A host key names no multiplexer: the host entry gives it, so a user
     /// never types one.
     #[test]
     fn a_host_key_resolves_to_its_hosts_own_multiplexer() {
@@ -784,78 +689,5 @@ worktrees_dir = "/home/me/wt"
         assert_eq!(full.socket.as_deref(), Some("tb2"));
         assert_eq!(full.ssh_opts, ["-o", "ControlMaster=auto"]);
         assert_eq!(full.worktrees_dir.as_deref(), Some("/home/me/wt"));
-    }
-
-    #[test]
-    fn the_distro_we_run_in_is_a_loopback_and_its_siblings_are_not() {
-        {
-            let us = Some("Ubuntu");
-            assert!(HostDef::wsl("Ubuntu").is_wsl_loopback(us));
-            // wsl.exe matches a distro name case-insensitively; so does this.
-            assert!(HostDef::wsl("ubuntu").is_wsl_loopback(us));
-            assert!(!HostDef::wsl("Debian").is_wsl_loopback(us));
-            // A prefix is a different distro, not us.
-            assert!(!HostDef::wsl("Ubuntu-22.04").is_wsl_loopback(us));
-            // The `distro` field is what wsl.exe is handed, so it — not the
-            // host's own name — decides.
-            assert!(HostDef {
-                name: "work".into(),
-                kind: HostKind::Wsl,
-                distro: Some("Ubuntu".into()),
-                ..Default::default()
-            }
-            .is_wsl_loopback(us));
-            // An SSH host is never one, whatever it is called.
-            assert!(!HostDef {
-                name: "Ubuntu".into(),
-                destination: "me@ubuntu".into(),
-                ..Default::default()
-            }
-            .is_wsl_loopback(us));
-        }
-    }
-
-    #[test]
-    fn a_host_named_after_our_distro_shadows_its_backend_name() {
-        {
-            let us = Some("Ubuntu");
-            // Reaches a real sibling, but would register as `wsl:Ubuntu` —
-            // the very spelling the loopback repair reads as "this machine".
-            let shadow = HostDef {
-                name: "Ubuntu".into(),
-                kind: HostKind::Wsl,
-                distro: Some("Debian".into()),
-                ..Default::default()
-            };
-            assert!(shadow.shadows_current_wsl_distro(us));
-            assert!(!shadow.is_wsl_loopback(us));
-            assert_eq!(shadow.backend_name(), "wsl:Ubuntu");
-
-            // A true loopback is not also a shadow: the two are reported
-            // separately so each gets the warning that fits it.
-            assert!(!HostDef::wsl("Ubuntu").shadows_current_wsl_distro(us));
-            // Any other name, and the predicate does not hold.
-            assert!(!HostDef {
-                name: "work".into(),
-                kind: HostKind::Wsl,
-                distro: Some("Debian".into()),
-                ..Default::default()
-            }
-            .shadows_current_wsl_distro(us));
-            // An SSH host named after the distro collides with nothing: it
-            // registers as `ssh:Ubuntu`.
-            assert!(!HostDef {
-                name: "Ubuntu".into(),
-                destination: "me@ubuntu".into(),
-                ..Default::default()
-            }
-            .shadows_current_wsl_distro(us));
-        }
-    }
-
-    #[test]
-    fn off_wsl_nothing_is_a_loopback() {
-        assert!(!HostDef::wsl("Ubuntu").is_wsl_loopback(None));
-        assert!(!HostDef::wsl("Ubuntu").shadows_current_wsl_distro(None));
     }
 }

@@ -602,7 +602,7 @@ fn a_bridged_stream_with_no_snapshot_shows_its_output() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let _entered = runtime.enter();
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     terminals.attach_fleet_through(link(&program));
@@ -1031,7 +1031,7 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let _entered = runtime.enter();
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     terminals.attach_fleet_through(link(&fleet.program));
@@ -1863,7 +1863,7 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let _entered = runtime.enter();
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     terminals.attach_fleet_through(over_ssh);
@@ -2016,7 +2016,7 @@ fn a_remote_fleets_companion_shell_opens_on_its_machine_through_fleet_shell() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let _entered = runtime.enter();
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     terminals.attach_fleet_through(over_ssh);

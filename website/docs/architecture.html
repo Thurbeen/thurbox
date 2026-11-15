@@ -286,12 +286,8 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
             <code>tmux -L thurbox</code>
             ; a remote one launches
             <code>ssh &lt;dest&gt; tmux -L thurbox</code>
-            &mdash; the tmux control-mode protocol is byte-identical over either transport. Each host
-            declared in
-            <code>hosts.toml</code>
-            registers a backend named
-            <code>ssh:&lt;host&gt;</code>
-            .
+            &mdash; the tmux control-mode protocol is byte-identical over either transport. A
+            session on another machine reaches thurbox through that machine's Fleet.
           </p>
 
           <h2 id="async">

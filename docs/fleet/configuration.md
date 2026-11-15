@@ -232,8 +232,8 @@ image = "agent-base"
 - Fleet passes a place's table to the runtime in each request
   ([places](../runtime/README.md#places-protocol-version-2)) and does not
   read it. The keys are the runtime's own. `runtime-mux` serves `local` only
-  today; its ssh and WSL places are planned, with today's `hosts.toml`
-  fields as their keys.
+  today; its ssh and WSL places are planned, with `HostDef`'s fields as
+  their keys.
 - `local` is the short form of `<runtime>/local` on the default runtime: the
   one with `default = true`, or the only runtime. Fleet refuses a config with
   several runtimes and no single default at load.

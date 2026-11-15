@@ -446,7 +446,7 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
 
     // This instance shows the session without the focus, and sizes the pane.
     let mut here = Terminals::with_registry(
-        Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     attach(&mut here, &id, here_rect).await;
@@ -553,7 +553,7 @@ async fn a_focused_session_whose_pane_is_replaced_takes_the_new_panes_size() {
     }
     let first = session_window(&server);
     let mut here = Terminals::with_registry(
-        Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
         &Default::default(),
     );
     attach(&mut here, &first, here_rect).await;

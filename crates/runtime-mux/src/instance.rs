@@ -73,7 +73,7 @@ pub const TMUX_SOCKET: &str = if cfg!(dev_build) {
 /// concept — every `-L <name>` resolves machine-wide, so without this override
 /// a scoped test on Windows would share (and could tear down) the user's real
 /// `thurbox`/`thurbox-dev` server. Remote hosts are unaffected (their socket
-/// comes from `hosts.toml`).
+/// comes from their host entry).
 pub const SOCKET_OVERRIDE_ENV: &str = "THURBOX_SOCKET";
 
 /// Env var naming the **data directory** the injected [`SOCKET_OVERRIDE_ENV`]
@@ -197,7 +197,7 @@ fn learned_host_sockets() -> &'static Mutex<HashMap<String, String>> {
 }
 
 /// Record the socket a host's own CLI reported for itself. Ignored for a host
-/// that pins `socket` in `hosts.toml` — the user's word wins.
+/// that pins `socket` in its host entry — the user's word wins.
 pub fn learn_host_socket(host: &crate::HostDef, socket: &str) {
     if host.socket.is_some() || socket.is_empty() {
         return;
@@ -346,7 +346,7 @@ pub(crate) fn learned_host_socket_dir(backend_name: &str) -> Option<Option<Strin
 /// at all.
 ///
 /// A host that runs a thurbox of its own owns the socket its sessions live on:
-/// its `hosts.toml` override, or what its CLI reported ([`learn_host_socket`]).
+/// its host entry's override, or what its CLI reported ([`learn_host_socket`]).
 /// This build's compile-time default is a guess about somebody else's machine —
 /// a dev build would aim at `thurbox-dev` while the host's release binary runs
 /// `thurbox`, and a host with a relocated data dir derives a name of its own —
@@ -365,7 +365,7 @@ pub(crate) fn known_host_socket(host: &crate::HostDef) -> Result<String> {
     }
     bail!(
         "socket unknown for host '{}': it runs a thurbox of its own and has not \
-         reported which socket that is (set `socket` in hosts.toml, or make its \
+         reported which socket that is (set `socket` in its host entry, or make its \
          thurbox-cli reachable)",
         host.name
     )
