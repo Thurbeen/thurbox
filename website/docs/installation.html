@@ -647,7 +647,7 @@ if ($lease.held) {
   $p = Get-Process -Id ($lease.holder -replace '^fleet-up-', '') -ErrorAction SilentlyContinue
   if ($p -and $p.ProcessName -eq 'fleet') { Stop-Process -Id $p.Id }
 }
-psmux -L runtime-mux kill-server
+psmux -L runtime-mux kill-server   # runtime-mux's psmux server; skip it if another Fleet still uses it
 psmux -L thurbox kill-server
 
 # 3. Remove the binaries

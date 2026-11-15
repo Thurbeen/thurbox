@@ -165,7 +165,12 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
 test('the docs sidebar gives Fleet and thurbox a group each', () => {
   const groups = built('docs/index.html').querySelectorAll('.docs-sidebar h4').map((h) => h.textContent.trim());
   assert.deepEqual(groups.slice(0, 2), ['Fleet', 'thurbox']);
-  assert.ok(!existsSync('_site/docs/features.html'), 'features are split per product');
+  // The published URL of the old single page stays, as a pointer to the two pages.
+  const moved = built('docs/features.html');
+  for (const page of ['fleet-features.html', 'thurbox-features.html']) {
+    assert.ok(moved.querySelector(`.docs-content a[href="${page}"]`), `docs/features.html links ${page}`);
+  }
+  assert.ok(moved.querySelector('meta[http-equiv="refresh"]'), 'docs/features.html redirects');
   for (const page of ['fleet', 'fleet-install', 'fleet-commands', 'fleet-features', 'thurbox', 'thurbox-features']) {
     assert.ok(existsSync(`_site/docs/${page}.html`), `docs/${page}.html exists`);
   }
