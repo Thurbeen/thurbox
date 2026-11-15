@@ -88,7 +88,7 @@ test('the site describes only what exists', () => {
     }
     const copy = text(page);
     assert.doesNotMatch(copy, /soft_delete|agents\.toml/, `${path} names a removed key or file`);
-    if (!['docs/configuration.html', 'docs/architecture.html', 'docs/runtime/runtime-mux.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
+    if (!['docs/configuration.html', 'docs/architecture.html', 'docs/runtime/index.html', 'docs/runtime/runtime-mux.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
   }
   const llms = readFileSync('_site/llms.txt', 'utf8');
   assert.doesNotMatch(llms, /extensions\.html|agents\.toml/);
