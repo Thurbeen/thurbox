@@ -1,5 +1,7 @@
 # ChangeRequest controller
 
+![ChangeRequestController: a ChangeRequest and one forge read go in; the status snapshot and a late delete come out](change-request-flow.svg)
+
 A ChangeRequest mirrors one change on a forge. Its controller decides, from
 the stored snapshot and one forge observation, whether anything changed and
 when to look again. It performs no effect: the forge is read, never written,

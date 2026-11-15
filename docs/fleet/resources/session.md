@@ -1,31 +1,49 @@
 # Session
 
-A Session is one running agent. It is the unit the runtime port starts,
-observes, briefs, sends to and releases. A Session is not a stored kind: a
-Task names its Session in `status.session` and reports what the runtime
-proved about it in `status.sessionState`. The source is
-[fleet-api's session module](../../../crates/fleet-api/src/session.rs); the
-guarantees are in [the runtime contract](../contracts.md#runtime-contract).
+## What it is for
 
-```text
-Task ──owns one, spawn to release──▶ Session
-                                       ├── identity  SessionRef {id, host, key}
-                                       └── lifecycle SessionState, proved by the runtime port
+A Session is one running agent: the unit that the runtime port starts,
+observes, briefs, sends to and releases. It is not a stored kind. A
+[Task](task.md) names its Session in `status.session`, and reports what the
+runtime proved about it in `status.sessionState`. The source is
+[fleet-api's session module](../../../crates/fleet-api/src/session.rs).
+
+## When you write one
+
+Never. TaskController starts a Session when it spawns a Task, and releases
+it when the Task is deleted. You read it in the Task's status.
+
+## Example
+
+The part of a Task's status that describes its Session:
+
+```json
+{
+  "session": {"id": "fake-1", "host": "local", "key": "design-305.u1-a864456b5b3dfedb"},
+  "sessionState": "Running",
+  "agentState": "working",
+  "activity": {"source": "hook", "at": 1730000400000}
+}
 ```
 
-## Ownership
+## Spec
 
-- One Task owns at most one Session, from the Task's spawn to the Task's
-  release.
-- TaskController is the only writer of `status.session` and
-  `status.sessionState`.
-- A Session's key is `<task name>.<task uid>`. A second spawn finds the
-  first Session under that key instead of starting a twin.
-- A Task recreated under the same name has a new uid. It never adopts the
-  old Session, because the key carries the uid.
-- A Session the runtime holds but Fleet did not spawn belongs to no Task.
+None. A Session has no spec: the Task's spec says what to run.
 
-## Identity
+## Status
+
+TaskController is the only writer of `status.session`, `status.sessionState`,
+`status.agentState` and `status.activity`.
+
+- One Task owns at most one Session, from the Task's spawn to its release.
+- The key is `<task name>.<task uid>`. A second spawn finds the first
+  Session under that key, and does not start a twin.
+- A Task recreated under the same name has a new uid, so it never adopts the
+  old Session.
+- A Session that the runtime holds but Fleet did not spawn belongs to no
+  Task.
+
+### Identity
 
 `status.session` is a `SessionRef`, written once the spawn's receipt or a
 `find` under the key names the Session.
@@ -33,10 +51,10 @@ Task ──owns one, spawn to release──▶ Session
 | Field | Meaning |
 | --- | --- |
 | `id` | The runtime's own identifier for the Session. |
-| `host` | The runtime host the Session runs on. |
+| `host` | The place the Session runs on. |
 | `key` | Fleet's deterministic key, `<name>.<uid>`. The exec adapter gives the runtime `<keyPrefix>.<uid>`. |
 
-## States
+## Lifecycle
 
 `status.sessionState` is what Fleet last proved. Each state is one Known
 answer of the runtime port, or, for the agent's activity, of the agent's own
@@ -59,7 +77,7 @@ over `Lost`, `Lost` over `Paused`, `Paused` over the agent's activity.
 The state is absent until a pass proved something. A pass that proves the
 same state again writes nothing.
 
-## Agent state
+### Agent state
 
 `status.agentState` is what the agent is doing, finer than
 `sessionState`. The agent's hooks set it, through `fleet signal`. Below
@@ -78,7 +96,7 @@ A signal file that cannot be read keeps the last state, unless a screen
 rule matches. The state is absent while the Task has no session. Nothing
 decides on a screen state.
 
-## State and phase
+### State and phase
 
 `status.phase` says where the Task is in its own lifecycle. `sessionState`
 says what the runtime proved about the agent. The two move independently.
@@ -96,7 +114,13 @@ says what the runtime proved about the agent. The two move independently.
 The conditions `SessionLost` and `WorkerGone` are the controller's decisions
 on the same observations. `sessionState` is the observation itself.
 
-## Reading it
+## Related kinds
+
+- A [Task](task.md) owns at most one Session.
+- The [runtime contract](../contracts.md#runtime-contract) states what a
+  runtime guarantees about a Session.
+
+## Commands
 
 ```sh
 fleet status task design-305           # one line: session <id> on <host> <state>

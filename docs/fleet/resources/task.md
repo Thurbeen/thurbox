@@ -1,13 +1,18 @@
 # Task resource
 
-A Task is one agent session doing one brief. TaskController spawns the
-session on the place the Task names, sends the brief once, delivers what is
-queued in the Task's inbox, records the worker's answer, and deletes the
-session when the Task is deleted. The guarantees behind each step are in
-[the contracts](../contracts.md). Read the
-[controller overview](../controllers/task.md),
-[interface](../controllers/task.md#task-controller-interface) and
-[state machine](../controllers/task.md#task-state-machine) for execution semantics.
+![Task: fleet apply, a TaskConfig and the inbox go in; TaskController runs the session; the session, the status and the worker's answer come out](task.svg)
+
+## What it is for
+
+A Task is one agent session doing one brief on one place. TaskController
+makes the workspace, starts the session, sends the brief, delivers the
+messages queued for it, records the worker's answer, and releases the
+session when you delete the Task.
+
+## When you write one
+
+Write a Task for each piece of work you hand to an agent. Write one with an
+empty brief for an interactive session that waits for its user.
 
 ## Example
 
@@ -29,128 +34,94 @@ session when the Task is deleted. The guarantees behind each step are in
 
 ## Spec
 
-Written by people and scripts through `fleet apply`. Fixed once created,
-except `dispatch` and `forge`. `amendments` grows only through
-[`fleet amend`](#amendments).
+You write the spec with `fleet apply`. It is fixed once created, except
+`dispatch` and `forge`. `fleet amend` appends to `amendments`; a manifest
+cannot change them.
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `harness` | unless inherited | The agent harness, such as `claude-code`, passed to the runtime as is. |
-| `host` | no | The place the session runs on: `<runtime>/<place>`, or `local`, the default runtime's `local` place. Default `local`. |
-| `model` | no | The model the harness runs. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
-| `configRef` | no | `{"name":"config"}` references passive execution defaults. |
-| `env` | no | Explicit string environment map; overrides inherited values. |
-| `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
-| `brief` | no | The brief, sent once to the ready session. It never changes. Empty or absent makes an interactive Task: its session spawns and waits for its user, messages still reach it, and `fleet amend` is refused. A blank brief is refused. |
-| `amendments` | no | Additions to the brief, oldest first, each `{text, reason?, outputs?, from, at, generation}`. Only `fleet amend` appends one. See [Amendments](#amendments). |
-| `workspace` | yes | What the session works in: a list of absolute URLs, `[]` for the runtime's default directory. See [Workspaces](#workspaces). |
-| `dispatch` | no | Nothing spawns while `false` (the default). |
-| `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. An amendment can add outputs. |
-| `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `harness` | string | unless a TaskConfig gives it | The agent harness, such as `claude-code`, passed to the runtime as is. |
+| `host` | string | no | The place the session runs on: `<runtime>/<place>`, or `local`, the default runtime's `local` place. Default `local`. |
+| `model` | string | no | The model the harness runs. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
+| `configRef` | `{name}` | no | A [TaskConfig](task-config.md) with execution defaults. |
+| `env` | object of strings | no | Environment values. They override inherited ones. |
+| `pauseAfterMs` | integer, at least 1 | no | Pause the session once its agent was idle this long. Overrides the TaskConfig's. Absent with no TaskConfig value: never. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
+| `brief` | string | no | The brief, sent once to the ready session. Empty or absent: an interactive Task, which `fleet amend` refuses. A blank brief is refused. |
+| `amendments` | array | no | Additions to the brief, oldest first. Only `fleet amend` appends one. See [Amendments](#amendments). |
+| `workspace` | array of URLs | yes | What the session works in. `[]` is the runtime's default directory. See [Workspace](workspace.md). |
+| `dispatch` | boolean | no | Nothing spawns while it is `false`, the default. Setting it back to `false` does not stop a session. |
+| `outputs` | object | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
+| `forge` | object | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, or `null` for no mark-ready). |
 
 `harness`, `host` and `model` may not be empty, contain NUL or start with
-`-`. Any other field is refused.
-
-See [TaskConfig](task-config.md) and [EnvProvider](env-provider.md) for provider sources,
-precedence, validation and private launch snapshots.
+`-`. Any other field is refused. The store assigns `uid`, `generation`,
+`resourceVersion`, the creation time and the `fleet.dev/release` finalizer.
+A manifest with a status, `ownerReferences` or a label that Fleet alone
+writes is refused.
 
 ### Workspaces
 
-A workspace is a list of absolute URLs, `<scheme>://…`. Fleet checks that,
-and nothing else: the scheme, the reference and any query are the
-runtime's to read. Any other shape is refused when it is applied.
-
-```json
-{"workspace": [
-  "git+https://github.com/example/app.git#main",
-  "git+file:///home/me/lib?branch=fix-1",
-  "file:///home/me/notes"
-]}
-```
-
-- The first URL is where the agent starts; the others are the extra
-  directories it spans. The first directory is the trust root, as
-  [workspace trust](../contracts.md#workspace-trust) states.
-- An empty list means the agent starts in the runtime's default directory.
-- The host's runtime makes one directory per URL before the first start,
-  and releases them after the session. It handles the schemes its manifest
-  lists. A Task with any other URL waits with `WorkspaceUnsupported`.
-- Fleet has no branch, base, worktree or cleanup field: the URL is the
-  whole request. With `workspace-git`, a `git+` URL is a worktree on a new
-  branch named after the session key, `?branch=` names the branch, and `#`
-  names the base. The worker reports the change it opened through
-  `fleet declare`.
-- A `file://` URL names a directory used as it is: the runtime makes and
-  removes nothing there. Two Tasks can name the same directory.
-- A release never loses work: with `workspace-git`, what a worktree holds
-  that its branch does not, untracked files included, is committed onto
-  `refs/fleet/preserved/<key>/<name>` first. A new Task restores it by
-  naming that ref in a `git+file` URL.
-- A [Gateway route](../configuration.md#the-gateway-section) with a
-  `{base}` workspace gives each thread `file://<base>/<conversation>`: the
-  manager creates that directory and removes it when the thread retires.
-
-[Runtimes](../../runtime/README.md#workspaces) states how each runtime
-makes a workspace.
+`workspace` is a list of absolute URLs. The runtime of the place makes one
+directory per URL before the session starts, and the agent starts in the
+first. [Workspace](workspace.md) says who makes it, where it lives, what
+happens to it when the Task is deleted, and how to span several
+repositories.
 
 ## Status
 
-Written by TaskController under the manager lease, except `result` and
-`declared`, which the worker writes through `fleet result` and `fleet
-declare`, `forge`, which the [Forge controller](../controllers/forge.md)
-writes, `gateway`, which the
-[Gateway controller](../controllers/gateway.md) writes, and `inbox`
-and `answered`, which nobody owns and which change only through the typed
-mutations described under [Inbox](#inbox).
+| Field | Writer | Meaning |
+| --- | --- | --- |
+| `phase` | TaskController | See [Lifecycle](#lifecycle). |
+| `conditions` | TaskController | One entry per [condition type](../controllers/task.md#conditions): `status`, `reason`, `message`, `lastTransitionTime`, `observedGeneration`. |
+| `observedGeneration` | TaskController | The spec generation it last acted on. |
+| `execution` | TaskController | The frozen launch: harness, place, model and the identity of each source, without values. Only for a Task with `configRef` or `env`. See [TaskConfig](task-config.md#resolution-and-freezing). |
+| `session` | TaskController | `{id, host, key}`: the session's runtime id, place and Fleet's key. See [Session](session.md). |
+| `sessionState` | TaskController | What the runtime last proved: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. An Unknown answer keeps the last state. |
+| `agentState`, `activity` | TaskController | What the agent does (`working`, `attention`, `idle`, `unknown`) and where that came from: its hooks or a screen rule. See [Session](session.md#agent-state). |
+| `conversation` | TaskController | The harness's id of the session's conversation, as its hooks reported it. A revive or a resume names it. |
+| `workspace` | TaskController | The workspace the runtime made: `key`, `host` and `dirs`, one per URL. See [Workspace](workspace.md). |
+| `intents`, `receipts` | TaskController | Each effect's intent, written before it runs, and its outcome, written after. |
+| `prompts` | TaskController | Per send key, the digest of the text sent, until the agent's prompt hook proves delivery. |
+| `brief` | TaskController | `{key, generation, recovered}`: the newest brief or amendment the worker received. A result names this generation. |
+| `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. |
+| `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |
+| `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. |
+| `result` | the worker, `fleet result` | The worker's claim: outcome, generation, summary, artifacts, outputs. See [Worker result](#worker-result). |
+| `declared` | the worker, `fleet declare` | Facts the worker declared, each a JSON object with a string `kind`. |
+| `forge` | ForgeController | One entry per declared change, and its conditions. See [Following declared changes](#following-declared-changes). |
+| `gateway` | GatewayController | The tie to a chat thread, the relay cursor and the posts. See [Talking in a conversation](#talking-in-a-conversation). |
+| `inbox` | nobody; typed appends | Messages queued for the session. See [Inbox](#inbox). |
+| `answered` | nobody; inbox appends | Per Question id, the entry that answered it. First answer wins. |
 
-| Field | Meaning |
-| --- | --- |
-| `phase` | Execution phase, defined by the [state machine](../controllers/task.md#task-state-machine). |
-| `observedGeneration` | The spec generation the controller last acted on. |
-| `conditions` | One entry per [condition type](../controllers/task.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
-| `execution` | Frozen execution selection and source identities; environment values are private. |
-| `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
-| `workspace` | The workspace the runtime made for the session: its `key`, the `host` whose runtime made it, and its `dirs`, one per URL in the Task's order; the session starts in the first. Absent for an empty list, until the runtime made it, and after it was released. |
-| `materializeAttempts`, `cleanAttempts` | `workspace` calls, bounded at 3 like spawn attempts, and workspace releases after the session. A call answered `Unsupported` does not count. Three failed cleans raise `NeedsAttention/CleanFailed`; cleans continue after each wait. |
-| `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. [Session](session.md#states) defines each state and how it is proved. |
-| `agentState` | What the agent is doing: `working`, `attention` (it waits on a person), `idle`, or `unknown` (nothing reported since it last started, and no screen rule matched). Its hooks set it, and below them a screen rule. Absent with no session. An unreadable signal file keeps the last state, unless a screen rule matches. Nothing decides on it; a view reads it. [Session](session.md#agent-state) maps each hook word. |
-| `activity` | Where `agentState` came from: `source` (`hook`, `screen` or `none`), `rule` (`<set>/<rule id>`, for a screen state) and `at` (when Fleet first saw this state from this source). Absent with no session, and for a harness with no hooks and no screen rules, such as a shell: it has no agent state to report. |
-| `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
-| `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped harness trust does not count. |
-| `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |
-| `revivals`, `reviveAttempts` | Revives over the Task's life, which number their keys, and revives since the session was last seen not lost. Three revives raise `NeedsAttention/ReviveFailed`; revives continue after each wait. |
-| `pauses`, `resumes`, `resumeAttempts` | Pause and resume effects over the Task's life, which number their keys, and resumes since the session was last seen running. Three resumes raise `NeedsAttention/ResumeFailed`; resumes continue after each wait. A record from before catch-up notes counts its old resume notes in `resumes`, so a resume key never repeats a note's key. |
-| `idleSince` | When the agent was first seen Idle in the current unbroken run of Idle answers, in Unix milliseconds. Active, Unknown or a send clears it. |
-| `catchUps`, `catchUp` | Catch-up notes over the Task's life, which number their keys, and the key of the note owed to a revived or resumed session until its delivery is known. A record from before the rename holds the key as `resume`, under `resume/<n>`; it is read and sent the same way. |
-| `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
-| `sessionCheckedAt` | When a Concluded Task's session was last looked up, in Unix milliseconds. At rest, the next lookup is due 5 minutes later. |
-| `conversation` | The harness's own id of the session's conversation, as the agent's hooks last reported it through `fleet signal`. A revive or a resume names it. |
-| `prompts` | Per send key, the digest of the text the send carries, recorded with its intent for a harness with a prompt hook. The send counts as delivered once the agent's prompt hook reports that digest; the entry goes then. See [proven delivery](../controllers/task.md#proven-delivery). |
-| `brief` | `{key, generation, recovered}`: the key and generation of the newest brief or amendment the worker received, once it has a receipt, and whether that receipt was read back from the session's journal. A result names this generation. |
-| `result` | The worker's claim: outcome, generation, summary, artifacts, outputs. |
-| `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, answers, amends, queuedAt}`. Appended by `fleet send` and `fleet amend`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
-| `deliveries` | TaskController's: `receipts`, the newest 100 delivery receipts by inbox key (`{key, from, at, recovered, deliveredVia, mayHold}`, where `deliveredVia` is the runtime's route and `mayHold` says that route can hold the text behind an approval dialog), and `revisions`, per mirror (`about.uid`) the highest `about.revision` delivered, which keeps a duplicate out after its receipt has rotated. |
-| `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
-| `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
-| `forge` | The Forge controller's: `changes`, one entry per declared change keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, `markReady` record and `notBefore`, plus that controller's `conditions`. Absent for a Task that declared nothing. |
-| `gateway` | The [Gateway controller](../controllers/gateway.md)'s: its tie to a chat conversation, relay cursor, children and post records, plus that controller's conditions. Absent for a Task that never talks. See [Talking in a conversation](#talking-in-a-conversation). |
-| `answered` | Per Question id, `{key, from, at}`: the inbox entry that answered it, its source and when. No owner; written only by an inbox append carrying `answers`, first answer wins. |
+## Lifecycle
 
-## Metadata and ownership
+![Task lifecycle from Pending through Spawning, Spawned, Briefed and Concluded; bounded spawn and send failures lead to Stalled; deletion from any phase enters Releasing and removes the record only after release](../controllers/task.svg)
 
-`apiVersion` is `fleet/v1alpha1`; `kind` is `Task`. `metadata.name` is a
-lowercase DNS-like name of at most 253 characters. The store assigns `uid`,
-`generation`, `resourceVersion`, creation time and `fleet.dev/release` finalizer.
-A spec change increments generation; compare-and-swap uses resourceVersion.
-Deleting a Task sets `deletionTimestamp` while the finalizer holds its record.
-Nonempty `ownerReferences` are refused.
+- `Pending`: nothing spawns until `dispatch` is `true`.
+- `Spawning`, `Spawned`: the workspace is made and the session starts on
+  the place.
+- `Briefed`: the agent's prompt hook proved that the brief arrived.
+- `Concluded`: a result for the current generation arrived. The session
+  stays, and inbox entries still reach it. An amendment re-opens the Task.
+- `Stalled`: spawn or brief attempts are exhausted.
+- `Releasing`: the Task is deleting. TaskController releases the session
+  and cleans the workspace. Then the finalizer goes.
 
-`fleet apply` accepts desired spec and labels, and refuses supplied status.
-Only `dispatch` and `forge` can change in an existing spec. Setting
-`dispatch` false prevents a Pending Task from spawning; it does not stop a
-session already spawned. A manifest without `amendments` keeps the stored
-amendments. A manifest that changes them is refused, and the error names
-`fleet amend`.
+`NeedsAttention` is a condition, not a phase.
+[The Task state machine](../controllers/task.md#task-state-machine) has the
+transition rules.
+
+## Related kinds
+
+- `spec.configRef` names a [TaskConfig](task-config.md), which names
+  [EnvProviders](env-provider.md).
+- A Task owns at most one [Session](session.md), from spawn to release, and
+  at most one [Workspace](workspace.md).
+- `fleet declare --change-request URL` makes the Task follow a
+  [ChangeRequest](change-request.md).
+- A [Conversation](conversation.md) can create a Task, and ties it to its
+  thread.
+- A [plugin](plugin-kinds.md) can create and act on Tasks.
 
 ## Worker result
 

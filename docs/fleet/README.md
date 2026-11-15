@@ -78,14 +78,16 @@ until it has its row here.
 | [TaskConfig](resources/task-config.md) | Execution defaults that Tasks share: harness, place, model, environment, idle pause. | You, with `fleet apply`. | Nobody: it has no controller. |
 | [EnvProvider](resources/env-provider.md) | Environment values for a launch: stored data, a file or a command. | You, with `fleet apply`. | Nobody: it has no controller. |
 | [ChangeRequest](resources/change-request.md) | A mirror of one change on a forge (a pull or merge request), numbered so that a reader diffs it with one integer. | The worker, with `fleet declare --change-request URL`; or you, with `fleet apply`. | ChangeRequestController. |
-| [Conversation](resources/conversation.md) | A mirror of one chat thread, and the Task that the thread is tied to. | The account's listener, with `fleet gateway receive`; GatewayController, for a thread that Fleet opens. | ConversationController. The listener spools deliveries on `received`. |
-| [Listener](resources/listener.md) | The inbound health of one chat account. | The account's listener, with `fleet gateway receive`. | ListenerController. The listener records `beats`, `refused` and `beatRevision`. |
-| [Plugin kinds](resources/plugin-kinds.md) | Kinds that a registered plugin defines and reconciles. | You, with `fleet apply`; the plugin, through its plan. | The plugin, as `plugin/<name>`, through the manager. |
+| [Conversation](resources/conversation.md) | A mirror of one chat thread, and the Task that the thread is tied to. | The account's listener, with `fleet gateway receive`; GatewayController, for a thread that Fleet opens; or you, with `fleet apply`. | ConversationController. The listener spools deliveries on `received`. |
+| [Listener](resources/listener.md) | The inbound health of one chat account. | The manager, one per `[gateway.accounts]` entry, or `fleet gateway receive` at a first beat. `fleet apply` refuses it. | ListenerController. The listener records `beats`, `refused` and `beatRevision`. |
+| [Plugin kinds](resources/plugin-kinds.md) | Kinds that a registered plugin defines and reconciles. [Write a plugin](plugins.md) shows how. | You, with `fleet apply`; the plugin, through its plan. | The plugin, as `plugin/<name>`, through the manager. |
 
 A Session is not a kind. It is the running agent that a Task owns, from
 spawn to release. The Task's `status.session` names it, and
 `status.sessionState` says what the runtime last proved about it. See
-[Session](resources/session.md).
+[Session](resources/session.md). A Workspace is not a kind either: it is the
+directories the session works in, which the place's runtime makes from the
+Task's `spec.workspace`. See [Workspace](resources/workspace.md).
 
 TaskConfig and EnvProvider are passive. A Task names a TaskConfig in
 `spec.configRef`. Before the first effect, the manager resolves the
@@ -208,6 +210,7 @@ running:
 | [contracts.md](contracts.md) | What each part guarantees, and which tests hold it to that |
 | [configuration.md](configuration.md) | `fleet init`, `fleet up`, every `fleet.toml` field, the environment file, OpenTelemetry export |
 | [integration.md](integration.md) | `fleet integration`: the hooks Fleet installs for an agent that takes none at launch |
+| [plugins.md](plugins.md) | Write a plugin: a new kind and its controller, step by step, with a working example |
 | [signal-contract.md](signal-contract.md) | For an agent vendor: how an agent reports its state through `fleet signal` |
 | [gateway-adapters.md](controllers/gateway-adapters.md) | The Slack and Discord adapters of the gateway port |
 

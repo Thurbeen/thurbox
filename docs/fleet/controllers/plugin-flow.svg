@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 318" role="img" aria-labelledby="title desc">
+<title id="title">How Plugin controller works</title>
+<desc id="desc">In: An object of a plugin kind, Observations. The plugin program: probes and reconcile: pure; a gate admits the plan. Out: Status, as plugin/&lt;name&gt;, Effects, Task verbs.</desc>
+<style>
+  svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  @media (prefers-color-scheme: light) { .background{fill:#fff} .ink{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a} .pure{fill:#173b2d} .adapter{fill:#202a33} .process{fill:#493517} .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker></defs>
+<rect class="background" width="900" height="318" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+<text x="20" y="34" font-size="19" font-weight="700">How Plugin controller works</text>
+<text x="20" y="70" font-size="13" font-weight="700" class="muted">in</text>
+<text x="320" y="70" font-size="13" font-weight="700" class="muted">what it does</text>
+<text x="620" y="70" font-size="13" font-weight="700" class="muted">out</text>
+<rect class="box adapter" x="20" y="128" width="260" height="58" rx="8"/>
+<text x="32" y="151" font-size="13.5" font-weight="650">An object of a plugin kind</text>
+<text x="32" y="171" font-size="12.5" class="muted">spec and status</text>
+<rect class="box adapter" x="20" y="200" width="260" height="58" rx="8"/>
+<text x="32" y="223" font-size="13.5" font-weight="650">Observations</text>
+<text x="32" y="243" font-size="12.5" class="muted">store reads, observe calls</text>
+<rect class="box process" x="620" y="92" width="260" height="58" rx="8"/>
+<text x="632" y="115" font-size="13.5" font-weight="650">Status, as plugin/&lt;name&gt;</text>
+<text x="632" y="135" font-size="12.5" class="muted">with intents and receipts</text>
+<rect class="box process" x="620" y="164" width="260" height="58" rx="8"/>
+<text x="632" y="187" font-size="13.5" font-weight="650">Effects</text>
+<text x="632" y="207" font-size="12.5" class="muted">run through perform</text>
+<rect class="box process" x="620" y="236" width="260" height="58" rx="8"/>
+<text x="632" y="259" font-size="13.5" font-weight="650">Task verbs</text>
+<text x="632" y="279" font-size="12.5" class="muted">create, patch, append, amend</text>
+<rect class="box pure" x="320" y="92" width="260" height="202" rx="8"/>
+<text x="450" y="166" font-size="14.5" font-weight="700" text-anchor="middle">The plugin program</text>
+<text x="450" y="188" font-size="12.5" text-anchor="middle">probes and reconcile:</text>
+<text x="450" y="206" font-size="12.5" text-anchor="middle">pure; a gate admits</text>
+<text x="450" y="224" font-size="12.5" text-anchor="middle">the plan</text>
+<path class="arrow" d="M280 157 H316"/>
+<path class="arrow" d="M280 229 H316"/>
+<path class="arrow" d="M580 121 H616"/>
+<path class="arrow" d="M580 193 H616"/>
+<path class="arrow" d="M580 265 H616"/>
+</g>
+</svg>

@@ -1,5 +1,7 @@
 # Gateway controller
 
+![GatewayController: a tied Task, the thread and declarations go in; status.gateway, inbox entries and posts come out](gateway-flow.svg)
+
 Implemented. The installed binary has steps 1 to 12 below: the `[gateway]`
 key, the Gateway port, the `fleet-gateway` crate with its fake, Slack and
 Discord adapters, the `Conversation` and `Listener` kinds,
@@ -932,6 +934,8 @@ performs every effect and every write. Each controller has the shape of the
 
 #### ConversationController
 
+![ConversationController: the spool, the history and the tied Task go in; the status, a new Task and notices come out](conversation-flow.svg)
+
 ```rust
 pub struct ConversationInput<'a> {
     pub object: &'a Object,
@@ -1083,6 +1087,8 @@ a plugin into a thread's directory later, so no other Task should name a
 directory below a route's base directory.
 
 #### ListenerController
+
+![ListenerController: beats, the gateway port and the config digest go in; the Listener status comes out](listener-flow.svg)
 
 ```rust
 pub struct ListenerInput<'a> {

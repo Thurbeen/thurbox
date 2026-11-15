@@ -1,20 +1,18 @@
 # Plugin controller
 
-Fleet hosts registered external controllers through bounded protocol-1 processes.
-The CLI acceptance suite exercises registered kinds, reconciliation, Task
-operations, environment separation and effects across process restarts.
+![Plugin controller: an object and observations go in; the plugin program plans; status, effects and Task verbs come out](plugin-flow.svg)
 
 A plugin is a controller written outside this repository, in a language a
-person can read in one sitting, such as a script. It
-defines its own resource kinds, decides what to do with each object of those
-kinds, and may create and steer Tasks. Fleet hosts it the way it hosts its
-own controllers: the manager owns every read, every write and every process,
-and the plugin is a function from values to a plan. The plugin that brought
-this about is one that mirrors GitHub issues and opens a Task to review,
-comment on or implement each; a Notion plugin is the second.
+person can read in one sitting, such as a script. It defines its own
+resource kinds, decides what to do with each object of those kinds, and may
+create and steer Tasks. Fleet hosts it the way it hosts its own controllers:
+the manager owns every read, every write and every process, and the plugin
+is a function from values to a plan. This page is the reference.
+[Write a plugin](../plugins.md) builds one step by step.
 
 | Read | Answers |
 | --- | --- |
+| [Write a plugin](../plugins.md) | How do I write, register, run and debug my own plugin? |
 | [Plugin kinds](../resources/plugin-kinds.md) | What does a plugin's resource look like, and who may write what on it? |
 | [State machine](#plugin-controller-state-machine) | How does one object of a plugin kind move through a sweep, an effect, and deletion? |
 | [Interface](#plugin-controller-interface) | What is the protocol, the manifest, the probes, the plan verbs and the write rules? |
