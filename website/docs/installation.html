@@ -544,7 +544,7 @@ thurbox</code></pre>
             The Fleet manager then stops the agent and removes the session's git worktree, so
             keep it running until <code>fleet list task</code> lists nothing. Only then stop the
             manager and remove Fleet's files. Committed work that exists nowhere else stays under
-            <code>refs/fleet/preserved/</code> in the source repository.
+            <code>refs/fleet/preserved/</code> in the source repository for 30 days.
             <strong>Destructive:</strong>
             this ends the agent session, and any unsaved agent conversation with it.
           </p>
