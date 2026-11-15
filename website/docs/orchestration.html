@@ -183,7 +183,8 @@ fleet delete ─▶ release session ◀── Concluded ◀───┘</code></
 <p>
   The commands the agent reaches for are <code>fleet apply --create-only</code>,
   <code>fleet send</code> and <code>fleet list task</code>. To schedule work, a cron job or a
-  systemd timer calls <code>fleet apply</code> or <code>fleet send</code>. The
+  systemd timer calls <code>fleet apply</code> (with a fresh Task name each run, since the same
+  name and contents is unchanged) or <code>fleet send</code>. The
   <a href="recipes.html">recipes</a>
   page has the same thing written as bash, if you would rather commit a script.
 </p>
