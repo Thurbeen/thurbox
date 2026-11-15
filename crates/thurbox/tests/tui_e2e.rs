@@ -120,6 +120,14 @@ impl Profile {
             "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
         )
         .expect("seed settings");
+        // A per-user Fleet config already there: thurbox runs `fleet init` on
+        // a machine without one, which only the first-run scenario is.
+        std::fs::create_dir_all(root.path().join("home/.config/fleet")).expect("fleet dir");
+        std::fs::write(
+            root.path().join("home/.config/fleet/config.toml"),
+            "version = 1\n",
+        )
+        .expect("seed fleet config");
         let bin = root.path().join("bin");
         // Fleet is the engine every interface starts (`fleet watch`, `fleet
         // up`), found on `PATH` as `fleet`. This one has no Tasks and no
@@ -246,6 +254,8 @@ impl Profile {
     fn apply(&self, cmd: &mut Command) {
         cmd.current_dir(self.root.path());
         cmd.env("HOME", self.path("home"));
+        cmd.env("XDG_CONFIG_HOME", self.path("home/.config"));
+        cmd.env_remove("FLEET_CONFIG");
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
         // Pinned socket, cleared owner tag, private socket directory. Run from
@@ -7054,6 +7064,45 @@ fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
     let mut tui = restart(&profile);
     in_the_shell(&mut tui, "echo tb-second-\"\"shell", "tb-second-shell");
     assert!(tui.quit().success());
+}
+
+#[test]
+fn the_first_run_sets_up_a_local_fleet_and_says_so() {
+    // A machine with no Fleet config: the first `thurbox` runs `fleet init`
+    // before it starts the manager, so the manager has the multiplexer
+    // runtime and its `local` place, and the interface says what to do next.
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let config = profile.path("home/.config/fleet/config.toml");
+    std::fs::remove_file(&config).expect("no Fleet config yet");
+    // The real Fleet with the profile's home and no `--config`: it finds, and
+    // `init` writes, the per-user config.
+    let dir = Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .parent()
+        .expect("bin dir");
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\nexec env -i HOME='{r}/home' XDG_CONFIG_HOME='{r}/home/.config' XDG_DATA_HOME='{r}/home/.local/share' TMPDIR='{r}/fleet-tmp' PATH='{b}:{d}:/usr/bin:/bin' TERM=xterm-256color TMUX_TMPDIR='{t}' '{f}' \"$@\"\n",
+            r = profile.root.path().display(),
+            b = profile.bin.display(),
+            d = dir.display(),
+            t = profile.server.tmpdir().display(),
+            f = dir.join("fleet").display(),
+        ),
+    );
+
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("Fleet set up");
+    let written = std::fs::read_to_string(&config).expect("fleet init wrote the config");
+    assert!(written.contains("[runtimes.mux]"), "{written}");
+    tui.quit();
 }
 
 #[test]

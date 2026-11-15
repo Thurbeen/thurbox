@@ -260,7 +260,7 @@ debug build with `release-archive.sh`, serves it as release assets on
 `127.0.0.1`, and runs the real installer into an empty home with no shipped
 program on `PATH` — in a bare Debian container on Linux, on the runner on macOS
 and Windows. Every program must then resolve to the install directory,
-`thurbox-cli version`, `fleet version` and `fleet init` must succeed, and
+`thurbox --version`, `thurbox-cli version`, `fleet version` and `fleet init` must succeed, and
 `thurbox-cli doctor --json` must report `fleet`, `fleet-config` and
 `runtime-mux` ok; with no multiplexer on `PATH` (Windows: no psmux) the
 `multiplexer` check is the only failure allowed. Run it locally after

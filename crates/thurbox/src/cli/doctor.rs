@@ -46,6 +46,8 @@ struct Finding {
     detail: String,
     /// The Fleet the check is of, when it is one Fleet's.
     fleet: Option<String>,
+    /// The command or step that fixes a check that is not ok.
+    fix: Option<String>,
 }
 
 impl Finding {
@@ -55,7 +57,14 @@ impl Finding {
             level,
             detail,
             fleet: None,
+            fix: None,
         }
+    }
+
+    /// The same finding, with the one thing to do about it.
+    fn fix(mut self, fix: impl Into<String>) -> Self {
+        self.fix = Some(fix.into());
+        self
     }
 }
 
@@ -86,15 +95,18 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
         fleets.push(entry);
     }
     if listed.len() > 1 {
-        findings.push(Finding::new(
-            "fleets",
-            Level::Warn,
-            format!(
+        findings.push(
+            Finding::new(
+                "fleets",
+                Level::Warn,
+                format!(
                 "{} Fleets are listed; the interface uses {in_force}, the first by name, until it \
                  follows several",
                 listed.len()
             ),
-        ));
+            )
+            .fix("keep only the Fleets you use under [fleets] in settings.toml"),
+        );
     }
     // Sessions of a Fleet on another machine run in that machine's
     // multiplexer: this one needs none unless a Fleet runs here.
@@ -136,7 +148,8 @@ fn multiplexer_finding() -> Finding {
             "multiplexer",
             Level::Fail,
             crate::backend::preflight::Dependency::LocalMultiplexer.missing_summary(),
-        ),
+        )
+        .fix(crate::backend::preflight::Dependency::LocalMultiplexer.fix()),
     }
 }
 
@@ -148,6 +161,9 @@ fn render(findings: &[Finding], verdict: Level) -> String {
             None => f.key.clone(),
         };
         human.push_str(&format!("  {}  {:<20} {}\n", f.level.mark(), key, f.detail));
+        if let Some(fix) = &f.fix {
+            human.push_str(&format!("        {:<20} fix: {fix}\n", ""));
+        }
     }
     let dirs = crate::paths::path_dirs();
     human.push_str(&format!("\nPATH searched ({}):\n", dirs.len()));
@@ -174,9 +190,19 @@ fn document(findings: &[Finding], verdict: Level) -> Value {
                 "level": f.level.as_str(),
                 "detail": f.detail,
                 "fleet": f.fleet,
+                "fix": f.fix,
             }))
             .collect::<Vec<Value>>(),
     })
+}
+
+/// The one-line install, which installs Fleet and runtime-mux with thurbox.
+fn installer() -> &'static str {
+    if cfg!(windows) {
+        "irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex"
+    } else {
+        "curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh"
+    }
 }
 
 /// ` (3.4)` when the multiplexer answers `-V`, empty when it does not.
@@ -261,11 +287,7 @@ impl FleetFacts {
                     }
                 }),
         };
-        let config = match link.config() {
-            Some(path) => Some((std::path::PathBuf::from(path), "settings.toml")),
-            None if link.is_local() => fleet_config_path(),
-            None => None,
-        };
+        let config = link.local_config();
         Self {
             name: link.name().to_string(),
             program: program.to_string(),
@@ -331,7 +353,11 @@ impl FleetFacts {
         let broken = if in_force { Level::Fail } else { Level::Warn };
         let name = &self.name;
         let mut findings = vec![match (&self.version, self.incompatible()) {
-            (Ok(_), Some(why)) => Finding::new("fleet", broken, why),
+            (Ok(_), Some(why)) => Finding::new("fleet", broken, why).fix(if self.local {
+                format!("update Fleet: {}", installer())
+            } else {
+                "update Fleet on that machine".into()
+            }),
             (Ok(v), None) => Finding::new(
                 "fleet",
                 Level::Ok,
@@ -343,18 +369,19 @@ impl FleetFacts {
                     self.harnesses().join(", ")
                 ),
             ),
-            (Err(why), _) if self.unreachable.is_some() => Finding::new(
-                "fleet",
-                broken,
-                format!("{why} — check [fleets.{name}] in settings.toml"),
-            ),
-            (Err(why), _) => Finding::new(
-                "fleet",
-                broken,
-                format!(
-                    "{why} — install Fleet there, or set [fleets.{name}] program in settings.toml"
-                ),
-            ),
+            (Err(why), _) if self.unreachable.is_some() => {
+                Finding::new("fleet", broken, why.clone()).fix(format!(
+                    "check the transport of [fleets.{name}] in settings.toml, then `thurbox-cli \
+                     doctor`"
+                ))
+            }
+            (Err(why), _) if self.local => Finding::new("fleet", broken, why.clone()).fix(format!(
+                "install Fleet with thurbox: {}, or set [fleets.{name}] program in settings.toml",
+                installer()
+            )),
+            (Err(why), _) => Finding::new("fleet", broken, why.clone()).fix(format!(
+                "install Fleet on that machine, or set [fleets.{name}] program in settings.toml"
+            )),
         }];
         if self.unreachable.is_none() {
             findings.push(match &self.hosts {
@@ -371,7 +398,10 @@ impl FleetFacts {
                         None => "any place (one runtime serves them all)".into(),
                     },
                 ),
-                Err(why) => Finding::new("fleet-hosts", Level::Warn, why.clone()),
+                Err(why) => Finding::new("fleet-hosts", Level::Warn, why.clone()).fix(format!(
+                    "`{} doctor` names the runtime that does not answer",
+                    self.program
+                )),
             });
         }
         if self.local {
@@ -407,10 +437,9 @@ impl FleetFacts {
                     manager["holder"].as_str().unwrap_or("?")
                 ),
             ),
-            Some(false) => Finding::new(
-                "fleet-manager",
-                broken,
-                "manager not running — see the systemd unit in docs/where-sessions-run.md".into(),
+            Some(false) => Finding::new("fleet-manager", broken, "manager not running".into()).fix(
+                "systemctl --user enable --now fleet.service on that machine (the unit is in \
+                 docs/where-sessions-run.md)",
             ),
             None => Finding::new(
                 "fleet-manager",
@@ -419,9 +448,10 @@ impl FleetFacts {
                     "whether the manager runs is unknown: {}",
                     manager["why"]
                         .as_str()
-                        .unwrap_or("this Fleet does not report its manager — update Fleet")
+                        .unwrap_or("this Fleet does not report its manager")
                 ),
-            ),
+            )
+            .fix("update Fleet on that machine"),
         })
     }
 
@@ -437,17 +467,14 @@ impl FleetFacts {
             Some((path, from)) => Finding::new(
                 "fleet-config",
                 Level::Warn,
-                format!(
-                    "{} ({from}) does not exist — run `{} init`",
-                    path.display(),
-                    self.program
-                ),
-            ),
-            None => Finding::new(
-                "fleet-config",
-                Level::Warn,
-                "no Fleet config path: set FLEET_CONFIG".into(),
-            ),
+                format!("{} ({from}) does not exist", path.display()),
+            )
+            .fix(format!(
+                "{} init (thurbox runs it on its first start)",
+                self.program
+            )),
+            None => Finding::new("fleet-config", Level::Warn, "no Fleet config path".into())
+                .fix("set FLEET_CONFIG to the config file, then `fleet init`"),
         };
         let mux = "runtime-mux";
         let runtime = match crate::backend::preflight::look_up(mux) {
@@ -458,7 +485,8 @@ impl FleetFacts {
                     "{mux} is not on PATH — Fleet's local runtime runs it unless its config \
                      names another program"
                 ),
-            ),
+            )
+            .fix(format!("install it with thurbox: {}", installer())),
             _ => Finding::new(mux, Level::Ok, format!("{mux} is installed")),
         };
         vec![config, runtime]
@@ -481,27 +509,101 @@ impl FleetFacts {
     }
 }
 
-/// The config file Fleet reads, by its documented rule (docs/fleet): the file
-/// `FLEET_CONFIG` names, else the native per-user one.
-fn fleet_config_path() -> Option<(std::path::PathBuf, &'static str)> {
-    if let Some(path) = std::env::var_os("FLEET_CONFIG").filter(|p| !p.is_empty()) {
-        return Some((std::path::PathBuf::from(path), "FLEET_CONFIG"));
-    }
-    let base = if cfg!(windows) {
-        std::env::var_os("APPDATA")
-            .filter(|d| !d.is_empty())?
-            .into()
-    } else if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
-        std::path::PathBuf::from(d)
-    } else {
-        std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config")
-    };
-    Some((base.join("fleet/config.toml"), "the per-user file"))
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// A Fleet's facts with every field given, for the cases below.
+    fn facts(
+        local: bool,
+        unreachable: Option<&str>,
+        version: Result<Value, &str>,
+        config: Option<&str>,
+        hosts: Result<Value, &str>,
+    ) -> FleetFacts {
+        FleetFacts {
+            name: "local".into(),
+            program: "fleet".into(),
+            local,
+            unreachable: unreachable.map(str::to_string),
+            version: version.map_err(str::to_string),
+            config: config.map(|p| (std::path::PathBuf::from(p), "the per-user file")),
+            hosts: hosts.map_err(str::to_string),
+        }
+    }
+
+    /// Every check that is not ok carries the command or step that fixes it,
+    /// in the JSON and on its own line of the report.
+    #[test]
+    fn every_failing_check_names_its_fix() {
+        let empty = tempfile::tempdir().expect("an empty PATH dir");
+        let fine = json!({"version": "9.9.9", "apiVersions": ["fleet/v1alpha1"], "harnesses": []});
+        let cases = [
+            facts(
+                true,
+                None,
+                Err("fleet: not found"),
+                None,
+                Err("fleet: not found"),
+            ),
+            facts(
+                true,
+                None,
+                Ok(json!({"version": "0.1.0"})),
+                Some("/nowhere/config.toml"),
+                Ok(json!({"hosts": []})),
+            ),
+            facts(
+                true,
+                None,
+                Ok(fine.clone()),
+                Some("/nowhere/config.toml"),
+                Err("no config"),
+            ),
+            facts(
+                false,
+                Some("ssh: connect refused"),
+                Err("ssh: connect refused"),
+                None,
+                Err("x"),
+            ),
+            facts(
+                false,
+                None,
+                Ok(
+                    json!({"version": "9.9.9", "apiVersions": ["fleet/v1alpha1"], "manager": {"held": false}}),
+                ),
+                None,
+                Ok(json!({"hosts": []})),
+            ),
+            facts(false, None, Ok(fine), None, Ok(json!({"hosts": []}))),
+        ];
+        let mut findings = crate::paths::with_path(empty.path().as_os_str(), || {
+            let mut all: Vec<Finding> = cases.iter().flat_map(|f| f.findings(true)).collect();
+            all.push(multiplexer_finding());
+            all
+        });
+        findings.retain(|f| f.level != Level::Ok);
+        assert!(
+            findings.len() >= 6,
+            "the cases fail several checks: {}",
+            findings.len()
+        );
+        for f in &findings {
+            let fix = f.fix.as_deref().unwrap_or("");
+            assert!(
+                !fix.trim().is_empty(),
+                "{} ({}) has no fix: {}",
+                f.key,
+                f.level.as_str(),
+                f.detail
+            );
+        }
+        let report = render(&findings, Level::Fail);
+        assert!(report.contains("fix:"), "{report}");
+        let json = document(&findings, Level::Fail);
+        assert!(json["checks"][0]["fix"].is_string(), "{json}");
+    }
 
     /// `doctor`'s probes reach Fleet through its link.
     #[test]
@@ -541,12 +643,11 @@ mod tests {
             .expect("a fleet-manager row");
         assert_eq!(manager.level, Level::Warn, "{}", manager.detail);
         assert!(
-            manager
-                .detail
-                .contains("does not report its manager — update Fleet"),
+            manager.detail.contains("does not report its manager"),
             "{}",
             manager.detail
         );
+        assert_eq!(manager.fix.as_deref(), Some("update Fleet on that machine"));
     }
 
     /// `doctor` lists the hosts Fleet defines, which are where a session can

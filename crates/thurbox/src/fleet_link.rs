@@ -98,6 +98,57 @@ impl FleetLink {
         self.launcher.is_none()
     }
 
+    /// The config file a Fleet on this machine reads, and what named it: the
+    /// `config` its `[fleets]` entry gives, else Fleet's documented rule
+    /// (docs/fleet/configuration.md), `FLEET_CONFIG` or the per-user file.
+    /// `None` for a Fleet elsewhere, whose files are that machine's.
+    pub fn local_config(&self) -> Option<(std::path::PathBuf, &'static str)> {
+        if let Some(path) = self.config() {
+            return Some((std::path::PathBuf::from(path), "settings.toml"));
+        }
+        if !self.is_local() {
+            return None;
+        }
+        if let Some(path) = std::env::var_os("FLEET_CONFIG").filter(|p| !p.is_empty()) {
+            return Some((std::path::PathBuf::from(path), "FLEET_CONFIG"));
+        }
+        let base = if cfg!(windows) {
+            std::env::var_os("APPDATA")
+                .filter(|d| !d.is_empty())?
+                .into()
+        } else if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
+            std::path::PathBuf::from(d)
+        } else {
+            std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config")
+        };
+        Some((base.join("fleet/config.toml"), "the per-user file"))
+    }
+
+    /// First run: a Fleet on this machine with no config file gets one from
+    /// `fleet init`, so the `fleet up` thurbox then starts has the
+    /// multiplexer runtime and its `local` place rather than no runtime at
+    /// all. `None` when there is nothing to set up: a remote Fleet, or a
+    /// config already there. Otherwise the config written, or why not.
+    pub fn set_up(&self) -> Option<Result<std::path::PathBuf, String>> {
+        if !self.is_local() {
+            return None;
+        }
+        let (path, _) = self.local_config()?;
+        if path.exists() {
+            return None;
+        }
+        Some(
+            self.bounded_output(&["init"], self.probe_timeout())
+                .and_then(|out| {
+                    if out.status.success() {
+                        Ok(path)
+                    } else {
+                        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+                    }
+                }),
+        )
+    }
+
     /// How the Fleet is reached, as the creation flow shows it: `local
     /// Fleet`, `ssh <destination>` or `wsl <distro>`.
     pub fn transport(&self) -> String {

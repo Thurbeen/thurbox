@@ -1316,9 +1316,9 @@ fn doctor_reports_each_listed_fleet() {
     assert_eq!(check("fleet", "laptop")["level"], "ok", "{report:#}");
     // A Fleet the interface does not use yet warns, never fails the report.
     assert_eq!(check("fleet", "gpu")["level"], "warn", "{report:#}");
-    // thurbox never starts a remote manager: doctor points at the unit.
+    // thurbox never starts a remote manager: doctor's fix points at the unit.
     assert!(
-        check("fleet-manager", "box")["detail"]
+        check("fleet-manager", "box")["fix"]
             .as_str()
             .is_some_and(|d| d.contains("where-sessions-run.md")),
         "{report:#}"
@@ -1605,7 +1605,8 @@ fn doctor_reports_whether_a_remote_fleets_manager_runs() {
     assert_eq!(down["level"], "fail", "{down:#}");
     let detail = down["detail"].as_str().unwrap();
     assert!(detail.contains("manager not running"), "{detail}");
-    assert!(detail.contains("docs/where-sessions-run.md"), "{detail}");
+    let fix = down["fix"].as_str().unwrap_or_default();
+    assert!(fix.contains("docs/where-sessions-run.md"), "{fix}");
     assert!(!detail.contains("cannot tell"), "{detail}");
     assert_eq!(remote.manager(), None, "doctor started no manager");
 

@@ -663,6 +663,80 @@ fn init_refuses_a_symlinked_config() {
     assert!(!target.exists());
 }
 
+/// `init` says what it set up and what to do next: the place sessions run
+/// in, the coding agents found on PATH, and the two commands that follow.
+#[cfg(unix)]
+#[test]
+fn init_explains_the_setup_it_wrote() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::without_tools("init-explains");
+    let claude = env.root.join("empty-path/claude");
+    fs::write(&claude, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = wait(installed(&env, &["init"]).spawn().unwrap());
+    run.ok()
+        .stdout_has("initialized")
+        .stdout_has("mux/local")
+        .stdout_has("claude")
+        .stdout_has("thurbox")
+        .stdout_has("fleet doctor");
+}
+
+/// The agents `init` reports are the profiles `fleet doctor` checks: a
+/// user's own harness beside the config counts, by its program.
+#[cfg(unix)]
+#[test]
+fn init_counts_a_user_harness_as_an_agent() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::without_tools("init-user-harness");
+    let dir = env.root.join("cfg");
+    fs::create_dir_all(dir.join("harnesses")).unwrap();
+    fs::write(
+        dir.join("harnesses/vendor.toml"),
+        "name = \"vendor\"\nprogram = \"vendor-cli\"\nauthority = \"full\"\n",
+    )
+    .unwrap();
+    let program = env.root.join("empty-path/vendor-cli");
+    fs::write(&program, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let config = dir.join("config.toml");
+    wait(
+        installed(&env, &["--config", config.to_str().unwrap(), "init"])
+            .spawn()
+            .unwrap(),
+    )
+    .ok()
+    .stdout_has("coding agents found: vendor-cli");
+}
+
+/// After `init --config PATH`, every command it prints names that config,
+/// and it says how thurbox is pointed at it.
+#[test]
+fn init_with_a_config_names_it_in_every_next_step() {
+    let env = Env::without_tools("init-explicit-config");
+    let config = env.root.join("other.toml");
+    let shown = config.display().to_string();
+    let run = wait(
+        installed(&env, &["--config", config.to_str().unwrap(), "init"])
+            .spawn()
+            .unwrap(),
+    );
+    run.ok()
+        .stdout_has(&format!("fleet --config {shown} up"))
+        .stdout_has(&format!("fleet --config {shown} apply"))
+        .stdout_has(&format!("fleet --config {shown} doctor"))
+        .stdout_has("[fleets.");
+}
+
+/// With no coding agent on PATH, `init` says to install one.
+#[test]
+fn init_says_to_install_an_agent_when_none_is_found() {
+    let env = Env::without_tools("init-no-agent");
+    wait(installed(&env, &["init"]).spawn().unwrap())
+        .ok()
+        .stdout_has("no coding agent");
+}
+
 /// Two inits racing write one config, never two halves.
 #[test]
 fn concurrent_init_writes_one_config() {

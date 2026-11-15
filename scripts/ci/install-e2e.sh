@@ -3,11 +3,9 @@
 # Install a release from scratch and check it runs: the documented one-line
 # installer (install.sh, or install.ps1 on Windows) against a local copy of the
 # release assets, into an empty HOME, with nothing thurbox or Fleet already on
-# PATH. Then every shipped program must resolve to the install directory, and
-# thurbox-cli, fleet, runtime-mux and workspace-git must answer (thurbox, the
-# TUI, has no command that answers without a terminal). `fleet init` must
-# write a config, and `thurbox-cli doctor` must find Fleet, its config and
-# runtime-mux.
+# PATH. Then every shipped program must resolve to the install directory and
+# answer. `fleet init` must write a config, and `thurbox-cli doctor` must find
+# Fleet, its config and runtime-mux.
 #
 # Usage:
 #   scripts/ci/install-e2e.sh <dist-dir> <version>
@@ -22,7 +20,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-[ "$#" -eq 2 ] || { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ "$#" -eq 2 ] || { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 dist="$(cd "$1" && pwd)" version="$2"
 # shellcheck disable=SC2207 # one word per line; macOS's bash 3.2 has no mapfile
 binaries=($("$repo/scripts/ci/release-archive.sh" --binaries))
@@ -111,9 +109,10 @@ for b in "${binaries[@]}"; do
 done
 pass "installed: ${binaries[*]}"
 
+thurbox --version </dev/null || fail "thurbox --version exited $?"
 thurbox-cli version || fail "thurbox-cli version exited $?"
 fleet version || fail "fleet version exited $?"
-pass "thurbox-cli version and fleet version answer"
+pass "thurbox --version, thurbox-cli version and fleet version answer"
 
 # The two programs Fleet and runtime-mux run speak JSON on stdin: an unknown
 # request comes back as an `unknown` answer, which only a program that runs

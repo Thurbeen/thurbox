@@ -92,6 +92,10 @@ edit it to change the bound. No runtime under `[runtimes]` passes a model to
 its harness: it refuses a Task that sets `spec.model`. Give the model in the
 harness's own configuration instead.
 
+`init` prints what it set up and what comes next: the config path, the places
+sessions run in, the coding agents found on PATH, and the commands to run.
+thurbox runs `init` itself on its first start when no config exists.
+
 The config is yours once written. A repeated `init` validates it and keeps
 it as it is; a malformed config is an error, never replaced. A symlink at the
 config's path is refused; a symlinked directory above it is not. Initializers serialize with an OS lock,
