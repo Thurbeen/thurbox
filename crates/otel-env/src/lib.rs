@@ -139,6 +139,44 @@ fn signals(var: impl Fn(&str) -> Option<String>, logs: bool) -> Result<Signals, 
     })
 }
 
+/// Where this program's own export goes, for the agents a program starts
+/// to export to as well (docs/observability.md, *Coding agents*): the base
+/// endpoint `OTEL_EXPORTER_OTLP_ENDPOINT`, without a trailing `/`, and
+/// `OTEL_EXPORTER_OTLP_HEADERS`. `None` unless traces or metrics are
+/// exported and the base endpoint is set: a signal's own endpoint names no
+/// collector for the other signals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collector {
+    pub endpoint: String,
+    /// Always `http/protobuf`: the one protocol the programs speak.
+    pub protocol: &'static str,
+    pub headers: Option<String>,
+}
+
+/// This process's [`Collector`], from its environment.
+pub fn collector() -> Option<Collector> {
+    collector_from(|name| std::env::var(name).ok())
+}
+
+fn collector_from(var: impl Fn(&str) -> Option<String>) -> Option<Collector> {
+    let wanted = signals(&var, false).ok()?;
+    if !(wanted.traces || wanted.metrics) {
+        return None;
+    }
+    let set = |name: &str| {
+        var(name)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    Some(Collector {
+        endpoint: set("OTEL_EXPORTER_OTLP_ENDPOINT")?
+            .trim_end_matches('/')
+            .to_string(),
+        protocol: PROTOCOL,
+        headers: set("OTEL_EXPORTER_OTLP_HEADERS"),
+    })
+}
+
 /// Install the providers the environment asks for, under the resource
 /// `service` (unless `OTEL_SERVICE_NAME` names another) at `version`, with
 /// the `attributes` the environment does not set itself; the logs signal
@@ -401,6 +439,45 @@ mod tests {
             vars.push(("OTEL_LOGS_EXPORTER", "otlp"));
         }
         read_for(&vars, true)
+    }
+
+    fn collector_for(vars: &[(&str, &str)]) -> Option<Collector> {
+        collector_from(|name| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        })
+    }
+
+    #[test]
+    fn agents_are_given_the_collector_only_while_this_program_exports() {
+        let endpoint = ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318/");
+        assert_eq!(
+            collector_for(&[endpoint, ("OTEL_EXPORTER_OTLP_HEADERS", "a=b")]),
+            Some(Collector {
+                endpoint: "http://c:4318".into(),
+                protocol: "http/protobuf",
+                headers: Some("a=b".into()),
+            })
+        );
+        assert_eq!(collector_for(&[endpoint]).unwrap().headers, None);
+        for off in [
+            vec![],
+            vec![endpoint, ("OTEL_SDK_DISABLED", "true")],
+            vec![
+                endpoint,
+                ("OTEL_TRACES_EXPORTER", "none"),
+                ("OTEL_METRICS_EXPORTER", "none"),
+            ],
+            vec![endpoint, ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")],
+            // A signal's own endpoint is no collector for the others.
+            vec![(
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "http://c:4318/v1/traces",
+            )],
+        ] {
+            assert_eq!(collector_for(&off), None, "{off:?}");
+        }
     }
 
     const ALL: Signals = Signals {

@@ -145,6 +145,8 @@ spec.host           the runtime host (default "local")
 spec.model          optional; reaches the harness through its model variable
 spec.pauseAfterMs   optional; pause the session once its agent was idle
                     this long, over the TaskConfig's
+spec.agentTelemetry optional; false keeps the agent's own telemetry off,
+                    over the TaskConfig's
 spec.brief          the brief, sent once, never changed
 spec.amendments     append-only additions to the brief, through fleet amend
 spec.workspace      a list of absolute URLs; the runtime makes them

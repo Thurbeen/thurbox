@@ -270,17 +270,25 @@ pub struct SpawnSpec {
     /// The manager already froze runtime model-variable selection with env.
     #[serde(default)]
     pub environment_frozen: bool,
+    /// The arguments of the agent's own telemetry, after the launch
+    /// arguments; the manager sets them at each start
+    /// ([`crate::harness::Profile::telemetry`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub telemetry_args: Vec<String>,
 }
 
 impl SpawnSpec {
     /// The harness profile's launch argv: its hooks, the trust of the
-    /// directory the session starts in and each other directory it spans.
+    /// directory the session starts in, each other directory it spans and
+    /// the agent's telemetry.
     pub fn launch_argv(&self) -> Result<Vec<String>, String> {
         let (extra, root) = match &self.ready {
             Some(r) => (r.extra_dirs().to_vec(), r.dir()),
             None => (Vec::new(), None),
         };
-        crate::harness::profile(&self.harness).launch(&extra, root)
+        let mut argv = crate::harness::profile(&self.harness).launch(&extra, root)?;
+        argv.extend(self.telemetry_args.iter().cloned());
+        Ok(argv)
     }
 }
 

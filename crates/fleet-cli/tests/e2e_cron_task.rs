@@ -64,6 +64,7 @@ impl World {
             holder: "cron-task-test".into(),
             forge: None,
             signals: None,
+            agent_telemetry: None,
             change_request_defaults: Default::default(),
             forge_defaults: Default::default(),
             gateway: None,

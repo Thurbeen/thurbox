@@ -558,6 +558,7 @@ impl Pass<'_, '_> {
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
             environment_frozen: false,
+            telemetry_args: Vec::new(),
         }
     }
 

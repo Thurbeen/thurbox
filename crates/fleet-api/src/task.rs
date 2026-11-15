@@ -55,6 +55,11 @@ pub struct TaskSpec {
     /// never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_after_ms: Option<Millis>,
+    /// `false`: the agent exports no telemetry of its own, even when Fleet
+    /// exports; overrides the TaskConfig's. Absent means the TaskConfig
+    /// decides, and without one, on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_telemetry: Option<bool>,
     /// The brief, sent once and never changed. Empty for an interactive
     /// Task: its session spawns and waits for its user.
     #[serde(default)]

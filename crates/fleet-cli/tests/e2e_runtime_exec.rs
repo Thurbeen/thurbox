@@ -3261,7 +3261,8 @@ fn a_runtime_without_browse_is_refused_by_name() {
 /// the `runtime-mux` it runs and in the `workspace-git` that one runs, each
 /// under its own `service.name`. `TRACEPARENT` carries the context over each
 /// process boundary, and every span about the Task, from its spawn to its
-/// release, is in one trace. The agent's window inherits none of it.
+/// release, is in one trace. The agent's window inherits none of it, and
+/// gets its own telemetry from its harness profile instead.
 #[test]
 fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
     use support::otlp::{Collector, Span};
@@ -3400,13 +3401,36 @@ fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
         );
     }
 
+    // The agent's window inherits none of Fleet's telemetry: it carries only
+    // its own, from its harness profile, pointed at the same collector and
+    // tagged with its Task (docs/observability.md, *Coding agents*).
     let seen = fs::read_to_string(&env_log).expect("the agent's environment");
-    for line in seen.lines() {
-        assert!(
-            !line.starts_with("OTEL_") && !line.starts_with("TRACEPARENT="),
-            "the agent inherited {line}"
-        );
-    }
+    let otel: std::collections::BTreeMap<&str, &str> = seen
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| k.starts_with("OTEL_") || k.starts_with("TRACE"))
+        .collect();
+    assert_eq!(
+        otel.keys().copied().collect::<Vec<_>>(),
+        [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+            "OTEL_LOGS_EXPORTER",
+            "OTEL_METRICS_EXPORTER",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "OTEL_SERVICE_NAME",
+        ],
+        "{seen}"
+    );
+    assert_eq!(otel["OTEL_EXPORTER_OTLP_ENDPOINT"], collector.endpoint);
+    assert_eq!(otel["OTEL_SERVICE_NAME"], "claude");
+    let resource = otel["OTEL_RESOURCE_ATTRIBUTES"];
+    assert!(resource.contains("fleet.task=t1"), "{resource}");
+    assert!(
+        !resource.contains("deployment.environment.name"),
+        "{resource}"
+    );
+    assert!(seen.contains("CLAUDE_CODE_ENABLE_TELEMETRY=1\n"), "{seen}");
 }
 
 /// A collector that accepts and never answers changes no runtime answer:
@@ -4641,4 +4665,107 @@ fn attach_and_shell_view_a_pane_on_an_ssh_place() {
         p.home.display().to_string(),
         "the shell runs on the place, in the Task's directory"
     );
+}
+
+/// A session's environment is in no argv: not the `tmux` client's that
+/// makes its window on this machine, and not the `ssh` that reaches a place,
+/// both of which every user of a machine can read. The agent still sees
+/// each value, here and on the place.
+#[test]
+fn a_sessions_environment_is_in_no_argv_here_or_on_an_ssh_place() {
+    let (Some(program), Some(real_tmux)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    const SECRET: &str = "s3cr3t-env-value-4b1f 'quoted' $HOME";
+    let sockets = Sockets::new("argv-local");
+    let remote = Sockets::new("argv-place");
+    let mut env = mux_env("runtime-mux-argv", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    // Stand-ins that log every argument, then run the real program.
+    let log = env.root.join("argv.log");
+    let shims = env.root.join("shims");
+    fs::create_dir_all(&shims).expect("shims");
+    let real_ssh = ["/usr/bin/ssh", "/bin/ssh"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+        .expect("ssh, since sshd started");
+    use std::os::unix::fs::PermissionsExt;
+    for (name, real) in [("tmux", &real_tmux), ("ssh", &real_ssh)] {
+        let shim = shims.join(name);
+        fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> '{}'\nexec '{}' \"$@\"\n",
+                log.display(),
+                real.display()
+            ),
+        )
+        .expect("shim");
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let bin = env.root.join("agent-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(
+        &claude,
+        "#!/bin/sh\nenv > \"$PWD/env.log\"\nexec sleep 300\n",
+    )
+    .expect("agent");
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}",
+            sshd.place("box", &[&shims, &bin])
+        ),
+    )
+    .expect("config");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        shims.display(),
+        bin.display()
+    )));
+    let mut tasks = Vec::new();
+    let mut logs = Vec::new();
+    for (name, host) in [("here", "local"), ("there", "mux/box")] {
+        let work = env.root.join("work").join(name);
+        fs::create_dir_all(&work).expect("workspace");
+        let mut task = support::task(name, true);
+        task["spec"]["host"] = json!(host);
+        task["spec"]["env"] = json!({"FLEET_SECRET": SECRET});
+        task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+        tasks.push(task);
+        logs.push(work.join("env.log"));
+    }
+    env.apply(json!(tasks)).ok();
+    reconcile_until(&env, "both agents started", |_| {
+        logs.iter().all(|l| l.is_file())
+    });
+    for l in &logs {
+        let seen = fs::read_to_string(l).expect("the agent's environment");
+        assert!(
+            seen.lines()
+                .any(|line| line == format!("FLEET_SECRET={SECRET}")),
+            "{}: {seen}",
+            l.display()
+        );
+    }
+    let argv = fs::read_to_string(&log).expect("argv log");
+    assert!(
+        argv.contains("source-file"),
+        "the window was made through the shim, its words on stdin: {argv}"
+    );
+    assert!(!argv.contains("s3cr3t"), "{argv}");
+    // Nor in any argument of a process running now.
+    let ps = Command::new("ps")
+        .args(["-eo", "args"])
+        .output()
+        .expect("ps");
+    assert!(!String::from_utf8_lossy(&ps.stdout).contains("s3cr3t"));
 }

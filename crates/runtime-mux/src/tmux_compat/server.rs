@@ -126,6 +126,13 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// and retains it by.
     const ONE_SHOT_SPAWN_ANSWERS: bool;
 
+    /// Whether a one-shot `new-window` goes to the server on the stdin of
+    /// `source-file -` rather than on the client's argv, which every user of
+    /// the machine can read: the window's `-e` values are a session's
+    /// environment, its secrets included. psmux has not been measured, and
+    /// keeps the argv.
+    const SPAWN_ON_STDIN: bool = true;
+
     /// How long after `create_window` to look for the window again, on a
     /// server whose window closes with its program (no `remain-on-exit`):
     /// there, a program that cannot start leaves nothing behind, and a create
@@ -4699,7 +4706,7 @@ impl<M: TmuxCompatible> Server<M> {
             })?
         };
         let run_new_window = || {
-            let mut tmux = self.new_window_command(
+            let mut window = self.new_window_command(
                 &window_name,
                 &create_target,
                 spec.command,
@@ -4713,11 +4720,20 @@ impl<M: TmuxCompatible> Server<M> {
                     (WINDOW_ROLE_OPTION, spec.role.as_str()),
                 ] {
                     if !value.is_empty() {
-                        tmux.args([";", "set-option", "-w", "-t", &create_target, option, value]);
+                        window.rest.args([
+                            ";",
+                            "set-option",
+                            "-w",
+                            "-t",
+                            &create_target,
+                            option,
+                            value,
+                        ]);
                     }
                 }
             }
-            tmux.output().map_err(|e| {
+            let (mut tmux, stdin) = self.new_window_process(&window)?;
+            run_with_stdin(&mut tmux, stdin.as_deref()).map_err(|e| {
                 self.transport.launch_failure(
                     &format!(
                         "Failed to run {} new-window for headless spawn",
@@ -4848,17 +4864,21 @@ impl<M: TmuxCompatible> Server<M> {
         args: &[String],
         cwd: Option<&Path>,
         env: &HashMap<String, String>,
-    ) -> Result<Command> {
+    ) -> Result<NewWindow> {
         let configure = M::COMMAND_LISTS && M::ONE_SHOT_SPAWN_ANSWERS && M::VERSION_FLOOR.is_none();
         let config = self.session_config();
-        let prefix = config_command_list(&["has-session", "-t", &self.session], &config);
-        let mut tmux = if configure {
-            let mut command = self.mux_command(&prefix)?;
-            command.args([";", "new-window", "-d"]);
-            command
+        let head = if configure {
+            config_command_list(&["has-session", "-t", &self.session], &config)
+                .into_iter()
+                .map(str::to_string)
+                .collect()
         } else {
-            self.mux_command(&["new-window", "-d"])?
+            Vec::new()
         };
+        // The `new-window` and what follows it, gathered as words: they go
+        // on the client's argv or on its stdin ([`NewWindow::command`]).
+        let mut tmux = Command::new(M::MULTIPLEXER.name());
+        tmux.args(["new-window", "-d"]);
         if M::ONE_SHOT_SPAWN_ANSWERS {
             tmux.arg("-a");
         }
@@ -4882,7 +4902,32 @@ impl<M: TmuxCompatible> Server<M> {
                 tmux.args([key, value]);
             }
         }
-        Ok(tmux)
+        Ok(NewWindow { head, rest: tmux })
+    }
+
+    /// The process that runs `window`: `head ; source-file -` with the rest
+    /// on its stdin, where the server takes that, else every word on the
+    /// argv. `has-session` stays on the argv: a command list without it
+    /// starts a server where there is none, where tmux should answer that
+    /// there is none.
+    fn new_window_process(&self, window: &NewWindow) -> Result<(Command, Option<String>)> {
+        let text = M::SPAWN_ON_STDIN
+            .then(|| tmux_command_text(window.rest.get_args()))
+            .flatten();
+        let mut argv: Vec<&str> = window.head.iter().map(String::as_str).collect();
+        if text.is_some() {
+            if !argv.is_empty() {
+                argv.push(";");
+            }
+            argv.extend(["source-file", "-"]);
+            return Ok((self.mux_command(&argv)?, text));
+        }
+        if !argv.is_empty() {
+            argv.push(";");
+        }
+        let mut cmd = self.mux_command(&argv)?;
+        cmd.args(window.rest.get_args());
+        Ok((cmd, None))
     }
 
     /// The control-mode `new-window` line [`PaneStream::spawn`] sends: the
@@ -5065,6 +5110,57 @@ fn new_window_pane_id(stdout: &[u8]) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+/// A one-shot `new-window` before it runs: the words that go on the
+/// client's argv in any case (`has-session` and the session's options), and
+/// the rest, which [`Server::new_window_process`] sends on stdin where it
+/// can.
+struct NewWindow {
+    head: Vec<String>,
+    rest: Command,
+}
+
+/// `words` as one line of tmux's command syntax, which `source-file`
+/// parses back into the same words: each one single-quoted, a `'` as
+/// `'\''`, and a `;` alone left bare, as the separator it is. Single quotes
+/// keep `$`, `~`, `#` and newlines as they are. `None` for a word that is
+/// not UTF-8, which only the argv can carry.
+fn tmux_command_text<'a>(words: impl Iterator<Item = &'a std::ffi::OsStr>) -> Option<String> {
+    let mut line = Vec::new();
+    for word in words {
+        let word = word.to_str()?;
+        line.push(match word {
+            ";" => ";".to_string(),
+            _ => format!("'{}'", word.replace('\'', "'\\''")),
+        });
+    }
+    Some(line.join(" ") + "\n")
+}
+
+/// Run `cmd` with `stdin` written to its standard input, or with none.
+fn run_with_stdin(cmd: &mut Command, stdin: Option<&str>) -> std::io::Result<std::process::Output> {
+    let Some(text) = stdin else {
+        return cmd.output();
+    };
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let written = child
+        .stdin
+        .take()
+        .map(|mut pipe| std::io::Write::write_all(&mut pipe, text.as_bytes()));
+    let output = child.wait_with_output()?;
+    if let Some(Err(e)) = written {
+        // A server that read nothing answers for itself on stderr; a broken
+        // pipe with no answer at all is the error.
+        if output.stdout.is_empty() && output.stderr.is_empty() {
+            return Err(e);
+        }
+    }
+    Ok(output)
 }
 
 /// The window's environment and the program it runs, which close a one-shot
@@ -5306,6 +5402,30 @@ pub(crate) fn assert_absence_replies<M: TmuxCompatible>(replies: &[(&str, bool)]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-shot `new-window`'s words as `source-file` reads them: each
+    /// single-quoted, a `;` left bare, nothing a shell or tmux would expand.
+    #[test]
+    fn a_new_window_is_spelled_as_one_line_tmux_parses_back() {
+        let words = [
+            "new-window",
+            "-e",
+            "SECRET=it's $HOME ~ `x` #c\nline2",
+            ";",
+            "set-option",
+            "#{pane_id}",
+        ];
+        assert_eq!(
+            tmux_command_text(words.iter().map(std::ffi::OsStr::new)).unwrap(),
+            "'new-window' '-e' 'SECRET=it'\\''s $HOME ~ `x` #c\nline2' ; 'set-option' '#{pane_id}'\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let bad = std::ffi::OsStr::from_bytes(b"PATH=\xff");
+            assert!(tmux_command_text([bad].into_iter()).is_none());
+        }
+    }
 
     /// RMUX's control mode can deliver a pane's `%output` inside a command's
     /// reply (captured from `a_missing_rmux_window_never_borrows_a_live_panes_pid`

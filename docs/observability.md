@@ -227,9 +227,101 @@ A session never inherits the telemetry of the program that started it.
 - It removes them as well from each command it runs on a remote place
   through ssh or `wsl.exe`: an `exec`, a readiness probe, a copy of a
   harness's files. A `SendEnv` or `WSLENV` setting cannot pass them on.
-- A session receives only the `OTEL_*` variables that its Task declares in
-  `spec.env`, a TaskConfig or an EnvProvider. The agent's own telemetry is
-  that Task's configuration.
+- A session receives only two sets of `OTEL_*` variables: the ones that its
+  Task declares in `spec.env`, a TaskConfig or an EnvProvider, and the ones
+  of the agent's own telemetry ([Coding agents](#coding-agents)). Fleet
+  gives each of them in the runtime's `start` request, after the strip.
+- A session never receives `TRACEPARENT` or `TRACESTATE`. An agent starts
+  its own traces.
+
+## Coding agents
+
+When Fleet exports telemetry, each agent that Fleet starts exports its own
+telemetry to the same collector. The agent's harness profile tells Fleet
+how to turn on the agent's telemetry
+([profile format](fleet/controllers/task.md#profile-format)).
+
+Fleet turns on an agent's telemetry when all of these are true:
+
+- Fleet exports traces or metrics ([Variables](#variables)).
+- `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A signal's own endpoint does not
+  name a collector for the agent.
+- The harness profile has a `[telemetry]` table.
+- The Task, or its TaskConfig, does not set `agentTelemetry` to `false`.
+- The Task's environment names no collector of its own: no variable whose
+  name holds `OTLP` and ends in `ENDPOINT`, in any case. Examples are
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and
+  `QWEN_TELEMETRY_OTLP_ENDPOINT`. Such a Task gets none of Fleet's
+  collector values: not the endpoint, and not the headers.
+
+Fleet gives the agent:
+
+- the collector's base URL, from `OTEL_EXPORTER_OTLP_ENDPOINT`;
+- the protocol `http/protobuf`, when the agent reads one;
+- the headers, from `OTEL_EXPORTER_OTLP_HEADERS`, as a variable only;
+- the resource attributes `service.name=<harness>`,
+  `fleet.task=<Task name>` and `fleet.uid=<Task uid>`, through
+  `OTEL_RESOURCE_ATTRIBUTES`.
+
+To find the telemetry of one Task's agent, search for the resource
+attribute `fleet.task=<Task name>`.
+
+Fleet adds these variables and arguments at each start of the session: a
+spawn, a revive and a resume. So a start after a change of Fleet's
+collector gets the new endpoint and headers. The launch snapshot does not
+keep them. The Task's own environment wins over each variable.
+
+| Harness | Supported | What Fleet sets | Content switches left off | Source |
+| --- | --- | --- | --- | --- |
+| `claude` | yes: metrics and events (logs) | `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_METRICS_EXPORTER=otlp`, `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME=claude`, `OTEL_RESOURCE_ATTRIBUTES` | `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_RAW_API_BODIES`. Its beta traces stay off. | [Monitoring](https://code.claude.com/docs/en/monitoring-usage) |
+| `codex` | yes: logs, traces and metrics | `-c otel.exporter=…`, `-c otel.trace_exporter=…` and `-c otel.metrics_exporter=…`, each `otlp-http` with the signal's URL and `protocol="binary"`; `OTEL_RESOURCE_ATTRIBUTES` | `otel.log_user_prompt`, `otel.log_agent_responses` | [Configuration](https://learn.chatgpt.com/docs/config-file/config-advanced), [source](https://github.com/openai/codex/blob/main/codex-rs/config/src/types.rs) |
+| `pi` | no | nothing | — | [pi variables](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/environment-variables.md) |
+| `opencode` | yes: traces and logs | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES` | `experimental.openTelemetry` (its AI SDK spans) | [source](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/core/src/observability/otlp.ts) |
+| `kilo` | yes, but Fleet sets nothing | nothing | Its AI SDK spans are on by default, and Fleet cannot turn them off at launch. | [source](https://github.com/Kilo-Org/kilocode/blob/main/packages/core/src/observability/otlp.ts) |
+| `omp` | yes: traces, logs and metrics | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME=omp`, `OTEL_RESOURCE_ATTRIBUTES` | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | [omp variables](https://github.com/can1357/oh-my-pi/blob/main/docs/environment-variables.md) |
+| `qwen` | yes: traces, logs and metrics | `QWEN_TELEMETRY_ENABLED=true`, `QWEN_TELEMETRY_OTLP_ENDPOINT`, `QWEN_TELEMETRY_OTLP_PROTOCOL=http`, `QWEN_TELEMETRY_LOG_PROMPTS=false`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME=qwen`, `OTEL_RESOURCE_ATTRIBUTES` | `QWEN_TELEMETRY_LOG_PROMPTS`, which is on by default: Fleet sets it to `false` | [Telemetry](https://github.com/QwenLM/qwen-code/blob/v0.27.4/docs/developers/development/telemetry.md) |
+| `copilot` | yes: traces and metrics | `COPILOT_OTEL_ENABLED=true`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME=copilot`, `OTEL_RESOURCE_ATTRIBUTES` | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` | `copilot help monitoring`, [changelog](https://github.com/github/copilot-cli/blob/main/changelog.md) |
+| `kimi` | no | nothing | — | [kimi-cli telemetry](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/telemetry/transport.py) |
+| any other | no | nothing | — | — |
+
+Notes:
+
+- Codex reads no `OTEL_EXPORTER_OTLP_*` variable. Fleet gives it no
+  headers: in an argument, a header is visible to each user of the
+  machine. Use a collector that needs no headers, or give Codex its headers
+  in its own `config.toml`.
+- Codex documents no resource variable. Its OpenTelemetry SDK can read
+  `OTEL_RESOURCE_ATTRIBUTES`, and its service name stays `codex-cli`.
+- Claude Code documents its service name as `claude-code`. Fleet sets
+  `OTEL_SERVICE_NAME=claude` and `service.name=claude`.
+- qwen's `http` protocol is OTLP over HTTP with JSON. A collector that
+  receives OTLP over HTTP takes both encodings on one port.
+- opencode exports over HTTP. Its encoding is the default of its
+  exporter.
+- The research behind this table is of 2026-11-15. A harness can change
+  its telemetry in a later release.
+
+### Privacy
+
+An agent's telemetry is not Fleet's. Each agent decides what it exports.
+Some agents can export the text of a prompt, a response or a tool call.
+Fleet leaves each switch that exports such content off, or sets it to off
+when the agent turns it on by default. To export content, set the agent's
+switch in the Task's `spec.env`, its TaskConfig or an EnvProvider.
+
+A collector receives the agent's metrics, events and spans. These name the
+model, the tools, the token counts and the costs of each turn. They can
+also name paths and commands.
+
+### Turn agent telemetry off
+
+- For one Task, set `"agentTelemetry": false` in its spec.
+- For the Tasks of a TaskConfig, set `"agentTelemetry": false` in that
+  TaskConfig. The Task's own field wins.
+- For every Task that has no `configRef`, set `"agentTelemetry": false` in
+  the [default TaskConfig](fleet/resources/task-config.md#the-default-taskconfig).
+  `fleet init` writes `default` without the field, so agent telemetry is on.
+- To turn off Fleet's own telemetry too, see [Turn it off](#turn-it-off).
 
 ## What is never exported
 
@@ -242,7 +334,8 @@ never leave a process as telemetry:
 - The text of an error or of an Unknown observation.
 
 Thurbox's log records are the exception: they hold the text of its log
-lines ([Logs](#logs)).
+lines ([Logs](#logs)). An agent's own telemetry is the agent's, not
+Fleet's ([Privacy](#privacy)).
 
 ## Guarantees
 

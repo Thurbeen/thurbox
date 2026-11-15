@@ -327,9 +327,21 @@ request.place ──▶ local ─────────▶ this machine's mult
   and answers `failed` when it is not there.
 - A session's `env`, `FLEET_SIGNAL_FILE` among it, and the place's `PATH`
   reach its window in the `new-window` line itself: `-e` for each variable,
-  and the login wrap's `PATH` assignment. The line travels over the control
-  connection that ssh or `wsl.exe` launches, so nothing depends on which of
-  this machine's variables `wsl.exe` passes (`WSLENV`).
+  and the login wrap's `PATH` assignment. The line travels on the stdin of
+  the control connection that ssh or `wsl.exe` launches, never in its
+  argv. So nothing depends on which of this machine's variables `wsl.exe`
+  passes (`WSLENV`).
+- On the `local` place, tmux and RMUX make the window with a one-shot
+  `new-window`, and every user of the machine can read a client's argv.
+  So the client's argv holds at most `has-session` and the session's options,
+  then `source-file -`. The `new-window` words, `-e` for each variable
+  among them, go on the client's stdin, as one line of tmux's command
+  syntax. The server sets each variable in the window: no shell assigns
+  one, so a name that a shell keeps read-only, such as `UID`, starts the
+  window as any other.
+- psmux takes the environment in its window's PowerShell script, as
+  `-EncodedCommand`. That argument holds every value, base64-encoded: on a
+  psmux place, `env` is in an argv.
 - A `start` whose `argv` or `env` names a file in `FLEET_ASSET_DIR`, a
   directory on this machine, copies that directory to
   `~/.local/state/fleet/assets/<key>` on the place. Every word of `argv` and

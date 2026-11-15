@@ -121,6 +121,9 @@ impl TmuxCompatible for Psmux {
     /// shorthand: the one-shot path targets the session and finds the window by
     /// its name.
     const ONE_SHOT_SPAWN_ANSWERS: bool = false;
+    /// Not measured on psmux: its window's environment rides in the
+    /// PowerShell script on the argv.
+    const SPAWN_ON_STDIN: bool = false;
 
     /// psmux has no `remain-on-exit`. Long enough for a Windows PowerShell
     /// with a light profile to start and fail to find the program it was told

@@ -5,7 +5,8 @@
 ## What it is for
 
 A TaskConfig holds execution defaults that many [Tasks](task.md) share: the
-harness, the place, the model, the environment and the idle pause. It is
+harness, the place, the model, the environment, the idle pause and the
+agent's own telemetry. It is
 passive data. It has no controller and no status.
 
 ## When you write one
@@ -37,6 +38,9 @@ So an idle session pauses after 30 minutes
   it is gone. To never pause, apply `default` with no `pauseAfterMs`.
 - A Task takes `default` when it first launches. A Task launched before
   `default` existed keeps its launch.
+- `default` does not set `agentTelemetry`. So when Fleet exports
+  telemetry, each agent exports its own to the same collector. To turn
+  that off for every Task, apply `default` with `"agentTelemetry": false`.
 
 ## Example
 
@@ -87,6 +91,7 @@ change applies to Tasks that resolve their launch after it.
 | `model` | string | no | The default model. A runtime under `[runtimes]` passes no model to its harness, and refuses a Task that has one. |
 | `envFrom` | array of `{name}` | no | [EnvProviders](env-provider.md), in merge order. |
 | `env` | object of strings | no | Environment values. They override every EnvProvider value. |
+| `agentTelemetry` | boolean | no | `false`: the agent exports no telemetry of its own, also when Fleet exports. Absent: on. See [coding agents](../../observability.md#coding-agents). |
 | `pauseAfterMs` | integer, at least 1 | no | Pause a Task's session once its agent was idle this long. Absent: never. A session on a runtime that cannot pause, of a harness Fleet cannot resume, or whose hooks report no activity never pauses either. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 
 `harness`, `host` and `model` may not be empty, contain NUL or start with
@@ -124,6 +129,7 @@ Task with configRef, env or a default TaskConfig, dispatch: true
   -> write a private snapshot, launches/<Task uid>.json, under the lease
   -> write status.execution: harness, place, model, pauseAfterMs and the
      kind, name, uid and generation of each source, without values
+     (the snapshot also keeps agentTelemetry)
   -> spawn and brief as usual
 ```
 
