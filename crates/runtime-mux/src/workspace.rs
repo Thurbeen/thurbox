@@ -238,11 +238,22 @@ impl Workspaces {
     /// do not stop the release, then `workspace-git release`.
     pub fn release(&self, key: &str) -> Result<(), String> {
         let request = json!({ "root": self.root, "key": key });
-        let found = match self.call("inspect", &request) {
-            // A place without `workspace-git` made nothing to release: its
-            // workspaces are directories already there.
-            Err(Call::NotRun(_)) if self.place.is_some() => return Ok(()),
-            found => found.map_err(Call::why)?,
+        let found = match (self.call("inspect", &request), &self.place) {
+            // A place without `workspace-git` releases a key only when the
+            // key has no directory under the root, where the program keeps
+            // every workspace it makes: its `file://` directories are the
+            // user's own. Anything else waits for the program.
+            (Err(Call::NotRun(why)), Some(host)) => {
+                let dir = format!("{}/{key}", self.root.display());
+                return match crate::place::exists(host, &dir) {
+                    Ok(false) => Ok(()),
+                    Ok(true) => Err(format!(
+                        "{dir} holds a workspace, and {why}; it is released once workspace-git runs there"
+                    )),
+                    Err(e) => Err(e),
+                };
+            }
+            (found, _) => found.map_err(Call::why)?,
         };
         if let Some(workspace) = found.get("workspace") {
             let strings = |field: &str| -> Vec<String> {

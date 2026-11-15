@@ -348,7 +348,8 @@ request.place ──▶ local ─────────▶ this machine's mult
 - `workspace` and a releasing `stop` run `workspace-git` on the place, from
   the place's `PATH`, over the same launcher. A place without it takes
   `file://` URLs only: directories already there, which a release keeps,
-  with no setup steps. A `git+` URL there answers `failed` and names
+  with no setup steps. A release there of a key that has a directory under
+  the root is Unknown until `workspace-git` runs again. A `git+` URL there answers `failed` and names
   `workspace-git`. The workspaces are under
   `~/.local/share/runtime-mux/workspaces` on the place. A `git+` URL gets a
   worktree there, on the key's own branch, with the same `#ref`, preserved

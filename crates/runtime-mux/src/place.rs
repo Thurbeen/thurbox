@@ -490,9 +490,20 @@ pub fn run_in(host: &HostDef, dir: &str, command: &str) -> Result<(), String> {
 /// Whether `path` is a file on the place; `Err` when the place cannot
 /// tell.
 pub fn is_file(host: &HostDef, path: &str) -> Result<bool, String> {
+    test_path(host, "-f", path)
+}
+
+/// Whether anything is at `path` on the place; `Err` when the place cannot
+/// tell.
+pub fn exists(host: &HostDef, path: &str) -> Result<bool, String> {
+    test_path(host, "-e", path)
+}
+
+/// `test <flag> path` on the place.
+fn test_path(host: &HostDef, flag: &str, path: &str) -> Result<bool, String> {
     let ran = run_script(
         host,
-        "if [ -f \"$1\" ]; then echo @file; fi",
+        &format!("if [ {flag} \"$1\" ]; then echo @file; fi"),
         &[path],
         Instant::now() + PROBE_TIMEOUT,
     )
@@ -858,6 +869,7 @@ mod tests {
     }
 
     /// Output past the cap is an error, never a cut answer passed as whole.
+    #[cfg(unix)]
     #[test]
     fn output_past_the_cap_is_an_error_not_a_cut_answer() {
         let run = |bytes: u64| {

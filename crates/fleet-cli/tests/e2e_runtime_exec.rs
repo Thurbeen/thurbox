@@ -3805,6 +3805,20 @@ fn an_ssh_place_reports_its_readiness() {
     );
     assert_eq!(released, json!({"known": "stopped"}));
     assert!(dir.is_dir(), "a file:// directory outlives its release");
+    // A key with a workspace recorded on the place is not released by a
+    // place that cannot run `workspace-git` now: its teardown cannot run.
+    let recorded = home.join(".local/share/runtime-mux/workspaces/k.made");
+    fs::create_dir_all(&recorded).expect("recorded");
+    fs::write(recorded.join(".fleet-workspace.json"), "{}").expect("record");
+    let held = mux_call(
+        &program,
+        &sockets,
+        "stop",
+        &json!({"protocol": 2, "place": bare, "key": "k.made", "release": true}),
+    );
+    let why = held["unknown"]["why"].as_str().unwrap_or_default();
+    assert!(why.contains("workspace-git"), "{held}");
+    assert!(recorded.is_dir(), "nothing was removed");
     let refused = mux_call(
         &program,
         &sockets,
