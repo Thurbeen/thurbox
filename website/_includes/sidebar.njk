@@ -2,13 +2,18 @@
     (the interface on top of one or more Fleets), then the pages about both.
     Hrefs are relative to /docs/; a page below it (the rendered docs/fleet
     pages) sets docsBase to the way back up. -#}
+{#- Rendered docs with a top-level entry of their own, left out of the
+    generated Resources and Controllers lists. -#}
+{%- set ownEntries = ["docs/fleet/resources/workspace.md"] -%}
 {%- set sections = [
   { heading: "Fleet", links: [
     { slug: "fleet-get-started", href: "fleet-get-started.html", label: "Get started" },
     { slug: "fleet", href: "fleet.html", label: "What is Fleet" },
     { slug: "fleet-places", href: "fleet-places.html", label: "Places and runtimes" },
+    { slug: "fleet-workspace", href: "fleet/resources/workspace.html", label: "Workspaces" },
     { slug: "fleet-resources", href: "fleet/index.html#resource-kinds", label: "Resources", sub: "resources" },
-    { slug: "fleet-controllers", href: "fleet/index.html#controllers", label: "Controllers", sub: "controllers" },
+    { slug: "fleet-controllers", href: "fleet/index.html#controllers", label: "Controllers", sub: "controllers",
+      extra: [{ src: "docs/fleet/plugins.md", href: "fleet/plugins.html", label: "Writing a plugin" }] },
     { slug: "fleet-install", href: "fleet-install.html", label: "Install" },
     { slug: "agents", href: "agents.html", label: "Agents" },
     { slug: "orchestration", href: "orchestration.html", label: "Orchestration" },
@@ -51,7 +56,8 @@
           so a new page there joins the list with no change here. #}
       <ul class="docs-sidebar__sub">
         {%- for d in repoDocs %}
-        {%- if d.src.startsWith("docs/fleet/" + link.sub + "/") %}
+        {#- A page with an entry of its own above is not listed twice. #}
+        {%- if d.src.startsWith("docs/fleet/" + link.sub + "/") and d.src not in ownEntries %}
         <li>
           <a
             href="{{ docsBase }}{{ d.url | replace("/docs/", "") }}"
@@ -60,6 +66,15 @@
           >
         </li>
         {%- endif %}
+        {%- endfor %}
+        {%- for extra in link.extra or [] %}
+        <li>
+          <a
+            href="{{ docsBase }}{{ extra.href }}"
+            {%- if repoDoc and repoDoc.src == extra.src %} class="current-page"{% endif %}
+            >{{ extra.label }}</a
+          >
+        </li>
         {%- endfor %}
       </ul>
       {%- endif %}

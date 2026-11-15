@@ -1,5 +1,5 @@
-/* The home page: a hero, then one band per product (Fleet, thurbox), then how
-   they fit. Every band uses the same parts - .section padding, an eyebrow, an
+/* The home page: a hero, then one band per product - thurbox, the interface,
+   then Fleet, the engine - then how they fit. Every band uses the same parts - .section padding, an eyebrow, an
    h2, ledes at --text-lg, small print at --text-sm - so the two products read
    as peers. Sizes come from the scale in variables.css only. */
 
@@ -75,6 +75,30 @@
   margin: 0 auto var(--space-xl);
   font-size: var(--text-lg);
   color: var(--text-primary);
+}
+
+/* A terminal block cursor after the tagline. Opacity only, stepped like a
+   real cursor; static under reduced motion. */
+.hero-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 0.25em;
+  vertical-align: text-bottom;
+  background: var(--green);
+  box-shadow: var(--glow-green);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hero-cursor {
+    animation: cursor-blink 1.1s steps(1) infinite;
+  }
+}
+
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .hero-ctas {
@@ -218,6 +242,9 @@
   background: var(--bg-card);
   border: 1px solid var(--hud-edge);
   box-shadow: var(--bevel);
+  transition:
+    border-color var(--transition),
+    box-shadow var(--transition);
 }
 
 .get-started h3,
@@ -254,6 +281,11 @@
   margin: 0;
   padding-left: var(--space-md);
   border-left: 2px solid var(--border);
+
+  /* `translate`, not `transform`: the scroll reveal owns the row's transform. */
+  transition:
+    translate var(--transition),
+    border-color var(--transition);
 }
 
 .plugin-strip__list a {
@@ -348,6 +380,10 @@
     inset -2px -2px 0 rgb(0, 0, 0, 0.6);
   padding: var(--space-md);
   min-width: 0;
+  transition:
+    transform var(--transition),
+    border-color var(--transition),
+    box-shadow var(--transition);
 }
 
 .flow__node--ui,
@@ -643,5 +679,113 @@
   .hero-press-start,
   .hud-bar__live {
     animation: none;
+  }
+}
+
+/* ---- Hover: lift or glow ----
+   Transform and shadow only, so nothing around the hovered part moves. */
+.get-started:hover {
+  border-color: var(--doom-red);
+  box-shadow: var(--bevel-glow-red);
+}
+
+.plugin-strip__list li:hover {
+  border-left-color: var(--doom-red);
+  translate: 4px 0;
+}
+
+.btn-secondary:hover {
+  box-shadow: var(--bevel-glow-red);
+}
+
+.flow__node:hover {
+  border-color: var(--flow-red);
+  transform: translateY(-2px);
+  box-shadow:
+    inset 2px 2px 0 rgb(255, 255, 255, 0.16),
+    inset -2px -2px 0 rgb(0, 0, 0, 0.6),
+    0 0 14px rgb(255, 42, 26, 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-strip__list li:hover {
+    translate: none;
+  }
+
+  .flow__node:hover {
+    transform: none;
+  }
+}
+
+/* ---- Scroll reveal ----
+   main.js puts .js-motion on <html> only when motion is welcome (JS on, no
+   reduced-motion preference, no ?nomotion), so the hidden start state below
+   never applies to a page that would leave it hidden. Each [data-reveal]
+   group's children fade and rise in turn: main.js numbers them --reveal-i, and
+   the observer adds .is-revealed once. The hover transitions are listed again
+   because this rule's transition replaces theirs; they take no stagger. */
+.js-motion [data-reveal] > * {
+  --reveal-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 0.6s var(--reveal-ease) calc(var(--reveal-i, 0) * 90ms),
+    transform 0.6s var(--reveal-ease) calc(var(--reveal-i, 0) * 90ms),
+    translate var(--transition),
+    border-color var(--transition),
+    box-shadow var(--transition);
+}
+
+.js-motion [data-reveal].is-revealed > * {
+  opacity: 1;
+  transform: none;
+}
+
+/* The overview's wires draw from their source end once the figure is in,
+   left to right, the remote lane a beat behind; the labels follow. The
+   marching dashes keep running throughout. */
+.js-motion .flow__wire {
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.5s cubic-bezier(0.5, 0, 0.2, 1);
+}
+
+.js-motion .flow__label {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.js-motion .flow.is-revealed .flow__wire {
+  transform: none;
+  transition-delay: calc(var(--wire-d, 0s) + var(--lane-d, 0s));
+}
+
+.js-motion .flow.is-revealed .flow__label {
+  opacity: 1;
+  transition-delay: calc(var(--wire-d, 0s) + var(--lane-d, 0s) + 0.4s);
+}
+
+.js-motion .flow__wire:nth-child(1) {
+  --wire-d: 0.35s;
+}
+
+.js-motion .flow__wire:nth-child(3) {
+  --wire-d: 0.75s;
+}
+
+.js-motion .flow__wire:nth-child(5) {
+  --wire-d: 1.15s;
+}
+
+.js-motion .flow__lane--remote {
+  --lane-d: 0.15s;
+}
+
+/* Stacked, each wire runs top to bottom. */
+@media (max-width: 1023px) {
+  .js-motion .flow__wire {
+    transform: scaleY(0);
+    transform-origin: center top;
   }
 }

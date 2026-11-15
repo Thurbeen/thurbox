@@ -121,6 +121,15 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   const code = (node) =>
     node.querySelectorAll('pre').map((pre) => parse(pre.innerHTML).textContent.trim().split(/\s*\n\s*/));
 
+  // The interface first, then the engine: the bands, the hero's buttons and the
+  // first steps all run thurbox, then Fleet.
+  const bands = home.querySelectorAll('section.product').map((s) => s.getAttribute('id'));
+  assert.deepEqual(bands, ['thurbox', 'fleet'], 'the thurbox band comes before the Fleet band');
+  const ctas = home.querySelectorAll('.hero-ctas a').map((a) => a.getAttribute('href'));
+  assert.deepEqual(ctas, ['#thurbox', '#fleet'], 'the hero leads with thurbox');
+  const starts = home.querySelectorAll('.get-started').map((s) => s.getAttribute('id'));
+  assert.deepEqual(starts, ['thurbox-start', 'fleet-start'], 'thurbox gets started first');
+
   // Fleet stands on its own: its own band, its own first steps, no thurbox in them.
   const fleet = home.querySelector('#fleet');
   assert.match(text(fleet), /works on its own/i, 'Fleet is said to run without thurbox');
@@ -168,10 +177,19 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
 test('the docs sidebar gives Fleet and thurbox a group each', () => {
   const groups = built('docs/index.html').querySelectorAll('.docs-sidebar h4').map((h) => h.textContent.trim());
   assert.deepEqual(groups.slice(0, 2), ['Fleet', 'Thurbox']);
+  const workspaceLinks = built('docs/index.html')
+    .querySelectorAll('.docs-sidebar a')
+    .filter((a) => a.getAttribute('href') === 'fleet/resources/workspace.html');
+  assert.equal(workspaceLinks.length, 1, 'Workspaces is listed once, as its own entry');
+  assert.ok(
+    built('docs/index.html').querySelector('.docs-sidebar__sub a[href="fleet/plugins.html"]'),
+    'Controllers lists the plugin guide',
+  );
   // Resources and Controllers list every page of their directory, read from it.
   const subs = built('docs/index.html').querySelectorAll('.docs-sidebar__sub a').map((a) => a.getAttribute('href'));
   for (const dir of ['resources', 'controllers']) {
-    for (const file of readdirSync(`docs/fleet/${dir}`).filter((f) => f.endsWith('.md'))) {
+    // workspace.md has a top-level entry of its own (sidebar.njk's ownEntries).
+    for (const file of readdirSync(`docs/fleet/${dir}`).filter((f) => f.endsWith('.md') && f !== 'workspace.md')) {
       assert.ok(subs.includes(`fleet/${dir}/${file.replace(/\.md$/, '.html')}`), `the sidebar lists ${dir}/${file}`);
     }
   }

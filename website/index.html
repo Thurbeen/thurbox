@@ -1,7 +1,7 @@
 ---
 layout: base.njk
-title: 'Fleet and thurbox — run coding agents'
-description: 'Fleet runs coding-agent sessions and keeps them running, on its own or under thurbox. thurbox is the terminal interface for one or more Fleets.'
+title: 'thurbox and Fleet — run coding agents'
+description: 'thurbox is the terminal interface to watch and drive coding agents across one or more Fleets. Fleet runs the sessions and keeps them running, under thurbox or on its own.'
 root: '.'
 extraCss: ['landing.css']
 footer: true
@@ -14,12 +14,15 @@ footer: true
           <span class="hero-headline-phrase">agents</span>
         </h1>
         <p class="subtitle">
-          <strong>Fleet</strong> runs your coding agents and keeps them running.
-          <strong>thurbox</strong> is the terminal interface to watch and drive them.
+          <strong>thurbox</strong> is the terminal interface to watch and drive your coding
+          agents. <strong>Fleet</strong> runs them and keeps them running.<span
+            class="hero-cursor"
+            aria-hidden="true"
+          ></span>
         </p>
         <div class="hero-ctas">
-          <a href="#fleet" class="btn btn-primary">Fleet</a>
-          <a href="#thurbox" class="btn btn-secondary">Thurbox</a>
+          <a href="#thurbox" class="btn btn-primary">Thurbox</a>
+          <a href="#fleet" class="btn btn-secondary">Fleet</a>
         </div>
         <button class="hero-press-start" id="press-start" type="button">
           <span class="arrow" aria-hidden="true">&#9654;</span>
@@ -29,56 +32,11 @@ footer: true
       </div>
     </section>
 
-    <!-- Fleet: the engine. It comes first because it stands on its own. -->
-    <section class="section product" id="fleet">
+    <!-- thurbox: the interface on top of one or more Fleets. It comes first:
+         it is what a visitor sees and uses; the engine under it follows. -->
+    <section class="section product" id="thurbox">
       <div class="container">
-        <div class="product__grid">
-          <div class="product__text">
-            <p class="section-eyebrow">The engine</p>
-            <h2>Fleet</h2>
-            <p class="product__lede">
-              Fleet runs coding-agent sessions. Each session is a Task: a file that names the
-              agent, the place it runs, the repository and the brief. You apply it with
-              <code>fleet apply</code>, and Fleet starts the session, keeps it running, delivers
-              your messages and records the result.
-            </p>
-            <p class="product__lede">
-              <strong>Fleet works on its own.</strong> It is headless and needs no thurbox.
-            </p>
-            <p class="product__more">
-              <a href="docs/fleet.html">What Fleet is &rarr;</a>
-              <a href="docs/fleet-features.html">Fleet features &rarr;</a>
-            </p>
-          </div>
-          <div class="product__media">
-            <pre data-title="drive it from a script"><code class="language-bash">fleet apply -f fix-login.json
-fleet list task
-fleet send fix-login "Run the tests too"</code></pre>
-          </div>
-        </div>
-
-        <!-- Fleet alone. Its own block so the install line can change without
-             touching thurbox's. -->
-        <div class="get-started" id="fleet-start">
-          <h3>Get started with Fleet alone</h3>
-          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
-fleet init
-fleet doctor
-fleet up</code></pre>
-          <p>
-            <code>--fleet-only</code> installs <code>fleet</code>, <code>runtime-mux</code> and
-            <code>workspace-git</code>, and nothing else. It needs a 3.x release: until one is
-            published, the script installs the latest 2.x, which has no Fleet.
-            <a href="docs/fleet-install.html">Install Fleet &rarr;</a>
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- thurbox: the interface on top of one or more Fleets. -->
-    <section class="section product product--alt" id="thurbox">
-      <div class="container">
-        <div class="product__grid">
+        <div class="product__grid" data-reveal>
           <div class="product__text">
             <p class="section-eyebrow">The interface</p>
             <h2>thurbox</h2>
@@ -120,7 +78,7 @@ fleet up</code></pre>
           </div>
         </div>
 
-        <div class="get-started" id="thurbox-start">
+        <div class="get-started" id="thurbox-start" data-reveal>
           <h3>Get started with thurbox</h3>
           <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
 thurbox</code></pre>
@@ -135,7 +93,7 @@ thurbox</code></pre>
              in the catalog, so the home page stays a list of names. -->
         <div class="plugin-strip" id="plugins">
           <h3>Plugins to start from</h3>
-          <ul class="plugin-strip__list">
+          <ul class="plugin-strip__list" data-reveal>
             <li>
               <a href="https://github.com/Thurbeen/thurbox-info-panel">thurbox-info-panel</a>
               <span>Session, git, agent, account quota and system readouts beside the terminal.</span>
@@ -164,9 +122,55 @@ thurbox</code></pre>
       </div>
     </section>
 
+    <!-- Fleet: the engine thurbox runs on. It also stands on its own. -->
+    <section class="section product product--alt" id="fleet">
+      <div class="container">
+        <div class="product__grid" data-reveal>
+          <div class="product__text">
+            <p class="section-eyebrow">The engine</p>
+            <h2>Fleet</h2>
+            <p class="product__lede">
+              Fleet runs coding-agent sessions. Each session is a Task: a file that names the
+              agent, the place it runs, the repository and the brief. You apply it with
+              <code>fleet apply</code>, and Fleet starts the session, keeps it running, delivers
+              your messages and records the result.
+            </p>
+            <p class="product__lede">
+              <strong>Fleet works on its own.</strong> It is headless and needs no thurbox.
+            </p>
+            <p class="product__more">
+              <a href="docs/fleet.html">What Fleet is &rarr;</a>
+              <a href="docs/fleet-features.html">Fleet features &rarr;</a>
+            </p>
+          </div>
+          <div class="product__media">
+            <pre data-title="drive it from a script"><code class="language-bash">fleet apply -f fix-login.json
+fleet list task
+fleet send fix-login "Run the tests too"</code></pre>
+          </div>
+        </div>
+
+        <!-- Fleet alone. Its own block so the install line can change without
+             touching thurbox's. -->
+        <div class="get-started" id="fleet-start" data-reveal>
+          <h3>Get started with Fleet alone</h3>
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+fleet init
+fleet doctor
+fleet up</code></pre>
+          <p>
+            <code>--fleet-only</code> installs <code>fleet</code>, <code>runtime-mux</code> and
+            <code>workspace-git</code>, and nothing else. It needs a 3.x release: until one is
+            published, the script installs the latest 2.x, which has no Fleet.
+            <a href="docs/fleet-install.html">Install Fleet &rarr;</a>
+          </p>
+        </div>
+      </div>
+    </section>
+
     <!-- How they fit -->
     <section class="section" id="how-they-fit">
-      <div class="container">
+      <div class="container" data-reveal>
         <h2>How they fit</h2>
         <p class="product__lede">
           thurbox follows one or more Fleets, on this machine or over ssh or WSL; each Fleet's
@@ -174,7 +178,7 @@ thurbox</code></pre>
         </p>
         <!-- The overview as real words: the same content as assets/overview.svg,
              which the README keeps because GitHub renders no custom HTML. -->
-        <figure class="flow" aria-labelledby="flow-title">
+        <figure class="flow" aria-labelledby="flow-title" data-reveal>
           <figcaption class="flow__title" id="flow-title">One interface, several Fleets</figcaption>
           <div class="flow__grid">
             <div class="flow__node flow__node--ui">

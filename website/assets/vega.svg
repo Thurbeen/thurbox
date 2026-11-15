@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 816 300" width="816" height="300" role="img" aria-labelledby="title desc">
+<title id="title">VEGA: a Task that dispatches worker Tasks</title>
+<desc id="desc">You send VEGA a request. VEGA, itself a Fleet Task, applies one worker Task per piece of work. Fleet runs each worker; each records its result. Fleet relays the results to VEGA's inbox, and VEGA reports back to you.</desc>
+<defs><linearGradient id="panel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a1517"/><stop offset="1" stop-color="#140a0b"/></linearGradient><linearGradient id="metal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a4244"/><stop offset=".5" stop-color="#2b2527"/><stop offset="1" stop-color="#1a1617"/></linearGradient><pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#2c0c0a" stroke-width="1"/></pattern><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#ff3b24"/></marker><style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono','Liberation Mono',monospace}.pnl{fill:url(#panel);stroke:#5e5457;stroke-width:2}.hot{stroke:#d0301c}.t{fill:#ff5a40;font-size:16px;font-weight:800;letter-spacing:1px}.l{fill:#efe2e0;font-size:13px}.dim{fill:#c4adab;font-size:12px}.wl{fill:#ff6a50;font-size:11px;font-weight:800;letter-spacing:1px}.wire{fill:none;stroke:#6a1a14;stroke-width:4}.trace{fill:none;stroke:#ff3b24;stroke-width:2;stroke-dasharray:8 10;animation:trace 1.6s linear infinite;marker-end:url(#arrow)}@keyframes trace{to{stroke-dashoffset:-36}}@media (prefers-reduced-motion: reduce){.trace{animation:none}}@media (prefers-color-scheme: light){.frame{stroke:#9a9093;stroke-width:1}}@media (prefers-color-scheme: dark){.frame{stroke:none}}</style></defs>
+<rect class="frame" width="816" height="300" rx="12" fill="url(#metal)"/>
+<rect x="10" y="10" width="796" height="280" rx="4" fill="#0e0606"/><rect x="10" y="10" width="796" height="280" fill="url(#grid)" opacity=".55"/>
+<rect class="pnl" x="36" y="40" width="170" height="92"/>
+<text class="t" x="50" y="68">YOU</text><text class="l" x="50" y="94">a request</text><text class="dim" x="50" y="114">fleet send vega …</text>
+<rect class="pnl hot" x="286" y="40" width="200" height="92"/>
+<text class="t" x="300" y="68">VEGA</text><text class="l" x="300" y="94">a Fleet Task</text><text class="dim" x="300" y="114">routes, never builds</text>
+<rect class="pnl" x="600" y="30" width="180" height="70"/>
+<text class="t" x="614" y="58">WORKER 1</text><text class="l" x="614" y="84">a worker Task</text><text class="dim" x="614" y="104"></text>
+<rect class="pnl" x="600" y="110" width="180" height="70"/>
+<text class="t" x="614" y="138">WORKER 2</text><text class="l" x="614" y="164">a worker Task</text><text class="dim" x="614" y="184"></text>
+<rect class="pnl" x="600" y="190" width="180" height="70"/>
+<text class="t" x="614" y="218">WORKER 3</text><text class="l" x="614" y="244">a worker Task</text><text class="dim" x="614" y="264"></text>
+<rect class="pnl" x="286" y="186" width="200" height="90"/>
+<text class="t" x="300" y="214">RESULTS</text><text class="l" x="300" y="240">fleet result per worker</text><text class="dim" x="300" y="260">relayed to VEGA's inbox</text>
+<path class="wire" d="M206 86L284 86"/><path class="trace" d="M206 86L284 86"/>
+<text class="wl" x="245" y="78" text-anchor="middle">REQUEST</text>
+<path class="wire" d="M486 86L598 65"/><path class="trace" d="M486 86L598 65"/>
+<text class="wl" x="542" y="0" text-anchor="middle"></text>
+<path class="wire" d="M486 86L598 145"/><path class="trace" d="M486 86L598 145"/>
+<text class="wl" x="542" y="0" text-anchor="middle"></text>
+<path class="wire" d="M486 86L598 225"/><path class="trace" d="M486 86L598 225"/>
+<text class="wl" x="542" y="0" text-anchor="middle"></text>
+<text class="wl" x="540" y="56" text-anchor="middle">APPLY</text>
+<path class="wire" d="M600 225L488 236"/><path class="trace" d="M600 225L488 236"/>
+<text class="wl" x="544" y="222" text-anchor="middle">RESULT</text>
+<path class="wire" d="M286 236L122 134"/><path class="trace" d="M286 236L122 134"/>
+<text class="wl" x="204" y="200" text-anchor="middle">REPORT</text>
+</svg>

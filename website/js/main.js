@@ -421,6 +421,39 @@
     });
   }
 
+  // ---- Scroll reveal (home page) ----
+  // landing.css hides a [data-reveal] group's children only under html.js-motion,
+  // which is set here and only when motion is welcome, so the page reads in full
+  // with JS off or reduced motion. ?nomotion skips it for full-page screenshots.
+  var revealGroups = document.querySelectorAll('[data-reveal]');
+  if (
+    revealGroups.length > 0 &&
+    'IntersectionObserver' in window &&
+    window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: no-preference)').matches &&
+    !/[?&]nomotion\b/.test(window.location.search)
+  ) {
+    revealGroups.forEach(function (group) {
+      Array.prototype.forEach.call(group.children, function (child, i) {
+        child.style.setProperty('--reveal-i', String(i));
+      });
+    });
+    document.documentElement.classList.add('js-motion');
+    var revealObserver = new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add('is-revealed');
+          revealObserver.unobserve(entry.target);
+        });
+      },
+      { rootMargin: '0px 0px -10% 0px', threshold: 0.1 },
+    );
+    revealGroups.forEach(function (group) {
+      revealObserver.observe(group);
+    });
+  }
+
   // ---- Mobile sidebar toggle (docs pages) ----
   var sidebarToggle = document.getElementById('sidebar-toggle');
   var sidebar = document.querySelector('.docs-sidebar');

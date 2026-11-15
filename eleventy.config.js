@@ -249,6 +249,7 @@ function listRepoDocs() {
         {
           'docs/fleet/README.md': 'fleet-reference',
           'docs/fleet/configuration.md': 'fleet-configuration',
+          'docs/fleet/resources/workspace.md': 'fleet-workspace',
           'docs/thurbox/plugins.md': 'thurbox-plugins',
           'docs/thurbox/kernel.md': 'thurbox-kernel',
         }[src] ?? (dir === 'docs/fleet' && file.includes('/') ? `fleet-${area}` : ''),
