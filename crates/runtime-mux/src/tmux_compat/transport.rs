@@ -151,9 +151,13 @@ pub(crate) fn strip_mux_nesting_env(cmd: &mut Command) {
 }
 
 /// Whether `var` configures or carries telemetry for the process that holds
-/// it: an `OTEL_*` variable, or W3C trace context.
+/// it: an `OTEL_*` variable, or W3C trace context. In any case: Windows
+/// reads an environment name case-insensitively.
 fn is_telemetry_var(var: &str) -> bool {
-    var.starts_with("OTEL_") || var == "TRACEPARENT" || var == "TRACESTATE"
+    var.get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("OTEL_"))
+        || var.eq_ignore_ascii_case("TRACEPARENT")
+        || var.eq_ignore_ascii_case("TRACESTATE")
 }
 
 impl TmuxTransport {
@@ -507,6 +511,21 @@ mod tests {
         for var in ["PATH", "HOTEL_X", "TRACEPARENTS", "TMUX_TMPDIR"] {
             assert!(!is_telemetry_var(var), "{var}");
         }
+    }
+
+    /// Windows reads an environment name in any case, so any case is a
+    /// telemetry variable on every platform.
+    #[test]
+    fn a_telemetry_variable_in_any_case_is_telemetry() {
+        for var in [
+            "otel_exporter_otlp_endpoint",
+            "Otel_Service_Name",
+            "traceparent",
+            "TraceState",
+        ] {
+            assert!(is_telemetry_var(var), "{var}");
+        }
+        assert!(!is_telemetry_var("hotel_x"));
     }
 
     #[test]
