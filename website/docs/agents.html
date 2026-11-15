@@ -7,7 +7,7 @@ breadcrumb: 'Agents'
 ---
 <h1>Agents</h1>
           <p>
-            Thurbox 3.0 keeps no agent registry. A session is a Fleet Task, and the agent it runs is
+            Thurbox keeps no agent registry. A session is a Fleet Task, and the agent it runs is
             the Task's <strong>harness</strong>: Fleet starts it, resumes it and reports its status
             through its harness profiles.
           </p>
@@ -17,12 +17,12 @@ breadcrumb: 'Agents'
             <a href="#overview" class="heading-anchor">#</a>
           </h2>
           <p>
-            The new-session flow offers the harnesses Fleet has profiles for, as
+            The new-session flow offers the harnesses the chosen Fleet has profiles for, as its
             <code>fleet version --json</code> lists them under <code>harnesses</code>. Fleet bundles
             <code>claude</code> (also <code>claude-code</code>), <code>codex</code>, <code>pi</code>,
             <code>opencode</code>, <code>kilo</code>, <code>omp</code>, <code>qwen</code>,
             <code>copilot</code> and <code>kimi</code>.
-            <code>thurbox-cli doctor</code> lists them beside the Fleet in force.
+            <code>thurbox-cli doctor</code> lists the harnesses of each Fleet it checks.
           </p>
 
           <h2 id="profiles">
@@ -42,6 +42,10 @@ breadcrumb: 'Agents'
             <a href="#adding" class="heading-anchor">#</a>
           </h2>
           <p>
-            A new agent is a new harness profile in Fleet, not a change to Thurbox.
+            A new agent is a new harness profile in Fleet, not a change to Thurbox. Put one
+            <code>*.toml</code> profile in the <code>harnesses/</code> directory beside Fleet's config
+            file. A profile with the <code>name</code> of a bundled one replaces it. See
+            <a href="https://github.com/Thurbeen/thurbox/tree/main/docs/fleet" target="_blank" rel="noopener">Fleet's documentation</a>
+            for the profile's fields.
           </p>
 

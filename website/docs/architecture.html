@@ -1,11 +1,132 @@
 ---
 layout: docs.njk
 title: 'Architecture — Thurbox Docs'
-description: 'Thurbox architecture: the Lua plugin kernel, module isolation, the tmux session backend, and design principles.'
+description: 'Thurbox architecture: three components (thurbox, Fleet, the runtimes), Fleets and places, the Lua plugin kernel, module isolation, and design principles.'
 currentPage: 'architecture'
 breadcrumb: 'Architecture'
 ---
 <h1>Architecture</h1>
+
+          <h2 id="components">
+            Three components
+            <a href="#components" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            thurbox, Fleet and the runtimes are three components. They talk only by running each
+            other's programs. All three live in one repository.
+          </p>
+          <figure class="perf-figure">
+            <img
+              src="../assets/overview.svg"
+              alt="thurbox lists the sessions of every Fleet; each Fleet runs runtime-mux, which runs each session at a place: local on the laptop, or local on the box"
+              width="1100"
+              height="460"
+              loading="lazy"
+            />
+          </figure>
+          <table>
+            <thead>
+              <tr>
+                <th>Component</th>
+                <th>Owns</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>thurbox</strong>, the interface (<code>crates/thurbox</code>)</td>
+                <td>
+                  The TUI, the Lua kernel, rendering, the session panes, and the interface's own
+                  state in plain files: order, seen marks, bookmarks, settings, keybindings.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>Fleet</strong>, the engine (<code>crates/fleet-*</code>)</td>
+                <td>
+                  Tasks (one per session), the store, every decision, the harness profiles that
+                  launch each agent, the agent hooks (<code>fleet signal</code>), the inbox and the
+                  runtime protocol.
+                </td>
+              </tr>
+              <tr>
+                <td><strong>A runtime</strong> (<code>crates/runtime-*</code>, or any program)</td>
+                <td>
+                  Processes by key on its places, the workspaces they work in, and whatever keeps a
+                  terminal alive there. <code>runtime-mux</code> (tmux, or psmux on Windows) is the
+                  default. It is not special.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="tui-demo">
+            <div class="terminal-header">
+              <div class="terminal-dot red"></div>
+              <div class="terminal-dot yellow"></div>
+              <div class="terminal-dot green"></div>
+              <span class="terminal-title">the contracts</span>
+            </div>
+            <div class="terminal-body">
+              <pre>thurbox &mdash;fleet watch / apply / send / delete / attach&rarr; Fleet
+Fleet   &mdash;runtime protocol: start / inspect / stop&rarr;      a runtime
+pane    &larr;terminal stream&mdash; the process fleet attach names
+agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
+            </div>
+          </div>
+          <p>
+            Every session is a Fleet Task, so thurbox keeps no session database. A fact that must
+            survive an interface restart belongs to Fleet. How to reach a terminal belongs to the
+            runtime. How you look at things belongs to thurbox, in a file. The whole system is in
+            <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/README.md" target="_blank" rel="noopener">docs/README.md</a>.
+          </p>
+
+          <h2 id="places">
+            Fleets and places
+            <a href="#places" class="heading-anchor">#</a>
+          </h2>
+          <p>Two choices decide where a session runs:</p>
+          <ol>
+            <li><strong>The Fleet</strong>: which Fleet manages the session.</li>
+            <li><strong>The place</strong>: where that Fleet's runtime runs the session's process.</li>
+          </ol>
+          <table>
+            <thead>
+              <tr>
+                <th>Term</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Fleet</td>
+                <td>
+                  Where sessions are managed: one Fleet installation and its store. thurbox reaches
+                  it by running <code>fleet</code>, on this machine or over ssh or WSL.
+                </td>
+              </tr>
+              <tr>
+                <td>runtime</td>
+                <td>A program a Fleet runs to start and stop processes, such as <code>runtime-mux</code>.</td>
+              </tr>
+              <tr>
+                <td>place</td>
+                <td>
+                  Where a runtime runs a process. Its name is <code>&lt;runtime&gt;/&lt;place&gt;</code>,
+                  such as <code>mux/wsl-dev</code>.
+                </td>
+              </tr>
+              <tr>
+                <td><code>local</code></td>
+                <td>The place on the Fleet's own machine.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            thurbox can follow several Fleets, listed under <code>[fleets.&lt;name&gt;]</code> in
+            <code>settings.toml</code>. The session list follows every listed Fleet as one list. A
+            Fleet that cannot be reached keeps its rows, marked unreachable. Each command goes to its
+            session's own Fleet. thurbox starts <code>fleet up</code> for a Fleet on this machine when
+            no manager runs; on another machine, a user systemd unit runs it. See
+            <a href="configuration.html">Configuration</a> for the <code>[fleets]</code> table.
+          </p>
 
           <h2 id="kernel">
             The interface is a Lua plugin kernel
@@ -42,7 +163,7 @@ breadcrumb: 'Architecture'
             <li>
               <strong>Reads are snapshots, writes are commands.</strong> Lua never blocks or awaits, so
               no plugin &mdash; including one nobody has written yet &mdash; can freeze the interface on
-              a slow git fetch or an unreachable host.
+              a slow git fetch or an unreachable Fleet.
             </li>
             <li>
               <strong>Capabilities are absent, not blocked.</strong> No filesystem, no network:
@@ -80,7 +201,8 @@ breadcrumb: 'Architecture'
             </div>
             <div class="terminal-body">
               <pre>tokio::main &rarr; load config + settings
-  &rarr; start Fleet (fleet up) &rarr; follow fleet watch
+  &rarr; start fleet up on this machine if no manager runs
+  &rarr; follow fleet watch, once per listed Fleet
   &rarr; resolve ui/ &rarr; build the Lua host
   &rarr; init terminal
   &rarr; loop {
@@ -111,10 +233,11 @@ breadcrumb: 'Architecture'
               <span class="terminal-title">dependency rules</span>
             </div>
             <div class="terminal-body">
-              <pre>session  &larr; pure data types, no project-local imports
-agent    &larr; imports session (+ path/shell utils; NEVER git)
-kernel   &larr; session + storage + sync + paths + session_ops + git
-main     &larr; the coordinator: the loop, the workers, the chrome</pre>
+              <pre>session     &larr; pure data types, no crate-internal imports
+fleet_link  &larr; session + shell: the one way to a Fleet's command line
+kernel      &larr; session + paths + git + notifications + theme + fleet_link
+cli         &larr; session + paths + notifications + ui_control + theme + fleet_link
+coordinator &larr; main's body: the loop, the workers, the chrome</pre>
             </div>
           </div>
 
@@ -155,7 +278,15 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
                 <td><code>session/</code></td>
                 <td>
                   Plain data types: <code>SessionState</code>, the settings, automation schedules,
-                  diffs, plugin specs and the host model. No logic beyond pure helpers.
+                  diffs and plugin specs. No logic beyond pure helpers.
+                </td>
+              </tr>
+              <tr>
+                <td><code>fleet_link</code></td>
+                <td>
+                  Every <code>fleet</code> call thurbox makes: the commands, the watch, the manager,
+                  an attach, an automation's fire and <code>doctor</code>'s probes. A Fleet on another
+                  machine is a launcher on the link (ssh or WSL), not a change at each call site.
                 </td>
               </tr>
               <tr>
@@ -182,132 +313,22 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
             </tbody>
           </table>
 
-          <h2 id="session-pipeline">
-            Session Pipeline
-            <a href="#session-pipeline" class="heading-anchor">#</a>
+          <h2 id="sessions">
+            Session panes
+            <a href="#sessions" class="heading-anchor">#</a>
           </h2>
           <p>
-            A
-            <code>SessionBackend</code>
-            trait abstracts session lifecycle. The default is
-            <code>TmuxBackend</code>
-            over a local
-            <code>TmuxTransport</code>
-            (
-            <code>tmux -L thurbox</code>
-            ).
-            <code>vt100::Parser</code>
-            interprets escape sequences,
-            <code>tui_term::PseudoTerminal</code>
-            renders into ratatui.
-          </p>
-
-          <h3>Backend trait methods</h3>
-          <ul>
-            <li>
-              <code>check_available</code>
-              &mdash; verify backend prerequisites
-            </li>
-            <li>
-              <code>ensure_ready</code>
-              &mdash; initialize backend resources
-            </li>
-            <li>
-              <code>spawn()</code>
-              &mdash; returns
-              <code>(backend_id, output_reader, input_writer)</code>
-            </li>
-            <li>
-              <code>adopt()</code>
-              &mdash; reconnect to existing session, returns initial screen content
-            </li>
-            <li>
-              <code>discover()</code>
-              &mdash; list the panes already on a server
-            </li>
-            <li>
-              <code>resize()</code>
-              &mdash; update terminal dimensions
-            </li>
-            <li>
-              <code>detach()</code>
-              &mdash; stop streaming without killing session
-            </li>
-            <li>
-              <code>kill()</code>
-              &mdash; permanently destroy session
-            </li>
-          </ul>
-
-          <h3>Multiplexer adapters</h3>
-          <p>
-            <code>TmuxBackend</code>, <code>PsmuxBackend</code> and
-            <code>RmuxBackend</code> are peer adapters over one tmux-protocol server,
-            registered for local, SSH and WSL routes. A session runs on tmux, or psmux on
-            native Windows; RMUX serves only a host's companion shell. See <a href="configuration.html#multiplexers">selection and version evidence</a>.
-          </p>
-          <h3>tmux details</h3>
-          <p>
-            Control mode (
-            <code>-C</code>
-            ) supports multiple concurrent client connections. Output arrives as
-            <code>%output</code>
-            notifications (octal-encoded), input is sent via
-            <code>send-keys -H</code>
-            (hex-encoded). Configuration on init includes
-            <code>remain-on-exit on</code>
-            ,
-            <code>extended-keys on</code>
-            , and flow control via
-            <code>pause-after</code>
-            .
-          </p>
-
-          <h2 id="backend">
-            Session Backend
-            <a href="#backend" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Session lifecycle (spawn, adopt, resize, kill, detach, discover) is abstracted behind a
-            <code>SessionBackend</code>
-            trait. The implementation is
-            <code>TmuxBackend</code>
-            , which runs every session in a dedicated
-            <code>tmux -L thurbox</code>
-            server. The trait boundary keeps the app layer transport-agnostic.
+            A session's process belongs to the runtime, not to thurbox. A pane shows a session by
+            starting the terminal stream that <code>fleet attach</code> names, for a Fleet on this
+            machine or over the Fleet's link. <code>vt100::Parser</code> interprets the escape
+            sequences, and <code>tui_term::PseudoTerminal</code> renders the screen into ratatui.
           </p>
           <p>
-            <code>TmuxBackend</code>
-            is itself transport-neutral via a
-            <code>TmuxTransport</code>
-            : sessions can run on a
-            <strong>remote host over SSH</strong>
-            while the TUI runs locally. The local backend launches
-            <code>tmux -L thurbox</code>
-            ; a remote one launches
-            <code>ssh &lt;dest&gt; tmux -L thurbox</code>
-            &mdash; the tmux control-mode protocol is byte-identical over either transport. A
-            session on another machine reaches thurbox through that machine's Fleet.
+            <code>runtime-mux</code> keeps each process alive in a tmux server (psmux on native
+            Windows). It talks to the server in control mode (<code>-C</code>): output arrives as
+            <code>%output</code> notifications, and input goes in as <code>send-keys -H</code>.
+            Quitting thurbox stops the streams and leaves every process running.
           </p>
-
-          <h2 id="async">
-            Async Runtime
-            <a href="#async" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            The app runs on tokio's multi-threaded runtime. PTY read loops run inside
-            <code>spawn_blocking</code>
-            (blocking I/O in a threadpool), while PTY write and event handling run in
-            <code>tokio::spawn</code>
-            (async).
-          </p>
-          <div class="info-box">
-            <p>
-              PTY reads are blocking by nature. Putting them in
-              <code>spawn_blocking</code>
-              prevents stalling the async executor and freezing the UI.
-            </p>
-          </div>
 
           <h2 id="persistence">
             Persistence
@@ -329,7 +350,7 @@ main     &larr; the coordinator: the loop, the workers, the chrome</pre>
             </li>
             <li>
               <strong>Session I/O</strong>
-              : Each instance opens the session's terminal stream on its own. The multiplexer
+              : Each instance opens the session's terminal stream on its own. The runtime
               serves every client.
             </li>
           </ul>

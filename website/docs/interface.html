@@ -159,7 +159,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   and the loaders are not in its world at all, and a lint enforces their absence. Reads are served
   from a snapshot and return instantly; writes are commands the kernel performs. So no plugin,
   including one nobody has written yet, can freeze the interface on a slow git fetch or an
-  unreachable host.
+  unreachable Fleet.
 </p>
 
 
@@ -177,8 +177,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <code>docker compose ps</code>
   or
   <code>npm outdated</code>
-  in a session's working directory &mdash; and on that session's own host for a remote session. It is
-  bounded: output is capped, a run times out, four run at once.
+  in a session's working directory, on this machine. A session on another machine is refused a run.
+  It is bounded: output is capped, a run times out, four run at once.
 </p>
 <p>
   <strong>Running a program you interact with.</strong>

@@ -67,7 +67,7 @@ breadcrumb: 'Keybindings'
     <tr><td><kbd>Ctrl</kbd>+<kbd>J</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>The same, from anywhere</td></tr>
     <tr><td><kbd>g</kbd> / <kbd>Home</kbd> &middot; <kbd>G</kbd> / <kbd>End</kbd></td><td>First / last row</td></tr>
     <tr><td><kbd>PgUp</kbd> / <kbd>PgDn</kbd></td><td>Previous / next page of rows</td></tr>
-    <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Previous / next host</td></tr>
+    <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Previous / next Fleet or place group</td></tr>
     <tr><td><kbd>n</kbd></td><td>Next session that needs you</td></tr>
     <tr><td><kbd>h</kbd> / <kbd>l</kbd> &middot; <kbd>H</kbd> / <kbd>L</kbd></td><td>Fold / unfold the group &middot; all groups</td></tr>
     <tr><td><kbd>&larr;</kbd> / <kbd>&rarr;</kbd></td><td>Fold the group or go to its parent / unfold it or go to its first child</td></tr>
@@ -108,13 +108,14 @@ breadcrumb: 'Keybindings'
 </h2>
 <p>
   <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the flow (<code>ui/plugins/70_new_session.lua</code>) &mdash; one
-  float rather than a chain of modals. It walks host &rarr; repositories &rarr; base branch &rarr;
-  name &rarr; branch name &rarr; agent. The host step offers this machine at once and adds Fleet's
-  hosts when Fleet names them. On the repo step <kbd>Space</kbd> ticks a repository and
+  float rather than a chain of modals. It walks Fleet &rarr; place &rarr; repositories &rarr; base
+  branch &rarr; name &rarr; branch name &rarr; agent. The Fleet step is skipped when only one Fleet
+  is listed. The place step offers the Fleet's <code>local</code> at once and adds the places that
+  Fleet names. On the repo step <kbd>Space</kbd> ticks a repository and
   <kbd>Alt</kbd>+<kbd>W</kbd> gives it a worktree of its own; <kbd>&rarr;</kbd> lists the worktrees
-  a repository already has. The two branch steps appear only with a worktree, and a directory with
-  no repository, or a remote host, is refused one. The agent step is skipped when Fleet offers one
-  harness.
+  a repository already has. The two branch steps appear only with a worktree. Worktrees are made on
+  this machine only, so a directory with no repository, or a Fleet on another machine, is refused
+  one. The agent step offers the chosen Fleet's harnesses and is skipped when it offers one.
 </p>
 <table>
   <thead>

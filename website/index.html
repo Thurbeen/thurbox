@@ -1,7 +1,7 @@
 ---
 layout: base.njk
 title: 'Thurbox — Orchestrate coding agents'
-description: 'Thurbox runs coding agents (Claude Code and Codex, through Fleet) in persistent tmux panes — with a fully customizable interface: every pane is a Lua file you can edit, move, turn off or replace.'
+description: 'Thurbox runs coding agents side by side. Fleet keeps every session running, on this machine or another, and every pane of the interface is a Lua file you can edit, move, turn off or replace.'
 root: '.'
 extraCss: ['landing.css']
 footer: true
@@ -16,15 +16,15 @@ footer: true
               <span class="hero-headline-phrase">agents</span>
             </h1>
             <p class="subtitle">
-              Thurbox runs any CLI agent you define, side by side in persistent tmux panes.
+              Thurbox runs coding agents side by side, on this machine or another.
             </p>
             <p class="subtitle subtitle--thesis">
-              <strong>The agents keep running</strong> after you quit thurbox.
+              <strong>The agents keep running</strong> after you quit thurbox: Fleet runs every
+              session.
             </p>
             <p class="hero-stability">
-              One command installs it, and
-              <code>thurbox</code>
-              runs it &mdash; that is the whole setup.
+              Install it, then run
+              <code>thurbox</code>.
             </p>
             <div class="hero-ctas">
               <a href="#installation" class="btn btn-primary">Get Started</a>
@@ -98,7 +98,8 @@ footer: true
           </div>
 
           <p class="install-more">
-            Also on winget, Chocolatey, the AUR and Nix, or from source &mdash;
+            The scripts also install Fleet once a 3.x release is out; until then they install the
+            latest 2.x. Also on winget, Chocolatey, the AUR and Nix, or from source &mdash;
             <a href="docs/installation.html">installation guide &rarr;</a>
           </p>
           </div>
@@ -142,7 +143,7 @@ footer: true
             <svg class="agent-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>
             Codex
           </span>
-          <span class="agent-support-any">plus any CLI agent</span>
+          <span class="agent-support-any">plus pi, opencode, kilo, omp, Qwen Code, Copilot CLI and Kimi Code</span>
             </p>
             <div class="hero-badges">
               <span class="badge badge-yellow">MIT License</span>
@@ -395,8 +396,8 @@ footer: true
             <p class="section-eyebrow">Band 1 &mdash; compiled, fixed</p>
             <h3 class="feature-band__title">The engine</h3>
             <p class="feature-band__lede">
-              Fleet runs the sessions: processes, workspaces, status. thurbox keeps hosts and
-              schedules. This half is Rust and it is not
+              Fleet runs the sessions: processes, workspaces, status. thurbox reads every Fleet
+              you list and keeps your schedules. This half is Rust and it is not
               yours to edit &mdash; which is the point: it is what a plugin is allowed to be
               careless in front of.
             </p>
@@ -407,8 +408,8 @@ footer: true
               <div class="card-icon" aria-hidden="true">&#x25A3;</div>
               <h3>Persistent Sessions</h3>
               <p>
-                Run multiple coding-agent CLIs side-by-side, each in its own tmux pane. Sessions
-                persist across crashes, restarts, and multiple concurrent Thurbox instances.
+                Every session is a Fleet Task, and Fleet's runtime keeps its agent alive in tmux.
+                Sessions survive crashes, restarts and quitting thurbox.
               </p>
             </div>
           </a>
@@ -428,9 +429,8 @@ footer: true
               <div class="card-icon" aria-hidden="true">&#x25B8;</div>
               <h3>Any Coding Agent</h3>
               <p>
-                A session runs one agent of your choice &mdash; Claude Code or Codex, through Fleet's
-                harness profiles. Each agent runs
-                with its own default
+                A session runs one agent of your choice &mdash; Claude Code, Codex, pi, opencode,
+                kilo, omp, Qwen Code, Copilot CLI or Kimi Code. Each runs unmodified, with its own
                 config. Mix different agents across the sidebar.
               </p>
             </div>
@@ -462,15 +462,16 @@ footer: true
               </p>
             </div>
           </a>
-          <a href="docs/features.html#remote-ssh-sessions" class="feature-link">
+          <a href="docs/features.html#fleets-and-places" class="feature-link">
             <div class="card">
               <div class="card-icon" aria-hidden="true">&#x21C4;</div>
-              <h3>Remote &amp; WSL Hosts</h3>
+              <h3>Several Fleets</h3>
               <p>
-                Run an agent on another machine while the interface stays local &mdash; over SSH, or
-                in a WSL distro that is
-                <strong>discovered with no config</strong>
-                . The agent and its tmux window live on that host, in a directory there.
+                List a Fleet on another machine in
+                <code>settings.toml</code>
+                and its sessions join the same list, over ssh or in WSL. The agents run there, and
+                <strong>keep running while your laptop sleeps</strong>
+                .
               </p>
             </div>
           </a>
@@ -533,7 +534,7 @@ footer: true
                   <code>docker compose ps</code>
                   ,
                   <code>npm outdated</code>
-                  &mdash; in the session's own directory, on the session's own host. Bounded by the
+                  &mdash; in the session's own directory. Bounded by the
                   kernel and granted only to a plugin
                   <strong>you have trusted</strong>
                   .
@@ -588,15 +589,25 @@ footer: true
       <div class="container">
         <div class="section-title">
           <h2>How It Works</h2>
-          <p>Three steps from launch to coding</p>
+          <p>One interface, any number of Fleets</p>
         </div>
+        <p class="how-it-works-diagram">
+          <img
+            src="assets/overview.svg"
+            alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place"
+            width="1100"
+            height="460"
+            loading="lazy"
+          />
+        </p>
         <div class="how-it-works-steps">
           <div class="step">
             <span class="step-number">1</span>
             <div class="step-content">
               <h3>Launch</h3>
               <p>
-                Run <code>thurbox</code>. The session sidebar and terminal panel appear.
+                Run <code>thurbox</code>. The session list and the agent terminal appear, and
+                thurbox starts Fleet's manager when none runs.
               </p>
             </div>
           </div>
@@ -608,7 +619,8 @@ footer: true
               <p>
                 Press
                 <code>Ctrl+N</code>
-                to pick repos, name the session, then choose an agent.
+                to pick a Fleet, a place and a repository, then name the session and choose an
+                agent.
               </p>
               <div class="tui-demo">
                 <div class="terminal-header">
@@ -616,8 +628,9 @@ footer: true
                 </div>
                 <div class="terminal-body">
                   <pre>Ctrl+N  New session
-# Pick repo: ~/projects/my-app
-# Name: my-app   Agent: claude</pre>
+# Fleet: laptop      Place: local
+# Repo:  ~/projects/my-app
+# Name:  my-app      Agent: claude</pre>
                 </div>
               </div>
             </div>
@@ -673,8 +686,8 @@ Ctrl+,  Settings</pre>
             <h3>Orchestrate sessions</h3>
             <p>
               Fleet's command line creates, prompts and tears down sessions, so an agent can spin up a
-              whole fleet for you. Everything it does appears in your running TUI within a tick
-              &mdash; both read the same Fleet store.
+              whole set of sessions for you. Everything it does appears in your running TUI within
+              a tick &mdash; both read the same Fleet.
             </p>
             <ul class="prompts">
               <li>
@@ -740,12 +753,18 @@ Ctrl+,  Settings</pre>
                 &mdash; session backend
               </li>
               <li>
+                <strong>fleet</strong>
+                and
+                <strong>runtime-mux</strong>
+                &mdash; the engine and its runtime, installed by the install script
+              </li>
+              <li>
                 <strong>A coding-agent CLI</strong>
                 &mdash; e.g.
                 <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener">
                   claude
                 </a>
-                or codex
+                or codex &mdash; any agent Fleet has a harness profile for
               </li>
               <li>
                 <strong>git</strong>
@@ -776,7 +795,7 @@ Ctrl+,  Settings</pre>
       </span>
       <span class="hud-bar__seg hud-bar__seg--hide-sm">
         <span class="k">Agents</span>
-        <span class="v">8+</span>
+        <span class="v">9</span>
       </span>
       <span class="hud-bar__seg hud-bar__seg--hide-sm">
         <span class="k">Backend</span>

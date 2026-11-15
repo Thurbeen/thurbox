@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Features — Thurbox Docs'
-description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, remote SSH sessions, automations, and a headless CLI.'
+description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, several Fleets and places, automations, and a headless CLI.'
 currentPage: 'features'
 breadcrumb: 'Features'
 ---
@@ -102,10 +102,6 @@ breadcrumb: 'Features'
             panel wants one
             <code>layout.lua</code>
             line.
-            <strong>CLI only</strong>
-            means the records and the commands are all there and nobody has written the pane yet;
-            <code>examples/panes/tasks</code>
-            is an example pane over the same task records.
           </p>
 
           <h2 id="session-orchestration">
@@ -133,9 +129,10 @@ breadcrumb: 'Features'
             <li>
               Create a session with
               <code>Ctrl+N</code>
-              : repo picker &rarr; session name &rarr; agent picker. The agent picker is skipped
-              when Fleet offers one harness, and a host picker comes first when Fleet defines more
-              than one host.
+              : Fleet &rarr; place &rarr; repository &rarr; name and branch &rarr; agent. The Fleet
+              step is skipped when only one Fleet is listed. The places and agents offered are the
+              chosen Fleet's, and the agent step is skipped when that Fleet offers one harness. See
+              <a href="#fleets-and-places">Fleets and places</a>.
             </li>
             <li>
               Rename a session with
@@ -231,7 +228,7 @@ breadcrumb: 'Features'
             <a href="#git-worktrees" class="heading-anchor">#</a>
           </h2>
           <p>
-            A Task's workspace is a list of URLs, and the runtime of its host makes them. The
+            A Task's workspace is a list of URLs, and the runtime of its place makes them. The
             new-session flow gives each repository it ticks one URL, the first where the agent
             starts:
           </p>
@@ -254,8 +251,8 @@ breadcrumb: 'Features'
             as a worktree of your checkout itself: its branches are your own, and a commit made in
             the session is in your repository at once (<code>git worktree list</code> shows it).
             No mapping is needed: the URL is the whole request. A directory that is no git repository, such as the installed interface,
-            is refused a worktree and runs as it is. A session on another Fleet host gets a
-            <code>file://</code> URL and runs in that directory.
+            is refused a worktree and runs as it is. Worktrees are made on this machine only: a
+            session of a Fleet on another machine runs in the directory it names there.
           </p>
           <ul>
             <li>
@@ -270,22 +267,43 @@ breadcrumb: 'Features'
             </li>
           </ul>
 
-          <h2 id="remote-ssh-sessions">
-            Sessions on Other Machines
-            <a href="#remote-ssh-sessions" class="heading-anchor">#</a>
+          <h2 id="fleets-and-places">
+            Fleets and places
+            <a href="#fleets-and-places" class="heading-anchor">#</a>
           </h2>
           <p>
-            Fleet decides where a session runs. Each host in Fleet's config names the runtime that
-            runs its sessions, and the new-session flow's host step lists the hosts Fleet defines.
+            Two choices decide where a session runs. The <strong>Fleet</strong> manages the session.
+            The <strong>place</strong> is where that Fleet's runtime runs the session's process. A
+            place is named <code>&lt;runtime&gt;/&lt;place&gt;</code>, such as
+            <code>mux/wsl-dev</code>, and <code>local</code> is the Fleet's own machine.
           </p>
+          <img src="../assets/overview.svg" alt="thurbox follows several Fleets; each Fleet runs runtimes, and each runtime runs sessions on its places" width="1100" height="460" loading="lazy">
+          <p>
+            thurbox can follow several Fleets. List them in
+            <code>~/.config/thurbox/settings.toml</code>. With no <code>[fleets]</code> table,
+            thurbox uses one Fleet on this machine. Once the file lists a Fleet, thurbox uses only
+            the listed Fleets.
+          </p>
+          <pre data-title="~/.config/thurbox/settings.toml"><code class="language-toml">[fleets.laptop]
+transport = "local"                     # the default
+
+[fleets.box]
+transport = { ssh = "me@box" }
+program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+
+[fleets.ubuntu]
+transport = { wsl = "Ubuntu" }</code></pre>
           <ul>
             <li>
-              A session on another host runs in its directory there, with no worktree: the flow
-              reads branches on this machine only, so it sends a <code>file://</code> URL
+              <code>transport</code> says how thurbox runs <code>fleet</code>:
+              <code>"local"</code>, <code>{ ssh = "&lt;destination&gt;" }</code> or
+              <code>{ wsl = "&lt;distro&gt;" }</code>. <code>program</code> names the
+              <code>fleet</code> binary, and <code>config</code> passes
+              <code>fleet --config &lt;path&gt;</code>
             </li>
             <li>
-              thurbox reads this machine only. Diffs, git stats and plugin runs refuse a session on
-              another machine, and a path typed for another host is remembered as typed
+              The session list follows every listed Fleet as one list. A row shows its Fleet, and its
+              place when the place is not <code>local</code>
             </li>
             <li>
               The agent's pane and its companion shell are the streams
@@ -293,11 +311,28 @@ breadcrumb: 'Features'
               session's Fleet. thurbox keeps no file of machines of its own
             </li>
             <li>
-              Connections go through your system
-              <code>ssh</code>
-              , so authentication, keys, and connection multiplexing come from
-              <code>~/.ssh/config</code>
-              &mdash; thurbox never handles credentials
+              A Fleet that cannot be reached keeps its rows, marked unreachable. They clear once the
+              Fleet answers again
+            </li>
+            <li>
+              Each command for a session goes to that session's own Fleet. A new session goes to the
+              Fleet picked in the new-session flow
+            </li>
+            <li>
+              thurbox starts <code>fleet up</code> for a Fleet on this machine when no manager runs.
+              It never starts one on another machine: there, a user systemd unit runs
+              <code>fleet up</code>
+              (<a href="https://github.com/Thurbeen/thurbox/blob/main/docs/where-sessions-run.md" target="_blank" rel="noopener">the unit</a>).
+              On this machine, the first <code>thurbox</code> runs <code>fleet init</code>; on
+              another machine, run <code>fleet init</code> there once
+            </li>
+            <li>
+              For a Fleet on another machine, the new-session flow takes an absolute path on that
+              machine, or a clone URL that the runtime clones there
+            </li>
+            <li>
+              <code>thurbox-cli doctor</code> checks each listed Fleet and says which one cannot be
+              reached
             </li>
           </ul>
 
@@ -498,7 +533,7 @@ breadcrumb: 'Features'
             </li>
             <li>
               <strong>Click a picker row</strong>
-              (theme, agent, host, branch, &hellip;) to select
+              (theme, Fleet, place, agent, branch, &hellip;) to select
               <em>and</em>
               confirm in one click. Open modals swallow stray clicks, so a misclick never discards
               typed input.

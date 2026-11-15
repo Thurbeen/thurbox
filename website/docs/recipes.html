@@ -28,7 +28,7 @@ repo=/home/me/code/mono
 for pkg in api web worker; do
   printf '{"apiVersion":"fleet/v1alpha1","kind":"Task",
     "metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},
-    "spec":{"harness":"claude-code","host":"local",
+    "spec":{"harness":"claude",
             "workspace":["git+file://%s?branch=%s"],
             "dispatch":true}}' \
     "$pkg" "$pkg" "$repo" "$pkg" | fleet apply --create-only -f -

@@ -68,22 +68,20 @@ const retiredFleet = [
 // Fleet v1: the Python control plane that installed as a Thurbox extension.
 const fleetV1 = [/uv run fleet/, /\/fleet-onboarding/, /Mission Control/, /Kanban/, /result\.md/, /--kind result/];
 
-test('orchestration page leads with Fleet v2, its release installer and Fleet Lens', () => {
+test('orchestration page leads with Fleet, its docs in this repository and Fleet Lens', () => {
   const page = built('docs/orchestration.html');
-  const fleet = 'https://github.com/Thurbeen/fleet';
-  assert.ok(page.querySelector(`a[href="${fleet}"]`), 'links the Fleet repository');
+  const docs = 'https://github.com/Thurbeen/thurbox/tree/main/docs/fleet';
+  assert.ok(page.querySelector(`a[href="${docs}"]`), "links Fleet's docs in this repository");
   assert.ok(page.querySelector('a[href="https://github.com/Thurbeen/thurbox-fleetlens"]'), 'links Fleet Lens');
   const h2s = page.querySelectorAll('h2').map((h) => h.getAttribute('id'));
   assert.equal(h2s[0], 'fleet', 'Fleet is the first section');
   const copy = text(page);
   const code = page.querySelectorAll('pre').map((pre) => text(parse(pre.innerHTML))).join('\n');
-  assert.match(
-    code,
-    /curl -fsSL https:\/\/github\.com\/Thurbeen\/fleet\/releases\/latest\/download\/install-release\.sh \| sh/,
-  );
+  assert.match(code, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/Thurbeen\/thurbox\/main\/scripts\/install\.sh \| sh/);
   assert.match(code, /thurbox-cli plugin install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
   assert.match(copy, /fleet result/, 'the worker reports its own result');
   for (const stale of [...retiredFleet, ...fleetV1]) assert.doesNotMatch(copy, stale);
+  assert.doesNotMatch(page.innerHTML, /github\.com\/Thurbeen\/fleet\b|install-release\.sh/, 'no link to the old Fleet repository');
   assert.doesNotMatch(page.innerHTML, /raw\.githubusercontent\.com\/Thurbeen\/fleet\//, 'no file from Fleet v1');
 });
 

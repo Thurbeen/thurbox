@@ -15,7 +15,7 @@ breadcrumb: 'FAQ'
 <p>
   Thurbox is a multi-session TUI for coding agents — the agents Fleet
   has harness profiles for — running inside persistent multiplexer panes.
-  Every session is a Fleet Task: Fleet starts it in a git worktree of the repository you pick and
+  Every session is a Fleet Task: Fleet starts it in the repository you pick and
   keeps it running, so sessions survive crashes and restarts.
 </p>
 
@@ -61,10 +61,10 @@ breadcrumb: 'FAQ'
   Which platforms does Thurbox run on? Does it support remote machines?
 </h2>
 <p>
-  Thurbox runs on Linux, macOS, and Windows. It defaults to tmux 3.2+ on
-  Linux/macOS and psmux 3.3.8+ on Windows. It can also run sessions on a remote host
-  over SSH while the TUI runs locally — through a Fleet on that machine, listed in
-  settings.toml.
+  Thurbox runs on Linux, macOS, and Windows. Its sessions run in tmux 3.2+ on
+  Linux/macOS and psmux 3.3.8+ on Windows. Thurbox can also follow a Fleet on another
+  machine, over ssh or WSL: that Fleet runs its sessions there while the TUI runs
+  locally. List each Fleet under <code>[fleets]</code> in <code>settings.toml</code>.
 </p>
 
 <h2 id="persistence">Do my sessions survive a crash or restart?</h2>
@@ -79,10 +79,10 @@ breadcrumb: 'FAQ'
 </h2>
 <p>
   tmux's default socket directory is <code>/tmp</code>, which macOS sweeps, and a
-  server whose socket file is gone keeps running with no way in. Thurbox now keeps
+  server whose socket file is gone keeps running with no way in. So Thurbox keeps
   its socket under its data dir (<code>~/.local/share/thurbox/tmux/</code>) and, if a
   socket is lost anyway, recreates it with <code>SIGUSR1</code> instead of starting a
-  second server. An older thurbox started a second one, leaving the first orphaned.
+  second server. A second server started under the same name leaves the first one orphaned.
   Find it with <code>ps -axo pid,args | grep '[t]mux -L thurbox'</code>: a server whose
   socket file is missing is the orphan. Once a second server owns the path, killing
   the orphan (<code>kill &lt;pid&gt;</code>) is the only option. See
@@ -110,7 +110,7 @@ breadcrumb: 'FAQ'
         "name": "What is Thurbox?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Thurbox is a multi-session TUI for coding agents — the agents Fleet has harness profiles for — running inside persistent multiplexer panes. Every session is a Fleet Task: Fleet starts it in a git worktree of the repository you pick and keeps it running, so sessions survive crashes and restarts."
+          "text": "Thurbox is a multi-session TUI for coding agents — the agents Fleet has harness profiles for — running inside persistent multiplexer panes. Every session is a Fleet Task: Fleet starts it in the repository you pick and keeps it running, so sessions survive crashes and restarts."
         }
       },
       {
@@ -142,7 +142,7 @@ breadcrumb: 'FAQ'
         "name": "Which platforms does Thurbox run on? Does it support remote machines?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Thurbox runs on Linux, macOS, and Windows. It defaults to tmux 3.2+ on Linux/macOS and psmux 3.3.8+ on Windows. It can also run sessions on a remote host over SSH while the TUI runs locally — through a Fleet on that machine, listed in settings.toml."
+          "text": "Thurbox runs on Linux, macOS, and Windows. Its sessions run in tmux 3.2+ on Linux/macOS and psmux 3.3.8+ on Windows. Thurbox can also follow a Fleet on another machine, over ssh or WSL: that Fleet runs its sessions there while the TUI runs locally. List each Fleet under [fleets] in settings.toml."
         }
       },
       {

@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 460" role="img" aria-labelledby="title desc">
+<title id="title">thurbox, its Fleets, their runtimes and places</title>
+<desc id="desc">thurbox shows one list of sessions from every Fleet that settings.toml lists. Fleet laptop runs on this machine, and thurbox starts its manager. Fleet box runs on another machine, and thurbox reaches it over ssh or WSL. Each Fleet asks its runtime, runtime-mux over tmux or psmux, to start and stop each session. The runtime runs the coding agent at a place: local is the Fleet's own machine, so the laptop for Fleet laptop and box for Fleet box. A session is a Task of one Fleet and keeps running when thurbox quits.</desc>
+<style>
+  svg { color-scheme:light dark }
+  .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5}
+  .interface{fill:#edf3f8} .engine{fill:#e9f5ef} .runtime{fill:#f3f4f5} .place{fill:#fff2de} .agent{fill:#f6ecf7}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  .icon{fill:none;stroke:#405367;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .iconfill{fill:#405367}
+  @media (prefers-color-scheme: light) { .background{fill:#fff} .ink{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) {
+    .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a}
+    .interface{fill:#1d2a36} .engine{fill:#173b2d} .runtime{fill:#202a33} .place{fill:#493517} .agent{fill:#3a2740}
+    .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} .icon{stroke:#a9bdd0} .iconfill{fill:#a9bdd0}
+  }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect class="icon" x="2" y="4" width="20" height="16" rx="2"/><path class="icon" d="M6 9l3 3-3 3M12 15h6"/></symbol>
+  <symbol id="i-engine" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="12" r="3"/><path class="icon" d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
+  <symbol id="i-mux" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="18" rx="2"/><path class="icon" d="M2 9h20M9 9v12M15 9v12"/></symbol>
+  <symbol id="i-robot" viewBox="0 0 24 24"><rect class="icon" x="4" y="8" width="16" height="12" rx="2"/><path class="icon" d="M12 8V4M9 4h6"/><circle class="iconfill" cx="9" cy="14" r="1.5"/><circle class="iconfill" cx="15" cy="14" r="1.5"/></symbol>
+</defs>
+<rect class="background" width="1100" height="460" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+  <text x="30" y="36" font-size="21" font-weight="700">One interface, several Fleets</text>
+  <text x="30" y="61" font-size="14">thurbox lists the sessions of every Fleet. A Fleet's runtime runs each session at a place.</text>
+
+  <g font-size="12" font-weight="650" class="muted">
+    <text x="30" y="106">INTERFACE</text>
+    <text x="310" y="106">FLEET · manages sessions</text>
+    <text x="620" y="106">RUNTIME · runs processes</text>
+    <text x="890" y="106">PLACE · where a session runs</text>
+  </g>
+
+  <g class="box">
+    <rect class="interface" x="30" y="124" width="190" height="204" rx="8"/>
+    <rect class="engine" x="310" y="124" width="220" height="90" rx="8"/>
+    <rect class="engine" x="310" y="238" width="220" height="90" rx="8"/>
+    <rect class="runtime" x="620" y="124" width="180" height="90" rx="8"/>
+    <rect class="runtime" x="620" y="238" width="180" height="90" rx="8"/>
+    <rect class="agent" x="890" y="124" width="180" height="90" rx="8"/>
+    <rect class="agent" x="890" y="238" width="180" height="90" rx="8"/>
+  </g>
+
+  <use href="#i-terminal" x="46" y="140" width="28" height="28"/>
+  <text x="84" y="160" font-size="17" font-weight="650">thurbox</text>
+  <text x="46" y="198" font-size="13">one list of sessions</text>
+  <text x="46" y="218" font-size="13">from every Fleet in</text>
+  <text x="46" y="238" font-size="13">settings.toml</text>
+  <text x="46" y="286" font-size="12" class="muted">Ctrl+N picks a Fleet,</text>
+  <text x="46" y="304" font-size="12" class="muted">a place, a repository</text>
+
+  <use href="#i-engine" x="326" y="138" width="26" height="26"/>
+  <text x="362" y="157" font-size="16" font-weight="650">Fleet laptop</text>
+  <text x="326" y="184" font-size="13">on this machine</text>
+  <text x="326" y="203" font-size="12" class="muted">thurbox starts fleet up</text>
+
+  <use href="#i-engine" x="326" y="252" width="26" height="26"/>
+  <text x="362" y="271" font-size="16" font-weight="650">Fleet box</text>
+  <text x="326" y="298" font-size="13">on another machine</text>
+  <text x="326" y="317" font-size="12" class="muted">a systemd unit runs fleet up</text>
+
+  <use href="#i-mux" x="636" y="138" width="26" height="26"/>
+  <text x="672" y="157" font-size="16" font-weight="650">runtime-mux</text>
+  <text x="636" y="184" font-size="13">tmux · psmux</text>
+  <text x="636" y="203" font-size="12" class="muted">keeps the process alive</text>
+
+  <use href="#i-mux" x="636" y="252" width="26" height="26"/>
+  <text x="672" y="271" font-size="16" font-weight="650">runtime-mux</text>
+  <text x="636" y="298" font-size="13">tmux · psmux</text>
+  <text x="636" y="317" font-size="12" class="muted">keeps the process alive</text>
+
+  <use href="#i-robot" x="906" y="138" width="26" height="26"/>
+  <text x="942" y="157" font-size="16" font-weight="650">local</text>
+  <text x="906" y="184" font-size="13">the laptop</text>
+  <text x="906" y="203" font-size="12" class="muted">a coding agent</text>
+
+  <use href="#i-robot" x="906" y="252" width="26" height="26"/>
+  <text x="942" y="271" font-size="16" font-weight="650">local</text>
+  <text x="906" y="298" font-size="13">box</text>
+  <text x="906" y="317" font-size="12" class="muted">a coding agent</text>
+
+  <g class="arrow">
+    <path d="M220 169 H308"/>
+    <path d="M220 283 H308"/>
+    <path d="M530 169 H618"/>
+    <path d="M530 283 H618"/>
+    <path d="M800 169 H888"/>
+    <path d="M800 283 H888"/>
+  </g>
+  <g class="muted" font-size="11" text-anchor="middle">
+    <text x="265" y="160">fleet</text>
+    <text x="265" y="274">ssh · WSL</text>
+    <text x="575" y="160">start · stop</text>
+    <text x="575" y="274">start · stop</text>
+    <text x="845" y="160">runs</text>
+    <text x="845" y="274">runs</text>
+  </g>
+
+  <g class="box"><rect class="place" x="30" y="356" width="1040" height="80" rx="8"/></g>
+  <text x="48" y="384" font-size="14" font-weight="650">A session is a Task of one Fleet</text>
+  <text x="48" y="410" font-size="13">It keeps running when thurbox quits. A Fleet that cannot be reached keeps its rows in the list, marked unreachable.</text>
+</g>
+</svg>
