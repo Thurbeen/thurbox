@@ -175,6 +175,7 @@ export const RENDERED_DOCS = [
   'docs/runtime',
   'docs/thurbox/plugins.md',
   'docs/thurbox/kernel.md',
+  'docs/thurbox/architecture.md',
   'docs/observability.md',
 ];
 
@@ -188,8 +189,6 @@ const REPO_URL = 'https://github.com/Thurbeen/thurbox';
 const DOC_ON_SITE = {
   'docs/README.md': 'architecture.html#components',
   'docs/where-sessions-run.md': 'architecture.html#places',
-  'docs/thurbox/architecture.md#adr-42-hosts-belong-to-runtimes': 'architecture.html#places',
-  'docs/thurbox/architecture.md': 'architecture.html',
   'docs/thurbox/config.md#fleets--the-fleets-that-manage-sessions': 'configuration.html#fleets',
   'docs/thurbox/config.md': 'configuration.html',
 };

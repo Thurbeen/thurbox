@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { posix } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'node-html-parser';
 import { RENDERED_DOCS } from '../../eleventy.config.js';
@@ -88,7 +89,7 @@ test('the site describes only what exists', () => {
     }
     const copy = text(page);
     assert.doesNotMatch(copy, /soft_delete|agents\.toml/, `${path} names a removed key or file`);
-    if (!['docs/configuration.html', 'docs/architecture.html', 'docs/runtime/index.html', 'docs/runtime/runtime-mux.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
+    if (!['docs/configuration.html', 'docs/architecture.html', 'docs/runtime/index.html', 'docs/runtime/runtime-mux.html', 'docs/thurbox/architecture.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
   }
   const llms = readFileSync('_site/llms.txt', 'utf8');
   assert.doesNotMatch(llms, /extensions\.html|agents\.toml/);
@@ -294,4 +295,23 @@ test('the site redeploys when a rendered doc changes', () => {
 test("the home page's grid tracks shrink to a phone's width", () => {
   const css = readFileSync('website/css/landing.css', 'utf8');
   assert.doesNotMatch(css, /minmax\(\s*\d+(\.\d+)?(rem|px|em)\s*,/, 'a minmax() minimum is wrapped in min(…, 100%)');
+});
+
+// A link to a section lands on that section: on this site, the id exists on
+// the built page it names; a repository doc the site does not render is
+// linked on GitHub, where its heading anchors live.
+test('every link to a section on the site lands on an element with that id', () => {
+  for (const path of pages()) {
+    const page = built(path);
+    const base = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+    for (const link of page.querySelectorAll('a[href*="#"]')) {
+      const href = link.getAttribute('href');
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')) continue;
+      const [target, fragment] = href.split('#');
+      if (!fragment) continue;
+      const file = target ? posix.normalize(base + target) : path;
+      if (!file.endsWith('.html') || !existsSync(`_site/${file}`)) continue;
+      assert.ok(built(file).querySelector(`[id="${fragment}"]`), `${path}: ${href} names no id on ${file}`);
+    }
+  }
 });

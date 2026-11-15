@@ -19,6 +19,7 @@ on:
       - 'docs/runtime/**'
       - 'docs/thurbox/plugins.md'
       - 'docs/thurbox/kernel.md'
+      - 'docs/thurbox/architecture.md'
       - 'docs/observability.md'
   # scripts/demo/publish-media.sh dispatches this after it replaces the
   # recordings on the `media` release, which no push to main announces.
