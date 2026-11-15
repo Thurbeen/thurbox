@@ -133,12 +133,12 @@ impl World {
     /// `at` and died before the create: the record has no receipt, and no
     /// Task exists.
     fn crash_before_create(&self, at: u64) {
-        self.crash_with(at, 1, None);
+        self.crash_with(at, 1, 0, None);
     }
 
     /// The create's intent for `at`, after `attempts` attempts, the last
     /// one answered with `receipt` (none: the manager died before it).
-    fn crash_with(&self, at: u64, attempts: u32, receipt: Option<Value>) {
+    fn crash_with(&self, at: u64, attempts: u32, unknowns: u32, receipt: Option<Value>) {
         let lease = self
             .store
             .acquire_lease("test-crash", 30_000)
@@ -151,6 +151,7 @@ impl World {
         status["effects"][format!("create/{minutes}")] = json!({
             "intent": {"action": "create", "at": at, "generation": obj.metadata.generation},
             "attempts": attempts,
+            "unknowns": unknowns,
             "task": format!("nightly-{minutes}"),
             "scheduled": at,
         });
@@ -379,6 +380,7 @@ fn a_create_unknown_three_times_needs_attention_and_is_retried() {
     w.crash_with(
         MONDAY_3AM,
         3,
+        2,
         Some(json!({"action": "create", "at": MONDAY_3AM,
                     "outcome": {"unknown": {"why": "the store could not tell"}}})),
     );

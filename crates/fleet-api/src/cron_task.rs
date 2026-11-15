@@ -120,6 +120,27 @@ pub struct EffectRecord {
     /// For a create: the scheduled time it is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled: Option<Millis>,
+    /// For a create: earlier attempts whose outcome was never known, read
+    /// Unknown or never received. Only a Known outcome clears it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unknowns: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+impl EffectRecord {
+    /// How many attempts at this create are in doubt: the earlier ones
+    /// counted in `unknowns`, and the latest when its outcome is not known.
+    pub fn doubt(&self) -> u32 {
+        let latest = self.attempts > 0
+            && matches!(
+                self.receipt.as_ref().map(|r| &r.outcome),
+                None | Some(crate::Observation::Unknown { .. })
+            );
+        self.unknowns + u32::from(latest)
+    }
 }
 
 /// CronTask status. CronTaskController owns all of it.

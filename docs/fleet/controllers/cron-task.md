@@ -131,8 +131,10 @@ writes. The controller answers it from the Task listing:
 - A create whose outcome is Unknown is tried again every minute, with no
   limit: Fleet never reads Unknown as absence, so it never drops the create.
   While it waits it counts as a running Task, so under `Forbid` it holds
-  later times. After three Unknown attempts `NeedsAttention` is True with
-  reason `CreateUnknown`.
+  later times. The record counts the attempts in doubt in `unknowns`: an
+  attempt that read Unknown, or whose receipt never came. Only a Known
+  outcome clears the count. After three attempts in doubt,
+  `NeedsAttention` is True with reason `CreateUnknown`.
 
 A create that finds a Task with the same name but without this uid is
 refused. The controller never takes another CronTask's Task.

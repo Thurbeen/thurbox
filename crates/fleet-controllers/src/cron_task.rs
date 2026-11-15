@@ -290,21 +290,15 @@ impl Pass<'_, '_> {
             .collect()
     }
 
-    /// Raise `NeedsAttention` while a pending create's outcome stayed
-    /// Unknown through `MAX_CREATE_ATTEMPTS` attempts; clear it once none
-    /// does. Unknown is never read as absence, so the create is retried,
+    /// Raise `NeedsAttention` while `MAX_CREATE_ATTEMPTS` attempts at a
+    /// pending create are in doubt (`EffectRecord::doubt`); clear it once
+    /// none is. Unknown is never read as absence, so the create is retried,
     /// not given up.
     fn attention(&mut self) {
         let stuck: Vec<String> = self
             .pending_creates()
             .into_iter()
-            .filter(|(_, r)| {
-                r.attempts >= MAX_CREATE_ATTEMPTS
-                    && matches!(
-                        r.receipt.as_ref().map(|x| &x.outcome),
-                        Some(Observation::Unknown { .. })
-                    )
-            })
+            .filter(|(_, r)| r.doubt() >= MAX_CREATE_ATTEMPTS)
             .map(|(_, r)| r.task)
             .collect();
         if !stuck.is_empty() {
@@ -413,6 +407,7 @@ impl Pass<'_, '_> {
                 attempts: 0,
                 task: name.to_string(),
                 scheduled: Some(at),
+                unknowns: 0,
             },
         );
     }
@@ -421,6 +416,13 @@ impl Pass<'_, '_> {
     fn plan_create(&mut self, key: &str, name: &str) {
         let intent = self.intent(CREATE_ACTION);
         if let Some(record) = self.st.effects.get_mut(key) {
+            // The doubt is kept on the record: a retry clears the receipt,
+            // and a Known refusal is the only answer that ends the doubt.
+            let refused = matches!(
+                record.receipt.as_ref().map(|r| &r.outcome),
+                Some(Observation::Known(_))
+            );
+            record.unknowns = if refused { 0 } else { record.doubt() };
             record.intent = intent;
             record.receipt = None;
             record.attempts += 1;
@@ -451,6 +453,7 @@ impl Pass<'_, '_> {
                 attempts: 0,
                 task: name.to_string(),
                 scheduled: None,
+                unknowns: 0,
             });
         record.intent = intent;
         record.receipt = None;
