@@ -224,6 +224,9 @@ A session never inherits the telemetry of the program that started it.
 - `runtime-mux` removes every `OTEL_*` variable, `TRACEPARENT` and
   `TRACESTATE` from each multiplexer command. The multiplexer server and
   its windows never see them.
+- It removes them as well from each command it runs on a remote place
+  through ssh or `wsl.exe`: an `exec`, a readiness probe, a copy of a
+  harness's files. A `SendEnv` or `WSLENV` setting cannot pass them on.
 - A session receives only the `OTEL_*` variables that its Task declares in
   `spec.env`, a TaskConfig or an EnvProvider. The agent's own telemetry is
   that Task's configuration.
