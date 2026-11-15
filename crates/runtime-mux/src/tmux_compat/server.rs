@@ -127,7 +127,7 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     const ONE_SHOT_SPAWN_ANSWERS: bool;
 
     /// Whether a one-shot `new-window` on this machine takes the window's
-    /// environment from a private file ([`EnvFile`]) its POSIX window program
+    /// environment from a private file (`EnvFile`) its POSIX window program
     /// reads, so no value is in the argv of the `new-window` client, which
     /// any user of the machine can read. psmux folds the environment into
     /// its window's PowerShell script instead.
