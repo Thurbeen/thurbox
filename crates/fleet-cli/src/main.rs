@@ -1724,8 +1724,6 @@ fn runtime_places(config: &Config) -> Vec<Value> {
     rows
 }
 
-/// `fleet doctor`: each check's finding, classified by
-/// `fleet_api::doctor`, and a failure when any check failed.
 /// What `fleet init` set up and what comes next, in a few lines: the
 /// config, the places sessions run in, the coding agents on PATH, and the
 /// commands that follow. A first-time user reads this, so it names the
@@ -1781,6 +1779,8 @@ fn init_summary(
     out
 }
 
+/// `fleet doctor`: each check's finding, classified by
+/// `fleet_api::doctor`, and a failure when any check failed.
 fn cmd_doctor(
     config: &Config,
     profiles: &fleet_api::harness::Profiles,
