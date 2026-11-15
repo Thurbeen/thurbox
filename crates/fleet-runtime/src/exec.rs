@@ -76,11 +76,12 @@ const PLACE_READ_AFTER: u64 = 512 * 1024;
 /// computed from the file's length first: `tail -c +N` seeks to it, and a
 /// read never scans more of the file than the two ranges. The length is
 /// `ls -ln`'s, from the file's metadata: uutils' `wc -c`, Ubuntu's since
-/// 25.10, reads the whole file.
+/// 25.10, reads the whole file. The variables that set `ls`'s units are
+/// unset for it, so the length is in bytes whatever the place exports.
 fn place_read_script() -> String {
     format!(
         "f=\"$HOME/${{1#\\~/}}\"; [ -e \"$f\" ] || exit 3; \
-         n=$(ls -ln \"$f\" | awk '{{print $5}}'); \
+         n=$(unset LS_BLOCK_SIZE BLOCK_SIZE BLOCKSIZE; ls -ln \"$f\" | awk '{{print $5}}'); \
          o=${{2:-0}}; [ \"$n\" -lt \"$o\" ] && o=0; \
          s=$((o > {PLACE_READ_BEFORE} ? o - {PLACE_READ_BEFORE} : 0)); \
          [ \"$o\" -gt \"$s\" ] && tail -c +$((s + 1)) \"$f\" | head -c $((o - s)); \
@@ -93,7 +94,7 @@ fn place_read_script() -> String {
 /// The `sh` script that prints the length of a place's signal file, `$1`
 /// (`~`-rooted), 0 when it is not there: `ls -ln`'s, from its metadata, as
 /// [`place_read_script`] takes it.
-const PLACE_LENGTH_SCRIPT: &str = "f=\"$HOME/${1#\\~/}\"; if [ -e \"$f\" ]; then ls -ln \"$f\" | awk '{print $5}'; else echo 0; fi";
+const PLACE_LENGTH_SCRIPT: &str = "f=\"$HOME/${1#\\~/}\"; if [ -e \"$f\" ]; then (unset LS_BLOCK_SIZE BLOCK_SIZE BLOCKSIZE; ls -ln \"$f\") | awk '{print $5}'; else echo 0; fi";
 
 /// What a restart learns of the length of the session's signal file on
 /// another host.
@@ -2095,6 +2096,10 @@ mod tests {
                 .push(("HOME".into(), home.to_string_lossy().into_owned()));
             spec.env
                 .push(("PATH".into(), format!("{}:{real}", shims.display())));
+            // A place may ask `ls` for other units: the lengths stay bytes.
+            for var in ["LS_BLOCK_SIZE", "BLOCK_SIZE", "BLOCKSIZE"] {
+                spec.env.push((var.into(), "1K".into()));
+            }
             match fleet_exec::run(&spec) {
                 Outcome::Exited {
                     code: Some(0),
