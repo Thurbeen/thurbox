@@ -380,7 +380,10 @@ request.place ──▶ local ─────────▶ this machine's mult
     arguments. A failed launch removes the file. A psmux server on this
     machine does the same.
   - `exec` finds its program as PowerShell finds a command, so an npm
-    `.cmd` shim or a `.ps1` script runs under `cmd.exe` or `powershell`.
+    `.cmd` shim or a `.ps1` script runs under `cmd.exe` or `powershell`. A
+    shim's arguments are quoted so that `cmd.exe` reads no `&`, `|`, `<`,
+    `>`, `^`, `%NAME%` or `!NAME!` in them: Rust std's rules for a batch
+    file, under `cmd /v:off`.
 - WSL stops a distro, and every process in it, soon after its last
   `wsl.exe` client exits. Each `runtime-mux` call is such a client. So a
   `start` or a `shell` on a WSL place also starts one waiter: a detached

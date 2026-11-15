@@ -510,10 +510,11 @@ pub fn launch_on_windows(
 /// The program is found as PowerShell finds a command (`Get-Command`), so
 /// an npm `.cmd` shim or a `.ps1` script on the `Path` is found as an `.exe`
 /// is. `ProcessStartInfo` starts only an executable, so a `.cmd` or `.bat`
-/// runs under `cmd.exe /d /s /c`, a `.ps1` under `powershell -File`, and
-/// anything else as it is. The arguments are one command line quoted for
-/// the C runtime ([`windows_arg_quote`]), as [`launch_on_windows`] passes
-/// them.
+/// runs under `cmd.exe /d /v:off /s /c`, a `.ps1` under `powershell -File`,
+/// and anything else as it is. The arguments are one command line quoted
+/// for the C runtime ([`windows_arg_quote`]), as [`launch_on_windows`]
+/// passes them; a batch shim's are quoted for `cmd.exe` first
+/// ([`cmd_arg_quote`]).
 pub fn windows_program_script<S: AsRef<str>>(
     program: &str,
     args: &[S],
@@ -526,6 +527,11 @@ pub fn windows_program_script<S: AsRef<str>>(
         .map(|a| windows_arg_quote(a.as_ref()))
         .collect::<Vec<_>>()
         .join(" ");
+    let cmd_line = args
+        .iter()
+        .map(|a| cmd_arg_quote(a.as_ref()))
+        .collect::<Vec<_>>()
+        .join(" ");
     let dir = dir
         .map(|d| format!("$s.WorkingDirectory = {}\n", powershell_quote(d)))
         .unwrap_or_default();
@@ -535,8 +541,9 @@ pub fn windows_program_script<S: AsRef<str>>(
          $c = Get-Command -Name {program} -CommandType Application,ExternalScript -ErrorAction Stop | Select-Object -First 1\n\
          $p = $c.Source\n\
          $line = {line}\n\
+         $cline = {cmd_line}\n\
          switch ([IO.Path]::GetExtension($p).ToLowerInvariant()) {{\n\
-         {{ $_ -in '.cmd', '.bat' }} {{ $f = $env:ComSpec; $a = '/d /s /c \"\"' + $p + '\" ' + $line + '\"' }}\n\
+         {{ $_ -in '.cmd', '.bat' }} {{ $f = $env:ComSpec; $a = '/d /v:off /s /c \"\"' + $p + '\" ' + $cline + '\"' }}\n\
          '.ps1' {{ $f = (Get-Command powershell.exe).Source; $a = '-NoProfile -ExecutionPolicy Bypass -File \"' + $p + '\" ' + $line }}\n\
          default {{ $f = $p; $a = $line }}\n\
          }}\n\
@@ -551,7 +558,47 @@ pub fn windows_program_script<S: AsRef<str>>(
         path = windows_path_prepend(path_prepend),
         program = powershell_quote(program),
         line = powershell_quote(&line),
+        cmd_line = powershell_quote(&cmd_line),
     )
+}
+
+/// One argument of a `.cmd` or `.bat` shim's command line, which `cmd.exe`
+/// reads before the program the shim starts does. The rules are Rust std's
+/// for a batch file (its fix of CVE-2024-24576):
+///
+/// - always one quoted region, so `&`, `|`, `<`, `>` and `^` are never
+///   syntax: each `"` is doubled, which `cmd.exe` toggles on twice and the
+///   C runtime behind the shim reads as one `"`, and the backslashes before
+///   a `"` are doubled;
+/// - each `%` (and `\r`) is preceded by `%%cd:~,`, so a `%NAME%` is never
+///   expanded: `%cd:~,%` is an empty substring of the current directory;
+/// - a newline becomes a space, since `cmd.exe` ends a command at one.
+///
+/// `!` needs nothing here: the shim runs under `cmd /v:off`
+/// ([`windows_program_script`]).
+pub fn cmd_arg_quote(arg: &str) -> String {
+    let mut quoted = String::from('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => {
+                backslashes += 1;
+                quoted.push(c);
+                continue;
+            }
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                quoted.push('"');
+            }
+            '%' | '\r' => quoted.push_str("%%cd:~,"),
+            _ => {}
+        }
+        backslashes = 0;
+        quoted.push(if c == '\n' { ' ' } else { c });
+    }
+    quoted.push_str(&"\\".repeat(backslashes));
+    quoted.push('"');
+    quoted
 }
 
 /// The PowerShell statement that puts `dirs` first on `$env:Path`, empty
@@ -1152,6 +1199,106 @@ mod tests {
             prelude < script.find("Get-Command").expect("lookup"),
             "{script}"
         );
+    }
+
+    /// What `cmd.exe /c` does to `line` before it runs it, as far as a
+    /// quote and a `%` go: the metacharacters it would read outside quotes,
+    /// and each `%name%` it would look up. A command line (not a batch file)
+    /// leaves `%%` and an unset `%name%` as they are; `%cd:~,%` is an empty
+    /// substring of the current directory.
+    fn cmd_reads(line: &str) -> (Vec<char>, Vec<String>, String) {
+        let (mut outside, mut looked_up, mut out) = (Vec::new(), Vec::new(), String::new());
+        let chars: Vec<char> = line.chars().collect();
+        let (mut i, mut inside) = (0, false);
+        while i < chars.len() {
+            match chars[i] {
+                '"' => {
+                    inside = !inside;
+                    out.push('"');
+                }
+                '%' => match chars[i + 1..].iter().position(|c| *c == '%') {
+                    Some(0) | None => out.push('%'),
+                    Some(n) => {
+                        let name: String = chars[i + 1..i + 1 + n].iter().collect();
+                        looked_up.push(name.clone());
+                        if name != "cd:~," {
+                            out.push('%');
+                            i += 1;
+                            continue;
+                        }
+                        i += n + 2;
+                        continue;
+                    }
+                },
+                c @ ('&' | '|' | '<' | '>' | '^') if !inside => {
+                    outside.push(c);
+                    out.push(c);
+                }
+                c => out.push(c),
+            }
+            i += 1;
+        }
+        (outside, looked_up, out)
+    }
+
+    /// A batch shim's arguments reach `cmd.exe` quoted so that it reads no
+    /// metacharacter outside quotes and expands no `%NAME%`: each `%` is
+    /// `%%cd:~,%`, which expands to itself. `!` is safe because the shim
+    /// runs under `cmd /v:off`. What is left is the line the C runtime
+    /// behind the shim splits back into the arguments.
+    #[test]
+    fn a_batch_shims_arguments_are_never_cmd_syntax() {
+        let args = [
+            "left&right",
+            "%PATH%",
+            "a|b",
+            "\"q\"",
+            "!x!",
+            "x\" & echo pwned & \"y",
+            "",
+        ];
+        let line = args
+            .iter()
+            .map(|a| cmd_arg_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (outside, looked_up, after) = cmd_reads(&line);
+        assert!(outside.is_empty(), "{outside:?} outside quotes: {line}");
+        assert!(
+            looked_up.iter().all(|n| n == "cd:~,"),
+            "{looked_up:?}: {line}"
+        );
+        let script = windows_program_script("shim", &args, None, &[], "");
+        assert!(script.contains("/d /v:off /s /c"), "{script}");
+        // The C runtime behind the shim reads `""` inside quotes as `"`.
+        let mut parsed = Vec::new();
+        let (mut arg, mut inside, mut any) = (String::new(), false, false);
+        let chars: Vec<char> = after.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            match chars[i] {
+                '"' if inside && chars.get(i + 1) == Some(&'"') => {
+                    arg.push('"');
+                    i += 1;
+                }
+                '"' => {
+                    inside = !inside;
+                    any = true;
+                }
+                ' ' if !inside => {
+                    if any || !arg.is_empty() {
+                        parsed.push(std::mem::take(&mut arg));
+                    }
+                    any = false;
+                }
+                c => arg.push(c),
+            }
+            i += 1;
+        }
+        if any || !arg.is_empty() {
+            parsed.push(arg);
+        }
+        assert_eq!(parsed, args, "{after}");
     }
 
     /// A Windows program is resolved as PowerShell resolves a command, so an
