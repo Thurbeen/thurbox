@@ -2455,6 +2455,7 @@ fn an_existing_worktree_opens_as_it_is() {
         },
     ));
     open(&host, &world);
+    assert!(drawn(&host, &world).contains("→ expand worktrees"));
     press(&host, &world, "right");
     let screen = drawn(&host, &world);
     assert!(
@@ -2746,6 +2747,12 @@ fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
     serve(&host, &mut world);
     let screen = drawn(&host, &world);
     assert!(screen.contains("/home/box/app"), "{screen}");
+    // A place elsewhere lists no existing worktrees: `→` is not offered,
+    // and pressing it asks for nothing.
+    assert!(!screen.contains("expand worktrees"), "{screen}");
+    press(&host, &world, "right");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_branches"), None);
 
     // A worktree there: its branches are the place's.
     press(&host, &world, "alt+w");

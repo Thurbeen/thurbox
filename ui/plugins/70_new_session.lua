@@ -1145,7 +1145,10 @@ local function render_repo(flow)
   end
   -- Stacked: this step has more keys than one row can name beside its pills,
   -- and a hint cut off at the pill is a key nobody learns (forget was).
-  if flow.focus == "search" then
+  -- Existing worktrees are read on this machine only (`→` ignores the rest):
+  -- a place elsewhere lists none, so its hint would name a key that does
+  -- nothing.
+  if flow.focus == "search" and (flow.host or "") == "" then
     children[#children + 1] = {
       type = "text",
       len = 1,
