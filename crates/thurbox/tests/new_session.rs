@@ -2915,6 +2915,29 @@ fn another_logins_home_on_a_place_elsewhere_is_refused() {
     press(&host, &world, "down");
     press(&host, &world, "enter");
     press(&host, &world, "tab");
+    // `~` is listed first, so the place's home is known: the refusal, not
+    // the wait for the home, is what keeps `~bob/app` from being saved.
+    type_text(&host, &world, "~/");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0~")
+    );
+    world
+        .repos
+        .set_listing_for_test("local/mux/box", "~", Listing::Ready(Vec::new()));
+    world
+        .repos
+        .set_resolved_dir_for_test("local/mux/box", "~", "/home/box");
+    world.wants.browse = Some(("local/mux/box".into(), "~".into()));
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0/home/box"),
+        "the home is known"
+    );
+    press(&host, &world, "backspace");
+    press(&host, &world, "backspace");
     type_text(&host, &world, "~bob/app");
     let screen = drawn(&host, &world);
     assert!(
@@ -2924,6 +2947,11 @@ fn another_logins_home_on_a_place_elsewhere_is_refused() {
     assert_eq!(host.shared_string("want_browse"), None, "no listing");
     press(&host, &world, "enter");
     assert!(host.drain_commands().is_empty(), "nothing remembered");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("only ~ and ~/… are supported on mux/box"),
+        "{screen}"
+    );
 }
 
 /// A place that cannot list a repository's branches says why in the
