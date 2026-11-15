@@ -504,6 +504,31 @@ it, or the operator's config, names a policy. The shipped
 `forge.example`, with `draftPolicy = "checks"` and the same three policies,
 so a declared draft can be taken out of draft offline.
 
+### Supported forges
+
+Fleet has one adapter for each forge in this table.
+To follow a change, the adapter reads its checks, review threads, notes and
+merge state. The [Forge controller](controllers/forge.md#relay) relays news
+from them to the worker. Mark ready takes a draft out of draft. Fleet does not
+check a minimum client version.
+
+| Forge | Client | Follow | Mark ready | `[forge.hosts]` entry | Self-hosted |
+| --- | --- | --- | --- | --- | --- |
+| GitHub | `gh api graphql` | Yes | Yes | `"github.com" = { kind = "github", cli = "gh" }` | Yes: GitHub Enterprise Server, under its own hostname |
+| GitLab | `glab api` | Yes | Yes | `"gitlab.com" = { kind = "gitlab", cli = "glab" }` | Yes: a self-hosted GitLab, under its own hostname |
+| Azure DevOps | `az devops invoke`, REST 7.1 | Yes | No | `"dev.azure.com" = { kind = "azure-devops", cli = "az" }` | No: Azure DevOps Services only. Azure DevOps Server is not supported. |
+| Bitbucket Cloud | `curl`, REST 2.0 | Yes | No | `"bitbucket.org" = { kind = "bitbucket-cloud", cli = "curl" }` | No: `bitbucket.org` only. Bitbucket Data Center is not supported. |
+
+- Azure DevOps and Bitbucket Cloud have no atomic head-and-state check on the
+  draft update. Fleet refuses mark ready on them.
+- GitLab marks a merge request ready when Fleet removes the draft marker from
+  its title. Fleet refuses a draft whose title has no marker.
+- On Azure DevOps and Bitbucket Cloud, reviewer votes set only the review
+  decision. Azure DevOps marks no note as a bot's.
+
+The [adapter truth tables](controllers/change-request.md#adapter-truth-tables)
+give each field's mapping.
+
 ### `[plugins]` section
 
 The [Plugin controller](controllers/plugin.md) registers each
