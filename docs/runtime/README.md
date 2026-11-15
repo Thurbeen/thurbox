@@ -186,7 +186,8 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
   machine's `git`;
 - with `shell` declared: a key no process holds answers `none`, a running
   key answers a `stream` or a `tty` argv on two calls in a row, and after a
-  stop the key answers `none`.
+  stop the key answers `none`. The check does not open the shell, so it
+  does not prove that the second call reaches the same one.
 
 The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
 `crates/fleet-cli/tests/e2e_runtime_exec.rs`, against `runtime-mux` and against
@@ -295,9 +296,13 @@ yet.
 `runtime-mux` opens the shell in a window of its own, beside the key's, on
 the same server. Its program is the machine's shell (`$SHELL`, else
 `/bin/sh`; `%COMSPEC%` on Windows). Its directory is the one the key's
-process is in now, else the home. The answer is a `stream`: `runtime-mux
-view` on the shell's pane. The window closes when the shell exits, and the
-next call opens a new one. `list` does not name the shell.
+process is in now, as the multiplexer reads it. When that directory is
+gone, the multiplexer starts the shell in its own home. `runtime-mux` reads
+nothing about the directory from its own disk, which need not be the
+place's. The answer is a `stream`: `runtime-mux view` on the shell's pane.
+The window closes when the shell exits, and the next call opens a new one.
+`list` does not name the shell. A `stop` closes every window named as the
+key's shell, so two of them never keep a stop from concluding.
 
 #### Browse and branches
 

@@ -680,24 +680,31 @@ fn inspect(backend: &dyn SessionBackend, key: &str) -> Value {
 }
 
 /// Stops the key's process and closes its [`shell`], which belongs to the
-/// key and would otherwise outlive it: `list` names agents only.
+/// key and would otherwise outlive it: `list` names agents only. Every
+/// window named as the key's shell goes, so two of them, which `shell`
+/// answers Unknown for, never keep a stop from concluding: nothing but this
+/// program makes windows on its socket, so the name alone is the key's.
 fn stop(backend: &dyn SessionBackend, key: &str) -> Value {
-    let placed = match backend.locate(owner(&name_of(key))) {
-        Ok(placed) => placed,
+    let stopped = match locate(backend, key) {
+        Err(why) => return unknown(why),
+        Ok(Located::Unknown) => return unknown("several windows answer to the key"),
+        Ok(Located::Absent) => known(json!("stopped")),
+        Ok(Located::At(pane)) => match backend.kill(&pane) {
+            Ok(()) => known(json!("stopped")),
+            Err(e) => return unknown(e),
+        },
+    };
+    let shell = window_name_for(WindowRole::Shell, &name_of(key));
+    let windows = match backend.discover() {
+        Ok(windows) => windows,
         Err(e) => return unknown(e),
     };
-    for located in [placed.agent, placed.shell] {
-        match located {
-            Located::Unknown => return unknown("several windows answer to the key"),
-            Located::Absent => {}
-            Located::At(pane) => {
-                if let Err(e) = backend.kill(&pane) {
-                    return unknown(e);
-                }
-            }
+    for window in windows.iter().filter(|w| w.name == shell) {
+        if let Err(e) = backend.kill(&window.backend_id) {
+            return unknown(e);
         }
     }
-    known(json!("stopped"))
+    stopped
 }
 
 /// The pane holding `key`: `None` when none does.
@@ -727,8 +734,10 @@ fn attach(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
 /// [`attach`]: the key's shell window, opened on the first call and found
 /// again by the next, so a view that leaves and comes back finds what it
 /// typed. Its program is the machine's shell; its directory, the agent's
-/// current one, else the home. It closes with its program, or at the key's
-/// [`stop`].
+/// current one as the server reads it, which the server itself falls back
+/// from (to its home) when it is gone: nothing here reads this machine's
+/// disk, which need not be the place's. It closes with its program, or at
+/// the key's [`stop`].
 fn shell(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
     let placed = match backend.locate(owner(&name_of(key))) {
         Ok(placed) => placed,
@@ -747,9 +756,7 @@ fn shell(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
                 .pane_state(&agent)
                 .ok()
                 .and_then(|state| state.foreground_cwd)
-                .map(PathBuf::from)
-                .filter(|dir| dir.is_dir())
-                .or_else(home);
+                .map(PathBuf::from);
             let name = name_of(key);
             let program = backend.default_shell();
             let spec = WindowSpec {

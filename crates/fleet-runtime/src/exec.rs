@@ -1386,8 +1386,10 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
 }
 
 /// The shell rules a runtime that declares `shell` holds to: how to open a
-/// shell for a key a process holds, the same way on a second call; `none`
-/// for a key nothing holds, as `attach` answers, and after a stop.
+/// shell for a key a process holds, on each call; `none` for a key nothing
+/// holds, as `attach` answers, and after a stop. That a second call reaches
+/// the same shell is not checked here: it needs a view typing into the
+/// answer, and a check runs processes only bounded, through `fleet-exec`.
 fn check_shell(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
     let shell =
         |k: &str| program.ask::<Attached>("shell", program.request(protocol, json!({ "key": k })));
@@ -1437,7 +1439,7 @@ fn check_shell(program: &ExecProgram, protocol: u64, key: &str) -> Vec<Case> {
             result: absent,
         },
         Case {
-            name: "shell: a running key answers how to open its shell, again on a second call",
+            name: "shell: a running key answers how to open its shell, on each call",
             result: opened,
         },
         Case {
