@@ -2877,22 +2877,7 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         // It is the server's code that births the pane, and one started before
         // an upgrade keeps running the old.
         self.admit_server()?;
-        // The command, its quoting and how the environment reaches it are the
-        // multiplexer's: tmux takes joined trailing tokens and `-e`, psmux one
-        // folded token.
-        let shell_cmd = M::window_command(self, window_name, command, args, env)?;
-        let cwd_part = match cwd {
-            Some(dir) => format!(" -c {}", M::quote(&dir.to_string_lossy())),
-            None => String::new(),
-        };
-        let env_part = M::env_flags(env);
-        let escaped_window_name = M::quote(window_name);
-        let session = &self.session;
-        // The window's own options ride along in the same command list — see
-        // `birth_options` for why neither can be a message of its own.
-        let new_window = format!(
-            "new-window -t {session} -n {escaped_window_name} -P -F '{SPAWN_FORMAT}'{cwd_part}{env_part} {shell_cmd}"
-        );
+        let new_window = self.new_window_line(window_name, command, args, cwd, env)?;
         let options = birth_option_commands::<M>(window_name);
         let cmds: Vec<&str> = std::iter::once(new_window.as_str())
             .chain(options.iter().map(String::as_str))
@@ -4893,6 +4878,38 @@ impl<M: TmuxCompatible> Server<M> {
             }
         }
         Ok(tmux)
+    }
+
+    /// The control-mode `new-window` line [`PaneStream::spawn`] sends: the
+    /// window named `window_name` running `command` with `args` in `cwd`,
+    /// with `env` set in it. On a host the environment rides in the line, as
+    /// `-e`, so it reaches the window however the connection is launched
+    /// (ssh, `wsl.exe`), and the command is wrapped in the host's login
+    /// shell with its `PATH` ([`Self::login_wrap_for_remote`]).
+    pub(crate) fn new_window_line(
+        &self,
+        window_name: &str,
+        command: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        env: &HashMap<String, String>,
+    ) -> Result<String> {
+        // The command, its quoting and how the environment reaches it are the
+        // multiplexer's: tmux takes joined trailing tokens and `-e`, psmux one
+        // folded token.
+        let shell_cmd = M::window_command(self, window_name, command, args, env)?;
+        let cwd_part = match cwd {
+            Some(dir) => format!(" -c {}", M::quote(&dir.to_string_lossy())),
+            None => String::new(),
+        };
+        let env_part = M::env_flags(env);
+        let escaped_window_name = M::quote(window_name);
+        let session = &self.session;
+        // The window's own options ride along in the same command list — see
+        // `birth_options` for why neither can be a message of its own.
+        Ok(format!(
+            "new-window -t {session} -n {escaped_window_name} -P -F '{SPAWN_FORMAT}'{cwd_part}{env_part} {shell_cmd}"
+        ))
     }
 
     /// Leave one window carrying `session_id`'s `role` stamp, and say which one

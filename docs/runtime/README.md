@@ -324,6 +324,11 @@ request.place ──▶ local ─────────▶ this machine's mult
   `exec` reads it inside its own deadline, and runs with `path_prepend`
   alone when it cannot. `start` looks for the agent on that `PATH` first,
   and answers `failed` when it is not there.
+- A session's `env`, `FLEET_SIGNAL_FILE` among it, and the place's `PATH`
+  reach its window in the `new-window` line itself: `-e` for each variable,
+  and the login wrap's `PATH` assignment. The line travels over the control
+  connection that ssh or `wsl.exe` launches, so nothing depends on which of
+  this machine's variables `wsl.exe` passes (`WSLENV`).
 - A `start` whose `argv` or `env` names a file in `FLEET_ASSET_DIR`, a
   directory on this machine, copies that directory to
   `~/.local/state/fleet/assets/<key>` on the place. Every word of `argv` and

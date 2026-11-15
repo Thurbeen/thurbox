@@ -2038,9 +2038,10 @@ mod tests {
     }
 
     /// A read of a place's signal file costs its two bounded ranges, never
-    /// the whole file: a file of 16 GiB, mostly a hole, around a restart
-    /// offset in its middle, reads at once, under `exec`'s cap, with the
-    /// newest report last.
+    /// the whole file: a file of 1 TiB, a hole but for its ends, around a
+    /// restart offset in its middle, reads well inside the bound, under
+    /// `exec`'s cap, with the newest report last. A scan of it would take
+    /// minutes; the bound leaves a slow CI runner seconds of headroom.
     #[cfg(unix)]
     #[test]
     fn a_place_signal_read_never_scans_the_whole_file() {
@@ -2050,7 +2051,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("k.jsonl");
         let mut f = std::fs::File::create(&path).expect("file");
-        let half: u64 = 8 * 1024 * 1024 * 1024;
+        let half: u64 = 512 * 1024 * 1024 * 1024;
         f.write_all(b"{\"at\":1,\"state\":\"idle\"}\n")
             .expect("old");
         f.seek(SeekFrom::Start(half)).expect("seek");
@@ -2077,7 +2078,7 @@ mod tests {
         else {
             panic!("the read failed: {}", out.failure());
         };
-        assert!(took < Duration::from_secs(2), "the read took {took:?}");
+        assert!(took < Duration::from_secs(20), "the read took {took:?}");
         assert!(stdout.len() < 1024 * 1024, "{} bytes", stdout.len());
         let text = String::from_utf8_lossy(&stdout);
         let (before, after) = text.split_once(RESTART_SPLIT).expect("the split");

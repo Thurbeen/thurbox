@@ -256,10 +256,7 @@ fn run_script(
     args: &[&str],
     deadline: Instant,
 ) -> Result<Ran, String> {
-    let path = assignment(host, left(deadline));
-    let mut words = vec!["sh"];
-    words.extend_from_slice(args);
-    let cmd = HostLauncher::for_host(host).shell_c_args(&format!("{path}{script}"), &words);
+    let cmd = script_command(host, &assignment(host, left(deadline)), script, args);
     run_bounded(cmd, left(deadline)).map(|(code, stdout, stderr)| Ran {
         ok: code == Some(0),
         unreached: matches!(host.kind, HostKind::Ssh) && code == Some(255),
@@ -267,6 +264,18 @@ fn run_script(
         stderr,
     })
 }
+
+/// `script` through `sh -c` on the place, after `path`, the place's `PATH`
+/// as an assignment, with `args` as its positional parameters.
+fn script_command(host: &HostDef, path: &str, script: &str, args: &[&str]) -> Command {
+    let mut words = vec!["sh"];
+    words.extend_from_slice(args);
+    HostLauncher::for_host(host).shell_c_args(&format!("{path}{script}"), &words)
+}
+
+/// The probe that `fleet` is on the place's `PATH`, which its agents' hooks
+/// run to report.
+const FLEET_PROBE: &str = "command -v fleet >/dev/null 2>&1 || echo @missing";
 
 /// Why the place cannot run a session now, if it cannot: the launcher does
 /// not reach it, its multiplexer is missing or too old, or `fleet` is not on
@@ -279,13 +288,7 @@ pub fn readiness(
 ) -> Result<(), String> {
     let name = &host.name;
     if host.platform() == Platform::Posix {
-        let ran = run_script(
-            host,
-            "command -v fleet >/dev/null 2>&1 || echo @missing",
-            &[],
-            deadline,
-        )
-        .map_err(|why| {
+        let ran = run_script(host, FLEET_PROBE, &[], deadline).map_err(|why| {
             format!(
                 "place {name:?} did not answer: {why}; check `{}`",
                 reach(host)
@@ -589,6 +592,41 @@ mod tests {
 
     fn place(name: &str, config: Value) -> Place {
         serde_json::from_value(json!({ "name": name, "config": config })).unwrap()
+    }
+
+    /// A WSL place's readiness looks for `fleet` inside the distro, on the
+    /// `PATH` its sessions get: `wsl.exe` enters it and runs the probe after
+    /// the place's `PATH` assignment.
+    #[test]
+    fn a_wsl_place_looks_for_fleet_on_its_own_path() {
+        let host = parse(&place("dev", json!({"kind": "wsl", "distro": "Ubuntu"})))
+            .unwrap()
+            .unwrap();
+        let path = "PATH=/home/me/.cargo/bin:/usr/bin; export PATH; ";
+        let cmd = script_command(&host, path, FLEET_PROBE, &[]);
+        let argv: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            cmd.get_program().to_string_lossy().ends_with("wsl.exe"),
+            "{:?}",
+            cmd.get_program()
+        );
+        assert_eq!(
+            argv,
+            [
+                "-d",
+                "Ubuntu",
+                "--cd",
+                "/",
+                "-e",
+                "sh",
+                "-c",
+                &format!("{path}{FLEET_PROBE}"),
+                "sh"
+            ],
+        );
     }
 
     #[test]

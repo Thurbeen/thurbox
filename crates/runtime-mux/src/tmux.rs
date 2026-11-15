@@ -177,6 +177,70 @@ mod tests {
     use super::*;
     use crate::StatusChannel;
 
+    /// A session on a WSL place gets the file its hooks report to and the
+    /// place's `PATH` through the `new-window` line itself: `-e` sets the
+    /// variable in the window, the login wrap assigns the `PATH`, and the
+    /// line travels over the control connection that `wsl.exe` launches, so
+    /// nothing depends on what `wsl.exe` passes of this machine's
+    /// environment (`WSLENV`).
+    #[test]
+    fn a_wsl_place_window_gets_the_signal_file_and_the_place_path() {
+        let host = crate::HostDef {
+            name: "wsl-window-line".into(),
+            kind: crate::HostKind::Wsl,
+            distro: Some("Ubuntu".into()),
+            path_prepend: vec!["/opt/fleet/bin".into()],
+            ..Default::default()
+        };
+        let backend = TmuxBackend::on_host(
+            &host,
+            crate::shell::HostLauncher::for_host(&host),
+            crate::Platform::Posix,
+            &crate::settings::for_tests(),
+        );
+        let env = std::collections::HashMap::from([(
+            "FLEET_SIGNAL_FILE".to_string(),
+            "~/.local/state/fleet/signals/t1.u1.jsonl".to_string(),
+        )]);
+        let line = backend
+            .new_window_line(
+                "tb-k",
+                "claude",
+                &["--resume".into(), "c1".into()],
+                None,
+                &env,
+            )
+            .expect("line");
+        assert!(
+            line.contains(" -e 'FLEET_SIGNAL_FILE=~/.local/state/fleet/signals/t1.u1.jsonl' "),
+            "{line}"
+        );
+        // A test reads no place's login `PATH`: `path_prepend` leads the
+        // inherited one.
+        assert!(
+            line.ends_with(
+                " /bin/sh -lc 'PATH=/opt/fleet/bin\"${PATH:+:$PATH}\"; export PATH; exec claude --resume c1'"
+            ),
+            "{line}"
+        );
+        // The connection the line travels over enters the distro.
+        let argv: Vec<String> = backend
+            .mux_command(&["-C", "attach"])
+            .expect("command")
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            argv[..6],
+            ["-d", "Ubuntu", "--cd", "/", "-e", "sh"],
+            "{argv:?}"
+        );
+        assert_eq!(
+            argv[argv.len() - 5..],
+            ["tmux", "-L", "thurbox-dev", "-C", "attach"]
+        );
+    }
+
     #[test]
     fn a_tmux_banner_names_its_version() {
         assert_eq!(Tmux::banner_version("tmux 3.4\n"), Some("3.4"));
