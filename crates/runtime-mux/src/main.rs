@@ -62,7 +62,9 @@ fn main() {
     // A releasing stop lets go of the server's lock once the process is
     // stopped: the workspace's teardown and release hold the key only.
     let mut server_turn = None;
-    if matches!(verb.as_str(), "start" | "stop") {
+    // A shell call makes the key's shell window the way a start makes its
+    // agent's, so it takes the same turn.
+    if matches!(verb.as_str(), "start" | "stop" | "shell") {
         match take(&format!("runtime-mux-{socket}.lock")) {
             Ok(file) => server_turn = Some(file),
             Err(answer) => {

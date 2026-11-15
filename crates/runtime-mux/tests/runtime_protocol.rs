@@ -1246,3 +1246,143 @@ fn branches_defaults_to_origins_default() {
         json!({"names": ["main", "origin/master", "origin/trunk"], "default": "origin/master"})
     );
 }
+
+/// The names of the key windows on the runtime's own server, leaving out
+/// the window a new server starts with.
+fn windows(rt: &Runtime) -> Vec<String> {
+    let out = Command::new("tmux")
+        .env("TMUX_TMPDIR", rt.server.tmpdir())
+        .env_remove("TMUX")
+        .args(["-L", SOCKET, "list-windows", "-a", "-F", "#{window_name}"])
+        .output()
+        .expect("run tmux");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|name| name.starts_with("tb"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Runs a stream `argv` as a view does: sized once its hello came, its
+/// frames drained on a thread, `typed` sent once the first screen came.
+fn type_into_stream(argv: &[String], typed: &[u8]) -> std::process::Child {
+    use term_stream::{Down, Size, Up};
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run the stream");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+    let (tx, frames) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(Some(frame)) = term_stream::read::<Down>(&mut stdout) {
+            if tx.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+    let bound = Duration::from_secs(30);
+    assert!(matches!(frames.recv_timeout(bound), Ok(Down::Hello(_))));
+    term_stream::write(&mut stdin, &Up::Resize(Size { rows: 24, cols: 80 })).expect("resize");
+    while !matches!(frames.recv_timeout(bound), Ok(Down::Snapshot(_))) {}
+    term_stream::write(&mut stdin, &Up::Input(typed.to_vec())).expect("type");
+    std::thread::spawn(move || {
+        let _keep_open = stdin;
+        while frames.recv().is_ok() {}
+    });
+    child
+}
+
+/// A runtime-mux call that opens a shell runs `/bin/sh` with a home of the
+/// test's own: never the operator's shell, never the real home.
+fn shell_env(rt: &mut Runtime, home: &std::path::Path) {
+    rt.env.push(("SHELL".into(), "/bin/sh".into()));
+    rt.env.push(("HOME".into(), home.display().to_string()));
+}
+
+#[test]
+fn the_manifest_names_the_shell_verb() {
+    let Some(rt) = Runtime::new() else { return };
+    let answer = rt.call("manifest", json!({"protocol": 2}));
+    let verbs = answer["known"]["verbs"].as_array().expect("verbs");
+    assert!(verbs.iter().any(|v| v == "shell"), "{answer}");
+}
+
+#[test]
+fn shell_of_a_key_no_process_holds_answers_none() {
+    let Some(rt) = Runtime::new() else { return };
+    let answer = rt.call(
+        "shell",
+        json!({"protocol": 2, "place": local(), "key": "no.one"}),
+    );
+    assert_eq!(answer["known"], "none", "{answer}");
+    assert!(windows(&rt).is_empty(), "no shell was opened");
+}
+
+#[test]
+fn shell_opens_a_shell_in_the_keys_directory_and_a_stop_closes_it() {
+    let Some(mut rt) = Runtime::new() else { return };
+    let home = tempfile::tempdir().expect("home");
+    shell_env(&mut rt, home.path());
+    let dir = tempfile::tempdir().expect("dir");
+    let dir_path = dir.path().canonicalize().expect("canonical dir");
+    started(&rt.call(
+        "start",
+        json!({"protocol": 2, "place": local(), "key": "sh.one",
+               "argv": ["sleep", "300"], "env": {}, "dir": dir_path}),
+    ));
+    let shell = || {
+        rt.call(
+            "shell",
+            json!({"protocol": 2, "place": local(), "key": "sh.one"}),
+        )
+    };
+
+    let answer = shell();
+    let argv: Vec<String> = serde_json::from_value(answer["known"]["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer}"));
+    assert_eq!(argv[1], "view", "{argv:?}");
+
+    let mut view = type_into_stream(&argv, b"pwd > shell-pwd\r");
+    let out = dir_path.join("shell-pwd");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_to_string(&out).unwrap_or_default().is_empty() && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = view.kill();
+    let _ = view.wait();
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap_or_default().trim(),
+        dir_path.display().to_string(),
+        "the shell runs in the directory the key's process is in"
+    );
+
+    // Idempotent by key: a second call finds the same shell.
+    assert_eq!(shell()["known"], answer["known"], "the shell is adopted");
+    assert_eq!(
+        windows(&rt).len(),
+        2,
+        "one agent, one shell: {:?}",
+        windows(&rt)
+    );
+    // The key's agent is still the only key listed.
+    let list = rt.call("list", json!({"protocol": 2, "place": local()}));
+    assert_eq!(list["known"]["keys"], json!(["sh.one"]), "{list}");
+
+    assert_eq!(
+        rt.call(
+            "stop",
+            json!({"protocol": 2, "place": local(), "key": "sh.one"})
+        )["known"],
+        "stopped"
+    );
+    assert!(
+        windows(&rt).is_empty(),
+        "the stop closed the shell: {:?}",
+        windows(&rt)
+    );
+    assert_eq!(shell()["known"], "none");
+}
