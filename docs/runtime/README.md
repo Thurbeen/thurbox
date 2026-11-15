@@ -8,6 +8,25 @@ and Fleet is the [overview](../README.md).
 How `runtime-mux` reaches hosts, where psmux differs from tmux, and its
 status channel are [runtime-mux.md](runtime-mux.md).
 
+## Two roles
+
+![Two roles: Fleet calls a runtime through the runtime protocol, runtime-mux or your own; runtime-mux runs a workspace provider, workspace-git or your own](roles.svg)
+
+- A **runtime** is a role. Any program that answers
+  [the runtime protocol](#the-runtime-protocol) at a place is a runtime.
+  `runtime-mux` is the runtime that Fleet ships. It runs sessions in tmux or
+  psmux. `examples/runtimes/tmux.sh` is a minimal runtime in a shell script.
+  Write your own for containers, VMs or a remote service.
+  `fleet runtime check` runs the conformance suite against it.
+- A **workspace provider** is a role inside a runtime. It is a program that
+  a runtime runs to turn a workspace URL into a directory. `workspace-git` is
+  the provider that Fleet ships, for git URLs. Fleet does not see the
+  provider: Fleet sees only the runtime's `workspace` verb. `runtime-mux`
+  runs the provider that its `workspace.program` setting names. Any program
+  that answers the same four calls can replace `workspace-git`
+  ([the calls](#workspace-git-the-shipped-workspace-provider)). Another runtime
+  can make workspaces without a provider.
+
 This page owns two contracts and one verb:
 
 - [the runtime protocol](#the-runtime-protocol), how Fleet drives a runtime;
@@ -650,7 +669,7 @@ The URL is the whole request: Fleet adds nothing to it.
 Restoring preserved work is therefore a new Task whose URL names the preserved
 ref; Fleet needs no verb for it.
 
-### workspace-git, the default for git URLs
+### workspace-git, the shipped workspace provider
 
 `workspace-git` is a small program a runtime runs where its files belong. No
 runtime links it: each runs the program, so it runs where the runtime's files

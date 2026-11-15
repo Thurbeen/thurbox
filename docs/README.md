@@ -27,7 +27,10 @@ then each component's own.
 4. **A runtime is the abstraction**, not a multiplexer. Fleet and thurbox
    know only "a runtime": a program that runs one keyed process somewhere.
    A multiplexer is one way to do that. `runtime-mux` (`crates/runtime-mux`)
-   is the runtime thurbox ships by default; it is not special.
+   is the runtime thurbox ships by default; it is not special. In the same
+   way, `workspace-git` is the shipped workspace provider: a program a runtime
+   runs to make a git workspace, which another program can replace
+   ([two roles](runtime/README.md#two-roles)).
 
 ## Components
 

@@ -12,8 +12,10 @@ TaskController records it in `status.workspace`.
   order. The agent starts in the first directory. It can also read and
   write the others.
 - **Who makes it.** The runtime of the Task's place makes it, before the
-  session starts. For a git URL, `runtime-mux` runs `workspace-git`. That
-  program adds a git worktree on a new branch. The branch name is the
+  session starts. A runtime can run a workspace provider for this
+  ([two roles](../../runtime/README.md#two-roles)). For a git URL, the
+  shipped runtime, `runtime-mux`, runs the shipped provider, `workspace-git`.
+  That program adds a git worktree on a new branch. The branch name is the
   session key, `<task name>.<task uid>`, unless the URL gives `?branch=`.
   The base is the URL's `#fragment`. Without a fragment, the base is the
   remote's default branch, as a fetch just before shows it.

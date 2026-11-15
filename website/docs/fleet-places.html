@@ -7,10 +7,26 @@ breadcrumb: 'Places and runtimes'
 ---
 <h1>Places and runtimes</h1>
 <p>
-  Fleet starts no process itself. It asks a <strong>runtime</strong>: a program that starts and
-  stops processes and speaks the runtime protocol. <code>runtime-mux</code> is the runtime Fleet
-  ships; it runs each session in a tmux window (psmux on native Windows).
+  Fleet starts no process itself. It asks a <strong>runtime</strong>. A runtime is a role: any
+  program that answers <a href="runtime/index.html#the-runtime-protocol">the runtime protocol</a>
+  at a place. <code>runtime-mux</code> is the runtime Fleet ships; it runs each session in a tmux
+  window (psmux on native Windows). <code>examples/runtimes/tmux.sh</code> is a minimal one, and
+  you can write your own for containers, VMs or a remote service. <code>fleet runtime check</code>
+  tests a runtime against the protocol.
 </p>
+<p>
+  To turn a workspace URL into a directory, a runtime can run a <strong>workspace
+  provider</strong>. <code>workspace-git</code> is the provider Fleet ships, for git URLs;
+  <code>runtime-mux</code> runs whichever provider its <code>workspace.program</code> setting
+  names (<a href="runtime/index.html#two-roles">two roles</a>).
+</p>
+<img
+  src="runtime/roles.svg"
+  alt="Fleet calls a runtime, runtime-mux or yours; runtime-mux runs a workspace provider, workspace-git or yours"
+  width="980"
+  height="250"
+  loading="lazy"
+/>
 <p>
   A <strong>place</strong> is where a runtime runs a session, named
   <code>&lt;runtime&gt;/&lt;place&gt;</code>. <code>local</code> is the Fleet's own machine, and

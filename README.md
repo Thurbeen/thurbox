@@ -34,8 +34,11 @@ file you can change.
   this machine, others over ssh or WSL. A Fleet that cannot be reached keeps its
   sessions in the list, marked unreachable.
 - **Places.** A Fleet's runtime runs each session at a place, named
-  `<runtime>/<place>`. `local` is the Fleet's own machine. The default runtime,
-  `runtime-mux`, keeps sessions alive in tmux, or psmux on Windows.
+  `<runtime>/<place>`. `local` is the Fleet's own machine. A runtime is any
+  program that speaks the runtime protocol: the shipped one, `runtime-mux`,
+  keeps sessions alive in tmux, or psmux on Windows, and you can write your
+  own. Its shipped workspace provider, `workspace-git`, makes each session's
+  git worktree, and another program can replace it too.
 - **A new-session flow in that order**: `Ctrl+N` picks a Fleet, then a place,
   then a repository, then an agent.
 - **Agents come from Fleet.** The agents on offer are the chosen Fleet's harness
