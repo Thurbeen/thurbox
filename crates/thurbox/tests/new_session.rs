@@ -2862,6 +2862,14 @@ fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
         Some("local/mux/box\0~"),
         "the home is asked for first"
     );
+    // Before the home is known, `enter` remembers nothing: saved as typed,
+    // `~/app` would be refused on the place.
+    press(&host, &world, "backspace");
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty());
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("asking mux/box for its home"), "{screen}");
+    type_text(&host, &world, "/");
     serve(&host, &mut world);
     drawn(&host, &world);
     assert_eq!(
@@ -2880,6 +2888,42 @@ fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
         ),
         "{commands:?}"
     );
+}
+
+/// Another login's home (`~user/…`) is not known on a place elsewhere: the
+/// flow says so rather than listing the login's own home, and remembers
+/// nothing.
+#[test]
+fn another_logins_home_on_a_place_elsewhere_is_refused() {
+    let host = host();
+    let mut world = World::default();
+    let mux_box = HostRow {
+        name: "mux/box".into(),
+        detail: "a mux place".into(),
+        backend: "mux/box".into(),
+        ready: Some(true),
+        why: None,
+    };
+    world.snapshot.fleets = vec![fleet(
+        "local",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host(), mux_box],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    type_text(&host, &world, "~bob/app");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("only ~ and ~/… are supported on mux/box"),
+        "{screen}"
+    );
+    assert_eq!(host.shared_string("want_browse"), None, "no listing");
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty(), "nothing remembered");
 }
 
 /// A place that cannot list a repository's branches says why in the

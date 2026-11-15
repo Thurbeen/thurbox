@@ -281,6 +281,20 @@ local function expand_remote_home(flow, path)
   return path
 end
 
+--- Why a path typed for a place elsewhere names another login's home
+--- (`~user/…`), or nil. Only the login's own home is known there: listing it
+--- instead would show the wrong folder.
+local function other_users_home(flow)
+  if not (flow.elsewhere and flow.step == "repo") then
+    return nil
+  end
+  local typed = (flow.input.value or ""):match("^%s*(.-)%s*$")
+  if typed:match("^~[^/]") then
+    return "only ~ and ~/… are supported on " .. place_label(flow)
+  end
+  return nil
+end
+
 --- Ask the kernel for what this step needs, and stop asking for the rest.
 ---
 --- Written every frame because the want is what keeps the read served; clearing
@@ -329,7 +343,9 @@ local function ask(flow)
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
   if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
-    if flow.elsewhere then
+    if other_users_home(flow) then
+      dir = nil
+    elseif flow.elsewhere then
       dir = expand_remote_home(flow, dir)
       -- A home not known yet is asked for first: the runtime takes only an
       -- absolute directory, and its answer to `~` names the home.
@@ -337,7 +353,7 @@ local function ask(flow)
         dir = "~"
       end
     end
-    store.want_browse = (flow.host or "") .. "\0" .. dir
+    store.want_browse = dir and ((flow.host or "") .. "\0" .. dir) or nil
   else
     store.want_browse = nil
   end
@@ -556,7 +572,7 @@ end
 local function message_row(flow)
   -- Every step says why its Fleet is refused, so a flow past the place step
   -- when the refusal came is not left waiting on what will never come.
-  local text = refusal() or flow.message
+  local text = refusal() or flow.message or other_users_home(flow)
   return {
     type = "text",
     len = 1,
@@ -2248,6 +2264,9 @@ return {
           flow.folder_index = 1
           flow.step = "new_folder"
           flow.browse = false
+        elseif other_users_home(flow) then
+          -- Shown on the message row already; nothing is remembered.
+          flow.message = nil
         elseif flow.elsewhere and path:sub(1, 1) == "~" and not remote_home(flow) then
           -- Saved as typed it would be refused: the home is still being
           -- asked for, through the listing the field already wants.
