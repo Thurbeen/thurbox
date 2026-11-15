@@ -1502,6 +1502,7 @@ fn pausable(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
             generation: 1,
             recovered: false,
         });
+        st.conversation = Some("conv-1".into());
         extra(st);
     });
     obj.spec["pauseAfterMs"] = json!(PAUSE_AFTER);
@@ -1597,6 +1598,23 @@ fn only_a_known_idle_lasting_pause_after_ms_pauses() {
 }
 
 #[test]
+fn a_session_fleet_cannot_resume_on_its_conversation_is_never_paused() {
+    // A harness with no resume argv, such as aider.
+    let mut aider = pausable(&[], |st| st.idle_since = Some(0));
+    aider.spec["harness"] = json!("aider");
+    let (plan, st) = run(&aider, pause_obs(idle(), Observation::Known(false)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(st.idle_since, None);
+    // A conversation the hooks never reported.
+    let unnamed = pausable(&[], |st| {
+        st.idle_since = Some(0);
+        st.conversation = None;
+    });
+    let (plan, _) = run(&unnamed, pause_obs(idle(), Observation::Known(false)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+}
+
+#[test]
 fn a_pause_without_its_receipt_is_read_back_and_never_repeated() {
     let obj = pausable(&[], |st| {
         st.pauses = 1;
@@ -1665,8 +1683,8 @@ fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
     assert!(
         matches!(
             &plan.effects[0].action,
-            Action::Resume { session: s, conversation: None, launch }
-                if *s == session() && launch.host == s.host && launch.key == s.key
+            Action::Resume { session: s, conversation: Some(c), launch }
+                if *s == session() && c == "conv-1" && launch.host == s.host && launch.key == s.key
         ),
         "{plan:#?}"
     );

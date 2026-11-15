@@ -1989,10 +1989,13 @@ fn decode(obj: &Object) -> Result<(TaskSpec, TaskStatus), StoreError> {
 }
 
 /// Whether the session may be paused, apart from its activity: a pause
-/// setting, dispatch on, Briefed or Concluded, and nothing in flight that a
-/// pause would cut short.
+/// setting, a conversation a resume can name on a harness Fleet can resume,
+/// dispatch on, Briefed or Concluded, and nothing in flight that a pause
+/// would cut short.
 fn pause_candidate(spec: &TaskSpec, st: &TaskStatus) -> bool {
     spec.pause_after_ms.is_some()
+        && st.conversation.is_some()
+        && fleet_api::harness::profile(&spec.harness).resumes()
         && spec.dispatch
         && (st.phase == Phase::Concluded || (st.phase == Phase::Briefed && !result_current(st)))
         && st.session.is_some()

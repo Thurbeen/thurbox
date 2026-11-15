@@ -1832,7 +1832,16 @@ impl Manager<'_> {
         } else {
             fleet_api::validate::typed(task::KIND, &obj.status)?
         };
-        let needs_launch = spec.config_ref.is_some() || !spec.env.is_empty();
+        // The default TaskConfig is taken at a Task's first launch only: one
+        // that launched without it keeps that launch.
+        let needs_launch = spec.config_ref.is_some()
+            || !spec.env.is_empty()
+            || st.execution.is_some()
+            || (st.session.is_none()
+                && st.intents.is_empty()
+                && !obj.is_deleting()
+                && spec.dispatch
+                && execution::default_config(self.store)?);
         let mut effective = None;
         if needs_launch && !obj.is_deleting() && spec.dispatch {
             let snapshot = match self.store.launch(obj)? {

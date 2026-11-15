@@ -1,6 +1,7 @@
 //! Resolve passive launch configuration before the first runtime effect.
 use fleet_api::config::{
-    ConfigSource, ENV_PROVIDER, EnvProviderSpec, Execution, TASK_CONFIG, TaskConfigSpec, merge_env,
+    ConfigSource, DEFAULT_TASK_CONFIG, ENV_PROVIDER, EnvProviderSpec, Execution, TASK_CONFIG,
+    TaskConfigSpec, merge_env,
 };
 use fleet_api::runtime::Runtime;
 use fleet_api::task::{TaskSpec, effective_host};
@@ -33,6 +34,16 @@ fn source(
     Ok(obj)
 }
 
+/// Whether the store holds the TaskConfig a Task with no `configRef` takes.
+pub(crate) fn default_config(store: &dyn Store) -> Result<bool, StoreError> {
+    match store.get(TASK_CONFIG, DEFAULT_TASK_CONFIG) {
+        Observation::Known(found) => Ok(found.is_some_and(|o| !o.is_deleting())),
+        Observation::Unknown { why } => Err(StoreError::Unknown(format!(
+            "{TASK_CONFIG}/{DEFAULT_TASK_CONFIG} unavailable: {why}"
+        ))),
+    }
+}
+
 pub(crate) fn resolve(
     store: &dyn Store,
     runtime: &dyn Runtime,
@@ -42,13 +53,16 @@ pub(crate) fn resolve(
 ) -> Result<Execution, StoreError> {
     let spec: TaskSpec = typed("Task", &task.spec)?;
     let mut sources = Vec::new();
-    let defaults: TaskConfigSpec = if let Some(r) = &spec.config_ref {
-        typed(
+    let name = match &spec.config_ref {
+        Some(r) => Some(r.name.as_str()),
+        None => default_config(store)?.then_some(DEFAULT_TASK_CONFIG),
+    };
+    let defaults: TaskConfigSpec = match name {
+        Some(name) => typed(
             TASK_CONFIG,
-            &source(store, TASK_CONFIG, &r.name, &mut sources)?.spec,
-        )?
-    } else {
-        TaskConfigSpec::default()
+            &source(store, TASK_CONFIG, name, &mut sources)?.spec,
+        )?,
+        None => TaskConfigSpec::default(),
     };
     // Validate every reference before executing any external provider command.
     let mut providers = Vec::new();

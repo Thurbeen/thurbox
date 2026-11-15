@@ -6,7 +6,7 @@
 mod bootstrap;
 mod config;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -534,6 +534,13 @@ fn run(cli: Cli) -> Result<(), Failure> {
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
         let written = bootstrap::init(&path, &root, cli.data_dir.as_deref()).map_err(fail)?;
         let config = Config::load(&path).map_err(fail)?;
+        let data_dir = cli
+            .data_dir
+            .clone()
+            .or(config.data.dir.clone())
+            .or_else(default_data_dir)
+            .ok_or_else(|| fail("no data directory: set data.dir in the config file"))?;
+        default_task_config(&FileStore::open(&data_dir)?)?;
         // The profiles `fleet doctor` checks: the bundled ones, then the
         // user's beside this config.
         let harnesses = harness_dir(Some(&path));
@@ -1739,6 +1746,24 @@ fn runtime_places(config: &Config) -> Vec<Value> {
         }
     }
     rows
+}
+
+/// Write the TaskConfig a Task with no `configRef` takes, when the store
+/// holds none: an idle session pauses after 30 minutes. One that is there is
+/// the user's, and stays as it is.
+fn default_task_config(store: &dyn Store) -> Result<(), Failure> {
+    use fleet_api::config::{DEFAULT_PAUSE_AFTER_MS, DEFAULT_TASK_CONFIG, TASK_CONFIG};
+    let obj: Object = serde_json::from_value(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": TASK_CONFIG,
+        "metadata": {"name": DEFAULT_TASK_CONFIG},
+        "spec": {"pauseAfterMs": DEFAULT_PAUSE_AFTER_MS},
+    }))
+    .map_err(|e| fail(e.to_string()))?;
+    match fleet_manager::verbs::apply(store, obj, &BTreeSet::new(), true) {
+        Ok(_) | Err(StoreError::AlreadyExists(_)) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// What `fleet init` set up and what comes next, in a few lines: the

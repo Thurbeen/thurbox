@@ -494,6 +494,12 @@ impl Profile {
         Ok(argv)
     }
 
+    /// Whether Fleet can start the agent again on its conversation: a stop
+    /// of one it cannot ends the conversation.
+    pub fn resumes(&self) -> bool {
+        !self.resume.args.is_empty()
+    }
+
     /// The argv that starts the agent again on `conversation`, from the one
     /// it was launched with. Without a conversation, or for a harness Fleet
     /// cannot resume, it is the launch argv: a fresh start.

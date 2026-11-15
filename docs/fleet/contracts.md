@@ -280,7 +280,9 @@ Guarantees, each with its test:
   frozen in `status.execution`, a dispatched Briefed or Concluded Task
   whose agent the runtime reports Known Idle on every pass for
   `pauseAfterMs`, and on the pass that plans it, plans `Pause` under
-  `pause/<n>`. The session must be observed not stopped and not known
+  `pause/<n>`. Its harness profile must have a resume argv and its hooks
+  must have reported its conversation, so aider and a program never pause.
+  The session must be observed not stopped and not known
   lost, its inbox empty, and no brief, entry, catch-up note, revive or
   resume in flight. Active or Unknown clears `status.idleSince`; the idle
   time starts again at the next Idle answer. Activity is what the agent's
@@ -840,7 +842,7 @@ answers keep the last state. Nothing decides on the state; a view reads it.
 `prepare_execution`, `env_source`, `spawn`, `find`, `ready`, `workspace_trust`,
 `brief`, `brief_delivered`, `at_rest`, `release`, `lost`, `revive`,
 `paused`, `pause` and `resume`, each answering Known or Unknown, and
-`can_pause`, and `screen`, which returns a session's `capture` text and
+`screen`, which returns a session's `capture` text and
 title. A runtime reports no activity: the agent's hooks do, and below them
 Fleet's screen rules read the screen `screen` returns
 ([agent state](#agent-state)). `revive`
@@ -864,7 +866,9 @@ outlast it.
   a running agent's `at_rest` read the agent's signals; `lost` is an
   `exited` process. `release` is `stop` with `release: true`. `brief` is
   `input` of the text, and only the agent's prompt hook proves it.
-  It cannot pause: `paused` stays Unknown. It passes no model to its
+  `pause` is the [`pause` verb](../runtime/README.md#pause), and `paused` is
+  an `inspect` that answers `paused`, when the runtime's `manifest` declares
+  the verb; on any other runtime `paused` stays Unknown. It passes no model to its
   harness, so a spawn with `spec.model` fails.
   `e2e_runtime_exec` drives the real `runtime-mux` through it.
 - **fake:** a file-backed host for tests and trials, with injectable faults
@@ -1291,7 +1295,9 @@ raised to twice the longest operation of the runtime, forge, gateway or
 plugin port.
 
 `fleet init` creates the native per-user config offline. A config that
-exists is kept, never replaced. The
+exists is kept, never replaced. It also writes the TaskConfig `default`, with
+`pauseAfterMs` 1800000, into the config's store when the store holds none
+([the default TaskConfig](resources/task-config.md#the-default-taskconfig)). The
 [initialization guide](configuration.md#configuration-and-customization)
 specifies precedence and paths.
 

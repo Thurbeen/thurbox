@@ -860,3 +860,61 @@ fn version_reports_the_manager_lease_without_taking_it() {
         "{named:#}"
     );
 }
+
+#[test]
+fn init_writes_a_default_task_config_that_pauses_an_idle_session_after_thirty_minutes() {
+    let mut env = Env::new("init-default-config");
+    env.set_var(
+        "LOCALAPPDATA",
+        &env.root.join("local-data").to_string_lossy(),
+    );
+    env.set_var("APPDATA", &env.root.join("config").to_string_lossy());
+    fs::remove_file(&env.config).unwrap();
+    env.fleet(&["init"]).ok();
+    let default = env.fleet(&["get", "taskconfig", "default"]).ok().json();
+    assert_eq!(
+        default["spec"],
+        serde_json::json!({"pauseAfterMs": 1_800_000})
+    );
+
+    // A second init keeps the one the user changed.
+    let mut changed = default.clone();
+    changed["spec"]["pauseAfterMs"] = serde_json::json!(60_000);
+    for field in ["status", "metadata"] {
+        changed.as_object_mut().unwrap().remove(field);
+    }
+    changed["metadata"] = serde_json::json!({"name": "default"});
+    env.apply(changed).ok();
+    env.fleet(&["init"]).ok();
+    let kept = env.fleet(&["get", "taskconfig", "default"]).ok().json();
+    assert_eq!(kept["spec"]["pauseAfterMs"], 60_000);
+
+    // A Task with no configRef takes it; its own setting or another config
+    // overrides it.
+    let mut config: toml::Value =
+        toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
+    set_runtime(
+        &mut config,
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("kind".into(), toml::Value::String("fake".into())),
+            (
+                "dir".into(),
+                toml::Value::String(env.fake.to_string_lossy().into_owned()),
+            ),
+        ])),
+    );
+    fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
+    let plain = support::task("plain", true);
+    let mut own = support::task("own", true);
+    own["spec"]["pauseAfterMs"] = serde_json::json!(5);
+    let mut other = support::task("other", true);
+    other["spec"]["configRef"] = serde_json::json!({"name": "other"});
+    let other_config = support::object("TaskConfig", "other", serde_json::json!({}));
+    env.apply(serde_json::json!([other_config, plain, own, other]))
+        .ok();
+    env.reconcile().ok();
+    let after = |name: &str| env.status(name)["execution"]["pauseAfterMs"].clone();
+    assert_eq!(after("plain"), 60_000);
+    assert_eq!(after("own"), 5);
+    assert!(after("other").is_null(), "{:#}", env.status("other"));
+}

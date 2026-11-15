@@ -166,6 +166,8 @@ fn runtime_mux_passes_the_conformance_suite() {
         .stdout_has("ok   shell: a key no process holds answers none")
         .stdout_has("ok   shell: a running key answers how to open its shell, on each call")
         .stdout_has("ok   shell: a stop leaves nothing to open")
+        .stdout_has("ok   pause: a key no process holds answers none")
+        .stdout_has("ok   pause: stops the process and keeps the key until a start or a stop")
         .stdout_has("speaks runtime protocol 2");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
 }
@@ -792,10 +794,7 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
     fs::create_dir_all(&work).expect("workspace");
     let mut task = support::task("t1", true);
     task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
-    // Watched for idleness, which is what reads the agent's activity.
-    task["spec"]["configRef"] = json!({"name": "pausing"});
-    let config = support::object("TaskConfig", "pausing", json!({"pauseAfterMs": 1}));
-    env.apply(json!([config, task])).ok();
+    env.apply(json!([task])).ok();
 
     // Started on the harness profile's launch argv, with the file its hooks
     // report to; its start report makes it ready, and its prompt hook proves
@@ -828,16 +827,6 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
         env.get("t1")["status"]["sessionState"] == "Idle"
     });
     assert_eq!(env.get("t1")["status"]["conversation"], "conv-1");
-    // Idle long enough, but the runtime cannot tell a stopped session, and
-    // Unknown never pauses.
-    env.reconcile().ok();
-    let status = env.get("t1")["status"].clone();
-    assert!(
-        status["conditions"].as_array().is_some_and(|cs| !cs
-            .iter()
-            .any(|c| c["type"] == "Paused" && c["status"] == "True")),
-        "{status:#}"
-    );
 
     // The agent exits on its own: the session is lost, and revived by a
     // start of the resume argv on the conversation its hooks reported,
@@ -948,6 +937,144 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
     cmd.env("FLEET_SIGNAL_FILE", &file);
     support::wait(cmd.spawn().expect("fleet signal")).ok();
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
+}
+
+/// [`CLAUDE`], except that it logs what is typed to it, and reports the
+/// lines typed together as one prompt, as Claude Code's prompt hook does:
+/// the catch-up note after a resume is several lines.
+const TYPING_CLAUDE: &str = r#"#!/bin/bash
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+fleet signal idle
+while IFS= read -r line; do
+  text=$line
+  while IFS= read -r -t 0.5 more; do text=$text$'\n'$more; done
+  text=$(printf '%s' "$text" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$text" >> "$PWD/typed.log"
+  json=$(printf '%s' "$text" | awk 'BEGIN { ORS = "" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); if (NR > 1) print "\\n"; print }')
+  fleet signal prompt "{\"prompt\":\"$json\",\"session_id\":\"conv-1\"}"
+  fleet signal idle
+done
+"#;
+
+/// One call of `program`'s `verb` on the private server, with `request`.
+fn ask(program: &Path, sockets: &Sockets, verb: &str, request: Value) -> Value {
+    let out = Command::new(program)
+        .arg(verb)
+        .env("TMUX_TMPDIR", &sockets.0)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(request.to_string().as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect(verb);
+    serde_json::from_slice(&out.stdout).expect("JSON")
+}
+
+#[test]
+fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversation() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("pause");
+    let mut env = mux_env("runtime-mux-pause", &program, &sockets);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, TYPING_CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    task["spec"]["configRef"] = json!({"name": "pausing"});
+    let config = support::object("TaskConfig", "pausing", json!({"pauseAfterMs": 1}));
+    env.apply(json!([config, task])).ok();
+
+    reconcile_until(&env, "paused while idle", |env| {
+        let status = env.get("t1")["status"].clone();
+        status["conditions"].as_array().is_some_and(|cs| {
+            cs.iter()
+                .any(|c| c["type"] == "Paused" && c["status"] == "True")
+        })
+    });
+    let status = env.get("t1")["status"].clone();
+    support::assert_condition(&status, "Paused", "True", "Idle");
+    assert_eq!(status["conversation"], "conv-1", "{status:#}");
+    let key = status["session"]["id"].as_str().unwrap().to_string();
+
+    // The agent's process is gone, and the runtime keeps its key.
+    let listed = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    assert!(
+        !listed.lines().any(|l| l == work.to_string_lossy()),
+        "no pane runs in the workspace: {listed}"
+    );
+    assert_eq!(
+        ask(
+            &program,
+            &sockets,
+            "inspect",
+            json!({"protocol": 1, "key": key})
+        ),
+        json!({"known": "paused"})
+    );
+    let keys = ask(&program, &sockets, "list", json!({"protocol": 1}));
+    assert!(
+        keys["known"]["keys"]
+            .as_array()
+            .is_some_and(|ks| ks.iter().any(|k| *k == key.as_str())),
+        "{keys}"
+    );
+    env.reconcile().ok();
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["sessionState"], "Paused", "{status:#}");
+    for c in ["WorkerGone", "SessionLost"] {
+        assert!(
+            !status["conditions"]
+                .as_array()
+                .is_some_and(|cs| cs.iter().any(|x| x["type"] == c && x["status"] == "True")),
+            "{c} in {status:#}"
+        );
+    }
+    assert_eq!(starts(&work).len(), 1, "nothing restarted it");
+
+    // A message resumes the conversation under the same key, and reaches
+    // the agent.
+    env.fleet(&["send", "t1", "next message"]).ok();
+    let typed = || fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    reconcile_until(&env, "the message typed", |_| {
+        typed().lines().any(|l| l == "next message")
+    });
+    let all = starts(&work);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!(
+        &all[1][all[1].len() - 2..],
+        ["--resume", "conv-1"],
+        "{all:?}"
+    );
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["session"]["id"], key.as_str(), "{status:#}");
+    // Idle again for pauseAfterMs, it may already be paused again.
+    let paused = support::condition(&status, "Paused");
+    assert!(
+        paused["reason"] == "Resumed" || paused["reason"] == "Idle",
+        "{status:#}"
+    );
 }
 
 /// An agent that exists for Fleet only as a harness profile in the user's
