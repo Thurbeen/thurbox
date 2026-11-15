@@ -3981,12 +3981,55 @@ done
 /// its clock says it was, is not the new one's.
 #[test]
 fn a_revive_on_a_place_with_a_skewed_clock_waits_for_the_new_report() {
+    revive_on_a_skewed_place("skew", 0, None);
+}
+
+/// The same once the place's signal file is past what one read of it
+/// keeps: the newest report and the restart boundary are still read.
+#[test]
+fn a_revive_waits_for_the_new_report_past_a_mib_of_old_reports() {
+    revive_on_a_skewed_place("skew-big", 1_300_000, None);
+}
+
+/// A restart whose boundary in the place's signal file cannot be read, as
+/// when its length read never answers, starts nothing: no state the
+/// previous process reported is taken for the new one's.
+#[test]
+fn a_restart_whose_boundary_cannot_be_read_accepts_no_old_state() {
+    // runtime-mux, except that the length read of a restart never answers.
+    let wrapper = |program: &Path, dir: &Path| {
+        let script = dir.join("no-length.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nreq=$(cat)\ncase $1:$req in\n  exec:*'else echo 0'*) echo '{{\"unknown\":{{\"why\":\"no answer\"}}}}' ;;\n  *) printf '%s' \"$req\" | exec '{}' \"$@\" ;;\nesac\n",
+                program.display()
+            ),
+        )
+        .expect("wrapper");
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+        script
+    };
+    revive_on_a_skewed_place("skew-nolen", 0, Some(&wrapper));
+}
+
+/// Makes the program Fleet runs in place of runtime-mux: given
+/// runtime-mux and a directory to write it in, its path.
+type Wrap = dyn Fn(&Path, &Path) -> PathBuf;
+
+/// A session on an ssh place whose reports run 10 minutes ahead of Fleet's
+/// clock, its place file padded with `pad` bytes of old idle reports, is
+/// lost: a revive types nothing before the new process reports, then types
+/// the catch-up note. With `wrap`, Fleet reaches runtime-mux through the
+/// program it makes, and the revive is not expected to happen.
+fn revive_on_a_skewed_place(name: &str, pad: usize, wrap: Option<&Wrap>) {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
-    let sockets = Sockets::new("ssh-skew");
-    let remote = Sockets::new("ssh-skew-place");
-    let mut env = mux_env("runtime-mux-ssh-skew", &program, &sockets);
+    let sockets = Sockets::new(&format!("ssh-{name}"));
+    let remote = Sockets::new(&format!("ssh-{name}-place"));
+    let mut env = mux_env(&format!("runtime-mux-ssh-{name}"), &program, &sockets);
     let home = env.root.join("place-home");
     let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
         return;
@@ -3998,7 +4041,11 @@ fn a_revive_on_a_place_with_a_skewed_clock_waits_for_the_new_report() {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
     let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
-    let cfg = fs::read_to_string(&env.config).expect("config");
+    let mut cfg = fs::read_to_string(&env.config).expect("config");
+    if let Some(wrap) = wrap {
+        let wrapped = wrap(&program, &env.root);
+        cfg = cfg.replace(&*program.to_string_lossy(), &wrapped.to_string_lossy());
+    }
     fs::write(
         &env.config,
         format!(
@@ -4025,6 +4072,29 @@ fn a_revive_on_a_place_with_a_skewed_clock_waits_for_the_new_report() {
             .count()
     };
     assert_eq!(typed(), 1, "the brief");
+    let file = home
+        .join(".local/state/fleet/signals")
+        .join(format!("{}.jsonl", env.session_key("t1")));
+    let skewed_idle = || {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            + 600_000;
+        format!("{{\"at\":{at},\"state\":\"idle\"}}\n")
+    };
+    use std::io::Write;
+    let append = |text: &str| {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .and_then(|mut f| f.write_all(text.as_bytes()))
+            .expect("the place's signal file");
+    };
+    // Old reports, ending idle, before the agent is lost.
+    let line = skewed_idle();
+    append(&line.repeat(pad / line.len()));
+    append(&skewed_idle());
 
     let listed = remote.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
     let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
@@ -4035,6 +4105,20 @@ fn a_revive_on_a_place_with_a_skewed_clock_waits_for_the_new_report() {
         .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
         .to_string();
     remote.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    if wrap.is_some() {
+        for _ in 0..8 {
+            std::thread::sleep(Duration::from_millis(300));
+            env.reconcile();
+        }
+        assert_eq!(typed(), 1, "no old state taken for the new process's");
+        assert_eq!(starts(&work).len(), 1, "nothing started without a boundary");
+        let status = env.get("t1")["status"].to_string();
+        assert!(
+            status.contains("signal file"),
+            "the status says why: {status}"
+        );
+        return;
+    }
     reconcile_until(&env, "revived", |_| starts(&work).len() >= 2);
     // The previous process's last report is idle, stamped 10 minutes after
     // the restart by Fleet's clock; the new one has said nothing.
@@ -4045,19 +4129,6 @@ fn a_revive_on_a_place_with_a_skewed_clock_waits_for_the_new_report() {
     assert_eq!(typed(), 1, "nothing typed before the new agent reports");
 
     // The new agent reports, with the place's clock: the note goes.
-    let file = home
-        .join(".local/state/fleet/signals")
-        .join(format!("{}.jsonl", env.session_key("t1")));
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        + 600_000;
-    use std::io::Write;
-    fs::OpenOptions::new()
-        .append(true)
-        .open(&file)
-        .and_then(|mut f| writeln!(f, "{{\"at\":{at},\"state\":\"idle\"}}"))
-        .expect("the place's signal file");
+    append(&skewed_idle());
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }

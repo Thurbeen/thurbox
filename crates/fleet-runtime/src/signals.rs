@@ -67,35 +67,49 @@ impl FileSignals {
     }
 }
 
+/// Where a restart left a place's signal file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boundary {
+    /// Its length then: what it holds past it is the new process's.
+    At(u64),
+    /// Not known, as on a place whose file Fleet cannot read: nothing the
+    /// file holds is taken for the new process's.
+    Unknown,
+}
+
+/// How a mark of an unknown boundary is written.
+const UNKNOWN_BOUNDARY: &str = "unknown";
+
 impl FileSignals {
-    /// Keep `offset`, the length of the place's signal file when the session
+    /// Keep `boundary`, where the place's signal file was when the session
     /// under `key` on another host was last started: what the file holds
     /// past it is the new process's. Fleet does not write that file, so the
     /// restart is kept here, and as a length rather than a time, so a
     /// place's clock need not agree with Fleet's.
-    pub fn mark_started(&self, key: &str, offset: u64) -> io::Result<()> {
+    pub fn mark_started(&self, key: &str, boundary: Boundary) -> io::Result<()> {
         let path = self
             .started_path(key)
             .ok_or_else(|| io::Error::other("the session key is not a plain name"))?;
         let tmp = path.with_extension("started.tmp");
-        fs::write(&tmp, offset.to_string())?;
+        let text = match boundary {
+            Boundary::At(offset) => offset.to_string(),
+            Boundary::Unknown => UNKNOWN_BOUNDARY.to_string(),
+        };
+        fs::write(&tmp, text)?;
         fs::rename(&tmp, &path)
     }
 
-    /// Forget the restart of the session under `key`, when the length of its
-    /// file could not be read: nothing is filtered.
-    pub fn clear_started(&self, key: &str) -> io::Result<()> {
-        match self.started_path(key).map(fs::remove_file) {
-            Some(Err(e)) if e.kind() != io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
-    }
-
-    /// The length the place's file had at the session's last start, as
-    /// [`FileSignals::mark_started`] kept it.
-    pub fn started(&self, key: &str) -> Option<u64> {
+    /// Where the place's file was at the session's last start, as
+    /// [`FileSignals::mark_started`] kept it; `None` when it was never
+    /// restarted. A mark that cannot be read is an unknown boundary.
+    pub fn started(&self, key: &str) -> Option<Boundary> {
         let path = self.started_path(key)?;
-        fs::read_to_string(path).ok()?.trim().parse().ok()
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(_) => return Some(Boundary::Unknown),
+        };
+        Some(text.trim().parse().map_or(Boundary::Unknown, Boundary::At))
     }
 
     fn started_path(&self, key: &str) -> Option<PathBuf> {

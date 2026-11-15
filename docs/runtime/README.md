@@ -348,14 +348,14 @@ machine. On a place other than `local`:
 
 ```text
 place:  hook ─fleet signal─▶ ~/.local/state/fleet/signals/<key>.jsonl
-Fleet:  runtime exec: tail -c 1MiB <that file> ──▶ fold ──▶ session state
+Fleet:  runtime exec: the end of <that file> ──▶ fold ──▶ session state
 ```
 
 - Fleet passes `FLEET_SIGNAL_FILE=~/.local/state/fleet/signals/<key>.jsonl`.
   The `fleet` on the place expands `~` to its home and makes the directory.
-- Fleet reads the file's last MiB through the runtime's `exec`, over the
-  connection the runtime has to the place. A file not written yet is a
-  session that reported nothing. An `exec` that fails is Unknown.
+- Fleet reads the file through the runtime's `exec`, over the connection
+  the runtime has to the place. A file not written yet is a session that
+  reported nothing. An `exec` that fails is Unknown.
 - Before a revive or a resume, Fleet reads the file's length through
   `exec` and keeps it in its own data, `<data dir>/signals/<key>.started`.
   It writes nothing on the place. A state in the file before that length is
@@ -363,9 +363,16 @@ Fleet:  runtime exec: tail -c 1MiB <that file> ──▶ fold ──▶ session 
   own report. No time is compared, so the place's clock need not agree with
   Fleet's. A file shorter than the kept length was made again, and is read
   whole.
-- The runtime writes no signal line and knows nothing of their format. A
-  runtime without `exec` still starts, stops and revives the session, and
-  its state stays Unknown.
+- One read takes the last 256 KiB before that length, for the prompts and
+  the conversation, and the last 512 KiB after it, for the state. Both stay
+  under `exec`'s 1 MiB cap, so the newest report is never cut.
+- When the length read does not answer, Fleet starts nothing and asks
+  again on the next pass. When the runtime cannot read the file at all (no
+  `exec`, or a place where `exec` fails, such as native Windows), Fleet
+  starts the session and marks the boundary unknown: its state stays
+  Unknown until the next restart, and no state the previous process
+  reported is taken for the new one's.
+- The runtime writes no signal line and knows nothing of their format.
 
 #### The shell
 

@@ -34,7 +34,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::signals::FileSignals;
+use crate::signals::{Boundary, FileSignals};
 
 /// The newest protocol version Fleet speaks. Every request carries the
 /// version the runtime's manifest named, and a runtime that speaks another
@@ -62,9 +62,23 @@ const MAX_CALLS_PER_OPERATION: u32 = 2;
 /// every second does not run a capture per session every second.
 pub const SCREEN_REUSE: Duration = Duration::from_secs(2);
 
-/// The most of a signal file on another host Fleet reads, from its end: one
-/// `exec` answer keeps 1 MiB of a stream.
-const PLACE_READ: u64 = 1024 * 1024;
+/// The most of a signal file on another host Fleet reads, in one `exec`
+/// answer, which keeps 1 MiB of a stream: the end of what it held at a
+/// restart, and the end of what came after. Together well under the cap,
+/// so neither the newest report nor the line between the two is cut.
+const PLACE_READ_BEFORE: u64 = 256 * 1024;
+const PLACE_READ_AFTER: u64 = 512 * 1024;
+
+/// What a restart learns of the length of the session's signal file on
+/// another host.
+enum Length {
+    At(u64),
+    /// The runtime cannot read it there: it does not offer `exec`, or answers
+    /// that it cannot run one at the place.
+    Unreadable,
+    /// The read may answer later: why it did not now.
+    Unknown(String),
+}
 
 /// The line that parts what a place's signal file held at a restart from
 /// what came after, in one read of it: not JSON, so no report is ever it.
@@ -687,13 +701,24 @@ impl ExecRuntime {
             // never waits on writing there.
             let marked = match &self.signals {
                 Some(signals) if spec.host != LOCAL_HOST => {
-                    match self.place_file_length(&spec.host, &file) {
-                        Some(length) => signals.mark_started(&spec.key, length),
-                        // Without the length, through `exec`, the file is
-                        // not read either: nothing to filter.
-                        None => signals.clear_started(&spec.key),
-                    }
-                    .map_err(|e| e.to_string())
+                    let boundary = match self.place_file_length(&spec.host, &file) {
+                        Length::At(length) => Boundary::At(length),
+                        // A file Fleet cannot read there is never read:
+                        // the session's state stays Unknown.
+                        Length::Unreadable => Boundary::Unknown,
+                        // A read that may answer on the next pass: start
+                        // nothing until it does, so no state the previous
+                        // process reported passes for the new one's.
+                        Length::Unknown(why) => {
+                            return Observation::unknown(format!(
+                                "cannot read the length of the signal file on {}, which marks the restart: {why}",
+                                spec.host
+                            ));
+                        }
+                    };
+                    signals
+                        .mark_started(&spec.key, boundary)
+                        .map_err(|e| e.to_string())
                 }
                 _ => crate::signals::append(std::path::Path::new(&file), &mark)
                     .map_err(|e| e.to_string()),
@@ -778,18 +803,28 @@ impl ExecRuntime {
         let Some(file) = signals.file(&session.host, &session.key) else {
             return Observation::unknown("the session key is not a plain name");
         };
-        let since = signals.started(&session.key);
-        // The tail of the file, as the local read takes it, in two parts:
-        // what it held at the restart (`since`), and what came after, split
-        // by a line no report writes. A file shorter than `since` was made
-        // again: all of it came after. Exit 3 is a file never written.
+        let since = match signals.started(&session.key) {
+            Some(Boundary::Unknown) => {
+                return Observation::unknown(format!(
+                    "where the restart left the signal file on {} is unknown: nothing it holds is taken for the new process's",
+                    session.host
+                ));
+            }
+            Some(Boundary::At(offset)) => Some(offset),
+            None => None,
+        };
+        // Two parts, each bounded so the whole answer stays under `exec`'s
+        // cap: the end of what the file held at the restart (`since`), for
+        // its prompts and conversation, then a line no report writes, then
+        // the end of what came after, whose last state is the session's. A
+        // file shorter than `since` was made again: all of it came after.
+        // Exit 3 is a file never written.
         let script = format!(
             "f=\"$HOME/${{1#\\~/}}\"; [ -e \"$f\" ] || exit 3; n=$(wc -c < \"$f\"); \
              o=${{2:-0}}; [ \"$n\" -lt \"$o\" ] && o=0; \
-             b=$((n > {PLACE_READ} ? n - {PLACE_READ} : 0)); \
-             [ \"$o\" -gt \"$b\" ] && tail -c +$((b + 1)) \"$f\" | head -c $((o - b)); \
+             head -c \"$o\" \"$f\" | tail -c {PLACE_READ_BEFORE}; \
              printf '\\n{RESTART_SPLIT}\\n'; \
-             tail -c +$(( (o > b ? o : b) + 1 )) \"$f\""
+             tail -c +$((o + 1)) \"$f\" | tail -c {PLACE_READ_AFTER}"
         );
         let offset = since.map(|o| o.to_string()).unwrap_or_default();
         let fold = |text: &str| {
@@ -826,8 +861,19 @@ impl ExecRuntime {
     }
 
     /// The length in bytes of the signal file `file` on `host`, 0 when it is
-    /// not there, through the runtime's `exec`; `None` when it cannot tell.
-    fn place_file_length(&self, host: &str, file: &str) -> Option<u64> {
+    /// not there, through the runtime's `exec`.
+    fn place_file_length(&self, host: &str, file: &str) -> Length {
+        let rt = match self.program(host) {
+            Ok(rt) => rt,
+            Err(why) => return Length::Unknown(why),
+        };
+        match rt.manifest() {
+            Observation::Known(m) if !m.verbs.iter().any(|v| v == "exec") => {
+                return Length::Unreadable;
+            }
+            Observation::Known(_) => {}
+            Observation::Unknown { why } => return Length::Unknown(why),
+        }
         let script =
             "f=\"$HOME/${1#\\~/}\"; if [ -e \"$f\" ]; then wc -c < \"$f\"; else echo 0; fi";
         match self.exec_on(host, &["sh", "-c", script, "sh", file]) {
@@ -835,8 +881,18 @@ impl ExecRuntime {
                 code: Some(0),
                 stdout,
                 ..
-            }) => stdout.trim().parse().ok(),
-            _ => None,
+            }) => stdout.trim().parse().map_or_else(
+                |_| Length::Unknown(format!("wc answered {:?}", stdout.trim())),
+                Length::At,
+            ),
+            // The runtime cannot run it at this place, as on a native-Windows
+            // one: it cannot read the file either.
+            Observation::Known(Executed::Failed { .. }) => Length::Unreadable,
+            Observation::Known(Executed::Exited { stderr, .. }) => {
+                Length::Unknown(stderr.lines().next().unwrap_or("wc failed").to_string())
+            }
+            Observation::Known(Executed::TimedOut { .. }) => Length::Unknown("timed out".into()),
+            Observation::Unknown { why } => Length::Unknown(why),
         }
     }
 
