@@ -248,11 +248,13 @@ lines ([Logs](#logs)).
 - The exporter retries a failed request inside that request's timeout.
   After the timeout, the program drops the batch. No program writes a batch
   to disk.
-- At exit, `fleet` and thurbox flush their batches. The flush waits at
-  most 2 seconds. Ctrl-C on `fleet up` flushes the same way.
-- `runtime-mux` and `workspace-git` answer one call of their caller. Each
-  one writes its answer first, then flushes for at most 100 milliseconds,
-  after it releases its locks. A stalled collector never makes a call time
+- `fleet up` and the thurbox interface run until they stop. At exit they
+  flush their batches for at most 2 seconds. Ctrl-C on `fleet up` flushes
+  the same way.
+- A one-shot `fleet` command, `runtime-mux` and `workspace-git` answer one
+  call of their caller. Each one writes its answer first, then flushes for
+  at most 100 milliseconds. `runtime-mux` and `workspace-git` flush after
+  they release their locks. A stalled collector never makes a call time
   out. Spans still unsent after 100 milliseconds are dropped.
 
 ## Turn it off

@@ -501,7 +501,15 @@ fn main() -> ExitCode {
         }
         code
     };
-    telemetry.shutdown();
+    // A one-shot command answers whoever ran it (thurbox's probes, an agent's
+    // hook), often under a deadline: its output is written, and its flush
+    // stays inside the call bound. Only `up`, stopped by Ctrl-C, waits the
+    // longer bound for its last sweeps (docs/observability.md).
+    if name == "up" {
+        telemetry.shutdown();
+    } else {
+        telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);
+    }
     ExitCode::from(code)
 }
 

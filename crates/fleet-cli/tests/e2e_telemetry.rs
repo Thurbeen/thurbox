@@ -454,3 +454,25 @@ fn a_command_joins_the_trace_its_caller_names_in_traceparent() {
     assert_eq!(get.len(), 1, "{:#?}", names(&spans));
     assert!(get[0].parent.is_empty(), "{:#?}", get[0]);
 }
+
+/// A one-shot command answers a caller that bounds it (thurbox probes
+/// `fleet version --json` within seconds, `doctor` within 300 ms), so a
+/// collector that accepts and never answers adds at most the call bound to
+/// its exit, never the 2-second bound of `fleet up`.
+#[test]
+fn a_stalled_collector_adds_at_most_the_call_bound_to_a_command() {
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", silent.local_addr().unwrap());
+    let mut env = Env::new("otel-call-bound");
+    exporting(&mut env, &endpoint);
+    // Warm the binary's page cache so the measure is the flush alone.
+    env.fleet(&["version", "--json"]).ok();
+    let started = Instant::now();
+    env.fleet(&["version", "--json"]).ok();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_millis(1000),
+        "the command took {took:?} with a stalled collector"
+    );
+    drop(silent);
+}

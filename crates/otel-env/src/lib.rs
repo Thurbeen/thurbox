@@ -46,9 +46,10 @@ pub use opentelemetry_sdk::logs::SdkLoggerProvider;
 /// The longest a program waits at exit for its last batches to leave.
 pub const SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
 
-/// The same bound for a program that answers one call of another, such as
-/// a runtime: it prints its answer first, then waits no more than this, so a
-/// stalled collector stays far inside its caller's deadline.
+/// The same bound for a program that answers one call of another (a
+/// runtime, `workspace-git`, a one-shot `fleet` command): it writes its
+/// answer first, then waits no more than this, so a stalled collector stays
+/// far inside its caller's deadline.
 pub const CALL_SHUTDOWN_BOUND: Duration = Duration::from_millis(100);
 
 /// The environment variable that carries trace context to a child process
