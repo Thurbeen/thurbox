@@ -135,9 +135,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // scrollback, the snapshot store's git cadence, the audit retention — is
     // handed over from `startup_settings`, never read from process state.
     //
-    // Loaded under the file log alone, because the global subscriber depends on
-    // what it says: `[telemetry]` decides whether diagnostic logs are bridged to
-    // a collector too (ADR-38), and a global subscriber cannot be replaced.
+    // Loaded under the file log alone, so a warning it raises reaches the file
+    // before the global subscriber, which cannot be replaced, is installed.
     let phase = Instant::now();
     let (config, config_warnings) = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(file_layer()),
@@ -146,15 +145,13 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
     let startup_settings = config.in_force().clone();
 
-    let identity = thurbox::telemetry::Identity {
-        version: env!("THURBOX_VERSION").to_string(),
-        instance: thurbox::backend::instance::local_socket_name(),
+    let (bridge, bridge_error) = match thurbox::telemetry::init(
+        env!("THURBOX_VERSION"),
+        &thurbox::backend::instance::local_socket_name(),
+    ) {
+        Ok((bridge, logs_off)) => (bridge, logs_off),
+        Err(e) => (None, Some(format!("telemetry is off: {e}"))),
     };
-    let (bridge, bridge_error) =
-        match thurbox::telemetry::diagnostic::layer(&startup_settings.telemetry, &identity) {
-            Ok(bridge) => (bridge, None),
-            Err(e) => (None, Some(e)),
-        };
     tracing_subscriber::registry()
         .with(file_layer())
         .with(bridge)
@@ -419,7 +416,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // another as the registry's last owner drops it.
     drop(app);
     backends.shutdown_all();
-    thurbox::telemetry::diagnostic::shutdown();
+    thurbox::telemetry::shutdown();
     result
 }
 

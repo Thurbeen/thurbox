@@ -393,6 +393,19 @@ pub enum Phase {
     Releasing,
 }
 
+impl Phase {
+    /// Every phase, in lifecycle order: what a view or a metric counts over.
+    pub const ALL: &[Phase] = &[
+        Phase::Pending,
+        Phase::Spawning,
+        Phase::Spawned,
+        Phase::Briefed,
+        Phase::Stalled,
+        Phase::Concluded,
+        Phase::Releasing,
+    ];
+}
+
 /// Task status. TaskController owns every field but `result` and
 /// `declared`, which the worker writes through `fleet result` and `fleet
 /// declare`, `forge`, which ForgeController owns, `gateway`, which
@@ -589,6 +602,22 @@ pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered"];
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new phase fails to compile here until it is listed in `ALL`.
+    #[test]
+    fn every_phase_is_in_all() {
+        let listed = |p: Phase| match p {
+            Phase::Pending
+            | Phase::Spawning
+            | Phase::Spawned
+            | Phase::Briefed
+            | Phase::Stalled
+            | Phase::Concluded
+            | Phase::Releasing => Phase::ALL.contains(&p),
+        };
+        assert!(Phase::ALL.iter().copied().all(listed));
+        assert_eq!(Phase::ALL.len(), 7);
+    }
 
     #[test]
     fn a_task_runs_on_this_machine_unless_it_names_a_host() {

@@ -1010,8 +1010,8 @@ dependencies = [
  "fleet-plugin",
  "fleet-runtime",
  "fleet-store",
- "fleet-telemetry",
  "opentelemetry-proto",
+ "otel-env",
  "prost",
  "serde",
  "serde_json",
@@ -1100,6 +1100,8 @@ version = "0.0.0-dev"
 dependencies = [
  "fleet-api",
  "fleet-exec",
+ "opentelemetry",
+ "otel-env",
  "serde",
  "serde_json",
  "term-stream",
@@ -1113,15 +1115,6 @@ dependencies = [
  "jsonschema",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "fleet-telemetry"
-version = "0.0.0-dev"
-dependencies = [
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
 ]
 
 [[package]]
@@ -2408,6 +2401,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "otel-env"
+version = "0.0.0-dev"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+]
+
+[[package]]
 name = "outref"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3031,6 +3033,7 @@ dependencies = [
  "anyhow",
  "base64 0.23.1",
  "libc",
+ "otel-env",
  "proptest",
  "serde",
  "serde_json",
@@ -3660,9 +3663,8 @@ dependencies = [
  "notify-rust",
  "opentelemetry",
  "opentelemetry-appender-tracing",
- "opentelemetry-otlp",
  "opentelemetry-proto",
- "opentelemetry_sdk",
+ "otel-env",
  "process-wrap",
  "proptest",
  "prost",
@@ -4619,6 +4621,7 @@ dependencies = [
 name = "workspace-git"
 version = "0.0.0-dev"
 dependencies = [
+ "otel-env",
  "serde",
  "serde_json",
  "sha2 0.11.1",

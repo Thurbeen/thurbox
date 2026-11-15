@@ -234,18 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn the_diagnostic_log_bridge_stays_as_booted_until_restart() {
-        // Booted with the bridge off: turning it on needs a restart, and
-        // turning it back off returns to what is running, which does not.
-        let mut config = Config::detached(settings());
-        let mut on = settings();
-        on.telemetry.enabled = true;
-        on.telemetry.export_diagnostic_logs = true;
-        assert_eq!(config.adopt(on), Reloaded::NeedsRestart);
-        assert_eq!(config.adopt(settings()), Reloaded::Live);
-    }
-
-    #[test]
     fn every_live_flag_survives_a_round_trip() {
         // Flipping every live flag must change every one of them.
         let mut config = Config::detached(settings());

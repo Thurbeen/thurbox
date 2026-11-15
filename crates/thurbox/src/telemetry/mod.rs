@@ -1,60 +1,76 @@
-//! The interface's own `tracing` events over OTLP, opt-in (ADR-38):
-//! [`diagnostic`]. Session metrics and event logs are Fleet's
-//! (`fleet-telemetry`).
+//! The interface's own telemetry (ADR-38), configured by the standard OTEL_*
+//! variables through `otel-env`, as every program of the repository is
+//! (docs/observability.md): its WARN-and-above `tracing` events as OTLP
+//! logs, and a span around each Fleet command it runs, carried to `fleet` as
+//! `TRACEPARENT`.
+//!
+//! Built only by the interface: it is long-running, so the batch processors'
+//! background threads have time to export. A short-lived `thurbox-cli`
+//! command — above all `session signal`, which every agent hook runs — never
+//! builds it, or each hook would wait on a network round-trip, and on a
+//! timeout while the collector is down.
 
-pub mod diagnostic;
+use std::sync::OnceLock;
 
-use std::time::Duration;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use otel_env::{KeyValue, Telemetry};
+use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::Layer;
 
-use opentelemetry::KeyValue;
-use opentelemetry_sdk::Resource;
+/// The installed providers, kept for [`shutdown`]: the log layer itself is
+/// moved into the subscriber, which is global and never dropped.
+static TELEMETRY: OnceLock<std::sync::Mutex<Option<Telemetry>>> = OnceLock::new();
 
-use crate::session::settings::TelemetrySettings;
-
-/// How long one request may take, retries included.
-const EXPORT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The one protocol thurbox's own exporter speaks.
-const HTTP_PROTOBUF: &str = "http/protobuf";
-
-/// Who is exporting: the OTLP resource every record carries.
-#[derive(Debug, Clone)]
-pub struct Identity {
-    pub version: String,
-    /// The multiplexer socket this instance runs on, which tells a sandbox's
-    /// telemetry apart from the real instance's on one machine.
-    pub instance: String,
+/// Install the providers the OTEL_* variables ask for, as `service.name`
+/// `thurbox` at `version`, and answer the log bridge layer when the logs
+/// signal is exported. `instance` is the multiplexer socket this instance
+/// runs on, which tells a sandbox's telemetry apart from the real
+/// instance's on one machine.
+///
+/// The layer has its own filter: WARN and above, from thurbox's own code only
+/// (its multiplexer runtime, `runtime_mux`, included). The file's
+/// `thurbox=debug` is far too much to ship, and the exporter's own HTTP stack
+/// logs through `tracing` too, so letting other targets through would feed
+/// each export back into the next.
+///
+/// An error is the reason nothing is exported, and the second value why the
+/// logs alone are not (an unsupported logs exporter or protocol), for the
+/// caller to log once the subscriber is up.
+pub fn init<S>(
+    version: &str,
+    instance: &str,
+) -> Result<(Option<impl Layer<S>>, Option<String>), String>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    let telemetry = otel_env::init(
+        "thurbox",
+        version,
+        &[KeyValue::new("thurbox.instance", instance.to_string())],
+        true,
+    )?;
+    let logs_off = telemetry
+        .logs_off()
+        .map(|why| format!("diagnostic logs are not exported: {why}"));
+    let bridge = telemetry.logs().map(|provider| {
+        let filter = Targets::new()
+            .with_target("thurbox", LevelFilter::WARN)
+            .with_target("runtime_mux", LevelFilter::WARN);
+        OpenTelemetryTracingBridge::new(provider).with_filter(filter)
+    });
+    let _ = TELEMETRY.set(std::sync::Mutex::new(Some(telemetry)));
+    Ok((bridge, logs_off))
 }
 
-fn resource(identity: &Identity) -> Resource {
-    let host = sysinfo::System::host_name().unwrap_or_default();
-    Resource::builder_empty()
-        .with_attributes([
-            KeyValue::new("service.name", "thurbox"),
-            KeyValue::new("service.version", identity.version.clone()),
-            KeyValue::new("host.name", host),
-            KeyValue::new("thurbox.instance", identity.instance.clone()),
-        ])
-        .build()
-}
-
-fn signal_url(settings: &TelemetrySettings, signal: &str) -> String {
-    format!("{}/v1/{signal}", settings.endpoint.trim_end_matches('/'))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_signal_url_appends_the_path_once() {
-        let mut settings = TelemetrySettings::default();
-        for endpoint in ["http://collector:4318", "http://collector:4318/"] {
-            settings.endpoint = endpoint.into();
-            assert_eq!(
-                signal_url(&settings, "logs"),
-                "http://collector:4318/v1/logs"
-            );
-        }
+/// Send what the batch processors still hold and stop them, within
+/// `otel_env::SHUTDOWN_BOUND`. Called on the interface's clean exit; a
+/// process killed by a signal loses at most the last batch interval's
+/// records, which the file log still has.
+pub fn shutdown() {
+    let taken = TELEMETRY
+        .get()
+        .and_then(|t| t.lock().ok().and_then(|mut t| t.take()));
+    if let Some(telemetry) = taken {
+        telemetry.shutdown();
     }
 }

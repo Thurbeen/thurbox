@@ -28,6 +28,7 @@ use fleet_manager::{
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::{FileStore, SystemClock};
+use otel_env::KeyValue;
 use serde_json::{Value, json};
 
 use crate::config::{CONFIG_VERSION, Config, default_data_dir};
@@ -468,9 +469,9 @@ fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let name = matches.subcommand_name().unwrap_or_default().to_string();
-    let telemetry = fleet_telemetry::init(VERSION).unwrap_or_else(|why| {
+    let telemetry = otel_env::init("fleet", VERSION, &[], false).unwrap_or_else(|why| {
         eprintln!("warning: telemetry is off: {why}");
-        fleet_telemetry::Telemetry::default()
+        otel_env::Telemetry::default()
     });
     let command = || match run(cli) {
         Ok(()) => 0,
@@ -483,12 +484,32 @@ fn main() -> ExitCode {
         }
     };
     // `up` runs until Ctrl-C: each of its sweeps is a trace of its own.
+    // Any other command is the root span `fleet NAME`, under the span its
+    // caller named in TRACEPARENT.
     let code = if name == "up" {
         command()
     } else {
-        telemetry.command(&name, command)
+        let root = otel_env::root(
+            "fleet",
+            format!("fleet {name}"),
+            vec![KeyValue::new("fleet.command", name.clone())],
+        );
+        let code = command();
+        root.set(KeyValue::new("process.exit.code", i64::from(code)));
+        if code != 0 {
+            root.fail(format!("exit {code}"));
+        }
+        code
     };
-    telemetry.shutdown();
+    // A one-shot command answers whoever ran it (thurbox's probes, an agent's
+    // hook), often under a deadline: its output is written, and its flush
+    // stays inside the call bound. Only `up`, stopped by Ctrl-C, waits the
+    // longer bound for its last sweeps (docs/observability.md).
+    if name == "up" {
+        telemetry.shutdown();
+    } else {
+        telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);
+    }
     ExitCode::from(code)
 }
 

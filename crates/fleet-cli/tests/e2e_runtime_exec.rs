@@ -3233,3 +3233,203 @@ fn a_runtime_without_browse_is_refused_by_name() {
         "only the manifest is asked: {calls}"
     );
 }
+
+/// One OpenTelemetry setup traces a Task across the programs: the standard
+/// OTEL_* variables, set where `fleet` runs, turn export on in `fleet`, in
+/// the `runtime-mux` it runs and in the `workspace-git` that one runs, each
+/// under its own `service.name`. `TRACEPARENT` carries the context over each
+/// process boundary, and every span about the Task, from its spawn to its
+/// release, is in one trace. The agent's window inherits none of it.
+#[test]
+fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
+    use support::otlp::{Collector, Span};
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let collector = Collector::start();
+    let sockets = Sockets::new("otel");
+    let mut env = mux_env("runtime-mux-otel", &program, &sockets);
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+    env.set_var(
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "deployment.environment.name=e2e",
+    );
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(
+        &harness,
+        "#!/bin/sh\nenv > \"$PWD/env.log\"\nexec sleep 300\n",
+    )
+    .expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+    let env_log = work.join("env.log");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !env_log.is_file() {
+        assert!(Instant::now() < deadline, "the agent never started");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let listed = String::from_utf8_lossy(
+        &sockets
+            .tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"])
+            .stdout,
+    )
+    .into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    env.fleet(&["delete", "task", "t1"]).ok();
+    sockets.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1"));
+        std::thread::sleep(Duration::from_millis(200));
+        env.reconcile();
+    }
+
+    let spans = collector.spans();
+    let of = |service: &str, name: &str| -> Vec<Span> {
+        spans
+            .iter()
+            .filter(|s| s.resource["service.name"] == service && s.name == name)
+            .cloned()
+            .collect()
+    };
+    let one = |service: &str, name: &str| -> Span {
+        of(service, name).into_iter().next().unwrap_or_else(|| {
+            let names: std::collections::BTreeSet<_> = spans
+                .iter()
+                .map(|s| format!("{} {}", s.resource["service.name"], s.name))
+                .collect();
+            panic!("no `{name}` span from {service} in {names:#?}")
+        })
+    };
+    for span in &spans {
+        assert_eq!(
+            span.resource["deployment.environment.name"], "e2e",
+            "{span:#?}"
+        );
+    }
+    let spawn = one("fleet", "effect spawn");
+    let release = one("fleet", "effect release");
+    let start = one("fleet", "runtime start");
+    let mux_start = one("runtime-mux", "runtime-mux start");
+    let mux_workspace = one("runtime-mux", "runtime-mux workspace");
+    let make = one("workspace-git", "workspace-git make");
+    let mux_stop = one("runtime-mux", "runtime-mux stop");
+    // The Task's lifecycle is one trace, over several `fleet reconcile`
+    // commands and three programs.
+    let trace = &spawn.trace_id;
+    for span in [
+        &release,
+        &start,
+        &mux_start,
+        &mux_workspace,
+        &make,
+        &mux_stop,
+    ] {
+        assert_eq!(&span.trace_id, trace, "{span:#?}");
+    }
+    assert_eq!(start.parent, spawn.span_id, "{start:#?}");
+    assert_eq!(start.attrs["fleet.runtime.verb"], "start", "{start:#?}");
+    assert_eq!(start.attrs["fleet.outcome"], "known", "{start:#?}");
+    assert_eq!(mux_start.parent, start.span_id, "{mux_start:#?}");
+    let workspace = spans
+        .iter()
+        .find(|s| s.span_id == mux_workspace.parent)
+        .expect("fleet's workspace call");
+    assert_eq!(workspace.name, "runtime workspace", "{workspace:#?}");
+    assert_eq!(make.parent, mux_workspace.span_id, "{make:#?}");
+
+    let all = collector.points();
+    let has = |metric: &str, attr: &str, value: &str| {
+        all.iter()
+            .any(|p| p.metric == metric && p.attrs.get(attr).is_some_and(|v| v == value))
+    };
+    for (metric, attr, value) in [
+        ("fleet.tasks", "fleet.phase", "Pending"),
+        ("fleet.sessions", "fleet.session.state", "Paused"),
+        (
+            "fleet.reconcile.duration",
+            "fleet.controller",
+            "TaskController",
+        ),
+        ("fleet.effects", "fleet.effect", "spawn"),
+        ("fleet.runtime.call.duration", "fleet.runtime.verb", "start"),
+        ("fleet.runtime.call.duration", "fleet.outcome", "known"),
+    ] {
+        assert!(
+            has(metric, attr, value),
+            "{metric} {attr}={value} in {all:#?}"
+        );
+    }
+
+    let seen = fs::read_to_string(&env_log).expect("the agent's environment");
+    for line in seen.lines() {
+        assert!(
+            !line.starts_with("OTEL_") && !line.starts_with("TRACEPARENT="),
+            "the agent inherited {line}"
+        );
+    }
+}
+
+/// A collector that accepts and never answers changes no runtime answer:
+/// `runtime-mux` and the `workspace-git` it runs answer first and flush
+/// their telemetry within a bound far inside Fleet's call deadline, so a
+/// Task still starts under a short `callTimeoutMs`.
+#[test]
+fn a_stalled_collector_never_times_out_a_runtime_call() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", stalled.local_addr().expect("address"));
+    let sockets = Sockets::new("otel-stall");
+    let mut env = mux_env("runtime-mux-otel-stall", &program, &sockets);
+    let config = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        config.replace(
+            "callTimeoutMs = 10000",
+            "callTimeoutMs = 2000\nworkspaceTimeoutMs = 2000",
+        ),
+    )
+    .expect("config");
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    assert!(
+        status["session"]["id"].is_string(),
+        "the start answered within the deadline: {status:#}"
+    );
+    drop(stalled);
+}

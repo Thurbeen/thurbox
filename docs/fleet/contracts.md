@@ -70,14 +70,13 @@ fleet-controllers  pure           controllers and gate   -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
 fleet-runtime      adapter        exec, fake, term-bridge -> api, exec,
-term-stream
+term-stream, otel-env
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
 fleet-gateway      adapter        curl (Slack, Discord), fake -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
-fleet-telemetry    adapter        OTLP export, off by default
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
 fleet-cli          edge           the `fleet` binary     -> api, manager, store,
-runtime, forge, gateway, plugin, telemetry
+runtime, forge, gateway, plugin, otel-env
 arch-rules         tooling        the architecture test
 fleet-dev          tooling        `cargo xtask`: gate and release
 ```
@@ -125,11 +124,12 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   the chat writes `open`, `post` and `react`, is held only by fleet-api,
   fleet-gateway, fleet-manager and fleet-cli. The CLI may not call the
   port's `history`, `capabilities`, `post` or `react`.
-- fleet-telemetry depends on no other Fleet crate and is depended on by the
-  CLI alone. Only fleet-telemetry reaches `opentelemetry_sdk` or
-  `opentelemetry_otlp`: the providers, batching, exporter and shutdown bound
-  are in one crate. The manager records through the `opentelemetry` API,
-  a no-op without a provider; the pure crates reach no telemetry at all.
+- otel-env, the telemetry crate every program shares, depends on no
+  other crate of the repository. Only otel-env reaches `opentelemetry_sdk`
+  or `opentelemetry_otlp`: the providers, batching, exporter and shutdown
+  bound are in one crate. The manager and the runtime adapter record through
+  the `opentelemetry` API, a no-op without a provider; the pure crates reach
+  no telemetry at all.
 
 Each rule has a negative fixture that breaks it, and the test requires the
 checker to report exactly that rule. The pure crates also carry
@@ -1346,7 +1346,12 @@ its parent, against the fake gateway and the fake host.
 metrics of a Task's lifecycle and of forge polls arrive with their
 identities and outcomes and without a brief, message or environment value;
 nothing is sent when export is off; an unreachable collector changes no
-command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
+command; a caller's `TRACEPARENT` parents a command's root span.
+`e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
+`e2e_runtime_exec` runs a Task through `runtime-mux` and `workspace-git`
+with one `OTEL_EXPORTER_OTLP_ENDPOINT`: the spans of all three programs
+arrive in the Task's one trace, the key metrics arrive, and the agent's
+window inherits no `OTEL_*` variable or `TRACEPARENT`.
 `e2e_runtime_exec` runs `fleet attach` against the reference script, whose
 `tty` answer comes back bridged, and against `runtime-mux`, whose stream a
 test view drives: snapshot, input, output, and a detach that leaves the

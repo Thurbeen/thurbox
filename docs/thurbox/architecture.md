@@ -1123,35 +1123,44 @@ in is still a server it cannot reach. The orphan left by an older build next to
 a live server is reported in the log and documented (`docs/thurbox/config.md` → An
 orphaned tmux server); killing it is the only remedy.
 
-## ADR-38: The interface's diagnostic logs are bridged to OTLP, opt-in
+## ADR-38: The interface's own telemetry reads the standard OTEL_* variables
 
-**Choice**: with `export_diagnostic_logs` on (and `[telemetry] enabled`), the
-interface adds an `opentelemetry-appender-tracing` layer to its `tracing`
-subscriber, beside the file appender, sending through a batch log processor
-to the same collector (`telemetry::diagnostic`). The layer has a filter of its
-own: WARN and above, from thurbox's own targets only. The file log keeps its
-`thurbox=debug` level. Off by default and
-restart-only. `thurbox-cli` never builds the layer.
+**Choice**: the interface installs its telemetry through `otel-env`, the
+crate every program of the repository shares (`telemetry`). The standard
+`OTEL_*` variables turn it on, as they do for `fleet`, `runtime-mux` and
+`workspace-git`; `settings.toml` has no telemetry table. When
+`OTEL_LOGS_EXPORTER=otlp` turns the logs signal on (an endpoint alone does
+not, as log records carry text), the interface adds an `opentelemetry-appender-tracing` layer
+to its `tracing` subscriber, beside the file appender. The layer has a
+filter of its own: WARN and above, from thurbox's own targets only. The
+file log keeps its `thurbox=debug` level. When the traces signal is on,
+each Fleet command the interface runs is a `fleet VERB` span, and the
+`fleet` it starts receives that span as `TRACEPARENT`. `thurbox-cli` never
+installs telemetry.
 
-**Why**: the interface is the one long-running process, so a batch processor
-has time to export, from a thread of its own, without holding up the loop.
-A short-lived `thurbox-cli` command would pay a network round-trip per call,
+**Why**: one configuration story for the whole system
+([Observability](../observability.md)). A `[telemetry]` table duplicated
+`OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and ignored the rest of the
+standard, so the interface and Fleet were turned on in two different ways.
+The interface is the one long-running process, so a batch processor has time
+to export, from a thread of its own, without holding up the loop. A
+short-lived `thurbox-cli` command would pay a network round-trip per call,
 and a timeout per call while the collector is down. WARN and above, because
-the file's level is far too much to ship. Thurbox's own
-targets only, because the exporter's HTTP stack logs through `tracing` too and
-would otherwise feed every export into the next. The settings are loaded under
-the file log alone before the global subscriber is installed: whether the
-bridge exists depends on them, and a global subscriber cannot be replaced.
+the file's level is far too much to ship. Thurbox's own targets only,
+because the exporter's HTTP stack logs through `tracing` too and would
+otherwise feed every export into the next. The variables are read before
+the global subscriber is installed: whether the bridge exists depends on
+them, and a global subscriber cannot be replaced.
 
 **Limits**: plain HTTP and `http/protobuf` only: no TLS stack is in the tree,
-so an `https` collector is reached through a local Collector. Another protocol
-builds no bridge and logs why to the file. The batch is flushed on a clean
-exit; an exit by signal or panic loses what the processor still held, at most
-about a second of records, which the file log has. A clean exit with the
-collector unreachable waits out the request timeout once. Records carry what
-the log lines carry — paths, session names, host names — which is why the
-bridge is opt-in. A change to the switch, or to the endpoint, protocol or
-headers while it is on, reads as restart-only.
+so an `https` collector is reached through a local Collector. Another
+protocol turns export off and logs why to the file. The batches are flushed
+on a clean exit, within two seconds; an exit by signal or panic loses what
+the processors still held, which the file log has. Records carry what the
+log lines carry — paths, session names, machine names — which is why the
+logs signal needs its own explicit opt-in. The variables are read
+at start: a change applies on the next start. `TRACEPARENT` does not cross a
+launcher, so a Fleet on another machine starts its own traces.
 
 ## ADR-39: Errors keep their classification across operation boundaries
 

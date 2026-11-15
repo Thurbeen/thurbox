@@ -100,6 +100,7 @@ docs/
 ├── README.md                  the system: this page
 ├── constitution.md            the rules for every component, and each one's own
 ├── where-sessions-run.md      Fleets and places: where a session runs
+├── observability.md           OpenTelemetry: one setup for every program
 ├── components.svg
 ├── thurbox/                   the interface
 │   ├── README.md              its index
@@ -111,7 +112,7 @@ docs/
 │   ├── README.md              its index
 │   ├── architecture.md        components, ports, flow, views (+ .svg)
 │   ├── contracts.md           guarantees and their tests
-│   ├── configuration.md       init, fleet.toml, environment, telemetry
+│   ├── configuration.md       init, fleet.toml, environment
 │   ├── controllers/           one page per controller (+ its state-machine .svg)
 │   └── resources/             one page per resource kind
 └── runtime/                   the runtimes

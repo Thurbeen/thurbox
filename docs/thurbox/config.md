@@ -745,41 +745,12 @@ a place.
 
 Read at startup only.
 
-### `[telemetry]` — OpenTelemetry for the interface
+### OpenTelemetry
 
-Configures the interface's own diagnostic logs over OTLP (ADR-38). Session
-metrics and session event logs are Fleet's (`fleet-telemetry`).
-
-```toml
-[telemetry]
-enabled = false
-endpoint = "http://localhost:4318"
-protocol = "http/protobuf"
-headers = {}                 # e.g. { authorization = "Bearer …" }
-export_diagnostic_logs = false
-```
-
-The agents' own telemetry is Fleet's to configure.
-
-#### thurbox's own diagnostic logs
-
-`export_diagnostic_logs = true` (with `enabled`) sends the interface's own
-log lines at `WARN` and above to the collector's `/v1/logs`. The resource is
-`service.name=thurbox`, `service.version`, `host.name` and `thurbox.instance`
-(the multiplexer socket, which tells a sandbox apart from the real instance).
-They serve debugging thurbox itself, so the switch is off by default.
-
-- **Interface only.** `thurbox-cli` never sends its log lines.
-- **The log file is unchanged.** `thurbox.log.<date>` keeps every level it had
-  and is the only log while telemetry is off or the collector is unreachable.
-- **Restart-only.** The interface builds its logging once, at start; changing
-  the switch, or the endpoint, protocol or headers while it is on, applies on
-  the next start.
-- **What they contain**: the same text as the log file, which can name paths,
-  sessions and hosts.
-- **Plain HTTP and `http/protobuf` only.** Reach an `https` backend through a
-  local Collector. Each request has a 5-second timeout. Records still queued
-  when the interface is killed by a signal are lost; the log file has them.
+`settings.toml` has no telemetry table. The standard `OTEL_*` environment
+variables turn on the interface's export, the same way as for every other
+program ([Observability](../observability.md)). A `[telemetry]` table left
+from an older file is reported as no longer read.
 
 ### `[notifications]` — OS notification settings
 

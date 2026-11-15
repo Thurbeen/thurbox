@@ -20,9 +20,10 @@ pub const SEED_SETTINGS_TOML: &str = r#"# Thurbox settings  —  ~/.config/thurb
 #
 # Unknown keys are reported on startup (and fail `thurbox-cli config
 # validate`) but don't break the load. A key thurbox 2.x read and 3.0 no
-# longer does (`multiplexer`, `[remote]`, `[features] soft_delete`, and the
-# agent keys of `[telemetry]`) is reported on startup as no longer read, and
-# passes `config validate`.
+# longer does (`multiplexer`, `[remote]`, `[features] soft_delete` and
+# `[telemetry]`) is reported on startup as no longer read, and passes
+# `config validate`. Telemetry is the standard OTEL_* environment variables
+# (docs/observability.md).
 
 config_version = 1
 
@@ -99,17 +100,6 @@ config_version = 1
 # [clipboard]
 # provider = "auto"             # auto | native | osc52 | none
 # copy_on_select = true
-
-# OpenTelemetry for the interface itself: export_diagnostic_logs bridges its
-# own WARN-and-above logs, which can name paths, sessions and hosts, to an OTLP
-# collector over plain HTTP (point an https backend's endpoint at a local
-# Collector). Restart-only. The agents' own telemetry is Fleet's to configure.
-# [telemetry]
-# enabled = false
-# endpoint = "http://localhost:4318"
-# protocol = "http/protobuf"
-# headers = {}                  # e.g. { authorization = "Bearer ..." }
-# export_diagnostic_logs = false
 
 # The Fleets that manage sessions. Every session is a Task of a Fleet: the
 # interface follows them with `fleet watch`, creates, sends to and deletes
@@ -356,8 +346,6 @@ mod tests {
             "sound",
             "min_interval_secs",
             "backend",
-            "[telemetry]",
-            "export_diagnostic_logs",
             "[fleets.",
             "transport",
             "program",
@@ -616,13 +604,7 @@ mod tests {
 
         let (settings, warnings) = load_or_seed_with_warnings();
         assert_eq!(settings.scrollback_lines, 7, "the rest of the file applies");
-        for key in [
-            "multiplexer",
-            "features.soft_delete",
-            "remote",
-            "telemetry.per_session",
-            "telemetry.configure_agents",
-        ] {
+        for key in ["multiplexer", "features.soft_delete", "remote", "telemetry"] {
             assert!(
                 warnings
                     .iter()

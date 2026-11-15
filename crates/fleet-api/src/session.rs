@@ -59,6 +59,15 @@ pub enum SessionState {
 }
 
 impl SessionState {
+    /// Every state: what a view or a metric counts over.
+    pub const ALL: &[SessionState] = &[
+        SessionState::Running,
+        SessionState::Idle,
+        SessionState::Paused,
+        SessionState::Lost,
+        SessionState::Gone,
+    ];
+
     /// Fold the runtime's answers about `session` into a state, or `None`
     /// when nothing Known was answered. The strongest proof wins: gone over
     /// lost, lost over paused, paused over the agent's activity, and any
@@ -142,6 +151,20 @@ pub fn uid_of_session_key(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new state fails to compile here until it is listed in `ALL`.
+    #[test]
+    fn every_session_state_is_in_all() {
+        let listed = |s: SessionState| match s {
+            SessionState::Running
+            | SessionState::Idle
+            | SessionState::Paused
+            | SessionState::Lost
+            | SessionState::Gone => SessionState::ALL.contains(&s),
+        };
+        assert!(SessionState::ALL.iter().copied().all(listed));
+        assert_eq!(SessionState::ALL.len(), 5);
+    }
 
     fn session() -> SessionRef {
         SessionRef {

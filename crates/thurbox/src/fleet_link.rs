@@ -191,7 +191,11 @@ impl FleetLink {
     /// `program` with `args` on the Fleet's machine: the one place a call
     /// becomes a process.
     fn build(&self, program: &str, args: &[&str]) -> Command {
-        crate::shell::launch(self.launcher.as_ref(), program, args)
+        let mut cmd = crate::shell::launch(self.launcher.as_ref(), program, args);
+        if self.launcher.is_none() {
+            carry_trace(&mut cmd);
+        }
+        cmd
     }
 
     /// The home directory of the machine this Fleet runs on, as that
@@ -250,6 +254,7 @@ impl FleetLink {
         args: &[&str],
         timeout: std::time::Duration,
     ) -> Result<std::process::Output, String> {
+        let _span = command_span(args.first().copied().unwrap_or_default());
         let mut command = self.command(args);
         command
             .stdin(Stdio::null())
@@ -337,6 +342,7 @@ impl FleetLink {
     /// it wrote, else all of its stderr.
     pub fn run(&self, args: &[&str], input: Option<&str>) -> Result<(), String> {
         let verb = args.first().copied().unwrap_or_default();
+        let _span = command_span(verb);
         let mut child = self
             .command(args)
             .stdin(if input.is_some() {
@@ -365,6 +371,35 @@ impl FleetLink {
             .find_map(|line| line.strip_prefix("error: "))
             .unwrap_or(stderr.trim());
         Err(format!("fleet {verb}: {why}"))
+    }
+}
+
+/// The span `fleet VERB` around one command the interface runs and waits
+/// for ([`FleetLink::run`], [`FleetLink::bounded_output`]), current until
+/// dropped: the `fleet` it starts joins its trace through
+/// `TRACEPARENT`. A no-op unless the OTEL_* variables turned tracing on.
+fn command_span(verb: &str) -> opentelemetry::ContextGuard {
+    use opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
+    let tracer = opentelemetry::global::tracer("thurbox");
+    let span = tracer
+        .span_builder(format!("fleet {verb}"))
+        .with_kind(SpanKind::Client)
+        .with_attributes([opentelemetry::KeyValue::new(
+            "fleet.command",
+            verb.to_string(),
+        )])
+        .start(&tracer);
+    opentelemetry::Context::current_with_span(span).attach()
+}
+
+/// Give a local `fleet` the current span as its `TRACEPARENT`, and none of
+/// the interface's own service name: the variables do not cross a launcher,
+/// and a Fleet on another machine reads its own (docs/observability.md).
+fn carry_trace(cmd: &mut Command) {
+    cmd.env_remove("OTEL_SERVICE_NAME")
+        .env_remove(otel_env::TRACEPARENT);
+    if let Some(parent) = otel_env::traceparent() {
+        cmd.env(otel_env::TRACEPARENT, parent);
     }
 }
 
@@ -699,6 +734,53 @@ mod tests {
             .chain(command.get_args())
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn env_of(command: &Command, name: &str) -> Option<Option<String>> {
+        command
+            .get_envs()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    /// A local `fleet` gets the current span as its `TRACEPARENT`, and never
+    /// the interface's service name; a Fleet behind a launcher gets neither.
+    #[test]
+    fn a_local_fleet_joins_the_current_trace() {
+        use opentelemetry::trace::{
+            SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+        };
+        let link = FleetLink::local("fleet");
+        let bare = link.command(&["get"]);
+        assert_eq!(env_of(&bare, "TRACEPARENT"), Some(None), "removed");
+        assert_eq!(env_of(&bare, "OTEL_SERVICE_NAME"), Some(None), "removed");
+        let sc = SpanContext::new(
+            TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4736").unwrap(),
+            SpanId::from_hex("00f067aa0ba902b7").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let _guard = opentelemetry::Context::new()
+            .with_remote_span_context(sc)
+            .attach();
+        assert_eq!(
+            env_of(&link.command(&["get"]), "TRACEPARENT"),
+            Some(Some(
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()
+            ))
+        );
+        let remote = FleetLink::of(
+            "box",
+            &FleetDef {
+                transport: FleetTransport::Ssh {
+                    ssh: "devbox".into(),
+                    ssh_opts: Vec::new(),
+                },
+                ..FleetDef::default()
+            },
+        );
+        assert_eq!(env_of(&remote.command(&["get"]), "TRACEPARENT"), None);
     }
 
     /// On this machine the call is the program and its arguments, as they

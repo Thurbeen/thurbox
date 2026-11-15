@@ -48,7 +48,7 @@ fn this_workspace_obeys_its_architecture() {
         "fleet-forge",
         "fleet-plugin",
         "fleet-gateway",
-        "fleet-telemetry",
+        "otel-env",
         "fleet-dev",
     ] {
         assert!(
@@ -933,36 +933,35 @@ fn the_rules_keep_spawning_in_fleet_exec() {
     }
 }
 
-/// Telemetry's rules, against the real rules file: fleet-telemetry is an
-/// adapter on no other Fleet crate, the CLI alone wires it, both pure
-/// crates probe its edge, and the SDK and the OTLP exporter are named by it
-/// alone.
+/// Telemetry's rules, against the real rules file: otel-env is a shared
+/// crate on no other, both pure crates probe its edge, and the SDK and the
+/// OTLP exporter are named by it alone.
 #[test]
-fn the_rules_keep_the_sdk_and_exporter_in_fleet_telemetry() {
+fn the_rules_keep_the_sdk_and_exporter_in_otel_env() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
-    let telemetry = rules
-        .crates
-        .get("fleet-telemetry")
-        .expect("fleet-telemetry is governed");
-    assert_eq!(telemetry.role, arch_rules::Role::Adapter);
+    let telemetry = rules.crates.get("otel-env").expect("otel-env is governed");
+    assert_eq!(telemetry.role, arch_rules::Role::Component);
     assert!(telemetry.deps.is_empty());
     let dependants: Vec<&String> = rules
         .crates
         .iter()
-        .filter(|(_, r)| r.deps.iter().any(|d| d == "fleet-telemetry"))
+        .filter(|(_, r)| r.deps.iter().any(|d| d == "otel-env"))
         .map(|(n, _)| n)
         .collect();
     assert_eq!(
         dependants,
-        vec!["fleet-cli"],
-        "only the edge wires telemetry"
+        vec![
+            "fleet-cli",
+            "fleet-runtime",
+            "runtime-mux",
+            "thurbox",
+            "workspace-git"
+        ],
+        "each program, and the runtime adapter that carries trace context"
     );
     for pure in ["fleet-api", "fleet-controllers"] {
         assert!(
-            rules.crates[pure]
-                .probes
-                .iter()
-                .any(|p| p == "fleet-telemetry"),
+            rules.crates[pure].probes.iter().any(|p| p == "otel-env"),
             "{pure} probes the telemetry edge"
         );
     }
@@ -972,7 +971,7 @@ fn the_rules_keep_the_sdk_and_exporter_in_fleet_telemetry() {
             .iter()
             .find(|r| r.path == path)
             .unwrap_or_else(|| panic!("{path} is not restricted"));
-        assert_eq!(r.allowed, vec!["fleet-telemetry".to_string()], "{path}");
+        assert_eq!(r.allowed, vec!["otel-env".to_string()], "{path}");
     }
 }
 

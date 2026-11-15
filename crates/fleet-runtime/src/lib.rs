@@ -20,6 +20,7 @@ pub mod fake;
 pub mod integration;
 pub mod program;
 pub mod signals;
+mod telemetry;
 
 pub use exec::{ExecProgram, ExecRuntime};
 pub use fake::{FakeHost, FakeRuntime, FakeSession, FakeWorkspace, Fault};

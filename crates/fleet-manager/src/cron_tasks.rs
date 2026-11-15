@@ -108,7 +108,9 @@ impl Manager<'_> {
             let Action::RetireScheduled { name, uid, running } = &effect.action else {
                 continue;
             };
-            let outcome = self.retire_scheduled(name, uid, &obj.metadata.uid, *running, lease);
+            let outcome = telemetry::effect(obj, effect, || {
+                self.retire_scheduled(name, uid, &obj.metadata.uid, *running, lease)
+            });
             if let Observation::Unknown { why } = &outcome {
                 report
                     .unknowns
@@ -126,7 +128,9 @@ impl Manager<'_> {
         }
         for create in &plan.creates {
             *lease = self.store.renew_lease(lease, ttl)?;
-            let outcome = self.create_scheduled(&create.object, &obj.metadata.uid, lease);
+            let outcome = telemetry::effect_named(obj, CREATE_ACTION, || {
+                self.create_scheduled(&create.object, &obj.metadata.uid, lease)
+            });
             if let Observation::Unknown { why } = &outcome {
                 report
                     .unknowns
