@@ -65,8 +65,9 @@ Status: implemented.
 1. Run the installer, `scripts/install.sh` (`install.ps1` on Windows). It
    installs thurbox, `fleet` and `runtime-mux` together. Also install a
    multiplexer and a coding agent.
-2. Run `fleet init`.
-3. Start thurbox. thurbox starts `fleet up` when no manager runs.
+2. Start thurbox. On a machine with no Fleet config, it runs `fleet init`
+   first, which writes the multiplexer runtime and its `local` place.
+   thurbox then starts `fleet up` when no manager runs.
 
 Each session runs on `local`: the laptop.
 

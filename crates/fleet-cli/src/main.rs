@@ -525,11 +525,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
         let root = default_data_dir()
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
         let written = bootstrap::init(&path, &root, cli.data_dir.as_deref()).map_err(fail)?;
-        println!(
-            "{} {}; run fleet up (runtime-mux, tmux and an authenticated harness are required)",
-            if written { "initialized" } else { "kept" },
-            path.display()
-        );
+        let config = Config::load(&path).map_err(fail)?;
+        print!("{}", init_summary(written, &path, &config));
         return Ok(());
     }
     let config = match &config_path {
@@ -1720,6 +1717,42 @@ fn runtime_places(config: &Config) -> Vec<Value> {
 
 /// `fleet doctor`: each check's finding, classified by
 /// `fleet_api::doctor`, and a failure when any check failed.
+/// What `fleet init` set up and what comes next, in a few lines: the
+/// config, the places sessions run in, the coding agents on PATH, and the
+/// commands that follow. A first-time user reads this, so it names the
+/// next command rather than the concepts.
+fn init_summary(written: bool, path: &Path, config: &Config) -> String {
+    let mut out = format!(
+        "{} {}\n",
+        if written { "initialized" } else { "kept" },
+        path.display()
+    );
+    let places: Vec<String> = config.places().into_iter().map(|p| p.id).collect();
+    if !places.is_empty() {
+        out.push_str(&format!("  sessions run in: {}\n", places.join(", ")));
+    }
+    let path_var = std::env::var_os("PATH");
+    let mut agents: Vec<String> = Vec::new();
+    for p in fleet_api::harness::installed().list() {
+        let found = fleet_runtime::program::find(&p.program, path_var.as_deref()).is_some();
+        if found && !agents.contains(&p.program) {
+            agents.push(p.program.clone());
+        }
+    }
+    if agents.is_empty() {
+        out.push_str(
+            "  no coding agent found on PATH: install one (claude, codex, opencode, ...)\n",
+        );
+    } else {
+        out.push_str(&format!("  coding agents found: {}\n", agents.join(", ")));
+    }
+    // Fleet runs without thurbox, so both ways to start are named.
+    out.push_str("next: run `thurbox` and press ctrl+n to start a session,\n");
+    out.push_str("      or run `fleet up` and `fleet apply` without it\n");
+    out.push_str("      `fleet doctor` checks this machine\n");
+    out
+}
+
 fn cmd_doctor(
     config: &Config,
     profiles: &fleet_api::harness::Profiles,

@@ -199,6 +199,20 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Fleet on this machine. A command goes to its session's own Fleet, a
     // creation to the Fleet in force.
     let fleets = thurbox::fleet_link::Fleets::of(&startup_settings);
+    // Before any watch starts `fleet up`, which on a machine never set up
+    // would run with no runtime at all.
+    for link in fleets.all() {
+        match link.set_up() {
+            Some(Ok(path)) => startup_notices.push(format!(
+                "Fleet set up: {}. Press ctrl+n to start a session.",
+                path.display()
+            )),
+            Some(Err(why)) => startup_notices.push(format!(
+                "Fleet is not set up ({why}). Run `fleet init`, then `thurbox-cli doctor`."
+            )),
+            None => {}
+        }
+    }
     let fleet = fleets.in_force().clone();
     let links = fleets.all().to_vec();
     // Automations fire while the interface runs; `thurbox-cli automation
