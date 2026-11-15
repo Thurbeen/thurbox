@@ -137,16 +137,16 @@ not state is marked **unverified**.
 | | Slack | Telegram | Discord | Microsoft Teams |
 | --- | --- | --- | --- | --- |
 | Status | Implemented | On paper | Implemented | On paper |
-| Conversation | A thread: channel and parent `ts`[^slack-threads] | A forum topic: chat and `message_thread_id`. Topics exist in supergroups, and in private chats with topics enabled[^tg-message][^tg-topics]. Otherwise the conversation is the whole chat. `reply_to_message` is one level deep[^tg-message], so reply chains are not threads. | A thread, which is a channel with a `parent_id`[^dc-threads]. A thread started from a message has that message's id[^dc-start]. | A channel reply chain: `conversation.id` ends with `;messageid=<root>`[^ms-channel]. Group chats are not threaded[^ms-concepts]. |
-| Mention | `<@U…>` in text[^slack-format] | `mention` and `text_mention` entities[^tg-entity]. With privacy mode on, the documented deliveries are commands, replies to the bot and messages via the bot. A bare mention is not listed (**unverified**)[^tg-privacy]. | `mentions` array, `<@id>`[^dc-message][^dc-format] | A `mention` entity whose `mentioned.id` is the bot[^ms-rsc] |
-| Unmentioned messages | Delivered with the history scopes[^slack-message] | Only with privacy mode off, or with the bot an admin[^tg-privacy] | Content only with the privileged `MESSAGE_CONTENT` intent. Mentions and DMs carry content without it[^dc-intent]. | Only with the RSC permission `ChannelMessage.Read.Group`. By default, only mentions[^ms-channel][^ms-rsc]. |
-| Transport | Socket Mode or HTTPS events[^slack-socket][^slack-events] | `getUpdates` long poll: a higher `offset` confirms an update, and updates are kept 24 hours. Or a webhook, which excludes polling[^tg-updates]. | The Gateway WebSocket. Resume replays lost events; an expired session does not[^dc-gateway]. HTTP webhook events carry no channel messages[^dc-webhooks]. | HTTPS POST to one messaging endpoint, JWT-signed. A retry comes after 15 seconds, so duplicates can occur[^ms-auth][^ms-concepts]. |
-| History | `conversations.replies`[^slack-replies] | No method for bots. None was found (**unverified** by absence). | `GET /channels/{id}/messages` with `after`, 100 per page[^dc-messages] | Microsoft Graph `…/messages/{id}/replies`, under `ChannelMessage.Read.Group` or `.All`[^ms-graph] |
-| Own posts | Bot id and message metadata[^slack-metadata] | `from.id` equals `getMe`'s id[^tg-user]. `sendMessage` has no metadata field[^tg-send]. | `author.id`. A `nonce` with `enforce_nonce` returns the existing message for a repeat "in the past few minutes"[^dc-create]. | `28:<appId>`; Graph `from.application`[^ms-graph-from]. No idempotency key is documented (**unverified**). |
-| Allowlist identity | User id, per workspace, or global in Enterprise[^slack-user][^slack-ent] | Numeric `User.id`[^tg-user] | User snowflake. Usernames change[^dc-user]. | `aadObjectId`, unique to the user. The `29:` id is per bot[^ms-proactive]. |
-| Open a thread | One `chat.postMessage` | `createForumTopic`, then `sendMessage`[^tg-forum] | A message, then Start Thread from Message[^dc-start] | Create a conversation in the channel. The app must be installed, and the call needs the `serviceUrl` of an earlier inbound activity[^ms-proactive]. |
-| Limits | 4,000 recommended, 40,000 truncated[^slack-post] | 4,096 characters. One message a second per chat, 20 a minute per group[^tg-send][^tg-limits]. | 2,000 characters[^dc-create] | About 100 KB; aim for 80 KB[^ms-format]. 7 sends a second per conversation[^ms-rate]. |
-| Breaks the model | Nothing. Events may be lost while disconnected. | No history and no marker, so an Unknown send can never be recovered. Mid-chat mentions see only what Fleet received. Bot-to-bot messages arrive when opted in[^tg-b2b]. | Opening is two calls. Recovery depends on a short nonce window. | Unmentioned replies never arrive without RSC. No marker. The Bot Framework SDK is archived in favour of the Teams SDK, which keeps the HTTPS endpoint[^ms-sdk][^ms-teams-sdk]. |
+| Conversation | A thread: channel and parent `ts` ([slack-threads]) | A forum topic: chat and `message_thread_id`. Topics exist in supergroups, and in private chats with topics enabled ([tg-message], [tg-topics]). Otherwise the conversation is the whole chat. `reply_to_message` is one level deep ([tg-message]), so reply chains are not threads. | A thread, which is a channel with a `parent_id` ([dc-threads]). A thread started from a message has that message's id ([dc-start]). | A channel reply chain: `conversation.id` ends with `;messageid=<root>` ([ms-channel]). Group chats are not threaded ([ms-concepts]). |
+| Mention | `<@U…>` in text ([slack-format]) | `mention` and `text_mention` entities ([tg-entity]). With privacy mode on, the documented deliveries are commands, replies to the bot and messages via the bot. A bare mention is not listed (**unverified**) ([tg-privacy]). | `mentions` array, `<@id>` ([dc-message], [dc-format]) | A `mention` entity whose `mentioned.id` is the bot ([ms-rsc]) |
+| Unmentioned messages | Delivered with the history scopes ([slack-message]) | Only with privacy mode off, or with the bot an admin ([tg-privacy]) | Content only with the privileged `MESSAGE_CONTENT` intent. Mentions and DMs carry content without it ([dc-intent]). | Only with the RSC permission `ChannelMessage.Read.Group`. By default, only mentions ([ms-channel], [ms-rsc]). |
+| Transport | Socket Mode or HTTPS events ([slack-socket], [slack-events]) | `getUpdates` long poll: a higher `offset` confirms an update, and updates are kept 24 hours. Or a webhook, which excludes polling ([tg-updates]). | The Gateway WebSocket. Resume replays lost events; an expired session does not ([dc-gateway]). HTTP webhook events carry no channel messages ([dc-webhooks]). | HTTPS POST to one messaging endpoint, JWT-signed. A retry comes after 15 seconds, so duplicates can occur ([ms-auth], [ms-concepts]). |
+| History | `conversations.replies` ([slack-replies]) | No method for bots. None was found (**unverified** by absence). | `GET /channels/{id}/messages` with `after`, 100 per page ([dc-messages]) | Microsoft Graph `…/messages/{id}/replies`, under `ChannelMessage.Read.Group` or `.All` ([ms-graph]) |
+| Own posts | Bot id and message metadata ([slack-metadata]) | `from.id` equals `getMe`'s id ([tg-user]). `sendMessage` has no metadata field ([tg-send]). | `author.id`. A `nonce` with `enforce_nonce` returns the existing message for a repeat "in the past few minutes" ([dc-create]). | `28:<appId>`; Graph `from.application` ([ms-graph-from]). No idempotency key is documented (**unverified**). |
+| Allowlist identity | User id, per workspace, or global in Enterprise ([slack-user], [slack-ent]) | Numeric `User.id` ([tg-user]) | User snowflake. Usernames change ([dc-user]). | `aadObjectId`, unique to the user. The `29:` id is per bot ([ms-proactive]). |
+| Open a thread | One `chat.postMessage` | `createForumTopic`, then `sendMessage` ([tg-forum]) | A message, then Start Thread from Message ([dc-start]) | Create a conversation in the channel. The app must be installed, and the call needs the `serviceUrl` of an earlier inbound activity ([ms-proactive]). |
+| Limits | 4,000 recommended, 40,000 truncated ([slack-post]) | 4,096 characters. One message a second per chat, 20 a minute per group ([tg-send], [tg-limits]). | 2,000 characters ([dc-create]) | About 100 KB; aim for 80 KB ([ms-format]). 7 sends a second per conversation ([ms-rate]). |
+| Breaks the model | Nothing. Events may be lost while disconnected. | No history and no marker, so an Unknown send can never be recovered. Mid-chat mentions see only what Fleet received. Bot-to-bot messages arrive when opted in ([tg-b2b]). | Opening is two calls. Recovery depends on a short nonce window. | Unmentioned replies never arrive without RSC. No marker. The Bot Framework SDK is archived in favour of the Teams SDK, which keeps the HTTPS endpoint ([ms-sdk], [ms-teams-sdk]). |
 
 ## What the platforms changed
 
@@ -193,7 +193,7 @@ The [interface](gateway.md#gateway-controller-interface) and the
    - `[gateway.people]` maps a person's name to one id per account.
 7. **Fleet's own bot is not the only bot.**
    - Telegram now delivers other bots' messages when a bot opts
-     in[^tg-b2b].
+     in ([tg-b2b]).
    - Every adapter filters on Fleet's own id from `whoami`.
    - Other bots are `bot` authors. Admission ignores them unless a route
      lists them.
@@ -224,47 +224,47 @@ The same change also does these things:
 - It adds the platform to the account row in the
   [native config](../configuration.md#the-gateway-section).
 
-[^slack-threads]: <https://docs.slack.dev/messaging/retrieving-messages>
-[^tg-message]: <https://core.telegram.org/bots/api#message>
-[^tg-topics]: <https://core.telegram.org/bots/features#topics-in-private-chats>
-[^dc-threads]: <https://docs.discord.com/developers/topics/threads>
-[^dc-start]: <https://docs.discord.com/developers/resources/channel#start-thread-from-message>
-[^ms-channel]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-and-group-conversations>
-[^ms-concepts]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/bot-concepts>
-[^slack-format]: <https://docs.slack.dev/messaging/formatting-message-text>
-[^tg-entity]: <https://core.telegram.org/bots/api#messageentity>
-[^tg-privacy]: <https://core.telegram.org/bots/features#privacy-mode>
-[^dc-message]: <https://docs.discord.com/developers/resources/message#message-object>
-[^dc-format]: <https://docs.discord.com/developers/reference#message-formatting>
-[^ms-rsc]: <https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/enable-receive-all-chat-messages>
-[^slack-message]: <https://docs.slack.dev/reference/events/message>
-[^dc-intent]: <https://docs.discord.com/developers/events/gateway#message-content-intent>
-[^slack-socket]: <https://docs.slack.dev/apis/events-api/using-socket-mode>
-[^slack-events]: <https://docs.slack.dev/apis/events-api/>
-[^tg-updates]: <https://core.telegram.org/bots/api#getting-updates>
-[^dc-gateway]: <https://docs.discord.com/developers/events/gateway#resuming>
-[^dc-webhooks]: <https://docs.discord.com/developers/events/webhook-events#event-types>
-[^ms-auth]: <https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication?view=azure-bot-service-4.0>
-[^slack-replies]: <https://docs.slack.dev/reference/methods/conversations.replies>
-[^dc-messages]: <https://docs.discord.com/developers/resources/message#get-channel-messages>
-[^ms-graph]: <https://learn.microsoft.com/en-us/graph/api/chatmessage-list-replies?view=graph-rest-1.0>
-[^slack-metadata]: <https://docs.slack.dev/messaging/message-metadata>
-[^tg-user]: <https://core.telegram.org/bots/api#user>
-[^tg-send]: <https://core.telegram.org/bots/api#sendmessage>
-[^dc-create]: <https://docs.discord.com/developers/resources/message#create-message>
-[^ms-graph-from]: <https://learn.microsoft.com/en-us/graph/api/resources/chatmessagefromidentityset?view=graph-rest-1.0>
-[^slack-user]: <https://docs.slack.dev/reference/objects/user-object/>
-[^slack-ent]: <https://docs.slack.dev/enterprise/developing-for-enterprise-orgs/>
-[^dc-user]: <https://docs.discord.com/developers/resources/user#user-object>
-[^ms-proactive]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages>
-[^tg-forum]: <https://core.telegram.org/bots/api#createforumtopic>
-[^slack-post]: <https://docs.slack.dev/reference/methods/chat.postMessage>
-[^tg-limits]: <https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this>
-[^ms-format]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/format-your-bot-messages>
-[^ms-rate]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/rate-limit>
-[^tg-b2b]: <https://core.telegram.org/bots/features#bot-to-bot-communication>
-[^ms-sdk]: <https://learn.microsoft.com/en-us/azure/bot-service/index-bf-sdk?view=azure-bot-service-4.0>
-[^ms-teams-sdk]: <https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/why>
+[slack-threads]: <https://docs.slack.dev/messaging/retrieving-messages>
+[tg-message]: <https://core.telegram.org/bots/api#message>
+[tg-topics]: <https://core.telegram.org/bots/features#topics-in-private-chats>
+[dc-threads]: <https://docs.discord.com/developers/topics/threads>
+[dc-start]: <https://docs.discord.com/developers/resources/channel#start-thread-from-message>
+[ms-channel]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-and-group-conversations>
+[ms-concepts]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/bot-concepts>
+[slack-format]: <https://docs.slack.dev/messaging/formatting-message-text>
+[tg-entity]: <https://core.telegram.org/bots/api#messageentity>
+[tg-privacy]: <https://core.telegram.org/bots/features#privacy-mode>
+[dc-message]: <https://docs.discord.com/developers/resources/message#message-object>
+[dc-format]: <https://docs.discord.com/developers/reference#message-formatting>
+[ms-rsc]: <https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/enable-receive-all-chat-messages>
+[slack-message]: <https://docs.slack.dev/reference/events/message>
+[dc-intent]: <https://docs.discord.com/developers/events/gateway#message-content-intent>
+[slack-socket]: <https://docs.slack.dev/apis/events-api/using-socket-mode>
+[slack-events]: <https://docs.slack.dev/apis/events-api/>
+[tg-updates]: <https://core.telegram.org/bots/api#getting-updates>
+[dc-gateway]: <https://docs.discord.com/developers/events/gateway#resuming>
+[dc-webhooks]: <https://docs.discord.com/developers/events/webhook-events#event-types>
+[ms-auth]: <https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication?view=azure-bot-service-4.0>
+[slack-replies]: <https://docs.slack.dev/reference/methods/conversations.replies>
+[dc-messages]: <https://docs.discord.com/developers/resources/message#get-channel-messages>
+[ms-graph]: <https://learn.microsoft.com/en-us/graph/api/chatmessage-list-replies?view=graph-rest-1.0>
+[slack-metadata]: <https://docs.slack.dev/messaging/message-metadata>
+[tg-user]: <https://core.telegram.org/bots/api#user>
+[tg-send]: <https://core.telegram.org/bots/api#sendmessage>
+[dc-create]: <https://docs.discord.com/developers/resources/message#create-message>
+[ms-graph-from]: <https://learn.microsoft.com/en-us/graph/api/resources/chatmessagefromidentityset?view=graph-rest-1.0>
+[slack-user]: <https://docs.slack.dev/reference/objects/user-object/>
+[slack-ent]: <https://docs.slack.dev/enterprise/developing-for-enterprise-orgs/>
+[dc-user]: <https://docs.discord.com/developers/resources/user#user-object>
+[ms-proactive]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages>
+[tg-forum]: <https://core.telegram.org/bots/api#createforumtopic>
+[slack-post]: <https://docs.slack.dev/reference/methods/chat.postMessage>
+[tg-limits]: <https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this>
+[ms-format]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/format-your-bot-messages>
+[ms-rate]: <https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/rate-limit>
+[tg-b2b]: <https://core.telegram.org/bots/features#bot-to-bot-communication>
+[ms-sdk]: <https://learn.microsoft.com/en-us/azure/bot-service/index-bf-sdk?view=azure-bot-service-4.0>
+[ms-teams-sdk]: <https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/why>
 
 ## Slack adapter
 
@@ -284,21 +284,21 @@ On the Slack side, the operator does these steps:
 1. Create an app for the one workspace. Keep it an internal app.
    Reason: since 2025-05-29, some commercially distributed apps get Tier 1
    history limits on new installs. Internal customer-built apps are not
-   affected[^slack-limits2025].
+   affected ([slack-limits2025]).
 2. Give the bot user the history scopes `channels:history` and
-   `groups:history`[^slack-message], and `message_metadata:read`. History
-   reads need the last scope to return Fleet's marker[^slack-metadata].
+   `groups:history` ([slack-message]), and `message_metadata:read`. History
+   reads need the last scope to return Fleet's marker ([slack-metadata]).
    Add `reactions:write`, so Fleet can mark a person's message queued,
-   working and replied[^slack-react-add][^slack-react-remove]. Without it, every
+   working and replied ([slack-react-add], [slack-react-remove]). Without it, every
    reaction fails, and relays and posts go on.
 3. Subscribe the app to the `message.channels` and `message.groups`
-   events[^slack-message].
+   events ([slack-message]).
 4. Choose the listener's transport, and set `inbound` to match:
    - `socket-mode`: the listener holds an app-level token with
      `connections:write`. `apps.connections.open` gives it a temporary `wss://`
-     URL[^slack-socket].
+     URL ([slack-socket]).
    - `events-api`: the listener serves a public HTTPS endpoint, and verifies
-     each request's signature[^slack-events].
+     each request's signature ([slack-events]).
 5. Put the bot token in a curl config file that the operator owns, as an
    Authorization header. Name the file in `curlConfig`.
 6. Invite the bot to every channel that a route lists. Message events and
@@ -316,7 +316,7 @@ The listener is a program outside Fleet. It does these things:
    the raw Socket Mode envelope or Events API body as the payload.
 4. It acknowledges the envelope by its `envelope_id` only after the verb exits
    0. The acknowledgement is due within three seconds, per Slack's Java SDK
-   guide[^slack-java].
+   guide ([slack-java]).
 5. It beats with `--beat` on every state change, and at least every
    `gateway.beatMs`.
 
@@ -335,7 +335,7 @@ curlConfig = "/etc/fleet/slack-curl.conf"   # operator-owned; holds the bot toke
 | Key | Required/default | Meaning |
 | --- | --- | --- |
 | `platform` | Required | `slack`. |
-| `team` | Optional | The `team_id`, or the `enterprise_id` in an Enterprise org. Slack advises keying stored data on the `enterprise_id`[^slack-ent]. When it is set, `whoami` checks it, and events of another workspace are ignored. |
+| `team` | Optional | The `team_id`, or the `enterprise_id` in an Enterprise org. Slack advises keying stored data on the `enterprise_id` ([slack-ent]). When it is set, `whoami` checks it, and events of another workspace are ignored. |
 | `bot` | Required | Fleet's bot user id. `whoami` compares it with the `user_id` of `auth.test`. |
 | `inbound` | Required | `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery. |
 | `cli` | `curl` | The client executable, a path or a name on `PATH`. |
@@ -385,8 +385,8 @@ route lists. In such a DM:
 
 The adapter marks a delivery `direct` when the message event's
 `channel_type` is `im`. Slack documents `channel_type` as the way to tell a
-DM from other message events[^slack-message-im]. A group DM has
-`channel_type` `mpim`[^slack-message-mpim], so it is not `direct`. The
+DM from other message events ([slack-message-im]). A group DM has
+`channel_type` `mpim` ([slack-message-mpim]), so it is not `direct`. The
 adapter does not read the channel id prefix. Reason: the documented group
 DM example has a `G…` id, the prefix of a private channel too.
 
@@ -398,9 +398,9 @@ still routes such an edit to its DM thread from the Conversation's
 To take DMs on an account, the operator makes these Slack app changes:
 
 1. Add the bot scope `im:history`. It reads DM history, including through
-   `conversations.replies`[^slack-message-im][^slack-replies].
-2. Subscribe the app to the `message.im` event[^slack-message-im].
-3. In App Home, switch on the **Messages Tab**[^slack-app-home]. Slack's
+   `conversations.replies` ([slack-message-im], [slack-replies]).
+2. Subscribe the app to the `message.im` event ([slack-message-im]).
+3. In App Home, switch on the **Messages Tab** ([slack-app-home]). Slack's
    App Home page names `chat:write` and `im:history` for it. A checkbox that
    lets users send messages from that tab may also need to be on
    (**unverified**: the page does not name it).
@@ -408,7 +408,7 @@ To take DMs on an account, the operator makes these Slack app changes:
 5. In the Fleet config, add `"dm:*"` to the route's `channels`. Keep every
    person who may DM the bot under that route's `allow`.
 
-Group DMs need `message.mpim` and `mpim:history`[^slack-message-mpim]. They
+Group DMs need `message.mpim` and `mpim:history` ([slack-message-mpim]). They
 are optional, and the wildcard covers them under the mention rule.
 
 ### Address format
@@ -419,13 +419,13 @@ A channel address, `slack:<channel>`, names where Fleet opens a thread.
 
 - A channel id starts with `C`, `G` or `D`, then uppercase letters and digits.
 - A `ts` is `<seconds>.<fraction>`. It is unique within a
-  channel[^slack-threads].
+  channel ([slack-threads]).
 - A message is in a thread when it has `thread_ts`. The parent is the message
-  where `thread_ts == ts`[^slack-threads].
+  where `thread_ts == ts` ([slack-threads]).
 - A message without `thread_ts` starts its own thread. Its address uses its own
   `ts`.
 - A reply is posted with the parent's `ts` as `thread_ts`, never with a reply's
-  `ts`[^slack-post].
+  `ts` ([slack-post]).
 
 ### Capabilities
 
@@ -445,28 +445,28 @@ first, so that a failing account answers Unknown.
 | Port item | Slack |
 | --- | --- |
 | `whoami` | `auth.test`. Its `user_id` is the identity. When `team` is set, the answer's `team_id` or `enterprise_id` must equal it. |
-| `event` | Reads a Socket Mode envelope (`type: events_api`) or an Events API body (`type: event_callback`). Message events become `Message`, `message_changed` becomes `Edited`, and `message_deleted` becomes `Removed`. A delivery is `direct` when the event's `channel_type` is `im`[^slack-message-im]. |
-| Delivery id | The event wrapper's `event_id`, which is globally unique[^slack-events]. |
+| `event` | Reads a Socket Mode envelope (`type: events_api`) or an Events API body (`type: event_callback`). Message events become `Message`, `message_changed` becomes `Edited`, and `message_deleted` becomes `Removed`. A delivery is `direct` when the event's `channel_type` is `im` ([slack-message-im]). |
+| Delivery id | The event wrapper's `event_id`, which is globally unique ([slack-events]). |
 | Ignored events | Other envelope types, events that are not messages, other workspaces, and message subtypes other than none, `file_share`, `thread_broadcast` and `bot_message`. |
-| Mention | `<@U…>` or `<@U…\|name>` with Fleet's bot user id in `text`[^slack-format]. The adapter does not rely on `app_mention`. Reason: `app_mention` needs `app_mentions.read`, and the reference does not state how it behaves inside threads (**unverified**)[^slack-mention]. |
+| Mention | `<@U…>` or `<@U…\|name>` with Fleet's bot user id in `text` ([slack-format]). The adapter does not rely on `app_mention`. Reason: `app_mention` needs `app_mentions.read`, and the reference does not state how it behaves inside threads (**unverified**) ([slack-mention]). |
 | Authors | The account's `bot` is `fleet`. A message with a `bot_id`, or of subtype `bot_message`, is a `bot`. Anyone else is a `person`. |
-| `history` | `conversations.replies` for a thread, `conversations.history` for a channel, both with `include_all_metadata`[^slack-replies]. Pages of 200 follow `next_cursor`. `has_more` without a cursor is Unknown (`Incomplete`). |
+| `history` | `conversations.replies` for a thread, `conversations.history` for a channel, both with `include_all_metadata` ([slack-replies]). Pages of 200 follow `next_cursor`. `has_more` without a cursor is Unknown (`Incomplete`). |
 | `starter` | The parent message. A `tombstone` parent is `removed`. |
-| `post` | `chat.postMessage` with `thread_ts`, one `markdown` block, a `mrkdwn` `text`, and `unfurl_links` and `unfurl_media` off[^slack-post]. |
+| `post` | `chat.postMessage` with `thread_ts`, one `markdown` block, a `mrkdwn` `text`, and `unfurl_links` and `unfurl_media` off ([slack-post]). |
 | `open` | `chat.postMessage` without `thread_ts`. The new thread's address is the channel and the returned `ts`. Later chunks of a split text reply to it. |
 | `post` to a channel address | `chat.postMessage` without `thread_ts`, for every chunk: a log post starts no thread. A `since` read of the channel uses `conversations.history`. |
-| `react` | `reactions.add` to add, `reactions.remove` to remove, with `channel`, `timestamp` (the message's `ts`) and `name`[^slack-react-add][^slack-react-remove]. `name` is Slack's emoji name, such as `eyes` or `white_check_mark`; surrounding colons are stripped. Both methods list JSON and form bodies as accepted. The adapter sends form arguments, as it does for every method other than `chat.*`. `already_reacted` and `no_reaction` mean the reaction already stands as asked: a Known success. |
+| `react` | `reactions.add` to add, `reactions.remove` to remove, with `channel`, `timestamp` (the message's `ts`) and `name` ([slack-react-add], [slack-react-remove]). `name` is Slack's emoji name, such as `eyes` or `white_check_mark`; surrounding colons are stripped. Both methods list JSON and form bodies as accepted. The adapter sends form arguments, as it does for every method other than `chat.*`. `already_reacted` and `no_reaction` mean the reaction already stands as asked: a Known success. |
 | `link` | None. A Slack permalink needs the workspace's domain, which only a `chat.getPermalink` call gives, so a log post names a Slack thread by its address. |
-| Marker | `{"event_type": "fleet_post", "event_payload": {"key": "<intent key>"}}`[^slack-post]. History reads it back[^slack-metadata]. |
-| Idempotency | None on `chat.postMessage`: `client_msg_id` is not an argument[^slack-post]. Recovery uses the marker in a later `since` read. |
-| Identity | User ids, unique in their workspace[^slack-user]. In an Enterprise org, every user has one global id that starts with `U` or `W`[^slack-ent]. |
+| Marker | `{"event_type": "fleet_post", "event_payload": {"key": "<intent key>"}}` ([slack-post]). History reads it back ([slack-metadata]). |
+| Idempotency | None on `chat.postMessage`: `client_msg_id` is not an argument ([slack-post]). Recovery uses the marker in a later `since` read. |
+| Identity | User ids, unique in their workspace ([slack-user]). In an Enterprise org, every user has one global id that starts with `U` or `W` ([slack-ent]). |
 
 Each post carries its text twice:
 
 - `blocks` holds one `markdown` block with the Markdown as written. Slack
-  renders standard Markdown in this block, tables included[^slack-markdown].
+  renders standard Markdown in this block, tables included ([slack-markdown]).
 - `text` holds the same Markdown converted to `mrkdwn`, Slack's own
-  syntax[^slack-format]. Slack shows `text` in notifications. History reads
+  syntax ([slack-format]). Slack shows `text` in notifications. History reads
   `text` back.
 
 In the `markdown` block, the adapter escapes with a backslash each `<` that
@@ -474,7 +474,7 @@ starts `<@`, `<!` or `<#` outside code. So a post makes no mention, no
 broadcast and no channel link. Slack's reference does not state that a
 `markdown` block parses these forms (**unverified**).
 
-In `text`, the adapter escapes `&`, `<` and `>`[^slack-format]. Code spans
+In `text`, the adapter escapes `&`, `<` and `>` ([slack-format]). Code spans
 and fences stay code. A heading becomes one bold line. A table becomes a
 code block, because `mrkdwn` has no table.
 
@@ -491,34 +491,34 @@ A Slack answer maps onto the port as follows:
 ### Limits
 
 - The adapter splits a text at 4,000 characters, Slack's recommended length.
-  Slack truncates text over 40,000[^slack-post]. So a text that needs more
+  Slack truncates text over 40,000 ([slack-post]). So a text that needs more
   than 10 posts is refused, never cut.
 - Slack allows 12,000 characters across the `markdown` blocks of one
-  payload[^slack-markdown]. One post holds one chunk of 4,000 at most.
-- Slack allows about one message a second per channel[^slack-post].
+  payload ([slack-markdown]). One post holds one chunk of 4,000 at most.
+- Slack allows about one message a second per channel ([slack-post]).
 - `conversations.replies` and `conversations.history` are Tier 3: 50 or more
-  calls a minute[^slack-replies].
+  calls a minute ([slack-replies]).
 - Message metadata is visible to every member of the
-  workspace[^slack-post]. So a key names a Task and its `uid`, never a
+  workspace ([slack-post]). So a key names a Task and its `uid`, never a
   secret.
 - While the listener is disconnected, the app "may lose events". Slack
-  refreshes connections every few hours[^slack-socket].
+  refreshes connections every few hours ([slack-socket]).
 - In a tied thread, the history backstop recovers a lost message. A new
   thread's first mention during an outage is lost, and the person mentions
   again.
-- Socket Mode apps are not allowed in the public Marketplace[^slack-compare].
+- Socket Mode apps are not allowed in the public Marketplace ([slack-compare]).
   This does not matter for an internal app.
 - The Events API needs a 2xx within three seconds. It retries up to three
-  times: at once, after one minute and after five[^slack-events].
+  times: at once, after one minute and after five ([slack-events]).
 
 These points are **unverified**:
 
 - The Socket Mode page gives no acknowledgement limit. The three seconds come
-  from the Java SDK guide[^slack-java].
-- The retry counts for Socket Mode[^slack-socket].
+  from the Java SDK guide ([slack-java]).
+- The retry counts for Socket Mode ([slack-socket]).
 - Whether `message.channels` delivers without channel membership.
 - Whether the app receives its own posts as events. Bolt's `ignoreSelf`
-  implies that it does[^slack-ignoreself]. So the adapter reads them as
+  implies that it does ([slack-ignoreself]). So the adapter reads them as
   `fleet` authors.
 - Whether `message_changed` and `message_deleted` events carry
   `channel_type`. The receive verb does not need it for a DM thread that
@@ -527,7 +527,7 @@ These points are **unverified**:
   that users can send messages to the app.
 - Whether `im:history` alone, without `mpim:history`, lets
   `conversations.replies` read a one-to-one DM. The method lists all four
-  history scopes[^slack-replies].
+  history scopes ([slack-replies]).
 
 ### Troubleshooting
 
@@ -545,17 +545,17 @@ These points are **unverified**:
 | A message gets no ⏳, 👀 or ✅, and the manager's report names `reactions.add: missing_scope` | The app lacks `reactions:write`. | Add the scope, and reinstall the app. |
 | `NeedsAttention/PostUnconfirmed` | A post stayed Unknown, and no recovery read found its key. | Check the thread, then act as the [Conversation](../resources/conversation.md) describes. |
 
-[^slack-limits2025]: <https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps>
-[^slack-react-add]: <https://docs.slack.dev/reference/methods/reactions.add>
-[^slack-react-remove]: <https://docs.slack.dev/reference/methods/reactions.remove>
-[^slack-java]: <https://docs.slack.dev/tools/java-slack-sdk/guides/socket-mode/>
-[^slack-message-im]: <https://docs.slack.dev/reference/events/message.im>
-[^slack-message-mpim]: <https://docs.slack.dev/reference/events/message.mpim>
-[^slack-app-home]: <https://docs.slack.dev/surfaces/app-home>
-[^slack-mention]: <https://docs.slack.dev/reference/events/app_mention>
-[^slack-markdown]: <https://docs.slack.dev/reference/block-kit/blocks/markdown-block>
-[^slack-compare]: <https://docs.slack.dev/apis/events-api/comparing-http-socket-mode>
-[^slack-ignoreself]: <https://docs.slack.dev/tools/bolt-js/reference/variables/ignoreself>
+[slack-limits2025]: <https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps>
+[slack-react-add]: <https://docs.slack.dev/reference/methods/reactions.add>
+[slack-react-remove]: <https://docs.slack.dev/reference/methods/reactions.remove>
+[slack-java]: <https://docs.slack.dev/tools/java-slack-sdk/guides/socket-mode/>
+[slack-message-im]: <https://docs.slack.dev/reference/events/message.im>
+[slack-message-mpim]: <https://docs.slack.dev/reference/events/message.mpim>
+[slack-app-home]: <https://docs.slack.dev/surfaces/app-home>
+[slack-mention]: <https://docs.slack.dev/reference/events/app_mention>
+[slack-markdown]: <https://docs.slack.dev/reference/block-kit/blocks/markdown-block>
+[slack-compare]: <https://docs.slack.dev/apis/events-api/comparing-http-socket-mode>
+[slack-ignoreself]: <https://docs.slack.dev/tools/bolt-js/reference/variables/ignoreself>
 
 ## Discord adapter
 
