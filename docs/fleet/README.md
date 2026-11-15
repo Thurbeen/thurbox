@@ -63,7 +63,9 @@ until it has its row here.
 A Session is not a kind. It is the running agent that a Task owns, from
 spawn to release. The Task's `status.session` names it, and
 `status.sessionState` says what the runtime last proved about it. See
-[Session](resources/session.md).
+[Session](resources/session.md). A Workspace is not a kind either: it is the
+directories the session works in, which the place's runtime makes from the
+Task's `spec.workspace`. See [Workspace](resources/workspace.md).
 
 TaskConfig and EnvProvider are passive. A Task names a TaskConfig in
 `spec.configRef`. Before the first effect, the manager resolves the

@@ -48,7 +48,7 @@ cannot change them.
 | `pauseAfterMs` | integer, at least 1 | no | Pause the session once its agent was idle this long. Overrides the TaskConfig's. Absent with no TaskConfig value: never. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 | `brief` | string | no | The brief, sent once to the ready session. Empty or absent: an interactive Task, which `fleet amend` refuses. A blank brief is refused. |
 | `amendments` | array | no | Additions to the brief, oldest first. Only `fleet amend` appends one. See [Amendments](#amendments). |
-| `workspace` | array of URLs | yes | What the session works in. `[]` is the runtime's default directory. See [Workspaces](#workspaces). |
+| `workspace` | array of URLs | yes | What the session works in. `[]` is the runtime's default directory. See [Workspace](workspace.md). |
 | `dispatch` | boolean | no | Nothing spawns while it is `false`, the default. Setting it back to `false` does not stop a session. |
 | `outputs` | object | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 | `forge` | object | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, or `null` for no mark-ready). |
@@ -61,42 +61,11 @@ writes is refused.
 
 ### Workspaces
 
-A workspace is a list of absolute URLs, `<scheme>://…`. Fleet checks that,
-and nothing else: the scheme, the reference and any query are the
-runtime's to read. Any other shape is refused when it is applied.
-
-```json
-{"workspace": [
-  "git+https://github.com/example/app.git#main",
-  "git+file:///home/me/lib?branch=fix-1",
-  "file:///home/me/notes"
-]}
-```
-
-- The first URL is where the agent starts; the others are the extra
-  directories it spans. The first directory is the trust root, as
-  [workspace trust](../contracts.md#workspace-trust) states.
-- An empty list means the agent starts in the runtime's default directory.
-- The place's runtime makes one directory per URL before the first start,
-  and releases them after the session. It handles the schemes its manifest
-  lists. A Task with any other URL waits with `WorkspaceUnsupported`.
-- Fleet has no branch, base, worktree or cleanup field: the URL is the
-  whole request. With `workspace-git`, a `git+` URL is a worktree on a new
-  branch named after the session key, `?branch=` names the branch, and `#`
-  names the base. The worker reports the change it opened through
-  `fleet declare`.
-- A `file://` URL names a directory used as it is: the runtime makes and
-  removes nothing there. Two Tasks can name the same directory.
-- A release never loses work: with `workspace-git`, what a worktree holds
-  that its branch does not, untracked files included, is committed onto
-  `refs/fleet/preserved/<key>/<name>` first. A new Task restores it by
-  naming that ref in a `git+file` URL.
-- A [Gateway route](../configuration.md#the-gateway-section) with a
-  `{base}` workspace gives each thread `file://<base>/<conversation>`: the
-  manager creates that directory and removes it when the thread retires.
-
-[Runtimes](../../runtime/README.md#workspaces) states how each runtime
-makes a workspace.
+`workspace` is a list of absolute URLs. The runtime of the place makes one
+directory per URL before the session starts, and the agent starts in the
+first. [Workspace](workspace.md) says who makes it, where it lives, what
+happens to it when the Task is deleted, and how to span several
+repositories.
 
 ## Status
 
@@ -110,7 +79,7 @@ makes a workspace.
 | `sessionState` | TaskController | What the runtime last proved: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. An Unknown answer keeps the last state. |
 | `agentState`, `activity` | TaskController | What the agent does (`working`, `attention`, `idle`, `unknown`) and where that came from: its hooks or a screen rule. See [Session](session.md#agent-state). |
 | `conversation` | TaskController | The harness's id of the session's conversation, as its hooks reported it. A revive or a resume names it. |
-| `workspace` | TaskController | The workspace the runtime made: `key`, `host` and `dirs`, one per URL. |
+| `workspace` | TaskController | The workspace the runtime made: `key`, `host` and `dirs`, one per URL. See [Workspace](workspace.md). |
 | `intents`, `receipts` | TaskController | Each effect's intent, written before it runs, and its outcome, written after. |
 | `prompts` | TaskController | Per send key, the digest of the text sent, until the agent's prompt hook proves delivery. |
 | `brief` | TaskController | `{key, generation, recovered}`: the newest brief or amendment the worker received. A result names this generation. |
@@ -146,7 +115,8 @@ transition rules.
 
 - `spec.configRef` names a [TaskConfig](task-config.md), which names
   [EnvProviders](env-provider.md).
-- A Task owns at most one [Session](session.md), from spawn to release.
+- A Task owns at most one [Session](session.md), from spawn to release, and
+  at most one [Workspace](workspace.md).
 - `fleet declare --change-request URL` makes the Task follow a
   [ChangeRequest](change-request.md).
 - A [Conversation](conversation.md) can create a Task, and ties it to its

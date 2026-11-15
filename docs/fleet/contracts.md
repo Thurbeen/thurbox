@@ -157,7 +157,7 @@ may not start with `-`, since they reach the runtime as arguments; whether
 each is present never changes after creation.
 
 `spec.workspace` names what the session works in. It never says how the
-workspace is made. [Workspaces](resources/task.md#workspaces)
+workspace is made. [Workspace](resources/workspace.md)
 defines both forms and their validation.
 
 See [execution configuration](resources/task-config.md) for
