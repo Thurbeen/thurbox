@@ -445,6 +445,7 @@ pub fn exec_command(
             dir.as_deref(),
             &host.path_prepend,
             "",
+            "",
         );
         return Ok(
             crate::shell::HostShell::PowerShell.run_script(&HostLauncher::for_host(host), &script)
@@ -808,6 +809,7 @@ pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<
             None,
             &[],
             &prelude,
+            "",
         );
         crate::shell::HostShell::PowerShell.run_script(&HostLauncher::for_host(host), &script)
     };

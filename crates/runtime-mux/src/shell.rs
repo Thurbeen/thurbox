@@ -504,7 +504,8 @@ pub fn launch_on_windows(
 /// A PowerShell script that runs `program` with `args` on a Windows host, in
 /// `dir` when given, with `path_prepend` put first on its `Path`, after
 /// `prelude`: statements of the caller's own, such as making the directory
-/// a copy goes to. A `~` leading an entry of `path_prepend` is the user's
+/// a copy goes to. `after` runs once the program exited, with
+/// `$LASTEXITCODE` its exit code. A `~` leading an entry of `path_prepend` is the user's
 /// profile directory.
 ///
 /// The program is found as PowerShell finds a command (`Get-Command`), so
@@ -524,6 +525,7 @@ pub fn windows_program_script<S: AsRef<str>>(
     dir: Option<&str>,
     path_prepend: &[String],
     prelude: &str,
+    after: &str,
 ) -> String {
     let argv = args
         .iter()
@@ -550,6 +552,8 @@ pub fn windows_program_script<S: AsRef<str>>(
          {dir}\
          $x=[Diagnostics.Process]::Start($s)\n\
          $x.WaitForExit()\n\
+         $global:LASTEXITCODE=$x.ExitCode\n\
+         {after}\
          exit $x.ExitCode",
         path = windows_path_prepend(path_prepend),
         program = powershell_quote(program),
@@ -1157,6 +1161,7 @@ mod tests {
             Some("C:/a b/it's"),
             &["~/bin".to_string()],
             "Prelude-Here\n",
+            "",
         );
         assert!(script.contains("Get-Command 'o''prog'"), "{script}");
         assert!(script.contains("$v=@('it''s', 'two words')"), "{script}");
@@ -1177,7 +1182,7 @@ mod tests {
     /// line. The rules themselves are checked on a real Windows place.
     #[test]
     fn each_kind_of_windows_program_gets_its_own_quoting() {
-        let script = windows_program_script("shim", &["left&right", "%PATH%"], None, &[], "");
+        let script = windows_program_script("shim", &["left&right", "%PATH%"], None, &[], "", "");
         assert!(script.contains("$v=@('left&right', '%PATH%')"), "{script}");
         assert!(
             script.contains("$f=$env:ComSpec;$a='/d /v:off /s /c \"\"'+$p+'\" '+(($v|%{&$k $_})"),
@@ -1380,7 +1385,7 @@ mod tests {
     #[test]
     fn a_long_argument_rides_the_windows_script_once() {
         let long = "x".repeat(1500);
-        let script = windows_program_script("tool.exe", &[long.as_str()], None, &[], "");
+        let script = windows_program_script("tool.exe", &[long.as_str()], None, &[], "", "");
         assert_eq!(script.matches(long.as_str()).count(), 1, "{script}");
         let launcher = HostLauncher::Ssh {
             destination: "me@win".into(),
@@ -1396,7 +1401,7 @@ mod tests {
     /// own interpreter; an `.exe` runs as it is.
     #[test]
     fn a_windows_program_is_resolved_and_run_by_its_kind() {
-        let script = windows_program_script("codex", &["exec"], None, &[], "");
+        let script = windows_program_script("codex", &["exec"], None, &[], "", "");
         assert!(script.contains("Get-Command 'codex'"), "{script}");
         for kind in ["'.cmd'", "'.bat'", "'.ps1'"] {
             assert!(script.contains(kind), "{kind}: {script}");
