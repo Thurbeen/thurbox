@@ -77,3 +77,55 @@ fn a_create_stays_in_doubt_when_its_retry_has_no_receipt() {
         "still in doubt: {next:#}"
     );
 }
+
+/// The doubt grows across passes: three attempts that each read Unknown,
+/// fed back as the manager would write them, raise `CreateUnknown`, though
+/// each retry clears the latest receipt.
+#[test]
+fn three_unknown_attempts_raise_create_unknown() {
+    let unknown = json!({"action": "create", "at": T,
+                         "outcome": {"unknown": {"why": "the store could not tell"}}});
+    let mut status = json!({
+        "observedGeneration": 1,
+        "lastConsidered": T,
+        "notBefore": T,
+        "effects": {"create/29913300": {
+            "intent": {"action": "create", "at": T, "generation": 1},
+            "receipt": unknown,
+            "attempts": 1,
+            "task": "nightly-29913300",
+            "scheduled": T
+        }}
+    });
+    for pass in 1..=3 {
+        status = reconcile(&cron_task(status), T + pass * MINUTE);
+        let record = &mut status["effects"]["create/29913300"];
+        assert!(
+            record["receipt"].is_null(),
+            "pass {pass} retried: {record:#}"
+        );
+        if pass < 3 {
+            assert_ne!(
+                attention_of(&status),
+                Some(("True".into(), "CreateUnknown".into())),
+                "pass {pass}: too early"
+            );
+        }
+        // The manager's receipt for the retry: Unknown again.
+        status["effects"]["create/29913300"]["receipt"] = unknown.clone();
+    }
+    let status = reconcile(&cron_task(status), T + 4 * MINUTE);
+    assert_eq!(attention(&status), ("True".into(), "CreateUnknown".into()));
+}
+
+fn attention_of(status: &Value) -> Option<(String, String)> {
+    status["conditions"]
+        .as_array()
+        .and_then(|cs| cs.iter().find(|c| c["type"] == "NeedsAttention"))
+        .map(|c| {
+            (
+                c["status"].as_str().unwrap().to_string(),
+                c["reason"].as_str().unwrap().to_string(),
+            )
+        })
+}

@@ -28,6 +28,25 @@ When the manager was down for several scheduled times, the controller
 decides only about the latest one. It drops the earlier ones, as a
 Kubernetes CronJob does.
 
+## Implementation and evidence
+
+| Responsibility | Source | Tests |
+| --- | --- | --- |
+| Pure decisions: the time, the policies, recovery, history | [CronTaskController](../../../crates/fleet-controllers/src/cron_task.rs) | [Controller passes](../../../crates/fleet-controllers/tests/cron_task_controller.rs), [CronTask E2E](../../../crates/fleet-cli/tests/e2e_cron_task.rs) |
+| Resource, status and schedule math | [CronTask types](../../../crates/fleet-api/src/cron_task.rs), [validation](../../../crates/fleet-api/src/validate.rs) | Unit tests in `cron_task.rs`; [CronTask E2E](../../../crates/fleet-cli/tests/e2e_cron_task.rs) |
+| Sweep, intent before effect, fenced create and retire, receipts | [Manager](../../../crates/fleet-manager/src/cron_tasks.rs) | [CronTask E2E](../../../crates/fleet-cli/tests/e2e_cron_task.rs) |
+| The `crontask.fleet.dev/` labels, `retire_scheduled_task` | [Store](../../../crates/fleet-store/src/lib.rs) | [CronTask E2E](../../../crates/fleet-cli/tests/e2e_cron_task.rs) |
+| Crate edges and the field manager | [architecture.toml](../../../crates/architecture.toml) | [Architecture suite](../../../crates/arch-rules/tests/architecture.rs) |
+
+The E2E suite runs the manager on the file store with a test clock and the
+fake runtime. It covers one Task per scheduled time, `Forbid`, `Allow`,
+`Replace` and its wait for the old session, a missed deadline, `suspend`,
+`historyLimit`, and recovery from an intent with no receipt: adoption, the
+limits in force at the retry, and `NeedsAttention` for a create in doubt.
+Through the `fleet` binary, it covers apply, get, list and delete, and the
+refusals of a bad schedule, a bad template, template amendments and the
+controller's labels.
+
 ## CronTask state machine
 
 ![CronTask state machine: at each scheduled time the controller skips the time when the CronTask is suspended, when the deadline passed, or when Forbid finds a Task that runs; with Replace it deletes the running Task first; then it writes the intent, the manager creates the Task, and the receipt is written](cron-task.svg)
@@ -147,13 +166,3 @@ refused. The controller never takes another CronTask's Task.
 | A Task, created | `cron-task-controller` | Only through `create_fenced`, under the lease. |
 | The `crontask.fleet.dev/name` and `-uid` labels | `cron-task-controller` | Set at create. `fleet apply` refuses them, and nobody changes them later. |
 | A Task, deleted | `cron-task-controller` | Only through `retire_scheduled_task`: the Task's uid must match, the Task must carry this CronTask's uid, and it must be Concluded unless the policy is `Replace`. |
-
-### Evidence
-
-[`e2e_cron_task.rs`](../../../crates/fleet-cli/tests/e2e_cron_task.rs)
-runs the manager on the file store with a test clock and the fake runtime.
-It covers one Task per scheduled time, `Forbid`, `Allow`, `Replace`, a
-missed deadline, `suspend`, `historyLimit`, and recovery from an intent
-with no receipt. Through the `fleet` binary, it covers apply, get, list
-and delete, and the refusals of a bad schedule, a bad template and the
-controller's labels.
