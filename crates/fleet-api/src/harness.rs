@@ -55,6 +55,12 @@ pub const ASSET_DIR: &str = "harness-assets";
 /// hook's own `fleet` would find.
 pub const HARNESS_DIR_ENV: &str = "FLEET_HARNESS_DIR";
 
+/// The variable Fleet names the asset directory in at spawn
+/// ([`ASSET_DIR`], as `{asset:<name>}` names it), so a runtime that starts
+/// the session on another machine can copy the files there and name its
+/// copy instead.
+pub const ASSET_DIR_ENV: &str = "FLEET_ASSET_DIR";
+
 /// What the agent's hooks report, which decides how far Fleet trusts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -331,6 +337,11 @@ impl Profiles {
     /// The directory the user's profiles were read from, when any was.
     pub fn dir(&self) -> Option<&str> {
         self.dir.as_deref()
+    }
+
+    /// The directory each `{asset:<name>}` names a file in, when one is set.
+    pub fn assets(&self) -> Option<&str> {
+        self.assets.as_deref()
     }
 
     /// These profiles with `user`'s: a user profile replaces the one of the

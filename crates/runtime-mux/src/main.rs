@@ -1,7 +1,8 @@
 //! `runtime-mux <verb>`: the runtime protocol's program (docs/runtime/README.md).
 //! Reads one JSON request on stdin and prints one answer on stdout. The
 //! composition root: it alone builds the backend, on the program's own tmux
-//! socket ([`runtime_mux::protocol::SOCKET`]).
+//! socket ([`runtime_mux::protocol::SOCKET`]), on this machine or on the
+//! remote place the request names.
 //!
 //! `runtime-mux view [--socket S] [--tmux-tmpdir D] [--scrollback N]
 //! <key | --pane P>` is the
@@ -10,9 +11,10 @@
 //! thurbox's stream panes name the pane.
 
 use std::io::Read;
+use std::sync::{Arc, Mutex};
 
 use runtime_mux::protocol::{self, SOCKET, SOCKET_ENV};
-use runtime_mux::MuxSettings;
+use runtime_mux::{BackendRegistry, HostDef, HostRegistry, MuxSettings, SessionBackend};
 
 fn main() {
     let verb = std::env::args().nth(1).unwrap_or_default();
@@ -66,6 +68,13 @@ fn serve(verb: &str) -> serde_json::Value {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| SOCKET.to_string());
+    // A remote place's server is not this machine's: its locks and pause
+    // marks name the place, so a slow place never holds up a local start.
+    let place = protocol::place_of(&request);
+    let server = match &place {
+        Some(host) => format!("{socket}@{}", host.name),
+        None => socket.clone(),
+    };
     // A start looks the key up and then makes its window, so two at once
     // could each make one; a stop between them could remove the one the
     // other just adopted. Both run one at a time per server. A workspace
@@ -81,7 +90,7 @@ fn serve(verb: &str) -> serde_json::Value {
     let mut _key_turn = None;
     if key_lock {
         if let Some(key) = request_key(&request) {
-            match take(&format!("runtime-mux-{socket}.key-{key}.lock")) {
+            match take(&format!("runtime-mux-{server}.key-{key}.lock")) {
                 Ok(file) => _key_turn = Some(file),
                 Err(answer) => return answer,
             }
@@ -94,27 +103,73 @@ fn serve(verb: &str) -> serde_json::Value {
     // agent's, so it takes the same turn.
     // A pause stops the process as a stop does.
     if matches!(verb, "start" | "stop" | "shell" | "pause") {
-        match take(&format!("runtime-mux-{socket}.lock")) {
+        match take(&format!("runtime-mux-{server}.lock")) {
             Ok(file) => server_turn = Some(file),
             Err(answer) => return answer,
         }
     }
-    let pauses = pauses(&socket);
+    let pauses = pauses(&server);
+    // Each remote place's login `PATH` is cached beside the locks, so a call
+    // does not read it again over ssh.
+    if let (Ok(dir), prefix) = private_dir() {
+        runtime_mux::place::keep_cache_in(dir, format!("{prefix}runtime-mux-{socket}@"));
+    }
     let settings = MuxSettings {
         socket: Some(socket),
         ..MuxSettings::default()
     };
-    let registry = runtime_mux::wiring::local_only(&settings);
+    let built = Mutex::new(Vec::new());
+    let backends = |place: Option<&HostDef>| backend_for(&settings, place, &built);
     let answer = protocol::serve_with(
-        registry.default_backend().as_ref(),
+        &backends,
         &pauses,
         verb,
         &request,
         &view_argv(&settings),
         &mut || drop(server_turn.take()),
     );
-    registry.shutdown_all();
+    for registry in built.into_inner().unwrap_or_default() {
+        registry.shutdown_all();
+    }
     answer
+}
+
+/// The backend serving `place`: this machine's default multiplexer, or the
+/// place's own on the host it names. A remote place's server runs on this
+/// program's socket unless the place names another. Each registry built is
+/// kept in `built`, for the caller to shut down.
+fn backend_for(
+    settings: &MuxSettings,
+    place: Option<&HostDef>,
+    built: &Mutex<Vec<BackendRegistry>>,
+) -> Result<Arc<dyn SessionBackend>, String> {
+    let mut host = place.cloned();
+    if let Some(host) = &mut host {
+        if host.socket.is_none() {
+            host.socket.clone_from(&settings.socket);
+        }
+    }
+    let hosts = HostRegistry {
+        config_version: None,
+        hosts: host.iter().cloned().collect(),
+    };
+    let registry = runtime_mux::wiring::for_hosts(&hosts, settings);
+    let backend = match &host {
+        None => Some(registry.default_backend().clone()),
+        Some(host) => registry.get(&host.default_route()).cloned(),
+    };
+    let found = backend.ok_or_else(|| {
+        let route = host.as_ref().map(HostDef::default_route);
+        format!(
+            "place {:?}: no multiplexer runtime-mux drives is {}",
+            host.as_ref().map(|h| h.name.as_str()).unwrap_or_default(),
+            route.map(|r| r.mux.name().to_string()).unwrap_or_default()
+        )
+    });
+    if let Ok(mut built) = built.lock() {
+        built.push(registry);
+    }
+    found
 }
 
 /// The lock file `name`, or the Unknown answer when it cannot be taken.
@@ -216,13 +271,14 @@ fn view(args: Vec<String>) -> Result<(), String> {
     served
 }
 
-/// The marks of the keys paused on the server of `socket`, beside its lock:
-/// they go with the directory the server keeps its socket in.
-fn pauses(socket: &str) -> protocol::Pauses {
+/// The marks of the keys paused on `server` (a socket, and the remote place
+/// it is on), beside its lock: they go with the directory this machine's
+/// server keeps its socket in.
+fn pauses(server: &str) -> protocol::Pauses {
     let (dir, prefix) = private_dir();
     protocol::Pauses::new(
         dir.map_err(|e| format!("no directory for the pause marks: {e}")),
-        format!("{prefix}runtime-mux-{socket}.paused-"),
+        format!("{prefix}runtime-mux-{server}.paused-"),
     )
 }
 

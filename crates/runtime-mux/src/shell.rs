@@ -285,6 +285,27 @@ impl std::fmt::Display for CommandLineTooLong {
 
 impl std::error::Error for CommandLineTooLong {}
 
+/// Remove this process's telemetry variables from `cmd`: the caller's
+/// `OTEL_*` identity and `TRACEPARENT` are not a session's, nor a place's
+/// (docs/observability.md).
+pub fn strip_telemetry_env(cmd: &mut Command) {
+    for (var, _) in std::env::vars_os() {
+        if is_telemetry_var(&var.to_string_lossy()) {
+            cmd.env_remove(var);
+        }
+    }
+}
+
+/// Whether `var` configures or carries telemetry for the process that holds
+/// it: an `OTEL_*` variable, or W3C trace context. In any case: Windows
+/// reads an environment name case-insensitively.
+pub(crate) fn is_telemetry_var(var: &str) -> bool {
+    var.get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("OTEL_"))
+        || var.eq_ignore_ascii_case("TRACEPARENT")
+        || var.eq_ignore_ascii_case("TRACESTATE")
+}
+
 /// A launcher for a command on an off-local host: `ssh <opts> <dest>` or
 /// `wsl.exe -d <distro>`.
 ///
@@ -332,14 +353,17 @@ impl HostLauncher {
     /// The bare launcher, ready for the caller to append the remote command.
     /// Both transports join and shell-interpret whitespace-free trailing
     /// tokens identically, so callers append the same POSIX-quoted words.
+    /// It carries none of this process's telemetry ([`strip_telemetry_env`]).
     pub fn command(&self) -> Command {
-        match self {
+        let mut cmd = match self {
             Self::Ssh {
                 destination,
                 ssh_opts,
             } => ssh_command(destination, ssh_opts),
             Self::Wsl { distro } => wsl_command(distro),
-        }
+        };
+        strip_telemetry_env(&mut cmd);
+        cmd
     }
 
     /// Run a multi-statement POSIX script via `sh -c` on the host.
@@ -875,6 +899,40 @@ fn off_the_terminal(cmd: &mut Command) {
 
 #[cfg(test)]
 mod tests {
+    /// A command on a place carries none of this process's telemetry: ssh
+    /// and `wsl.exe` forward little by default, and an operator's
+    /// `SendEnv` or `WSLENV` must not hand the caller's `OTEL_*` identity
+    /// or `TRACEPARENT` to a session there (docs/observability.md).
+    #[test]
+    fn a_command_on_a_place_carries_no_telemetry() {
+        std::env::set_var("OTEL_SERVICE_NAME", "fleet");
+        std::env::set_var(
+            "TRACEPARENT",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        );
+        for launcher in [
+            HostLauncher::Ssh {
+                destination: "me@devbox".into(),
+                ssh_opts: Vec::new(),
+            },
+            HostLauncher::Wsl {
+                distro: "Ubuntu".into(),
+            },
+        ] {
+            let cmd = launcher.shell_c("true");
+            let removed: Vec<String> = cmd
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect();
+            for var in ["OTEL_SERVICE_NAME", "TRACEPARENT"] {
+                assert!(
+                    removed.iter().any(|r| r == var),
+                    "{launcher:?}: {removed:?}"
+                );
+            }
+        }
+    }
 
     /// Through WSL each word is its own argument of `--exec`, after a small
     /// `sh` script that reads the profile for `PATH` and then `exec`s them:

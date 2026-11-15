@@ -24,6 +24,7 @@ mod osc8;
 pub mod output_wake;
 pub mod pane;
 pub mod path_lookup;
+pub mod place;
 pub mod preflight;
 pub mod protocol;
 pub mod psmux;

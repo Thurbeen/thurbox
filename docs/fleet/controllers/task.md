@@ -360,9 +360,9 @@ the prompt and the conversation id. The harness profile's `[payload]`
 fields name them ([signal contract](../signal-contract.md)). The
 `Activity` probe reads the file through the port and answers both the
 activity and the whole report. A file never written is a report of nothing;
-a file that cannot be read is Unknown. A session on another host gets no
-file: reading one there takes the runtime's `exec`, so what Fleet would
-learn from it stays Unknown, and Unknown never concludes.
+a file that cannot be read is Unknown. A session on another place gets a
+file on that place, which the runtime port reads through the runtime's
+`exec` ([signals on a remote place](../../runtime/README.md#signals-on-a-remote-place)).
 
 The controller records the last reported conversation in
 `status.conversation`. A revive or a resume names it, so the runtime starts

@@ -235,9 +235,9 @@ image = "agent-base"
 
 - Fleet passes a place's table to the runtime in each request
   ([places](../runtime/README.md#places-protocol-version-2)) and does not
-  read it. The keys are the runtime's own. `runtime-mux` serves `local` only
-  today; its ssh and WSL places are planned, with `HostDef`'s fields as
-  their keys.
+  read it. The keys are the runtime's own. `runtime-mux` takes `local` with
+  no table, and [remote places](#remote-places-on-runtime-mux) of
+  `kind = "ssh"` or `kind = "wsl"`.
 - `local` is the short form of `<runtime>/local` on the default runtime: the
   one with `default = true`, or the only runtime. Fleet refuses a config with
   several runtimes and no single default at load.
@@ -275,6 +275,60 @@ image = "agent-base"
   the runtime cannot read are errors that say why
   ([browse and branches](../runtime/README.md#browse-and-branches)).
 
+#### Remote places on runtime-mux
+
+A remote place of `runtime-mux` is a machine over ssh or a WSL distro. The
+agent runs there, on that machine's multiplexer:
+
+```toml
+[runtimes.mux]
+program = "runtime-mux"
+
+[runtimes.mux.places.local]
+
+# spec.host = "mux/nixos-hp"
+[runtimes.mux.places.nixos-hp]
+kind = "ssh"
+destination = "nixos-hp"
+ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
+path_prepend = ["~/.cargo/bin"]
+
+# spec.host = "mux/ubuntu"; runtime-mux runs on Windows
+[runtimes.mux.places.ubuntu]
+kind = "wsl"
+distro = "Ubuntu-24.04"
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `kind` | required | `ssh` or `wsl`. |
+| `destination` | required for `ssh` | The ssh destination, such as `me@devbox`. `~/.ssh/config` applies. |
+| `ssh_opts` | `[]` | `ssh` options before the destination. |
+| `distro` | the place's name | The WSL distro, for `wsl`. |
+| `multiplexer` | `tmux` | The multiplexer on the place: `tmux`, `psmux` or `rmux`. |
+| `platform` | `posix`, or `windows` with `psmux` | The place's operating system. |
+| `socket` | `runtime-mux` | The multiplexer's socket on the place. |
+| `session` | the default | The multiplexer's session name on the place. |
+| `path_prepend` | `[]` | Directories put first on the agent's `PATH` on the place, before its login `PATH`. Absolute or `~`-rooted. |
+
+- `runtime-mux` refuses any other key, and names it.
+- The place needs `ssh -o BatchMode=yes <destination> true` to succeed,
+  tmux 3.2 or newer (or psmux), and `fleet` and the agent on its `PATH`.
+  `fleet runtime places` and `fleet doctor` say which one is missing, with
+  the command that shows or fixes it.
+- `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
+  run on the place. A harness's hook files, such as pi's extension, are
+  copied to the place at each start that names them. A native-Windows place
+  refuses such a start: it runs only harnesses whose hooks are inline.
+- A Task asks the runtime about its own place only. A place that does not
+  answer is reported not ready after 8 s, and never holds up a Task on
+  another place.
+- A workspace on a remote place is a directory already there, named as a
+  `file://` URL. `runtime-mux` refuses a `git+` URL there: it does not clone
+  on a remote place yet. A release removes nothing on the place.
+- `attach`, `shell`, `browse` and `branches` answer Unknown on a remote
+  place: they are not supported there yet.
+
 A second Fleet installation on the same runtime needs a distinct
 `keyPrefix`. Store and config must remain separate paths.
 
@@ -311,9 +365,12 @@ runtime or key prefix.
 Each runtime makes the workspaces of the hosts it serves, from the URLs a
 Task names ([workspaces](../runtime/README.md#workspaces)).
 
-Every session Fleet starts gets `FLEET_SIGNAL_FILE`, a file under
-`<data dir>/signals`, `FLEET_HARNESS` and `FLEET_HARNESS_DIR`, the directory
-below ([signal contract](signal-contract.md)).
+Every session Fleet starts gets `FLEET_SIGNAL_FILE`, `FLEET_HARNESS` and
+`FLEET_HARNESS_DIR`, the directory below
+([signal contract](signal-contract.md)). On `local`, the signal file is
+under `<data dir>/signals`. On any other place, it is
+`~/.local/state/fleet/signals/<key>.jsonl` on that place, and Fleet reads
+it through the runtime's `exec`.
 
 The `harnesses/` directory beside the config file holds the user's
 [harness profiles](controllers/task.md#harness-profiles), one `*.toml` file

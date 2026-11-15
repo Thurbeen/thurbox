@@ -349,9 +349,11 @@ jobs:
       # xvfb: `tui_e2e`'s native-clipboard paste runs against a private X server.
       # dbus: `notify_send_e2e` delivers to a private session bus.
       # jq: the reference runtime `e2e_runtime_exec` checks is a jq script.
-      - name: Install tmux, Xvfb, dbus and jq
+      # openssh-server: `e2e_runtime_exec`'s ssh places run on a private
+      # sshd on 127.0.0.1, started by the test as the runner's user.
+      - name: Install tmux, Xvfb, dbus, jq and sshd
         if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
-        run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus jq
+        run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus jq openssh-server
       # The `fleet` binary, beside `thurbox-cli` in target/debug, for the
       # tests that drive a real Fleet: `tests/fleet_engine_e2e.rs` and the
       # `Profile::real_fleet` scenarios of `tests/tui_e2e.rs`. The run below

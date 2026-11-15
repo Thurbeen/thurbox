@@ -181,6 +181,18 @@ impl Reported {
         r
     }
 
+    /// [`Reported::fold`] of a file whose agent was started again when the
+    /// file held `before`: `after` is what was appended since. A state in
+    /// `before` is the previous process's, so until a state in `after` the
+    /// state is [`State::Started`]. Prompts and the conversation of both are
+    /// kept, as a `Started` line keeps them. No time is compared: a place's
+    /// clock need not agree with Fleet's.
+    pub fn fold_restarted(before: &str, after: &str) -> Reported {
+        let mut r = Reported::fold(&format!("{before}\n{after}"));
+        r.state = Some(Reported::fold(after).state.unwrap_or(State::Started));
+        r
+    }
+
     /// What the agent is doing, when it reported anything.
     pub fn activity(&self) -> Option<Activity> {
         match self.state? {
@@ -236,6 +248,24 @@ pub trait Signals {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_restart_hides_the_states_reported_before_it() {
+        // The previous process's report is stamped later than the new one's:
+        // only where each line sits in the file counts.
+        let before = format!(
+            "{}\n",
+            json!({"at": 900, "state": "idle", "conversation": "c1"})
+        );
+        let r = Reported::fold_restarted(&before, "");
+        assert_eq!(r.state, Some(State::Started));
+        assert!(!r.reported());
+        assert_eq!(r.conversation.as_deref(), Some("c1"));
+        let after = format!("{}\n", json!({"at": 1, "state": "working"}));
+        let r = Reported::fold_restarted(&before, &after);
+        assert_eq!(r.state, Some(State::Working));
+        assert_eq!(r.conversation.as_deref(), Some("c1"));
+    }
 
     #[test]
     fn the_last_state_wins_and_every_prompt_is_kept() {

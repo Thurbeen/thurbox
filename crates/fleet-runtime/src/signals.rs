@@ -2,9 +2,17 @@
 //! directory, on this machine.
 //!
 //! A session on the local host gets `<dir>/<key>.jsonl` and its hooks
-//! append to it through `fleet signal`. A session on any other host gets
-//! no file: reading one back there takes the runtime's `exec`, which this
-//! adapter does not have, so what Fleet would learn from it stays Unknown.
+//! append to it through `fleet signal`. A session on any other host gets a
+//! file on that host, under its home ([`place_file`]), which the `fleet`
+//! there appends to. This adapter cannot read it: the exec runtime reads it
+//! back through the runtime's `exec`, over the connection the runtime
+//! already has to the host.
+//!
+//! ```text
+//! local:  hook ─fleet signal─▶ <data>/signals/<key>.jsonl ◀─read── Fleet
+//! remote: hook ─fleet signal─▶ ~/.local/state/fleet/signals/<key>.jsonl
+//!                                    ◀─runtime exec (tail)── Fleet
+//! ```
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -17,6 +25,28 @@ use fleet_api::task::{LOCAL_HOST, SessionRef};
 /// The most of one file Fleet reads, from its end, so a runaway hook cannot
 /// stall a pass.
 const MAX_FILE: u64 = 8 * 1024 * 1024;
+
+/// Where a session on a host other than this machine reports, under the
+/// host's home: `fleet signal` there expands the `~/`, which this machine
+/// cannot, as it does not know that home.
+pub const PLACE_DIR: &str = "~/.local/state/fleet/signals";
+
+/// The file a session under `key` on another host reports to, as that
+/// host's `fleet signal` reads it; `None` for a key that is not a plain
+/// name.
+pub fn place_file(key: &str) -> Option<String> {
+    let plain = !key.is_empty() && !key.starts_with('.') && !key.contains(['/', '\\']);
+    plain.then(|| format!("{PLACE_DIR}/{key}.jsonl"))
+}
+
+/// `file` as `fleet signal` opens it: a leading `~/` is the user's home.
+pub fn expand_home(file: &Path) -> PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    match (file.to_string_lossy().strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => Path::new(&home).join(rest),
+        _ => file.to_path_buf(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FileSignals {
@@ -34,6 +64,56 @@ impl FileSignals {
     fn path(&self, key: &str) -> Option<PathBuf> {
         let plain = !key.is_empty() && !key.starts_with('.') && !key.contains(['/', '\\']);
         plain.then(|| self.dir.join(format!("{key}.jsonl")))
+    }
+}
+
+/// Where a restart left a place's signal file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boundary {
+    /// Its length then: what it holds past it is the new process's.
+    At(u64),
+    /// Not known, as on a place whose file Fleet cannot read: nothing the
+    /// file holds is taken for the new process's.
+    Unknown,
+}
+
+/// How a mark of an unknown boundary is written.
+const UNKNOWN_BOUNDARY: &str = "unknown";
+
+impl FileSignals {
+    /// Keep `boundary`, where the place's signal file was when the session
+    /// under `key` on another host was last started: what the file holds
+    /// past it is the new process's. Fleet does not write that file, so the
+    /// restart is kept here, and as a length rather than a time, so a
+    /// place's clock need not agree with Fleet's.
+    pub fn mark_started(&self, key: &str, boundary: Boundary) -> io::Result<()> {
+        let path = self
+            .started_path(key)
+            .ok_or_else(|| io::Error::other("the session key is not a plain name"))?;
+        let tmp = path.with_extension("started.tmp");
+        let text = match boundary {
+            Boundary::At(offset) => offset.to_string(),
+            Boundary::Unknown => UNKNOWN_BOUNDARY.to_string(),
+        };
+        fs::write(&tmp, text)?;
+        fs::rename(&tmp, &path)
+    }
+
+    /// Where the place's file was at the session's last start, as
+    /// [`FileSignals::mark_started`] kept it; `None` when it was never
+    /// restarted. A mark that cannot be read is an unknown boundary.
+    pub fn started(&self, key: &str) -> Option<Boundary> {
+        let path = self.started_path(key)?;
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(_) => return Some(Boundary::Unknown),
+        };
+        Some(text.trim().parse().map_or(Boundary::Unknown, Boundary::At))
+    }
+
+    fn started_path(&self, key: &str) -> Option<PathBuf> {
+        self.path(key).map(|p| p.with_extension("started"))
     }
 }
 
@@ -55,7 +135,7 @@ pub fn append(file: &Path, signal: &Signal) -> io::Result<()> {
 impl Signals for FileSignals {
     fn file(&self, host: &str, key: &str) -> Option<String> {
         if host != LOCAL_HOST {
-            return None;
+            return place_file(key);
         }
         self.path(key).map(|p| p.to_string_lossy().into_owned())
     }

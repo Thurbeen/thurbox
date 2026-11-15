@@ -1096,8 +1096,15 @@ fn cmd_signal(
             Profiles::bundled().with(user).get(&h).payload
         });
     let signal = Signal::from_hook_with(now, state, payload.as_ref(), &fields);
-    fleet_runtime::signals::append(std::path::Path::new(&file), &signal)
-        .map_err(|e| fail(format!("{}: {e}", Path::new(&file).display())))
+    // A session on another host than Fleet's reports to a file under that
+    // host's home, `~/…`, whose directory the first report makes.
+    let on_place = file.to_string_lossy().starts_with("~/");
+    let file = fleet_runtime::signals::expand_home(Path::new(&file));
+    if on_place && let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| fail(format!("{}: {e}", dir.display())))?;
+    }
+    fleet_runtime::signals::append(&file, &signal)
+        .map_err(|e| fail(format!("{}: {e}", file.display())))
 }
 
 /// The `fleet gateway` verbs: each reads the `[gateway]` section and calls
@@ -1650,6 +1657,9 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
         let mut hosts = BTreeMap::new();
         for place in config.places() {
             let mut rt = exec_program(config, &place.runtime);
+            // Its manifest asks about its own place only: a Task on one
+            // place never waits on another's probe.
+            rt.places = vec![place.place.clone()];
             rt.place = place.place;
             if place.local {
                 hosts.insert(config::LOCAL.to_string(), rt.clone());
@@ -1884,6 +1894,7 @@ fn cmd_doctor(
         }
         for place in config.places() {
             let mut program = exec_program(config, &place.runtime);
+            program.places = vec![place.place.clone()];
             program.place = place.place;
             let answer = fleet_runtime::exec::reach(&program);
             checks.push(doctor::runtime(&place.id, &place.runtime, answer));

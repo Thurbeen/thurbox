@@ -143,21 +143,7 @@ pub(crate) fn strip_mux_nesting_env(cmd: &mut Command) {
     for var in MUX_NESTING_ENV {
         cmd.env_remove(var);
     }
-    for (var, _) in std::env::vars_os() {
-        if is_telemetry_var(&var.to_string_lossy()) {
-            cmd.env_remove(var);
-        }
-    }
-}
-
-/// Whether `var` configures or carries telemetry for the process that holds
-/// it: an `OTEL_*` variable, or W3C trace context. In any case: Windows
-/// reads an environment name case-insensitively.
-fn is_telemetry_var(var: &str) -> bool {
-    var.get(..5)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("OTEL_"))
-        || var.eq_ignore_ascii_case("TRACEPARENT")
-        || var.eq_ignore_ascii_case("TRACESTATE")
+    crate::shell::strip_telemetry_env(cmd);
 }
 
 impl TmuxTransport {
@@ -497,6 +483,8 @@ mod tests {
             );
         }
     }
+
+    use crate::shell::is_telemetry_var;
 
     #[test]
     fn only_the_telemetry_variables_are_telemetry() {

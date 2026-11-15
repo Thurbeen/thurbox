@@ -250,6 +250,12 @@ pub trait Runtime {
     fn shell(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
         Observation::Known(None)
     }
+    /// What the agent's hooks reported, when the session's signal file is
+    /// on a host only this runtime reaches. `None`: the signal port reads it
+    /// on this machine ([`crate::signal::Signals`]).
+    fn signals(&self, _session: &SessionRef) -> Option<Observation<crate::signal::Reported>> {
+        None
+    }
     /// Known(true) when the runtime holds the session and its agent is
     /// stopped, by Fleet or by anyone else. A running or lost session is
     /// Known(false). A runtime that cannot pause answers Unknown, so Fleet

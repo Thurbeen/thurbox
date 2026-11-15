@@ -23,19 +23,19 @@ use serde_json::{json, Value};
 
 use crate::contract::{Located, Owner, SessionBackend, WindowRole, WindowSpec};
 use crate::identity::window_name_for;
+use crate::place::Place;
 use crate::workspace::{Workspaces, SCHEMES};
+use crate::HostDef;
+
+pub use crate::place::LOCAL;
 
 /// The newest protocol version this program speaks, which its manifest
 /// names. Version 2 carries a place on each request.
 pub const PROTOCOL: u64 = 2;
 
 /// Every version it answers. A version 1 request names no place and runs at
-/// `local`, the one place this program serves.
+/// `local`, this machine.
 pub const PROTOCOLS: &[u64] = &[1, 2];
-
-/// The one place this program serves: this machine
-/// (docs/runtime/README.md, "Places").
-pub const LOCAL: &str = "local";
 
 /// The verbs it answers, `manifest` first.
 pub const VERBS: &[&str] = &[
@@ -85,24 +85,30 @@ fn unknown(why: impl std::fmt::Display) -> Value {
     json!({ "unknown": { "why": why.to_string() } })
 }
 
-/// The answer to `verb` with `request`, the JSON read from stdin. `view` is
-/// the argv that runs this program's `view` against the same server, which
-/// `attach` answers with the key after it.
-pub fn serve(
-    backend: &dyn SessionBackend,
-    pauses: &Pauses,
-    verb: &str,
-    request: &[u8],
-    view: &[String],
-) -> Value {
-    serve_with(backend, pauses, verb, request, view, &mut || {})
+/// The backend serving a place: this machine's for `None`, else the one on
+/// the host the place names, or why there is none.
+pub type Backends<'a> =
+    dyn Fn(Option<&HostDef>) -> Result<std::sync::Arc<dyn SessionBackend>, String> + Sync + 'a;
+
+/// The place a request runs at, parsed: `None` for `local`, for a version 1
+/// request, and for a request [`serve_with`] refuses, which it answers
+/// Unknown itself. The caller builds the backend and the locks for it.
+pub fn place_of(request: &[u8]) -> Option<HostDef> {
+    let request: Value = serde_json::from_slice(request).ok()?;
+    if request.get("protocol").and_then(Value::as_u64) != Some(2) {
+        return None;
+    }
+    check_place(request.get("place")).ok().flatten()
 }
 
-/// [`serve`], with `process_done` called once a releasing stop has stopped
-/// the process and before it releases the workspace: the caller lets go of
-/// the server's lock there, so a slow teardown holds only its key.
+/// The answer to `verb` with `request`, the JSON read from stdin. `backends`
+/// gives the backend of the request's place. `view` is the argv that runs
+/// this program's `view` against the same server, which `attach` answers
+/// with the key after it. `process_done` is called once a releasing stop
+/// has stopped the process and before it releases the workspace: the caller
+/// lets go of the server's lock there, so a slow teardown holds only its key.
 pub fn serve_with(
-    backend: &dyn SessionBackend,
+    backends: &Backends,
     pauses: &Pauses,
     verb: &str,
     request: &[u8],
@@ -116,37 +122,65 @@ pub fn serve_with(
             "protocol": PROTOCOL,
             "verbs": VERBS,
             "workspace": { "schemes": SCHEMES, "survivesStop": true },
-            "places": places(backend, request),
+            "places": places(backends, request),
         }));
     }
     let request: Value = match serde_json::from_slice(request) {
         Ok(value) => value,
         Err(e) => return unknown(format!("the request is not JSON: {e}")),
     };
-    match request.get("protocol").and_then(Value::as_u64) {
-        Some(1) => {}
-        Some(2) => {
-            if let Err(why) = check_place(request.get("place")) {
-                return unknown(why);
-            }
-        }
+    let place = match request.get("protocol").and_then(Value::as_u64) {
+        Some(1) => None,
+        Some(2) => match check_place(request.get("place")) {
+            Ok(place) => place,
+            Err(why) => return unknown(why),
+        },
         Some(other) => {
             return unknown(format!(
                 "protocol {other} is not served; this runtime speaks {PROTOCOLS:?}"
             ))
         }
         None => return unknown("the request names no protocol"),
+    };
+    let backend = match backends(place.as_ref()) {
+        Ok(backend) => backend,
+        Err(why) => return unknown(why),
+    };
+    let backend = backend.as_ref();
+    let place = place.as_ref();
+    // What reads or writes this machine's disk does not serve a remote place
+    // yet: it would answer about the wrong machine.
+    // The backend's commands lead with the place's login `PATH`: read it,
+    // or take it from the cache, before the first of them. `exec` reads it
+    // inside its own deadline.
+    if let Some(host) = place.filter(|_| verb != "exec") {
+        crate::place::warm(host);
+    }
+    if let Some(host) = place.filter(|_| matches!(verb, "attach" | "shell" | "browse" | "branches"))
+    {
+        return unknown(format!(
+            "{verb} is not yet supported on a remote place ({:?})",
+            host.name
+        ));
     }
     let result = match verb {
-        "start" => parse(request).map(|r| start(backend, pauses, r)),
+        "start" => parse(request).map(|r| start(backend, place, pauses, r)),
         "inspect" => parse(request).map(|r: Keyed| inspect(backend, pauses, &r.key)),
         "pause" => parse(request).map(|r: Keyed| pause(backend, pauses, &r.key)),
         "stop" => parse(request).map(|r: Stop| {
             let stopped = stop(backend, pauses, &r.key);
+            if let (Some(host), Some(_)) = (place, stopped.get("known")) {
+                crate::place::remove_assets(host, &r.key);
+            }
             if !r.release || stopped.get("known").is_none() {
                 return stopped;
             }
             process_done();
+            // A remote place's workspace is a directory already there,
+            // which a release never removes: nothing was made.
+            if place.is_some() {
+                return stopped;
+            }
             match Workspaces::load().and_then(|w| w.release(&r.key)) {
                 Ok(()) => stopped,
                 Err(why) => unknown(format!(
@@ -154,14 +188,23 @@ pub fn serve_with(
                 )),
             }
         }),
-        "workspace" => parse(request).map(|r: Workspace| match Workspaces::load() {
-            Ok(workspaces) => workspaces.make(&r.key, &r.urls),
-            Err(why) => known(json!({ "failed": { "why": why } })),
+        "workspace" => parse(request).map(|r: Workspace| match place {
+            Some(host) => match crate::place::workspace(host, &r.urls) {
+                crate::place::Workspace::Dirs(dirs) => {
+                    known(json!({ "made": { "dirs": dirs, "adopted": false } }))
+                }
+                crate::place::Workspace::Failed(why) => known(json!({ "failed": { "why": why } })),
+                crate::place::Workspace::Unknown(why) => unknown(why),
+            },
+            None => match Workspaces::load() {
+                Ok(workspaces) => workspaces.make(&r.key, &r.urls),
+                Err(why) => known(json!({ "failed": { "why": why } })),
+            },
         }),
         "list" => Ok(list(backend, pauses)),
         "input" => parse(request).map(|r| input(backend, r)),
         "capture" => parse(request).map(|r| capture(backend, r)),
-        "exec" => parse(request).map(exec),
+        "exec" => parse(request).map(|r: Exec| exec(place, r)),
         "attach" => parse(request).map(|r: Keyed| attach(backend, &r.key, view)),
         "shell" => parse(request).map(|r: Keyed| shell(backend, &r.key, view)),
         "browse" => parse(request).map(browse),
@@ -350,47 +393,26 @@ fn git_out(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// A place as a request names it: the name, and its table from Fleet's
-/// config.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Place {
-    name: String,
-    #[serde(default)]
-    config: serde_json::Map<String, Value>,
-}
-
-/// Why this program cannot run a request at `place`, if it cannot: it serves
-/// `local` alone, which takes no config.
-fn serves(place: &Place) -> Result<(), String> {
-    if place.name != LOCAL {
-        return Err(format!(
-            "place {:?}: runtime-mux serves only {LOCAL:?}, this machine",
-            place.name
-        ));
-    }
-    if !place.config.is_empty() {
-        return Err(format!(
-            "place {LOCAL:?} takes no config; runtime-mux cannot use {:?}",
-            place.config.keys().collect::<Vec<_>>()
-        ));
-    }
-    Ok(())
-}
-
-/// A version 2 request's `place`, checked: every request but `manifest`
-/// names one.
-fn check_place(place: Option<&Value>) -> Result<(), String> {
+/// A version 2 request's `place`, checked and parsed: every request but
+/// `manifest` names one. `None` is `local`.
+fn check_place(place: Option<&Value>) -> Result<Option<HostDef>, String> {
     let place = place.ok_or("a version 2 request names its place")?;
     let place: Place =
         serde_json::from_value(place.clone()).map_err(|e| format!("bad place: {e}"))?;
-    serves(&place)
+    crate::place::parse(&place)
 }
+
+/// How long `manifest` waits for the places' readiness, all of them
+/// together: well inside Fleet's bound on a call (15 s unless configured),
+/// so one place that does not answer leaves the others their report.
+const READINESS_BUDGET: Duration = Duration::from_secs(8);
 
 /// The manifest's `places`: each place the request asks about, or `local`
 /// when it asks about none, with whether this program can run a process
-/// there now.
-fn places(backend: &dyn SessionBackend, request: &[u8]) -> Vec<Value> {
+/// there now. Each place is probed on a thread of its own, and every probe
+/// shares [`READINESS_BUDGET`]: a place whose probe has not answered by
+/// then is not ready, and its probe is left to end on its own.
+fn places(backends: &Backends, request: &[u8]) -> Vec<Value> {
     let asked: Vec<Value> = serde_json::from_slice::<Value>(request)
         .ok()
         .and_then(|r| r.get("places").and_then(Value::as_array).cloned())
@@ -400,30 +422,59 @@ fn places(backend: &dyn SessionBackend, request: &[u8]) -> Vec<Value> {
     } else {
         asked
     };
-    let platform = if cfg!(windows) { "windows" } else { "posix" };
-    asked
+    let deadline = Instant::now() + READINESS_BUDGET;
+    let local = if cfg!(windows) { "windows" } else { "posix" };
+    let (tx, rx) = mpsc::channel();
+    let mut reports: Vec<Value> = asked
         .into_iter()
-        .map(|place| {
+        .enumerate()
+        .map(|(i, place)| {
             let name = place
                 .get("name")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
-            let ready = serde_json::from_value::<Place>(place.clone())
+                .unwrap_or_default()
+                .to_string();
+            let parsed = serde_json::from_value::<Place>(place)
                 .map_err(|e| format!("bad place: {e}"))
-                .and_then(|place| serves(&place))
-                .and_then(|()| backend.check_available().map_err(|e| e.to_string()));
-            let mut report = json!({
-                "name": name,
-                "platform": platform,
-                "dynamic": false,
-                "ready": ready.is_ok(),
-            });
-            if let Err(why) = ready {
-                report["why"] = json!(why);
+                .and_then(|place| crate::place::parse(&place));
+            let platform = match &parsed {
+                Ok(Some(host)) => host.platform().name(),
+                _ => local,
+            };
+            match parsed.and_then(|host| Ok((backends(host.as_ref())?, host))) {
+                Ok((backend, host)) => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let ready = match &host {
+                            Some(host) => {
+                                crate::place::readiness(host, backend.as_ref(), deadline)
+                            }
+                            None => backend.check_available().map_err(|e| e.to_string()),
+                        };
+                        let _ = tx.send((i, ready));
+                    });
+                    json!({ "name": name, "platform": platform, "dynamic": false, "ready": false,
+                            "why": format!("place {name:?}: its readiness probe timed out after {} s", READINESS_BUDGET.as_secs()) })
+                }
+                Err(why) => json!({ "name": name, "platform": platform, "dynamic": false,
+                                    "ready": false, "why": why }),
             }
-            report
         })
-        .collect()
+        .collect();
+    drop(tx);
+    while let Ok((i, ready)) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        let report = &mut reports[i];
+        match ready {
+            Ok(()) => {
+                report["ready"] = json!(true);
+                if let Some(map) = report.as_object_mut() {
+                    map.remove("why");
+                }
+            }
+            Err(why) => report["why"] = json!(why),
+        }
+    }
+    reports
 }
 
 /// A request as its verb's shape, with every key it names checked.
@@ -505,9 +556,8 @@ impl Validate for Start {
         if self.argv.first().is_none_or(|program| program.is_empty()) {
             return Err("argv names no program".into());
         }
-        if self.dir.as_ref().is_some_and(|dir| !dir.is_absolute()) {
-            return Err("dir must be an absolute path".into());
-        }
+        // The directory is the place's: `start` checks it by the place's
+        // rules ([`absolute_on`]).
         Ok(())
     }
 }
@@ -695,10 +745,19 @@ impl Pauses {
     }
 }
 
-fn start(backend: &dyn SessionBackend, pauses: &Pauses, request: Start) -> Value {
+fn start(
+    backend: &dyn SessionBackend,
+    place: Option<&HostDef>,
+    pauses: &Pauses,
+    request: Start,
+) -> Value {
     // The one Known failure: nothing can have started without the binary.
     if let Err(e) = backend.check_available() {
-        return known(json!({ "failed": { "why": e.to_string() } }));
+        let why = match place {
+            Some(host) => format!("place {:?}: {e}", host.name),
+            None => e.to_string(),
+        };
+        return known(json!({ "failed": { "why": why } }));
     }
     match locate(backend, &request.key) {
         Err(why) => return unknown(why),
@@ -715,6 +774,25 @@ fn start(backend: &dyn SessionBackend, pauses: &Pauses, request: Start) -> Value
             }
         },
         Ok(Located::Absent) => {}
+    }
+    // On a remote place the agent is looked for on the place's `PATH` before
+    // its window is made: a window whose program is missing dies at once,
+    // and its pane says less than this does.
+    if let Some(why) = place.and_then(|host| crate::place::missing_program(host, &request.argv[0]))
+    {
+        return known(json!({ "failed": { "why": why } }));
+    }
+    let platform = place.map_or(crate::Platform::local(), HostDef::platform);
+    if let Some(dir) = &request.dir {
+        if !absolute_on(&dir.to_string_lossy(), platform) {
+            return unknown("dir must be an absolute path");
+        }
+    }
+    let mut request = request;
+    if let Some(host) = place {
+        if let Err(why) = place_assets(host, &mut request) {
+            return known(json!({ "failed": { "why": why } }));
+        }
     }
     let name = name_of(&request.key);
     let spec = WindowSpec {
@@ -740,6 +818,97 @@ fn start(backend: &dyn SessionBackend, pauses: &Pauses, request: Start) -> Value
         return unknown(why);
     }
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
+}
+
+/// Whether `dir` is absolute on a machine of `platform`, read as a string:
+/// this machine's own path rules are not the place's. On POSIX a path
+/// starts at `/`; on Windows at a drive (`C:\`, `C:/`) or a UNC share.
+fn absolute_on(dir: &str, platform: crate::Platform) -> bool {
+    match platform {
+        crate::Platform::Posix => dir.starts_with('/'),
+        crate::Platform::Windows => {
+            let b = dir.as_bytes();
+            let drive = b.len() >= 3
+                && b[0].is_ascii_alphabetic()
+                && b[1] == b':'
+                && matches!(b[2], b'\\' | b'/');
+            drive || dir.starts_with("\\\\") || dir.starts_with("//")
+        }
+    }
+}
+
+/// A start on a remote place whose launch names a file of the directory
+/// Fleet passes as `FLEET_ASSET_DIR`, such as pi's hook extension: the
+/// directory is copied to the place, and every word of `argv` and every
+/// value of `env` that names it names the copy instead. A launch that names
+/// none of its files copies nothing, so it starts on any place. A directory
+/// that is not on this machine is left as it is: it may already be the
+/// place's.
+fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
+    place_profiles(host, request)?;
+    let Some(local) = request
+        .env
+        .get(ASSET_DIR_ENV)
+        .filter(|dir| !dir.is_empty() && std::path::Path::new(dir.as_str()).is_dir())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let named = request.argv.iter().any(|word| word.contains(&local))
+        || request
+            .env
+            .iter()
+            .any(|(name, value)| name != ASSET_DIR_ENV && value.contains(&local));
+    if !named {
+        return Ok(());
+    }
+    let remote = crate::place::copy_dir(
+        host,
+        &request.key,
+        std::path::Path::new(&local),
+        crate::place::ASSETS_DIR,
+    )?;
+    for word in request.argv.iter_mut().chain(request.env.values_mut()) {
+        if word.contains(&local) {
+            *word = word.replace(&local, &remote);
+        }
+    }
+    Ok(())
+}
+
+/// The variable Fleet names its harness asset directory in.
+const ASSET_DIR_ENV: &str = "FLEET_ASSET_DIR";
+
+/// The variable Fleet names the user's harness profiles directory in, which
+/// `fleet signal` reads a profile's payload fields from.
+const HARNESS_DIR_ENV: &str = "FLEET_HARNESS_DIR";
+
+/// A start on a remote POSIX place with `FLEET_HARNESS_DIR` naming a
+/// directory on this machine: the user's profiles are copied to the place
+/// and the variable names the copy, so `fleet signal` there reads the
+/// profile's own payload fields (its conversation, its prompt). On a place
+/// they cannot be copied to, the variable is left as it is: `fleet signal`
+/// falls back to the bundled profile, as before.
+fn place_profiles(host: &HostDef, request: &mut Start) -> Result<(), String> {
+    if host.platform() != crate::Platform::Posix {
+        return Ok(());
+    }
+    let Some(local) = request
+        .env
+        .get(HARNESS_DIR_ENV)
+        .filter(|dir| !dir.is_empty() && std::path::Path::new(dir.as_str()).is_dir())
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let remote = crate::place::copy_dir(
+        host,
+        &request.key,
+        std::path::Path::new(&local),
+        crate::place::HARNESSES_DIR,
+    )?;
+    request.env.insert(HARNESS_DIR_ENV.to_string(), remote);
+    Ok(())
 }
 
 /// The key's window, else its pause mark: a window answers for the key while
@@ -980,24 +1149,42 @@ fn capture(backend: &dyn SessionBackend, request: Capture) -> Value {
     }}))
 }
 
-/// One bounded command on this machine: its process group is killed past the
-/// deadline, and once it exits, and each stream is kept up to the cap. The
-/// answer comes by the deadline even when a child that left the group holds
-/// a stream open: what was read by then is the output.
-fn exec(request: Exec) -> Value {
+/// One bounded command at the place, on this machine or through the
+/// place's launcher (ssh, `wsl.exe`): its process group here is killed past
+/// the deadline, and once it exits, and each stream is kept up to the cap.
+/// The answer comes by the deadline even when a child that left the group
+/// holds a stream open: what was read by then is the output. On a remote
+/// place the group killed is the launcher's: a command there that ignores
+/// its closed connection can outlive the deadline.
+fn exec(place: Option<&HostDef>, request: Exec) -> Value {
+    // The deadline starts here: on a remote place, reading its `PATH` is
+    // part of the command's time.
+    let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
     let cap = request
         .output_cap
         .unwrap_or(DEFAULT_OUTPUT_CAP)
         .min(MAX_OUTPUT_CAP);
-    let mut command = Command::new(&request.argv[0]);
+    let mut command = match place {
+        Some(host) => {
+            match crate::place::exec_command(host, &request.argv, request.dir.as_deref(), deadline)
+            {
+                Ok(command) => command,
+                Err(why) => return known(json!({ "failed": { "why": why } })),
+            }
+        }
+        None => {
+            let mut command = Command::new(&request.argv[0]);
+            command.args(&request.argv[1..]);
+            if let Some(dir) = &request.dir {
+                command.current_dir(dir);
+            }
+            command
+        }
+    };
     command
-        .args(&request.argv[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(dir) = &request.dir {
-        command.current_dir(dir);
-    }
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = match command.spawn() {
@@ -1035,7 +1222,6 @@ fn exec(request: Exec) -> Value {
             .take()
             .map(|p| Box::new(p) as Box<dyn Read + Send>),
     );
-    let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -1082,6 +1268,57 @@ fn kill_tree(child: &mut std::process::Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start's directory is checked by the rules of the place it runs
+    /// on, whatever machine this program runs on: a POSIX path for a POSIX
+    /// place (an ssh host, a WSL distro), a drive or UNC path for Windows.
+    #[test]
+    fn a_directory_is_absolute_by_its_places_rules() {
+        use crate::Platform::{Posix, Windows};
+        for (dir, platform, absolute) in [
+            ("/home/me/project", Posix, true),
+            ("home/me", Posix, false),
+            ("C:\\Users\\me", Posix, false),
+            ("C:\\Users\\me", Windows, true),
+            ("C:/Users/me", Windows, true),
+            ("\\\\server\\share\\x", Windows, true),
+            ("/home/me", Windows, false),
+            ("Users\\me", Windows, false),
+        ] {
+            assert_eq!(
+                absolute_on(dir, platform),
+                absolute,
+                "{dir} on {platform:?}"
+            );
+        }
+    }
+
+    /// A launch that names no file of Fleet's asset directory starts on any
+    /// place, a native-Windows one included; one that names a file is
+    /// refused there, by why, since the files cannot be copied to it yet.
+    #[test]
+    fn a_windows_place_refuses_only_a_launch_that_needs_the_asset_files() {
+        let assets = tempfile::tempdir().expect("an asset dir");
+        let dir = assets.path().to_string_lossy().into_owned();
+        let windows = HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..HostDef::default()
+        };
+        let start = |argv: &[&str]| Start {
+            key: "k.one".into(),
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+            env: HashMap::from([(ASSET_DIR_ENV.to_string(), dir.clone())]),
+            dir: None,
+        };
+        let mut bare = start(&["codex"]);
+        assert_eq!(place_assets(&windows, &mut bare), Ok(()));
+        assert_eq!(bare.argv, ["codex"]);
+        let mut pi = start(&["pi", "-e", &format!("{dir}/fleet-pi.ts")]);
+        let why = place_assets(&windows, &mut pi).unwrap_err();
+        assert!(why.contains("native-Windows"), "{why}");
+    }
 
     #[test]
     fn every_key_has_a_window_name_of_its_own_and_reads_back() {

@@ -43,7 +43,7 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | --- | --- |
 | The runtime protocol carries a place, and `manifest` reports places | implemented |
 | Places in Fleet's config, `[runtimes.<name>.places.<place>]`, named `<runtime>/<place>` | implemented |
-| `runtime-mux` runs sessions on `local` only | implemented |
+| `runtime-mux` runs sessions on `local`, on an ssh place and in a WSL distro: start, stop, input, screen and state | implemented |
 | Several Fleets in thurbox's `settings.toml`, `[fleets.<name>]`, over ssh or WSL; `thurbox-cli doctor` checks each | implemented |
 | The session list follows every listed Fleet; a row's id is `<fleet>:<task>`, and an unreachable Fleet's rows stay, marked unreachable | implemented |
 | Send, rename and delete go to the session's own Fleet | implemented |
@@ -55,7 +55,8 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | `fleet shell <task>` names the stream that opens that shell | implemented |
 | Every session's companion shell opens through `fleet shell` on its Fleet, at the session's place, and the runtime keeps it | implemented |
 | thurbox keeps no file of machines of its own: `hosts.toml` is retired | implemented |
-| `runtime-mux` places over ssh and WSL, a VM runtime | planned |
+| On an ssh or WSL place: a workspace cloned there, `browse`, `branches`, and the session's pane and shell | planned |
+| A VM runtime | planned |
 
 ## What thurbox does on another machine
 
@@ -146,10 +147,10 @@ when the laptop sleeps.
 
 ### 3. One Fleet, several places
 
-Status: Fleet's config takes these places today. `runtime-mux` runs sessions
-on `local` only, and no VM runtime ships yet, so these sessions are planned.
+Status: `runtime-mux` runs sessions on an ssh place and in a WSL distro. Each
+workspace there is a directory already on the place. No VM runtime ships yet.
 
-One Fleet runs sessions in a WSL distro or a VM. Declare each place in
+One Fleet runs sessions on another machine, in a WSL distro or in a VM. Declare each place in
 Fleet's config, under its runtime
 ([runtimes and their places](fleet/configuration.md#runtimes-and-their-places)):
 
@@ -159,6 +160,10 @@ program = "runtime-mux"
 default = true   # several runtimes need one default
 
 [runtimes.mux.places.local]   # keeps local: a places table replaces the implied one
+
+[runtimes.mux.places.devbox]
+kind = "ssh"
+destination = "me@devbox"
 
 [runtimes.mux.places.wsl-dev]
 kind = "wsl"
