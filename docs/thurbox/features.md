@@ -341,16 +341,20 @@ not applicable.
    step is skipped when one is listed. Then choose where the session runs:
    that Fleet's `local` at once, and the places it defines (`fleet runtime
    places --json`), each with whether it is ready, when it names them. The
-   session's Task runs on the place of that name. thurbox reads this
-   machine only, so for another place, or any place of a remote Fleet, a
-   typed path is remembered as typed and must be absolute; a remote Fleet
-   also takes a clone URL.
+   session's Task runs on the place of that name. A place on another
+   machine (an ssh or wsl place, of this machine's Fleet or of a remote
+   one) is read there, through its Fleet: the repo picker browses its
+   folders from its home (`fleet runtime browse`), and the base branch step
+   lists its branches (`fleet runtime branches`). A path there must be
+   absolute, and a clone URL is cloned there too.
 2. **Repo picker** — fuzzy-searchable list of bookmarked repo
    paths. `Space` ticks a repository (`[x]`), and every ticked one goes
    into the session. `Alt+W` gives the repository under the cursor a
    worktree of its own (`[wt]`, ticking it too); a directory that is no
-   git repository, or a path on another host, is refused one and stays
-   ticked as it is. `→` opens a repository's existing worktrees under it
+   git repository is refused one and stays ticked as it is. On a place on
+   another machine the runtime makes the worktree there, from the
+   `git+file://<path>?branch=<branch>#<base>` URL of the Task's workspace.
+   `→` opens a repository's existing worktrees under it
    (`↳`), `←` closes them, and `Enter` on one runs the session in that
    checkout as it is. `Alt+D` (or `Delete`) deletes the bookmark — chords
    rather than letters, because the step types every letter into its
@@ -362,22 +366,15 @@ not applicable.
    highlighted directory, `Esc` closes it, listings are cached per picker).
    A refused addition shows its reason inside the modal and restores the
    path for correction.
-   Remote paths expand `~` against the remote home and are verified
-   (exists + is-it-git, one round trip, async with a `checking…`
-   spinner) on Enter; git-ness is kept per bookmark so it's learned
-   once.
+   On a place on another machine the listing comes from that place, its
+   `~` is that place's home, and a path is remembered as typed: the place
+   tells a repository from a directory when the session starts.
 
    **A folder imported with `Alt+P` is a scan, not a snapshot.** Its
    members are whatever it holds *now*, so a repository cloned into
    it appears and one deleted from it stops being offered, with no
-   re-import. A **local** folder is scanned on every bookmark read
-   (a `readdir`, so free). A **remote** one is scanned on its host
-   every 30 s while the picker is open, on a worker, and what it
-   finds is written back to the bookmarks — which is what the
-   folder still shows across a restart and while the host is
-   unreachable. A scan that *fails* changes nothing: an unreachable
-   host, or a folder that can't be read, leaves it holding what it
-   last held rather than emptying it. A folder that reads as *empty*
+   re-import. A folder is scanned on every bookmark read (a `readdir`,
+   so free), and is imported on this machine only. A folder that reads as *empty*
    is empty — the same answer as deleting the last repository in it,
    which is half of what the rescan is for. So a folder imported from
    a mount point goes empty while its drive is unmounted (an unmounted
@@ -386,7 +383,9 @@ not applicable.
 3. **Base branch** — only when a ticked repository has a worktree: the
    branch the first worktree repository's new branch starts from, with
    the default branch under the cursor. The list is read with local git
-   on a worker.
+   on a worker, or, on a place on another machine, through `fleet runtime
+   branches` as that machine last fetched it. A refusal from the place is
+   shown in the step.
 4. **Session name** — free text identifier shown in the sidebar. The
    Task's name is derived from it (lowercase letters, digits, `-` and
    `.`), and the name as typed is the Task's `thurbox.dev/name` label.

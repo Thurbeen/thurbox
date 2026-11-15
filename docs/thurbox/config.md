@@ -597,24 +597,32 @@ a place.
   `incompatible`. An unreachable or incompatible Fleet is not taken. The places, their readiness (`fleet
   runtime places --json`) and the agents that follow are the chosen Fleet's,
   read again each time the place step opens on it.
-  For a Fleet on another machine, a repository is a typed path on that
-  machine or a clone URL (`https://…`, `ssh://…`, `user@host:path`), which
-  the runtime clones there on the session's branch. A relative scp-like
-  path is under the login's home (`git+ssh://me@box/~/repos/app.git`).
-  thurbox never reads this machine's disk for it, and remembers its paths
-  apart from this machine's.
-  The path field starts at that machine's home: `$HOME` there, read once
-  over the Fleet's link and given 15 seconds, like `doctor`'s probes. A
-  typed `~` is that home. When the home cannot be read, the field starts
-  empty and asks for an absolute path. Browsing (`tab`) lists that place's
-  folders through `fleet runtime browse <place> <dir> --json` over the
-  Fleet's link, a git work tree marked. `alt+w` gives a repository there a
+  A place on another machine is every place of a Fleet on another machine,
+  and every place of this machine's Fleet other than its `local` (an ssh or
+  wsl place of runtime-mux, such as `mux/box`). There, a repository is a
+  path on that machine or a clone URL (`https://…`, `ssh://…`,
+  `user@host:path`), which the runtime clones there on the session's
+  branch. A relative scp-like path is under the login's home
+  (`git+ssh://me@box/~/repos/app.git`). thurbox never reads this machine's
+  disk for it, and remembers its paths apart from this machine's, under
+  `<fleet>/<place>`.
+  On a remote Fleet's own `local`, the path field starts at that machine's
+  home: `$HOME` there, read once over the Fleet's link and given 15
+  seconds, like `doctor`'s probes. A typed `~` is that home. On any other
+  place, or when the home cannot be read, the field starts empty, and
+  browsing it lists the home the place's runtime names. Browsing (`tab`)
+  lists that place's folders through `fleet runtime browse <place> <dir>
+  --json` over the Fleet's link, a git work tree marked. A listing is
+  cached for 5 seconds, and a slow one shows as pending, never as empty.
+  `alt+w` gives a repository there a
   worktree: its base branch is picked from `fleet runtime branches <place>
   <repo> --json`, as that machine last fetched them (no fetch), with its
   default preselected, and the runtime makes the worktree on the place
   (`git+file://<repo>?branch=…#<base>`). Each call has the 15-second bound.
   A runtime that does not offer `browse` or `branches` is named in the
-  dropdown, and a typed path still works.
+  dropdown, and a typed path still works. Any other refusal from the place
+  (for example, `workspace-git` not on its `PATH`) is shown in the dialog in
+  the place's own words.
 - The first thing asked of each listed Fleet is `fleet version --json`. A
   Fleet whose `apiVersions` lack `fleet/v1alpha1`, the version thurbox
   writes its Tasks in, is refused: it shows as `incompatible`, the session
@@ -628,7 +636,7 @@ a place.
 - A Fleet that cannot be asked (its `ssh` exits 255) makes a command fail
   with that reason. The check a confirmed delete makes never reads it as a
   Task that is gone: only Fleet's own answer (exit 3) says so.
-- A session of a Fleet on another machine names a path there. A creation
+- A session on a place on another machine names a path there. A creation
   there takes the path as given: it must be absolute, `~` is not expanded,
   and this machine's disk is not read to tell a repository from a
   directory, so with no choice made the directory is taken as it is.

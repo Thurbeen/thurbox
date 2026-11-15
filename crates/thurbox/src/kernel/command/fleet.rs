@@ -321,8 +321,8 @@ struct Choice<'a> {
 ///
 /// A clone URL (`https://…`, `ssh://…`, git's `user@host:path`) is cloned
 /// by the runtime on the session's machine, always on a branch of its own:
-/// it is how a session on a Fleet whose folders thurbox does not read
-/// starts from a repository that machine does not hold yet.
+/// it is how a session on a place elsewhere starts from a repository that
+/// machine does not hold yet.
 fn workspace_url(
     fleet: &crate::fleet_link::FleetLink,
     host: &str,

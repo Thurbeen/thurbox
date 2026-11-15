@@ -19,19 +19,20 @@
 -- agents) is that Fleet's. With one, the step is skipped. The place step (still
 -- `host` in the flow's state) is always asked: the Fleet's `local` is a choice
 -- at once, and the places Fleet names join the open step when they arrive. A
--- Fleet on another machine has folders thurbox does not read: there, a
--- repository is a typed path on that machine or a clone URL, never a browse of
--- this one. The repo step gathers repositories, each ticked (`space`) and each
--- given a worktree of its own or not (`alt+w`); a repository's existing
--- worktrees open under it (`→`), and one picked runs as it is. `base branch`
--- and `branch name` only appear when some repository has a worktree, and
--- `agent` is skipped when there is one harness or none. A worktree is made on
--- this machine only: thurbox reads no other host's branches, so a path on
--- another host runs as it is. Each repository is one URL of the Task's
--- workspace, the first where the agent starts, and the runtime makes every
--- worktree from its `git+file` URL (ADR-41). Nothing here waits: every
--- listing, path check and branch list is a READ the kernel serves from a
--- worker (`kernel::repos`), asked for by leaving a key in `store`.
+-- place on another machine (any place of a Fleet elsewhere, or a place of this
+-- machine's Fleet other than its `local`) is read there, through Fleet: the
+-- repo step browses its folders from its home (`fleet runtime browse`), and
+-- the base branch step lists its branches (`fleet runtime branches`). A clone
+-- URL is taken there too. The repo step gathers repositories, each ticked
+-- (`space`) and each given a worktree of its own or not (`alt+w`); a
+-- repository's existing worktrees open under it (`→`), and one picked runs as
+-- it is. `base branch` and `branch name` only appear when some repository has
+-- a worktree, and `agent` is skipped when there is one harness or none. Each
+-- repository is one URL of the Task's workspace, the first where the agent
+-- starts, and the runtime makes every worktree from its `git+file` URL on the
+-- session's place (ADR-41). Nothing here waits: every listing, path check and
+-- branch list is a READ the kernel serves from a worker (`kernel::repos`),
+-- asked for by leaving a key in `store`.
 --
 -- WHY ONE PLUGIN AND NOT SIX. The kernel renders every floating plugin each
 -- frame purely to discover it is not floating, so six closed modals would cost
@@ -197,6 +198,9 @@ local function fresh()
     step = several_fleets() and "fleet" or "host",
     fleet = only and only.name or nil,
     remote = only ~= nil and only.remote == true,
+    -- The chosen place is another machine: its folders and branches are read
+    -- there, through Fleet. Set with the place.
+    elsewhere = false,
     fleet_index = 1,
     host = "",
     -- The place a created Task names: empty for the Fleet's own `local`.
@@ -238,13 +242,29 @@ local function fresh()
   }
 end
 
---- A remote Fleet's home on its machine, or nil until it has said.
+--- The home of the place's machine, or nil while it is not known here.
+---
+--- Known only for a remote Fleet's own `local`: its Fleet said. Any other
+--- place elsewhere names its home when its `~` is browsed.
 local function remote_home(flow)
-  local fleet = flow.remote and chosen_fleet()
+  local fleet = flow.remote and flow.place == "" and chosen_fleet()
   return fleet and fleet.home or nil
 end
 
---- A typed `~` on a remote Fleet is that machine's home, never this one's.
+--- How the chosen place is named in the flow's words: a place of this
+--- machine's Fleet by its own name, a remote Fleet's `local` as that Fleet,
+--- and any other place of a remote Fleet by its key (`box/mux/wsl-dev`).
+local function place_label(flow)
+  if not flow.remote then
+    return flow.place ~= "" and flow.place or (flow.host or "")
+  end
+  if flow.place == "" then
+    return flow.fleet
+  end
+  return flow.host
+end
+
+--- A typed `~` on a place elsewhere is that machine's home, never this one's.
 local function expand_remote_home(flow, path)
   local home = remote_home(flow)
   if home and (path == "~" or path:sub(1, 2) == "~/") then
@@ -271,10 +291,10 @@ local function ask(flow)
   store.want_places = (flow.step == "host" and flow.fleet) or nil
   -- The branches of the first worktree repository, while the base branch is
   -- asked; on the repo step, the expanded repository's, whose read carries
-  -- its existing worktrees. A remote Fleet's are read on its place, through
+  -- its existing worktrees. A place elsewhere has its read there, through
   -- Fleet, so they are asked as `<host>\0<repo>`.
   if flow.step == "branch" then
-    store.want_branches = flow.remote and (flow.host .. "\0" .. flow.primary) or flow.primary
+    store.want_branches = flow.elsewhere and (flow.host .. "\0" .. flow.primary) or flow.primary
   elseif flow.step == "repo" and flow.wt_repo then
     store.want_branches = flow.wt_repo
   else
@@ -294,14 +314,14 @@ local function ask(flow)
   --
   -- Only while the field has focus: it holds its starting directory the whole
   -- time now, and a flow picking from memory must not pay for a listing.
-  -- A remote Fleet's listing is read on its place, through Fleet, and its
-  -- `~` is that machine's home. The directory part is split off first and
+  -- A place elsewhere is listed there, through Fleet, and its `~` is that
+  -- machine's home. The directory part is split off first and
   -- only then made the home: a bare `~` names the home itself, not its
   -- parent.
   local typed = flow.step == "repo" and (flow.input.value or "") or ""
   if flow.step == "repo" and flow.focus == "input" and (typed ~= "" or flow.browse) then
     local dir = pathpicker.split_typed(typed)
-    if flow.remote then
+    if flow.elsewhere then
       dir = expand_remote_home(flow, dir)
     end
     store.want_browse = (flow.host or "") .. "\0" .. dir
@@ -393,17 +413,17 @@ end
 --- most likely goes (`pathpicker.start`). The fill is remembered so it can be
 --- told apart from something typed: until it is edited it is no choice at all.
 ---
---- A remote Fleet's path starts at that machine's home, an absolute path it
---- takes. Until its home is known the field starts empty: a `~/` there would
---- only be refused.
+--- A place elsewhere starts at that machine's home, an absolute path it
+--- takes. Until its home is known the field starts empty, and browsing it
+--- lists the home the runtime names: a `~/` there would only be refused.
 local function enter_path_field(flow)
   flow.focus = "input"
   if (flow.input.value or "") == "" then
-    if flow.remote then
+    if flow.elsewhere then
       local home = remote_home(flow)
       flow.prefill = home and (home .. "/") or ""
       if not home then
-        flow.message = "type an absolute path on " .. flow.fleet .. ", or a clone URL"
+        flow.message = "type an absolute path on " .. place_label(flow) .. ", or a clone URL"
       end
     else
       flow.prefill = pathpicker.start(bookmarks().rows or {})
@@ -438,8 +458,8 @@ local function names_missing_folder(flow)
     return false
   end
   local dir, leaf = pathpicker.split_typed(target)
-  -- A folder is made on this machine only: a remote Fleet's path is typed.
-  if flow.remote then
+  -- A folder is made on this machine only: a path elsewhere is typed.
+  if flow.elsewhere then
     return false
   end
   local listing = browse()
@@ -491,7 +511,7 @@ local function trail(flow)
     parts[#parts + 1] = flow.fleet
   end
   if (flow.host or "") ~= "" then
-    parts[#parts + 1] = flow.host
+    parts[#parts + 1] = flow.remote and flow.host or place_label(flow)
   end
   if (flow.primary or "") ~= "" then
     local extra = #(flow.extras or {})
@@ -917,7 +937,7 @@ local function render_repo(flow)
     end
   end
 
-  local host_name = flow.host or ""
+  local host_name = flow.remote and (flow.host or "") or place_label(flow)
   children[#children + 1] = {
     type = "box",
     len = visible + 2,
@@ -936,9 +956,8 @@ local function render_repo(flow)
   -- typed text. The input node is sized to the value so the caret lands where
   -- the text ends and the ghost begins there rather than at the right edge.
   local suggestion = flow.suggestion or ""
-  -- A remote Fleet's folders are not this machine's: a path there is typed,
-  -- or its repository cloned there from a URL.
-  local label = flow.remote and "Add Repo Path or Clone URL" or "Add Repo Path"
+  -- A place elsewhere takes a path there, or a URL its runtime clones.
+  local label = flow.elsewhere and "Add Repo Path or Clone URL" or "Add Repo Path"
   if bookmark_pending() then
     label = label .. " " .. spinner(flow) .. " " .. (flow.pending_label or "checking…")
   end
@@ -1106,7 +1125,8 @@ local function render_repo(flow)
       -- can send it, and help lists both.
       { "alt+⏎", "next" },
     }
-    if flow.remote then
+    -- A folder is imported on this machine only.
+    if flow.elsewhere then
       hints = { hints[1], { "s-tab", "search" }, { "alt+⏎", "next" } }
     end
     -- An empty field is nothing to add — including straight after an add, which
@@ -1185,7 +1205,7 @@ local function render_branch(flow)
   local read = repo_branches(flow.primary)
   local names = (read and read.names) or {}
   if not read or #names == 0 then
-    local pending = flow.remote and (" listing " .. flow.fleet .. "'s branches…")
+    local pending = flow.elsewhere and (" listing branches on " .. place_label(flow) .. "…")
       or " fetching and listing branches…"
     local text = (read and read.error) or (spinner(flow) .. pending)
     local failed = read and read.error ~= nil
@@ -1219,9 +1239,10 @@ local function render_branch(flow)
   local rows = {}
   -- A fetch that failed leaves the refs as they were: say so, or `origin/main`
   -- reads as the upstream's tip when it is only the last one fetched. A
-  -- remote Fleet's are never fetched here: they are as that machine has them.
+  -- place elsewhere is never fetched here: its branches are as that machine
+  -- has them.
   local note = read.fetch_error and (" not fetched: " .. read.fetch_error)
-    or (flow.remote and (" branches as of " .. flow.fleet .. "'s last fetch"))
+    or (flow.elsewhere and (" branches as of " .. place_label(flow) .. "'s last fetch"))
   if note then
     rows[1] = {
       type = "text",
@@ -1426,7 +1447,7 @@ local function after_repos(flow)
   -- local home to stand in for it and `create` needs a path on the machine the
   -- session will run on, so that one case asks for a repository instead.
   if (flow.host or "") ~= "" then
-    flow.message = "Pick a repository on " .. flow.host
+    flow.message = "Pick a repository on " .. place_label(flow)
     return flow
   end
   flow.primary = "~"
@@ -1814,12 +1835,12 @@ return {
           -- the directory stays selectable without it.
           flow.message =
             "Not a git repo — worktree mode needs one (it can still be added as a plain dir)"
-        elseif (flow.host or "") ~= "" and not flow.remote then
-          -- thurbox reads no other place's branches of this Fleet, so it cannot
-          -- ask what a worktree there starts from: the repository runs as it
-          -- is. A remote Fleet's are read through Fleet on its place, and its
-          -- runtime makes the worktree there.
-          flow.message = "Worktrees are made on this machine only — it runs as it is"
+        elseif (flow.host or "") ~= "" and not flow.elsewhere then
+          -- A place no Fleet names cannot be asked what a worktree there
+          -- starts from: the repository runs as it is. A place elsewhere has
+          -- its branches read through Fleet, and its runtime makes the
+          -- worktree there.
+          flow.message = "Worktrees need a Fleet's place — it runs as it is"
         else
           local path = entry.row.path
           flow.worktree[path] = not flow.worktree[path] or nil
@@ -1959,10 +1980,12 @@ return {
           return true
         end
         flow.place = chosen.backend or ""
-        -- Repositories are remembered per place. A remote Fleet's are kept
-        -- under `<fleet>/<place>`, never under this machine's empty key,
-        -- since none of its paths is a path here.
-        if flow.remote then
+        -- Repositories are remembered per place. A place on another machine
+        -- (a remote Fleet's, or this Fleet's other than `local`) is kept under
+        -- `<fleet>/<place>`, never under this machine's empty key, since none
+        -- of its paths is a path here, and the kernel reads that key there.
+        flow.elsewhere = flow.fleet ~= nil and (flow.remote or flow.place ~= "")
+        if flow.elsewhere then
           flow.host = flow.fleet .. "/" .. chosen.name
         else
           flow.host = flow.place
@@ -2155,7 +2178,7 @@ return {
           and not row.is_worktree
           and (flow.host or "") == ""
         then
-          -- Local only, as every worktree is: thurbox reads no other machine.
+          -- This machine only: a place elsewhere lists no existing worktrees.
           flow.wt_repo = row.path
         end
         save(flow)

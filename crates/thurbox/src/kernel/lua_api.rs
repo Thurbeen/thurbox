@@ -386,7 +386,7 @@ pub static FLEET: Class = Class {
         leaf("transport", "string")
             .doc("How it is reached: `local Fleet`, `ssh <destination>` or `wsl <distro>`."),
         leaf("remote", "boolean")
-            .doc("It runs on another machine, whose folders thurbox does not read."),
+            .doc("It runs on another machine: its places are read there, through it."),
         leaf(
             "state",
             "\"connecting\"|\"up\"|\"down\"|\"unreachable\"|\"unknown\"|\"incompatible\"",
