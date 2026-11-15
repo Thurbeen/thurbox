@@ -209,14 +209,36 @@ fn painted(
     world: &World,
     hovered: Option<&Identity>,
 ) -> Option<(Buffer, Vec<Hit>)> {
+    painted_on(host, world, hovered, 120)
+}
+
+/// [`painted`] on a screen `screen_cols` wide: a float is told the screen's
+/// width, and one sized to its content may not outgrow it.
+fn painted_on(
+    host: &LuaHost,
+    world: &World,
+    hovered: Option<&Identity>,
+    screen_cols: u16,
+) -> Option<(Buffer, Vec<Hit>)> {
+    painted_sized(host, world, hovered, screen_cols, 40)
+}
+
+/// [`painted_on`] on a screen `screen_rows` tall as well.
+fn painted_sized(
+    host: &LuaHost,
+    world: &World,
+    hovered: Option<&Identity>,
+    screen_cols: u16,
+    screen_rows: u16,
+) -> Option<(Buffer, Vec<Hit>)> {
     publish_hovered(host, world, hovered);
     let index = index_of(host, PLUGIN);
     let rendered = host
         .render(
             index,
             RenderContext {
-                width: 120,
-                height: 40,
+                width: screen_cols,
+                height: screen_rows,
                 focused: true,
                 elapsed: 0.0,
                 frame: 0,
@@ -230,7 +252,7 @@ fn painted(
     let rows = float.rows.expect("the flow sizes its own height");
     let width = float
         .cols
-        .unwrap_or((120.0 * float.width_pct / 100.0) as u16);
+        .unwrap_or((f64::from(screen_cols) * float.width_pct / 100.0) as u16);
     let mut hits = Vec::new();
     let mut terminal = Terminal::new(TestBackend::new(width, rows)).expect("terminal");
     terminal
@@ -800,6 +822,282 @@ fn a_host_list_not_yet_published_shows_the_wait() {
     world.snapshot.hosts = Some(vec![local_host(), devbox()]);
     let screen = drawn(&host, &world);
     assert!(screen.contains("devbox"), "{screen}");
+}
+
+/// Two places as the maintainer's screenshot listed them: `local`, and a
+/// place whose runtime says why it cannot run a session, at length.
+fn places_of_two_lengths() -> Vec<HostRow> {
+    vec![
+        HostRow {
+            detail: "this machine (mux)".into(),
+            ready: Some(true),
+            ..HostRow::local("this machine")
+        },
+        HostRow {
+            name: "mux/gpu-box".into(),
+            detail: "a mux place".into(),
+            backend: "mux/gpu-box".into(),
+            ready: Some(false),
+            why: Some(NOT_READY_WHY.into()),
+        },
+    ]
+}
+
+const NOT_READY_WHY: &str =
+    "place \"gpu-box\" cannot be reached: ssh: connect to host gpu-box port 22: Connection timed out";
+
+/// The cell column `needle` starts at on screen.
+fn column_of(buffer: &Buffer, needle: &str) -> u16 {
+    locate(buffer, needle).0
+}
+
+/// The place picker is a table: each column starts at one cell on every row,
+/// whatever the names' lengths; a row's status is short and whole, and the
+/// selected place's full reason reads under the list, wrapped to the modal,
+/// which fits the screen it opens on.
+#[test]
+fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
+    let frames: [(u16, &[&str]); 2] = [
+        (
+            80,
+            &[
+                "╭ Place ───────────────────────────────────────────────────╮",
+                "│  local        this machine (mux)  ● ready                │",
+                "│▸ mux/gpu-box  a mux place         ○ not ready            │",
+                "│ place \"gpu-box\" cannot be reached: ssh: connect to host  │",
+                "│ gpu-box port 22: Connection timed out                    │",
+                "│                                                          │",
+                "│j/k navigate                         [ Select ] [ Cancel ]│",
+                "╰──────────────────────────────────────────────────────────╯",
+            ],
+        ),
+        (
+            48,
+            &[
+                "╭ Place ───────────────────────────────────────╮",
+                "│  local        this machine (mux)  ● ready    │",
+                "│▸ mux/gpu-box  a mux place         ○ not ready│",
+                "│ place \"gpu-box\" cannot be reached: ssh:      │",
+                "│ connect to host gpu-box port 22: Connection  │",
+                "│ timed out                                    │",
+                "│                                              │",
+                "│j/k navigate             [ Select ] [ Cancel ]│",
+                "╰──────────────────────────────────────────────╯",
+            ],
+        ),
+    ];
+    for (screen_cols, frame) in frames {
+        let host = host();
+        let mut world = World::default();
+        world.snapshot.hosts = Some(places_of_two_lengths());
+        press(&host, &world, "ctrl+n");
+        press(&host, &world, "down");
+        let (buffer, _) = painted_on(&host, &world, None, screen_cols).expect("open");
+        let screen = screen_of(&buffer);
+        assert!(
+            buffer.area.width <= screen_cols,
+            "{screen_cols} cols: the modal is {} wide:\n{screen}",
+            buffer.area.width
+        );
+        let lines: Vec<&str> = screen.lines().collect();
+        let local = lines
+            .iter()
+            .position(|l| l.contains("local"))
+            .expect(&screen);
+        let place = lines
+            .iter()
+            .position(|l| l.contains("mux/gpu-box"))
+            .expect(&screen);
+        // The detail column starts where the longest name ends, on both rows.
+        let detail = |row: usize, text: &str| {
+            let at = lines[row].find(text).unwrap_or_else(|| {
+                panic!("{screen_cols} cols: {text:?} not on row {row}:\n{screen}")
+            });
+            lines[row][..at].chars().count()
+        };
+        assert_eq!(
+            detail(local, "this"),
+            detail(place, "a mux"),
+            "{screen_cols} cols: the detail column wanders:\n{screen}"
+        );
+        assert!(
+            detail(place, "a mux") > detail(place, "mux/gpu-box") + "mux/gpu-box".len(),
+            "{screen_cols} cols: a name runs into its detail:\n{screen}"
+        );
+        // The status column too, and the status is whole.
+        assert_eq!(
+            column_of(&buffer, "● ready"),
+            column_of(&buffer, "○ not ready"),
+            "{screen_cols} cols: the status column wanders:\n{screen}"
+        );
+        assert!(
+            !lines[place].contains("not ready:"),
+            "{screen_cols} cols: the row carries the reason, cut:\n{screen}"
+        );
+        // The selected place's whole reason, wrapped under the list.
+        let below: String = lines[place + 1..]
+            .iter()
+            .map(|l| l.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            below.contains(
+                &NOT_READY_WHY
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            "{screen_cols} cols: the full reason is not under the list:\n{screen}"
+        );
+        assert_eq!(screen, frame.join("\n"), "{screen_cols} cols:\n{screen}");
+    }
+}
+
+/// A name too long for its row never costs a row its status: the status
+/// column is always kept, the description gives up its cells first, and
+/// then the name is ellipsized. The Fleet picker keeps its state the same way.
+#[test]
+fn a_long_name_never_hides_a_pickers_status_column() {
+    let long = "mux/a-place-whose-name-runs-on-and-on-and-on-x";
+    assert_eq!(long.len(), 46);
+    let host = host();
+    let mut world = World::default();
+    let mut places = places_of_two_lengths();
+    places[1].name = long.into();
+    places[1].backend = long.into();
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    let (buffer, _) = painted_on(&host, &world, None, 60).expect("open");
+    let screen = screen_of(&buffer);
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(
+        lines[1].contains("local") && lines[1].contains("● ready"),
+        "{screen}"
+    );
+    assert!(
+        lines[2].contains("mux/a-place") && lines[2].contains("○ not ready"),
+        "{screen}"
+    );
+    assert!(
+        lines[2].contains('…'),
+        "the long name is ellipsized:\n{screen}"
+    );
+    assert_eq!(
+        column_of(&buffer, "● ready"),
+        column_of(&buffer, "○ not ready"),
+        "{screen}"
+    );
+
+    let host = self::host();
+    let mut world = World::default();
+    let mut fleets = three_fleets();
+    fleets[2].name = "a-fleet-whose-name-runs-on-and-on-and-on-and-on".into();
+    world.snapshot.fleets = fleets;
+    press(&host, &world, "ctrl+n");
+    let (buffer, _) = painted_on(&host, &world, None, 60).expect("open");
+    let screen = screen_of(&buffer);
+    assert!(screen.contains("Fleet"), "{screen}");
+    for state in ["○ Fleet not running", "○ unreachable", "● up"] {
+        assert!(screen.contains(state), "{state:?} is lost:\n{screen}");
+    }
+}
+
+/// More places than the screen has rows: the modal stays inside the screen,
+/// the list scrolls with the cursor, and the row the cursor is on is drawn.
+#[test]
+fn a_long_place_list_scrolls_inside_a_short_screen() {
+    let host = host();
+    let mut world = World::default();
+    let mut places = vec![places_of_two_lengths()[0].clone()];
+    for n in 1..20 {
+        places.push(HostRow {
+            name: format!("mux/place-{n:02}"),
+            detail: "a mux place".into(),
+            backend: format!("mux/place-{n:02}"),
+            ready: Some(false),
+            why: Some(NOT_READY_WHY.into()),
+        });
+    }
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    for _ in 0..19 {
+        press(&host, &world, "down");
+    }
+    let (buffer, _) = painted_sized(&host, &world, None, 80, 24).expect("open");
+    let screen = screen_of(&buffer);
+    assert!(
+        buffer.area.height <= 24,
+        "{} rows:\n{screen}",
+        buffer.area.height
+    );
+    assert!(
+        screen.lines().any(|l| l.contains("▸ mux/place-19")),
+        "the cursor's row is off screen:\n{screen}"
+    );
+    assert!(
+        screen.contains("[ Select ]"),
+        "the footer is lost:\n{screen}"
+    );
+    assert!(
+        screen.contains("cannot be reached"),
+        "no reason at all:\n{screen}"
+    );
+    // The reason gives up its lines before the list gives up a row: twenty
+    // rows inside the border, footer and message row leave the list 19 and
+    // the reason one.
+    let lines: Vec<&str> = screen.lines().collect();
+    let listed = lines
+        .iter()
+        .filter(|l| l.contains("mux/place-") || l.contains("this machine"))
+        .count();
+    assert_eq!(listed, 19, "the list gave up rows to the reason:\n{screen}");
+    let cursor = lines
+        .iter()
+        .position(|l| l.contains("▸ mux/place-19"))
+        .expect(&screen);
+    assert!(lines[cursor + 1].contains("cannot be reached"), "{screen}");
+    assert_eq!(
+        lines[cursor + 2].trim_matches(|c: char| c == '│' || c.is_whitespace()),
+        "",
+        "the reason takes one line:\n{screen}"
+    );
+}
+
+/// A reason longer than the reason area keeps the area at its four lines,
+/// and its last line says that more was cut.
+#[test]
+fn a_reason_past_four_lines_ends_in_an_ellipsis() {
+    let host = host();
+    let mut world = World::default();
+    let mut places = places_of_two_lengths();
+    places[1].why = Some([NOT_READY_WHY; 3].join(" "));
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    let (buffer, _) = painted_on(&host, &world, None, 48).expect("open");
+    let screen = screen_of(&buffer);
+    let lines: Vec<&str> = screen.lines().collect();
+    let place = lines
+        .iter()
+        .position(|l| l.contains("▸ mux/gpu-box"))
+        .expect(&screen);
+    let reason = &lines[place + 1..place + 5];
+    assert!(
+        reason.iter().all(|l| !l
+            .trim_matches(|c: char| c == '│' || c.is_whitespace())
+            .is_empty()),
+        "four reason lines:\n{screen}"
+    );
+    assert!(
+        reason[3].trim_end_matches('│').trim_end().ends_with('…'),
+        "the last reason line ends in …:\n{screen}"
+    );
+    assert_eq!(
+        lines[place + 5].trim_matches(|c: char| c == '│' || c.is_whitespace()),
+        "",
+        "the reason stops at four lines:\n{screen}"
+    );
 }
 
 /// A Fleet that defines no `local` host offers none.
