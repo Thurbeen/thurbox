@@ -13,7 +13,9 @@
 //!
 //! - **payload**: the fields of a hook's JSON that `fleet signal` reads;
 //! - **screen**: the rule set that reads the agent's state off its screen
-//!   when its hooks do not say it ([`crate::screen`]).
+//!   when its hooks do not say it ([`crate::screen`]);
+//! - **telemetry**: how the agent exports its own OpenTelemetry to the
+//!   collector Fleet exports to ([`Profile::telemetry`]).
 //!
 //! A profile is data: one TOML document per harness. A file under
 //! `<config dir>/harnesses/` replaces the bundled
@@ -224,6 +226,42 @@ fn default_comment() -> String {
     "#".into()
 }
 
+/// The `[telemetry]` table: the arguments and variables that make the agent
+/// export its own OpenTelemetry to Fleet's collector. Empty: the agent has
+/// no OpenTelemetry export Fleet knows, and gets none. In each value,
+/// `{endpoint}`, `{protocol}`, `{headers}` and `{resource}` are Fleet's
+/// ([`Collector`], [`Profile::telemetry`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetrySpec {
+    /// After the launch arguments. `{headers}` is refused here: a header
+    /// can be a secret, and an argument list is public on the machine.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Under the Task's own environment. A variable whose value names
+    /// `{headers}` is left out when Fleet sends none.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// Where Fleet's own telemetry goes, which an agent's goes to as well: the
+/// collector's base URL, the OTLP protocol and the request headers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collector {
+    /// The base URL, without a trailing `/`; a signal's path follows it.
+    pub endpoint: String,
+    pub protocol: String,
+    /// `OTEL_EXPORTER_OTLP_HEADERS` as Fleet was given it, when set.
+    pub headers: Option<String>,
+}
+
+/// The arguments and variables [`Profile::telemetry`] renders.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentTelemetry {
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
 /// One harness's profile: one TOML document.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -248,6 +286,8 @@ pub struct Profile {
     /// Only for a harness that takes no hooks at launch.
     #[serde(default)]
     pub install: Option<Install>,
+    #[serde(default)]
+    pub telemetry: TelemetrySpec,
 }
 
 /// Parse one profile.
@@ -279,6 +319,9 @@ pub fn parse(text: &str) -> Result<Profile, String> {
     if let Some(install) = &p.install {
         crate::integration::check(install)?;
     }
+    if p.telemetry.args.iter().any(|a| a.contains("{headers}")) {
+        return Err("telemetry.args may not name {headers}: use telemetry.env".into());
+    }
     Ok(p)
 }
 
@@ -296,6 +339,7 @@ pub fn bare(harness: &str) -> Profile {
         payload: Payload::default(),
         screen: ScreenSpec::default(),
         install: None,
+        telemetry: TelemetrySpec::default(),
     }
 }
 
@@ -505,6 +549,49 @@ impl Profile {
         Ok(argv)
     }
 
+    /// The arguments and variables that make the agent export its own
+    /// telemetry to `collector`, tagged with the Task `task` of `uid`:
+    /// `{resource}` is `service.name=<harness>,fleet.task=<task>,fleet.uid=<uid>`,
+    /// each value percent-encoded. In an argument, `{endpoint}` is escaped
+    /// for a double-quoted TOML or JSON string; an endpoint with a control
+    /// character gives no arguments. Empty for a harness with no
+    /// `[telemetry]`.
+    pub fn telemetry(&self, collector: &Collector, task: &str, uid: &str) -> AgentTelemetry {
+        let resource = [
+            ("service.name", self.name.as_str()),
+            ("fleet.task", task),
+            ("fleet.uid", uid),
+        ]
+        .iter()
+        .map(|(k, v)| format!("{k}={}", percent_encode(v)))
+        .collect::<Vec<_>>()
+        .join(",");
+        let headers = collector.headers.as_deref().unwrap_or_default();
+        let fill = |text: &str, endpoint: &str| {
+            text.replace("{endpoint}", endpoint)
+                .replace("{protocol}", &collector.protocol)
+                .replace("{headers}", headers)
+                .replace("{resource}", &resource)
+        };
+        let args = match escape_root(&collector.endpoint) {
+            Some(endpoint) => self
+                .telemetry
+                .args
+                .iter()
+                .map(|a| fill(a, &endpoint))
+                .collect(),
+            None => Vec::new(),
+        };
+        let env = self
+            .telemetry
+            .env
+            .iter()
+            .filter(|(_, v)| collector.headers.is_some() || !v.contains("{headers}"))
+            .map(|(k, v)| (k.clone(), fill(v, &collector.endpoint)))
+            .collect();
+        AgentTelemetry { args, env }
+    }
+
     /// Whether Fleet can start the agent again on its conversation: a stop
     /// of one it cannot ends the conversation.
     pub fn resumes(&self) -> bool {
@@ -534,6 +621,20 @@ impl Profile {
         }
         argv
     }
+}
+
+/// `value` as an `OTEL_RESOURCE_ATTRIBUTES` value: each byte outside the
+/// unreserved set percent-encoded, so a `,` or `=` never splits it.
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// `root` escaped for a double-quoted TOML or JSON string; `None` when it
@@ -1099,6 +1200,153 @@ mod tests {
         assert!(copilot_process("node"));
         assert!(copilot_process("/usr/bin/copilot"));
         assert!(!copilot_process("codex"));
+    }
+
+    fn collector(headers: Option<&str>) -> Collector {
+        Collector {
+            endpoint: "http://c:4318".into(),
+            protocol: "http/protobuf".into(),
+            headers: headers.map(str::to_string),
+        }
+    }
+
+    /// Each bundled profile's telemetry, rendered for one Task: the agent's
+    /// own switch, Fleet's collector, and the Task in its resource. No
+    /// profile sets a content switch or trace context.
+    #[test]
+    fn each_profile_renders_its_own_telemetry_for_fleets_collector() {
+        let c = collector(Some("authorization=Bearer s"));
+        let render = |h: &str| profile(h).telemetry(&c, "t1", "u-1");
+        let resource = |h: &str| format!("service.name={h},fleet.task=t1,fleet.uid=u-1");
+        let env = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let claude = render("claude-code");
+        assert!(claude.args.is_empty());
+        assert_eq!(
+            claude.env,
+            env(&[
+                ("CLAUDE_CODE_ENABLE_TELEMETRY", "1"),
+                ("OTEL_METRICS_EXPORTER", "otlp"),
+                ("OTEL_LOGS_EXPORTER", "otlp"),
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318"),
+                ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+                ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer s"),
+                ("OTEL_SERVICE_NAME", "claude"),
+                ("OTEL_RESOURCE_ATTRIBUTES", &resource("claude")),
+            ])
+        );
+
+        let codex = render("codex");
+        assert_eq!(
+            codex.args,
+            [
+                "-c",
+                r#"otel.exporter={otlp-http={endpoint="http://c:4318/v1/logs",protocol="binary"}}"#,
+                "-c",
+                r#"otel.trace_exporter={otlp-http={endpoint="http://c:4318/v1/traces",protocol="binary"}}"#,
+                "-c",
+                r#"otel.metrics_exporter={otlp-http={endpoint="http://c:4318/v1/metrics",protocol="binary"}}"#,
+            ]
+        );
+        assert_eq!(
+            codex.env,
+            env(&[("OTEL_RESOURCE_ATTRIBUTES", &resource("codex"))])
+        );
+
+        assert_eq!(
+            render("opencode"),
+            AgentTelemetry {
+                args: Vec::new(),
+                env: env(&[
+                    ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318"),
+                    ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer s"),
+                    ("OTEL_RESOURCE_ATTRIBUTES", &resource("opencode")),
+                ])
+            }
+        );
+        assert_eq!(
+            render("omp").env,
+            env(&[
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318"),
+                ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+                ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer s"),
+                ("OTEL_SERVICE_NAME", "omp"),
+                ("OTEL_RESOURCE_ATTRIBUTES", &resource("omp")),
+            ])
+        );
+        // qwen logs prompts by default once its telemetry is on.
+        assert_eq!(
+            render("qwen").env,
+            env(&[
+                ("QWEN_TELEMETRY_ENABLED", "true"),
+                ("QWEN_TELEMETRY_OTLP_ENDPOINT", "http://c:4318"),
+                ("QWEN_TELEMETRY_OTLP_PROTOCOL", "http"),
+                ("QWEN_TELEMETRY_LOG_PROMPTS", "false"),
+                ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer s"),
+                ("OTEL_SERVICE_NAME", "qwen"),
+                ("OTEL_RESOURCE_ATTRIBUTES", &resource("qwen")),
+            ])
+        );
+        assert_eq!(
+            render("copilot").env,
+            env(&[
+                ("COPILOT_OTEL_ENABLED", "true"),
+                ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c:4318"),
+                ("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"),
+                ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer s"),
+                ("OTEL_SERVICE_NAME", "copilot"),
+                ("OTEL_RESOURCE_ATTRIBUTES", &resource("copilot")),
+            ])
+        );
+        // No OpenTelemetry export Fleet can turn on: nothing is injected.
+        for none in ["pi", "kilo", "kimi", "aider"] {
+            assert_eq!(render(none), AgentTelemetry::default(), "{none}");
+        }
+        for p in Profiles::bundled().list() {
+            let t = p.telemetry(&c, "t1", "u-1");
+            for k in t.env.keys() {
+                assert!(
+                    !k.contains("LOG_USER_PROMPTS")
+                        && !k.contains("CAPTURE")
+                        && !k.starts_with("OTEL_LOG_")
+                        && k != "TRACEPARENT",
+                    "{}: {k}",
+                    p.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn telemetry_without_headers_leaves_the_header_variable_out_and_encodes_the_resource() {
+        let claude = profile("claude").telemetry(&collector(None), "a,b=c", "u 1");
+        assert!(!claude.env.contains_key("OTEL_EXPORTER_OTLP_HEADERS"));
+        assert_eq!(
+            claude.env["OTEL_RESOURCE_ATTRIBUTES"],
+            "service.name=claude,fleet.task=a%2Cb%3Dc,fleet.uid=u%201"
+        );
+        // An endpoint is escaped for Codex's TOML string.
+        let quoted = Collector {
+            endpoint: r#"http://c/"x""#.into(),
+            ..collector(None)
+        };
+        assert!(
+            profile("codex").telemetry(&quoted, "t", "u").args[1]
+                .contains(r#"endpoint="http://c/\"x\"/v1/logs""#)
+        );
+        // A header is never an argument.
+        let base = "name = \"x\"\nprogram = \"x\"\nauthority = \"none\"\n";
+        assert!(parse(&format!("{base}[telemetry]\nargs = [\"h={{headers}}\"]\n")).is_err());
+        assert!(
+            parse(&format!(
+                "{base}[telemetry]\nenv = {{ H = \"{{headers}}\" }}\n"
+            ))
+            .is_ok()
+        );
     }
 
     #[test]

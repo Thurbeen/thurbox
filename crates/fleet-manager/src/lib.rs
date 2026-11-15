@@ -136,6 +136,11 @@ pub struct Manager<'a> {
     /// it says. `None`: no session gets one, and what Fleet would learn
     /// from it stays Unknown.
     pub signals: Option<&'a dyn fleet_api::signal::Signals>,
+    /// The collector Fleet exports its own telemetry to: each agent's
+    /// harness profile points the agent's telemetry there too, unless its
+    /// Task says `agentTelemetry: false`. `None`: Fleet exports nothing,
+    /// and no agent gets telemetry from Fleet.
+    pub agent_telemetry: Option<fleet_api::harness::Collector>,
     /// The `[forge]` defaults a ChangeRequest spec may override.
     pub change_request_defaults: ChangeRequestDefaults,
     /// The `[forge]` relay defaults a Task's `spec.forge` may override, and
@@ -1914,6 +1919,11 @@ impl Manager<'_> {
             self.observe(&probe, obj, &mut input.observations, report);
         }
         let mut plan = ctl.reconcile(&input)?;
+        let telemetry_on = effective
+            .as_ref()
+            .and_then(|e| e.agent_telemetry)
+            .or(spec.agent_telemetry)
+            .unwrap_or(true);
         if let Some(execution) = effective {
             for effect in &mut plan.effects {
                 // A revive or a resume starts where the session is.
@@ -1947,6 +1957,22 @@ impl Manager<'_> {
                 let mut env = profiles.get(&spawn.harness).launch.env;
                 fleet_api::config::merge_env(&mut env, &spawn.env);
                 spawn.env = env;
+            }
+            // The agent's own telemetry, under the Task's environment and
+            // never frozen: each start takes Fleet's collector as it is
+            // then, and no header is kept in the launch snapshot.
+            if let Some(collector) = &self.agent_telemetry
+                && telemetry_on
+            {
+                let t = profiles.get(&spawn.harness).telemetry(
+                    collector,
+                    &obj.metadata.name,
+                    &obj.metadata.uid,
+                );
+                let mut env = t.env;
+                fleet_api::config::merge_env(&mut env, &spawn.env);
+                spawn.env = env;
+                spawn.telemetry_args = t.args;
             }
             if let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key)) {
                 spawn

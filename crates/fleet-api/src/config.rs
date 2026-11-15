@@ -38,6 +38,10 @@ pub struct TaskConfigSpec {
     /// means never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_after_ms: Option<crate::Millis>,
+    /// `false`: the agent exports no telemetry of its own, even when Fleet
+    /// exports. Absent means on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_telemetry: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +66,9 @@ pub struct Execution {
     pub sources: Vec<ConfigSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_after_ms: Option<crate::Millis>,
+    /// The Task's `agentTelemetry`, else its TaskConfig's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_telemetry: Option<bool>,
 }
 
 /// Later sources override earlier spelling variants consistently on every host.

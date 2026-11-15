@@ -346,6 +346,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         holder: "lease-clock-test".into(),
         forge: None,
         signals: None,
+        agent_telemetry: None,
         change_request_defaults: Default::default(),
         forge_defaults: Default::default(),
         gateway: None,

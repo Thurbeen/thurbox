@@ -46,6 +46,7 @@ cannot change them.
 | `configRef` | `{name}` | no | A [TaskConfig](task-config.md) with execution defaults. |
 | `env` | object of strings | no | Environment values. They override inherited ones. |
 | `pauseAfterMs` | integer, at least 1 | no | Pause the session once its agent was idle this long. Overrides the TaskConfig's, including [the default TaskConfig](task-config.md#the-default-taskconfig)'s. Absent with no TaskConfig value: never. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
+| `agentTelemetry` | boolean | no | `false`: the agent exports no telemetry of its own, also when Fleet exports. Overrides the TaskConfig's. Absent with no TaskConfig value: on. See [coding agents](../../observability.md#coding-agents). |
 | `brief` | string | no | The brief, sent once to the ready session. Empty or absent: an interactive Task, which `fleet amend` refuses. A blank brief is refused. |
 | `amendments` | array | no | Additions to the brief, oldest first. Only `fleet amend` appends one. See [Amendments](#amendments). |
 | `workspace` | array of URLs | yes | What the session works in. `[]` is the runtime's default directory. See [Workspace](workspace.md). |

@@ -5307,6 +5307,30 @@ pub(crate) fn assert_absence_replies<M: TmuxCompatible>(replies: &[(&str, bool)]
 mod tests {
     use super::*;
 
+    /// The strip removes the telemetry this process inherited; the
+    /// variables a launch declares, an agent's own telemetry included
+    /// (docs/observability.md, *Coding agents*), are the window's `-e`
+    /// arguments, which no strip touches.
+    #[test]
+    fn a_window_keeps_the_telemetry_its_launch_declares() {
+        let mut cmd = std::process::Command::new("tmux");
+        crate::tmux_compat::transport::strip_mux_nesting_env(&mut cmd);
+        let env = HashMap::from([(
+            "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
+            "http://c:4318".to_string(),
+        )]);
+        push_posix_window_program(&mut cmd, "sh", &[], &env);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = args
+            .iter()
+            .position(|a| a == "OTEL_EXPORTER_OTLP_ENDPOINT=http://c:4318")
+            .expect("the declared variable");
+        assert_eq!(args[at - 1], "-e");
+    }
+
     /// RMUX's control mode can deliver a pane's `%output` inside a command's
     /// reply (captured from `a_missing_rmux_window_never_borrows_a_live_panes_pid`
     /// failing intermittently); the answer is still its last line.

@@ -557,6 +557,10 @@ conversation = ["session_id", "thread-id"]
 [screen]
 rules = "codex"                # a bundled rule set; omit for the set named as the profile
 
+[telemetry]                    # the agent's own OpenTelemetry; omit for none
+env = { STUB_OTEL_ENDPOINT = "{endpoint}", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
+args = []                      # after the launch arguments; never {headers}
+
 [install]                      # only for an agent that takes no hooks at launch
 version = 1                    # a greater one makes an installed integration outdated
 dir_env = ["STUB_AGENT_HOME"]  # the agent's variables for its config dir; the first set wins
@@ -596,6 +600,16 @@ comment = "#"                  # what starts a comment line there
 - `[install]` is what `fleet integration install` writes
   ([installed integrations](../integration.md)). Each path is inside the
   config directory, and each is listed once.
+- `[telemetry]` is used only when Fleet exports its own telemetry, and the
+  Task does not set `agentTelemetry` to `false`
+  ([coding agents](../../observability.md#coding-agents)). Fleet replaces
+  `{endpoint}` with its collector's base URL, `{protocol}` with
+  `http/protobuf`, `{headers}` with `OTEL_EXPORTER_OTLP_HEADERS`, and
+  `{resource}` with `service.name=<name>,fleet.task=<Task>,fleet.uid=<uid>`.
+  A variable that names `{headers}` is left out when Fleet has no headers.
+  An argument may not name `{headers}`: a header can be a secret, and an
+  argument list is visible to each user of the machine. The Task's own
+  environment wins over each variable.
 
 #### Screen rules
 

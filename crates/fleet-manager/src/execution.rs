@@ -83,6 +83,7 @@ pub(crate) fn resolve(
         defaults.model
     };
     let pause_after_ms = spec.pause_after_ms.or(defaults.pause_after_ms);
+    let agent_telemetry = spec.agent_telemetry.or(defaults.agent_telemetry);
     validate_execution(Some(&harness), Some(&host), model.as_deref())?;
     // The harness profile's variables first, under every source: the
     // frozen launch keeps them as they were when it was resolved.
@@ -119,6 +120,7 @@ pub(crate) fn resolve(
         env,
         sources,
         pause_after_ms,
+        agent_telemetry,
     }) {
         Observation::Known(e) => Ok(e),
         Observation::Unknown { why } => Err(StoreError::Unknown(why)),

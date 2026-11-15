@@ -937,6 +937,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 holder,
                 forge: forge.as_ref().map(|f| f as &dyn Forge),
                 signals: Some(&signals),
+                agent_telemetry: agent_collector(),
                 change_request_defaults: forge_defaults(&config),
                 forge_defaults: relay_defaults(&config),
                 plugins: Some((&plugins, &registrations)),
@@ -1330,6 +1331,7 @@ fn cmd_up(
         holder: format!("fleet-up-{}", std::process::id()),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
         signals: Some(&signals),
+        agent_telemetry: agent_collector(),
         change_request_defaults: forge_defaults(config),
         forge_defaults: relay_defaults(config),
         plugins: Some(plugins),
@@ -1777,6 +1779,16 @@ fn runtime_places(config: &Config) -> Vec<Value> {
         }
     }
     rows
+}
+
+/// The collector Fleet exports to, for the agents it starts to export to
+/// as well (docs/observability.md, *Coding agents*).
+fn agent_collector() -> Option<fleet_api::harness::Collector> {
+    otel_env::collector().map(|c| fleet_api::harness::Collector {
+        endpoint: c.endpoint,
+        protocol: c.protocol.to_string(),
+        headers: c.headers,
+    })
 }
 
 /// Write the TaskConfig a Task with no `configRef` takes, when the store

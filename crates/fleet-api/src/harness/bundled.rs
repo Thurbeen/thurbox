@@ -5,12 +5,19 @@
 //! names is written by `fleet integration`. A user file of the same `name` in
 //! Fleet's config dir replaces one (docs/fleet/controllers/task.md, *Harness
 //! profiles*).
+//!
+//! Each `[telemetry]` table follows the agent's own documentation, and
+//! leaves every switch that exports prompt or tool content off
+//! (docs/observability.md, *Coding agents*). pi and Kimi Code export no
+//! OpenTelemetry. kilo has none here: its AI SDK spans are on by default,
+//! and they can hold prompt text.
 
 /// Claude Code. Its hooks are one `--settings`: Claude Code keeps the last
 /// of several, so a second would drop Fleet's hooks or the other's. Only a
 /// permission prompt needs a person: Claude Code also notifies after 60 s of
 /// input idle (`idle_prompt`), which a matcher-less hook would report as
-/// attention.
+/// attention. Its telemetry exports metrics and events; its `OTEL_LOG_*`
+/// content switches stay unset, which is off.
 pub const CLAUDE: &str = r#"
 name = "claude"
 program = "claude"
@@ -33,12 +40,18 @@ mode = "dialog"
 [payload]
 prompt = ["prompt"]
 conversation = ["session_id"]
+
+[telemetry]
+env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1", OTEL_METRICS_EXPORTER = "otlp", OTEL_LOGS_EXPORTER = "otlp", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "claude", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
 /// Codex. `notify` runs at each turn's end with the turn as JSON, its
 /// prompts included, as the last argument. The trust override is one
 /// `projects` key with a TOML inline table: Codex splits a dotted `-c` key
-/// on every `.`, and a path has them.
+/// on every `.`, and a path has them. Its telemetry is its `[otel]` config,
+/// given as `-c` overrides: Codex reads no `OTEL_EXPORTER_OTLP_*` variable,
+/// and a header in an argument would be public, so Codex gets none.
+/// `log_user_prompt` stays at its default, off.
 pub const CODEX: &str = r#"
 name = "codex"
 program = "codex"
@@ -58,6 +71,14 @@ args = ["-c", 'projects={"{root}"={trust_level="trusted"}}']
 [payload]
 prompt = ["input-messages"]
 conversation = ["thread-id"]
+
+[telemetry]
+args = [
+  "-c", 'otel.exporter={otlp-http={endpoint="{endpoint}/v1/logs",protocol="binary"}}',
+  "-c", 'otel.trace_exporter={otlp-http={endpoint="{endpoint}/v1/traces",protocol="binary"}}',
+  "-c", 'otel.metrics_exporter={otlp-http={endpoint="{endpoint}/v1/metrics",protocol="binary"}}',
+]
+env = { OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
 /// pi. Its hooks are an extension file Fleet writes, passed with `-e`,
@@ -90,7 +111,9 @@ conversation = ["session_id"]
 /// named in `OPENCODE_CONFIG_CONTENT`, which opencode merges with the
 /// user's and the project's config. It runs its own server: the shared
 /// background service was started with another environment, and loads
-/// neither the plugin nor the session's signal file.
+/// neither the plugin nor the session's signal file. Its telemetry is on
+/// when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; its AI SDK spans, which can
+/// hold prompt text, need `experimental.openTelemetry`, which stays off.
 pub const OPENCODE: &str = r#"
 name = "opencode"
 program = "opencode"
@@ -106,6 +129,9 @@ args = ["{program}", "{launch_args}", "--session", "{conversation}"]
 [payload]
 prompt = ["prompt"]
 conversation = ["session_id"]
+
+[telemetry]
+env = { OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
 /// kilo, an opencode fork with the first plugin API. Its hooks are two
@@ -135,7 +161,9 @@ conversation = ["session_id"]
 /// `-e`, which loads beside the user's own extensions. Unlike pi, omp asks
 /// before a tool runs when its approval mode says so, and trusts every
 /// project. `OMP_SKIP_SETUP` skips the setup wizard of omp's first start:
-/// Fleet never answers it, as it never answers pi's trust question.
+/// Fleet never answers it, as it never answers pi's trust question. Its
+/// telemetry is on when an OTLP endpoint is set; message content needs
+/// `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, which stays unset.
 pub const OMP: &str = r#"
 name = "omp"
 program = "omp"
@@ -152,6 +180,9 @@ args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
 [payload]
 prompt = ["prompt"]
 conversation = ["session_id"]
+
+[telemetry]
+env = { OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "omp", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
 /// Qwen Code. Its hooks are a settings file Fleet writes, named in
@@ -159,7 +190,9 @@ conversation = ["session_id"]
 /// defaults, user, project and system settings. That path replaces the
 /// system defaults file's, which a Fleet session does not read. The system
 /// settings path is left alone: qwen derives the defaults path from it when
-/// none is given, so naming it would hide both files.
+/// none is given, so naming it would hide both files. qwen logs prompts by
+/// default once its telemetry is on: `QWEN_TELEMETRY_LOG_PROMPTS=false`
+/// turns that off. Its `http` protocol is OTLP over HTTP with JSON.
 pub const QWEN: &str = r#"
 name = "qwen"
 program = "qwen"
@@ -175,6 +208,9 @@ args = ["{program}", "{launch_args}", "--resume", "{conversation}"]
 [payload]
 prompt = ["prompt"]
 conversation = ["session_id"]
+
+[telemetry]
+env = { QWEN_TELEMETRY_ENABLED = "true", QWEN_TELEMETRY_OTLP_ENDPOINT = "{endpoint}", QWEN_TELEMETRY_OTLP_PROTOCOL = "http", QWEN_TELEMETRY_LOG_PROMPTS = "false", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "qwen", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
 /// GitHub Copilot CLI. Its hooks are a plugin directory Fleet writes, passed
@@ -182,7 +218,8 @@ conversation = ["session_id"]
 /// Copilot runs `permissionRequest` for every permission check, an allowed
 /// one included, so the plugin reports `blocked` from the notification that
 /// a person is asked. Copilot starts its session, and reports it, at its
-/// first message.
+/// first message. Its telemetry captures no content unless
+/// `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says so, which stays unset.
 pub const COPILOT: &str = r#"
 name = "copilot"
 program = "copilot"
@@ -201,6 +238,9 @@ mode = "dialog"
 [payload]
 prompt = ["prompt"]
 conversation = ["sessionId"]
+
+[telemetry]
+env = { COPILOT_OTEL_ENABLED = "true", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "copilot", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
 "#;
 
 /// Kimi Code (`kimi`). It reads hooks from its own `config.toml` only: no
