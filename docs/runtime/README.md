@@ -332,15 +332,13 @@ request.place ──▶ local ─────────▶ this machine's mult
   argv. So nothing depends on which of this machine's variables `wsl.exe`
   passes (`WSLENV`).
 - On the `local` place, tmux and RMUX make the window with a one-shot
-  `new-window`, whose argv every user of the machine can read. So no value
-  of `env` is in that argv. runtime-mux writes the variables to a file in
-  the temporary directory, mode 0600. The window's program is
-  `/bin/sh -c <loader> sh <file> <argv…>`: the loader reads the file and
-  removes it before it sets any variable, then runs the agent. The loader
-  names no shell variable, so a variable of the session cannot change
-  what it removes or runs. When no window is made, runtime-mux
-  removes the file. A variable name that a shell cannot read stays a `-e`
-  flag; Fleet refuses such names.
+  `new-window`, and every user of the machine can read a client's argv.
+  So the client's argv holds at most `has-session` and the session's options,
+  then `source-file -`. The `new-window` words, `-e` for each variable
+  among them, go on the client's stdin, as one line of tmux's command
+  syntax. The server sets each variable in the window: no shell assigns
+  one, so a name that a shell keeps read-only, such as `UID`, starts the
+  window as any other.
 - psmux takes the environment in its window's PowerShell script, as
   `-EncodedCommand`. That argument holds every value, base64-encoded: on a
   psmux place, `env` is in an argv.

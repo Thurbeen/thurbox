@@ -1657,3 +1657,83 @@ fn a_pause_cut_short_before_the_shell_closed_is_not_paused_until_a_pause_finishe
     assert!(windows(&rt).is_empty(), "{:?}", windows(&rt));
     assert_eq!(rt.inspect("sh.cut")["known"], "paused");
 }
+
+/// A session's environment reaches its window and no argv: the `tmux`
+/// client that makes the window, which every user of the machine can read,
+/// is given it on stdin. Names a shell keeps read-only (`UID`, `EUID`,
+/// `PPID`, `SHELLOPTS`, `BASHOPTS`) start the window as any other, under
+/// bash and dash, and as one token through the window's shell.
+#[test]
+fn a_sessions_environment_reaches_its_window_and_no_argv() {
+    let Some(mut rt) = Runtime::new() else { return };
+    let real = runtime_mux::path_lookup::resolve_on_path("tmux").expect("tmux");
+    let dir = tempfile::tempdir().expect("dir");
+    let log = dir.path().join("argv.log");
+    let shim = dir.path().join("tmux");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            real.display()
+        ),
+    )
+    .expect("shim");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    rt.env
+        .push(("PATH".into(), format!("{}:{path}", dir.path().display())));
+    const SECRET: &str = "s3cr3t-4a7e it's $HOME `x`";
+    let env = json!({
+        "FLEET_SECRET": SECRET,
+        "UID": "4242",
+        "EUID": "4242",
+        "PPID": "4242",
+        "SHELLOPTS": "braceexpand",
+        "BASHOPTS": "checkwinsize",
+    });
+    let mut shells: Vec<&str> = vec!["bash", "sh"];
+    if runtime_mux::path_lookup::resolve_on_path("dash").is_some() {
+        shells.push("dash");
+    }
+    let mut cases: Vec<(String, Vec<String>)> = Vec::new();
+    for shell in &shells {
+        let out = dir.path().join(format!("{shell}.env"));
+        let script = format!("env > '{}'; exec sleep 300", out.display());
+        cases.push((
+            format!("env.{shell}"),
+            vec![(*shell).to_string(), "-c".into(), script],
+        ));
+    }
+    // One token: the window's shell splits it, as tmux runs it.
+    let out = dir.path().join("token.env");
+    cases.push((
+        "env.token".into(),
+        vec![format!("env > '{}'; exec sleep 300", out.display())],
+    ));
+    for (key, argv) in &cases {
+        let answer = rt.call(
+            "start",
+            json!({"protocol": 1, "key": key, "argv": argv, "env": env}),
+        );
+        started(&answer);
+    }
+    for name in shells
+        .iter()
+        .map(|s| format!("{s}.env"))
+        .chain(["token.env".into()])
+    {
+        let seen = read_when_written(&dir.path().join(&name));
+        assert!(
+            seen.lines().any(|l| l == format!("FLEET_SECRET={SECRET}")),
+            "{name}: {seen}"
+        );
+    }
+    let argv = std::fs::read_to_string(&log).expect("argv log");
+    assert!(argv.contains("source-file"), "{argv}");
+    assert!(!argv.contains("s3cr3t"), "{argv}");
+    for (key, _) in &cases {
+        rt.call("stop", json!({"protocol": 1, "key": key}));
+    }
+}

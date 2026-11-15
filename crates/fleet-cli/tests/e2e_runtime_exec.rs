@@ -4758,8 +4758,8 @@ fn a_sessions_environment_is_in_no_argv_here_or_on_an_ssh_place() {
     }
     let argv = fs::read_to_string(&log).expect("argv log");
     assert!(
-        argv.contains("new-window"),
-        "the window was made through the shim: {argv}"
+        argv.contains("source-file"),
+        "the window was made through the shim, its words on stdin: {argv}"
     );
     assert!(!argv.contains("s3cr3t"), "{argv}");
     // Nor in any argument of a process running now.
