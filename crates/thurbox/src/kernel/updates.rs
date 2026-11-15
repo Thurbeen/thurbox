@@ -124,7 +124,12 @@ impl Updates {
                 Done::Checked(latest) => self.latest = latest,
                 Done::Installed(to) => {
                     self.latest = Some(to.clone());
-                    message = Some(format!("Updated to v{to} — restart thurbox to apply."));
+                    // A running `fleet up` keeps the program it started
+                    // from until it restarts, which a thurbox restart does
+                    // not do: it outlives the interface.
+                    message = Some(format!(
+                        "Updated to v{to} — restart thurbox and any running `fleet up` to apply."
+                    ));
                 }
             }
         }
@@ -242,6 +247,17 @@ mod tests {
             "the new version applies on the next launch, and has to say so: {message}"
         );
         assert_eq!(updates.available(), Some("9.9.9"));
+    }
+
+    /// A running `fleet up` keeps the program it started from, so the notice
+    /// says the manager needs a restart too.
+    #[test]
+    fn an_install_names_the_fleet_manager_that_keeps_the_old_program() {
+        let mut updates = Updates::default();
+        let tx = updates.sender();
+        tx.send(Done::Installed("9.9.9".into())).expect("send");
+        let message = updates.poll().unwrap_or_default();
+        assert!(message.contains("fleet up"), "{message}");
     }
 
     #[test]

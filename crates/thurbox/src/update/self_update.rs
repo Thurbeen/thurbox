@@ -555,6 +555,11 @@ fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> 
 /// second rename moves the backup straight back.
 #[cfg(windows)]
 fn commit_binary(staged: &Path, dest: &Path) -> Result<Option<PathBuf>, String> {
+    // A program the install lacked has nothing to move aside.
+    if !dest.exists() {
+        std::fs::rename(staged, dest).map_err(|e| replace_failed(dest, e))?;
+        return Ok(None);
+    }
     let backup = backup_path(dest)?;
     std::fs::rename(dest, &backup).map_err(|e| replace_failed(dest, e))?;
     if let Err(e) = std::fs::rename(staged, dest) {
@@ -601,16 +606,17 @@ fn backup_path(dest: &Path) -> Result<PathBuf, String> {
 /// directory, and a suffix-blind version looked for a `thurbox` that is in
 /// neither, reporting the archive as missing it (issue #1172).
 ///
-/// Returns the names actually replaced (binaries absent from either side are
-/// skipped). Unit-testable: takes plain dirs, no network.
+/// A program the install directory lacks is added, not skipped: the archive is
+/// the same verified one, and thurbox cannot start a session without `fleet`
+/// and the programs it runs. Returns the names installed. Unit-testable: takes
+/// plain dirs, no network.
 fn install_binaries(
     extract_dir: &Path,
     install_dir: &Path,
     exe_suffix: &str,
 ) -> Result<Vec<String>, String> {
-    // Phase 1: stage every binary present both in the archive and on disk.
+    // Phase 1: stage every binary the archive ships.
     let mut staged: Vec<(PathBuf, PathBuf, String)> = Vec::new(); // (staged, dest, name)
-    let mut skipped: Vec<String> = Vec::new();
     for stem in BINARIES {
         let name = format!("{stem}{exe_suffix}");
         let src = extract_dir.join(&name);
@@ -621,11 +627,6 @@ fn install_binaries(
         if std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0) == 0 {
             return Err(format!("extracted `{name}` is empty"));
         }
-        if !dest.exists() {
-            // e.g. thurbox-cli not co-located next to the running thurbox.
-            skipped.push(name);
-            continue;
-        }
         let s = match stage_binary(&src, &dest) {
             Ok(s) => s,
             Err(e) => {
@@ -634,9 +635,6 @@ fn install_binaries(
             }
         };
         staged.push((s, dest, name));
-    }
-    if staged.is_empty() {
-        return Err("no installed binaries to replace in the install directory".to_string());
     }
     // Phase 2: commit staged files back-to-back (`commit_binary` says how). A
     // failure puts back every binary already swapped, so the install is never
@@ -656,14 +654,7 @@ fn install_binaries(
             }
         }
     }
-    let replaced = staged.into_iter().map(|(_, _, name)| name).collect();
-    if !skipped.is_empty() {
-        tracing::warn!(
-            "auto-update: skipped {} (not in install dir)",
-            skipped.join(", ")
-        );
-    }
-    Ok(replaced)
+    Ok(staged.into_iter().map(|(_, _, name)| name).collect())
 }
 
 /// Remove staged `.new` files an update will not commit, so the next one does
@@ -1273,19 +1264,29 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
     }
 
     #[cfg(unix)]
+    /// An install that predates a program (only `thurbox` and `thurbox-cli`
+    /// beside each other) gains every program the release ships: thurbox
+    /// cannot start a session without `fleet` and the two it runs.
     #[test]
-    fn install_binaries_skips_binaries_absent_from_install_dir() {
+    fn install_binaries_adds_the_programs_the_install_lacks() {
         let install = tempfile::TempDir::new().unwrap();
         let extract = tempfile::TempDir::new().unwrap();
         for name in BINARIES {
             std::fs::write(extract.path().join(name), b"NEW").unwrap();
         }
-        // Only `thurbox` is installed; `thurbox-cli` is not co-located.
-        std::fs::write(install.path().join("thurbox"), b"OLD").unwrap();
+        for name in ["thurbox", "thurbox-cli"] {
+            std::fs::write(install.path().join(name), b"OLD").unwrap();
+        }
 
         let replaced = install_binaries(extract.path(), install.path(), "").unwrap();
-        assert_eq!(replaced, vec!["thurbox".to_string()]);
-        assert!(!install.path().join("thurbox-cli").exists());
+        assert_eq!(replaced.len(), BINARIES.len(), "{replaced:?}");
+        for name in BINARIES {
+            assert_eq!(
+                std::fs::read(install.path().join(name)).unwrap(),
+                b"NEW",
+                "{name}"
+            );
+        }
     }
 
     #[test]

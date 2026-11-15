@@ -511,7 +511,9 @@ the current binaries untouched; the whole step runs before the TUI takes the
 terminal and is best-effort (any failure is logged and startup continues on
 the current version). The replaced binary takes effect on the **next launch**
 (the running process keeps its open file), so the TUI shows an "Updated to
-vX.Y.Z — restart to apply" status line. `thurbox-cli update` performs the
+vX.Y.Z — restart thurbox and any running `fleet up` to apply" status line: a
+running Fleet manager keeps the program it started from, and it outlives the
+interface. `thurbox-cli update` performs the
 same update on demand (with `--force` to bypass the up-to-date and dev-build
 guards — never the major line); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a
