@@ -564,17 +564,10 @@
 
 /* ---- HUD status bar (the Doom status-bar flourish) ---- */
 
-/* Reserve room under the fixed bar. Both read --hud-height. */
-body {
-  padding-bottom: calc(var(--hud-height) + var(--space-xs));
-}
-
+/* In the flow at the end of the page, not fixed to the viewport: fixed, it sat
+   over whatever band content reached the bottom of the screen. */
 .hud-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 80;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
