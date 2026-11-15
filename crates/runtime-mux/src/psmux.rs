@@ -226,6 +226,12 @@ impl TmuxCompatible for Psmux {
         Ok(HashMap::from([(ENV_FILE.to_string(), file)]))
     }
 
+    fn discard_private_env(server: &Server<Self>, env: &HashMap<String, String>) {
+        if let Some(file) = env.get(ENV_FILE) {
+            remove_env_file(&server.located_transport(), file);
+        }
+    }
+
     fn window_command(
         _server: &Server<Self>,
         window_name: &str,
@@ -483,15 +489,29 @@ const EXIT_REPORT: &str =
 /// name, so it never names one.
 const ENV_FILE: &str = "=runtime-mux-env-file";
 
-/// Writes the base64 of a UTF-8 JSON object, read from stdin, to a new file
-/// in the user's temp directory, and prints its path. That directory is in
-/// the user's profile, which only the user, SYSTEM and Administrators can
-/// read. Base64 keeps the bytes clear of the console's code page.
+/// Writes the bytes whose base64 it reads from stdin (a UTF-8 JSON object)
+/// to a new file under `%LOCALAPPDATA%\\runtime-mux`, and prints its path.
+/// The file is created with an ACL of its own: only this user, its owner,
+/// may open it, whatever the directory allows. Base64 keeps the bytes clear
+/// of the console's code page.
 const STASH_SCRIPT: &str = "$ErrorActionPreference = 'Stop'\n\
     $b = [Console]::In.ReadToEnd().Trim()\n\
-    $p = Join-Path ([IO.Path]::GetTempPath()) ('runtime-mux-env-' + [guid]::NewGuid().ToString('N') + '.json')\n\
-    [IO.File]::WriteAllText($p, [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)))\n\
+    $d = Join-Path $env:LOCALAPPDATA 'runtime-mux'\n\
+    [void][IO.Directory]::CreateDirectory($d)\n\
+    $p = Join-Path $d ('env-' + [guid]::NewGuid().ToString('N') + '.json')\n\
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User\n\
+    $fs = New-Object Security.AccessControl.FileSecurity\n\
+    $fs.SetAccessRuleProtection($true, $false)\n\
+    $fs.SetOwner($me)\n\
+    $fs.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'Allow')))\n\
+    $bytes = [Convert]::FromBase64String($b)\n\
+    $f = [IO.File]::Create($p, 4096, [IO.FileOptions]::None, $fs)\n\
+    try { $f.Write($bytes, 0, $bytes.Length) } finally { $f.Close() }\n\
     [Console]::Out.Write($p)";
+
+/// The longest a write or a removal of a window's environment file may take:
+/// it is one ssh round trip, and window creation waits on it.
+const STASH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What the stash of `env` sends: the command, which carries no value, and
 /// its stdin.
@@ -513,23 +533,9 @@ fn stash_env(
     transport: &crate::tmux_compat::transport::TmuxTransport,
     env: &HashMap<String, String>,
 ) -> Result<String> {
-    use std::io::Write as _;
-    use std::process::Stdio;
-    let (mut cmd, input) = stash_request(transport, env);
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("cannot write the window's environment")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&input)
-            .context("cannot send the window's environment")?;
-    }
-    let out = child
-        .wait_with_output()
-        .context("cannot write the window's environment")?;
+    let (cmd, input) = stash_request(transport, env);
+    let out = run_fed_bounded(cmd, input, STASH_TIMEOUT)
+        .context("the window's environment was not written")?;
     let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if !out.status.success() || path.is_empty() {
         bail!(
@@ -538,6 +544,83 @@ fn stash_env(
         );
     }
     Ok(path)
+}
+
+/// Remove the environment file `file` on the server's machine. Best effort,
+/// bounded like the write.
+fn remove_env_file(transport: &crate::tmux_compat::transport::TmuxTransport, file: &str) {
+    let script = format!(
+        "Remove-Item -LiteralPath {} -Force -ErrorAction SilentlyContinue",
+        powershell_quote(file)
+    );
+    if let Err(e) = run_fed_bounded(
+        transport.powershell_command(&script),
+        Vec::new(),
+        STASH_TIMEOUT,
+    ) {
+        warn!("the window's environment file {file} may be left: {e:#}");
+    }
+}
+
+/// `cmd` with `input` on its stdin, run to its end or killed and reaped at
+/// `timeout`. The input is written from a thread of its own, so a command
+/// that does not read never blocks the wait.
+fn run_fed_bounded(
+    mut cmd: Command,
+    input: Vec<u8>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output> {
+    use std::io::{Read as _, Write as _};
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("cannot run {:?}", cmd.get_program()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    let reader = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut out);
+            }
+            out
+        })
+    };
+    let stdout = reader(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let stderr = reader(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("no answer within {} s", timeout.as_secs());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 /// The PowerShell that sets the window's environment from the file `file`
@@ -1226,6 +1309,44 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// A write of the environment that never answers is killed and reaped
+    /// at its bound, and answers an error: a stalled ssh never holds up a
+    /// window's creation. Asserted on the answer, not on a clock.
+    #[cfg(unix)]
+    #[test]
+    fn a_stalled_environment_write_is_killed_at_its_bound() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec sleep 600"]);
+        let why = run_fed_bounded(
+            cmd,
+            b"input".to_vec(),
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(why.contains("no answer within"), "{why}");
+        let mut cat = Command::new("cat");
+        cat.arg("-");
+        let out = run_fed_bounded(cat, b"sent".to_vec(), std::time::Duration::from_secs(60))
+            .expect("cat answers");
+        assert_eq!(out.stdout, b"sent");
+    }
+
+    /// The environment file is created with an owner-only ACL of its own,
+    /// in the user's local app data: never in a temp directory whose
+    /// permissions another user may share.
+    #[test]
+    fn the_environment_file_is_created_owner_only() {
+        assert!(!STASH_SCRIPT.contains("GetTempPath"), "{STASH_SCRIPT}");
+        assert!(STASH_SCRIPT.contains("LOCALAPPDATA"), "{STASH_SCRIPT}");
+        assert!(
+            STASH_SCRIPT.contains("SetAccessRuleProtection($true, $false)")
+                && STASH_SCRIPT
+                    .contains("[IO.File]::Create($p, 4096, [IO.FileOptions]::None, $fs)"),
+            "{STASH_SCRIPT}"
+        );
     }
 
     /// A psmux window's environment is in no process's arguments, here or

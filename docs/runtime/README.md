@@ -373,10 +373,14 @@ request.place ──▶ local ─────────▶ this machine's mult
   - `browse`, `branches` and a workspace's setup and teardown steps read the
     place with `sh`, so they answer `failed` there and say why.
   - A window's environment goes, over the stdin of one PowerShell command,
-    to a new file in the user's own temp directory. The window's script
-    names only that file: it loads it, deletes it, then starts the program.
-    So no value is in any process's arguments. A psmux server on this
+    to a new file under `%LOCALAPPDATA%\runtime-mux`. The file is created
+    with an ACL of its own that lets only the user open it, whatever the
+    directory allows. The window's script names only that file: it loads
+    it, deletes it, then starts the program. So no value is in any process's
+    arguments. A failed launch removes the file. A psmux server on this
     machine does the same.
+  - `exec` finds its program as PowerShell finds a command, so an npm
+    `.cmd` shim or a `.ps1` script runs under `cmd.exe` or `powershell`.
 - WSL stops a distro, and every process in it, soon after its last
   `wsl.exe` client exits. Each `runtime-mux` call is such a client. So a
   `start` or a `shell` on a WSL place also starts one waiter: a detached

@@ -501,11 +501,19 @@ pub fn launch_on_windows(
     Ok(cmd)
 }
 
-/// A PowerShell script that runs `program` with `args` on a Windows host as
-/// [`launch_on_windows`] does, in `dir` when given, with `path_prepend` put
-/// first on its `Path`, after `prelude`: statements of the caller's own,
-/// such as making the directory a copy goes to. A `~` leading an entry of
-/// `path_prepend` is the user's profile directory.
+/// A PowerShell script that runs `program` with `args` on a Windows host, in
+/// `dir` when given, with `path_prepend` put first on its `Path`, after
+/// `prelude`: statements of the caller's own, such as making the directory
+/// a copy goes to. A `~` leading an entry of `path_prepend` is the user's
+/// profile directory.
+///
+/// The program is found as PowerShell finds a command (`Get-Command`), so
+/// an npm `.cmd` shim or a `.ps1` script on the `Path` is found as an `.exe`
+/// is. `ProcessStartInfo` starts only an executable, so a `.cmd` or `.bat`
+/// runs under `cmd.exe /d /s /c`, a `.ps1` under `powershell -File`, and
+/// anything else as it is. The arguments are one command line quoted for
+/// the C runtime ([`windows_arg_quote`]), as [`launch_on_windows`] passes
+/// them.
 pub fn windows_program_script<S: AsRef<str>>(
     program: &str,
     args: &[S],
@@ -513,18 +521,37 @@ pub fn windows_program_script<S: AsRef<str>>(
     path_prepend: &[String],
     prelude: &str,
 ) -> String {
-    let mut script = String::from("$ProgressPreference = 'SilentlyContinue'\n");
-    script.push_str(&windows_path_prepend(path_prepend));
-    script.push_str(prelude);
-    let extra = dir
+    let line = args
+        .iter()
+        .map(|a| windows_arg_quote(a.as_ref()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let dir = dir
         .map(|d| format!("$s.WorkingDirectory = {}\n", powershell_quote(d)))
         .unwrap_or_default();
-    script.push_str(&start_process_script(
-        &powershell_quote(program),
-        args,
-        &extra,
-    ));
-    script
+    format!(
+        "$ProgressPreference = 'SilentlyContinue'\n\
+         {path}{prelude}\
+         $c = Get-Command -Name {program} -CommandType Application,ExternalScript -ErrorAction Stop | Select-Object -First 1\n\
+         $p = $c.Source\n\
+         $line = {line}\n\
+         switch ([IO.Path]::GetExtension($p).ToLowerInvariant()) {{\n\
+         {{ $_ -in '.cmd', '.bat' }} {{ $f = $env:ComSpec; $a = '/d /s /c \"\"' + $p + '\" ' + $line + '\"' }}\n\
+         '.ps1' {{ $f = (Get-Command powershell.exe).Source; $a = '-NoProfile -ExecutionPolicy Bypass -File \"' + $p + '\" ' + $line }}\n\
+         default {{ $f = $p; $a = $line }}\n\
+         }}\n\
+         $s = New-Object System.Diagnostics.ProcessStartInfo\n\
+         $s.FileName = $f\n\
+         $s.Arguments = $a\n\
+         $s.UseShellExecute = $false\n\
+         {dir}\
+         $x = [System.Diagnostics.Process]::Start($s)\n\
+         $x.WaitForExit()\n\
+         exit $x.ExitCode",
+        path = windows_path_prepend(path_prepend),
+        program = powershell_quote(program),
+        line = powershell_quote(&line),
+    )
 }
 
 /// The PowerShell statement that puts `dirs` first on `$env:Path`, empty
@@ -1090,6 +1117,56 @@ mod tests {
         );
     }
     use super::*;
+
+    /// `path_prepend` goes first on a Windows `Path`, each entry quoted, a
+    /// leading `~` read as the user's profile; none adds nothing.
+    #[test]
+    fn a_windows_path_prepend_reads_tilde_as_the_profile() {
+        assert_eq!(windows_path_prepend(&[]), "");
+        assert_eq!(
+            windows_path_prepend(&["~/rp2/win".to_string(), "C:/it's/bin".to_string()]),
+            "$env:Path = (@(($env:USERPROFILE + '/rp2/win'), 'C:/it''s/bin') -join ';') + ';' + $env:Path\n"
+        );
+    }
+
+    /// The program, its directory and its argument line are each one quoted
+    /// PowerShell string, so a `'` in any of them stays text.
+    #[test]
+    fn a_windows_program_script_quotes_its_program_directory_and_arguments() {
+        let script = windows_program_script(
+            "o'prog",
+            &["it's", "two words"],
+            Some("C:/a b/it's"),
+            &["~/bin".to_string()],
+            "Prelude-Here\n",
+        );
+        assert!(script.contains("Get-Command -Name 'o''prog'"), "{script}");
+        assert!(script.contains("$line = 'it''s \"two words\"'"), "{script}");
+        assert!(
+            script.contains("$s.WorkingDirectory = 'C:/a b/it''s'"),
+            "{script}"
+        );
+        assert!(script.contains("($env:USERPROFILE + '/bin')"), "{script}");
+        let prelude = script.find("Prelude-Here").expect("prelude");
+        assert!(
+            prelude < script.find("Get-Command").expect("lookup"),
+            "{script}"
+        );
+    }
+
+    /// A Windows program is resolved as PowerShell resolves a command, so an
+    /// npm `.cmd` shim or a `.ps1` script is found, and each runs under its
+    /// own interpreter; an `.exe` runs as it is.
+    #[test]
+    fn a_windows_program_is_resolved_and_run_by_its_kind() {
+        let script = windows_program_script("codex", &["exec"], None, &[], "");
+        assert!(script.contains("Get-Command -Name 'codex'"), "{script}");
+        assert!(script.contains("$line = 'exec'"), "{script}");
+        for kind in ["'.cmd'", "'.bat'", "'.ps1'"] {
+            assert!(script.contains(kind), "{kind}: {script}");
+        }
+        assert!(script.contains("$env:ComSpec"), "{script}");
+    }
 
     #[test]
     fn the_local_platform_is_the_build_os_unless_simulated() {

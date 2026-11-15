@@ -1013,6 +1013,84 @@ mod tests {
         assert!(why.contains("more than"), "{why}");
     }
 
+    fn windows_place() -> HostDef {
+        parse(&place(
+            "win",
+            json!({"kind": "ssh", "destination": "me@win", "multiplexer": "psmux",
+                   "path_prepend": ["~/bin"]}),
+        ))
+        .unwrap()
+        .unwrap()
+    }
+
+    /// The text of the `-EncodedCommand` a command carries.
+    fn encoded_script(cmd: &Command) -> String {
+        use base64::Engine as _;
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = args
+            .iter()
+            .position(|a| a == "-EncodedCommand")
+            .expect("encoded");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&args[at + 1])
+            .expect("base64");
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        String::from_utf16_lossy(&units)
+    }
+
+    /// On a native-Windows place `exec` is an encoded PowerShell script over
+    /// ssh: the place's `path_prepend` first on `Path`, the directory as the
+    /// program's working directory, and the program looked up by name.
+    #[test]
+    fn a_windows_exec_runs_its_program_in_its_directory_with_the_places_path() {
+        let host = windows_place();
+        let argv = ["fleet".to_string(), "signal-read".to_string()];
+        let cmd = exec_command(&host, &argv, Some(Path::new("C:/work")), Instant::now())
+            .expect("a command");
+        assert_eq!(cmd.get_program(), "ssh");
+        let script = encoded_script(&cmd);
+        assert!(script.contains("($env:USERPROFILE + '/bin')"), "{script}");
+        assert!(
+            script.contains("$s.WorkingDirectory = 'C:/work'"),
+            "{script}"
+        );
+        assert!(script.contains("Get-Command -Name 'fleet'"), "{script}");
+        assert!(script.contains("$line = 'signal-read'"), "{script}");
+    }
+
+    /// A Windows place's readiness looks each program up on its `Path`.
+    #[test]
+    fn a_windows_lookup_names_each_missing_program() {
+        let lookup = windows_lookup(&["fleet", "o'x"]);
+        assert!(
+            lookup.contains("Get-Command -Name 'fleet' -CommandType Application")
+                && lookup.contains("'@missing ' + 'o''x'"),
+            "{lookup}"
+        );
+    }
+
+    /// `browse` and `branches` read a place with `sh`, so a native-Windows
+    /// place refuses them by name, without asking it anything.
+    #[test]
+    fn a_windows_place_refuses_browse_and_branches_by_name() {
+        let host = windows_place();
+        for why in [
+            browse(&host, None).map(|r| r.map(|_| ())),
+            git_refs(&host, "C:/repo").map(|r| r.map(|_| ())),
+        ] {
+            let why = why.expect("an answer").unwrap_err();
+            assert!(why.contains("native-Windows"), "{why}");
+        }
+    }
+
     #[test]
     fn local_takes_no_config() {
         assert_eq!(parse(&place("local", json!({}))), Ok(None));
