@@ -286,3 +286,12 @@ test('the site redeploys when a rendered doc changes', () => {
     assert.ok(paths.includes(want), `pages.yml's push paths list ${want}`);
   }
 });
+
+// The node test has no layout engine, so the overflow at 320px is checked by
+// its cause: a grid track whose minimum is a bare length cannot shrink below
+// it, and on the narrowest phones the overview's cards then ran out of the
+// frame. Every track minimum on the home page is clamped with min(…, 100%).
+test("the home page's grid tracks shrink to a phone's width", () => {
+  const css = readFileSync('website/css/landing.css', 'utf8');
+  assert.doesNotMatch(css, /minmax\(\s*\d+(\.\d+)?(rem|px|em)\s*,/, 'a minmax() minimum is wrapped in min(…, 100%)');
+});

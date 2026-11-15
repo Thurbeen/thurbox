@@ -413,6 +413,23 @@
   font-size: var(--text-xs);
 }
 
+.flow__name > * {
+  min-width: 0;
+}
+
+/* The narrowest phones: a name like WORKSPACE-GIT fits its card rather than
+   breaking mid-word, and the cards lose some padding. */
+@media (max-width: 399px) {
+  .flow .flow__name {
+    font-size: var(--text-sm);
+    letter-spacing: 0.02em;
+  }
+
+  .flow .flow__node {
+    padding: var(--space-sm);
+  }
+}
+
 .flow__name {
   overflow-wrap: anywhere;
   display: flex;
@@ -575,7 +592,7 @@
   }
 
   .flow__lanes {
-    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
     align-items: start;
     gap: var(--space-lg);
   }
