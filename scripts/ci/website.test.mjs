@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { parse } from 'node-html-parser';
+import { RENDERED_DOCS } from '../../eleventy.config.js';
 
 // Reads the built site, so run it after `npm run build:website`.
 const built = (path) => parse(readFileSync(`_site/${path}`, 'utf8'));
@@ -257,4 +258,13 @@ test('the docs sidebar reaches the rendered Fleet reference from every depth', (
   const forge = built('docs/fleet/controllers/forge.html');
   assert.ok(forge.querySelectorAll('.docs-toc a').length > 2, 'the on-this-page rail lists the headings');
   assert.ok(forge.querySelector('.docs-content img[src="forge.svg"]'), 'the state diagram is beside the page');
+});
+
+test('the site redeploys when a rendered doc changes', () => {
+  const workflow = readFileSync('.github/workflows/pages.yml', 'utf8');
+  const paths = [...workflow.matchAll(/^\s+- '([^']+)'$/gm)].map((m) => m[1]);
+  for (const entry of RENDERED_DOCS) {
+    const want = entry.endsWith('.md') ? entry : `${entry}/**`;
+    assert.ok(paths.includes(want), `pages.yml's push paths list ${want}`);
+  }
 });

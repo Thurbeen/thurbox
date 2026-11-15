@@ -168,7 +168,9 @@ function writeCoreBundle() {
 // README becomes the directory's index.html) through the paginated
 // website/repo-docs.njk. A directory is read on every build, so a new or
 // renamed page there needs no change here; a single file is listed by name.
-const RENDERED_DOCS = [
+// .github/workflows/pages.yml redeploys on a change to each entry; the website
+// test holds its `paths` to this list.
+export const RENDERED_DOCS = [
   'docs/fleet',
   'docs/runtime',
   'docs/thurbox/plugins.md',

@@ -13,10 +13,12 @@ on:
       - 'eleventy.config.js'
       - 'package.json'
       - 'package-lock.json'
-      # The docs pages under /docs/fleet and /docs/runtime are rendered from
-      # these (eleventy.config.js, listRepoDocs).
+      # The docs pages rendered from the repository: eleventy.config.js's
+      # RENDERED_DOCS, which scripts/ci/website.test.mjs holds this list to.
       - 'docs/fleet/**'
       - 'docs/runtime/**'
+      - 'docs/thurbox/plugins.md'
+      - 'docs/thurbox/kernel.md'
   # scripts/demo/publish-media.sh dispatches this after it replaces the
   # recordings on the `media` release, which no push to main announces.
   workflow_dispatch:

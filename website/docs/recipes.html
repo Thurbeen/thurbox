@@ -37,6 +37,6 @@ done
 fleet list task</code></pre>
 <p>
   <code>fleet send</code> queues each message, and Fleet delivers it once the agent is ready.
-  <code>fleet delete task &lt;name&gt;</code> ends a session and removes its worktree, keeping
-  work that exists nowhere else under <code>refs/fleet/preserved/</code> in the runtime's mirror for 30 days.
+  <code>fleet delete task &lt;name&gt;</code> ends a session and removes its worktree. Its branch
+  stays, and uncommitted work is kept under <code>refs/fleet/preserved/</code> for 30 days.
 </p>

@@ -61,9 +61,10 @@ breadcrumb: 'Fleet features'
 </p>
 <ul>
   <li>
-    Deleting the Task removes its worktree. Work that exists nowhere else, committed or not, is kept
-    under <code>refs/fleet/preserved/</code> in your repository for 30 days (unless the runtime's
-    config sets another retention), and a new Task can restore it by naming that ref in a
+    Deleting the Task removes its worktree and keeps its branch, so committed work stays on it.
+    Uncommitted work, untracked files included, is committed under
+    <code>refs/fleet/preserved/</code> in your repository and kept for 30 days (unless the
+    runtime's config sets another retention); a new Task can restore it by naming that ref in a
     <code>git+file</code> URL.
   </li>
   <li>Ignored files (build output, caches) are not kept.</li>

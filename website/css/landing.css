@@ -7,8 +7,20 @@
 .hero {
   position: relative;
   padding-top: calc(var(--nav-height) + var(--space-3xl));
+  padding-bottom: var(--space-2xl);
   text-align: center;
   overflow: hidden;
+}
+
+/* One column for the whole page: the hero, both bands and the overview share
+   the reading width, where the wide-desktop container would stretch the
+   bands' text to the edges and leave the centred hero alone in the middle. */
+@media (min-width: 1440px) {
+  .hero .container,
+  .product .container,
+  #how-they-fit .container {
+    max-width: var(--container-max);
+  }
 }
 
 /* CRT grid + ember backdrop */
@@ -254,6 +266,18 @@
 .plugin-strip__list span {
   font-size: var(--text-sm);
   color: var(--text-secondary);
+}
+
+/* On a phone the names are the list: each description is one tap away on its
+   repository, and keeping them doubled the band's length. */
+@media (max-width: 479px) {
+  .plugin-strip__list span {
+    display: none;
+  }
+
+  .plugin-strip__list {
+    gap: var(--space-xs);
+  }
 }
 
 /* ---- How they fit ---- */
