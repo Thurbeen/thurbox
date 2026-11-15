@@ -5,6 +5,14 @@ use std::collections::BTreeMap;
 
 pub const ENV_PROVIDER: &str = "EnvProvider";
 pub const SOURCE_CAP: usize = 64 * 1024;
+/// The TaskConfig a Task with no `configRef` takes its defaults from, when
+/// the store holds it. `fleet init` writes it.
+pub const DEFAULT_TASK_CONFIG: &str = "default";
+
+/// What `fleet init` writes as [`DEFAULT_TASK_CONFIG`]: an idle session
+/// pauses after 30 minutes.
+pub const DEFAULT_PAUSE_AFTER_MS: crate::Millis = 30 * 60 * 1000;
+
 pub const TASK_CONFIG: &str = "TaskConfig";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

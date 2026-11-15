@@ -250,14 +250,10 @@ pub trait Runtime {
     fn shell(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
         Observation::Known(None)
     }
-    /// Whether this runtime can pause a session and resume it. Fleet never
-    /// pauses a session on a runtime that cannot.
-    fn can_pause(&self) -> bool {
-        false
-    }
     /// Known(true) when the runtime holds the session and its agent is
     /// stopped, by Fleet or by anyone else. A running or lost session is
-    /// Known(false).
+    /// Known(false). A runtime that cannot pause answers Unknown, so Fleet
+    /// never pauses a session on it.
     fn paused(&self, _session: &SessionRef) -> Observation<bool> {
         Observation::unknown("this runtime cannot tell a stopped session")
     }

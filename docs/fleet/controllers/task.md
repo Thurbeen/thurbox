@@ -133,7 +133,7 @@ concludes nothing.
 | Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. After three revives have left the session lost, each further revive also raises `NeedsAttention/ReviveFailed`. |
 | Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt, owe a catch-up note under `catchup/<n>`. In Spawned, the brief protocol continues. |
 | Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
-| Briefed, or Concluded and watched | A pause setting; the agent's hooks report Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
+| Briefed, or Concluded and watched | A pause setting; a harness with a resume argv and a reported conversation; the agent's hooks report Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
 | Briefed or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
 | Briefed or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. |
 | Briefed, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
@@ -277,9 +277,11 @@ The manager must run again after the reboot. See
 
 ### Pausing an idle session
 
-An idle session costs a process and a terminal while its Task waits. Fleet
-pauses the session through the runtime and resumes it when work arrives. The
-Task, its workspace and the agent's conversation stay.
+An idle session costs a process, its memory and a terminal while its Task
+waits. Fleet pauses the session through the runtime and resumes it when work
+arrives. A pause stops the agent's process. The Task, the session's key, its
+workspace and the agent's conversation stay. A resume starts the harness
+profile's resume argv on that conversation, under the same key.
 
 A pause ends background work in the agent. A resumed agent does not start
 its background shells, Monitors or loops again. For this reason, Fleet
@@ -300,7 +302,12 @@ The controller plans a pause when all of these hold:
 - The phase is Briefed, or Concluded.
 - The inbox holds no entry to deliver, and no catch-up note is owed.
 - No brief, revive or resume waits for its outcome.
-- The runtime can pause. The fake runtime can. The exec runtime cannot.
+- The runtime can pause. The fake runtime can. The exec runtime can when
+  the runtime's `manifest` declares the `pause` verb
+  ([pause](../../runtime/README.md#pause)), as `runtime-mux` does.
+- The harness profile has a resume argv, and the agent's hooks reported its
+  conversation. A stop of any other agent ends its conversation, so Fleet
+  never pauses aider or a program.
 - The agent's own hooks reported Idle (`fleet signal idle`) on every pass
   for `pauseAfterMs`, and on the pass that plans the pause. `status.idleSince`
   records the first Idle answer. Active, Unknown, a pass that sent something, a recorded result or
@@ -323,7 +330,10 @@ These rules apply to a paused session:
   inbox entry delivers the note. A revived Concluded Task behaves the same
   way.
 
-`pauseAfterMs` absent means that Fleet never pauses the session.
+`pauseAfterMs` absent means that Fleet never pauses the session. `fleet init`
+writes the TaskConfig `default` with `pauseAfterMs` 1800000, 30 minutes,
+which a Task with no `configRef` takes
+([TaskConfig](../resources/task-config.md)).
 
 Activity comes from the agent's hooks, never from the runtime: see
 [signals](#signals). A session whose hooks reported nothing, or whose
@@ -822,8 +832,7 @@ return `Observation<T>`; a refused effect is
 | `release` | `SessionRef` | `Released` if deleted or proven absent, or Failed/Unknown. Repeating a completed release is a no-op. |
 | `lost` | `SessionRef` | Known true only when the runtime holds the session and proves its agent's window gone, and nobody stopped it. Known false for a running or stopped session. |
 | `revive` | `SessionRef` and the reported conversation | `Revived` after the runtime started the lost session's agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
-| `can_pause` | None | Whether the runtime can pause and resume a session. False by default. Fleet never pauses on a runtime that cannot. |
-| `paused` | `SessionRef` | Known true when the runtime holds the session with its agent stopped, by Fleet or anyone else. Known false for a running or lost session. |
+| `paused` | `SessionRef` | Known true when the runtime holds the session with its agent stopped, by Fleet or anyone else. Known false for a running or lost session. Unknown on a runtime that cannot pause, so Fleet never pauses there. |
 | `pause` | `SessionRef` | `Paused` after the runtime stopped the agent and kept its row, workspace and conversation, or Failed/Unknown. A stopped session is left alone. |
 | `resume` | `SessionRef` and the reported conversation | `Resumed` after the runtime started the stopped agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
 | `create_dir` | Host and directory | `Ok(true)` when made, `Ok(false)` when it existed, `Err` with why, or Unknown. Used for a conversation Task's thread directory. |
@@ -839,8 +848,11 @@ agent's prompt hook proves the delivery. `lost` is a key whose process
 exited. A key the runtime no longer holds is Unknown, since a `stop` also
 leaves none. `revive` and `resume` start the harness profile's resume argv
 under the same key. A running agent is at rest once its hooks last
-reported idle. An exited or absent one is at rest. `release` is `stop` with
-`release: true`. The adapter cannot pause.
+reported idle. An exited, paused or absent one is at rest. `release` is
+`stop` with `release: true`. `pause` is the runtime's `pause` verb, and
+`paused` is an `inspect` that answers `paused`, when the runtime's
+`manifest` declares the verb. On any other runtime, `paused` is Unknown and
+`pause` fails.
 
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor

@@ -412,8 +412,23 @@ pub enum Started {
 #[serde(rename_all = "camelCase")]
 pub enum Inspected {
     None,
-    Running { id: String },
-    Exited { id: String, code: Option<i64> },
+    Running {
+        id: String,
+    },
+    Exited {
+        id: String,
+        code: Option<i64>,
+    },
+    /// Stopped by `pause`, the key kept.
+    Paused,
+}
+
+/// `pause`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PauseAnswer {
+    Paused,
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -518,6 +533,22 @@ impl ExecRuntime {
                 Attached::Tty { argv } => Some(Attach::Tty { argv }),
                 Attached::None => None,
             })
+        })
+    }
+
+    /// The program serving `host` when its manifest declares `pause`, else
+    /// why not.
+    fn pausing(&self, host: &str) -> Observation<Result<&ExecProgram, String>> {
+        let rt = match self.program(host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::Known(Err(why)),
+        };
+        rt.manifest().map(|m| {
+            if m.verbs.iter().any(|v| v == "pause") {
+                Ok(rt)
+            } else {
+                Err(format!("runtime {} declares no pause", rt.name))
+            }
         })
     }
 
@@ -866,7 +897,9 @@ impl Runtime for ExecRuntime {
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
         self.inspect(host, key).map(|found| match found {
             Inspected::None => None,
-            Inspected::Running { .. } | Inspected::Exited { .. } => Some(self.session(host, key)),
+            Inspected::Running { .. } | Inspected::Exited { .. } | Inspected::Paused => {
+                Some(self.session(host, key))
+            }
         })
     }
 
@@ -994,7 +1027,9 @@ impl Runtime for ExecRuntime {
                     }
                     Some(_) => Observation::Known(false),
                 }),
-                Inspected::Exited { .. } | Inspected::None => Observation::Known(true),
+                Inspected::Exited { .. } | Inspected::Paused | Inspected::None => {
+                    Observation::Known(true)
+                }
             },
         )
     }
@@ -1055,7 +1090,7 @@ impl Runtime for ExecRuntime {
         bind(
             self.inspect(&session.host, &session.key),
             |found| match found {
-                Inspected::Running { .. } => Observation::Known(false),
+                Inspected::Running { .. } | Inspected::Paused => Observation::Known(false),
                 Inspected::Exited { .. } => Observation::Known(true),
                 Inspected::None => Observation::unknown(
                     "the runtime holds nothing under the key, which a stop also leaves",
@@ -1073,8 +1108,46 @@ impl Runtime for ExecRuntime {
         self.restart(session, conversation, launch, EffectOutcome::Revived)
     }
 
-    // Not `can_pause`: a pause is a `stop`, after which protocol version 1
-    // holds nothing under the key, so the session would read as gone.
+    /// Stopped under its key, as `inspect` answers it, on a runtime whose
+    /// manifest declares `pause`; Unknown on any other, so Fleet never
+    /// pauses there.
+    fn paused(&self, session: &SessionRef) -> Observation<bool> {
+        bind(self.pausing(&session.host), |declared| {
+            if let Err(why) = declared {
+                return Observation::unknown(why);
+            }
+            bind(
+                self.inspect(&session.host, &session.key),
+                |found| match found {
+                    Inspected::Paused => Observation::Known(true),
+                    Inspected::Running { .. } | Inspected::Exited { .. } => {
+                        Observation::Known(false)
+                    }
+                    Inspected::None => {
+                        Observation::unknown("the runtime holds nothing under the key")
+                    }
+                },
+            )
+        })
+    }
+
+    /// The runtime's `pause`: the process stops and the key stays.
+    fn pause(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        bind(self.pausing(&session.host), |declared| {
+            let rt = match declared {
+                Ok(rt) => rt,
+                Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+            };
+            rt.send::<PauseAnswer>("pause", json!({ "key": rt.key(&session.key) }))
+                .map(|answer| match answer {
+                    PauseAnswer::Paused => EffectOutcome::Paused,
+                    PauseAnswer::None => EffectOutcome::Failed {
+                        why: "no process holds the session's key".into(),
+                    },
+                })
+        })
+    }
+
     fn resume(
         &self,
         session: &SessionRef,
@@ -1394,7 +1467,86 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
     if verbs.iter().any(|v| v == "shell") {
         cases.extend(check_shell(program, protocol, &key("shell")));
     }
+    if verbs.iter().any(|v| v == "pause") {
+        let listed = verbs.iter().any(|v| v == "list");
+        cases.extend(check_pause(program, protocol, &key("pause"), listed));
+    }
     cases
+}
+
+/// The pause rules a runtime that declares `pause` holds to: a pause stops
+/// the key's process and keeps the key, `list` names it, a second pause
+/// answers the same, a start runs the key again and a stop forgets it; a
+/// key nothing holds answers `none`.
+fn check_pause(program: &ExecProgram, protocol: u64, key: &str, listed: bool) -> Vec<Case> {
+    let request = |fields: Value| program.request(protocol, fields);
+    let pause = |k: &str| program.ask::<PauseAnswer>("pause", request(json!({ "key": k })));
+    let inspect = |k: &str| program.ask::<Inspected>("inspect", request(json!({ "key": k })));
+    let start = |k: &str| {
+        program.ask::<Started>(
+            "start",
+            request(json!({ "key": k, "argv": ["sleep", "300"], "env": {} })),
+        )
+    };
+    let stop = |k: &str| program.ask::<Stopped>("stop", request(json!({ "key": k })));
+    let absent = match pause(&format!("{key}-absent")) {
+        Observation::Known(PauseAnswer::None) => Ok(()),
+        other => Err(format!("answered {other:?}, not none")),
+    };
+    let kept = (|| {
+        match start(key) {
+            Observation::Known(Started::Started { .. }) => {}
+            other => return Err(format!("start answered {other:?}")),
+        }
+        for n in ["the first", "a second"] {
+            match pause(key) {
+                Observation::Known(PauseAnswer::Paused) => {}
+                other => return Err(format!("{n} pause answered {other:?}")),
+            }
+            match inspect(key) {
+                Observation::Known(Inspected::Paused) => {}
+                other => return Err(format!("inspect after {n} pause answered {other:?}")),
+            }
+        }
+        if listed {
+            match program.ask::<Keys>("list", request(json!({}))) {
+                Observation::Known(Keys { keys }) if keys.iter().any(|k| k == key) => {}
+                other => return Err(format!("list answered {other:?}, without the paused key")),
+            }
+        }
+        match (start(key), inspect(key)) {
+            (
+                Observation::Known(Started::Started { adopted: false, .. }),
+                Observation::Known(Inspected::Running { .. }),
+            ) => {}
+            (started, inspected) => {
+                return Err(format!(
+                    "a start of the paused key answered {started:?}, then inspect {inspected:?}"
+                ));
+            }
+        }
+        match (pause(key), stop(key), inspect(key)) {
+            (
+                Observation::Known(PauseAnswer::Paused),
+                Observation::Known(Stopped::Stopped),
+                Observation::Known(Inspected::None),
+            ) => Ok(()),
+            (paused, stopped, inspected) => Err(format!(
+                "pause {paused:?}, stop {stopped:?}, then inspect {inspected:?}"
+            )),
+        }
+    })();
+    let _ = stop(key);
+    vec![
+        Case {
+            name: "pause: a key no process holds answers none",
+            result: absent,
+        },
+        Case {
+            name: "pause: stops the process and keeps the key until a start or a stop",
+            result: kept,
+        },
+    ]
 }
 
 /// The shell rules a runtime that declares `shell` holds to: how to open a

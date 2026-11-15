@@ -353,3 +353,86 @@ fn all_references_are_validated_before_any_provider_command_runs() {
         "invalid reference must be detected before command execution"
     );
 }
+
+#[test]
+fn a_launch_frozen_from_the_default_config_is_kept_when_the_config_goes_before_its_status() {
+    let e = Env::new("config-default-crash");
+    e.apply(object(
+        "TaskConfig",
+        "default",
+        json!({"pauseAfterMs": 60000}),
+    ))
+    .ok();
+    e.apply(task("t1", true)).ok();
+    // One pass freezes the private launch, then records it in status.
+    e.fleet(&["reconcile", "--max-passes", "1"]).ok();
+    assert_eq!(e.status("t1")["execution"]["pauseAfterMs"], 60000);
+    // As a manager stopped between those two writes: the private launch is
+    // saved, the status is not. Then the default goes.
+    let path = e.object_path("Task", "t1");
+    let mut obj: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj["status"].as_object_mut().unwrap().remove("execution");
+    std::fs::write(&path, obj.to_string()).unwrap();
+    e.fleet(&["delete", "taskconfig", "default"]).ok();
+    e.reconcile().ok();
+    let st = e.status("t1");
+    assert_eq!(st["execution"]["pauseAfterMs"], 60000, "{st:#}");
+}
+
+#[test]
+fn a_task_with_no_configref_takes_its_harness_model_and_env_from_the_default_config() {
+    let e = Env::new("config-default-fields");
+    let mut bare = task("bare", true);
+    let spec = bare["spec"].as_object_mut().unwrap();
+    spec.remove("harness");
+    spec.remove("host");
+    // With no default to give one, a Task with no harness is refused.
+    e.apply(bare.clone())
+        .code(1)
+        .stderr_has("TaskConfig default");
+    // The default gives it, applied in the same batch or before.
+    let default = object(
+        "TaskConfig",
+        "default",
+        json!({"harness": "codex", "model": "default-model", "env": {"FROM_DEFAULT": "yes"}}),
+    );
+    e.apply(json!([default, bare])).ok();
+    let mut later = bare.clone();
+    later["metadata"]["name"] = json!("later");
+    e.apply(later).ok();
+    e.reconcile().ok();
+    for name in ["bare", "later"] {
+        let execution = e.status(name)["execution"].clone();
+        assert_eq!(execution["harness"], "codex", "{name}: {execution:#}");
+        assert_eq!(execution["model"], "default-model", "{name}: {execution:#}");
+        assert_eq!(execution["host"], "local", "{name}: {execution:#}");
+        let session = e
+            .host()
+            .session(&e.session_key(name))
+            .unwrap()
+            .expect("a session");
+        assert_eq!(session.harness, "codex", "{name}");
+        assert_eq!(
+            session.env.get("FROM_DEFAULT").map(String::as_str),
+            Some("yes")
+        );
+    }
+}
+
+#[test]
+fn a_task_launched_with_the_default_harness_takes_updates_after_the_default_goes() {
+    let e = Env::new("config-default-gone");
+    let default = object("TaskConfig", "default", json!({"harness": "codex"}));
+    let mut t = task("t1", true);
+    t["spec"].as_object_mut().unwrap().remove("harness");
+    e.apply(json!([default, t.clone()])).ok();
+    e.reconcile().ok();
+    assert_eq!(e.status("t1")["execution"]["harness"], "codex");
+    e.fleet(&["delete", "taskconfig", "default"]).ok();
+    // Its saved launch holds the harness: a later update is not refused.
+    t["spec"]["dispatch"] = json!(false);
+    e.apply(t).ok();
+    assert_eq!(e.get("t1")["spec"]["dispatch"], false);
+    assert_eq!(e.status("t1")["execution"]["harness"], "codex");
+}

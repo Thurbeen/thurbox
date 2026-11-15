@@ -6,7 +6,7 @@
 mod bootstrap;
 mod config;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -534,6 +534,13 @@ fn run(cli: Cli) -> Result<(), Failure> {
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
         let written = bootstrap::init(&path, &root, cli.data_dir.as_deref()).map_err(fail)?;
         let config = Config::load(&path).map_err(fail)?;
+        let data_dir = cli
+            .data_dir
+            .clone()
+            .or(config.data.dir.clone())
+            .or_else(default_data_dir)
+            .ok_or_else(|| fail("no data directory: set data.dir in the config file"))?;
+        default_task_config(&FileStore::open(&data_dir)?)?;
         // The profiles `fleet doctor` checks: the bundled ones, then the
         // user's beside this config.
         let harnesses = harness_dir(Some(&path));
@@ -1741,6 +1748,24 @@ fn runtime_places(config: &Config) -> Vec<Value> {
     rows
 }
 
+/// Write the TaskConfig a Task with no `configRef` takes, when the store
+/// holds none: an idle session pauses after 30 minutes. One that is there is
+/// the user's, and stays as it is.
+fn default_task_config(store: &dyn Store) -> Result<(), Failure> {
+    use fleet_api::config::{DEFAULT_PAUSE_AFTER_MS, DEFAULT_TASK_CONFIG, TASK_CONFIG};
+    let obj: Object = serde_json::from_value(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": TASK_CONFIG,
+        "metadata": {"name": DEFAULT_TASK_CONFIG},
+        "spec": {"pauseAfterMs": DEFAULT_PAUSE_AFTER_MS},
+    }))
+    .map_err(|e| fail(e.to_string()))?;
+    match fleet_manager::verbs::apply(store, obj, &BTreeSet::new(), true) {
+        Ok(_) | Err(StoreError::AlreadyExists(_)) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// What `fleet init` set up and what comes next, in a few lines: the
 /// config, the places sessions run in, the coding agents on PATH, and the
 /// commands that follow. A first-time user reads this, so it names the
@@ -2106,35 +2131,61 @@ fn cmd_apply(
             serde_json::from_value(item).map_err(|e| fail(format!("item {i}: {e}")))?;
         objs.push(obj);
     }
+    // The TaskConfig a Task takes its defaults from, as the manager
+    // resolves it: the one `configRef` names, else `default`. Of several of
+    // one name in the batch, the last is the one stored; else the store's.
+    let task_config = |obj: &Object| {
+        let name = obj.spec["configRef"]["name"]
+            .as_str()
+            .unwrap_or(fleet_api::config::DEFAULT_TASK_CONFIG);
+        objs.iter()
+            .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
+            .cloned()
+            .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
+                Observation::Known(found) => found.filter(|o| !o.is_deleting()),
+                Observation::Unknown { .. } => None,
+            })
+    };
+    // A Task with no harness and no `configRef` takes `default`'s, or the
+    // one its saved launch froze. One whose `configRef` names a TaskConfig
+    // not there yet is checked at its launch.
+    let launched = |obj: &Object| match store.get(fleet_api::task::KIND, &obj.metadata.name) {
+        Observation::Known(Some(stored)) => store.launch(&stored).is_ok_and(|l| l.is_some()),
+        _ => false,
+    };
+    if let Some(obj) = objs.iter().find(|obj| {
+        obj.kind == fleet_api::task::KIND
+            && obj.spec.get("harness").is_none()
+            && obj.spec.get("configRef").is_none()
+            && task_config(obj).is_none_or(|c| c.spec["harness"].as_str().is_none())
+            && !launched(obj)
+    }) {
+        return Err(Failure {
+            code: exit::ERROR,
+            message: format!(
+                "{}: spec.harness is missing, and the TaskConfig default gives none",
+                obj.key()
+            ),
+            hint: Some("give the Task a harness, or a harness to the TaskConfig default".into()),
+        });
+    }
     // `local` naming no place is refused here, by name: the runtime would
     // only read the place as unreachable. The host is the manager's rule
-    // (`effective_host`); a TaskConfig not there yet leaves it untold. Of
-    // several of one name in the batch, the last is the one stored.
+    // (`effective_host`), from the TaskConfig the Task takes. A named
+    // TaskConfig not there yet leaves it untold; with no `default`, the
+    // host is `local`.
     let on_local = |obj: &Object| {
         if obj.kind != fleet_api::task::KIND {
             return false;
         }
-        let config_host = match obj
-            .spec
-            .get("host")
-            .is_none()
-            .then(|| obj.spec["configRef"]["name"].as_str())
-        {
-            Some(Some(name)) => {
-                let config = objs
-                    .iter()
-                    .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
-                    .cloned()
-                    .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
-                        Observation::Known(found) => found,
-                        Observation::Unknown { .. } => None,
-                    });
-                match config {
-                    Some(config) => config.spec["host"].as_str().map(str::to_string),
-                    None => return false,
-                }
+        let config_host = if obj.spec.get("host").is_some() {
+            None
+        } else {
+            match task_config(obj) {
+                Some(config) => config.spec["host"].as_str().map(str::to_string),
+                None if obj.spec.get("configRef").is_some() => return false,
+                None => None,
             }
-            _ => None,
         };
         fleet_api::task::effective_host(&obj.spec, config_host.as_deref())
             == fleet_api::task::LOCAL_HOST

@@ -26,9 +26,10 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | --- | --- | --- |
 | `manifest` | yes | protocol version, the verbs supported and, from version 2, each place's readiness |
 | `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in the workspace made under that key |
-| `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}` |
+| `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}`, and `Paused` with the `pause` verb |
 | `stop` | yes | a process already gone counts as stopped; `release: true` also removes the key's workspace |
-| `list` | no | every key the runtime holds a process or a workspace for, for the collector |
+| `pause` | no | stops the key's process and keeps the key: `inspect` answers `Paused` until the next `start` or `stop` ([pause](#pause)) |
+| `list` | no | every key the runtime holds a process, a pause or a workspace for, for the collector |
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process, title |
 | `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
@@ -39,7 +40,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | `branches` | no | a repository's branches on the place and its default ([browse and branches](#browse-and-branches)) |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
-journal: pause is `stop`, resume and revive are `start` with the harness's
+journal: pause is `pause`, resume and revive are `start` with the harness's
 resume argv, idle comes from agent hooks, delivery is proven by the agent's
 prompt hook. Fleet reads an agent's state off the `capture` screen with its
 own rules, below the hooks; the runtime only returns the screen.
@@ -71,8 +72,9 @@ Unknown.
 | --- | --- | --- |
 | `manifest` | — | `{"protocol": 1, "verbs": [...]}`, and `workspace: {schemes, survivesStop}` with the `workspace` verb |
 | `start` | `key`, `argv`, `env` (object), `dir` (absolute, optional) | `{"started": {"id", "adopted"}}`, or `{"failed": {"why"}}` when nothing can have started, such as a missing multiplexer |
-| `inspect` | `key` | `"none"`, `{"running": {"id"}}` or `{"exited": {"id", "code"}}`, `code` null for a signal |
+| `inspect` | `key` | `"none"`, `{"running": {"id"}}`, `{"exited": {"id", "code"}}`, `code` null for a signal, or `"paused"` |
 | `stop` | `key`, `release` (optional) | `"stopped"`, whether or not a process was there |
+| `pause` | `key` | `"paused"`, or `"none"` when no process holds the key and the key is not paused |
 | `list` | — | `{"keys": [...]}` |
 | `input` | `key`, `text`, `submit` | `"sent"`, or `"none"` when no process holds the key |
 | `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground", "title"}}`, or `"none"`; `title` is the one the program set (OSC 0 or 2), and a runtime that cannot read it omits it |
@@ -147,8 +149,10 @@ What Fleet's `exec` kind does with the answers:
   with the profile's resume argv on the conversation the hooks reported. Fleet
   first marks the restart in the signal file, so readiness and trust wait for
   the new process's own report;
-- `none` proves nothing about a pause, so Fleet never pauses a session on this
-  kind: version 1 has no stop that keeps the key.
+- `paused` is a paused session, and resume is `start` with the resume argv,
+  as for a revive. Fleet pauses a session only on a runtime whose
+  `manifest` declares `pause`. On any other runtime, whether a session is
+  paused stays Unknown, and Unknown never pauses.
 
 Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`.
 Fleet reads it directly on a local host, so a local runtime needs nothing for
@@ -184,6 +188,10 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
   `feat` lists both, in any order, with `main` as its default, and a directory inside a
   checkout answers `failed`. The check makes the repository with this
   machine's `git`;
+- with `pause` declared: a pause of a running key answers `paused`, and
+  then `inspect` answers `paused` and `list` names the key; a pause again
+  answers `paused`; a `start` runs the key again; a pause of a key nothing
+  holds answers `none`; and a `stop` of a paused key leaves `none`;
 - with `shell` declared: a key no process holds answers `none`, a running
   key answers a `stream` or a `tty` argv on two calls in a row, and after a
   stop the key answers `none`. The check does not open the shell, so it
@@ -195,6 +203,41 @@ The cases start `sleep` and `sh` in the runtime's place. CI runs it, through
 runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
 stops with a kernel lock in tmux's private socket directory, taken with
 `flock(1)` or else `perl`, which a killed holder releases.
+
+#### Pause
+
+`pause` stops the key's process and keeps the key, so a later `start`
+resumes the session in the same workspace. Fleet uses it to free the memory
+and the processor time of an idle agent
+([pausing an idle session](../fleet/controllers/task.md#pausing-an-idle-session)).
+
+- After a pause, `inspect` answers `"paused"` and `list` names the key.
+  `input`, `capture`, `attach` and `shell` answer `"none"`: no process holds
+  the key.
+- The workspace stays as it is.
+- A `start` of a paused key starts its `argv`, and the key is no longer
+  paused. A `stop` of a paused key leaves `none`, and `release: true`
+  removes its workspace as for any key.
+- A pause of a paused key answers `"paused"`. A pause of a key that no
+  process holds answers `"none"`.
+- The runtime knows no harness and no conversation: the argv that resumes
+  the conversation is Fleet's, in the `start` that follows.
+
+`runtime-mux` pauses a key in three steps:
+
+1. It closes the key's shell.
+2. It writes a mark for the key, an empty file
+   `runtime-mux-<socket>.paused-<key>` beside the server's lock.
+3. It stops the agent's window.
+
+A pause takes the server's lock, as a start and a stop do. While the
+agent's window is there, it answers for the key, so a pause cut short
+before step 3 reads as running. `inspect` answers `paused` for a key with a
+mark, no agent window and no shell. A mark with a shell left answers
+Unknown, and the next pause closes the shell. A `start` removes the mark
+after it makes the window, and a `stop` removes it after it stops the
+process. The mark is in the private directory tmux keeps the socket in, so
+it goes when that directory goes, as the server's windows do.
 
 ### Places (protocol version 2)
 
@@ -360,7 +403,7 @@ terminal is a full runtime:
 - the optional verbs add features and nothing more: without `input`,
   `fleet send` waits for the next start; without `capture`, no screen
   checks; without `attach`, no live view, and thurbox shows the Task without
-  a terminal.
+  a terminal; without `pause`, an idle session keeps running.
 
 The default install configures `runtime-mux` and nothing else. With no
 multiplexer on the machine, Fleet does not fall back to another runtime: the
@@ -487,8 +530,7 @@ The `manifest` declares what Fleet may rely on:
 
 - `workspace.schemes`: the URL schemes the runtime handles, such as
   `git+https`, `git+ssh`, `git+file`, `file`.
-- `workspace.survivesStop`: the files outlive the process. When false, Fleet
-  never pauses an idle session on that runtime, because pause is stop.
+- `workspace.survivesStop`: the files outlive the process.
 
 A runtime without `workspace` runs only Tasks with an empty list.
 

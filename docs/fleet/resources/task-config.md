@@ -13,6 +13,31 @@ passive data. It has no controller and no status.
 Write a TaskConfig when several Tasks run the same way. Each Task then names
 it in `spec.configRef`, and keeps only its own brief, workspace and outputs.
 
+### The default TaskConfig
+
+A Task with no `configRef` takes its defaults from the TaskConfig named
+`default`, when the store holds one. `fleet init` writes it:
+
+```json
+{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "TaskConfig",
+  "metadata": {"name": "default"},
+  "spec": {"pauseAfterMs": 1800000}
+}
+```
+
+So an idle session pauses after 30 minutes
+([pausing an idle session](../controllers/task.md#pausing-an-idle-session)).
+
+- A Task's own field overrides it, as for any TaskConfig.
+- A Task with a `configRef` takes that TaskConfig instead, and nothing from
+  `default`.
+- A repeated `fleet init` keeps `default` as it is, and writes it again when
+  it is gone. To never pause, apply `default` with no `pauseAfterMs`.
+- A Task takes `default` when it first launches. A Task launched before
+  `default` existed keeps its launch.
+
 ## Example
 
 ```json
@@ -62,7 +87,7 @@ change applies to Tasks that resolve their launch after it.
 | `model` | string | no | The default model. A runtime under `[runtimes]` passes no model to its harness, and refuses a Task that has one. |
 | `envFrom` | array of `{name}` | no | [EnvProviders](env-provider.md), in merge order. |
 | `env` | object of strings | no | Environment values. They override every EnvProvider value. |
-| `pauseAfterMs` | integer, at least 1 | no | Pause a Task's session once its agent was idle this long. Absent: never. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
+| `pauseAfterMs` | integer, at least 1 | no | Pause a Task's session once its agent was idle this long. Absent: never. A session on a runtime that cannot pause, of a harness Fleet cannot resume, or whose hooks report no activity never pauses either. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 
 `harness`, `host` and `model` may not be empty, contain NUL or start with
 `-`. Any other field is refused.
@@ -93,7 +118,7 @@ that already resolved it continues.
 ### Resolution and freezing
 
 ```text
-Task with configRef or env, dispatch: true
+Task with configRef, env or a default TaskConfig, dispatch: true
   -> check every TaskConfig and EnvProvider reference
   -> resolve the sources through the store and the runtime port
   -> write a private snapshot, launches/<Task uid>.json, under the lease
@@ -122,7 +147,7 @@ an argument list.
 - A TaskConfig names [EnvProviders](env-provider.md) in `spec.envFrom`.
 - A TaskConfig is a resource, separate from
   [`fleet.toml`](../configuration.md#native-fleet-configuration-fleettoml).
-  There is no global TaskConfig.
+  A Task with no `configRef` takes [the default TaskConfig](#the-default-taskconfig).
 
 ## Commands
 

@@ -64,7 +64,8 @@ fn main() {
     let mut server_turn = None;
     // A shell call makes the key's shell window the way a start makes its
     // agent's, so it takes the same turn.
-    if matches!(verb.as_str(), "start" | "stop" | "shell") {
+    // A pause stops the process as a stop does.
+    if matches!(verb.as_str(), "start" | "stop" | "shell" | "pause") {
         match take(&format!("runtime-mux-{socket}.lock")) {
             Ok(file) => server_turn = Some(file),
             Err(answer) => {
@@ -73,6 +74,7 @@ fn main() {
             }
         }
     }
+    let pauses = pauses(&socket);
     let settings = MuxSettings {
         socket: Some(socket),
         ..MuxSettings::default()
@@ -80,6 +82,7 @@ fn main() {
     let registry = runtime_mux::wiring::local_only(&settings);
     let answer = protocol::serve_with(
         registry.default_backend().as_ref(),
+        &pauses,
         &verb,
         &request,
         &view_argv(&settings),
@@ -188,16 +191,47 @@ fn view(args: Vec<String>) -> Result<(), String> {
     served
 }
 
+/// The marks of the keys paused on the server of `socket`, beside its lock:
+/// they go with the directory the server keeps its socket in.
+fn pauses(socket: &str) -> protocol::Pauses {
+    let (dir, prefix) = private_dir();
+    protocol::Pauses::new(
+        dir.map_err(|e| format!("no directory for the pause marks: {e}")),
+        format!("{prefix}runtime-mux-{socket}.paused-"),
+    )
+}
+
 /// The lock file `name`, held until the returned file is dropped: the one
-/// serializing starts and stops on a server, or one key's. It sits in the private directory tmux keeps
-/// its sockets in, `<TMUX_TMPDIR or /tmp>/tmux-<uid>` and never under
-/// `TMPDIR`, so every caller reaching one server takes one lock, a server in
-/// another directory has its own, and no other user can plant a link at its
-/// name. The directory is made `0700` when missing and refused, as tmux
-/// refuses it, when another user owns it or can write to it.
-#[cfg(unix)]
+/// serializing starts and stops on a server, or one key's.
 fn lock(name: &str) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    let (dir, prefix) = private_dir();
+    let path = dir?.join(format!("{prefix}{name}"));
+    let mut options = std::fs::OpenOptions::new();
+    // Appending never truncates.
+    options.create(true).append(true);
+    // A link at the name is refused.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+    let file = options.open(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+/// The directory the locks and the pause marks sit in, and the prefix of
+/// their names. It is the private directory tmux keeps its sockets in,
+/// `<TMUX_TMPDIR or /tmp>/tmux-<uid>` and never under `TMPDIR`, so every
+/// caller reaching one server takes one lock, a server in another directory
+/// has its own, and no other user can plant a link at a name. The directory
+/// is made `0700` when missing and refused, as tmux refuses it, when another
+/// user owns it or can write to it.
+#[cfg(unix)]
+fn private_dir() -> (std::io::Result<std::path::PathBuf>, String) {
+    (tmux_dir(), String::new())
+}
+
+#[cfg(unix)]
+fn tmux_dir() -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let base = std::env::var_os("TMUX_TMPDIR")
         .filter(|d| !d.is_empty())
         .map_or_else(
@@ -218,24 +252,13 @@ fn lock(name: &str) -> std::io::Result<std::fs::File> {
             dir.display()
         )));
     }
-    // Appending never truncates, and a link at the name is refused.
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(dir.join(name))?;
-    file.lock()?;
-    Ok(file)
+    Ok(dir)
 }
 
-/// The lock on a host without tmux's private socket directory.
+/// On a machine without tmux's private socket directory: the temporary
+/// directory, each name prefixed with the user's.
 #[cfg(not(unix))]
-fn lock(name: &str) -> std::io::Result<std::fs::File> {
+fn private_dir() -> (std::io::Result<std::path::PathBuf>, String) {
     let user = std::env::var("USERNAME").unwrap_or_default();
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(std::env::temp_dir().join(format!("{user}-{name}")))?;
-    file.lock()?;
-    Ok(file)
+    (Ok(std::env::temp_dir()), format!("{user}-"))
 }

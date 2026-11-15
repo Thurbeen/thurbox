@@ -304,3 +304,20 @@ fn a_resume_whose_answer_was_lost_is_read_back_and_never_repeated() {
     assert_eq!(texts.len(), 3, "{texts:#?}");
     assert_eq!(texts[2], "next message");
 }
+
+#[test]
+fn an_agent_fleet_cannot_resume_is_never_paused() {
+    // aider has no resume argv: a stop would end its conversation.
+    let mut aider = task("t1");
+    aider["spec"]["harness"] = json!("aider");
+    let env = setup("pause-aider", vec![aider]);
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    set_activity(&env, Some("idle"));
+    for _ in 0..3 {
+        env.reconcile().ok();
+    }
+    assert!(env.get("t1")["status"]["idleSince"].is_null());
+    assert_eq!(env.calls("pause"), 0);
+    assert!(!stopped(&env));
+}

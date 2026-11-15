@@ -122,8 +122,10 @@ it through bounded processes; the fake runtime provides persisted fault injectio
 isolated tests. Runtime operations report their worst-case duration so the
 CLI can reject a lease too short to outlast them.
 
-The runtime reports what an agent is doing, Active or Idle, and pauses or
-resumes a session on request. It decides nothing. TaskController decides
+The agent's hooks report what it is doing, Active or Idle. The runtime
+pauses or resumes a session on request: a pause stops the agent's process
+and keeps its key, and a resume starts it again on its conversation. It
+decides nothing. TaskController decides
 when to pause an idle session and when to resume it. A runtime that cannot
 pause answers Unknown, and Unknown never pauses. See
 [pausing an idle session](controllers/task.md#pausing-an-idle-session).

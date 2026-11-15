@@ -21,6 +21,9 @@ authenticate each harness your Tasks name before `fleet up`; that foreground
 manager keeps all due Tasks progressing and creates no Task of its own.
 Ctrl-C retains sessions and releases its lease; after a crash, wait for lease
 expiry before reconnecting. A repeated `fleet init` keeps the existing config.
+`init` also writes the TaskConfig `default`, which pauses a Task's idle
+session after 30 minutes; a Task's `pauseAfterMs` or `configRef` overrides
+it.
 
 Run `fleet version --json` before applying Tasks. Apply each Task with
 `fleet apply -f FILE`, keeping `dispatch` false until it has been inspected.

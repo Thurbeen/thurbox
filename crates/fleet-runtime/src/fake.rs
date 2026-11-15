@@ -759,10 +759,6 @@ impl Runtime for FakeRuntime {
         })
     }
 
-    fn can_pause(&self) -> bool {
-        true
-    }
-
     fn paused(&self, session: &SessionRef) -> Observation<bool> {
         self.probe("paused", |s| match live(s, &session.key) {
             Some(x) => Observation::Known(x.paused),

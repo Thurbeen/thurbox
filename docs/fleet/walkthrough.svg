@@ -41,7 +41,7 @@
 <text x="83" y="137" font-size="12.5">1. fleet apply Task (dispatch: true)</text>
 <path class="arrow" d="M347 178 H219"/>
 <rect class="background" x="218" y="158" width="287" height="17" rx="3"/>
-<text x="221" y="171" font-size="12.5">2. with configRef or env: status.execution</text>
+<text x="221" y="171" font-size="12.5">2. TaskConfig or env: status.execution</text>
 <path class="arrow" d="M355 212 H483"/>
 <rect class="background" x="356" y="192" width="234" height="17" rx="3"/>
 <text x="359" y="205" font-size="12.5">3. Materialize: make the workspace</text>
