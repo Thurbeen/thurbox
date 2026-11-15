@@ -1,0 +1,56 @@
+---
+layout: docs.njk
+title: 'What is thurbox — thurbox Docs'
+description: 'thurbox is the terminal interface on top of one or more Fleets: one list of sessions, the live agent terminal beside it, and every pane a Lua file.'
+currentPage: 'thurbox'
+breadcrumb: 'What is thurbox'
+---
+<h1>What is thurbox</h1>
+<p>
+  thurbox is a terminal interface on top of one or more <a href="fleet.html">Fleets</a>. It shows
+  every session of every Fleet in one list, with the agent's live terminal beside it, and lets you
+  create, switch, message and delete sessions from the keyboard.
+</p>
+<ul>
+  <li>
+    <strong>Fleet runs the sessions.</strong> thurbox keeps no session state: every session is a
+    Fleet Task. Quit thurbox and the agents keep running.
+  </li>
+  <li>
+    <strong>One list, several Fleets.</strong> Follow a Fleet on this machine and others over ssh
+    or WSL, listed in <code>~/.config/thurbox/settings.toml</code>
+    (<a href="configuration.html#fleets">Fleets</a>).
+  </li>
+  <li>
+    <strong>The interface is yours.</strong> Every pane, the session list included, is a Lua file
+    you can move, turn off, replace or write (<a href="interface.html">The interface</a>).
+  </li>
+</ul>
+
+<h2 id="first-steps">
+  First steps
+  <a href="#first-steps" class="heading-anchor">#</a>
+</h2>
+<ol>
+  <li><a href="installation.html">Install thurbox</a>. The install script installs Fleet with it.</li>
+  <li>
+    Run <code>thurbox</code>. On a machine with no Fleet config, it runs <code>fleet init</code>
+    first, and it starts <code>fleet up</code> on this machine when no manager runs.
+  </li>
+  <li>
+    Press <kbd>Ctrl</kbd>+<kbd>N</kbd>: pick a place, a repository, a name and an agent. The
+    <a href="tutorial.html">tutorial</a> walks through it.
+  </li>
+</ol>
+
+<h2 id="what-it-keeps">
+  What thurbox keeps
+  <a href="#what-it-keeps" class="heading-anchor">#</a>
+</h2>
+<p>
+  Only how you look at things: session order, seen marks, bookmarks, theme, keybindings and
+  settings, as plain files under <code>~/.config/thurbox/</code> and
+  <code>~/.local/share/thurbox/</code>. Everything about a session is
+  Fleet's. <code>thurbox-cli</code> covers the interface's own files: <code>doctor</code>,
+  <code>config</code>, <code>plugin</code>, <code>ui</code>, <code>version</code> and more.
+</p>

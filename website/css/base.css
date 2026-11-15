@@ -118,7 +118,7 @@ li a:not([class]) {
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
-  text-decoration-color: rgb(110, 255, 110, 0.5);
+  text-decoration-color: var(--link-underline);
 }
 
 p a:not([class]):hover,
@@ -154,6 +154,13 @@ code {
   padding: 0.15em 0.4em;
   border-radius: var(--border-radius-sm);
   color: var(--cyan);
+}
+
+/* A long command in prose (an install URL) breaks rather than pushing a phone
+   page sideways; overflow-wrap only breaks a word that cannot fit. */
+p code,
+li code {
+  overflow-wrap: anywhere;
 }
 
 pre {
@@ -209,8 +216,8 @@ hr {
 }
 
 ::selection {
-  background: rgb(255, 92, 84, 0.4);
-  color: #fff;
+  background: var(--selection-bg);
+  color: var(--selection-text);
 }
 
 /* Keyboard focus — visible ring on every interactive element */
@@ -229,7 +236,7 @@ hr {
   font-family: var(--font-mono);
   font-size: 0.85rem;
   background: var(--green);
-  color: #0a2e0a;
+  color: var(--on-green);
 }
 
 .skip-link:focus {

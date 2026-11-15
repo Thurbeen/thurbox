@@ -179,20 +179,16 @@
 
 .btn-primary {
   background: var(--green);
-  color: #0a2e0a;
+  color: var(--on-green);
   border-color: var(--green);
-  box-shadow:
-    var(--bevel),
-    0 0 10px rgb(110, 255, 110, 0.5),
-    inset 0 0 6px rgb(255, 255, 255, 0.25);
+  box-shadow: var(--bevel), var(--glow-btn);
 }
 
 .btn-primary:hover {
-  background: #8cff8c;
-  color: #0a2e0a;
-  box-shadow:
-    0 0 18px rgb(110, 255, 110, 0.85),
-    inset 0 0 8px rgb(255, 255, 255, 0.35);
+  background: var(--green-hover);
+  border-color: var(--green-hover);
+  color: var(--on-green);
+  box-shadow: var(--glow-btn-hover);
   transform: translateY(-1px);
 }
 
@@ -223,9 +219,7 @@
 
 .card:hover {
   border-color: var(--doom-red);
-  box-shadow:
-    var(--bevel-glow-red),
-    0 4px 14px rgb(0, 0, 0, 0.5);
+  box-shadow: var(--bevel-glow-red), var(--shadow-panel);
 }
 
 /* Monochrome terminal glyph in a beveled tile — shared by the landing feature
@@ -294,9 +288,7 @@
   background: var(--bg-code);
   border: 1px solid var(--hud-edge);
   overflow: hidden;
-  box-shadow:
-    var(--bevel),
-    0 8px 30px rgb(0, 0, 0, 0.5);
+  box-shadow: var(--bevel), var(--shadow-panel);
 }
 
 .terminal-header {
@@ -338,9 +330,7 @@
   background: var(--bg-code);
   border: 1px solid var(--hud-edge);
   overflow: hidden;
-  box-shadow:
-    var(--bevel),
-    0 8px 30px rgb(0, 0, 0, 0.5);
+  box-shadow: var(--bevel), var(--shadow-panel);
   margin-bottom: var(--space-md);
 }
 
@@ -354,6 +344,10 @@
 }
 
 .code-block-lang {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--text-muted);
@@ -619,7 +613,7 @@
   width: 32px;
   height: 32px;
   background: var(--green);
-  color: #0a2e0a;
+  color: var(--on-green);
   font-family: var(--font-display);
   font-weight: 400;
   font-size: 0.7rem;
@@ -805,9 +799,7 @@
 .terminal-frame:hover,
 .tui-demo:hover,
 .code-block:hover {
-  box-shadow:
-    var(--bevel-glow-red),
-    0 8px 30px rgb(0, 0, 0, 0.5);
+  box-shadow: var(--bevel-glow-red), var(--shadow-panel);
 }
 
 @media (prefers-reduced-motion: reduce) {

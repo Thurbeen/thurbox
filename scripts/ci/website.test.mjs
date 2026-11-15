@@ -114,9 +114,33 @@ test('plugin catalog lists Fleet Lens in place of the Fleet v1 extension', () =>
   );
 });
 
-test('homepage links each official plugin from the interface section, and stays light on commands', () => {
+test('homepage presents Fleet and thurbox apart, links each official plugin, and stays light on commands', () => {
   const home = built('index.html');
-  const section = home.querySelector('#customizable');
+  const install = 'curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh';
+  // One string per code block, one line per command.
+  const code = (node) =>
+    node.querySelectorAll('pre').map((pre) => parse(pre.innerHTML).textContent.trim().split(/\s*\n\s*/));
+
+  // Fleet stands on its own: its own band, its own first steps, no thurbox in them.
+  const fleet = home.querySelector('#fleet');
+  assert.match(text(fleet), /works on its own/i, 'Fleet is said to run without thurbox');
+  const fleetStart = code(home.querySelector('#fleet-start'));
+  assert.equal(fleetStart.length, 1);
+  assert.deepEqual(fleetStart[0], [install, 'fleet init', 'fleet up']);
+  // Every fleet subcommand the band shows is a variant of the CLI's Command enum.
+  const cli = readFileSync('crates/fleet-cli/src/main.rs', 'utf8');
+  for (const line of code(fleet).flat().filter((l) => l.startsWith('fleet '))) {
+    const verb = line.split(' ')[1];
+    const variant = verb[0].toUpperCase() + verb.slice(1);
+    assert.match(cli, new RegExp(`^    ${variant}\\b`, 'm'), `${line}: fleet ${verb} exists`);
+  }
+
+  // thurbox: the full install, then the program.
+  const thurboxStart = code(home.querySelector('#thurbox-start'));
+  assert.deepEqual(thurboxStart, [[install, 'thurbox']]);
+  assert.ok(home.querySelector('#thurbox video'), 'the demo is in the thurbox band');
+
+  const section = home.querySelector('#plugins');
   const plugins = ['info-panel', 'code-review', 'auto-continue', 'fleetlens', 'doom'];
   for (const name of plugins) {
     const repo = `https://github.com/Thurbeen/thurbox-${name}`;
@@ -125,11 +149,24 @@ test('homepage links each official plugin from the interface section, and stays 
     assert.ok(text(link.parentNode).trim().length > `thurbox-${name}`.length, `${name} says what it does`);
   }
   assert.ok(section.querySelector('a[href="plugins.html"]'), 'points at the full catalog');
+  assert.ok(home.querySelector('#thurbox #plugins'), 'the plugins sit under thurbox');
   assert.doesNotMatch(home.innerHTML, /thurbox-discord|thurbox-plugin-orchestrator|thurbox-ask/);
-  // An install line is enough for a first visit; the rest lives in the docs.
+  // The first steps and one short Fleet example are the only code blocks.
   const codeBlocks = home.querySelectorAll('pre').filter((pre) => /language-/.test(pre.innerHTML));
-  assert.equal(codeBlocks.length, 3, 'the install lines are the only code blocks');
+  assert.equal(codeBlocks.length, 3, 'two install blocks and the Fleet example');
   assert.doesNotMatch(text(home), /thurbox-cli (plugin|session) /);
   assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
-  assert.match(text(home.querySelector('#how-it-works')), /Run thurbox\. The session/, 'no space before the period');
+  assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
+  const fit = home.querySelector('#how-they-fit');
+  assert.ok(fit.querySelector('img[src="assets/overview.svg"]'), 'how they fit shows the overview');
+  assert.doesNotMatch(text(fit), / \./, 'no space before a period');
+});
+
+test('the docs sidebar gives Fleet and thurbox a group each', () => {
+  const groups = built('docs/index.html').querySelectorAll('.docs-sidebar h4').map((h) => h.textContent.trim());
+  assert.deepEqual(groups.slice(0, 2), ['Fleet', 'thurbox']);
+  assert.ok(!existsSync('_site/docs/features.html'), 'features are split per product');
+  for (const page of ['fleet', 'fleet-install', 'fleet-commands', 'fleet-features', 'thurbox', 'thurbox-features']) {
+    assert.ok(existsSync(`_site/docs/${page}.html`), `docs/${page}.html exists`);
+  }
 });

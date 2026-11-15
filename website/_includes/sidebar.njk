@@ -1,36 +1,29 @@
+{#- Two products, two groups: Fleet (the engine, usable on its own) and thurbox
+    (the interface on top of one or more Fleets), then the pages about both. -#}
 {%- set sections = [
-  { heading: "Getting Started", links: [
-    { slug: "installation", href: "installation.html", label: "Installation" },
+  { heading: "Fleet", links: [
+    { slug: "fleet", href: "fleet.html", label: "What is Fleet" },
+    { slug: "fleet-install", href: "fleet-install.html", label: "Install" },
+    { slug: "fleet-commands", href: "fleet-commands.html", label: "init, up and apply" },
+    { href: "fleet.html#resources-and-controllers", label: "Resources and controllers" },
+    { href: "fleet.html#places-and-runtimes", label: "Places and runtimes" },
+    { slug: "agents", href: "agents.html", label: "Agents" },
+    { slug: "orchestration", href: "orchestration.html", label: "Orchestration" },
+    { slug: "fleet-features", href: "fleet-features.html", label: "Features" }
+  ]},
+  { heading: "thurbox", links: [
+    { slug: "thurbox", href: "thurbox.html", label: "What is thurbox" },
+    { slug: "installation", href: "installation.html", label: "Install" },
+    { slug: "interface", href: "interface.html", label: "The interface" },
+    { slug: "keybindings", href: "keybindings.html", label: "Keybindings" },
+    { slug: "configuration", href: "configuration.html", label: "Configuration" },
+    { slug: "thurbox-features", href: "thurbox-features.html", label: "Features" }
+  ]},
+  { heading: "Both", links: [
     { slug: "tutorial", href: "tutorial.html", label: "Tutorial" },
     { slug: "recipes", href: "recipes.html", label: "Recipes" },
-    { slug: "orchestration", href: "orchestration.html", label: "Orchestration" },
     { slug: "comparison", href: "comparison.html", label: "Comparison" },
-    { slug: "faq", href: "faq.html", label: "FAQ" }
-  ]},
-  { heading: "Features", links: [
-    { href: "features.html#session-orchestration", label: "Sessions" },
-    { href: "features.html#agent-definitions", label: "Agent Definitions" },
-    { href: "features.html#git-worktrees", label: "Git Worktrees" },
-    { href: "features.html#fleets-and-places", label: "Fleets and Places" },
-    { href: "features.html#parent-sessions", label: "Parent Sessions" },
-    { href: "features.html#inter-session-messages", label: "Inter-Session Messages" },
-    { href: "features.html#global-search", label: "Global Search" },
-    { href: "features.html#themes", label: "Themes" },
-    { href: "features.html#os-notifications", label: "OS Notifications" },
-    { href: "features.html#mouse-navigation", label: "Mouse Navigation" },
-    { href: "features.html#feature-flags", label: "Feature Flags" },
-    { href: "features.html#session-persistence", label: "Session Persistence" },
-    { href: "features.html#headless-cli", label: "Headless CLI" }
-  ]},
-  { heading: "Agents", links: [
-    { slug: "agents", href: "agents.html", label: "Agents" }
-  ]},
-  { heading: "Configurations", links: [
-    { slug: "configuration", href: "configuration.html", label: "Configuration" },
-    { slug: "keybindings", href: "keybindings.html", label: "Keybindings" }
-  ]},
-  { heading: "Reference", links: [
-    { slug: "interface", href: "interface.html", label: "The interface" },
+    { slug: "faq", href: "faq.html", label: "FAQ" },
     { slug: "architecture", href: "architecture.html", label: "Architecture" }
   ]}
 ] -%}
@@ -39,9 +32,6 @@
   <h4>{{ section.heading }}</h4>
   <ul>
     {%- for link in section.links %}
-    {%- if link.subheading %}
-    <li class="nav-subheading">{{ link.subheading }}</li>
-    {%- else %}
     <li>
       <a
         href="{{ link.href }}"
@@ -49,11 +39,7 @@
         >{{ link.label }}</a
       >
     </li>
-    {%- endif %}
     {%- endfor %}
   </ul>
   {%- endfor %}
-  {#- The "On This Page" list used to be restated here from each page's
-      `onThisPage` front matter. It is now derived from the content's heading ids
-      by the docs-toc transform and rendered as its own column (.docs-toc). -#}
 </aside>

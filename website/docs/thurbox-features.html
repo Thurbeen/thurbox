@@ -1,13 +1,17 @@
 ---
 layout: docs.njk
-title: 'Features — Thurbox Docs'
-description: 'Thurbox features: a fully customizable Lua-plugin interface, persistent coding-agent sessions, agent definitions, git worktrees, several Fleets and places, and a headless CLI.'
-currentPage: 'features'
-breadcrumb: 'Features'
+title: 'thurbox features — thurbox Docs'
+description: 'thurbox features: a Lua-plugin interface you can rearrange, one session list across Fleets, global search, the responsive layout, themes, OS notifications, mouse navigation and settings.'
+currentPage: 'thurbox-features'
+breadcrumb: 'thurbox features'
 ---
-<h1>Features</h1>
+<h1>thurbox features</h1>
+<p>
+  What the interface adds on top of Fleet. For what runs the sessions, see
+  <a href="fleet-features.html">Fleet features</a>.
+</p>
 
-          <h2 id="customizable-interface">
+<h2 id="customizable-interface">
             A customizable interface
             <a href="#customizable-interface" class="heading-anchor">#</a>
           </h2>
@@ -99,26 +103,21 @@ breadcrumb: 'Features'
             line.
           </p>
 
-          <h2 id="session-orchestration">
-            Sessions
-            <a href="#session-orchestration" class="heading-anchor">#</a>
+          <h2 id="session-list">
+            The session list
+            <a href="#session-list" class="heading-anchor">#</a>
           </h2>
           <div class="info-box warning">
             <p>
               <strong>Heads up:</strong>
-              The session list display is not yet perfect and will keep improving &mdash; what it
-              can show is heavily dependent on the signals each agent CLI exposes.
+              what the session list can show depends on the signals each agent CLI exposes.
             </p>
           </div>
           <p>
-            Run multiple coding-agent CLIs side-by-side, each in its own multiplexer pane. A session runs
-            one agent (any harness Fleet has a profile for), each with its own default
-            config. Every session is a Fleet Task: Fleet starts it, keeps it running and reports its
-            status. Sessions persist across crashes,
-            restarts,
-            and even
-            multiple concurrent Thurbox instances &mdash; the multiplexer keeps them alive in the background.
-            The multiplexer is tmux on POSIX and psmux on native Windows.
+            Every session of every Fleet thurbox follows, in one list, with the agent's live
+            terminal beside it. Each session is a Fleet Task
+            (<a href="fleet-features.html#sessions-as-tasks">Sessions as Tasks</a>), so quitting
+            thurbox leaves it running.
           </p>
           <ul>
             <li>
@@ -126,8 +125,8 @@ breadcrumb: 'Features'
               <code>Ctrl+N</code>
               : Fleet &rarr; place &rarr; repository &rarr; name and branch &rarr; agent. The Fleet
               step is skipped when only one Fleet is listed. The places and agents offered are the
-              chosen Fleet's, and the agent step is skipped when that Fleet offers one harness. See
-              <a href="#fleets-and-places">Fleets and places</a>.
+              chosen Fleet's, and the agent step is skipped when that Fleet offers one harness.
+              <kbd>Alt</kbd>+<kbd>W</kbd> gives a repository a worktree of its own.
             </li>
             <li>
               Rename a session with
@@ -135,173 +134,35 @@ breadcrumb: 'Features'
               from the session list. The name is the Task's <code>thurbox.dev/name</code> label.
             </li>
             <li>
-              Each session row shows the agent's live activity when the CLI reports one (via its
-              terminal title), next to a colored status dot
+              Each row shows the agent's live activity when the CLI reports one (via its terminal
+              title), next to a colored status dot.
             </li>
             <li>
-              Open URLs in terminal output with
-              <code>Ctrl+Click</code>
+              Open URLs in terminal output with <code>Ctrl+Click</code>. Select text with a mouse
+              drag, copy with <code>Ctrl+C</code>, paste with <code>Ctrl+V</code>. With no
+              selection, <code>Ctrl+C</code> sends SIGINT to the active session.
             </li>
-            <li>
-              Select text with mouse drag, copy with
-              <code>Ctrl+C</code>
-              , paste with
-              <code>Ctrl+V</code>
-              . With no selection,
-              <code>Ctrl+C</code>
-              sends SIGINT to the active session.
-            </li>
-            <li>
-              Toggle a shell pane alongside the agent session with
-              <code>Ctrl+T</code>
-            </li>
+            <li>Toggle a shell pane beside the agent with <code>Ctrl+T</code>.</li>
             <li>
               Reorder the list by hand: with the session list focused,
-              <code>Shift+J</code>
-              /
-              <code>Shift+K</code>
-              move the selected session (and its nested children) down/up, and
-              <code>Shift+S</code>
-              sorts sessions alphabetically by name within each repo group. Manual order wins
-              &mdash; a status change only recolors the dot, never moves a row &mdash; and it
+              <code>Shift+J</code> / <code>Shift+K</code> move the selected session (and its nested
+              children) down/up, and <code>Shift+S</code> sorts sessions by name within each repo
+              group. A status change only recolors the dot, never moves a row, and the order
               survives restarts.
             </li>
             <li>
-              Attach to a session's terminal outside Thurbox with
-              <code>fleet attach &lt;task&gt;</code>
+              <code>Ctrl+Q</code> quits and leaves every session running.
+              <code>Ctrl+D</code> deletes the session's Task
+              (<code>fleet delete task</code>): Fleet stops the agent and removes its worktree,
+              keeping work that exists nowhere else under <code>refs/fleet/preserved/</code>.
+              There is no undo.
             </li>
           </ul>
 
-                    <h2 id="agent-definitions">
-            Agent Definitions
-            <a href="#agent-definitions" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            The agents are Fleet's harness profiles. Thurbox keeps no agent registry: the agent picker
-            offers the harnesses <code>fleet version --json</code> lists, and a session's Task names
-            its harness. See
-            <a href="agents.html">Agents</a>.
-          </p>
-
-                    <h2 id="git-worktrees">
-            Git Worktrees
-            <a href="#git-worktrees" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            A Task's workspace is a list of URLs, and the runtime of its place makes them. The
-            new-session flow gives each repository it ticks one URL, the first where the agent
-            starts:
-          </p>
-          <ul>
-            <li>
-              A repository given a worktree with <kbd>Alt</kbd>+<kbd>W</kbd>:
-              <code>git+file:///path/to/repo?branch=&lt;branch&gt;#&lt;base&gt;</code> for the
-              first, from the base branch picked, and without <code>#&lt;base&gt;</code> for the
-              others, from their own default branch. All are on the one branch the flow names; a
-              branch that exists is checked out
-            </li>
-            <li>
-              A repository ticked as it is, or an existing worktree opened with <kbd>&rarr;</kbd>:
-              <code>file:///path/to/repo</code>
-            </li>
-          </ul>
-          <p>
-            <code>runtime-mux</code> makes each worktree under its workspace root
-            (<code>~/.local/share/runtime-mux/workspaces</code> unless its config says otherwise),
-            as a worktree of your checkout itself: its branches are your own, and a commit made in
-            the session is in your repository at once (<code>git worktree list</code> shows it).
-            No mapping is needed: the URL is the whole request. A directory that is no git repository, such as the installed interface,
-            is refused a worktree and runs as it is. On a Fleet on another machine, the runtime
-            makes the worktree there, from that machine's branches.
-          </p>
-          <ul>
-            <li>
-              Deleting such a Task (<code>fleet delete task</code>) removes its worktree. Work that
-              exists nowhere else, committed or not, is kept under
-              <code>refs/fleet/preserved/</code> in your repository, and a new Task can restore
-              it by naming that ref in a <code>git+file</code> URL.
-            </li>
-            <li>
-              Ignored files (build output, caches) are not kept: the repository declares them
-              disposable.
-            </li>
-          </ul>
-
-          <h2 id="fleets-and-places">
-            Fleets and places
-            <a href="#fleets-and-places" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Two choices decide where a session runs. The <strong>Fleet</strong> manages the session.
-            The <strong>place</strong> is where that Fleet's runtime runs the session's process. A
-            place is named <code>&lt;runtime&gt;/&lt;place&gt;</code>, such as
-            <code>mux/wsl-dev</code>, and <code>local</code> is the Fleet's own machine.
-          </p>
-          <img src="../assets/overview.svg" alt="thurbox follows several Fleets; each Fleet runs runtimes, and each runtime runs sessions on its places" width="1100" height="520" loading="lazy">
-          <p>
-            thurbox can follow several Fleets. List them in
-            <code>~/.config/thurbox/settings.toml</code>. With no <code>[fleets]</code> table,
-            thurbox uses one Fleet on this machine. Once the file lists a Fleet, thurbox uses only
-            the listed Fleets.
-          </p>
-          <pre data-title="~/.config/thurbox/settings.toml"><code class="language-toml">[fleets.laptop]
-transport = "local"                     # the default
-
-[fleets.box]
-transport = { ssh = "me@box" }
-program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
-
-[fleets.ubuntu]
-transport = { wsl = "Ubuntu" }</code></pre>
-          <ul>
-            <li>
-              <code>transport</code> says how thurbox runs <code>fleet</code>:
-              <code>"local"</code>, <code>{ ssh = "&lt;destination&gt;" }</code> or
-              <code>{ wsl = "&lt;distro&gt;" }</code>. <code>program</code> names the
-              <code>fleet</code> binary, and <code>config</code> passes
-              <code>fleet --config &lt;path&gt;</code>
-            </li>
-            <li>
-              The session list follows every listed Fleet as one list. A row shows its Fleet, and its
-              place when the place is not <code>local</code>
-            </li>
-            <li>
-              The agent's pane and its companion shell are the streams
-              <code>fleet attach</code> and <code>fleet shell</code> name, over the link to the
-              session's Fleet. thurbox keeps no file of machines of its own
-            </li>
-            <li>
-              A Fleet that cannot be reached keeps its rows, marked unreachable. They clear once the
-              Fleet answers again
-            </li>
-            <li>
-              Each command for a session goes to that session's own Fleet. A new session goes to the
-              Fleet picked in the new-session flow
-            </li>
-            <li>
-              thurbox starts <code>fleet up</code> for a Fleet on this machine when no manager runs.
-              It never starts one on another machine: there, a user systemd unit runs
-              <code>fleet up</code>
-              (<a href="https://github.com/Thurbeen/thurbox/blob/main/docs/where-sessions-run.md" target="_blank" rel="noopener">the unit</a>).
-              On this machine, the first <code>thurbox</code> runs <code>fleet init</code>; on
-              another machine, run <code>fleet init</code> there once
-            </li>
-            <li>
-              For a Fleet on another machine, the new-session flow browses that machine's folders
-              and branches through its Fleet (<code>fleet runtime browse</code>,
-              <code>fleet runtime branches</code>), and takes a clone URL that the runtime clones
-              there
-            </li>
-            <li>
-              <code>thurbox-cli doctor</code> checks each listed Fleet and says which one cannot be
-              reached
-            </li>
-          </ul>
-
-                    <h2 id="parent-sessions">
+<h3 id="parent-sessions">
             Parent Sessions (Lead / Worker)
             <a href="#parent-sessions" class="heading-anchor">#</a>
-          </h2>
+          </h3>
           <p>
             A Task can name a <strong>parent</strong> with its
             <code>gateway.fleet.dev/parent</code> label, so a <em>lead</em> session that spawns
@@ -319,19 +180,52 @@ transport = { wsl = "Ubuntu" }</code></pre>
             </li>
           </ul>
 
-                    <h2 id="inter-session-messages">
-            Inter-Session Messages
-            <a href="#inter-session-messages" class="heading-anchor">#</a>
+                    
+<h2 id="several-fleets">
+            Several Fleets
+            <a href="#several-fleets" class="heading-anchor">#</a>
           </h2>
           <p>
-            <code>fleet send &lt;task&gt; &lt;text&gt;</code> queues a message for a session's agent,
-            and Fleet's Task controller delivers it on its next pass. One agent hands another a
-            payload this way instead of scraping its terminal. The Task's <code>status.inbox</code>
-            records what was queued and delivered, and <code>--answers &lt;id&gt;</code> marks a
-            message as the answer to a question the Task declared.
+            thurbox can follow several Fleets. List them in
+            <code>~/.config/thurbox/settings.toml</code>. With no <code>[fleets]</code> table,
+            thurbox uses one Fleet on this machine. Once the file lists a Fleet, thurbox uses only
+            the listed Fleets.
           </p>
+          <pre data-title="~/.config/thurbox/settings.toml"><code class="language-toml">[fleets.laptop]
+transport = "local"                     # the default
 
-          <h2 id="global-search">
+[fleets.box]
+transport = { ssh = "me@box" }
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
+
+[fleets.ubuntu]
+transport = { wsl = "Ubuntu" }</code></pre>
+          <ul>
+            <li>
+              A row shows its Fleet, and its place when the place is not <code>local</code>. A
+              Fleet that cannot be reached keeps its rows, marked unreachable.
+            </li>
+            <li>
+              Each command for a session goes to that session's own Fleet. A new session goes to
+              the Fleet picked in the new-session flow, which browses that Fleet's folders and
+              branches, on whichever machine it runs.
+            </li>
+            <li>
+              The agent's pane and its companion shell are the streams <code>fleet attach</code>
+              and <code>fleet shell</code> name, over the link to the session's Fleet.
+            </li>
+            <li>
+              thurbox starts <code>fleet up</code> for a Fleet on this machine when no manager
+              runs. It never starts one on another machine: run it there as a service
+              (<a href="fleet-install.html#service">Keep fleet up running</a>).
+            </li>
+            <li>
+              <code>thurbox-cli doctor</code> checks each listed Fleet and says which one cannot be
+              reached. Every key is in <a href="configuration.html#fleets">Configuration</a>.
+            </li>
+          </ul>
+
+<h2 id="global-search">
             Global Search
             <a href="#global-search" class="heading-anchor">#</a>
           </h2>
@@ -571,76 +465,4 @@ auto_update = true    # download+verify+replace the binaries on startup (never a
             <code>Esc</code>
             discards); the file is also live-reloaded, so feature flags and notification knobs take
             effect immediately.
-          </p>
-
-                    <h2 id="session-persistence">
-            Session Persistence
-            <a href="#session-persistence" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Sessions are Fleet Tasks, and Fleet's runtime keeps each one's terminal in a multiplexer
-            window, so a session survives Thurbox quitting, crashing or restarting, and several
-            Thurbox instances show the same sessions.
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Action</th>
-                <th>Behavior</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>Ctrl+Q</code> (Quit)</td>
-                <td>Leaves every session running. The next launch shows them again.</td>
-              </tr>
-              <tr>
-                <td><code>Ctrl+D</code> (Delete)</td>
-                <td>
-                  Deletes the Task (<code>fleet delete task</code>). Fleet stops the agent
-                  and removes the session's worktree, keeping committed work that exists nowhere
-                  else under <code>refs/fleet/preserved/</code>. There is no undo.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-                    <h2 id="headless-cli">
-            Headless CLI
-            <a href="#headless-cli" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            Every session is a Fleet Task, so <code>fleet</code> drives the same sessions as the TUI,
-            from a script. A change made either way shows up in the other within a tick.
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>To</th>
-                <th>Run</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td>List sessions</td><td><code>fleet list task</code></td></tr>
-              <tr><td>Read one</td><td><code>fleet get task &lt;name&gt;</code> (JSON)</td></tr>
-              <tr>
-                <td>Create one</td>
-                <td><code>fleet apply --create-only -f &lt;task.json&gt;</code></td>
-              </tr>
-              <tr><td>Type into its agent</td><td><code>fleet send &lt;task&gt; &lt;text&gt;</code></td></tr>
-              <tr>
-                <td>Rename it</td>
-                <td><code>fleet label task &lt;task&gt; thurbox.dev/name=&lt;name&gt;</code></td>
-              </tr>
-              <tr><td>Attach to its terminal</td><td><code>fleet attach &lt;task&gt;</code></td></tr>
-              <tr><td>Follow changes</td><td><code>fleet watch --json</code></td></tr>
-              <tr><td>Delete it</td><td><code>fleet delete task &lt;name&gt;</code></td></tr>
-            </tbody>
-          </table>
-          <p>
-            <code>thurbox-cli</code> keeps what is the interface's own: <code>config</code>,
-            <code>doctor</code>, <code>version</code>, <code>update</code>, <code>plugin</code>,
-            <code>ui</code>, <code>schema</code>, <code>editor</code>,
-            <code>notify</code> and <code>perf</code>.
-            <code>thurbox-cli --help</code> lists them.
           </p>

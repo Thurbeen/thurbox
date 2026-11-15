@@ -1,0 +1,95 @@
+---
+layout: docs.njk
+title: 'init, up and apply — Fleet Docs'
+description: 'Set Fleet up with fleet init, run its manager with fleet up, and create a session with fleet apply.'
+currentPage: 'fleet-commands'
+breadcrumb: 'init, up and apply'
+---
+<h1>init, up and apply</h1>
+<p>Three commands take Fleet from nothing to a running agent session.</p>
+
+<h2 id="init">
+  fleet init
+  <a href="#init" class="heading-anchor">#</a>
+</h2>
+<pre><code class="language-bash">fleet init</code></pre>
+<p>
+  Writes Fleet's config, <code>~/.config/fleet/config.toml</code>, with one runtime,
+  <code>runtime-mux</code>, and one place, <code>local</code>: this machine. It prints the config
+  path, the places, the coding agents it found on <code>PATH</code>, and what to run next. It
+  works offline. The config is yours once written: a second <code>fleet init</code> checks it and
+  keeps it.
+</p>
+
+<h2 id="up">
+  fleet up
+  <a href="#up" class="heading-anchor">#</a>
+</h2>
+<pre><code class="language-bash">fleet up</code></pre>
+<p>
+  The manager. It runs in the foreground and keeps every Task moving: it starts sessions, sends
+  briefs, delivers messages and records results. It creates no Task of its own.
+  <kbd>Ctrl</kbd>+<kbd>C</kbd> stops it and leaves the sessions running; the next
+  <code>fleet up</code> picks them up again. Only one manager runs per Fleet.
+  <code>fleet version --json</code> says whether one runs. To keep it running without a terminal,
+  see <a href="fleet-install.html#service">Keep fleet up running</a>.
+</p>
+
+<h2 id="apply">
+  fleet apply
+  <a href="#apply" class="heading-anchor">#</a>
+</h2>
+<p>A Task is a JSON file. This one runs Claude Code in a worktree of a local repository:</p>
+<pre data-title="fix-login.json"><code class="language-json">{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "Task",
+  "metadata": {"name": "fix-login"},
+  "spec": {
+    "harness": "claude",
+    "host": "local",
+    "brief": "Fix the login redirect and run the tests.",
+    "workspace": ["git+file:///home/me/app"],
+    "dispatch": true
+  }
+}</code></pre>
+<pre><code class="language-bash">fleet apply -f fix-login.json
+fleet list task
+fleet status task fix-login --json</code></pre>
+<ul>
+  <li><code>harness</code> is the agent (<a href="agents.html">Agents</a>), and <code>host</code> the place.</li>
+  <li>
+    <code>workspace</code> lists URLs. With <code>git+file://</code>, the runtime makes a git
+    worktree on a new branch; <code>file://</code> uses the directory as it is; <code>[]</code>
+    starts the agent in the runtime's default directory.
+  </li>
+  <li>Nothing starts while <code>dispatch</code> is <code>false</code>, the default.</li>
+  <li>Leave <code>brief</code> out and the session waits for you to type.</li>
+</ul>
+<p>
+  <code>fleet apply</code> creates or updates; <code>--create-only</code> refuses a name that is
+  taken. <code>-f -</code> reads the JSON from stdin. Every field is in
+  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/fleet/resources/task.md" target="_blank" rel="noopener">the Task resource</a>.
+</p>
+
+<h2 id="after">
+  After apply
+  <a href="#after" class="heading-anchor">#</a>
+</h2>
+<table>
+  <thead>
+    <tr>
+      <th>To</th>
+      <th>Run</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Type into its agent</td><td><code>fleet send fix-login "Run the tests too"</code></td></tr>
+    <tr><td>Print the command that opens its terminal</td><td><code>fleet attach fix-login</code></td></tr>
+    <tr><td>Follow every change</td><td><code>fleet watch --json</code></td></tr>
+    <tr><td>Stop it and remove its worktree</td><td><code>fleet delete task fix-login</code></td></tr>
+  </tbody>
+</table>
+<p>
+  <code>fleet --help</code> lists every command, and each command's <code>--help</code> its flags.
+  More in <a href="fleet-features.html#headless-cli">Fleet features</a>.
+</p>

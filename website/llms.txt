@@ -39,7 +39,12 @@
 - [Documentation hub](https://thurbox.thurbeen.eu/docs/index.html): entry point to all Thurbox documentation.
 - [Tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html): onboarding walkthrough with screenshots — adding a repository to the picker, creating a first session in a repository, the everyday keybindings, and the equivalent fleet commands.
 - [FAQ](https://thurbox.thurbeen.eu/docs/faq.html): short answers to the most common questions (what it is, how it differs, install, platforms, license).
-- [Features](https://thurbox.thurbeen.eu/docs/features.html): the customizable interface, sessions, agent definitions, git worktrees, sessions on other machines, global search, headless CLI.
+- [What is Fleet](https://thurbox.thurbeen.eu/docs/fleet.html): Fleet, the engine — sessions as Tasks, resources and controllers, places and runtimes. Fleet runs on its own, headless, with no thurbox.
+- [Install Fleet](https://thurbox.thurbeen.eu/docs/fleet-install.html): Fleet alone — the install script, then `fleet init` and `fleet up`, and a systemd user unit that keeps `fleet up` running.
+- [init, up and apply](https://thurbox.thurbeen.eu/docs/fleet-commands.html): Fleet's first commands and a Task's JSON.
+- [Fleet features](https://thurbox.thurbeen.eu/docs/fleet-features.html): sessions as Tasks, harness profiles, worktrees made by the runtime, places, messages between agents, the headless CLI.
+- [What is thurbox](https://thurbox.thurbeen.eu/docs/thurbox.html): thurbox, the terminal interface on top of one or more Fleets.
+- [thurbox features](https://thurbox.thurbeen.eu/docs/thurbox-features.html): the customizable interface, the session list, several Fleets, global search, layout, themes, notifications, settings.
 - [Agents](https://thurbox.thurbeen.eu/docs/agents.html): the agents are the harness profiles Fleet bundles (claude, codex, pi, opencode, kilo, omp, qwen, copilot, kimi).
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
 - [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, Nix/NixOS, winget, Chocolatey, or from source; prerequisites; running it; how to pin a specific version.

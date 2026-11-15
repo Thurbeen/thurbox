@@ -8,9 +8,7 @@
   margin: var(--space-lg) 0 var(--space-xl);
   background: var(--bg-code);
   border: 1px solid var(--hud-edge);
-  box-shadow:
-    var(--bevel),
-    0 8px 30px rgb(0, 0, 0, 0.5);
+  box-shadow: var(--bevel), var(--shadow-panel);
   overflow: hidden;
 }
 

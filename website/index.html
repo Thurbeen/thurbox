@@ -1,7 +1,7 @@
 ---
 layout: base.njk
-title: 'Thurbox — Orchestrate coding agents'
-description: 'Thurbox runs coding agents side by side. Fleet keeps every session running, on this machine or another, and every pane of the interface is a Lua file you can edit, move, turn off or replace.'
+title: 'Fleet and thurbox — run coding agents'
+description: 'Fleet runs coding-agent sessions and keeps them running, on its own or under thurbox. thurbox is the terminal interface for one or more Fleets.'
 root: '.'
 extraCss: ['landing.css']
 footer: true
@@ -9,344 +9,134 @@ footer: true
 <!-- Hero -->
     <section class="hero section">
       <div class="container">
-        <div class="hero-grid">
-          <div class="hero-grid__intro">
-            <h1>
-              Orchestrate
-              <span class="hero-headline-phrase">agents</span>
-            </h1>
-            <p class="subtitle">
-              Thurbox runs coding agents side by side, on this machine or another.
-            </p>
-            <p class="subtitle subtitle--thesis">
-              <strong>The agents keep running</strong> after you quit thurbox: Fleet runs every
-              session.
-            </p>
-            <p class="hero-stability">
-              Install it, then run
-              <code>thurbox</code>.
-            </p>
-            <div class="hero-ctas">
-              <a href="#installation" class="btn btn-primary">Get Started</a>
-              <a href="#customizable" class="btn btn-secondary">See it move</a>
-            </div>
-            <button class="hero-press-start" id="press-start" type="button">
-              <span class="arrow" aria-hidden="true">&#9654;</span>
-              Press any key to begin
-              <span class="arrow" aria-hidden="true">&#9654;</span>
-            </button>
-          </div>
-
-          <div class="hero-grid__install install-tabs" id="installation">
-            <div class="install-tablist-rail">
-              <div class="install-tablist" role="tablist" aria-label="Installation methods">
-            <button
-              class="install-tab"
-              id="tab-script"
-              role="tab"
-              aria-controls="panel-script"
-              aria-selected="true"
-            >
-              Shell Script
-            </button>
-            <button
-              class="install-tab"
-              id="tab-windows"
-              role="tab"
-              aria-controls="panel-windows"
-              aria-selected="false"
-              tabindex="-1"
-            >
-              PowerShell
-            </button>
-            <button
-              class="install-tab"
-              id="tab-brew"
-              role="tab"
-              aria-controls="panel-brew"
-              aria-selected="false"
-              tabindex="-1"
-            >
-              Homebrew
-            </button>
-              </div>
-            </div>
-
-          <div class="install-panel" role="tabpanel" id="panel-script" aria-labelledby="tab-script">
-            <p>Linux &amp; macOS. The recommended route.</p>
-            <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
-          </div>
-
-          <div
-            class="install-panel"
-            role="tabpanel"
-            id="panel-windows"
-            aria-labelledby="tab-windows"
-            hidden
+        <h1>
+          Fleet
+          <span class="hero-headline-tail"
+            ><span class="hero-amp" aria-hidden="true">+</span>
+            <span class="hero-headline-phrase">thurbox</span></span
           >
-            <p>
-              Native Windows. Needs
-              <a href="https://github.com/psmux/psmux" target="_blank" rel="noopener">psmux</a>
-              installed separately.
+        </h1>
+        <p class="subtitle">
+          <strong>Fleet</strong> runs your coding agents and keeps them running.
+          <strong>thurbox</strong> is the terminal interface to watch and drive them.
+        </p>
+        <div class="hero-ctas">
+          <a href="#fleet" class="btn btn-primary">Fleet</a>
+          <a href="#thurbox" class="btn btn-secondary">thurbox</a>
+        </div>
+        <button class="hero-press-start" id="press-start" type="button">
+          <span class="arrow" aria-hidden="true">&#9654;</span>
+          Press any key to begin
+          <span class="arrow" aria-hidden="true">&#9654;</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Fleet: the engine. It comes first because it stands on its own. -->
+    <section class="section product" id="fleet">
+      <div class="container">
+        <div class="product__grid">
+          <div class="product__text">
+            <p class="section-eyebrow">The engine</p>
+            <h2>Fleet</h2>
+            <p class="product__lede">
+              Fleet runs coding-agent sessions. Each session is a Task: a file that names the
+              agent, the place it runs, the repository and the brief. You apply it with
+              <code>fleet apply</code>, and Fleet starts the session, keeps it running, delivers
+              your messages and records the result.
             </p>
-            <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
+            <p class="product__lede">
+              <strong>Fleet works on its own.</strong> It is headless and needs no thurbox.
+            </p>
+            <p class="product__more">
+              <a href="docs/fleet.html">What Fleet is &rarr;</a>
+              <a href="docs/fleet-features.html">Fleet features &rarr;</a>
+            </p>
           </div>
-
-          <div class="install-panel" role="tabpanel" id="panel-brew" aria-labelledby="tab-brew" hidden>
-            <p>macOS &amp; Linux. Pulls in tmux and git.</p>
-            <pre><code class="language-bash">brew install thurbeen/thurbox/thurbox</code></pre>
+          <div class="product__media">
+            <pre data-title="drive it from a script"><code class="language-bash">fleet apply -f fix-login.json
+fleet list task
+fleet send fix-login "Run the tests too"</code></pre>
           </div>
+        </div>
 
-          <p class="install-more">
-            The scripts also install Fleet once a 3.x release is out; until then they install the
-            latest 2.x. Also on winget, Chocolatey, the AUR and Nix, or from source &mdash;
-            <a href="docs/installation.html">installation guide &rarr;</a>
+        <!-- Fleet alone. Its own block so the install line can change without
+             touching thurbox's. -->
+        <div class="get-started" id="fleet-start">
+          <h3>Get started with Fleet alone</h3>
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+fleet init
+fleet up</code></pre>
+          <p>
+            The script installs Fleet with thurbox beside it; to use Fleet alone, never run
+            <code>thurbox</code>. It needs a 3.x release: until one is published, it installs the
+            latest 2.x, which has no Fleet.
+            <a href="docs/fleet-install.html">Install Fleet &rarr;</a>
           </p>
-          </div>
-
-          <div class="hero-grid__demo" id="demo">
-            <div class="hero-demo">
-              <div class="terminal-frame">
-                <div class="terminal-header">
-                  <span class="terminal-title">thurbox</span>
-                </div>
-                <div class="terminal-body">
-                  <video
-                    src="assets/thurbox-demo.mp4"
-                    poster="assets/thurbox-demo-poster.webp"
-                    width="1944"
-                    height="1288"
-                    autoplay
-                    loop
-                    muted
-                    playsinline
-                    preload="none"
-                  >
-                    Four coding-agent sessions in parallel, with a tasks pane and a CPU/memory
-                    pane stacked beside them &mdash; both from examples/panes/, neither bundled
-                  </video>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="hero-grid__meta">
-            <p class="agent-support">
-              <span class="agent-support__label">Built-in agent support for</span>
-          <span>
-            <!-- prettier-ignore -->
-            <svg class="agent-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>
-            Claude Code
-          </span>
-          <span>
-            <!-- prettier-ignore -->
-            <svg class="agent-logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>
-            Codex
-          </span>
-          <span class="agent-support-any">plus pi, opencode, kilo, omp, Qwen Code, Copilot CLI and Kimi Code</span>
-            </p>
-            <div class="hero-badges">
-              <span class="badge badge-yellow">MIT License</span>
-              <span class="badge badge-green">Built with Rust</span>
-            </div>
-          </div>
-
         </div>
       </div>
     </section>
 
-    <!-- Features -->
-    <!-- The thesis: every pane is a file you can move, turn off or replace. The
-         lab autoplays a short arrangement sequence on scroll so the movement is
-         seen without being asked for, then hands control over on first input. -->
-    <section class="section ui-lab-section" id="customizable">
+    <!-- thurbox: the interface on top of one or more Fleets. -->
+    <section class="section product product--alt" id="thurbox">
       <div class="container">
-        <p class="section-eyebrow">Every pane is a plugin</p>
-        <h2>The interface is a directory you can edit</h2>
-        <p class="section-lede">
-          The session list, the agent terminal, the search strip &mdash; each one is a Lua file
-          under <code>ui/plugins/</code>. Move it, turn it off, replace it with your own, and the
-          arrangement closes up around what is left. No recompile, no restart.
-        </p>
-
-        <div class="ui-lab">
-          <div class="ui-lab__stage">
+        <div class="product__grid">
+          <div class="product__text">
+            <p class="section-eyebrow">The interface</p>
+            <h2>thurbox</h2>
+            <p class="product__lede">
+              thurbox is a terminal interface on top of one or more Fleets. It shows every session
+              of every Fleet in one list, with the agent's live terminal beside it. Every pane is a
+              Lua file you can move, turn off or replace.
+            </p>
+            <p class="product__lede">
+              <strong>Quit thurbox and the agents keep running</strong>: Fleet runs them.
+            </p>
+            <p class="product__more">
+              <a href="docs/thurbox.html">What thurbox is &rarr;</a>
+              <a href="docs/thurbox-features.html">thurbox features &rarr;</a>
+            </p>
+          </div>
+          <div class="product__media" id="demo">
             <div class="terminal-frame">
               <div class="terminal-header">
-                <div class="terminal-dot red"></div>
-                <div class="terminal-dot yellow"></div>
-                <div class="terminal-dot green"></div>
                 <span class="terminal-title">thurbox</span>
               </div>
-              <div class="ui-lab__screen" id="ui-lab-screen" aria-hidden="true">
-                <!-- Each pane below is the frame the real plugin paints, as
-                     pinned in tests/frames.rs against the `doom` preset: the
-                     title sits in the top border, the session list is a host
-                     band, dotted repo separators and sessions indented under
-                     them, and the agent's border is its tab bar. The `.lua` footer is the
-                     one thing the terminal does not draw — it is this
-                     section's whole point. -->
-                <div class="ui-pane" data-pane="sessions">
-                  <span class="ui-pane__chrome">
-                    <span class="ui-pane__title">Sessions</span>
-                  </span>
-  <span class="ui-pane__body">
-                    <span class="ui-pane__host">&#x2302; local <small>5 sessions</small></span>
-                    <span class="ui-pane__group">thurbox</span>
-                    <span class="ui-pane__row is-parent is-selected">
-                      <i class="tui-dot working">&#x2807;</i>
-                      <span class="tui-name">fix-osc52</span>
-                    </span>
-                    <span class="ui-pane__row is-child">
-                      <i class="tui-dot idle">&#x25CB;</i>
-                      <span class="tui-name">fix-osc52-tests</span>
-                    </span>
-                    <span class="ui-pane__row is-waiting">
-                      <i class="tui-dot blocked">&#x25C6;</i>
-                      <span class="tui-name">add-wsl-tests</span>
-                      <em class="tui-state blocked">Blocked</em>
-                    </span>
-                    <span class="ui-pane__row">
-                      <i class="tui-dot done">&#x25CF;</i>
-                      <span class="tui-name">perf-cache</span>
-                    </span>
-                    <span class="ui-pane__group">website</span>
-                    <span class="ui-pane__row">
-                      <i class="tui-dot idle">&#x25CB;</i>
-                      <span class="tui-name">update-deps</span>
-                    </span>
-  </span>
-  <span class="ui-pane__file">10_sessions.lua</span>
-                </div>
-                <div class="ui-pane" data-pane="agent">
-                  <span class="ui-pane__chrome">
-                    <span class="ui-pane__hint"><b>&#x25C0;</b> F9</span>
-                    <span class="ui-pane__title">Agent</span>
-                    <span class="ui-pane__tab">Shell &middot; F8</span>
-                    <span class="ui-pane__session">fix-osc52 (claude)</span>
-                  </span>
-                  <span class="ui-pane__body">
-                    <span class="ui-pane__row">$ claude</span>
-                    <span class="ui-pane__row dim">&gt; rebasing feat/osc52&hellip;</span>
-                    <span class="ui-pane__row dim">&nbsp;&nbsp;3 files changed</span>
-                  </span>
-                  <span class="ui-pane__file">20_agent.lua</span>
-                </div>
-                <div class="ui-pane" data-pane="yours">
-                  <span class="ui-pane__chrome">
-                    <span class="ui-pane__title">git status</span>
-                  </span>
-                  <span class="ui-pane__body">
-                    <span class="ui-pane__row">M src/main.rs</span>
-                    <span class="ui-pane__row">M ui/layout.lua</span>
-                  </span>
-                  <span class="ui-pane__file">90_yours.lua</span>
-                </div>
-                <div class="ui-pane" data-pane="search">
-                  <span class="ui-pane__chrome">
-                    <span class="ui-pane__title">&#x25B8; Search</span>
-                  </span>
-                  <span class="ui-pane__body">
-                    <span class="ui-pane__row">
-                      osc
-                      <em class="tui-count">[1/5]</em>
-                    </span>
-                  </span>
-                  <span class="ui-pane__file">65_search.lua</span>
-                </div>
-                <div class="ui-pane" data-pane="tasks">
-                  <span class="ui-pane__chrome">
-                    <span class="ui-pane__title">Tasks</span>
-                  </span>
-                  <span class="ui-pane__body">
-                    <span class="ui-pane__row">&#9744; rebase the wsl branch</span>
-                    <span class="ui-pane__row warn">&#9680; osc52 over ssh</span>
-                    <span class="ui-pane__row done">&#9745; ship the kernel</span>
-                  </span>
-                  <span class="ui-pane__file">80_tasks.lua</span>
-                </div>
-                <div class="ui-pane" data-pane="top">
-                  <span class="ui-pane__chrome">
-                    <span class="ui-pane__title">System</span>
-                  </span>
-                  <span class="ui-pane__body">
-                    <span class="ui-pane__row">
-                      CPU
-                      <i class="bar"><i class="bar__fill" style="width: 38%"></i></i>
-                      38%
-                    </span>
-                    <span class="ui-pane__row">
-                      MEM
-                      <i class="bar"><i class="bar__fill is-warn" style="width: 71%"></i></i>
-                      71%
-                    </span>
-                    <span class="ui-pane__row dim">firefox&nbsp;&nbsp;&nbsp;81.0%</span>
-                  </span>
-                  <span class="ui-pane__file">85_top.lua</span>
-                </div>
+              <div class="terminal-body">
+                <video
+                  src="assets/thurbox-demo.mp4"
+                  poster="assets/thurbox-demo-poster.webp"
+                  width="1944"
+                  height="1288"
+                  autoplay
+                  loop
+                  muted
+                  playsinline
+                  preload="none"
+                >
+                  Four coding-agent sessions in parallel, with a tasks pane and a CPU/memory
+                  pane stacked beside them &mdash; both from examples/panes/, neither bundled
+                </video>
               </div>
-            </div>
-          </div>
-
-          <div class="ui-lab__controls">
-            <div class="ui-lab__group">
-              <p class="ui-lab__label"><code>ui/layout.lua</code> &mdash; arrangement</p>
-              <div class="ui-lab__buttons" role="group" aria-label="Arrangement">
-                <button class="ui-lab__btn" type="button" data-arrangement="columns" aria-pressed="true">
-                  columns
-                </button>
-                <button class="ui-lab__btn" type="button" data-arrangement="rows" aria-pressed="false">
-                  rows
-                </button>
-                <button class="ui-lab__btn" type="button" data-arrangement="focus" aria-pressed="false">
-                  focus
-                </button>
-                <button class="ui-lab__btn" type="button" data-arrangement="stack" aria-pressed="false">
-                  stacked right
-                </button>
-              </div>
-            </div>
-
-            <div class="ui-lab__group">
-              <p class="ui-lab__label"><code>ui/plugins/</code> &mdash; click to turn off</p>
-              <div class="ui-lab__buttons" role="group" aria-label="Plugins">
-                <button class="ui-lab__chip" type="button" data-toggle="sessions" aria-pressed="true">
-                  10_sessions.lua
-                </button>
-                <button class="ui-lab__chip" type="button" data-toggle="agent" aria-pressed="true">
-                  20_agent.lua
-                </button>
-                <button class="ui-lab__chip" type="button" data-toggle="search" aria-pressed="true">
-                  65_search.lua
-                </button>
-                <button class="ui-lab__chip is-yours" type="button" data-toggle="yours" aria-pressed="false">
-                  90_yours.lua
-                </button>
-                <button class="ui-lab__chip is-demo" type="button" data-toggle="tasks" aria-pressed="false">
-                  80_tasks.lua
-                </button>
-                <button class="ui-lab__chip is-demo" type="button" data-toggle="top" aria-pressed="false">
-                  85_top.lua
-                </button>
-              </div>
-              <p class="ui-lab__hint">
-                <span class="ui-lab__hint-mark">&#9656;</span>
-                <span id="ui-lab-hint">Autoplaying &mdash; click anything to take over.</span>
-              </p>
             </div>
           </div>
         </div>
 
-        <p class="ui-lab__foot">
-          That last one is not shipped &mdash; it is yours. A pane is a short Lua file, and it only
-          ever gets what you have trusted it with.
-          <a href="docs/interface.html">Writing a pane &rarr;</a>
-        </p>
+        <div class="get-started" id="thurbox-start">
+          <h3>Get started with thurbox</h3>
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+thurbox</code></pre>
+          <p>
+            The first <code>thurbox</code> runs <code>fleet init</code> and starts Fleet on this
+            machine. On Windows, run <code>irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code>.
+            <a href="docs/installation.html">Other install routes &rarr;</a>
+          </p>
+        </div>
 
         <!-- The official plugins, one line each. Setup lives in each README and
              in the catalog, so the home page stays a list of names. -->
-        <div class="plugin-strip">
-          <p class="section-eyebrow">Plugins to start from</p>
+        <div class="plugin-strip" id="plugins">
+          <h3>Plugins to start from</h3>
           <ul class="plugin-strip__list">
             <li>
               <a href="https://github.com/Thurbeen/thurbox-info-panel">thurbox-info-panel</a>
@@ -369,209 +159,22 @@ footer: true
               <span>DOOM as a tab of the agent pane.</span>
             </li>
           </ul>
-          <p class="plugin-strip__more">
+          <p class="product__more">
             <a href="plugins.html">All plugins, including community ones &rarr;</a>
           </p>
         </div>
       </div>
     </section>
 
-    <!-- Features, in two bands.
-         The split is not decoration: the engine is compiled and fixed, the
-         interface is Lua you edit. Grouping the cards that way is the same
-         boundary the architecture draws, so the grid teaches it. -->
-    <section class="features section" id="features">
+    <!-- How they fit -->
+    <section class="section" id="how-they-fit">
       <div class="container">
-        <div class="section-title">
-          <h2>Features</h2>
-          <p>A fixed engine under an interface that is entirely yours</p>
-        </div>
-
-        <div class="feature-band">
-          <div class="feature-band__head">
-            <p class="section-eyebrow">Band 1 &mdash; compiled, fixed</p>
-            <h3 class="feature-band__title">The engine</h3>
-            <p class="feature-band__lede">
-              Fleet runs the sessions: processes, workspaces, status. thurbox reads every Fleet
-              you list and keeps your schedules. This half is Rust and it is not
-              yours to edit &mdash; which is the point: it is what a plugin is allowed to be
-              careless in front of.
-            </p>
-          </div>
-        <div class="grid grid-3">
-          <a href="docs/features.html#session-orchestration" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x25A3;</div>
-              <h3>Persistent Sessions</h3>
-              <p>
-                Every session is a Fleet Task, and Fleet's runtime keeps its agent alive in tmux.
-                Sessions survive crashes, restarts and quitting thurbox.
-              </p>
-            </div>
-          </a>
-          <a href="docs/features.html#git-worktrees" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x2442;</div>
-              <h3>Git Worktrees</h3>
-              <p>
-                A session can run in a git worktree of its own, on a new or an existing branch, made
-                by its runtime. Deleting the session removes it and keeps work that exists nowhere
-                else.
-              </p>
-            </div>
-          </a>
-          <a href="docs/features.html#session-orchestration" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x25B8;</div>
-              <h3>Any Coding Agent</h3>
-              <p>
-                A session runs one agent of your choice &mdash; Claude Code, Codex, pi, opencode,
-                kilo, omp, Qwen Code, Copilot CLI or Kimi Code. Each runs unmodified, with its own
-                config. Mix different agents across the sidebar.
-              </p>
-            </div>
-          </a>
-          <a href="docs/features.html#agent-definitions" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x2699;&#xFE0E;</div>
-              <h3>Agent Definitions</h3>
-              <p>
-                The agents are Fleet's harness profiles: the agent picker offers what
-                <code>fleet version --json</code> lists. Adding an agent is adding a profile to
-                Fleet, not a change to thurbox.
-              </p>
-            </div>
-          </a>
-          <a href="docs/features.html#fleets-and-places" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x21C4;</div>
-              <h3>Several Fleets</h3>
-              <p>
-                List a Fleet on another machine in
-                <code>settings.toml</code>
-                and its sessions join the same list, over ssh or in WSL. The agents run there, and
-                <strong>keep running while your laptop sleeps</strong>
-                .
-              </p>
-            </div>
-          </a>
-          <a href="docs/features.html#headless-cli" class="feature-link">
-            <div class="card">
-              <div class="card-icon" aria-hidden="true">&#x2385;</div>
-              <h3>Headless CLI</h3>
-              <p>
-                Every session is a Fleet Task, so Fleet's command line creates, drives and deletes
-                sessions from a script, and passes messages between
-                agents &mdash; and the interface shows every change within a tick.
-              </p>
-            </div>
-          </a>
-        </div>
-        </div>
-
-        <div class="feature-band feature-band--yours">
-          <div class="feature-band__head">
-            <p class="section-eyebrow">Band 2 &mdash; Lua, yours</p>
-            <h3 class="feature-band__title">The interface</h3>
-            <p class="feature-band__lede">
-              Everything you look at. Not a theme layer over fixed panes &mdash; the panes
-              themselves, the arrangement that places them, and the keys that reach them are
-              files in a directory you own.
-            </p>
-          </div>
-          <div class="grid grid-3">
-            <a href="docs/interface.html" class="feature-link">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2732;&#xFE0E;</div>
-                <h3>Every pane is a file</h3>
-                <p>
-                  The session list included. Move one, turn it off, delete it, or write your own
-                  &mdash; and the arrangement
-                  <strong>closes up around what is left</strong>
-                  rather than leaving a hole. No recompile, no restart.
-                </p>
-              </div>
-            </a>
-            <a href="docs/features.html#responsive-ui" class="feature-link">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x229E;</div>
-                <h3>The arrangement is a file</h3>
-                <p>
-                  No breakpoint is compiled into the binary.
-                  <code>ui/layout.lua</code>
-                  is a function of the available size, so the thresholds, the split, and the order
-                  of the bands are yours to change.
-                </p>
-              </div>
-            </a>
-            <a href="docs/interface.html#running-programs" class="feature-link">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x25B8;</div>
-                <h3>A pane can run a program</h3>
-                <p>
-                  <code>git status</code>
-                  ,
-                  <code>docker compose ps</code>
-                  ,
-                  <code>npm outdated</code>
-                  &mdash; in the session's own directory. Bounded by the
-                  kernel and granted only to a plugin
-                  <strong>you have trusted</strong>
-                  .
-                </p>
-              </div>
-            </a>
-            <a href="docs/keybindings.html" class="feature-link">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2328;&#xFE0E;</div>
-                <h3>Keys are declared, not fixed</h3>
-                <p>
-                  A plugin declares the chords it wants and they appear in help. Rebind any of them
-                  live from the help screen; a pane that is turned off
-                  <strong>declares nothing</strong>
-                  , so its chord goes quiet instead of lingering.
-                </p>
-              </div>
-            </a>
-            <a href="docs/features.html#global-search" class="feature-link">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2315;</div>
-                <h3>Search that reads screens</h3>
-                <p>
-                  <code>Ctrl+/</code>
-                  finds a session by its name, branch, repo &mdash;
-                  <strong>or by the error on its screen</strong>
-                  . Matches highlight in the pane itself, and nothing pays for it while the strip is
-                  closed.
-                </p>
-              </div>
-            </a>
-            <a href="docs/features.html#themes" class="feature-link">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x25D0;</div>
-                <h3>Thirty-six palettes</h3>
-                <p>
-                  Twenty-eight dark and eight light, switched live with
-                  <code>Ctrl+Y</code>
-                  and persisted. Add your own in
-                  <code>themes.toml</code>
-                  from a base plus the colours you want to override.
-                </p>
-              </div>
-            </a>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- How It Works -->
-    <section class="section" id="how-it-works">
-      <div class="container">
-        <div class="section-title">
-          <h2>How It Works</h2>
-          <p>One interface, any number of Fleets</p>
-        </div>
-        <p class="how-it-works-diagram">
+        <h2>How they fit</h2>
+        <p class="product__lede">
+          thurbox follows one or more Fleets, on this machine or over ssh or WSL; each Fleet's
+          runtime runs the sessions at a place.
+        </p>
+        <p class="how-they-fit__diagram">
           <img
             src="assets/overview.svg"
             alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place"
@@ -580,179 +183,6 @@ footer: true
             loading="lazy"
           />
         </p>
-        <div class="how-it-works-steps">
-          <div class="step">
-            <span class="step-number">1</span>
-            <div class="step-content">
-              <h3>Launch</h3>
-              <p>
-                Run <code>thurbox</code>. The session list and the agent terminal appear, and
-                thurbox starts Fleet's manager when none runs.
-              </p>
-            </div>
-          </div>
-
-          <div class="step">
-            <span class="step-number">2</span>
-            <div class="step-content">
-              <h3>Create a Session</h3>
-              <p>
-                Press
-                <code>Ctrl+N</code>
-                to pick a Fleet, a place and a repository, then name the session and choose an
-                agent.
-              </p>
-              <div class="tui-demo">
-                <div class="terminal-header">
-                  <span class="terminal-title">thurbox</span>
-                </div>
-                <div class="terminal-body">
-                  <pre>Ctrl+N  New session
-# Fleet: laptop      Place: local
-# Repo:  ~/projects/my-app
-# Name:  my-app      Agent: claude</pre>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="step">
-            <span class="step-number">3</span>
-            <div class="step-content">
-              <h3>Start Coding</h3>
-              <p>
-                Spin up sessions on your repositories and start working with the agent. Navigate
-                with Vim-inspired keys.
-                <a href="docs/keybindings.html">All keys &rarr;</a>
-              </p>
-              <div class="tui-demo">
-                <div class="terminal-header">
-                  <span class="terminal-title">thurbox</span>
-                </div>
-                <div class="terminal-body">
-                  <pre>Ctrl+N  New session
-Ctrl+J  Next session      Ctrl+K  Previous
-Ctrl+/  Search sessions and their screens
-Ctrl+,  Settings</pre>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Just ask for it -->
-    <!-- The two things you would otherwise script by hand — fleets of sessions,
-         and the interface itself — are both reachable in plain English from
-         inside a session, because thurbox-cli is installed beside thurbox and
-         the interface is a directory of text files. Two parallel categories, so
-         a 2-up card grid rather than the numbered .step list used above. -->
-    <section class="section ask-section" id="just-ask">
-      <div class="container">
-        <p class="section-eyebrow">You are already in a coding agent</p>
-        <h2>Just ask for it</h2>
-        <p class="section-lede">
-          <code>thurbox-cli</code>
-          is installed beside
-          <code>thurbox</code>
-          and the interface is a directory of text files &mdash; so the two things you would
-          otherwise script by hand are a sentence from inside any session.
-        </p>
-
-        <div class="grid grid-2 grid--stretch">
-          <div class="card ask-card">
-            <div class="card-icon" aria-hidden="true">&#x2263;</div>
-            <h3>Orchestrate sessions</h3>
-            <p>
-              Fleet's command line creates, prompts and tears down sessions, so an agent can spin up a
-              whole set of sessions for you. Everything it does appears in your running TUI within
-              a tick &mdash; both read the same Fleet.
-            </p>
-            <ul class="prompts">
-              <li>
-                Using Fleet, start a session per crate of this repository, and send each one a
-                prompt to refactor its crate.
-              </li>
-            </ul>
-            <p class="ask-card__more">
-              <a href="docs/orchestration.html">Orchestration patterns &rarr;</a>
-            </p>
-          </div>
-
-          <div class="card ask-card">
-            <div class="card-icon" aria-hidden="true">&#x25EB;</div>
-            <h3>Reshape the interface</h3>
-            <p>
-              Every pane is a Lua file, so changing the UI is also just a request. It works from
-              <strong>any</strong>
-              session, in whichever CLI you run, because thurbox ships a
-              <code>thurbox-ui</code>
-              skill that loads when the request is about the interface. Press
-              <kbd>F10</kbd>
-              and the change is on your screen.
-            </p>
-            <ul class="prompts">
-              <li>Add my project logs within a dedicated pane on the right in the thurbox UI.</li>
-              <li>
-                Add a pane on the left with CPU and RAM usage. There is a
-                <code>top</code>
-                example plugin &mdash; install it and give it a slot in the layout.
-              </li>
-              <li>Move the search strip to the bottom and make the session column 30% wide.</li>
-              <li>Install the info panel plugin.</li>
-            </ul>
-            <p class="ask-card__more">
-              <a href="docs/interface.html#ask-the-agent">What that actually does &rarr;</a>
-            </p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Prerequisites -->
-    <section class="install section" id="prerequisites">
-      <div class="container">
-        <div class="section-title">
-          <h2>Prerequisites</h2>
-          <p>What you need before running Thurbox &mdash; <a href="docs/installation.html">full installation guide</a></p>
-        </div>
-
-        <div class="install-main">
-          <div class="prereqs">
-            <h3>Prerequisites</h3>
-            <ul>
-              <li>
-                <strong>tmux >= 3.2</strong>
-                (or psmux >= 3.3.8 on native Windows)
-                &mdash; session backend
-              </li>
-              <li>
-                <strong>fleet</strong>
-                and
-                <strong>runtime-mux</strong>
-                &mdash; the engine and its runtime, installed by the install script
-              </li>
-              <li>
-                <strong>A coding-agent CLI</strong>
-                &mdash; e.g.
-                <a href="https://github.com/anthropics/claude-code" target="_blank" rel="noopener">
-                  claude
-                </a>
-                or codex &mdash; any agent Fleet has a harness profile for
-              </li>
-              <li>
-                <strong>git</strong>
-                &mdash; your repositories, and the worktrees the runtime makes
-              </li>
-              <li>
-                <strong>Rust 1.95+</strong>
-                &mdash; only for building from source
-                <span class="optional">(optional)</span>
-              </li>
-            </ul>
-          </div>
-        </div>
       </div>
     </section>
 
@@ -773,8 +203,8 @@ Ctrl+,  Settings</pre>
         <span class="v">9</span>
       </span>
       <span class="hud-bar__seg hud-bar__seg--hide-sm">
-        <span class="k">Backend</span>
-        <span class="v">tmux</span>
+        <span class="k">Runtime</span>
+        <span class="v">mux</span>
       </span>
       <span class="hud-bar__seg">
         <span class="k">License</span>

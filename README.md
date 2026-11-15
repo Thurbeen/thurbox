@@ -68,6 +68,9 @@ Fleet. You also need:
 - **git**
 - at least one coding-agent CLI
 
+**Fleet on its own** needs no thurbox: run the same script, then `fleet init`
+and `fleet up`, and drive it with `fleet` ([Fleet's install](https://thurbox.thurbeen.eu/docs/fleet-install.html)).
+
 **Upgrading from 2.x:** a 2.x install never updates itself to 3.x, and
 `thurbox-cli update` stays on 2.x. Run the install script again.
 
@@ -130,9 +133,11 @@ session opened there you can just ask your agent:
 ## Documentation
 
 [**thurbox.thurbeen.eu/docs**](https://thurbox.thurbeen.eu/docs/) is the manual:
+[Fleet](https://thurbox.thurbeen.eu/docs/fleet.html) and its
+[features](https://thurbox.thurbeen.eu/docs/fleet-features.html),
 [installation](https://thurbox.thurbeen.eu/docs/installation.html),
 [tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html),
-[features](https://thurbox.thurbeen.eu/docs/features.html),
+[thurbox's features](https://thurbox.thurbeen.eu/docs/thurbox-features.html),
 [keybindings](https://thurbox.thurbeen.eu/docs/keybindings.html),
 [configuration](https://thurbox.thurbeen.eu/docs/configuration.html),
 [agents](https://thurbox.thurbeen.eu/docs/agents.html),
