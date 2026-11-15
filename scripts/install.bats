@@ -245,10 +245,29 @@ fleet_only_installed() {
   rm -rf "$tmpdir"
 }
 
-@test "THURBOX_FLEET_ONLY=1 is the same as --fleet-only" {
+@test "THURBOX_FLEET_ONLY=1 is the same as --fleet-only, and says it skipped thurbox" {
   fake_release
   run_installer THURBOX_FLEET_ONLY=1 sh "${BATS_TEST_DIRNAME}/install.sh"
   fleet_only_installed
+  [[ "$log" == *"THURBOX_FLEET_ONLY is set"* ]]
+  rm -rf "$tmpdir"
+}
+
+@test "--fleet-only does not blame THURBOX_FLEET_ONLY" {
+  fake_release
+  run_installer THURBOX_FLEET_ONLY= sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
+  fleet_only_installed
+  [[ "$log" != *"THURBOX_FLEET_ONLY"* ]]
+  rm -rf "$tmpdir"
+}
+
+@test "THURBOX_FLEET_ONLY=0 is a full install" {
+  fake_release
+  run_installer THURBOX_FLEET_ONLY=0 sh "${BATS_TEST_DIRNAME}/install.sh"
+  [ "$code" -eq 0 ]
+  for bin in $("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries); do
+    [ -x "$dest/$bin" ]
+  done
   rm -rf "$tmpdir"
 }
 

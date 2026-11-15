@@ -218,6 +218,8 @@ show_success() {
     step "• Check the setup:   ${C_CYAN}fleet doctor${C_RESET}"
     step "• Run it:            ${C_CYAN}fleet up${C_RESET}"
     step "• Hand it a Task:    ${C_CYAN}fleet apply -f task.json${C_RESET}"
+    # A shell that kept the variable from an earlier install must not skip thurbox silently.
+    [ -n "${FLEET_FLAG:-}" ] || warn "THURBOX_FLEET_ONLY is set, so thurbox was not installed. Unset it for a full install."
     return
   fi
   if [ -f "$1/fleet" ]; then
@@ -233,7 +235,7 @@ show_success() {
 main() {
   for arg in "$@"; do
     case "$arg" in
-      --fleet-only) FLEET_ONLY=1 ;;
+      --fleet-only) FLEET_ONLY=1 FLEET_FLAG=1 ;;
       *) error "Unknown option: $arg (the one option is --fleet-only)"; return 1 ;;
     esac
   done

@@ -24,6 +24,8 @@ form leaves no `THURBOX_FLEET_ONLY` variable behind in the session:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly
 ```
 
+A `THURBOX_FLEET_ONLY` variable stays set in the session. A later install in
+that session then skips thurbox, and the installer warns about it.
 Then run `fleet init`, `fleet doctor` and `fleet up`.
 [configuration.md](configuration.md) owns these commands. Nothing updates a
 fleet-only install: to update it, run the installer again.

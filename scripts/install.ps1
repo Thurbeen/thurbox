@@ -24,8 +24,8 @@
     .\install.ps1 -Version v0.1.0 -InstallDir C:\tools\thurbox
 
 .EXAMPLE
-    # Fleet alone, without thurbox:
-    $env:THURBOX_FLEET_ONLY = '1'; irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+    # Fleet alone, without thurbox (leaves no variable behind in the session):
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly
 
 .NOTES
     Configuration can also be supplied via environment variables, which is the
@@ -58,8 +58,10 @@ $DownloadUrl = if ($env:THURBOX_DOWNLOAD_URL) { $env:THURBOX_DOWNLOAD_URL } else
 $Binaries = @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'workspace-git')
 $FleetBinaries = @('fleet', 'runtime-mux', 'workspace-git')
 # The env var is a default: an explicit -FleetOnly or -FleetOnly:$false wins.
+$FleetOnlyFromEnv = $false
 if (-not $PSBoundParameters.ContainsKey('FleetOnly') -and $env:THURBOX_FLEET_ONLY -and $env:THURBOX_FLEET_ONLY -ne '0') {
     $FleetOnly = [switch]$true
+    $FleetOnlyFromEnv = $true
 }
 # What this run installs.
 $Programs = if ($FleetOnly) { $FleetBinaries } else { $Binaries }
@@ -303,6 +305,10 @@ function Invoke-Install {
     Write-Warn 'Windows support is experimental for now - expect rough edges and please report issues.'
 
     Show-NextSteps -Dir $InstallDir -FleetOnly:$FleetOnly
+    # A session that kept the variable from an earlier install must not skip thurbox silently.
+    if ($FleetOnlyFromEnv) {
+        Write-Warn 'THURBOX_FLEET_ONLY is set, so thurbox was not installed. Remove it for a full install: Remove-Item Env:\THURBOX_FLEET_ONLY'
+    }
     Write-Host ''
     Write-Ok 'Installation complete! Happy hacking.'
 }

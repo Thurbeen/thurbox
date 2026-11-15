@@ -409,6 +409,21 @@ Describe 'A fleet-only install' {
         }
         $text | Should -Not -Match 'thurbox-cli'
         $text | Should -Not -Match 'Launch the TUI'
+        # Only the env var can leave a session installing Fleet alone unasked.
+        if ($Form -eq '-FleetOnly') {
+            $text | Should -Not -Match 'THURBOX_FLEET_ONLY'
+        } else {
+            $text | Should -Match 'THURBOX_FLEET_ONLY is set'
+        }
+    }
+
+    It 'installs every shipped program when THURBOX_FLEET_ONLY is 0' {
+        $env:THURBOX_FLEET_ONLY = '0'
+        . $script:ScriptPath
+        Invoke-Install
+        foreach ($name in $script:Shipped) {
+            Test-Path -LiteralPath (Join-Path $script:Dest "$name.exe") | Should -BeTrue
+        }
     }
 
     It 'lets an explicit -FleetOnly:$false win over THURBOX_FLEET_ONLY' {

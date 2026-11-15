@@ -222,7 +222,11 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 `install.ps1 -FleetOnly`, or `THURBOX_FLEET_ONLY=1` for either, installs only
 `FLEET_BINARIES` from `scripts/ci/release-archive.sh` (`fleet`, `runtime-mux`,
 `workspace-git`; `--fleet-binaries` prints them, and `install.bats` holds them
-to a subset of `BINARIES`) and prints only Fleet's next steps. The in-app
+to a subset of `BINARIES`) and prints only Fleet's next steps. `0` turns the
+variable off, an explicit `-FleetOnly:$false` wins over it, and a fleet-only
+install the variable chose warns that it skipped thurbox. The documented
+Windows form is `& ([scriptblock]::Create((irm …/install.ps1))) -FleetOnly`,
+which leaves no variable behind in the session. The in-app
 updater lives in thurbox and thurbox-cli, so a fleet-only install is updated by
 re-running the installer (`docs/thurbox/config.md`, auto-update).
 
