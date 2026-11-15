@@ -175,6 +175,7 @@ export const RENDERED_DOCS = [
   'docs/runtime',
   'docs/thurbox/plugins.md',
   'docs/thurbox/kernel.md',
+  'docs/observability.md',
 ];
 
 const REPO_URL = 'https://github.com/Thurbeen/thurbox';
@@ -243,13 +244,15 @@ function listRepoDocs() {
         .fill('..')
         .join('/'),
       docsBase: '../'.repeat(depth),
-      product: { 'docs/fleet': 'Fleet', 'docs/thurbox': 'thurbox' }[dir] ?? 'Runtime',
+      product:
+        { 'docs/fleet': 'Fleet', 'docs/thurbox': 'thurbox', docs: 'Fleet' }[dir] ?? 'Runtime',
       // The sidebar entry this page sits under, if any.
       currentPage:
         {
           'docs/fleet/README.md': 'fleet-reference',
           'docs/fleet/configuration.md': 'fleet-configuration',
           'docs/fleet/resources/workspace.md': 'fleet-workspace',
+          'docs/observability.md': 'observability',
           'docs/thurbox/plugins.md': 'thurbox-plugins',
           'docs/thurbox/kernel.md': 'thurbox-kernel',
         }[src] ?? (dir === 'docs/fleet' && file.includes('/') ? `fleet-${area}` : ''),
