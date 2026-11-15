@@ -81,7 +81,8 @@ breadcrumb: 'Fleet features'
 <p>
   A <a href="fleet/resources/cron-task.html">CronTask</a> creates a Task at each time of a cron
   schedule, from a Task template: a nightly review, a weekly dependency update, a check every
-  hour. Its controller keeps a short history and skips a run whose time has passed.
+  hour. Its controller keeps a short history and, by default, skips a time while the previous Task
+  still runs.
 </p>
 
 <h2 id="headless-cli">
