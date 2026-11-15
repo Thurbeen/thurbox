@@ -1845,8 +1845,11 @@ impl Manager<'_> {
         // The default TaskConfig is taken at a Task's first launch only: one
         // that launched without it keeps that launch. A launch frozen from
         // it is kept even when it went before the launch reached status.
+        // A Task with no harness of its own takes one at its launch, or
+        // its launch fails: it never starts without one.
         let needs_launch = spec.config_ref.is_some()
             || !spec.env.is_empty()
+            || obj.spec.get("harness").is_none()
             || st.execution.is_some()
             || (!obj.is_deleting() && spec.dispatch && self.launch_saved(obj)?)
             || (st.session.is_none()

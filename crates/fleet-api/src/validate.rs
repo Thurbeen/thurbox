@@ -114,11 +114,14 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     }
     validate_env(&s.env)?;
     validate_pause_after(s.pause_after_ms)?;
+    // A Task with no harness of its own takes one from its TaskConfig, the
+    // one `configRef` names or `default`: the store cannot see either here,
+    // so `fleet apply` checks `default` and the launch checks the rest.
     validate_execution(
-        if s.config_ref.is_some() && !spec.as_object().is_some_and(|m| m.contains_key("harness")) {
-            None
-        } else {
+        if spec.as_object().is_some_and(|m| m.contains_key("harness")) {
             Some(&s.harness)
+        } else {
+            None
         },
         Some(&s.host),
         s.model.as_deref(),

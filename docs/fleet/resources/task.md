@@ -40,7 +40,7 @@ cannot change them.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `harness` | string | unless a TaskConfig gives it | The agent harness, such as `claude-code`, passed to the runtime as is. |
+| `harness` | string | unless its TaskConfig, the `configRef` one or [`default`](task-config.md#the-default-taskconfig), gives it | The agent harness, such as `claude-code`, passed to the runtime as is. |
 | `host` | string | no | The place the session runs on: `<runtime>/<place>`, or `local`, the default runtime's `local` place. Default `local`. |
 | `model` | string | no | The model the harness runs. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
 | `configRef` | `{name}` | no | A [TaskConfig](task-config.md) with execution defaults. |

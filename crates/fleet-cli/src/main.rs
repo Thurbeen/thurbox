@@ -2131,32 +2131,54 @@ fn cmd_apply(
             serde_json::from_value(item).map_err(|e| fail(format!("item {i}: {e}")))?;
         objs.push(obj);
     }
+    // The TaskConfig a Task takes its defaults from, as the manager
+    // resolves it: the one `configRef` names, else `default`. Of several of
+    // one name in the batch, the last is the one stored; else the store's.
+    let task_config = |obj: &Object| {
+        let name = obj.spec["configRef"]["name"]
+            .as_str()
+            .unwrap_or(fleet_api::config::DEFAULT_TASK_CONFIG);
+        objs.iter()
+            .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
+            .cloned()
+            .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
+                Observation::Known(found) => found.filter(|o| !o.is_deleting()),
+                Observation::Unknown { .. } => None,
+            })
+    };
+    // A Task with no harness and no `configRef` takes `default`'s. One
+    // whose `configRef` names a TaskConfig not there yet is checked at its
+    // launch.
+    if let Some(obj) = objs.iter().find(|obj| {
+        obj.kind == fleet_api::task::KIND
+            && obj.spec.get("harness").is_none()
+            && obj.spec.get("configRef").is_none()
+            && task_config(obj).is_none_or(|c| c.spec["harness"].as_str().is_none())
+    }) {
+        return Err(Failure {
+            code: exit::ERROR,
+            message: format!(
+                "{}: spec.harness is missing, and the TaskConfig default gives none",
+                obj.key()
+            ),
+            hint: Some("give the Task a harness, or a harness to the TaskConfig default".into()),
+        });
+    }
     // `local` naming no place is refused here, by name: the runtime would
     // only read the place as unreachable. The host is the manager's rule
-    // (`effective_host`), from the TaskConfig the manager resolves: the
-    // one `configRef` names, else `default`. A named TaskConfig not there
-    // yet leaves it untold; with no `default`, the host is `local`. Of
-    // several of one name in the batch, the last is the one stored.
+    // (`effective_host`), from the TaskConfig the Task takes. A named
+    // TaskConfig not there yet leaves it untold; with no `default`, the
+    // host is `local`.
     let on_local = |obj: &Object| {
         if obj.kind != fleet_api::task::KIND {
             return false;
         }
-        let named = obj.spec["configRef"]["name"].as_str();
         let config_host = if obj.spec.get("host").is_some() {
             None
         } else {
-            let name = named.unwrap_or(fleet_api::config::DEFAULT_TASK_CONFIG);
-            let config = objs
-                .iter()
-                .rfind(|o| o.kind == fleet_api::config::TASK_CONFIG && o.metadata.name == name)
-                .cloned()
-                .or_else(|| match store.get(fleet_api::config::TASK_CONFIG, name) {
-                    Observation::Known(found) => found.filter(|o| !o.is_deleting()),
-                    Observation::Unknown { .. } => None,
-                });
-            match config {
+            match task_config(obj) {
                 Some(config) => config.spec["host"].as_str().map(str::to_string),
-                None if named.is_some() => return false,
+                None if obj.spec.get("configRef").is_some() => return false,
                 None => None,
             }
         };

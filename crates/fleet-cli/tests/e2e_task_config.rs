@@ -379,3 +379,43 @@ fn a_launch_frozen_from_the_default_config_is_kept_when_the_config_goes_before_i
     let st = e.status("t1");
     assert_eq!(st["execution"]["pauseAfterMs"], 60000, "{st:#}");
 }
+
+#[test]
+fn a_task_with_no_configref_takes_its_harness_model_and_env_from_the_default_config() {
+    let e = Env::new("config-default-fields");
+    let mut bare = task("bare", true);
+    let spec = bare["spec"].as_object_mut().unwrap();
+    spec.remove("harness");
+    spec.remove("host");
+    // With no default to give one, a Task with no harness is refused.
+    e.apply(bare.clone())
+        .code(1)
+        .stderr_has("TaskConfig default");
+    // The default gives it, applied in the same batch or before.
+    let default = object(
+        "TaskConfig",
+        "default",
+        json!({"harness": "codex", "model": "default-model", "env": {"FROM_DEFAULT": "yes"}}),
+    );
+    e.apply(json!([default, bare])).ok();
+    let mut later = bare.clone();
+    later["metadata"]["name"] = json!("later");
+    e.apply(later).ok();
+    e.reconcile().ok();
+    for name in ["bare", "later"] {
+        let execution = e.status(name)["execution"].clone();
+        assert_eq!(execution["harness"], "codex", "{name}: {execution:#}");
+        assert_eq!(execution["model"], "default-model", "{name}: {execution:#}");
+        assert_eq!(execution["host"], "local", "{name}: {execution:#}");
+        let session = e
+            .host()
+            .session(&e.session_key(name))
+            .unwrap()
+            .expect("a session");
+        assert_eq!(session.harness, "codex", "{name}");
+        assert_eq!(
+            session.env.get("FROM_DEFAULT").map(String::as_str),
+            Some("yes")
+        );
+    }
+}
