@@ -13,7 +13,7 @@
 //! So the host's own login `PATH` is read once per host — the user's `$SHELL
 //! -l` and `/bin/sh -l`, stdin closed, each under `timeout` — cached for the
 //! process, and spliced in front of what the launcher gives:
-//! `path_prepend` (hosts.toml), then the login shells', then the launcher's,
+//! `path_prepend` (the host entry), then the login shells', then the launcher's,
 //! de-duplicated in that order. The same `PATH` leads the multiplexer commands
 //! thurbox runs there (`TmuxTransport::with_path`), so a binary only a login
 //! shell finds — Homebrew's tmux on a Mac — runs as the probe offered it. A
@@ -69,7 +69,7 @@ pub struct HostEnv {
 /// **last** sentinel is kept, so an rc file that echoes something on a login
 /// shell cannot end up as a `PATH` component. `-l` without `-i` and stdin on
 /// `/dev/null`: nothing here can print a prompt or wait for input. Last, each
-/// multiplexer found on `prepend` (hosts.toml `path_prepend`), those `PATH`s
+/// multiplexer found on `prepend` (the host entry's `path_prepend`), those `PATH`s
 /// and the launcher's — the order [`plan`] gives the commands that run it — is
 /// named on an `@mux` line: one probe answers both questions a host is asked.
 pub fn probe_script(prepend: &[String]) -> String {
@@ -155,7 +155,7 @@ pub enum PathPlan {
     Prepend(Vec<Component>),
 }
 
-/// Merge `prepend` (hosts.toml `path_prepend`) with what the probe read.
+/// Merge `prepend` (the host entry's `path_prepend`) with what the probe read.
 ///
 /// Order: `prepend`, the user's login shell, `/bin/sh -l`, the launcher's
 /// `PATH`; each directory kept at its first position. `None` means "change
@@ -386,12 +386,12 @@ fn probe(host: &HostDef) -> Option<HostEnv> {
     match &env {
         None => warn!(
             "host '{}': could not read the host's PATH; agents there keep the default PATH \
-             (set `path_prepend` in hosts.toml to add directories)",
+             (set the host entry's `path_prepend` to add directories)",
             host.name
         ),
         Some(e) if e.shell_login.is_none() && e.sh_login.is_none() => warn!(
             "host '{}': the login shell did not report a PATH; agents there keep the default \
-             PATH (set `path_prepend` in hosts.toml to add directories)",
+             PATH (set the host entry's `path_prepend` to add directories)",
             host.name
         ),
         Some(e) => debug!("host '{}': login PATH read: {e:?}", host.name),

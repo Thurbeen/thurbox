@@ -13,7 +13,7 @@
 //!
 //! A key always names its multiplexer. A **host key** — `ssh:<host>` or
 //! `wsl:<host>`, what the host picker carries — names a machine only; its
-//! multiplexer is the host's own, which `hosts.toml` holds
+//! multiplexer is the host's own, which its host entry holds
 //! ([`HostRegistry::resolve`](super::HostRegistry::resolve)).
 
 use std::fmt;
@@ -83,7 +83,7 @@ pub fn host_of_key(key: &str) -> Option<&str> {
     let rest = [SSH_PREFIX, WSL_PREFIX]
         .iter()
         .find_map(|prefix| key.strip_prefix(prefix))?;
-    // A host name holds no `:` (`hosts.toml` refuses one), so a known
+    // A host name holds no `:` (a registry refuses one), so a known
     // multiplexer after the last one is the route's.
     let host = match rest.rsplit_once(':') {
         Some((host, name)) if Multiplexer::parse(name).is_ok() => host,

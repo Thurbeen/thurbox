@@ -651,7 +651,7 @@ mod tests {
     }
 
     /// `doctor` lists the hosts Fleet defines, which are where a session can
-    /// run, instead of thurbox's own `hosts.toml`.
+    /// run.
     #[cfg(unix)]
     #[test]
     fn doctor_reports_fleets_hosts() {

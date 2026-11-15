@@ -909,7 +909,7 @@ host's own platform ([a host's platform](../runtime/runtime-mux.md#a-hosts-platf
 ## ADR-29: One backend registry per process; lifecycle goes through the route's backend
 
 **Choice**: each composition root builds the `BackendRegistry` once and hands
-it down: `coordinator::boot` for the interface (`backend::wiring::configured`,
+it down: `coordinator::boot` for the interface (`backend::wiring::local_only`,
 to `Terminals::with_registry`), and the `runtime-mux` program's `main` for the
 runtime protocol (`wiring::local_only`, to `protocol::serve`). Every verb asks
 it for the backend its route names and acts through the trait: `create_window`
@@ -939,9 +939,8 @@ route the registry does not serve must not fall through to the local server.
 
 **Consequences**: RMUX and any future Herdr adapter own a session's lifecycle by
 registering for its route in `wiring`; no consumer changes. The interface's
-registry is built from the `hosts.toml` of its start, so a host added later is
-served once the interface restarts. A host is served for every multiplexer an
-adapter implements (ADR-28). Where
+registry holds this machine's adapters only. A host is served for every
+multiplexer an adapter implements (ADR-28). Where
 the interface holds a connection to a backend, a lifecycle kill goes through
 it (reconnecting once on a dead link) rather than one-shot; either way it
 kills the pane's whole window, so a window somebody split leaves nothing
@@ -1263,8 +1262,8 @@ One repository keeps a change across components in one change and one CI.
 **Status**: in progress. The code lands in steps. The runtime protocol's
 version 2 has landed: each request names a place, and `manifest` reports
 places. Fleet's config declares places, and its `[hosts]` table is gone.
-Until each other step lands, thurbox's `hosts.toml` works as documented
-today.
+thurbox reads no `hosts.toml`: its companion shell opens through Fleet.
+`runtime-mux` places over ssh and WSL are planned.
 
 **Choice**: a host is a place of a runtime.
 

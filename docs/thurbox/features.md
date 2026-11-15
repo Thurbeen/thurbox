@@ -501,68 +501,16 @@ adding a harness profile to Fleet ([agents.md](agents.md)).
 ### Remote SSH & WSL sessions
 
 Which Fleet manages a session, and the place it runs on, are in
-[Where sessions run](../where-sessions-run.md).
-
-Like agents, off-local hosts are **data**. A session can run on a
-remote machine over SSH, or inside a local **WSL distro**, while the
-TUI stays local. Hosts are declared in
-`~/.config/thurbox/hosts.toml` (seeded commented-out, so a fresh
-install has none) — **and WSL distros
-are auto-discovered** (`wsl.exe -l -q`), so they need no entry at all.
-Running thurbox *inside* a distro discovers its siblings but not the
-distro itself: that one is this machine, and its sessions are plain
-local ones.
-
-```toml
-[[hosts]]
-name = "devbox"            # selectable as backend "ssh:devbox"
-destination = "me@devbox"  # resolved via ~/.ssh/config
-ssh_opts = ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]
-
-# Only needed to override an auto-discovered WSL distro's defaults:
-[[hosts]]
-name = "ubuntu"            # selectable as backend "wsl:ubuntu"
-kind = "wsl"
-distro = "Ubuntu-22.04"    # defaults to `name`
-```
-
-Each `[[hosts]]` entry (`session::HostDef`) — the seeded `hosts.toml`
-documents each field inline:
-
-| Field | Required | Default | Meaning |
-|-------|----------|---------|---------|
-| `name` | yes | — | unique id; registers the backend `ssh:<name>` / `wsl:<name>` and is what `--host` expects |
-| `kind` | no | `ssh` | transport: `ssh` (remote machine) or `wsl` (local distro) |
-| `destination` | for ssh | — | ssh target (`user@host` or a `~/.ssh/config` alias) |
-| `distro` | no | `name` | WSL distro name (`kind = "wsl"` only) |
-| `ssh_opts` | no | `[]` | extra `ssh` flags, one token per array element; no `~` expansion (use absolute paths) |
-| `socket` | no | `thurbox` | host `tmux -L` socket name |
-| `session` | no | `thurbox` | host tmux session name |
-
-Each host becomes a route named `ssh:<name>` / `wsl:<name>`. A session
-created on it is a Task whose `spec.host` is `<name>`, which must be a host
-Fleet's own config defines: Fleet runs the agent there. thurbox's own use of
-the host is none: the companion shell opens through Fleet (see *Shell Pane
-Toggle*). For **SSH**, thurbox shells out to the
-system `ssh` binary, so authentication, keys, and connection multiplexing
-come from your `~/.ssh/config` — thurbox never handles credentials. A **WSL
-distro** is reached with `wsl.exe -d <distro>` (no credentials, no network),
-so the *same* tmux control-mode protocol applies — only the launch prefix
-differs. Over `ssh` the remote shell re-splits the line, so each word is
-POSIX-quoted. Through WSL each word is its own argument of `wsl.exe
---exec`, which hands argv over verbatim, after a small `sh` script that
-sources `/etc/profile` and `~/.profile` for their `PATH` (each only when
-it is there, with stdin closed and output discarded), and then `exec`s the
-words. A word holding a space arrives
-whole, a program on a `PATH` set in the profile is found, and nothing the
-profile prints reaches the program's output. `wsl.exe` is started off
-the interface's terminal, or an attached WSL session takes the keyboard
-([runtime-mux](../runtime/runtime-mux.md#hosts-and-transports)). The session list says where a session runs with its host row, or,
-with host rows off, with an `@` after the dot of the top row of its tree.
-
-**Why a config file rather than ad-hoc destinations?** Named hosts
-give the picker stable, readable entries, and a host's name is the one
-Fleet's config and thurbox's both use for the same machine.
+[Where sessions run](../where-sessions-run.md). thurbox keeps no file of
+machines of its own: it reaches another machine only through a Fleet listed
+in `settings.toml` (`[fleets.<name>]`, over ssh or WSL), and that Fleet's
+runtime reaches the place. The agent's pane and its companion shell are the
+streams `fleet attach` and `fleet shell` name, over the same link. For
+**SSH**, thurbox shells out to the system `ssh` binary, so authentication,
+keys, and connection multiplexing come from your `~/.ssh/config` — thurbox
+never handles credentials. The session list says where a session runs with
+its host row, or, with host rows off, with an `@` after the dot of the top row
+of its tree.
 
 **Why lean on `~/.ssh/config`?** Re-implementing SSH auth, agent
 forwarding, and ControlMaster multiplexing would be a large, fragile

@@ -775,8 +775,7 @@ impl SnapshotStore {
     }
 }
 
-/// A remote session's host name — `ssh:devbox:rmux` → `devbox` — whether or
-/// not `hosts.toml` still describes it.
+/// A remote session's host name — `ssh:devbox:rmux` → `devbox`.
 ///
 /// A session's machine is published to the interface bare while the host
 /// picker carries the prefixed backend name, and the two have to answer as one

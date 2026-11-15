@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Configuration — Thurbox Docs'
-description: 'Every config file and knob Thurbox reads: hosts.toml, settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, interface.json, and environment variables.'
+description: 'Every config file and knob Thurbox reads: settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, interface.json, and environment variables.'
 currentPage: 'configuration'
 breadcrumb: 'Configuration'
 ---
@@ -39,9 +39,8 @@ breadcrumb: 'Configuration'
             A session's terminal belongs to Fleet's runtime: <code>runtime-mux</code>
             starts it on this platform's default multiplexer, tmux on Linux and
             macOS and psmux on Windows. The top-level <code>multiplexer</code> key in
-            <code>settings.toml</code> is accepted and ignored since 3.0. A
-            <code>[[hosts]]</code> entry's <code>multiplexer</code> names the
-            multiplexer of the companion shell opened on that host.
+            <code>settings.toml</code> is accepted and ignored since 3.0. The
+            companion shell opens beside the session, on the same multiplexer.
           </p>
           <h2 id="files">
             Files at a glance
@@ -58,13 +57,6 @@ breadcrumb: 'Configuration'
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td><code>~/.config/thurbox/hosts.toml</code></td>
-                <td>TOML</td>
-                <td>you</td>
-                <td>startup</td>
-                <td>remote SSH hosts</td>
-              </tr>
               <tr>
                 <td><code>~/.config/thurbox/settings.toml</code></td>
                 <td>TOML</td>
@@ -181,15 +173,12 @@ breadcrumb: 'Configuration'
             <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             feature flags, and the write-once scalars take effect on the next launch and the toast says so.
             A change to
-            <code>hosts.toml</code>
-            or
             <code>themes.toml</code>
-            , needs a restart.
+            needs a restart.
           </p>
           <p>
             Config problems land in the log file. Unknown TOML keys are tolerated and reported by
-            name, while syntax/type errors fall back to zero hosts or defaults
-            (settings). Check everything from the command line:
+            name, while syntax/type errors fall back to defaults. Check everything from the command line:
           </p>
           <pre><code class="language-bash">thurbox-cli config validate   # strict parse of every file; exit 1 on problems
 thurbox-cli config show       # effective config + where each value came from</code></pre>
@@ -215,7 +204,7 @@ thurbox-cli config show       # effective config + where each value came from</c
               </tr>
               <tr>
                 <td>Run sessions on another machine</td>
-                <td>a <code>[hosts.&lt;name&gt;]</code> in Fleet's config; <a href="#hosts-toml"><code>hosts.toml</code></a> for how runtime-mux reaches it</td>
+                <td>a Fleet there, listed in <code>settings.toml</code>'s <code>[fleets.&lt;name&gt;]</code>; or a place in Fleet's <code>[runtimes.&lt;name&gt;.places]</code> (<a href="https://github.com/Thurbeen/thurbox/blob/main/docs/where-sessions-run.md">Where sessions run</a>)</td>
               </tr>
               <tr>
                 <td>Turn a whole TUI feature on/off (mouse, notifications&hellip;)</td>
@@ -260,71 +249,6 @@ thurbox-cli config show       # effective config + where each value came from</c
           </p>
           <p id="agents-toml">
             The agents are Fleet's harness profiles (<a href="agents.html">Agents</a>).
-          </p>
-
-          <h2 id="hosts-toml">
-            hosts.toml
-            <a href="#hosts-toml" class="heading-anchor">#</a>
-          </h2>
-          <p>
-            runtime-mux's host config: each
-            <code>[[hosts]]</code>
-            entry says how to reach an SSH machine as
-            <code>ssh:&lt;name&gt;</code>
-            (WSL distros are discovered). Which host runs a session is Fleet's
-            <code>[hosts.&lt;name&gt;]</code>
-            ; thurbox reads this file only to reattach a companion shell on such a host. Seeded
-            fully commented-out. A malformed file means zero remote hosts and shows the error.
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>Field</th>
-                <th>Required</th>
-                <th>Default</th>
-                <th>Purpose</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>name</code></td>
-                <td>yes</td>
-                <td>&mdash;</td>
-                <td>route <code>ssh:&lt;name&gt;</code></td>
-              </tr>
-              <tr>
-                <td><code>destination</code></td>
-                <td>yes</td>
-                <td>&mdash;</td>
-                <td>ssh target (<code>user@host</code> or <code>~/.ssh/config</code> alias)</td>
-              </tr>
-              <tr>
-                <td><code>ssh_opts</code></td>
-                <td>no</td>
-                <td><code>[]</code></td>
-                <td>extra ssh flags, one token per element</td>
-              </tr>
-              <tr>
-                <td><code>socket</code></td>
-                <td>no</td>
-                <td><code>thurbox</code></td>
-                <td>
-                  remote <code>tmux -L</code> socket name; the socket file is under the host's thurbox
-                  data dir (<code>~/.local/share/thurbox/tmux/</code>)
-                </td>
-              </tr>
-              <tr>
-                <td><code>session</code></td>
-                <td>no</td>
-                <td><code>thurbox</code></td>
-                <td>remote tmux session name</td>
-              </tr>
-            </tbody>
-          </table>
-          <p>
-            Auth comes entirely from your
-            <code>~/.ssh/config</code>
-            ; thurbox never handles credentials. Host changes require a restart.
           </p>
 
           <h2 id="settings-toml">

@@ -297,7 +297,7 @@ work. `fleet runtime check` holds every runtime to this.
 
 `runtime-mux` depends on no other crate of the repository, and reads nothing
 of the program embedding it: the settings it honours and where that program
-keeps its data are passed in (`MuxSettings`, `HostsConfig`). Inside it, the
+keeps its data are passed in (`MuxSettings`). Inside it, the
 module rules in `crates/architecture.toml` give every module under
 `crates/runtime-mux/src/` one entry naming what it may reference, and
 `arch-rules` checks them; that file is the one copy of the graph, and its

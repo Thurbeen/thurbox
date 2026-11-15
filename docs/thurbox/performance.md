@@ -716,7 +716,7 @@ were enough:
   (`ControlMaster=auto` behind the existing first-occurrence-wins contract);
   worktree stats read one `status --porcelain=v2 --branch` instead of 5–8
   processes; untracked diffs render counts and patch from one invocation;
-  `hosts.toml` loads once per process; pane pids resolve through one
+  pane pids resolve through one
   `list-panes` per backend per second instead of one serialized round trip per
   session.
 

@@ -103,7 +103,7 @@ forbidden_methods = [
 
 # Sessions on a terminal multiplexer, local or on a host over ssh or wsl.exe.
 # Knows nothing of thurbox: what it needs from settings and from where
-# thurbox keeps its files is passed in (`MuxSettings`, `HostsConfig`). Its
+# thurbox keeps its files is passed in (`MuxSettings`). Its
 # module rules follow, then the boundary's shape: the adapters are peers, only
 # the factory names one, and the route and the contract know no launcher.
 [crates.runtime-mux]
@@ -118,18 +118,15 @@ governed = ["tmux_compat"]
 # The host model a route names: pure data, the sink.
 host = { use = [] }
 # Pure values: the identity a window is stamped with, the hyperlink runs a
-# pane records, what the embedder injects, and the TOML parse.
+# pane records and what the embedder injects.
 session_id = { use = [] }
 hyperlink = { use = [] }
 settings = { use = [] }
-toml_file = { use = [] }
 # Process lookups: `PATH` and the WSL distro this process runs in.
 path_lookup = { use = [] }
 # How a command reaches a machine: quoting, ssh and `wsl.exe` launchers.
 # `host` for the one conversion from a host entry to its launcher.
 shell = { use = ["host"] }
-# `hosts.toml`: loading, WSL discovery and the loopback repair plan.
-hosts = { use = ["host", "path_lookup", "shell", "toml_file"] }
 # A host's `PATH` and the multiplexers on it, probed once and cached.
 host_path = { use = ["host", "shell"] }
 # Whether the binaries a session needs are installed.
@@ -244,7 +241,7 @@ why = "no adapter serves Herdr, so the factory may not"
 # simulates the other OS through `shell::simulate_local`.
 [[crates.runtime-mux.restricted]]
 paths = [
-  "runtime_mux::shell", "runtime_mux::host::host_def", "runtime_mux::hosts",
+  "runtime_mux::shell", "runtime_mux::host::host_def",
   "runtime_mux::tmux", "runtime_mux::psmux", "runtime_mux::rmux", "runtime_mux::tmux_compat",
   "#cfg::windows", "#cfg::unix",
 ]
@@ -315,10 +312,6 @@ config = { use = [] }
 # What the interface remembers between runs (`interface.json`): data in, the
 # editor mode's type from `session`.
 "config::interface_state" = { use = ["session", "config::file"] }
-# hosts.toml in thurbox's config directory: the runtime's loader bound to
-# `config::file`. A module of its own so that reading global host config is a
-# visible decision.
-"config::hosts" = { use = ["session", "config::file"] }
 "config::settings" = { use = ["session", "config::file"] }
 "config::themes" = { use = ["theme", "config::file"] }
 # Self-update: whether a newer release exists, and installing it.
@@ -327,10 +320,9 @@ update = { use = [] }
 "update::version_check" = { use = ["paths", "agent::fetch"] }
 # The gateway to the multiplexer runtime (`runtime_mux`, ADR-41): its
 # re-exports, and what thurbox injects into it: `session` for the settings
-# type, `paths` for the data directory, `config::hosts` for the hosts the
-# factory registers. Every crossing into the runtime is an edge to this
+# type, `paths` for the data directory. Every crossing into the runtime is an edge to this
 # module, judged by the item it names (the concrete-backend check).
-backend = { use = ["session", "paths", "config::hosts"] }
+backend = { use = ["session", "paths"] }
 git = { use = ["session", "paths", "shell"] }
 # The theme presets and the user's overrides, in `ratatui` colours: data, but
 # rendering data, which `session`'s `external` list keeps out of the sink.
@@ -347,7 +339,7 @@ telemetry = { use = ["session"] }
 # its `ui.json` overrides). Both are kernel-owned surfaces asked about from
 # outside.
 cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "fleet_link"], path_only = [
-  "kernel", "backend", "config::file", "config::hosts", "config::automations",
+  "kernel", "backend", "config::file", "config::automations",
   "config::interface_state", "config::settings", "config::themes",
   "update::self_update", "update::version_check",
 ] }
@@ -402,13 +394,12 @@ clipboard = { use = ["paths", "session"] }
 
 # The modules that may name `runtime_mux` itself: the `backend` gateway, and
 # the ones re-exporting a runtime type as their own: the shell grammar
-# (`shell`), the host model and `SessionId` (`session`), the data directory and
-# binary lookup (`paths`), the hosts loader (`config::hosts`) and the TOML
-# reader (`config::file`). Everyone else reaches the runtime through them, so
-# the module rules see each crossing.
+# (`shell`), the host model and `SessionId` (`session`), and the data
+# directory and binary lookup (`paths`). Everyone else reaches the runtime
+# through them, so the module rules see each crossing.
 [[crates.thurbox.restricted]]
 paths = ["runtime_mux"]
-allowed = ["backend", "shell", "session", "paths", "config::hosts", "config::file"]
+allowed = ["backend", "shell", "session", "paths"]
 direct = true
 why = "reach the runtime through crate::backend or the module re-exporting it"
 
