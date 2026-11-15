@@ -74,10 +74,13 @@ const PLACE_READ_AFTER: u64 = 512 * 1024;
 /// two parts split by [`RESTART_SPLIT`]: the end of what it held before the
 /// offset `$2`, and the end of what came after. Each part is a byte range
 /// computed from the file's length first: `tail -c +N` seeks to it, and a
-/// read never scans more of the file than the two ranges.
+/// read never scans more of the file than the two ranges. The length is
+/// `ls -ln`'s, from the file's metadata: uutils' `wc -c`, Ubuntu's since
+/// 25.10, reads the whole file.
 fn place_read_script() -> String {
     format!(
-        "f=\"$HOME/${{1#\\~/}}\"; [ -e \"$f\" ] || exit 3; n=$(wc -c < \"$f\"); \
+        "f=\"$HOME/${{1#\\~/}}\"; [ -e \"$f\" ] || exit 3; \
+         n=$(ls -ln \"$f\" | awk '{{print $5}}'); \
          o=${{2:-0}}; [ \"$n\" -lt \"$o\" ] && o=0; \
          s=$((o > {PLACE_READ_BEFORE} ? o - {PLACE_READ_BEFORE} : 0)); \
          [ \"$o\" -gt \"$s\" ] && tail -c +$((s + 1)) \"$f\" | head -c $((o - s)); \
@@ -86,6 +89,11 @@ fn place_read_script() -> String {
          tail -c +$((a + 1)) \"$f\" | head -c {PLACE_READ_AFTER}"
     )
 }
+
+/// The `sh` script that prints the length of a place's signal file, `$1`
+/// (`~`-rooted), 0 when it is not there: `ls -ln`'s, from its metadata, as
+/// [`place_read_script`] takes it.
+const PLACE_LENGTH_SCRIPT: &str = "f=\"$HOME/${1#\\~/}\"; if [ -e \"$f\" ]; then ls -ln \"$f\" | awk '{print $5}'; else echo 0; fi";
 
 /// What a restart learns of the length of the session's signal file on
 /// another host.
@@ -886,9 +894,7 @@ impl ExecRuntime {
             Observation::Known(_) => {}
             Observation::Unknown { why } => return Length::Unknown(why),
         }
-        let script =
-            "f=\"$HOME/${1#\\~/}\"; if [ -e \"$f\" ]; then wc -c < \"$f\"; else echo 0; fi";
-        match self.exec_on(host, &["sh", "-c", script, "sh", file]) {
+        match self.exec_on(host, &["sh", "-c", PLACE_LENGTH_SCRIPT, "sh", file]) {
             Observation::Known(Executed::Exited {
                 code: Some(0),
                 stdout,
@@ -2038,20 +2044,23 @@ mod tests {
     }
 
     /// A read of a place's signal file costs its two bounded ranges, never
-    /// the whole file: a file of 1 TiB, a hole but for its ends, around a
-    /// restart offset in its middle, reads well inside the bound, under
-    /// `exec`'s cap, with the newest report last. A scan of it would take
-    /// minutes; the bound leaves a slow CI runner seconds of headroom.
+    /// the whole file. Each tool the read and the length read run is logged
+    /// by a shim in front of it on `PATH`: none of them is one that reads a
+    /// whole file (`wc`, `cat`; uutils' `wc -c` reads it, measured on
+    /// Ubuntu 26.04), each `tail` starts within a range of the restart
+    /// offset or the end, and each `head` takes at most a range. Counted in
+    /// calls, not time: a shared runner's clock proves nothing.
     #[cfg(unix)]
     #[test]
     fn a_place_signal_read_never_scans_the_whole_file() {
         use std::io::{Seek, SeekFrom, Write};
+        use std::os::unix::fs::PermissionsExt;
         let home = std::env::temp_dir().join(format!("fleet-exec-read-{}", std::process::id()));
         let dir = home.join("signals");
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("k.jsonl");
         let mut f = std::fs::File::create(&path).expect("file");
-        let half: u64 = 512 * 1024 * 1024 * 1024;
+        let half: u64 = 32 * 1024 * 1024;
         f.write_all(b"{\"at\":1,\"state\":\"idle\"}\n")
             .expect("old");
         f.seek(SeekFrom::Start(half)).expect("seek");
@@ -2060,25 +2069,65 @@ mod tests {
         f.seek(SeekFrom::Start(2 * half)).expect("seek");
         f.write_all(b"\n{\"at\":2,\"state\":\"working\"}\n")
             .expect("new");
+        let size = f.stream_position().expect("size");
         drop(f);
-        let started = Instant::now();
-        let mut spec = Spec::new("sh", Duration::from_secs(30))
-            .args(["-c", &place_read_script(), "sh", "~/signals/k.jsonl"])
-            .arg(offset.to_string());
-        spec.env
-            .push(("HOME".into(), home.to_string_lossy().into_owned()));
-        let out = fleet_exec::run(&spec);
-        let took = started.elapsed();
-        let _ = std::fs::remove_dir_all(&home);
-        let Outcome::Exited {
-            code: Some(0),
-            stdout,
-            ..
-        } = out
-        else {
-            panic!("the read failed: {}", out.failure());
+        let shims = home.join("shims");
+        std::fs::create_dir_all(&shims).expect("shims");
+        let log = home.join("calls.log");
+        let real = std::env::var("PATH").unwrap_or_default();
+        for tool in ["wc", "cat", "tail", "head", "dd", "ls", "awk", "stat"] {
+            let shim = shims.join(tool);
+            std::fs::write(
+                &shim,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"{tool} $*\" >> '{}'\nPATH='{real}' exec {tool} \"$@\"\n",
+                    log.display()
+                ),
+            )
+            .expect("shim");
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let run = |script: &str, args: &[String]| {
+            let mut spec = Spec::new("sh", Duration::from_secs(60))
+                .args(["-c", script, "sh", "~/signals/k.jsonl"])
+                .args(args.iter().map(String::as_str));
+            spec.env
+                .push(("HOME".into(), home.to_string_lossy().into_owned()));
+            spec.env
+                .push(("PATH".into(), format!("{}:{real}", shims.display())));
+            match fleet_exec::run(&spec) {
+                Outcome::Exited {
+                    code: Some(0),
+                    stdout,
+                    ..
+                } => stdout,
+                out => panic!("the read failed: {}", out.failure()),
+            }
         };
-        assert!(took < Duration::from_secs(20), "the read took {took:?}");
+        let length = run(PLACE_LENGTH_SCRIPT, &[]);
+        let stdout = run(&place_read_script(), &[offset.to_string()]);
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(String::from_utf8_lossy(&length).trim(), size.to_string());
+        for call in calls.lines() {
+            let words: Vec<&str> = call.split_whitespace().collect();
+            match words.as_slice() {
+                ["wc" | "cat", ..] => panic!("a whole-file read: {call}"),
+                ["tail", "-c", from, ..] => {
+                    let from: u64 = from.trim_start_matches('+').parse().expect(call);
+                    assert!(
+                        from > offset - PLACE_READ_BEFORE || from > size - PLACE_READ_AFTER,
+                        "a tail from before the ranges: {call}"
+                    );
+                }
+                ["head", "-c", count, ..] => {
+                    let count: u64 = count.parse().expect(call);
+                    assert!(count <= PLACE_READ_AFTER, "an unbounded head: {call}");
+                }
+                _ => {}
+            }
+        }
+        assert!(calls.lines().any(|c| c.starts_with("tail ")), "{calls}");
         assert!(stdout.len() < 1024 * 1024, "{} bytes", stdout.len());
         let text = String::from_utf8_lossy(&stdout);
         let (before, after) = text.split_once(RESTART_SPLIT).expect("the split");
