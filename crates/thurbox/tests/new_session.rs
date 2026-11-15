@@ -778,6 +778,42 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     );
 }
 
+/// A remote Fleet's home is the home of its own `local` only: another
+/// place of it is another machine, whose path field starts empty until that
+/// place names its home.
+#[test]
+fn a_remote_fleets_home_prefills_only_its_own_local() {
+    let mut world = World::default();
+    world.snapshot.fleets = three_fleets();
+    world.snapshot.fleets[0].home = Some("/home/box".into());
+
+    let host = host();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Repos on box/mux/wsl-dev"), "{screen}");
+    assert!(
+        !screen.contains("/home/box/"),
+        "box's home is not wsl-dev's: {screen}"
+    );
+    assert!(
+        screen.contains("type an absolute path on box/mux/wsl-dev, or a clone URL"),
+        "{screen}"
+    );
+
+    let host = self::host();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Repos on box/local"), "{screen}");
+    assert!(screen.contains("/home/box/"), "{screen}");
+}
+
 // ── Opening and closing ────────────────────────────────────────────────────
 
 #[test]
