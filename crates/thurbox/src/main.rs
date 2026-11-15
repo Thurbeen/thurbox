@@ -14,6 +14,8 @@
 mod coordinator;
 
 use std::error::Error;
+
+use clap::Parser as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -191,7 +193,35 @@ const STATUS_TTL: Duration = Duration::from_secs(5);
 // pool.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Both before boot: it writes the interface's config and starts `fleet
+    // up`, which neither a flag nor a run that cannot draw may do.
+    Args::parse();
+    require_terminal();
     coordinator::boot::run().await
+}
+
+/// The interface takes no options: `--version`, `--help`, and a usage line
+/// for anything else. Scripts drive thurbox through `thurbox-cli`.
+#[derive(clap::Parser)]
+#[command(
+    name = "thurbox",
+    version = env!("THURBOX_VERSION"),
+    about = "The thurbox terminal interface: every session of every Fleet, in one screen.",
+    after_help = "Run it in a terminal. To script thurbox or check this machine, use thurbox-cli \
+                  (`thurbox-cli doctor`)."
+)]
+struct Args {}
+
+/// Exit with a clear message when stdin or stdout is not a terminal, where
+/// the interface could only crash once it tried to draw.
+fn require_terminal() {
+    use std::io::IsTerminal;
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        eprintln!(
+            "thurbox: needs a terminal on stdin and stdout. To script thurbox, use thurbox-cli."
+        );
+        std::process::exit(1);
+    }
 }
 
 /// A hitbox from the frame just painted, and the plugin that painted it.

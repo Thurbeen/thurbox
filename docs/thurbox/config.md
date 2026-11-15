@@ -5,6 +5,11 @@ per audience/lifecycle: hand-edited registries are TOML, and what the
 interface writes for itself is JSON. thurbox keeps no database: every
 session is a Task of a Fleet ([`[fleets]`](#fleets--the-fleets-that-manage-sessions)).
 
+`thurbox` itself takes no options beyond `--version` and `--help`, and refuses
+any other with a usage line. It needs a terminal on stdin and stdout, and exits
+with an error before it writes anything when it has none. Scripts use
+`thurbox-cli`.
+
 Dev builds (version `0.0.0-dev`) use `thurbox-dev` in place of
 `thurbox` in every path below, plus a `thurbox-dev` tmux socket, so a
 development checkout never touches your real setup.
