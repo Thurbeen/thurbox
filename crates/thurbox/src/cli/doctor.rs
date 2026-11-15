@@ -175,10 +175,8 @@ fn retired_automations_finding(path: Option<&std::path::Path>) -> Option<Finding
                 .into(),
         )
         .fix(format!(
-            "schedule the work with a cron job or systemd timer that applies a Task under a \
-             fresh name each tick (`jq --arg n \"nightly-$(date +%Y%m%d%H%M)\" '.metadata.name = \
-             $n' task.json | fleet apply --create-only -f -`) or runs `fleet send TASK TEXT` to a long-lived \
-             Task, then delete {}",
+            "move each schedule to a Fleet CronTask (`fleet apply -f crontask.json`; see \
+             docs/fleet/resources/cron-task.md), then delete {}",
             path.display()
         )),
     )
@@ -731,11 +729,9 @@ mod tests {
         );
         let fix = finding.fix.expect("a fix");
         assert!(fix.contains(&path.display().to_string()), "{fix}");
-        // A timer re-applying one manifest makes one Task: the same name and
-        // contents answer `Unchanged`. Each tick needs a fresh name.
-        assert!(fix.contains("fleet apply --create-only -f -"), "{fix}");
-        assert!(fix.contains("$(date +%Y%m%d%H%M)"), "{fix}");
-        assert!(fix.contains("fleet send TASK TEXT"), "{fix}");
+        // Fleet's CronTask is where a schedule goes now.
+        assert!(fix.contains("CronTask"), "{fix}");
+        assert!(fix.contains("docs/fleet/resources/cron-task.md"), "{fix}");
     }
 
     /// The keeper window is found on any session and named with the command

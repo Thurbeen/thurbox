@@ -36,9 +36,9 @@
       # The modules install the package. thurbox configures everything else
       # itself, in files it owns, so the modules manage no config.
       removedAutomations = ''
-        thurbox schedules nothing of its own any more. Run work on a timer with
-        a systemd timer or cron job that applies a Task under a fresh name, or
-        runs `fleet send TASK TEXT`.
+        thurbox schedules nothing of its own any more. Run work on a schedule
+        with a Fleet CronTask, or with a systemd timer that runs
+        `fleet send TASK TEXT`.
       '';
       options =
         { lib, pkgs, ... }:

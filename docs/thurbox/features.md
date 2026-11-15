@@ -788,19 +788,33 @@ honored as the fallback when no command is set.
 
 ## Scheduling work
 
-thurbox schedules nothing of its own. Run work on a timer with cron or a
-systemd timer, in one of two ways:
+thurbox schedules nothing of its own: Fleet does. A
+[CronTask](../fleet/resources/cron-task.md) creates a Task from its template
+at each time of a cron schedule, as a Kubernetes CronJob makes a Job:
 
-- Start a new Task each tick. Applying the same manifest again changes
-  nothing (`Unchanged`), so give each Task a fresh name. `fleet apply`
-  reads JSON, from a file or from `-`:
+```json
+{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "CronTask",
+  "metadata": {"name": "nightly-review"},
+  "spec": {
+    "schedule": "0 3 * * 1-5",
+    "template": {
+      "spec": {
+        "harness": "claude-code",
+        "brief": "Review what landed today.",
+        "workspace": ["git+https://github.com/example/app.git#main"],
+        "dispatch": true
+      }
+    }
+  }
+}
+```
 
-  ```bash
-  jq --arg n "nightly-$(date +%Y%m%d%H%M)" '.metadata.name = $n' task.json \
-    | fleet apply --create-only -f -
-  ```
-
-- Prompt a long-lived Task each tick: `fleet send TASK TEXT`.
+Apply it with `fleet apply -f nightly-review.json`. Each Task it creates
+shows up in the session list like any other. An outside timer still works
+too: a cron job or systemd timer can run `fleet send TASK TEXT` to prompt a
+long-lived Task.
 
 An earlier thurbox fired its automations from a tmux window,
 `automation-heartbeat`, and could install a `thurbox-automations.timer`
