@@ -335,8 +335,10 @@ request.place ──▶ local ─────────▶ this machine's mult
   `new-window`, whose argv every user of the machine can read. So no value
   of `env` is in that argv. runtime-mux writes the variables to a file in
   the temporary directory, mode 0600. The window's program is
-  `/bin/sh -c <loader> sh <file> <argv…>`: the loader reads the file,
-  removes it, and runs the agent. When no window is made, runtime-mux
+  `/bin/sh -c <loader> sh <file> <argv…>`: the loader reads the file and
+  removes it before it sets any variable, then runs the agent. The loader
+  names no shell variable, so a variable of the session cannot change
+  what it removes or runs. When no window is made, runtime-mux
   removes the file. A variable name that a shell cannot read stays a `-e`
   flag; Fleet refuses such names.
 - psmux takes the environment in its window's PowerShell script, as

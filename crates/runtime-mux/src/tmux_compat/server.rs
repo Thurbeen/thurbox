@@ -5182,11 +5182,16 @@ fn push_env_file_program(tmux: &mut Command, command: &str, args: &[String], fil
     }
 }
 
-/// Read the file `$1` names into the environment, remove it, then run the
+/// Read the file `$1` names, remove it, then set its variables and run the
 /// rest: a lone token through the window's shell, as tmux runs a
-/// one-argument window command, else as an argv.
-const ENV_FILE_SCRIPT: &str = "f=$1; shift; . \"$f\"; rm -f -- \"$f\"; \
-     if [ $# -eq 1 ]; then exec \"${SHELL:-/bin/sh}\" -c \"$1\"; fi; exec \"$@\"";
+/// one-argument window command, else as an argv. The loader names no shell
+/// variable, so no variable the file sets can steer it: the shell is taken
+/// from `SHELL` before the file is read, kept as `$1`, and the file is
+/// read and removed in one command substitution, before any of its
+/// variables is set.
+const ENV_FILE_SCRIPT: &str = "set -- \"${SHELL:-/bin/sh}\" \"$@\"; \
+     eval \"$(cat -- \"$2\"; rm -f -- \"$2\")\"; \
+     if [ $# -eq 3 ]; then exec \"$1\" -c \"$3\"; fi; shift 2; exec \"$@\"";
 
 /// A window's environment in a file only this user can read, so that no
 /// value is on an argv: `export NAME='value'` lines a POSIX shell reads.
@@ -5513,6 +5518,59 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr)
             );
             assert!(!path.exists(), "the window removes the file it read");
+        }
+    }
+
+    /// The loader keeps no state a variable can reach: the Task's own `f`,
+    /// `_1`, `PATH`, `IFS`, `HOME`, `SHELL`, `cat` or `rm` neither removes
+    /// another file nor changes how the program runs, and the environment
+    /// file is removed before any of them is set.
+    #[test]
+    fn a_windows_own_variables_never_steer_its_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let decoy = dir.path().join("report.txt");
+        std::fs::write(&decoy, "keep me").unwrap();
+        let env: HashMap<String, String> = [
+            ("f", "report.txt"),
+            ("F", "report.txt"),
+            ("_1", "report.txt"),
+            ("_", "report.txt"),
+            ("cat", "report.txt"),
+            ("rm", "report.txt"),
+            ("PATH", "/nonexistent"),
+            ("IFS", "x"),
+            ("HOME", "/nowhere"),
+            ("SHELL", "/nonexistent/sh"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        // A new shell resets `IFS`, so the program shows the others.
+        let shown = "printf '%s|%s|%s|%s|%s' \"$f\" \"$_1\" \"$PATH\" \"$HOME\" \"$SHELL\"";
+        let want = "report.txt|report.txt|/nonexistent|/nowhere|/nonexistent/sh";
+        // Several tokens, run as an argv; and one, through the window's shell.
+        for (command, args) in [
+            ("sh", vec!["-c".to_string(), shown.to_string()]),
+            (shown, Vec::new()),
+        ] {
+            let file = EnvFile::write(&env).unwrap();
+            let path = file.path().unwrap().to_path_buf();
+            let argv = pushed(command, &args, &env, Some(&path));
+            file.keep();
+            let out = std::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(dir.path())
+                .env("SHELL", "/bin/sh")
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                want,
+                "{command}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(!path.exists(), "the environment file is removed");
+            assert_eq!(std::fs::read_to_string(&decoy).unwrap(), "keep me");
         }
     }
 
