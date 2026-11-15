@@ -61,13 +61,14 @@ fleet send fix-login "Run the tests too"</code></pre>
              touching thurbox's. -->
         <div class="get-started" id="fleet-start">
           <h3>Get started with Fleet alone</h3>
-          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+          <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
 fleet init
+fleet doctor
 fleet up</code></pre>
           <p>
-            The script installs Fleet with thurbox beside it; to use Fleet alone, never run
-            <code>thurbox</code>. It needs a 3.x release: until one is published, it installs the
-            latest 2.x, which has no Fleet.
+            <code>--fleet-only</code> installs <code>fleet</code>, <code>runtime-mux</code> and
+            <code>workspace-git</code>, and nothing else. It needs a 3.x release: until one is
+            published, the script installs the latest 2.x, which has no Fleet.
             <a href="docs/fleet-install.html">Install Fleet &rarr;</a>
           </p>
         </div>

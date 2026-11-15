@@ -68,8 +68,21 @@ Fleet. You also need:
 - **git**
 - at least one coding-agent CLI
 
-**Fleet on its own** needs no thurbox: run the same script, then `fleet init`
-and `fleet up`, and drive it with `fleet` ([Fleet's install](https://thurbox.thurbeen.eu/docs/fleet-install.html)).
+**Fleet on its own** needs no thurbox. The installer's fleet-only mode installs
+`fleet`, `runtime-mux` and `workspace-git`, and nothing else:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+```
+
+On Windows:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly
+```
+
+Then run `fleet init`, `fleet doctor` and `fleet up`
+([Fleet's install](https://thurbox.thurbeen.eu/docs/fleet-install.html)).
 
 **Upgrading from 2.x:** a 2.x install never updates itself to 3.x, and
 `thurbox-cli update` stays on 2.x. Run the install script again.

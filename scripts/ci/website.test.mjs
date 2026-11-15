@@ -125,7 +125,7 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
   assert.match(text(fleet), /works on its own/i, 'Fleet is said to run without thurbox');
   const fleetStart = code(home.querySelector('#fleet-start'));
   assert.equal(fleetStart.length, 1);
-  assert.deepEqual(fleetStart[0], [install, 'fleet init', 'fleet up']);
+  assert.deepEqual(fleetStart[0], [`${install} -s -- --fleet-only`, 'fleet init', 'fleet doctor', 'fleet up']);
   // Every fleet subcommand the band shows is a variant of the CLI's Command enum.
   const cli = readFileSync('crates/fleet-cli/src/main.rs', 'utf8');
   for (const line of code(fleet).flat().filter((l) => l.startsWith('fleet '))) {

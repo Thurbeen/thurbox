@@ -26,14 +26,18 @@ breadcrumb: 'Install Fleet'
   Fleet alone
   <a href="#fleet-alone" class="heading-anchor">#</a>
 </h2>
-<pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+<pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
 fleet init
+fleet doctor
 fleet up</code></pre>
 <p>
-  The install script puts <code>fleet</code>, <code>runtime-mux</code> and
-  <code>workspace-git</code> in <code>~/.local/bin</code>, with thurbox beside them. To use Fleet
-  alone, never run <code>thurbox</code>. On Windows, the script is
-  <code>irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code>.
+  The installer's fleet-only mode puts <code>fleet</code>, <code>runtime-mux</code> and
+  <code>workspace-git</code> in <code>~/.local/bin</code>, and nothing else. On Windows, pass
+  <code>-FleetOnly</code> through a script block:
+</p>
+<pre data-wrap><code class="language-powershell">&amp; ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly</code></pre>
+<p>
+  Nothing updates a fleet-only install: to update it, run the installer again.
 </p>
 <p>
   The script needs a 3.x release. Until one is published, it installs the latest 2.x release,
