@@ -834,17 +834,17 @@ fn places_of_two_lengths() -> Vec<HostRow> {
             ..HostRow::local("this machine")
         },
         HostRow {
-            name: "mux/nixos-hp".into(),
+            name: "mux/gpu-box".into(),
             detail: "a mux place".into(),
-            backend: "mux/nixos-hp".into(),
+            backend: "mux/gpu-box".into(),
             ready: Some(false),
             why: Some(NOT_READY_WHY.into()),
         },
     ]
 }
 
-const NOT_READY_WHY: &str = "place \"nixos-hp\": `fleet` is not on its PATH, \
-    so the runtime cannot start a session there; install Fleet on that machine";
+const NOT_READY_WHY: &str =
+    "place \"gpu-box\" cannot be reached: ssh: connect to host gpu-box port 22: Connection timed out";
 
 /// The cell column `needle` starts at on screen.
 fn column_of(buffer: &Buffer, needle: &str) -> u16 {
@@ -862,11 +862,10 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
             80,
             &[
                 "╭ Place ───────────────────────────────────────────────────╮",
-                "│  local         this machine (mux)  ● ready               │",
-                "│▸ mux/nixos-hp  a mux place         ○ not ready           │",
-                "│ place \"nixos-hp\": `fleet` is not on its PATH, so the     │",
-                "│ runtime cannot start a session there; install Fleet on   │",
-                "│ that machine                                             │",
+                "│  local        this machine (mux)  ● ready                │",
+                "│▸ mux/gpu-box  a mux place         ○ not ready            │",
+                "│ place \"gpu-box\" cannot be reached: ssh: connect to host  │",
+                "│ gpu-box port 22: Connection timed out                    │",
                 "│                                                          │",
                 "│j/k navigate                         [ Select ] [ Cancel ]│",
                 "╰──────────────────────────────────────────────────────────╯",
@@ -876,11 +875,11 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
             48,
             &[
                 "╭ Place ───────────────────────────────────────╮",
-                "│  local         this machine (mu…  ● ready    │",
-                "│▸ mux/nixos-hp  a mux place        ○ not ready│",
-                "│ place \"nixos-hp\": `fleet` is not on its PATH,│",
-                "│ so the runtime cannot start a session there; │",
-                "│ install Fleet on that machine                │",
+                "│  local        this machine (mux)  ● ready    │",
+                "│▸ mux/gpu-box  a mux place         ○ not ready│",
+                "│ place \"gpu-box\" cannot be reached: ssh:      │",
+                "│ connect to host gpu-box port 22: Connection  │",
+                "│ timed out                                    │",
                 "│                                              │",
                 "│j/k navigate             [ Select ] [ Cancel ]│",
                 "╰──────────────────────────────────────────────╯",
@@ -907,7 +906,7 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
             .expect(&screen);
         let place = lines
             .iter()
-            .position(|l| l.contains("mux/nixos-hp"))
+            .position(|l| l.contains("mux/gpu-box"))
             .expect(&screen);
         // The detail column starts where the longest name ends, on both rows.
         let detail = |row: usize, text: &str| {
@@ -922,7 +921,7 @@ fn the_place_picker_aligns_its_columns_and_shows_the_full_reason() {
             "{screen_cols} cols: the detail column wanders:\n{screen}"
         );
         assert!(
-            detail(place, "a mux") > detail(place, "mux/nixos-hp") + "mux/nixos-hp".len(),
+            detail(place, "a mux") > detail(place, "mux/gpu-box") + "mux/gpu-box".len(),
             "{screen_cols} cols: a name runs into its detail:\n{screen}"
         );
         // The status column too, and the status is whole.
@@ -1041,8 +1040,44 @@ fn a_long_place_list_scrolls_inside_a_short_screen() {
         "the footer is lost:\n{screen}"
     );
     assert!(
-        screen.contains("not on its PATH"),
+        screen.contains("cannot be reached"),
         "no reason at all:\n{screen}"
+    );
+}
+
+/// A reason longer than the reason area keeps the area at its four lines,
+/// and its last line says that more was cut.
+#[test]
+fn a_reason_past_four_lines_ends_in_an_ellipsis() {
+    let host = host();
+    let mut world = World::default();
+    let mut places = places_of_two_lengths();
+    places[1].why = Some([NOT_READY_WHY; 3].join(" "));
+    world.snapshot.hosts = Some(places);
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    let (buffer, _) = painted_on(&host, &world, None, 48).expect("open");
+    let screen = screen_of(&buffer);
+    let lines: Vec<&str> = screen.lines().collect();
+    let place = lines
+        .iter()
+        .position(|l| l.contains("▸ mux/gpu-box"))
+        .expect(&screen);
+    let reason = &lines[place + 1..place + 5];
+    assert!(
+        reason.iter().all(|l| !l
+            .trim_matches(|c: char| c == '│' || c.is_whitespace())
+            .is_empty()),
+        "four reason lines:\n{screen}"
+    );
+    assert!(
+        reason[3].trim_end_matches('│').trim_end().ends_with('…'),
+        "the last reason line ends in …:\n{screen}"
+    );
+    assert_eq!(
+        lines[place + 5].trim_matches(|c: char| c == '│' || c.is_whitespace()),
+        "",
+        "the reason stops at four lines:\n{screen}"
     );
 }
 
