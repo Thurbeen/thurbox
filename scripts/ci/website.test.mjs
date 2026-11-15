@@ -190,10 +190,11 @@ test('the docs sidebar gives Fleet and thurbox a group each', () => {
 
 // The Markdown pages rendered from the repository (repo-docs.njk), as
 // [source, built path]: a README is its directory's index.html.
-const repoDocs = ['docs/fleet', 'docs/runtime'].flatMap((dir) =>
-  readdirSync(dir, { recursive: true })
-    .filter((file) => file.endsWith('.md'))
-    .map((file) => [`${dir}/${file}`, `${dir}/${file}`.replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html')]),
+const repoDocs = ['docs/fleet', 'docs/runtime', 'docs/thurbox/plugins.md', 'docs/thurbox/kernel.md'].flatMap((entry) =>
+  (entry.endsWith('.md') ? [entry.split('/').pop()] : readdirSync(entry, { recursive: true }))
+    .map((file) => (entry.endsWith('.md') ? [entry.replace(/\/[^/]+$/, ''), file] : [entry, file]))
+    .filter(([, file]) => file.endsWith('.md'))
+    .map(([dir, file]) => [`${dir}/${file}`, `${dir}/${file}`.replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html')]),
 );
 
 test('no page links to the documentation on GitHub', () => {

@@ -163,11 +163,17 @@ function writeCoreBundle() {
 }
 
 // ---- The repository's Fleet and runtime docs, rendered as pages ----
-// docs/fleet and docs/runtime are the one source of these pages: each
-// Markdown file there becomes /docs/<same path>.html (a README becomes the
-// directory's index.html) through the paginated website/repo-docs.njk. The
-// files are read on every build, so a new or renamed page needs no change here.
-const RENDERED_DOCS = ['docs/fleet', 'docs/runtime'];
+// docs/fleet and docs/runtime, and thurbox's plugin-author guides, are the one
+// source of these pages: each Markdown file becomes /docs/<same path>.html (a
+// README becomes the directory's index.html) through the paginated
+// website/repo-docs.njk. A directory is read on every build, so a new or
+// renamed page there needs no change here; a single file is listed by name.
+const RENDERED_DOCS = [
+  'docs/fleet',
+  'docs/runtime',
+  'docs/thurbox/plugins.md',
+  'docs/thurbox/kernel.md',
+];
 
 const REPO_URL = 'https://github.com/Thurbeen/thurbox';
 
@@ -206,38 +212,46 @@ function summary(body) {
   return plain.length > 200 ? `${plain.slice(0, 197).replace(/\s+\S*$/, '')}…` : plain;
 }
 
-function listRepoDocs() {
-  return RENDERED_DOCS.flatMap((dir) =>
-    readdirSync(dir, { recursive: true })
-      .filter((file) => file.endsWith('.md'))
-      .sort()
-      .map((file) => {
-        const src = `${dir}/${file}`;
-        const url = docUrl(src);
-        const source = readFileSync(src, 'utf8');
-        const title = (source.match(/^# (.+)$/m) || [, file])[1].replace(/`/g, '');
-        const depth = url.split('/').length - 3; // directories below /docs/
-        const area = src.split('/')[2]; // resources, controllers, or a page
-        return {
-          src,
-          url,
-          title,
-          description: summary(source.replace(/^# .+$/m, '')),
-          body: source,
-          root: Array(depth + 1)
-            .fill('..')
-            .join('/'),
-          docsBase: '../'.repeat(depth),
-          product: dir === 'docs/fleet' ? 'Fleet' : 'Runtime',
-          // The sidebar entry this page sits under, if any.
-          currentPage:
-            {
-              'docs/fleet/README.md': 'fleet-reference',
-              'docs/fleet/configuration.md': 'fleet-configuration',
-            }[src] ?? (dir === 'docs/fleet' && file.includes('/') ? `fleet-${area}` : ''),
-        };
-      }),
+// Every rendered Markdown file, as [directory, path below it].
+const renderedFiles = () =>
+  RENDERED_DOCS.flatMap((entry) =>
+    entry.endsWith('.md')
+      ? [[path.posix.dirname(entry), path.posix.basename(entry)]]
+      : readdirSync(entry, { recursive: true })
+          .filter((file) => file.endsWith('.md'))
+          .sort()
+          .map((file) => [entry, file]),
   );
+
+function listRepoDocs() {
+  return renderedFiles().map(([dir, file]) => {
+    const src = `${dir}/${file}`;
+    const url = docUrl(src);
+    const source = readFileSync(src, 'utf8');
+    const title = (source.match(/^# (.+)$/m) || [, file])[1].replace(/`/g, '');
+    const depth = url.split('/').length - 3; // directories below /docs/
+    const area = src.split('/')[2]; // resources, controllers, or a page
+    return {
+      src,
+      url,
+      title,
+      description: summary(source.replace(/^# .+$/m, '')),
+      body: source,
+      root: Array(depth + 1)
+        .fill('..')
+        .join('/'),
+      docsBase: '../'.repeat(depth),
+      product: { 'docs/fleet': 'Fleet', 'docs/thurbox': 'thurbox' }[dir] ?? 'Runtime',
+      // The sidebar entry this page sits under, if any.
+      currentPage:
+        {
+          'docs/fleet/README.md': 'fleet-reference',
+          'docs/fleet/configuration.md': 'fleet-configuration',
+          'docs/thurbox/plugins.md': 'thurbox-plugins',
+          'docs/thurbox/kernel.md': 'thurbox-kernel',
+        }[src] ?? (dir === 'docs/fleet' && file.includes('/') ? `fleet-${area}` : ''),
+    };
+  });
 }
 
 // Where a link in the rendered document `fromSrc` goes, or null to drop it.
