@@ -210,6 +210,143 @@ mod tests {
         assert!(terminals.drain_shell_results().is_empty());
     }
 
+    /// A shell over `output`, through `backend`, as a stream pane opens one:
+    /// a blank first snapshot gives it its grid.
+    fn shell_over(
+        backend: &Arc<dyn crate::backend::SessionBackend>,
+        rest: crate::backend::PaneOutput,
+    ) -> crate::backend::pane::ShellPane {
+        let blank = crate::backend::contract::PaneSnapshot {
+            cols: 80,
+            rows: 24,
+            cursor: (0, 0),
+            normal: Vec::new(),
+            alternate: None,
+        };
+        let adopted = crate::backend::AdoptedSession {
+            output: Box::new(
+                std::iter::once(crate::backend::PaneChunk::Snapshot(Box::new(blank))).chain(rest),
+            ),
+            input: Box::new(std::io::sink()),
+            seed_len: 0,
+            size: None,
+        };
+        crate::backend::Session::shell_over(adopted, backend, "probe#shell", 24, 80, 100)
+    }
+
+    /// Output that never ends while its sender lives.
+    struct Open(std::sync::mpsc::Receiver<()>);
+
+    impl Iterator for Open {
+        type Item = crate::backend::PaneChunk;
+        fn next(&mut self) -> Option<Self::Item> {
+            let _ = self.0.recv();
+            None
+        }
+    }
+
+    /// Collect until `done` holds, within five seconds.
+    fn collect_until(terminals: &mut Terminals, done: impl Fn(&Terminals) -> bool) {
+        let snapshot = snapshot_with_probe();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done(terminals) && std::time::Instant::now() < deadline {
+            terminals.collect_shells(&snapshot);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(done(terminals), "never happened");
+    }
+
+    /// A live shell is left as it is; one whose stream ended is opened again,
+    /// and the new one replaces it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_shell_whose_stream_ended_is_opened_again() {
+        let (mut terminals, backend) = terminals_with_probe();
+        let row = super::super::tests::row("probe", "fleet", Some("%1"));
+        let parser_of = |terminals: &Terminals| {
+            terminals.live["probe"]
+                .session
+                .shell_pane
+                .as_ref()
+                .map(|shell| Arc::clone(&shell.parser))
+        };
+
+        // A live shell.
+        let (keep_open, open) = std::sync::mpsc::channel::<()>();
+        let first = Arc::clone(&backend);
+        terminals.start_shell("probe", move || {
+            Ok((shell_over(&first, Box::new(Open(open))), first))
+        });
+        collect_until(&mut terminals, |t| t.has_shell("probe"));
+        let live = parser_of(&terminals).expect("the first shell");
+        terminals
+            .open_shell(&row, 24, 80)
+            .expect("a live shell is left as it is");
+        assert!(
+            !terminals.shelling.contains_key("probe"),
+            "no second open while the shell lives"
+        );
+
+        // Its stream ends: the shell exited, and the next open asks for one
+        // again (here refused, since the row names no listed Fleet).
+        drop(keep_open);
+        collect_until(&mut terminals, |t| {
+            t.live["probe"]
+                .session
+                .shell_pane
+                .as_ref()
+                .is_some_and(|shell| shell.has_exited())
+        });
+        assert!(
+            terminals
+                .open_shell(&row, 24, 80)
+                .is_err_and(|e| e.contains("Fleet")),
+            "an ended shell is opened again"
+        );
+
+        // The new shell replaces the ended one.
+        let second = Arc::clone(&backend);
+        terminals.start_shell("probe", move || {
+            Ok((shell_over(&second, Box::new(std::iter::empty())), second))
+        });
+        collect_until(&mut terminals, |t| {
+            parser_of(t).is_some_and(|parser| !Arc::ptr_eq(&parser, &live))
+        });
+    }
+
+    /// A shell opened over a stream starts without its grid, as an agent's
+    /// stream pane does: the stream's first snapshot is its screen. A shell
+    /// opened again, which already shows text, keeps that text.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_shell_over_a_stream_takes_its_first_snapshot_as_its_screen() {
+        let (_, backend) = terminals_with_probe();
+        let snapshot = crate::backend::contract::PaneSnapshot {
+            cols: 40,
+            rows: 4,
+            cursor: (0, 1),
+            normal: vec!["kept-text".into()],
+            alternate: None,
+        };
+        let adopted = crate::backend::AdoptedSession {
+            output: Box::new(std::iter::once(crate::backend::PaneChunk::Snapshot(
+                Box::new(snapshot),
+            ))),
+            input: Box::new(std::io::sink()),
+            seed_len: 0,
+            size: None,
+        };
+        let shell = crate::backend::Session::shell_over(adopted, &backend, "t#shell", 4, 40, 100);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut text = String::new();
+        while std::time::Instant::now() < deadline {
+            text = shell.parser.lock().unwrap().screen().contents();
+            if text.contains("kept-text") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(text.contains("kept-text"), "the screen: {text:?}");
+    }
+
     /// A failed open is reported, so the interface can say why.
     #[test]
     fn a_failed_open_is_reported() {

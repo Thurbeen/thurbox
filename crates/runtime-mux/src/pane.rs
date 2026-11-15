@@ -1771,11 +1771,12 @@ impl Session {
         cols: u16,
         scrollback: usize,
     ) -> ShellPane {
-        // The shell can print before its reader is wired: its first view
-        // needs the whole screen, which only a backend without snapshots
-        // cannot fetch again.
+        // Without its grid until the stream's first snapshot, as an agent's
+        // stream pane (`adopt_io`): that snapshot is the shell's screen, with
+        // what it showed before this view came. A stream with no screen keeper
+        // sends a blank one.
         let io = SessionIo {
-            resident: !backend.capabilities().supports_snapshots,
+            resident: false,
             ..SessionIo::adopted(adopted, backend_id)
         };
         let (wired, _) = Self::wire_up(rows, cols, io, backend, "Shell", scrollback);

@@ -862,8 +862,9 @@ end
 ---
 --- v1 `select_central_tab` focuses the centre for both terminal tabs, so the
 --- chord works from wherever you were standing. The shell is opened on first
---- use (v1 `show_shell_view`); `ensure_shell_pane` behind the command is
---- idempotent, so asking again on every switch costs nothing.
+--- use (v1 `show_shell_view`); `Terminals::open_shell` behind the command
+--- leaves a live shell as it is, so asking again on every switch costs
+--- nothing.
 local function show_tab(id, tab)
   set_tab(id, tab)
   if tab == SHELL_TAB then

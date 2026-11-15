@@ -1427,16 +1427,16 @@ Installing the snapshot moves the output generation and triggers a repaint, so
 the first nonblank frame is current. A host that stopped answering
 cannot stall a paint; the request is repeated only after two seconds without
 an answer. A companion shell likewise opens on a worker, through `fleet
-shell`.
-Only an answer for the same live attachment and shell slot is installed, and
-the shell id is remembered or forgotten when that answer lands. Repeated
-shell commands share one in-flight request per live attachment and observed
-shell slot. A replacement attachment or a changed slot can start its own request
-while obsolete work finishes. Only the current job's unique token can publish
-an answer or clear the pending request, even if the saved id changes back.
-Obsolete replies are dropped without killing their pane: a pane id can be
-reused after a server restart, and the reply carries no atomic creation identity.
-A canceled creation can therefore leave an unused shell window on the backend.
+shell`. Repeated shell commands share one in-flight request per live
+attachment. Each request carries a token of its own: only the current one
+installs its answer or clears the pending request, and only while the
+session is still attached as it was when the request started. A replacement
+attachment starts its own request while the obsolete one finishes. An
+obsolete answer is dropped, and dropping its stream only detaches from the
+shell, which the runtime keeps, so the next request finds the same shell.
+The shell starts without its grid, as an agent's stream pane does: the
+stream's first snapshot is its screen, including what it showed before the
+view came.
 
 Reading replies by content also exposed a framing hole that the snapshot would
 otherwise have fallen into: a `capture-pane` reply is written raw, so a screen
