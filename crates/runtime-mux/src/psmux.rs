@@ -121,6 +121,9 @@ impl TmuxCompatible for Psmux {
     /// shorthand: the one-shot path targets the session and finds the window by
     /// its name.
     const ONE_SHOT_SPAWN_ANSWERS: bool = false;
+    /// Its window runs a PowerShell script, which the environment is folded
+    /// into; no POSIX shell reads a file there.
+    const ENV_FILE: bool = false;
 
     /// psmux has no `remain-on-exit`. Long enough for a Windows PowerShell
     /// with a light profile to start and fail to find the program it was told
@@ -230,6 +233,7 @@ impl TmuxCompatible for Psmux {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        _env_file: Option<&std::path::Path>,
     ) -> Result<()> {
         cmd.arg(psmux_window_program(window_name, command, args, env)?);
         Ok(())
@@ -2130,7 +2134,8 @@ mod tests {
         );
 
         let mut cmd = Command::new("psmux");
-        Psmux::push_window_program(&mut cmd, "tb-x", "C:\\Tools\\claude.exe", &args, &env).unwrap();
+        Psmux::push_window_program(&mut cmd, "tb-x", "C:\\Tools\\claude.exe", &args, &env, None)
+            .unwrap();
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())

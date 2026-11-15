@@ -4666,3 +4666,106 @@ fn attach_and_shell_view_a_pane_on_an_ssh_place() {
         "the shell runs on the place, in the Task's directory"
     );
 }
+
+/// A session's environment is in no argv: not the `tmux` client's that
+/// makes its window on this machine, and not the `ssh` that reaches a place,
+/// both of which every user of a machine can read. The agent still sees
+/// each value, here and on the place.
+#[test]
+fn a_sessions_environment_is_in_no_argv_here_or_on_an_ssh_place() {
+    let (Some(program), Some(real_tmux)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    const SECRET: &str = "s3cr3t-env-value-4b1f 'quoted' $HOME";
+    let sockets = Sockets::new("argv-local");
+    let remote = Sockets::new("argv-place");
+    let mut env = mux_env("runtime-mux-argv", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    // Stand-ins that log every argument, then run the real program.
+    let log = env.root.join("argv.log");
+    let shims = env.root.join("shims");
+    fs::create_dir_all(&shims).expect("shims");
+    let real_ssh = ["/usr/bin/ssh", "/bin/ssh"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+        .expect("ssh, since sshd started");
+    use std::os::unix::fs::PermissionsExt;
+    for (name, real) in [("tmux", &real_tmux), ("ssh", &real_ssh)] {
+        let shim = shims.join(name);
+        fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> '{}'\nexec '{}' \"$@\"\n",
+                log.display(),
+                real.display()
+            ),
+        )
+        .expect("shim");
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let bin = env.root.join("agent-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(
+        &claude,
+        "#!/bin/sh\nenv > \"$PWD/env.log\"\nexec sleep 300\n",
+    )
+    .expect("agent");
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}",
+            sshd.place("box", &[&shims, &bin])
+        ),
+    )
+    .expect("config");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        shims.display(),
+        bin.display()
+    )));
+    let mut tasks = Vec::new();
+    let mut logs = Vec::new();
+    for (name, host) in [("here", "local"), ("there", "mux/box")] {
+        let work = env.root.join("work").join(name);
+        fs::create_dir_all(&work).expect("workspace");
+        let mut task = support::task(name, true);
+        task["spec"]["host"] = json!(host);
+        task["spec"]["env"] = json!({"FLEET_SECRET": SECRET});
+        task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+        tasks.push(task);
+        logs.push(work.join("env.log"));
+    }
+    env.apply(json!(tasks)).ok();
+    reconcile_until(&env, "both agents started", |_| {
+        logs.iter().all(|l| l.is_file())
+    });
+    for l in &logs {
+        let seen = fs::read_to_string(l).expect("the agent's environment");
+        assert!(
+            seen.lines()
+                .any(|line| line == format!("FLEET_SECRET={SECRET}")),
+            "{}: {seen}",
+            l.display()
+        );
+    }
+    let argv = fs::read_to_string(&log).expect("argv log");
+    assert!(
+        argv.contains("new-window"),
+        "the window was made through the shim: {argv}"
+    );
+    assert!(!argv.contains("s3cr3t"), "{argv}");
+    // Nor in any argument of a process running now.
+    let ps = Command::new("ps")
+        .args(["-eo", "args"])
+        .output()
+        .expect("ps");
+    assert!(!String::from_utf8_lossy(&ps.stdout).contains("s3cr3t"));
+}

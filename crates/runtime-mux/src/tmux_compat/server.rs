@@ -126,6 +126,13 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// and retains it by.
     const ONE_SHOT_SPAWN_ANSWERS: bool;
 
+    /// Whether a one-shot `new-window` on this machine takes the window's
+    /// environment from a private file ([`EnvFile`]) its POSIX window program
+    /// reads, so no value is in the argv of the `new-window` client, which
+    /// any user of the machine can read. psmux folds the environment into
+    /// its window's PowerShell script instead.
+    const ENV_FILE: bool = true;
+
     /// How long after `create_window` to look for the window again, on a
     /// server whose window closes with its program (no `remain-on-exit`):
     /// there, a program that cannot start leaves nothing behind, and a create
@@ -210,15 +217,18 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     }
 
     /// The environment and program that close a one-shot `new-window`'s argv
-    /// — or why the server could not run it.
+    /// — or why the server could not run it. `env_file`, where
+    /// [`Self::ENV_FILE`] wrote one, holds the variables `env` would
+    /// otherwise put on the argv.
     fn push_window_program(
         cmd: &mut Command,
         _window_name: &str,
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        env_file: Option<&Path>,
     ) -> Result<()> {
-        push_posix_window_program(cmd, command, args, env);
+        push_posix_window_program(cmd, command, args, env, env_file);
         Ok(())
     }
 
@@ -4698,6 +4708,12 @@ impl<M: TmuxCompatible> Server<M> {
                 format!("list the windows named {window_name} before adding one")
             })?
         };
+        // One file for every attempt below. The window removes it once it
+        // read it; it is removed here when no window was made.
+        let env_file = match M::ENV_FILE {
+            true => EnvFile::write(spec.env)?,
+            false => EnvFile::default(),
+        };
         let run_new_window = || {
             let mut tmux = self.new_window_command(
                 &window_name,
@@ -4706,6 +4722,7 @@ impl<M: TmuxCompatible> Server<M> {
                 spec.args,
                 spec.cwd,
                 spec.env,
+                env_file.path(),
             )?;
             if stamped {
                 for (option, value) in [
@@ -4758,6 +4775,9 @@ impl<M: TmuxCompatible> Server<M> {
         } else {
             String::new()
         };
+        if output.status.success() || control_mode::is_valid_pane_id(&pane_id) {
+            env_file.keep();
+        }
         if !output.status.success() {
             // The exit status is not this command's verdict on its own. tmux
             // hands a command-mode client the status of the last `run-shell` its
@@ -4840,6 +4860,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// window created detached at `create_target` running `command` — and,
     /// where the server takes them, its birth options chained into the same
     /// invocation.
+    #[allow(clippy::too_many_arguments)]
     fn new_window_command(
         &self,
         window_name: &str,
@@ -4848,6 +4869,7 @@ impl<M: TmuxCompatible> Server<M> {
         args: &[String],
         cwd: Option<&Path>,
         env: &HashMap<String, String>,
+        env_file: Option<&Path>,
     ) -> Result<Command> {
         let configure = M::COMMAND_LISTS && M::ONE_SHOT_SPAWN_ANSWERS && M::VERSION_FLOOR.is_none();
         let config = self.session_config();
@@ -4869,7 +4891,7 @@ impl<M: TmuxCompatible> Server<M> {
         if let Some(dir) = cwd {
             tmux.args(["-c", &dir.to_string_lossy()]);
         }
-        M::push_window_program(&mut tmux, window_name, command, args, env)?;
+        M::push_window_program(&mut tmux, window_name, command, args, env, env_file)?;
 
         // Chained into the same command list as the creation, not sent after
         // it — `birth_options` has the measurement. This path passes `-d`, so
@@ -5075,9 +5097,16 @@ pub(crate) fn push_posix_window_program(
     command: &str,
     args: &[String],
     env: &HashMap<String, String>,
+    env_file: Option<&Path>,
 ) {
     for (k, v) in env {
-        tmux.args(["-e", &format!("{k}={v}")]);
+        if env_file.is_none() || !EnvFile::holds(k) {
+            tmux.args(["-e", &format!("{k}={v}")]);
+        }
+    }
+    if let Some(file) = env_file {
+        push_env_file_program(tmux, command, args, file);
+        return;
     }
     // Pass the command + args as a single argv list. tmux treats trailing args
     // as the command to run inside the window. Resolved here for the same
@@ -5129,6 +5158,113 @@ pub(crate) fn push_posix_window_program(
     }
     for a in args {
         tmux.arg(a);
+    }
+}
+
+/// The window's program behind a POSIX `sh` that reads `file` into its
+/// environment and removes it, then runs the program as
+/// [`push_posix_window_program`] would: one token through the window's
+/// shell (`$SHELL`, which tmux sets to its `default-shell`), several through
+/// `exec`. The `env PATH=…` prefix stays in front, where [`path_from_prefix`]
+/// reads it. Only the file's path is on the argv.
+fn push_env_file_program(tmux: &mut Command, command: &str, args: &[String], file: &Path) {
+    for arg in path_prefix_args() {
+        tmux.arg(arg);
+    }
+    tmux.args(["/bin/sh", "-c", ENV_FILE_SCRIPT, "sh"]);
+    tmux.arg(file);
+    if args.is_empty() {
+        // One token: what the window's shell split before.
+        tmux.arg(resolve_local_program(command));
+    } else {
+        tmux.arg(resolve_local_program(command));
+        tmux.args(args);
+    }
+}
+
+/// Read the file `$1` names into the environment, remove it, then run the
+/// rest: a lone token through the window's shell, as tmux runs a
+/// one-argument window command, else as an argv.
+const ENV_FILE_SCRIPT: &str = "f=$1; shift; . \"$f\"; rm -f -- \"$f\"; \
+     if [ $# -eq 1 ]; then exec \"${SHELL:-/bin/sh}\" -c \"$1\"; fi; exec \"$@\"";
+
+/// A window's environment in a file only this user can read, so that no
+/// value is on an argv: `export NAME='value'` lines a POSIX shell reads.
+/// Removed when dropped, unless [`Self::keep`] says a window was made, which
+/// removes it once it read it.
+#[derive(Default)]
+pub(crate) struct EnvFile {
+    path: Option<std::path::PathBuf>,
+    kept: std::cell::Cell<bool>,
+}
+
+impl EnvFile {
+    /// The file for `env`'s variables that a shell can name, in the
+    /// system's temporary directory, mode 0600; none when there are none.
+    pub(crate) fn write(env: &HashMap<String, String>) -> Result<EnvFile> {
+        let lines: String = env
+            .iter()
+            .filter(|(k, _)| Self::holds(k))
+            // Single-quoted as a shell reads it, newlines kept: the
+            // control-mode escape folds them, since a command line has none.
+            .map(|(k, v)| format!("export {k}='{}'\n", v.replace('\'', "'\\''")))
+            .collect();
+        if lines.is_empty() {
+            return Ok(EnvFile::default());
+        }
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let path = std::env::temp_dir().join(format!(
+            "runtime-mux-env-{}-{nanos}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options
+            .open(&path)
+            .with_context(|| format!("create the window's environment file {}", path.display()))?;
+        std::io::Write::write_all(&mut file, lines.as_bytes())
+            .and_then(|()| file.sync_all())
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&path);
+            })
+            .context("write the window's environment file")?;
+        Ok(EnvFile {
+            path: Some(path),
+            kept: std::cell::Cell::new(false),
+        })
+    }
+
+    /// Whether the file carries `name`: a shell can only name a variable
+    /// spelled `[A-Za-z_][A-Za-z0-9_]*`. Any other rides as `-e`.
+    pub(crate) fn holds(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    pub(crate) fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// A window was made: it removes the file itself.
+    pub(crate) fn keep(&self) {
+        self.kept.set(true);
+    }
+}
+
+impl Drop for EnvFile {
+    fn drop(&mut self) {
+        if let (Some(path), false) = (&self.path, self.kept.get()) {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -5307,28 +5443,95 @@ pub(crate) fn assert_absence_replies<M: TmuxCompatible>(replies: &[(&str, bool)]
 mod tests {
     use super::*;
 
-    /// The strip removes the telemetry this process inherited; the
-    /// variables a launch declares, an agent's own telemetry included
-    /// (docs/observability.md, *Coding agents*), are the window's `-e`
-    /// arguments, which no strip touches.
-    #[test]
-    fn a_window_keeps_the_telemetry_its_launch_declares() {
+    /// The args `push_posix_window_program` pushed onto a bare command.
+    fn pushed(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        file: Option<&Path>,
+    ) -> Vec<String> {
         let mut cmd = std::process::Command::new("tmux");
-        crate::tmux_compat::transport::strip_mux_nesting_env(&mut cmd);
-        let env = HashMap::from([(
-            "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
-            "http://c:4318".to_string(),
-        )]);
-        push_posix_window_program(&mut cmd, "sh", &[], &env);
-        let args: Vec<_> = cmd
-            .get_args()
+        push_posix_window_program(&mut cmd, command, args, env, file);
+        cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        let at = args
-            .iter()
-            .position(|a| a == "OTEL_EXPORTER_OTLP_ENDPOINT=http://c:4318")
-            .expect("the declared variable");
-        assert_eq!(args[at - 1], "-e");
+            .collect()
+    }
+
+    /// A window's environment is in a file only this user can read, never on
+    /// the `new-window` argv, which every user of the machine can read; the
+    /// window's program reads it, removes it, and runs as it would have.
+    #[test]
+    fn a_window_reads_its_environment_from_a_private_file_never_its_argv() {
+        let secret = "s3cr3t 'quoted' $HOME `x`\nline2";
+        let env = HashMap::from([
+            ("FLEET_TOKEN".to_string(), secret.to_string()),
+            (
+                "OTEL_EXPORTER_OTLP_HEADERS".to_string(),
+                "authorization=Bearer h".to_string(),
+            ),
+        ]);
+        for (args, script) in [
+            // Several tokens: run as an argv.
+            (
+                vec![
+                    "-c".to_string(),
+                    "printf '%s|%s' \"$FLEET_TOKEN\" \"$OTEL_EXPORTER_OTLP_HEADERS\"".to_string(),
+                ],
+                false,
+            ),
+            // One token: split by the window's shell, as tmux does.
+            (Vec::new(), true),
+        ] {
+            let file = EnvFile::write(&env).unwrap();
+            let path = file.path().unwrap().to_path_buf();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+            let command = if script {
+                "printf '%s|%s' \"$FLEET_TOKEN\" \"$OTEL_EXPORTER_OTLP_HEADERS\""
+            } else {
+                "sh"
+            };
+            let argv = pushed(command, &args, &env, Some(&path));
+            for a in &argv {
+                assert!(!a.contains("s3cr3t") && !a.contains("Bearer"), "{argv:#?}");
+            }
+            assert!(!argv.iter().any(|a| a == "-e"), "{argv:#?}");
+            file.keep();
+            let out = std::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .env("SHELL", "/bin/sh")
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                format!("{secret}|authorization=Bearer h"),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(!path.exists(), "the window removes the file it read");
+        }
+    }
+
+    /// Without a file the environment rides as `-e`, as before; a file not
+    /// kept is removed with its writer, so no window means no file left.
+    #[test]
+    fn an_environment_file_no_window_read_is_removed() {
+        let env = HashMap::from([("A".to_string(), "1".to_string())]);
+        let argv = pushed("sh", &[], &env, None);
+        let at = argv.iter().position(|a| a == "A=1").expect("the -e value");
+        assert_eq!(argv[at - 1], "-e");
+        let file = EnvFile::write(&env).unwrap();
+        let path = file.path().unwrap().to_path_buf();
+        drop(file);
+        assert!(!path.exists());
+        assert!(EnvFile::write(&HashMap::new()).unwrap().path().is_none());
+        // A name no shell can spell rides as `-e`.
+        let odd = HashMap::from([("A-B".to_string(), "1".to_string())]);
+        assert!(EnvFile::write(&odd).unwrap().path().is_none());
     }
 
     /// RMUX's control mode can deliver a pane's `%output` inside a command's
@@ -5466,8 +5669,9 @@ mod tests {
             command: &str,
             args: &[String],
             env: &HashMap<String, String>,
+            env_file: Option<&Path>,
         ) -> Result<()> {
-            push_posix_window_program(cmd, command, args, env);
+            push_posix_window_program(cmd, command, args, env, env_file);
             Ok(())
         }
         fn paste_args(_: &str, _: &str) -> Vec<Vec<String>> {
