@@ -526,7 +526,16 @@ fn run(cli: Cli) -> Result<(), Failure> {
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
         let written = bootstrap::init(&path, &root, cli.data_dir.as_deref()).map_err(fail)?;
         let config = Config::load(&path).map_err(fail)?;
-        print!("{}", init_summary(written, &path, &config));
+        // The profiles `fleet doctor` checks: the bundled ones, then the
+        // user's beside this config.
+        let harnesses = harness_dir(Some(&path));
+        let user = user_profiles(harnesses.as_deref(), true).map_err(fail)?;
+        let profiles = fleet_api::harness::Profiles::bundled().with(user);
+        let named = explicit_config.then_some(path.as_path());
+        print!(
+            "{}",
+            init_summary(written, &path, &config, &profiles, named)
+        );
         return Ok(());
     }
     let config = match &config_path {
@@ -1720,8 +1729,15 @@ fn runtime_places(config: &Config) -> Vec<Value> {
 /// What `fleet init` set up and what comes next, in a few lines: the
 /// config, the places sessions run in, the coding agents on PATH, and the
 /// commands that follow. A first-time user reads this, so it names the
-/// next command rather than the concepts.
-fn init_summary(written: bool, path: &Path, config: &Config) -> String {
+/// next command rather than the concepts. `named`: a config chosen with
+/// `--config` or `FLEET_CONFIG`, which every printed command then carries.
+fn init_summary(
+    written: bool,
+    path: &Path,
+    config: &Config,
+    profiles: &fleet_api::harness::Profiles,
+    named: Option<&Path>,
+) -> String {
     let mut out = format!(
         "{} {}\n",
         if written { "initialized" } else { "kept" },
@@ -1733,7 +1749,7 @@ fn init_summary(written: bool, path: &Path, config: &Config) -> String {
     }
     let path_var = std::env::var_os("PATH");
     let mut agents: Vec<String> = Vec::new();
-    for p in fleet_api::harness::installed().list() {
+    for p in profiles.list() {
         let found = fleet_runtime::program::find(&p.program, path_var.as_deref()).is_some();
         if found && !agents.contains(&p.program) {
             agents.push(p.program.clone());
@@ -1747,9 +1763,21 @@ fn init_summary(written: bool, path: &Path, config: &Config) -> String {
         out.push_str(&format!("  coding agents found: {}\n", agents.join(", ")));
     }
     // Fleet runs without thurbox, so both ways to start are named.
+    let fleet = match named {
+        Some(p) => format!("fleet --config {}", p.display()),
+        None => "fleet".to_string(),
+    };
     out.push_str("next: run `thurbox` and press ctrl+n to start a session,\n");
-    out.push_str("      or run `fleet up` and `fleet apply` without it\n");
-    out.push_str("      `fleet doctor` checks this machine\n");
+    if let Some(p) = named {
+        out.push_str(&format!(
+            "      once settings.toml names this config: [fleets.<name>] config = \"{}\"\n",
+            p.display()
+        ));
+    }
+    out.push_str(&format!(
+        "      or run `{fleet} up` and `{fleet} apply` without it\n"
+    ));
+    out.push_str(&format!("      `{fleet} doctor` checks this machine\n"));
     out
 }
 
