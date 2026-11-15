@@ -354,7 +354,7 @@
 
 .flow__grid {
   display: grid;
-  grid-template-columns: 1fr 3fr;
+  grid-template-columns: 11rem 1fr;
   gap: var(--space-md);
 }
 
@@ -368,7 +368,7 @@
 
 .flow__lane {
   display: grid;
-  grid-template-columns: 4.5rem 1fr 4.5rem 1fr 4.5rem 1fr;
+  grid-template-columns: 4.5rem 1fr 3.25rem 1fr 3.25rem 1fr 3.25rem 1fr;
   align-items: center;
 }
 
@@ -378,7 +378,7 @@
   box-shadow:
     inset 2px 2px 0 rgb(255, 255, 255, 0.16),
     inset -2px -2px 0 rgb(0, 0, 0, 0.6);
-  padding: var(--space-md);
+  padding: var(--space-md) 0.75rem;
   min-width: 0;
   transition:
     transform var(--transition),
@@ -425,6 +425,62 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--flow-red);
+}
+
+/* A configurable slot: a role, not a program. The dashed edge says it can be
+   swapped; the name shows the shipped program "or yours". Under .js-motion the
+   name instead cross-fades between the two (see Scroll reveal), and the
+   "or yours" stays in the accessibility tree as a visually hidden span, so a
+   screen reader hears one sentence either way. */
+.flow__node--slot {
+  border-style: dashed;
+}
+
+.flow .flow__role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  margin-bottom: var(--space-sm);
+  color: var(--flow-dim);
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.flow__tag {
+  padding: 0 0.35em;
+  border: 1px solid var(--flow-cyan);
+  color: var(--flow-cyan);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.flow__node--slot .flow__name {
+  flex-wrap: wrap;
+  gap: 0 var(--space-sm);
+}
+
+.flow__swap {
+  display: grid;
+}
+
+.flow__swap > * {
+  grid-area: 1 / 1;
+}
+
+.flow__swap-b {
+  display: none;
+}
+
+.flow__or {
+  color: var(--flow-dim);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .flow__sigil {
@@ -503,10 +559,12 @@
   }
 }
 
-/* Below the xl step a row of three boxes and three wires does not fit (each box
-   needs about 150px for RUNTIME-MUX): the flow stacks, and each wire turns
-   vertical between its boxes. */
-@media (max-width: 1023px) {
+/* A row of four boxes and four wires needs a figure about 1130px wide: each box
+   needs about 160px for WORKSPACE-GIT, and thurbox takes 11rem. The figure
+   reaches its full 1152px at a 1280px viewport, so below that the flow stacks:
+   each wire turns vertical between its boxes, and the two lanes sit side by
+   side while there is room. */
+@media (max-width: 1279px) {
   .flow {
     padding: var(--space-md);
     border-width: 6px;
@@ -517,11 +575,17 @@
   }
 
   .flow__lanes {
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    align-items: start;
     gap: var(--space-lg);
   }
 
   .flow__lane {
     grid-template-columns: 1fr;
+  }
+
+  .flow__node {
+    padding: var(--space-md);
   }
 
   .flow__wire {
@@ -778,12 +842,74 @@
   --wire-d: 1.15s;
 }
 
+.js-motion .flow__wire:nth-child(7) {
+  --wire-d: 1.55s;
+}
+
+/* Once the wires are in, each configurable slot cross-fades between the
+   shipped program and "yours", the provider a beat behind the runtime. Opacity
+   only; the static "or yours" leaves the screen but not the accessibility
+   tree. */
+.js-motion .flow__swap-b {
+  display: block;
+  opacity: 0;
+}
+
+.js-motion .flow__or {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.js-motion .flow.is-revealed .flow__swap-a {
+  animation: flow-swap-a 6s ease-in-out calc(2s + var(--slot-d, 0s)) infinite both;
+}
+
+.js-motion .flow.is-revealed .flow__swap-b {
+  animation: flow-swap-b 6s ease-in-out calc(2s + var(--slot-d, 0s)) infinite both;
+}
+
+.js-motion .flow__wire:nth-child(5) + .flow__node--slot {
+  --slot-d: 0.6s;
+}
+
+@keyframes flow-swap-a {
+  0%,
+  25%,
+  83%,
+  100% {
+    opacity: 1;
+  }
+
+  33%,
+  75% {
+    opacity: 0;
+  }
+}
+
+@keyframes flow-swap-b {
+  0%,
+  25%,
+  83%,
+  100% {
+    opacity: 0;
+  }
+
+  33%,
+  75% {
+    opacity: 1;
+  }
+}
+
 .js-motion .flow__lane--remote {
   --lane-d: 0.15s;
 }
 
 /* Stacked, each wire runs top to bottom. */
-@media (max-width: 1023px) {
+@media (max-width: 1279px) {
   .js-motion .flow__wire {
     transform: scaleY(0);
     transform-origin: center top;

@@ -174,7 +174,8 @@ fleet up</code></pre>
         <h2>How they fit</h2>
         <p class="product__lede">
           thurbox follows one or more Fleets, on this machine or over ssh or WSL; each Fleet's
-          runtime runs the sessions at a place.
+          runtime runs the sessions at a place, in a directory its workspace provider makes. Both
+          are yours to swap.
         </p>
         <!-- The overview as real words: the same content as assets/overview.svg,
              which the README keeps because GitHub renders no custom HTML. -->
@@ -195,16 +196,28 @@ fleet up</code></pre>
                 <p class="flow__dim">thurbox starts <code>fleet up</code></p>
               </div>
               <span class="flow__wire"><span class="flow__label">start</span></span>
-              <div class="flow__node">
-                <h3 class="flow__name">runtime-mux</h3>
-                <p>tmux &middot; psmux</p>
-                <p class="flow__dim">the shipped runtime, or yours</p>
+              <div class="flow__node flow__node--slot">
+                <p class="flow__role">runtime <span class="flow__tag">configurable</span></p>
+                <h3 class="flow__name">
+                  <span class="flow__swap"><span class="flow__swap-a">runtime-mux</span><span class="flow__swap-b" aria-hidden="true">your runtime</span></span>
+                  <span class="flow__or">&middot; or yours</span>
+                </h3>
+                <p class="flow__dim">answers the runtime protocol</p>
               </div>
               <span class="flow__wire"><span class="flow__label">runs</span></span>
+              <div class="flow__node flow__node--slot">
+                <p class="flow__role">workspace provider <span class="flow__tag">configurable</span></p>
+                <h3 class="flow__name">
+                  <span class="flow__swap"><span class="flow__swap-a">workspace-git</span><span class="flow__swap-b" aria-hidden="true">your provider</span></span>
+                  <span class="flow__or">&middot; or yours</span>
+                </h3>
+                <p class="flow__dim">turns a URL into a directory</p>
+              </div>
+              <span class="flow__wire"><span class="flow__label">makes</span></span>
               <div class="flow__node flow__node--place">
                 <h3 class="flow__name">local</h3>
                 <p>the laptop</p>
-                <p class="flow__dim">a coding agent</p>
+                <p class="flow__dim">a repository, a coding agent</p>
               </div>
             </li>
             <li class="flow__lane flow__lane--remote">
@@ -215,16 +228,28 @@ fleet up</code></pre>
                 <p class="flow__dim">a systemd unit runs <code>fleet up</code></p>
               </div>
               <span class="flow__wire"><span class="flow__label">start</span></span>
-              <div class="flow__node">
-                <h3 class="flow__name">runtime-mux</h3>
-                <p>tmux &middot; psmux</p>
-                <p class="flow__dim">the shipped runtime, or yours</p>
+              <div class="flow__node flow__node--slot">
+                <p class="flow__role">runtime <span class="flow__tag">configurable</span></p>
+                <h3 class="flow__name">
+                  <span class="flow__swap"><span class="flow__swap-a">runtime-mux</span><span class="flow__swap-b" aria-hidden="true">your runtime</span></span>
+                  <span class="flow__or">&middot; or yours</span>
+                </h3>
+                <p class="flow__dim">answers the runtime protocol</p>
               </div>
               <span class="flow__wire"><span class="flow__label">runs</span></span>
+              <div class="flow__node flow__node--slot">
+                <p class="flow__role">workspace provider <span class="flow__tag">configurable</span></p>
+                <h3 class="flow__name">
+                  <span class="flow__swap"><span class="flow__swap-a">workspace-git</span><span class="flow__swap-b" aria-hidden="true">your provider</span></span>
+                  <span class="flow__or">&middot; or yours</span>
+                </h3>
+                <p class="flow__dim">turns a URL into a directory</p>
+              </div>
+              <span class="flow__wire"><span class="flow__label">makes</span></span>
               <div class="flow__node flow__node--place">
                 <h3 class="flow__name">local</h3>
                 <p>box</p>
-                <p class="flow__dim">a coding agent</p>
+                <p class="flow__dim">a repository, a coding agent</p>
               </div>
             </li>
             </ol>
