@@ -4,6 +4,7 @@
 //! terminal, must leave that home as it found it and never start Fleet.
 #![cfg(unix)]
 
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -39,12 +40,17 @@ impl Sandbox {
 
     /// `thurbox args`, stdin from nowhere and stdout to a pipe: no terminal.
     fn run(&self, args: &[&str]) -> Output {
+        self.run_on(args, Stdio::null(), Stdio::piped())
+    }
+
+    /// `thurbox args` with the given stdin and stdout; stderr is captured.
+    fn run_on(&self, args: &[&str], stdin: Stdio, stdout: Stdio) -> Output {
         let home = self.home();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox"));
         cmd.args(args)
             .current_dir(self.root.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdin(stdin)
+            .stdout(stdout)
             .stderr(Stdio::piped())
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
@@ -80,6 +86,32 @@ impl Sandbox {
         assert!(written.is_empty(), "thurbox wrote {written:?}");
         let calls = std::fs::read_to_string(self.root.path().join("fleet-calls"));
         assert!(calls.is_err(), "thurbox ran fleet: {calls:?}");
+    }
+}
+
+/// A pseudo-terminal: the controller, kept open while the test runs, and the
+/// terminal side handed to thurbox.
+fn pty() -> (OwnedFd, OwnedFd) {
+    let (mut controller, mut terminal) = (-1, -1);
+    // SAFETY: openpty writes two valid descriptors into the out-params on
+    // success; the name, termios and winsize pointers may be null.
+    let rc = unsafe {
+        libc::openpty(
+            &mut controller,
+            &mut terminal,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+    // SAFETY: both descriptors were just returned by openpty and nobody else
+    // owns them.
+    unsafe {
+        (
+            OwnedFd::from_raw_fd(controller),
+            OwnedFd::from_raw_fd(terminal),
+        )
     }
 }
 
@@ -147,5 +179,36 @@ fn without_a_terminal_thurbox_exits_before_it_writes_or_starts_fleet() {
     let stderr = text(&out.stderr);
     assert!(stderr.contains("terminal"), "{stderr}");
     assert!(stderr.contains("thurbox-cli"), "{stderr}");
+    sandbox.assert_untouched();
+}
+
+/// A terminal on stdin alone is not enough: the interface draws on stdout.
+#[test]
+fn a_terminal_on_stdin_alone_is_refused() {
+    let sandbox = Sandbox::new();
+    let (_controller, terminal) = pty();
+    let out = sandbox.run_on(&[], Stdio::from(terminal), Stdio::piped());
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("terminal"),
+        "{}",
+        text(&out.stderr)
+    );
+    sandbox.assert_untouched();
+}
+
+/// A terminal on stdout alone is not enough: the interface reads keys from
+/// stdin.
+#[test]
+fn a_terminal_on_stdout_alone_is_refused() {
+    let sandbox = Sandbox::new();
+    let (_controller, terminal) = pty();
+    let out = sandbox.run_on(&[], Stdio::null(), Stdio::from(terminal));
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("terminal"),
+        "{}",
+        text(&out.stderr)
+    );
     sandbox.assert_untouched();
 }
