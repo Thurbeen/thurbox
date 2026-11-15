@@ -50,7 +50,7 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | Send, rename, delete and a sent automation go to the session's own Fleet | implemented |
 | A remote Fleet's session panes: `fleet attach` and its stream over the link | implemented |
 | The new-session modal's Fleet step, then the chosen Fleet's places and agents; creation goes to that Fleet | implemented |
-| Browsing a remote Fleet's folders in the modal | planned |
+| The modal browses a remote Fleet's folders and lists a repository's branches there, through Fleet | implemented |
 | A Fleet whose `fleet version --json` lacks `fleet/v1alpha1` is refused: no watch, no command | implemented |
 | `runtime-mux` places over ssh and WSL, a VM runtime | planned |
 
@@ -74,8 +74,8 @@ Status: implemented. thurbox lists box's Fleet and follows its sessions over
 ssh beside the laptop's, `thurbox-cli doctor` checks it, the new-session
 modal creates on it, each command for one of box's sessions goes to box,
 and a session's pane shows and takes typing over the same ssh. The modal
-does not browse box's folders yet: type a path on box, or paste a clone
-URL.
+browses box's folders and lists a repository's branches on box, through
+box's Fleet.
 
 This is the most common setup. The agents run on box, so they keep working
 when the laptop sleeps.
@@ -186,11 +186,13 @@ Rows:  ● fix-auth      box
 - **Place**: pick a place of that Fleet's runtimes, from its `fleet runtime
   places --json`. A place that is not ready shows why. The agents that the
   modal offers next are that Fleet's too.
-- **Repository**: on this machine's Fleet, browse folders or pick a
-  remembered repository. On a remote Fleet, type a path on that machine or
-  paste a clone URL: the runtime clones it there. The path starts at that
-  machine's home, and `~` is that home. Browsing a remote Fleet's folders,
-  and a worktree of a repository there, are planned.
+- **Repository**: browse folders on the place, pick a remembered
+  repository, or paste a clone URL: the runtime clones it there. On a remote
+  Fleet, browsing starts at that machine's home, `~` is that home, and the
+  folders come from `fleet runtime browse` through that Fleet. A worktree
+  there (`alt+w`) asks for its base branch from `fleet runtime branches`, as
+  that machine last fetched them, and the runtime makes the worktree on the
+  place. A runtime without `browse` leaves a typed path, and says so.
 - **Rows**: each row shows its Fleet, and its place when the place is not
   `local`. A row of an unreachable Fleet stays in the list. Implemented
   today: the session list shows a Fleet on another machine where it shows a

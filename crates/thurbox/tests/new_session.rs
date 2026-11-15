@@ -645,10 +645,14 @@ fn the_fleet_step_lists_each_fleet_and_the_rest_follows_the_one_picked() {
 
     press(&host, &world, "tab");
     press(&host, &world, "tab");
-    let screen = drawn(&host, &world);
+    drawn(&host, &world);
+    // Browsing asks for box's place, which the kernel reads through box's
+    // link, never this machine's disk.
     assert!(
-        screen.contains("browsing box's folders comes later"),
-        "{screen}"
+        host.shared_string("want_browse")
+            .is_some_and(|want| want.starts_with("box/local\0")),
+        "{:?}",
+        host.shared_string("want_browse")
     );
     press(&host, &world, "backtab");
     press(&host, &world, "enter");
@@ -691,6 +695,37 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     );
     assert!(!screen.contains("~/"), "{screen}");
 
+    // Browsing with the home unknown lists the runtime's own home, and an
+    // entry picked there is an absolute path on box, never `~/…`.
+    press(&host, &world, "tab");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("box/local\0~")
+    );
+    world.wants.browse = Some(("box/local".into(), "~".into()));
+    world.repos.set_listing_for_test(
+        "box/local",
+        "~",
+        Listing::Ready(vec![BrowseEntry {
+            name: "app".into(),
+            is_git: true,
+        }]),
+    );
+    world
+        .repos
+        .set_resolved_dir_for_test("box/local", "~", "/home/box");
+    drawn(&host, &world);
+    press(&host, &world, "enter");
+    assert!(
+        host.drain_commands().iter().any(|c| matches!(
+            c,
+            Command::Bookmark { host, path, .. } if host == "box/local" && path == "/home/box/app"
+        )),
+        "a picked entry is absolute"
+    );
+    world.wants.browse = None;
+
     let host = self::host();
     world.snapshot.fleets[0].home = Some("/home/me".into());
     press(&host, &world, "ctrl+n");
@@ -698,6 +733,20 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     press(&host, &world, "enter");
     press(&host, &world, "tab");
     assert!(drawn(&host, &world).contains("/home/me/"));
+    // A typed `~` lists box's home, not its parent: the directory part is
+    // split off first and only then made box's home.
+    for (typed, back) in [("~", 1), ("~/", 2), ("~/pro", 5)] {
+        type_text(&host, &world, typed);
+        drawn(&host, &world);
+        assert_eq!(
+            host.shared_string("want_browse").as_deref(),
+            Some("box/local\0/home/me"),
+            "{typed}"
+        );
+        for _ in 0..back {
+            press(&host, &world, "backspace");
+        }
+    }
     type_text(&host, &world, "~/app");
     press(&host, &world, "enter");
     assert!(

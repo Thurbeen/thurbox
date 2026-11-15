@@ -88,8 +88,8 @@ pub type HostKey = String;
 /// The keys a plugin asks through, in `store`.
 pub const WANT_BOOKMARKS: &str = "want_bookmarks";
 pub const WANT_BROWSE: &str = "want_browse";
-/// A repository on this machine whose branches the flow offers for a
-/// worktree: its path, as the flow chose it.
+/// A repository whose branches the flow offers for a worktree: its path,
+/// as the flow chose it, or `<host>\0<path>` on a remote Fleet's place.
 pub const WANT_BRANCHES: &str = "want_branches";
 
 /// What the flow is asking about right now.
@@ -106,8 +106,8 @@ pub const WANT_BRANCHES: &str = "want_branches";
 pub struct Wants {
     pub bookmarks: Option<HostKey>,
     pub browse: Option<(HostKey, String)>,
-    /// A repository on this machine whose branches are asked for. Local
-    /// only: thurbox reads no other machine.
+    /// A repository whose branches are asked for: its path on this
+    /// machine, or `<host>\0<path>` on a remote Fleet's place.
     pub branches: Option<String>,
 }
 
@@ -205,6 +205,9 @@ enum Done {
     Listing {
         key: PathKey,
         listing: Listing,
+        /// The directory the listing is of, when it is not the one asked
+        /// for as typed: a remote place's home asked for as `~`.
+        dir: Option<String>,
     },
     Branches {
         repo: String,
@@ -252,14 +255,21 @@ pub struct RepoStore {
     /// Why the last fetch of a repository's `origin` failed, while its
     /// branches are listed from the refs already there.
     fetch_notes: HashMap<String, String>,
+    /// The Fleets on other machines: a host key `<fleet>/<place>` naming one
+    /// is read on that place, through that Fleet (`fleet runtime browse`,
+    /// `branches`), never on this machine's disk.
+    remote: Vec<crate::fleet_link::FleetLink>,
+    /// The absolute directory a listing answered for, where it was asked as
+    /// `~` of a remote place whose home is not known here.
+    resolved: HashMap<PathKey, String>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
 }
 
 impl RepoStore {
     /// A store that reads this machine only: the creation flow browses and
-    /// scans local folders, and a path remembered for another Fleet host is
-    /// kept as typed, never read over a connection.
+    /// scans local folders, and a path remembered for another place is kept
+    /// as typed. [`Self::with_fleets`] also reads remote Fleets' places.
     pub fn new() -> Self {
         let (tx, rx) = channel();
         Self {
@@ -270,9 +280,28 @@ impl RepoStore {
             branches_inflight: std::collections::HashSet::new(),
             fetched: std::collections::HashSet::new(),
             fetch_notes: HashMap::new(),
+            remote: Vec::new(),
+            resolved: HashMap::new(),
             tx,
             rx,
         }
+    }
+
+    /// A store that also reads the places of the Fleets on other machines
+    /// among `fleets`, each through its own link.
+    pub fn with_fleets(fleets: &[crate::fleet_link::FleetLink]) -> Self {
+        Self {
+            remote: fleets.iter().filter(|l| !l.is_local()).cloned().collect(),
+            ..Self::new()
+        }
+    }
+
+    /// The remote Fleet and its place a host key `<fleet>/<place>` names, or
+    /// `None` for a key of this machine.
+    fn remote_place(&self, host: &str) -> Option<(crate::fleet_link::FleetLink, String)> {
+        let (fleet, place) = host.split_once('/')?;
+        let link = self.remote.iter().find(|link| link.name() == fleet)?;
+        Some((link.clone(), place.to_string()))
     }
 
     /// Whether any read is still on its way — a bookmark refresh or a pending
@@ -315,6 +344,34 @@ impl RepoStore {
         if self.branches_inflight.contains(repo) {
             return;
         }
+        // `<host>\0<repo>`: a repository of a remote Fleet's place, read
+        // there through Fleet, as that machine last fetched it.
+        if let Some((link, place, path)) = repo
+            .split_once('\0')
+            .and_then(|(host, path)| self.remote_place(host).map(|(l, p)| (l, p, path)))
+        {
+            if self.branches.get(repo).is_some_and(|held| !held.stale()) {
+                return;
+            }
+            self.branches_inflight.insert(repo.to_string());
+            self.branches
+                .entry(repo.to_string())
+                .or_insert_with(|| BranchesHeld {
+                    at: std::time::Instant::now(),
+                    listing: BranchListing::Pending,
+                });
+            let (repo, path) = (repo.to_string(), path.to_string());
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let listing = remote_branches(&link, &place, &path);
+                let _ = tx.send(Done::Branches {
+                    repo,
+                    listing,
+                    fetched: None,
+                });
+            });
+            return;
+        }
         // The fresh-answer shortcut is for re-reads only: an opening fetches
         // however recently a closed picker listed the repository.
         let fetch = !self.fetched.contains(repo);
@@ -352,6 +409,22 @@ impl RepoStore {
     /// The rows for `host`, once they have been asked for.
     pub fn bookmarks(&self, host: &str) -> Option<&[BookmarkRow]> {
         self.bookmarks.get(host).map(|held| held.rows.as_slice())
+    }
+
+    /// The absolute directory the listing of `dir` on `host` is of, when
+    /// `dir` was a remote place's `~` and the runtime named its home.
+    pub fn resolved_dir(&self, host: &str, dir: &str) -> Option<&str> {
+        self.resolved
+            .get(&(host.to_string(), dir.to_string()))
+            .map(String::as_str)
+    }
+
+    /// Seed [`Self::resolved_dir`] directly, so a test can render a remote
+    /// home's listing.
+    #[doc(hidden)]
+    pub fn set_resolved_dir_for_test(&mut self, host: &str, dir: &str, resolved: &str) {
+        self.resolved
+            .insert((host.to_string(), dir.to_string()), resolved.to_string());
     }
 
     /// What is known about `dir` on `host`.
@@ -404,6 +477,15 @@ impl RepoStore {
 
         let dir = dir.to_string();
         let tx = self.tx.clone();
+        // A remote Fleet's place is listed there, through Fleet: never this
+        // machine's directory of the same name.
+        if let Some((link, place)) = self.remote_place(host) {
+            std::thread::spawn(move || {
+                let (listing, dir) = remote_listing(&link, &place, &dir);
+                let _ = tx.send(Done::Listing { key, listing, dir });
+            });
+            return;
+        }
         std::thread::spawn(move || {
             let listing = match crate::git::list_dir_entries(&dir) {
                 crate::git::DirListing::Missing => {
@@ -416,7 +498,11 @@ impl RepoStore {
                         .collect(),
                 ),
             };
-            let _ = tx.send(Done::Listing { key, listing });
+            let _ = tx.send(Done::Listing {
+                key,
+                listing,
+                dir: None,
+            });
         });
     }
 
@@ -446,7 +532,10 @@ impl RepoStore {
                         },
                     );
                 }
-                Done::Listing { key, listing } => {
+                Done::Listing { key, listing, dir } => {
+                    if let Some(dir) = dir {
+                        self.resolved.insert(key.clone(), dir);
+                    }
                     self.remember_listing(key, listing);
                 }
                 Done::Branches {
@@ -547,6 +636,103 @@ impl Default for RepoStore {
 }
 
 use super::bookmarks::Bookmark;
+
+/// `fleet <args> --json`'s answer from a remote Fleet, bounded as a probe of
+/// it is, or why there is none. A runtime that does not offer the verb says
+/// so in plain words: the flow takes a typed path instead.
+fn ask_place(
+    link: &crate::fleet_link::FleetLink,
+    args: &[&str],
+    verb: &str,
+) -> Result<serde_json::Value, String> {
+    let out = link.bounded_output(args, link.probe_timeout())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let why = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("error: "))
+            .unwrap_or(stderr.trim())
+            .to_string();
+        if why.contains(&format!("does not offer {verb}")) {
+            return Err(format!(
+                "{} cannot {verb} here (its runtime does not offer it): type a path",
+                link.name()
+            ));
+        }
+        return Err(why);
+    }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("fleet runtime {verb} answered no JSON: {e}"))
+}
+
+/// The subdirectories of `dir` on a remote Fleet's `place`
+/// (`fleet runtime browse`), each marked when it is a git work tree.
+///
+/// A bare `~` is a home not known here: the runtime is asked with no
+/// directory, which it answers with its own home, since it takes only an
+/// absolute one.
+fn remote_listing(
+    link: &crate::fleet_link::FleetLink,
+    place: &str,
+    dir: &str,
+) -> (Listing, Option<String>) {
+    let home = dir == "~";
+    let args: &[&str] = if home {
+        &["runtime", "browse", place, "--json"]
+    } else {
+        &["runtime", "browse", place, dir, "--json"]
+    };
+    match ask_place(link, args, "browse") {
+        Ok(answer) => {
+            // The runtime names the home it listed: kept, so an entry picked
+            // from it is an absolute path.
+            let resolved = home
+                .then(|| answer["dir"].as_str().map(str::to_string))
+                .flatten();
+            (listing_of(&answer), resolved)
+        }
+        Err(why) => (Listing::Failed(why), None),
+    }
+}
+
+/// The entries of a `fleet runtime browse --json` answer.
+fn listing_of(answer: &serde_json::Value) -> Listing {
+    Listing::Ready(
+        answer["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                Some(BrowseEntry {
+                    name: entry["name"].as_str()?.to_string(),
+                    is_git: entry["repo"].as_bool().unwrap_or(false),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The branches of the repository at `repo` on a remote Fleet's `place`
+/// (`fleet runtime branches`), as that machine last fetched them.
+fn remote_branches(link: &crate::fleet_link::FleetLink, place: &str, repo: &str) -> BranchListing {
+    match ask_place(
+        link,
+        &["runtime", "branches", place, repo, "--json"],
+        "branches",
+    ) {
+        Ok(answer) => BranchListing::Ready(crate::git::Branches {
+            default: answer["default"].as_str().map(str::to_string),
+            names: answer["names"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect(),
+            worktrees: Vec::new(),
+        }),
+        Err(why) => BranchListing::Failed(why),
+    }
+}
 
 /// Read a host's bookmarks and flatten them into rows. Called on a worker.
 ///
@@ -753,6 +939,95 @@ fn row(path: &Path, parent: Option<String>, is_parent: bool, is_git: Option<bool
 
 #[cfg(test)]
 mod tests {
+    /// A remote Fleet's place is listed and its branches read through that
+    /// Fleet's link (`fleet runtime browse` / `branches`), never from this
+    /// machine; a runtime that does not offer `browse` is said plainly, so
+    /// the flow falls back to a typed path.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_fleets_place_is_read_through_its_link() {
+        let remote = crate::fleet_link::testing::Remote::new(
+            "case \"$3\" in\n\
+             local) ;;\n\
+             *) echo 'error: runtime mux does not offer browse' >&2; exit 1 ;;\n\
+             esac\n\
+             case \"$2\" in\n\
+             browse) echo '{\"dir\":\"/srv\",\"entries\":[{\"name\":\"app\",\"repo\":true}]}' ;;\n\
+             branches) echo '{\"names\":[\"feat\",\"main\"],\"default\":\"main\"}' ;;\n\
+             esac",
+        );
+        crate::paths::with_path(remote.path(), || {
+            let mut store = super::RepoStore::with_fleets(std::slice::from_ref(&remote.link));
+            store.request_listing("devbox/local", "/srv");
+            store.request_listing("devbox/local", "~");
+            store.request_listing("devbox/mux/vm", "/srv");
+            store.request_branches("devbox/local\0/srv/app");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                store.poll();
+                let done = [
+                    ("devbox/local", "/srv"),
+                    ("devbox/local", "~"),
+                    ("devbox/mux/vm", "/srv"),
+                ]
+                .iter()
+                .all(|(h, d)| !matches!(store.listing(h, d), Some(super::Listing::Pending)))
+                    && !matches!(
+                        store.branches("devbox/local\0/srv/app"),
+                        Some(super::BranchListing::Pending)
+                    );
+                if done {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "{:?}", remote.calls());
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(
+                store.listing("devbox/local", "/srv"),
+                Some(&super::Listing::Ready(vec![super::BrowseEntry {
+                    name: "app".into(),
+                    is_git: true,
+                }]))
+            );
+            assert!(
+                matches!(store.listing("devbox/mux/vm", "/srv"),
+                    Some(super::Listing::Failed(why)) if why.contains("devbox cannot browse here") && why.contains("type a path")),
+                "{:?}",
+                store.listing("devbox/mux/vm", "/srv")
+            );
+            assert_eq!(store.resolved_dir("devbox/local", "~"), Some("/srv"));
+            match store.branches("devbox/local\0/srv/app") {
+                Some(super::BranchListing::Ready(found)) => {
+                    assert_eq!(found.names, ["feat", "main"]);
+                    assert_eq!(found.default.as_deref(), Some("main"));
+                }
+                other => panic!("{other:?}"),
+            }
+        });
+        assert!(
+            remote.called("runtime browse local /srv --json"),
+            "{:?}",
+            remote.calls()
+        );
+        // A home not known here is the runtime's own default: `~` itself is
+        // never sent, since a runtime takes only an absolute directory. The
+        // directory the runtime answered for is kept, so an entry picked
+        // from it is an absolute path.
+        assert!(
+            remote.called("runtime browse local --json"),
+            "{:?}",
+            remote.calls()
+        );
+        assert!(
+            !remote
+                .calls()
+                .iter()
+                .any(|c| c.contains("browse local '~'")),
+            "{:?}",
+            remote.calls()
+        );
+    }
+
     use super::*;
 
     #[test]

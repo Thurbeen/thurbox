@@ -265,7 +265,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         },
         commands: CommandBus::fleet(fleets),
         diffs: DiffStore::new(),
-        repos: thurbox::kernel::repos::RepoStore::new(),
+        repos: thurbox::kernel::repos::RepoStore::with_fleets(&links),
         metrics: Metrics::new(),
         clipboard: arboard::Clipboard::new().ok(),
         image_probe: thurbox::clipboard::ImageProbe::default(),

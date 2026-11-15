@@ -471,7 +471,13 @@ impl LuaHost {
         let Some(repo) = &wants.branches else {
             return Ok(out);
         };
-        out.set("repo", repo.clone()).map_err(|e| e.to_string())?;
+        // A remote place's repository is asked as `<host>\0<path>`; the flow
+        // matches the read by its path.
+        let path = repo
+            .split_once('\0')
+            .map_or(repo.as_str(), |(_, path)| path);
+        out.set("repo", path.to_string())
+            .map_err(|e| e.to_string())?;
         let listing = store.branches(repo);
         out.set(
             "loading",
@@ -578,7 +584,12 @@ impl LuaHost {
             browse
                 .set("host", host.clone())
                 .map_err(|e| e.to_string())?;
-            browse.set("dir", dir.clone()).map_err(|e| e.to_string())?;
+            // A remote place's `~` is published as the home the runtime
+            // listed, so an entry joined to it is an absolute path there.
+            let shown = store.resolved_dir(host, dir).unwrap_or(dir);
+            browse
+                .set("dir", shown.to_string())
+                .map_err(|e| e.to_string())?;
             let listing = store.listing(host, dir);
             browse
                 .set("loading", matches!(listing, None | Some(Listing::Pending)))
