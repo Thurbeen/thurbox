@@ -7,8 +7,12 @@
 # answer. `fleet init` must write a config, and `thurbox-cli doctor` must find
 # Fleet, its config and runtime-mux.
 #
+# With --fleet-only it runs the installers' fleet-only mode instead: only
+# Fleet's programs may be installed, neither thurbox nor thurbox-cli, and
+# `fleet doctor` takes thurbox-cli doctor's place.
+#
 # Usage:
-#   scripts/ci/install-e2e.sh <dist-dir> <version>
+#   scripts/ci/install-e2e.sh <dist-dir> <version> [--fleet-only]
 #
 # <dist-dir> holds the archive scripts/ci/release-archive.sh packed for this
 # machine; this script serves it with a checksums file beside it, as the
@@ -20,10 +24,15 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-[ "$#" -eq 2 ] || { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
-dist="$(cd "$1" && pwd)" version="$2"
+case "$#:${3:-}" in
+  2: | 3:--fleet-only) ;;
+  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac
+dist="$(cd "$1" && pwd)" version="$2" fleet_only="${3:-}"
 # shellcheck disable=SC2207 # one word per line; macOS's bash 3.2 has no mapfile
-binaries=($("$repo/scripts/ci/release-archive.sh" --binaries))
+shipped=($("$repo/scripts/ci/release-archive.sh" --binaries))
+# shellcheck disable=SC2207
+binaries=($("$repo/scripts/ci/release-archive.sh" "--${fleet_only:+fleet-}binaries"))
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
@@ -61,7 +70,8 @@ for _ in $(seq 1 50); do
 done
 
 # A machine that has never seen thurbox: an empty home, and a PATH without
-# any directory that already holds one of the shipped programs.
+# any directory that already holds one of the shipped programs, whichever
+# the install takes.
 bin="$root/bin"
 export HOME="$root/home"
 mkdir -p "$HOME"
@@ -78,13 +88,13 @@ fi
 clean_path=""
 IFS=: read -r -a entries <<< "$PATH"
 for dir in "${entries[@]}"; do
-  for b in "${binaries[@]}"; do
+  for b in "${shipped[@]}"; do
     if [ -e "$dir/$b" ] || [ -e "$dir/$b.exe" ]; then continue 2; fi
   done
   clean_path="${clean_path:+$clean_path:}$dir"
 done
 export PATH="$clean_path"
-for b in "${binaries[@]}"; do
+for b in "${shipped[@]}"; do
   if command -v "$b" >/dev/null; then fail "$b is already on PATH"; fi
 done
 
@@ -92,11 +102,11 @@ url="http://127.0.0.1:$port"
 if [ -n "$windows" ]; then
   THURBOX_VERSION="$version" THURBOX_DOWNLOAD_URL="$url" \
     THURBOX_INSTALL_DIR="$(cygpath -w "$bin")" \
-    pwsh -NoProfile -File "$(cygpath -w "$repo/scripts/install.ps1")" \
+    pwsh -NoProfile -File "$(cygpath -w "$repo/scripts/install.ps1")" ${fleet_only:+-FleetOnly} \
     || fail "install.ps1 exited $?"
 else
   VERSION="$version" DOWNLOAD_URL="$url" INSTALL_DIR="$bin" \
-    sh "$repo/scripts/install.sh" || fail "install.sh exited $?"
+    sh "$repo/scripts/install.sh" ${fleet_only:+"$fleet_only"} || fail "install.sh exited $?"
 fi
 pass "the installer ran"
 
@@ -109,10 +119,19 @@ for b in "${binaries[@]}"; do
 done
 pass "installed: ${binaries[*]}"
 
-thurbox --version </dev/null || fail "thurbox --version exited $?"
-thurbox-cli version || fail "thurbox-cli version exited $?"
+if [ -n "$fleet_only" ]; then
+  for b in thurbox thurbox-cli; do
+    if [ -e "$bin/$b" ] || [ -e "$bin/$b.exe" ]; then fail "a fleet-only install wrote $b"; fi
+    if command -v "$b" >/dev/null; then fail "$b is on PATH"; fi
+  done
+  pass "no thurbox or thurbox-cli installed or on PATH"
+else
+  thurbox --version </dev/null || fail "thurbox --version exited $?"
+  thurbox-cli version || fail "thurbox-cli version exited $?"
+  pass "thurbox --version and thurbox-cli version answer"
+fi
 fleet version || fail "fleet version exited $?"
-pass "thurbox --version, thurbox-cli version and fleet version answer"
+pass "fleet version answers"
 
 # The two programs Fleet and runtime-mux run speak JSON on stdin: an unknown
 # request comes back as an `unknown` answer, which only a program that runs
@@ -125,6 +144,27 @@ pass "runtime-mux and workspace-git answer"
 
 fleet init || fail "fleet init exited $?"
 pass "fleet init wrote a config"
+
+if [ -n "$fleet_only" ]; then
+  # Fleet checks this machine on its own: harnesses, integrations and the
+  # runtime of each place. runtime-mux answers only beside a multiplexer.
+  status=0
+  report="$(fleet doctor --json)" || status=$?
+  echo "$report" | jq . >/dev/null 2>&1 || fail "fleet doctor --json printed no JSON: $report"
+  fleet doctor || true
+  failing="$(echo "$report" | jq -r '[.checks[] | select(.level == "fail") | .area + ":" + .name] | join(" ")')"
+  mux=tmux
+  [ -n "$windows" ] && mux=psmux
+  if command -v "$mux" >/dev/null; then
+    [ -z "$failing" ] && [ "$status" -eq 0 ] \
+      || fail "fleet doctor exited $status with failing checks: $failing"
+  else
+    [ "$failing" = "runtime:mux/local" ] || fail "fleet doctor's failing checks: $failing"
+    echo "note: $mux is not on PATH; fleet doctor's mux/local runtime check fails, as it should"
+  fi
+  pass "fleet doctor finds the mux/local runtime"
+  exit 0
+fi
 
 status=0
 report="$(thurbox-cli doctor --json)" || status=$?

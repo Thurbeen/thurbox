@@ -618,6 +618,8 @@ jobs:
   # served as release assets and installed by install.sh (install.ps1 on
   # Windows) into an empty home. Then `thurbox-cli version`, `fleet version`,
   # `fleet init` and `thurbox-cli doctor` must work from the install alone.
+  # Then the installer's fleet-only mode, into another empty home: Fleet's
+  # programs alone, no thurbox, and `fleet doctor` in thurbox-cli doctor's place.
   # A debug build: what is under test is the packing and the install, not the
   # optimiser.
   install-e2e:
@@ -674,17 +676,22 @@ jobs:
             docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 \
             sh -c 'apt-get update -qq &&
               apt-get install -qq -y --no-install-recommends ca-certificates curl jq python3 tmux >/dev/null &&
-              scripts/ci/install-e2e.sh dist v0.0.0-ci'
+              scripts/ci/install-e2e.sh dist v0.0.0-ci &&
+              scripts/ci/install-e2e.sh dist v0.0.0-ci --fleet-only'
       - name: Install and check on macOS
         if: runner.os == 'macOS'
         run: |
           brew install tmux
           scripts/ci/install-e2e.sh dist v0.0.0-ci
-      # No psmux here: doctor's multiplexer check is the one failure the test
-      # accepts when none is on PATH.
+          scripts/ci/install-e2e.sh dist v0.0.0-ci --fleet-only
+      # No psmux here: doctor's multiplexer check (fleet doctor's mux/local
+      # runtime check, fleet-only) is the one failure the test accepts when
+      # none is on PATH.
       - name: Install and check on Windows
         if: runner.os == 'Windows'
-        run: scripts/ci/install-e2e.sh dist v0.0.0-ci
+        run: |
+          scripts/ci/install-e2e.sh dist v0.0.0-ci
+          scripts/ci/install-e2e.sh dist v0.0.0-ci --fleet-only
 
   winget-packaging:
     name: winget Packaging Tests

@@ -218,22 +218,33 @@ errors cleanly on any other), while `install.ps1` pulls
 `cd.yml`) and extracts it with the built-in `Expand-Archive` (no tar needed).
 ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 
+**Fleet alone.** `install.sh --fleet-only` (`curl … | sh -s -- --fleet-only`),
+`install.ps1 -FleetOnly`, or `THURBOX_FLEET_ONLY=1` for either, installs only
+`FLEET_BINARIES` from `scripts/ci/release-archive.sh` (`fleet`, `runtime-mux`,
+`workspace-git`; `--fleet-binaries` prints them, and `install.bats` holds them
+to a subset of `BINARIES`) and prints only Fleet's next steps. The in-app
+updater lives in thurbox and thurbox-cli, so a fleet-only install is updated by
+re-running the installer (`docs/thurbox/config.md`, auto-update).
+
 **`install.sh` (POSIX `sh`) specifics:**
 
 - Colorized output (auto-disabled when stderr is not a TTY, `NO_COLOR` is set,
   or `TERM=dumb`); platforms Linux/macOS × x86_64/aarch64
 - No external deps beyond standard tools (curl/wget, tar, sha256sum/shasum)
 - Env vars: `VERSION=v1.0.0`, `INSTALL_DIR=/path` (default `~/.local/bin`),
+  `THURBOX_FLEET_ONLY=1` (or the `--fleet-only` argument; any other argument
+  is refused),
   `DOWNLOAD_URL` (default `https://github.com/<REPO>/releases/download`; a
   mirror, or the local copy CI's `install-e2e` serves)
 - Non-interactive (safe pipe-to-shell), cleanup via `trap`
-- Tested by `scripts/install.bats` (bats-core, ~30 tests; CI `install-script` job)
+- Tested by `scripts/install.bats` (bats-core, ~40 tests, a fake release
+  installed end to end among them; CI `install-script` job)
 
 **`install.ps1` (PowerShell 5.1+) specifics:**
 
-- Parameters `-Version` / `-InstallDir` / `-Repo`, or the matching
-  `THURBOX_VERSION` / `THURBOX_INSTALL_DIR` / `THURBOX_REPO` env vars, plus
-  `THURBOX_DOWNLOAD_URL` (env vars
+- Parameters `-Version` / `-InstallDir` / `-Repo` / `-FleetOnly`, or the matching
+  `THURBOX_VERSION` / `THURBOX_INSTALL_DIR` / `THURBOX_REPO` /
+  `THURBOX_FLEET_ONLY` env vars, plus `THURBOX_DOWNLOAD_URL` (env vars
   are the reliable path for the `irm | iex` form, which can't pass parameters);
   default install dir `%LOCALAPPDATA%\Programs\thurbox`
 - Adds the install dir to the **user** `PATH` (`[Environment]::SetEnvironmentVariable(... 'User')`)
@@ -263,7 +274,11 @@ and Windows. Every program must then resolve to the install directory,
 `thurbox --version`, `thurbox-cli version`, `fleet version` and `fleet init` must succeed, and
 `thurbox-cli doctor --json` must report `fleet`, `fleet-config` and
 `runtime-mux` ok; with no multiplexer on `PATH` (Windows: no psmux) the
-`multiplexer` check is the only failure allowed. Run it locally after
+`multiplexer` check is the only failure allowed. A second run per OS passes
+`--fleet-only`: the installer's fleet-only mode into another empty home, where
+thurbox and thurbox-cli must be absent, `fleet version` and `fleet init` must
+succeed, and `fleet doctor --json` must report no failing check (with no
+multiplexer on `PATH`, the `mux/local` runtime is the only failure allowed). Run it locally after
 `cargo build` of the five programs:
 `scripts/ci/release-archive.sh v0.0.0-ci <target> target/debug dist &&
 scripts/ci/install-e2e.sh dist v0.0.0-ci`.

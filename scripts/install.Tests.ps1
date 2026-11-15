@@ -29,8 +29,11 @@ BeforeAll {
     . $script:ScriptPath
     # The one list of shipped programs, as scripts/ci/release-archive.sh packs it.
     $packer = Get-Content -Raw (Join-Path $PSScriptRoot 'ci/release-archive.sh')
-    $m = [regex]::Match($packer, 'BINARIES=\(([^)]*)\)')
+    $m = [regex]::Match($packer, '(?m)^BINARIES=\(([^)]*)\)')
     $script:Shipped = @($m.Groups[1].Value.Trim() -split '\s+')
+    # And the part of it Fleet runs without thurbox.
+    $m = [regex]::Match($packer, '(?m)^FLEET_BINARIES=\(([^)]*)\)')
+    $script:FleetShipped = @($m.Groups[1].Value.Trim() -split '\s+')
 }
 
 AfterAll {
@@ -85,6 +88,11 @@ Describe 'The shipped programs' {
         $script:Shipped.Count | Should -BeGreaterThan 1
         $Binaries -join ' ' | Should -Be ($script:Shipped -join ' ')
     }
+
+    It 'name the Fleet programs the release archive names' {
+        $script:FleetShipped.Count | Should -BeGreaterThan 1
+        $FleetBinaries -join ' ' | Should -Be ($script:FleetShipped -join ' ')
+    }
 }
 
 Describe 'Show-NextSteps' {
@@ -104,6 +112,17 @@ Describe 'Show-NextSteps' {
         Show-NextSteps -Dir $script:Dir
         ($script:Printed -join "`n") | Should -Match 'fleet init'
         ($script:Printed -join "`n") | Should -Not -Match 'no Fleet'
+    }
+
+    It 'names only Fleet''s steps for a fleet-only install' {
+        Set-Content -Path (Join-Path $script:Dir 'fleet.exe') -Value ''
+        Show-NextSteps -Dir $script:Dir -FleetOnly
+        $text = $script:Printed -join "`n"
+        foreach ($step in 'fleet init', 'fleet up', 'fleet apply', 'fleet doctor') {
+            $text | Should -Match $step
+        }
+        $text | Should -Not -Match 'thurbox-cli'
+        $text | Should -Not -Match 'Launch the TUI'
     }
 
     It 'says a 3.x release is needed when the release has no fleet' {
@@ -325,5 +344,79 @@ Describe 'Install-Archive' {
         Set-Content -Path $old -Value 'stale' -NoNewline
         Install-Archive -ZipPath $script:Zip -Destination $script:Dest
         Test-Path $old | Should -BeFalse
+    }
+}
+
+Describe 'A fleet-only install' {
+    BeforeAll {
+        $script:SavedArch = $env:PROCESSOR_ARCHITECTURE
+        $env:PROCESSOR_ARCHITECTURE = 'AMD64'
+    }
+
+    AfterAll {
+        $env:PROCESSOR_ARCHITECTURE = $script:SavedArch
+        Remove-Item Env:\THURBOX_FLEET_ONLY, Env:\THURBOX_VERSION, Env:\THURBOX_INSTALL_DIR -ErrorAction SilentlyContinue
+        # Back to the full install every other block expects.
+        . $script:ScriptPath
+    }
+
+    BeforeEach {
+        # A release of every shipped program, served as the release assets are.
+        $script:Work = Join-Path ([System.IO.Path]::GetTempPath()) ('thurbox-test-' + [guid]::NewGuid().ToString('N'))
+        $src = Join-Path $script:Work 'src'
+        $script:Assets = Join-Path $script:Work 'assets'
+        $script:Dest = Join-Path $script:Work 'install'
+        New-Item -ItemType Directory -Path $src, $script:Assets -Force | Out-Null
+        foreach ($name in $script:Shipped) {
+            Set-Content -Path (Join-Path $src "$name.exe") -Value 'new' -NoNewline
+        }
+        Set-Content -Path (Join-Path $src 'LICENSE') -Value 'license'
+        $zip = Join-Path $script:Assets 'thurbox-v9.9.9-x86_64-pc-windows-msvc.zip'
+        Compress-Archive -Path (Join-Path $src '*') -DestinationPath $zip
+        $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+        Set-Content -Path (Join-Path $script:Assets 'thurbox-v9.9.9-checksums.txt') `
+            -Value "$hash  thurbox-v9.9.9-x86_64-pc-windows-msvc.zip"
+        $env:THURBOX_VERSION = 'v9.9.9'
+        $env:THURBOX_INSTALL_DIR = $script:Dest
+        Remove-Item Env:\THURBOX_FLEET_ONLY -ErrorAction SilentlyContinue
+
+        $script:Printed = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { $script:Printed.Add([string]$Object) }
+        Mock Invoke-WebRequest { Copy-Item (Join-Path $script:Assets (Split-Path -Leaf $Uri)) $OutFile }
+        Mock Add-ToUserPath { $false }
+    }
+
+    AfterEach {
+        Remove-Item -Recurse -Force $script:Work -ErrorAction SilentlyContinue
+    }
+
+    It 'installs only Fleet''s programs and names only Fleet''s steps, from <Form>' -ForEach @(
+        @{ Form = '-FleetOnly' }
+        @{ Form = 'THURBOX_FLEET_ONLY=1' }
+    ) {
+        if ($Form -eq '-FleetOnly') {
+            . $script:ScriptPath -FleetOnly
+        } else {
+            $env:THURBOX_FLEET_ONLY = '1'
+            . $script:ScriptPath
+        }
+        Invoke-Install
+        $installed = @(Get-ChildItem -LiteralPath $script:Dest -File | ForEach-Object { $_.Name } | Sort-Object)
+        $installed -join ' ' | Should -Be (($script:FleetShipped | ForEach-Object { "$_.exe" } | Sort-Object) -join ' ')
+        $text = $script:Printed -join "`n"
+        foreach ($step in 'fleet init', 'fleet up', 'fleet apply', 'fleet doctor') {
+            $text | Should -Match $step
+        }
+        $text | Should -Not -Match 'thurbox-cli'
+        $text | Should -Not -Match 'Launch the TUI'
+    }
+
+    It 'installs every shipped program without it' {
+        . $script:ScriptPath
+        Invoke-Install
+        foreach ($name in $script:Shipped) {
+            Test-Path -LiteralPath (Join-Path $script:Dest "$name.exe") | Should -BeTrue
+        }
+        ($script:Printed -join "`n") | Should -Match 'thurbox-cli doctor'
     }
 }

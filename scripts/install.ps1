@@ -9,6 +9,9 @@
     workspace-git) into an install directory, and adds that directory to the
     user PATH.
 
+    -FleetOnly installs Fleet alone, headless: fleet, runtime-mux and
+    workspace-git, without thurbox or thurbox-cli.
+
     Mirrors scripts/install.sh (Linux/macOS). Windows uses psmux as the terminal
     multiplexer (a native, drop-in tmux replacement) instead of tmux.
 
@@ -20,6 +23,10 @@
     # Pin a version / custom dir (run as a file):
     .\install.ps1 -Version v0.1.0 -InstallDir C:\tools\thurbox
 
+.EXAMPLE
+    # Fleet alone, without thurbox:
+    $env:THURBOX_FLEET_ONLY = '1'; irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+
 .NOTES
     Configuration can also be supplied via environment variables, which is the
     reliable path for the pipe-to-iex form that cannot pass parameters:
@@ -27,13 +34,15 @@
       $env:THURBOX_INSTALL_DIR  = 'C:\tools\thurbox'
       $env:THURBOX_REPO         = 'Thurbeen/thurbox'
       $env:THURBOX_DOWNLOAD_URL = 'https://mirror.example/releases/download'
+      $env:THURBOX_FLEET_ONLY   = '1'
 #>
 
 [CmdletBinding()]
 param(
     [string]$Version,
     [string]$InstallDir,
-    [string]$Repo
+    [string]$Repo,
+    [switch]$FleetOnly
 )
 
 Set-StrictMode -Version Latest
@@ -44,8 +53,13 @@ if (-not $Repo)    { $Repo    = if ($env:THURBOX_REPO)    { $env:THURBOX_REPO } 
 if (-not $Version) { $Version = if ($env:THURBOX_VERSION) { $env:THURBOX_VERSION } else { '' } }
 # Where the release assets are fetched from; a mirror, or a local copy in tests.
 $DownloadUrl = if ($env:THURBOX_DOWNLOAD_URL) { $env:THURBOX_DOWNLOAD_URL } else { "https://github.com/$Repo/releases/download" }
-# Every program a v3 install runs by name (scripts/ci/release-archive.sh packs them).
+# Every program a v3 install runs by name, and the part Fleet runs without
+# thurbox: BINARIES and FLEET_BINARIES in scripts/ci/release-archive.sh.
 $Binaries = @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'workspace-git')
+$FleetBinaries = @('fleet', 'runtime-mux', 'workspace-git')
+if (-not $FleetOnly -and $env:THURBOX_FLEET_ONLY -and $env:THURBOX_FLEET_ONLY -ne '0') { $FleetOnly = [switch]$true }
+# What this run installs.
+$Programs = if ($FleetOnly) { $FleetBinaries } else { $Binaries }
 if (-not $InstallDir) {
     if ($env:THURBOX_INSTALL_DIR) { $InstallDir = $env:THURBOX_INSTALL_DIR }
     elseif ($env:LOCALAPPDATA)    { $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\thurbox' }
@@ -161,14 +175,22 @@ function Get-LockingProcess {
 # the in-app updater (src/update/self_update.rs) uses - and the new one moved
 # in. A backup a process still runs from stays until the next update.
 function Install-Archive {
-    param([string]$ZipPath, [string]$Destination)
+    # -Only: the program stems to install; every file in the archive otherwise.
+    param([string]$ZipPath, [string]$Destination, [string[]]$Only)
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     $Destination = (Resolve-Path -LiteralPath $Destination).ProviderPath
     # Inside $Destination so every move below is a rename on one volume.
     $staging = Join-Path $Destination ('.install-' + [System.Guid]::NewGuid().ToString('N'))
     try {
         Expand-Archive -LiteralPath $ZipPath -DestinationPath $staging
-        foreach ($file in Get-ChildItem -LiteralPath $staging -File) {
+        $files = @(Get-ChildItem -LiteralPath $staging -File)
+        if ($Only) {
+            $files = @($files | Where-Object { $Only -contains $_.BaseName -and $_.Extension -eq '.exe' })
+            if ($files.Count -ne $Only.Count) {
+                throw 'This release has no Fleet. Install a 3.x release: $env:THURBOX_VERSION = "v3.x.y"'
+            }
+        }
+        foreach ($file in $files) {
             $target = Join-Path $Destination $file.Name
             $backup = Join-Path $Destination ".$($file.Name).old"
             Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
@@ -202,10 +224,17 @@ function Install-Archive {
 # --- Next steps -------------------------------------------------------------
 # `fleet init` only when the release shipped Fleet: a 2.x release has none.
 function Show-NextSteps {
-    param([string]$Dir)
+    param([string]$Dir, [switch]$FleetOnly)
     Write-Host "`nNext steps" -ForegroundColor Magenta
     Write-Step '* Install psmux (the Windows multiplexer): https://github.com/psmux/psmux'
     Write-Step '* Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, ...)'
+    if ($FleetOnly) {
+        Write-Step '* Set up Fleet:      fleet init'
+        Write-Step '* Check the setup:   fleet doctor'
+        Write-Step '* Run it:            fleet up'
+        Write-Step '* Hand it a Task:    fleet apply -f task.json'
+        return
+    }
     if (Test-Path -LiteralPath (Join-Path $Dir 'fleet.exe')) {
         Write-Step '* Set up Fleet:      fleet init'
     } else {
@@ -251,15 +280,16 @@ function Invoke-Install {
         }
 
         Write-Info "Installing to $InstallDir ..."
-        Install-Archive -ZipPath $zipPath -Destination $InstallDir
+        $only = if ($FleetOnly) { $Programs } else { $null }
+        Install-Archive -ZipPath $zipPath -Destination $InstallDir -Only $only
     }
     finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     }
 
     Write-Host ''
-    Write-Ok "Thurbox installed to $InstallDir"
-    foreach ($bin in $Binaries) {
+    Write-Ok "$(if ($FleetOnly) { 'Fleet' } else { 'Thurbox' }) installed to $InstallDir"
+    foreach ($bin in $Programs) {
         if (Test-Path -LiteralPath (Join-Path $InstallDir "$bin.exe")) { Write-Step "  $bin" }
     }
 
@@ -269,7 +299,7 @@ function Invoke-Install {
 
     Write-Warn 'Windows support is experimental for now - expect rough edges and please report issues.'
 
-    Show-NextSteps -Dir $InstallDir
+    Show-NextSteps -Dir $InstallDir -FleetOnly:$FleetOnly
     Write-Host ''
     Write-Ok 'Installation complete! Happy hacking.'
 }

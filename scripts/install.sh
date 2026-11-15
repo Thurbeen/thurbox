@@ -3,14 +3,18 @@ set -e
 
 # Thurbox Installation Script
 # Usage: curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+# Fleet alone, headless: ... | sh -s -- --fleet-only  (or THURBOX_FLEET_ONLY=1)
 
 REPO="${REPO:-Thurbeen/thurbox}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
 # Where the release assets are fetched from; a mirror, or a local copy in tests.
 DOWNLOAD_URL="${DOWNLOAD_URL:-https://github.com/${REPO}/releases/download}"
-# Every program a v3 install runs by name (scripts/ci/release-archive.sh packs them).
+# Every program a v3 install runs by name, and the part Fleet runs without
+# thurbox: BINARIES and FLEET_BINARIES in scripts/ci/release-archive.sh.
 BINARIES="thurbox thurbox-cli fleet runtime-mux workspace-git"
+FLEET_BINARIES="fleet runtime-mux workspace-git"
+FLEET_ONLY="${THURBOX_FLEET_ONLY:-}"
 TEMP_DIR=""
 
 # Colors (auto-disabled when stderr is not a terminal, NO_COLOR is set, or TERM=dumb)
@@ -182,7 +186,12 @@ do_install() {
 
   info "Installing..."
   mkdir -p "$dir"
-  tar -xzf "$tarball" -C "$dir"
+  if [ -n "$FLEET_ONLY" ]; then
+    # shellcheck disable=SC2086 # one archive member per word
+    tar -xzf "$tarball" -C "$dir" $BINARIES || { error "This release has no Fleet: VERSION=v3.x.y"; return 1; }
+  else
+    tar -xzf "$tarball" -C "$dir"
+  fi
   # An older release ships fewer programs: chmod the ones it has.
   for bin in $BINARIES; do
     if [ -f "$dir/$bin" ]; then chmod +x "$dir/$bin"; fi
@@ -192,7 +201,7 @@ do_install() {
 # Show success message
 show_success() {
   printf '\n' >&2
-  success "Thurbox installed to ${C_BOLD}$1${C_RESET}"
+  success "$([ -n "$FLEET_ONLY" ] && echo Fleet || echo Thurbox) installed to ${C_BOLD}$1${C_RESET}"
   for bin in $BINARIES; do
     if [ -f "$1/$bin" ]; then step "  $bin"; fi
   done
@@ -204,6 +213,13 @@ show_success() {
   printf '\n%b\n' "${C_BOLD}${C_MAGENTA}Next steps${C_RESET}" >&2
   step "• Install tmux >= 3.2"
   step "• Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, …)"
+  if [ -n "$FLEET_ONLY" ]; then
+    step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
+    step "• Check the setup:   ${C_CYAN}fleet doctor${C_RESET}"
+    step "• Run it:            ${C_CYAN}fleet up${C_RESET}"
+    step "• Hand it a Task:    ${C_CYAN}fleet apply -f task.json${C_RESET}"
+    return
+  fi
   if [ -f "$1/fleet" ]; then
     step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
   else
@@ -215,6 +231,14 @@ show_success() {
 
 # Main
 main() {
+  for arg in "$@"; do
+    case "$arg" in
+      --fleet-only) FLEET_ONLY=1 ;;
+      *) error "Unknown option: $arg (the one option is --fleet-only)"; return 1 ;;
+    esac
+  done
+  [ "$FLEET_ONLY" = 0 ] && FLEET_ONLY=""
+  [ -n "$FLEET_ONLY" ] && BINARIES="$FLEET_BINARIES"
   banner
 
   local platform target version binary

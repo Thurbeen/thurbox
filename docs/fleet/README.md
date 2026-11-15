@@ -8,6 +8,26 @@ thurbox and the runtimes.
 This page explains the model, every resource kind, every controller and
 how they fit together. Each linked page is a reference for one subject.
 
+## Install
+
+Fleet runs headless, without thurbox. The installers' fleet-only mode
+installs `fleet`, `runtime-mux` and `workspace-git`, and nothing else:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+```
+
+On Windows, pass `-FleetOnly` to the installer through a script block. This
+form leaves no `THURBOX_FLEET_ONLY` variable behind in the session:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly
+```
+
+Then run `fleet init`, `fleet doctor` and `fleet up`.
+[configuration.md](configuration.md) owns these commands. Nothing updates a
+fleet-only install: to update it, run the installer again.
+
 ## The model
 
 Fleet is declarative, like Kubernetes:
