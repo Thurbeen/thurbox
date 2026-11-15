@@ -351,10 +351,22 @@ fn mux_config(env: &Env) -> PathBuf {
 
 /// One verb of `runtime-mux` and its answer.
 fn mux_call(program: &Path, sockets: &Sockets, verb: &str, request: &Value) -> Value {
+    mux_call_env(program, sockets, verb, request, &[])
+}
+
+/// [`mux_call`] with `envs` set for the program.
+fn mux_call_env(
+    program: &Path,
+    sockets: &Sockets,
+    verb: &str,
+    request: &Value,
+    envs: &[(&str, &Path)],
+) -> Value {
     use std::io::Write;
     let out = Command::new(program)
         .arg(verb)
         .env("TMUX_TMPDIR", &sockets.0)
+        .envs(envs.iter().copied())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -3702,8 +3714,8 @@ fn toml_place(sshd: &Sshd, path: &[&Path]) -> Value {
 
 /// `fleet runtime places` and `fleet doctor` say whether each ssh place can
 /// run a session, and why not, with the command that shows it. A place
-/// without `workspace-git` on its `PATH` is not ready: no workspace can be
-/// made there.
+/// without `workspace-git` on its `PATH` is ready: it takes `file://`
+/// workspaces, and refuses a `git+` one by naming the program.
 #[test]
 fn an_ssh_place_reports_its_readiness() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
@@ -3767,14 +3779,43 @@ fn an_ssh_place_reports_its_readiness() {
         .code(1)
         .stdout_has("mux/down")
         .stdout_has("cannot be reached");
-    let bare = row("mux/bare");
-    assert_eq!(bare["ready"], false, "{places:#}");
-    assert!(
-        bare["why"]
-            .as_str()
-            .is_some_and(|w| w.contains("`workspace-git` is not on its PATH")),
-        "{places:#}"
+    // A place without `workspace-git` is ready: a `file://` workspace is
+    // made there without it, and only a `git+` one is refused, by name.
+    assert_eq!(row("mux/bare")["ready"], true, "{places:#}");
+    let bare = json!({"name": "bare", "config": toml_place(&sshd, &[&fleet_only])});
+    let dir = env.root.join("on-the-place");
+    fs::create_dir_all(&dir).expect("dir");
+    let made = mux_call(
+        &program,
+        &sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": bare, "key": "k.file",
+                "urls": [format!("file://{}", dir.display())]}),
     );
+    assert_eq!(
+        made["known"]["made"]["dirs"],
+        json!([dir.display().to_string()]),
+        "{made}"
+    );
+    let released = mux_call(
+        &program,
+        &sockets,
+        "stop",
+        &json!({"protocol": 2, "place": bare, "key": "k.file", "release": true}),
+    );
+    assert_eq!(released, json!({"known": "stopped"}));
+    assert!(dir.is_dir(), "a file:// directory outlives its release");
+    let refused = mux_call(
+        &program,
+        &sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": bare, "key": "k.git",
+                "urls": ["git+https://example.test/app.git"]}),
+    );
+    let why = refused["known"]["failed"]["why"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(why.contains("workspace-git"), "{refused}");
 }
 
 /// A Task on one place asks the runtime's manifest about that place only:
@@ -4208,6 +4249,7 @@ fn a_user_profile_reports_its_conversation_from_an_ssh_place() {
 /// place's `PATH` only through its `path_prepend`.
 struct Placed {
     env: Env,
+    program: PathBuf,
     home: PathBuf,
     sockets: Sockets,
     remote: Sockets,
@@ -4243,6 +4285,7 @@ impl Placed {
         env.only_on_path(Path::new(&path));
         Some(Placed {
             env,
+            program,
             home,
             sockets,
             remote,
@@ -4273,11 +4316,41 @@ impl Placed {
 /// the checkout, as on this machine.
 #[test]
 fn a_git_workspace_on_an_ssh_place_is_made_and_released_there() {
-    let Some(p) = Placed::new("ssh-git", CLAUDE) else {
+    let Some(mut p) = Placed::new("ssh-git", CLAUDE) else {
         return;
     };
+    let src = p.env.root.join("src");
+    let bad = p.env.root.join("bad");
+    // runtime-mux's setup steps run on the place, in the worktree: one that
+    // succeeds, and one that leaves work and fails.
+    let config = p.env.root.join("runtime-mux.toml");
+    fs::write(
+        &config,
+        format!(
+            "[[workspace.setup]]\nmatch = 'git+file://{}'\nrun = ['echo ran >> setup.log']\n\n\
+             [[workspace.setup]]\nmatch = 'git+file://{}'\nrun = ['echo left > left.txt; exit 3']\n",
+            src.display(),
+            bad.display()
+        ),
+    )
+    .expect("runtime-mux config");
+    p.env
+        .set_var("RUNTIME_MUX_CONFIG", &config.to_string_lossy());
     let env = &p.env;
-    let src = env.root.join("src");
+    fs::create_dir_all(&bad).expect("bad");
+    git(&bad, &["init", "-q", "-b", "main"]);
+    git(
+        &bad,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ],
+    );
     fs::create_dir_all(&src).expect("source");
     git(&src, &["init", "-q", "-b", "main"]);
     git(
@@ -4328,6 +4401,59 @@ fn a_git_workspace_on_an_ssh_place_is_made_and_released_there() {
     assert!(
         branch.trim().ends_with(&uid),
         "a branch of its own: {branch}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("setup.log")).unwrap_or_default(),
+        "ran\n",
+        "the setup step ran once, in the worktree on the place"
+    );
+
+    // A second call adopts the workspace and finds its setup finished.
+    let place = json!({"name": "box", "config": toml_place(&p._sshd, &[&env.root.join("place-bin"), Placed::build()])});
+    let again = mux_call_env(
+        &p.program,
+        &p.sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": place, "key": format!("fleet.{uid}"),
+                "urls": [format!("git+file://{}#main", src.display())]}),
+        &[("RUNTIME_MUX_CONFIG", &config)],
+    );
+    assert_eq!(again["known"]["made"]["adopted"], true, "{again}");
+    assert_eq!(
+        fs::read_to_string(dir.join("setup.log")).unwrap_or_default(),
+        "ran\n",
+        "an adopted workspace's finished setup does not run again"
+    );
+
+    // A failing step fails the call, and the work it left is preserved
+    // before the worktree goes.
+    let failed = mux_call_env(
+        &p.program,
+        &p.sockets,
+        "workspace",
+        &json!({"protocol": 2, "place": place, "key": "k.bad",
+                "urls": [format!("git+file://{}#main", bad.display())]}),
+        &[("RUNTIME_MUX_CONFIG", &config)],
+    );
+    let why = failed["known"]["failed"]["why"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(why.contains("exit 3"), "{failed}");
+    let kept = preserved_refs(&bad);
+    assert_eq!(
+        kept.len(),
+        1,
+        "the failed setup's work is preserved: {kept:?}"
+    );
+    assert_eq!(
+        git(&bad, &["show", &format!("{}:left.txt", kept[0])]),
+        "left\n"
+    );
+    assert!(
+        !p.home
+            .join(".local/share/runtime-mux/workspaces/k.bad/bad")
+            .exists(),
+        "the failed workspace is gone from the place"
     );
 
     fs::write(dir.join("notes.txt"), "kept\n").expect("work");

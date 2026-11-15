@@ -164,7 +164,22 @@ impl Workspaces {
         }
         let answer = match self.call("make", &request) {
             Ok(answer) => answer,
-            Err(Call::NotRun(why)) => return known(json!({ "failed": { "why": why } })),
+            // A place without `workspace-git` takes directories already
+            // there; only a `git+` URL needs the program.
+            Err(Call::NotRun(why)) => {
+                return match self
+                    .place
+                    .as_ref()
+                    .and_then(|h| crate::place::file_dirs(h, urls))
+                {
+                    Some(Ok(Ok(dirs))) => {
+                        known(json!({ "made": { "dirs": dirs, "adopted": false } }))
+                    }
+                    Some(Ok(Err(failed))) => known(json!({ "failed": { "why": failed } })),
+                    Some(Err(unanswered)) => unknown(unanswered),
+                    None => known(json!({ "failed": { "why": why } })),
+                }
+            }
             Err(Call::Unanswered(why)) => return unknown(why),
         };
         let Some(made) = answer.get("made") else {
@@ -182,8 +197,15 @@ impl Workspaces {
             return known(answer);
         }
         let done = PathBuf::from(format!("{}/{key}/{SETUP_DONE}", self.root.display()));
-        if made["adopted"] == true && self.is_file(&done) {
-            return known(answer);
+        let adopted = made["adopted"] == true;
+        match setup_needed(adopted, || self.is_file(&done)) {
+            Ok(true) => {}
+            Ok(false) => return known(answer),
+            Err(why) => {
+                return unknown(format!(
+                    "whether the workspace's setup finished cannot be told: {why}"
+                ))
+            }
         }
         let dirs: Vec<String> = made["dirs"]
             .as_array()
@@ -194,16 +216,11 @@ impl Workspaces {
             })
             .unwrap_or_default();
         if let Err(why) = self.run_steps(&self.setup, urls, &dirs) {
-            return match self.call("discard", &json!({ "root": self.root, "key": key })) {
-                Ok(discarded) if discarded == json!("discarded") => {
-                    known(json!({ "failed": { "why": why } }))
-                }
-                Ok(other) => unknown(format!(
-                    "{why}; and the workspace was not discarded: workspace-git discard answered {other}"
-                )),
-                Err(Call::NotRun(e) | Call::Unanswered(e)) => {
-                    unknown(format!("{why}; and the workspace was not discarded: {e}"))
-                }
+            // A failed setup may have left work, as a session would: the
+            // release preserves it before the worktree goes.
+            return match self.release(key) {
+                Ok(()) => known(json!({ "failed": { "why": why } })),
+                Err(e) => unknown(format!("{why}; and the workspace was not released: {e}")),
             };
         }
         // A marker that cannot be written only costs the steps again on the
@@ -221,7 +238,12 @@ impl Workspaces {
     /// do not stop the release, then `workspace-git release`.
     pub fn release(&self, key: &str) -> Result<(), String> {
         let request = json!({ "root": self.root, "key": key });
-        let found = self.call("inspect", &request).map_err(Call::why)?;
+        let found = match self.call("inspect", &request) {
+            // A place without `workspace-git` made nothing to release: its
+            // workspaces are directories already there.
+            Err(Call::NotRun(_)) if self.place.is_some() => return Ok(()),
+            found => found.map_err(Call::why)?,
+        };
         if let Some(workspace) = found.get("workspace") {
             let strings = |field: &str| -> Vec<String> {
                 workspace[field]
@@ -254,7 +276,7 @@ impl Workspaces {
             // `sh` exits 127 when it cannot find the program: nothing ran.
             if code == Some(127) {
                 return Err(Call::NotRun(format!(
-                    "cannot run workspace-git on place {:?}: {}",
+                    "cannot run workspace-git on place {:?}: {}; a git+ workspace needs it on the place's PATH (it ships beside runtime-mux), or add its directory to path_prepend",
                     host.name,
                     stderr.trim()
                 )));
@@ -315,12 +337,26 @@ impl Workspaces {
         Ok(())
     }
 
-    fn is_file(&self, path: &Path) -> bool {
+    fn is_file(&self, path: &Path) -> Result<bool, String> {
         match &self.place {
             Some(host) => crate::place::is_file(host, &path.to_string_lossy()),
-            None => path.is_file(),
+            None => path
+                .try_exists()
+                .map(|there| there && path.is_file())
+                .map_err(|e| format!("{}: {e}", path.display())),
         }
     }
+}
+
+/// Whether this runtime's setup steps run on a workspace `workspace-git`
+/// answered for: always on one it made, and on one it adopted only when the
+/// marker of a finished setup is proven absent. `Err` when `marker` cannot
+/// tell, so the call is Unknown and a retry asks again.
+fn setup_needed(
+    adopted: bool,
+    marker: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    Ok(!adopted || !marker()?)
 }
 
 enum Call {
@@ -427,6 +463,17 @@ mod tests {
         assert!(step.applies_to("git+https://h/org/app.git"));
         assert!(step.applies_to("git+https://h/org/app.git?branch=x#main"));
         assert!(!step.applies_to("git+https://h/org/lib.git"));
+    }
+
+    /// Setup runs again in an adopted workspace only when its marker is
+    /// proven absent: a marker that cannot be checked leaves the call
+    /// Unknown, so a retry never reruns a finished setup.
+    #[test]
+    fn setup_reruns_only_when_the_marker_is_proven_absent() {
+        assert_eq!(setup_needed(false, || Ok(true)), Ok(true));
+        assert_eq!(setup_needed(true, || Ok(true)), Ok(false));
+        assert_eq!(setup_needed(true, || Ok(false)), Ok(true));
+        assert!(setup_needed(true, || Err("no answer".to_string())).is_err());
     }
 
     #[test]

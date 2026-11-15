@@ -313,8 +313,9 @@ distro = "Ubuntu-24.04"
 
 - `runtime-mux` refuses any other key, and names it.
 - The place needs `ssh -o BatchMode=yes <destination> true` to succeed,
-  tmux 3.2 or newer (or psmux), and `fleet`, `workspace-git`, `git` and the
-  agent on its `PATH`.
+  tmux 3.2 or newer (or psmux), and `fleet` and the agent on its `PATH`.
+  A `git+` workspace also needs `workspace-git` and `git` there, and a WSL
+  place needs `flock`.
   `fleet runtime places` and `fleet doctor` say which one is missing, with
   the command that shows or fixes it.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`

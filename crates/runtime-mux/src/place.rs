@@ -32,8 +32,10 @@ pub const LOCAL: &str = "local";
 /// first.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// What a probe keeps of a stream.
-const PROBE_OUTPUT: u64 = 64 * 1024;
+/// The most a command run on a place may print on a stream: a `browse` of
+/// a large directory or a `branches` of a repository with many refs fits
+/// well inside it. Past it the run is an error, never a cut answer.
+const PROBE_OUTPUT: u64 = 8 * 1024 * 1024;
 
 /// How long a place's login `PATH`, read once, is used from the cache on
 /// disk before it is read again. Each `runtime-mux` call is a process of its
@@ -276,9 +278,18 @@ fn script_command(host: &HostDef, path: &str, script: &str, args: &[&str]) -> Co
 }
 
 /// The probe that `fleet` is on the place's `PATH`, which its agents' hooks
-/// run to report, and `workspace-git`, which makes its workspaces.
-const FLEET_PROBE: &str = "command -v fleet >/dev/null 2>&1 || echo @missing; \
-     command -v workspace-git >/dev/null 2>&1 || echo @noworkspace";
+/// run to report.
+const FLEET_PROBE: &str = "command -v fleet >/dev/null 2>&1 || echo @missing";
+
+/// On a WSL place, the probe also looks for `flock`, which the waiter that
+/// keeps the distro running needs ([`run_detached`]).
+const FLOCK_PROBE: &str = "; command -v flock >/dev/null 2>&1 || echo @noflock";
+
+/// The readiness probe of `host`.
+fn probe_script(host: &HostDef) -> String {
+    let flock = if host.is_wsl() { FLOCK_PROBE } else { "" };
+    format!("{FLEET_PROBE}{flock}")
+}
 
 /// Why the place cannot run a session now, if it cannot: the launcher does
 /// not reach it, its multiplexer is missing or too old, or `fleet` is not on
@@ -291,7 +302,7 @@ pub fn readiness(
 ) -> Result<(), String> {
     let name = &host.name;
     if host.platform() == Platform::Posix {
-        let ran = run_script(host, FLEET_PROBE, &[], deadline).map_err(|why| {
+        let ran = run_script(host, &probe_script(host), &[], deadline).map_err(|why| {
             format!(
                 "place {name:?} did not answer: {why}; check `{}`",
                 reach(host)
@@ -309,9 +320,9 @@ pub fn readiness(
                 "place {name:?}: `fleet` is not on its PATH, so its agents' hooks cannot report their state; install fleet there, or add its directory to the place's path_prepend"
             ));
         }
-        if ran.stdout.contains("@noworkspace") {
+        if ran.stdout.contains("@noflock") {
             return Err(format!(
-                "place {name:?}: `workspace-git` is not on its PATH, so no workspace can be made there; install it there (it ships beside runtime-mux), or add its directory to the place's path_prepend"
+                "place {name:?}: `flock` is not in the distro, so runtime-mux cannot keep it running between calls and WSL would stop its sessions; install util-linux there"
             ));
         }
     }
@@ -393,6 +404,57 @@ pub fn workspace_git(
     run_fed(cmd, request, WORKSPACE_TIMEOUT)
 }
 
+/// The directories a workspace of `file://` URLs only names on the place,
+/// each checked to be there: what a place without `workspace-git` makes.
+/// `None` when a URL is not `file://`, which only `workspace-git` makes.
+pub fn file_dirs(host: &HostDef, urls: &[String]) -> Option<Reading<Vec<String>>> {
+    let mut dirs = Vec::new();
+    for url in urls {
+        let path = url.strip_prefix("file://")?;
+        match percent_decode(path).filter(|p| p.starts_with('/') && !path.contains(['?', '#'])) {
+            Some(dir) => dirs.push(dir),
+            None => return Some(Ok(Err(format!("{url} names no absolute path")))),
+        }
+    }
+    let args: Vec<&str> = dirs.iter().map(String::as_str).collect();
+    let ran = match read(
+        host,
+        "for d; do [ -d \"$d\" ] || printf '@missing %s\\n' \"$d\"; done",
+        &args,
+    ) {
+        Ok(Ok(ran)) => ran,
+        other => return Some(other.map(|r| r.map(|_| Vec::new()))),
+    };
+    Some(Ok(
+        match ran.lines().find_map(|l| l.strip_prefix("@missing ")) {
+            Some(missing) => Err(format!(
+                "{missing} is not a directory on place {:?}",
+                host.name
+            )),
+            None => Ok(dirs),
+        },
+    ))
+}
+
+/// A URL path's `%XX` escapes decoded; `None` when one is malformed or the
+/// result is not UTF-8.
+fn percent_decode(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// The place's home directory, as its login shell reads it.
 pub fn home(host: &HostDef) -> Result<String, String> {
     env(host, PROBE_TIMEOUT)
@@ -425,15 +487,24 @@ pub fn run_in(host: &HostDef, dir: &str, command: &str) -> Result<(), String> {
     ))
 }
 
-/// Whether `path` is a file on the place; `false` when it cannot tell.
-pub fn is_file(host: &HostDef, path: &str) -> bool {
-    run_script(
+/// Whether `path` is a file on the place; `Err` when the place cannot
+/// tell.
+pub fn is_file(host: &HostDef, path: &str) -> Result<bool, String> {
+    let ran = run_script(
         host,
-        "[ -f \"$1\" ]",
+        "if [ -f \"$1\" ]; then echo @file; fi",
         &[path],
         Instant::now() + PROBE_TIMEOUT,
     )
-    .is_ok_and(|ran| ran.ok)
+    .map_err(|why| format!("place {:?} did not answer: {why}", host.name))?;
+    if !ran.ok {
+        return Err(format!(
+            "place {:?} cannot be reached: {}",
+            host.name,
+            last_line(&ran.stderr)
+        ));
+    }
+    Ok(ran.stdout.contains("@file"))
 }
 
 /// An empty file at `path` on the place. Best effort.
@@ -702,7 +773,7 @@ fn wait_bounded(
         std::thread::spawn(move || {
             let mut out = Vec::new();
             if let Some(pipe) = pipe {
-                let mut capped = pipe.take(PROBE_OUTPUT);
+                let mut capped = pipe.take(PROBE_OUTPUT + 1);
                 let _ = capped.read_to_end(&mut out);
                 let _ = std::io::copy(&mut capped.into_inner(), &mut std::io::sink());
             }
@@ -738,9 +809,12 @@ fn wait_bounded(
     };
     let text = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
         let out = rx.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
-        String::from_utf8_lossy(&out).into_owned()
+        if out.len() as u64 > PROBE_OUTPUT {
+            return Err(format!("it printed more than {PROBE_OUTPUT} bytes"));
+        }
+        Ok(String::from_utf8_lossy(&out).into_owned())
     };
-    Ok((status.code(), text(stdout), text(stderr)))
+    Ok((status.code(), text(stdout)?, text(stderr)?))
 }
 
 #[cfg(test)]
@@ -761,7 +835,9 @@ mod tests {
             .unwrap()
             .unwrap();
         let path = "PATH=/home/me/.cargo/bin:/usr/bin; export PATH; ";
-        let cmd = script_command(&host, path, FLEET_PROBE, &[]);
+        let probe = probe_script(&host);
+        assert!(probe.ends_with(FLOCK_PROBE), "{probe}");
+        let cmd = script_command(&host, path, &probe, &[]);
         let argv: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -777,8 +853,24 @@ mod tests {
         if cfg!(unix) {
             want.extend(["--cd".to_string(), "/".to_string()]);
         }
-        want.extend(["-e", "sh", "-c", &format!("{path}{FLEET_PROBE}"), "sh"].map(String::from));
+        want.extend(["-e", "sh", "-c", &format!("{path}{probe}"), "sh"].map(String::from));
         assert_eq!(argv, want);
+    }
+
+    /// Output past the cap is an error, never a cut answer passed as whole.
+    #[test]
+    fn output_past_the_cap_is_an_error_not_a_cut_answer() {
+        let run = |bytes: u64| {
+            let mut cmd = Command::new("head");
+            cmd.args(["-c", &bytes.to_string(), "/dev/zero"]);
+            run_bounded(cmd, Duration::from_secs(30))
+        };
+        assert_eq!(
+            run(PROBE_OUTPUT).map(|(_, out, _)| out.len() as u64),
+            Ok(PROBE_OUTPUT)
+        );
+        let why = run(PROBE_OUTPUT + 1).unwrap_err();
+        assert!(why.contains("more than"), "{why}");
     }
 
     #[test]

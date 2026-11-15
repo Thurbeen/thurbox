@@ -310,9 +310,9 @@ request.place ──▶ local ─────────▶ this machine's mult
   Unknown and names what is wrong, and `manifest` reports the place not
   ready.
 - `local` is ready when the multiplexer answers. A remote place is ready
-  when its launcher reaches it without a prompt, `fleet` and
-  `workspace-git` are on its `PATH`, and its multiplexer answers at tmux 3.2
-  or newer, or psmux 3.3.8 or newer.
+  when its launcher reaches it without a prompt, `fleet` is on its `PATH`,
+  and its multiplexer answers at tmux 3.2 or newer, or psmux 3.3.8 or
+  newer. A WSL place also needs `flock`.
   `why` names what is missing and the command that shows or fixes it.
 - `manifest` probes each place on a thread of its own, and waits 8 s for
   all of them together. A place that has not answered by then is not
@@ -346,7 +346,10 @@ request.place ──▶ local ─────────▶ this machine's mult
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
   run on the place. A pause mark of a remote key stays on this machine.
 - `workspace` and a releasing `stop` run `workspace-git` on the place, from
-  the place's `PATH`, over the same launcher. The workspaces are under
+  the place's `PATH`, over the same launcher. A place without it takes
+  `file://` URLs only: directories already there, which a release keeps,
+  with no setup steps. A `git+` URL there answers `failed` and names
+  `workspace-git`. The workspaces are under
   `~/.local/share/runtime-mux/workspaces` on the place. A `git+` URL gets a
   worktree there, on the key's own branch, with the same `#ref`, preserved
   refs and retention as on `local` ([workspace-git](#workspace-git-the-default-for-git-urls)). The
@@ -365,7 +368,7 @@ request.place ──▶ local ─────────▶ this machine's mult
   `wsl.exe` that runs `flock -n` and `tmux wait-for` on the place's server.
   The waiter keeps the distro running while that server runs, and exits
   with it. A second waiter for the same server exits at once. The distro
-  needs `flock` (util-linux).
+  needs `flock` (util-linux), and readiness says so when it is missing.
 
 #### Signals on a remote place
 
@@ -749,9 +752,14 @@ run = ["npm ci"]
 - A step matches a URL as written, or the URL without its query and fragment.
   Its commands run in order, through `sh -c`, in the directory made for that
   URL.
-- Setup runs only in a workspace the call made, not in one it adopted. A
-  failing command discards the workspace, with nothing preserved, and the
-  call answers `failed`, naming the command and its exit code.
+- Setup runs in a workspace the call made, and in one it adopted only when
+  the mark of a finished setup is proven absent. When the mark cannot be
+  read, as on a place that does not answer, the call is Unknown and setup
+  does not run.
+- A failing command fails the call, naming the command. The workspace is
+  released, which preserves any work in it first, as a stop does.
+- A place's `browse`, `branches` and `workspace-git` answers may be up to
+  8 MiB on a stream. A longer one is an error, never a cut answer.
 - `stop {release: true}` stops the process first, then runs the teardown
   steps, then releases the workspace. A failing teardown command does not
   stop the release.
