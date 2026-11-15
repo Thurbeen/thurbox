@@ -11,13 +11,12 @@ repository = "https://github.com/Thurbeen/thurbox"
 publish = false
 
 [dependencies]
-opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
-opentelemetry-otlp.workspace = true
-
-[features]
-# The logs signal, for the one program that records logs: thurbox.
-logs = ["opentelemetry/logs", "opentelemetry_sdk/logs", "opentelemetry-otlp/logs"]
+# The logs signal is compiled in for every program and asked for at run time
+# by the one that records logs (thurbox), so feature unification never
+# changes what another program reads.
+opentelemetry = { workspace = true, features = ["logs"] }
+opentelemetry_sdk = { workspace = true, features = ["logs"] }
+opentelemetry-otlp = { workspace = true, features = ["logs"] }
 
 [lints]
 workspace = true

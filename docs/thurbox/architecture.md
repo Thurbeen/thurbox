@@ -1128,8 +1128,9 @@ orphaned tmux server); killing it is the only remedy.
 **Choice**: the interface installs its telemetry through `otel-env`, the
 crate every program of the repository shares (`telemetry`). The standard
 `OTEL_*` variables turn it on, as they do for `fleet`, `runtime-mux` and
-`workspace-git`; `settings.toml` has no telemetry table. When the logs
-signal is on, the interface adds an `opentelemetry-appender-tracing` layer
+`workspace-git`; `settings.toml` has no telemetry table. When
+`OTEL_LOGS_EXPORTER=otlp` turns the logs signal on (an endpoint alone does
+not, as log records carry text), the interface adds an `opentelemetry-appender-tracing` layer
 to its `tracing` subscriber, beside the file appender. The layer has a
 filter of its own: WARN and above, from thurbox's own targets only. The
 file log keeps its `thurbox=debug` level. When the traces signal is on,
@@ -1156,8 +1157,8 @@ so an `https` collector is reached through a local Collector. Another
 protocol turns export off and logs why to the file. The batches are flushed
 on a clean exit, within two seconds; an exit by signal or panic loses what
 the processors still held, which the file log has. Records carry what the
-log lines carry — paths, session names, machine names — so
-`OTEL_LOGS_EXPORTER=none` exports traces without them. The variables are read
+log lines carry — paths, session names, machine names — which is why the
+logs signal needs its own explicit opt-in. The variables are read
 at start: a change applies on the next start. `TRACEPARENT` does not cross a
 launcher, so a Fleet on another machine starts its own traces.
 

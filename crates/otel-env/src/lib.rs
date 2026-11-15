@@ -9,8 +9,9 @@
 //! does nothing until this crate installs a provider. A signal is exported
 //! when its endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or the signal's own
 //! `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`) is set, its
-//! `OTEL_{TRACES,METRICS,LOGS}_EXPORTER` is unset or `otlp`, and
-//! `OTEL_SDK_DISABLED` is not `true`. The transport is OTLP over HTTP with
+//! `OTEL_{TRACES,METRICS}_EXPORTER` is unset or `otlp` (logs need
+//! `OTEL_LOGS_EXPORTER=otlp` set explicitly), and `OTEL_SDK_DISABLED` is not
+//! `true`. The transport is OTLP over HTTP with
 //! protobuf; the exporter itself reads the headers, timeout and compression
 //! variables, and the resource reads `OTEL_SERVICE_NAME` and
 //! `OTEL_RESOURCE_ATTRIBUTES`.
@@ -40,11 +41,15 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
-#[cfg(feature = "logs")]
 pub use opentelemetry_sdk::logs::SdkLoggerProvider;
 
 /// The longest a program waits at exit for its last batches to leave.
 pub const SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
+
+/// The same bound for a program that answers one call of another, such as
+/// a runtime: it prints its answer first, then waits no more than this, so a
+/// stalled collector stays far inside its caller's deadline.
+pub const CALL_SHUTDOWN_BOUND: Duration = Duration::from_millis(100);
 
 /// The environment variable that carries trace context to a child process
 /// (W3C Trace Context, as the OpenTelemetry environment carrier spells it).
@@ -59,44 +64,39 @@ const PROTOCOL: &str = "http/protobuf";
 pub struct Telemetry {
     traces: Option<SdkTracerProvider>,
     metrics: Option<SdkMeterProvider>,
-    #[cfg(feature = "logs")]
     logs: Option<SdkLoggerProvider>,
+    /// Why the logs signal is off although it was asked for.
+    logs_off: Option<String>,
 }
 
 /// Which signals the environment asks to export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Signals {
     traces: bool,
     metrics: bool,
     logs: bool,
+    /// Why logs are off although the program asked for them.
+    logs_off: Option<String>,
 }
 
-/// The signals a program built with this crate can export: logs only with
-/// the `logs` feature, so a program that records none reads no logs
-/// variable.
-fn kinds() -> &'static [&'static str] {
-    if cfg!(feature = "logs") {
-        &["traces", "metrics", "logs"]
-    } else {
-        &["traces", "metrics"]
-    }
-}
-
-/// Read the signals from the variables `var` answers. An unsupported
-/// protocol or exporter is an error, so a misconfiguration is reported
-/// rather than silently exporting nothing.
-fn signals(var: impl Fn(&str) -> Option<String>) -> Result<Signals, String> {
+/// Read the signals from the variables `var` answers; the logs signal only
+/// when the program records logs (`logs`), so a program that records none
+/// never reads a logs variable. An unsupported protocol or exporter of
+/// traces or metrics is an error, so a misconfiguration is reported rather
+/// than silently exporting nothing. One of logs turns logs off alone: a log
+/// setting never changes what traces and metrics do.
+fn signals(var: impl Fn(&str) -> Option<String>, logs: bool) -> Result<Signals, String> {
     let set = |name: &str| var(name).filter(|v| !v.trim().is_empty());
     if set("OTEL_SDK_DISABLED").is_some_and(|v| v.trim().eq_ignore_ascii_case("true")) {
         return Ok(Signals::default());
     }
     let signal = |name: &str| -> Result<bool, String> {
-        if !kinds().contains(&name) {
-            return Ok(false);
-        }
         let upper = name.to_ascii_uppercase();
         let exporter_var = format!("OTEL_{upper}_EXPORTER");
         match set(&exporter_var).as_deref().map(str::trim) {
+            // Log records carry text, so logs are opt-in: an endpoint alone,
+            // which an agent's own telemetry may have set, never sends them.
+            None if name == "logs" => return Ok(false),
             None | Some("otlp") => {}
             Some("none") => return Ok(false),
             Some(other) => {
@@ -125,22 +125,36 @@ fn signals(var: impl Fn(&str) -> Option<String>) -> Result<Signals, String> {
         }
         Ok(true)
     };
+    let (logs, logs_off) = match logs.then(|| signal("logs")) {
+        None => (false, None),
+        Some(Ok(on)) => (on, None),
+        Some(Err(why)) => (false, Some(why)),
+    };
     Ok(Signals {
         traces: signal("traces")?,
         metrics: signal("metrics")?,
-        logs: signal("logs")?,
+        logs,
+        logs_off,
     })
 }
 
 /// Install the providers the environment asks for, under the resource
 /// `service` (unless `OTEL_SERVICE_NAME` names another) at `version`, with
-/// the `attributes` the environment does not set itself. On an error
-/// nothing is installed, and the caller reports it and runs on without
-/// telemetry.
-pub fn init(service: &str, version: &str, attributes: &[KeyValue]) -> Result<Telemetry, String> {
-    let wanted = signals(|name| std::env::var(name).ok())?;
-    if wanted == Signals::default() {
-        return Ok(Telemetry::default());
+/// the `attributes` the environment does not set itself; the logs signal
+/// only when `logs` (the program records logs). On an error nothing is
+/// installed, and the caller reports it and runs on without telemetry.
+pub fn init(
+    service: &str,
+    version: &str,
+    attributes: &[KeyValue],
+    logs: bool,
+) -> Result<Telemetry, String> {
+    let wanted = signals(|name| std::env::var(name).ok(), logs)?;
+    if !(wanted.traces || wanted.metrics || wanted.logs) {
+        return Ok(Telemetry {
+            logs_off: wanted.logs_off,
+            ..Telemetry::default()
+        });
     }
     // Every exporter first: one that cannot be built leaves nothing
     // installed, never one signal exporting under a warning that says off.
@@ -154,7 +168,6 @@ pub fn init(service: &str, version: &str, attributes: &[KeyValue]) -> Result<Tel
         .then(|| MetricExporter::builder().with_http().build())
         .transpose()
         .map_err(|e| format!("metric exporter: {e}"))?;
-    #[cfg(feature = "logs")]
     let logs = wanted
         .logs
         .then(|| {
@@ -165,7 +178,10 @@ pub fn init(service: &str, version: &str, attributes: &[KeyValue]) -> Result<Tel
         .transpose()
         .map_err(|e| format!("log exporter: {e}"))?;
     let resource = resource(service, version, attributes);
-    let mut telemetry = Telemetry::default();
+    let mut telemetry = Telemetry {
+        logs_off: wanted.logs_off,
+        ..Telemetry::default()
+    };
     if let Some(exporter) = spans {
         let provider = SdkTracerProvider::builder()
             .with_batch_exporter(exporter)
@@ -182,7 +198,6 @@ pub fn init(service: &str, version: &str, attributes: &[KeyValue]) -> Result<Tel
         global::set_meter_provider(provider.clone());
         telemetry.metrics = Some(provider);
     }
-    #[cfg(feature = "logs")]
     if let Some(exporter) = logs {
         telemetry.logs = Some(
             SdkLoggerProvider::builder()
@@ -309,29 +324,39 @@ impl Drop for Root {
 
 impl Telemetry {
     /// The logger provider, when the logs signal is exported.
-    #[cfg(feature = "logs")]
     pub fn logs(&self) -> Option<&SdkLoggerProvider> {
         self.logs.as_ref()
+    }
+
+    /// Why the logs signal is off although the program asked for it: an
+    /// unsupported logs exporter or protocol.
+    pub fn logs_off(&self) -> Option<&str> {
+        self.logs_off.as_deref()
     }
 
     /// Flush and stop every provider, together, for at most
     /// [`SHUTDOWN_BOUND`]: an unreachable collector delays exit by no more.
     pub fn shutdown(self) {
+        self.shutdown_within(SHUTDOWN_BOUND);
+    }
+
+    /// Flush and stop every provider, together, for at most `bound`. What
+    /// is still unsent then is dropped.
+    pub fn shutdown_within(self, bound: Duration) {
         let mut stops: Vec<Box<dyn FnOnce() + Send>> = Vec::new();
         if let Some(traces) = self.traces {
             stops.push(Box::new(move || {
-                let _ = traces.shutdown_with_timeout(SHUTDOWN_BOUND);
+                let _ = traces.shutdown_with_timeout(bound);
             }));
         }
         if let Some(metrics) = self.metrics {
             stops.push(Box::new(move || {
-                let _ = metrics.shutdown_with_timeout(SHUTDOWN_BOUND);
+                let _ = metrics.shutdown_with_timeout(bound);
             }));
         }
-        #[cfg(feature = "logs")]
         if let Some(logs) = self.logs {
             stops.push(Box::new(move || {
-                let _ = logs.shutdown_with_timeout(SHUTDOWN_BOUND);
+                let _ = logs.shutdown_with_timeout(bound);
             }));
         }
         let (done, finished) = mpsc::channel();
@@ -343,7 +368,7 @@ impl Telemetry {
                 let _ = done.send(());
             });
         }
-        let deadline = Instant::now() + SHUTDOWN_BOUND;
+        let deadline = Instant::now() + bound;
         for _ in 0..pending {
             let left = deadline.saturating_duration_since(Instant::now());
             if finished.recv_timeout(left).is_err() {
@@ -357,18 +382,31 @@ impl Telemetry {
 mod tests {
     use super::*;
 
+    fn read_for(vars: &[(&str, &str)], logs: bool) -> Result<Signals, String> {
+        signals(
+            |name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+            },
+            logs,
+        )
+    }
+
+    /// As a program that records logs reads them, with logs opted in.
     fn read(vars: &[(&str, &str)]) -> Result<Signals, String> {
-        signals(|name| {
-            vars.iter()
-                .find(|(k, _)| *k == name)
-                .map(|(_, v)| v.to_string())
-        })
+        let mut vars = vars.to_vec();
+        if !vars.iter().any(|(k, _)| *k == "OTEL_LOGS_EXPORTER") {
+            vars.push(("OTEL_LOGS_EXPORTER", "otlp"));
+        }
+        read_for(&vars, true)
     }
 
     const ALL: Signals = Signals {
         traces: true,
         metrics: true,
-        logs: cfg!(feature = "logs"),
+        logs: true,
+        logs_off: None,
     };
 
     #[test]
@@ -411,7 +449,7 @@ mod tests {
             ]),
             Ok(Signals {
                 traces: false,
-                ..ALL
+                ..ALL.clone()
             })
         );
     }
@@ -436,13 +474,56 @@ mod tests {
             ]),
             Ok(Signals {
                 metrics: false,
-                ..ALL
+                ..ALL.clone()
             })
         );
         let console = read(&[endpoint, ("OTEL_METRICS_EXPORTER", "console")]).unwrap_err();
         assert!(
             console.contains("OTEL_METRICS_EXPORTER=console"),
             "{console}"
+        );
+    }
+
+    #[test]
+    fn a_log_setting_never_turns_off_traces_or_metrics() {
+        let endpoint = ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c");
+        for logs in [
+            ("OTEL_LOGS_EXPORTER", "console"),
+            ("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "grpc"),
+        ] {
+            let read = read(&[endpoint, logs]).expect("traces and metrics stay on");
+            assert!(read.traces && read.metrics, "{logs:?}: {read:?}");
+            assert!(!read.logs, "{logs:?}: {read:?}");
+            assert!(read.logs_off.is_some(), "the reason is kept: {read:?}");
+        }
+    }
+
+    #[test]
+    fn logs_are_exported_only_when_otel_logs_exporter_is_otlp() {
+        let endpoint = ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c");
+        assert_eq!(
+            read_for(&[endpoint], true),
+            Ok(Signals {
+                logs: false,
+                ..ALL.clone()
+            }),
+            "an endpoint alone sends no log text"
+        );
+        assert_eq!(
+            read_for(&[endpoint, ("OTEL_LOGS_EXPORTER", "otlp")], true),
+            Ok(ALL)
+        );
+    }
+
+    #[test]
+    fn a_program_that_records_no_logs_reads_no_logs_variable() {
+        let endpoint = ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://c");
+        assert_eq!(
+            read_for(&[endpoint, ("OTEL_LOGS_EXPORTER", "console")], false),
+            Ok(Signals {
+                logs: false,
+                ..ALL.clone()
+            })
         );
     }
 

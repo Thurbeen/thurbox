@@ -48,7 +48,8 @@ the `runtime-mux` calls Fleet makes, and the `workspace-git` calls
 | `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_PROTOCOL` | Must be `http/protobuf`, the default. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Headers for each export request, such as an authorization header. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | The bound of one export request, in milliseconds. The default is 10000. |
-| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp` (the default) or `none`. `none` turns that signal off. |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` (the default) or `none`. `none` turns that signal off. |
+| `OTEL_LOGS_EXPORTER` | `otlp` turns on thurbox's log export. Unset or `none`, no log is exported. |
 | `OTEL_SDK_DISABLED` | `true` turns all export off. |
 | `OTEL_SERVICE_NAME` | The `service.name` of the program you start. The programs it starts keep their own names. |
 | `OTEL_RESOURCE_ATTRIBUTES` | More resource attributes, as `key=value` pairs separated by commas. Every program in the chain adds them. |
@@ -58,9 +59,15 @@ the `runtime-mux` calls Fleet makes, and the `workspace-git` calls
 A signal is exported when an endpoint for it is set, its exporter is unset
 or `otlp`, and `OTEL_SDK_DISABLED` is not `true`.
 
+Logs are the exception: an endpoint alone never exports them, because a
+log record holds text. Set `OTEL_LOGS_EXPORTER=otlp` to export them. Only
+thurbox reads the logs variables. The other programs record no logs and
+ignore them. An unsupported logs exporter or protocol turns off the logs of
+thurbox only: it never turns off traces or metrics.
+
 The programs speak OTLP over HTTP with protobuf only. A `grpc` or
-`http/json` protocol, or an exporter other than `otlp` or `none`, turns all
-export off. The program then writes one `warning: telemetry is off:` line
+`http/json` protocol, or an exporter other than `otlp` or `none`, for
+traces or metrics turns all export off. The program then writes one `warning: telemetry is off:` line
 (thurbox writes it to its log file) and runs without telemetry.
 
 The programs have no TLS client. Send to a collector on `http://`, such as
@@ -199,8 +206,10 @@ Only the thurbox interface exports logs. It sends its own log lines at
 log file `thurbox.log.<date>` keeps every level, and is the only log when
 export is off or the collector is unreachable.
 
-The log lines can name paths, sessions and machines. Set
-`OTEL_LOGS_EXPORTER=none` to export traces and metrics without them.
+The log lines can name paths, sessions and machines, so log export is
+opt-in: thurbox exports them only when `OTEL_LOGS_EXPORTER=otlp` is set.
+An endpoint alone, which an agent's own telemetry can set, exports traces
+and metrics only.
 
 `thurbox-cli` exports nothing. Each agent hook runs it, and a network
 round trip on each hook costs too much
@@ -239,15 +248,19 @@ lines ([Logs](#logs)).
 - The exporter retries a failed request inside that request's timeout.
   After the timeout, the program drops the batch. No program writes a batch
   to disk.
-- At exit, a program flushes its batches. The flush waits at most 2
-  seconds. Ctrl-C on `fleet up` flushes the same way. `runtime-mux` and
-  `workspace-git` flush after they release their locks.
+- At exit, `fleet` and thurbox flush their batches. The flush waits at
+  most 2 seconds. Ctrl-C on `fleet up` flushes the same way.
+- `runtime-mux` and `workspace-git` answer one call of their caller. Each
+  one writes its answer first, then flushes for at most 100 milliseconds,
+  after it releases its locks. A stalled collector never makes a call time
+  out. Spans still unsent after 100 milliseconds are dropped.
 
 ## Turn it off
 
 Unset `OTEL_EXPORTER_OTLP_ENDPOINT` and the signal endpoints, or set
-`OTEL_SDK_DISABLED=true`. Set `OTEL_{TRACES,METRICS,LOGS}_EXPORTER=none` to
-turn off one signal.
+`OTEL_SDK_DISABLED=true`. Set `OTEL_TRACES_EXPORTER=none` or
+`OTEL_METRICS_EXPORTER=none` to turn off one signal. Logs are off unless
+`OTEL_LOGS_EXPORTER=otlp` is set.
 
 When export is off, a program reads the variables once at start. It opens
 no connection, starts no telemetry thread, and records into no-op

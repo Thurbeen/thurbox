@@ -15,6 +15,8 @@ use std::sync::OnceLock;
 
 use fleet_api::forge::{ChangeObservation, Uncertainty};
 use fleet_api::plan::{Action, Effect, EffectOutcome};
+use fleet_api::session::SessionState;
+use fleet_api::task::Phase;
 use fleet_api::{Millis, Object, Observation, StoreError};
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::trace::{
@@ -174,31 +176,42 @@ pub(crate) fn amendment(outcome: &'static str) {
         .add(1, &[KeyValue::new("fleet.outcome", outcome)]);
 }
 
-/// Every Task phase and session state, so a gauge reports a zero rather
-/// than keeping a count no Task holds any more.
-const PHASES: &[&str] = &[
-    "Pending",
-    "Spawning",
-    "Spawned",
-    "Briefed",
-    "Stalled",
-    "Concluded",
-    "Releasing",
-];
-const SESSION_STATES: &[&str] = &["Running", "Idle", "Paused", "Lost", "Gone"];
+/// The names `values` serialize to, as a Task's status spells them: every
+/// phase or session state, so a gauge reports a zero rather than keeping a
+/// count no Task holds any more.
+fn names<T: serde::Serialize>(values: &[T]) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(|v| serde_json::to_value(v).ok())
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect()
+}
+
+fn phases() -> &'static [String] {
+    static PHASES: OnceLock<Vec<String>> = OnceLock::new();
+    PHASES.get_or_init(|| names(Phase::ALL))
+}
+
+fn session_states() -> &'static [String] {
+    static STATES: OnceLock<Vec<String>> = OnceLock::new();
+    STATES.get_or_init(|| names(SessionState::ALL))
+}
 
 /// Record on `gauge` how many `tasks` hold each of `values`, as `of` reads
 /// one, under the attribute `key`.
 fn count<'a>(
     gauge: &Gauge<u64>,
     key: &'static str,
-    values: &[&'static str],
+    values: &[String],
     tasks: &'a [Object],
     of: impl Fn(&'a Object) -> Option<&'a str>,
 ) {
     for value in values {
-        let n = tasks.iter().filter(|t| of(t) == Some(*value)).count() as u64;
-        gauge.record(n, &[KeyValue::new(key, *value)]);
+        let n = tasks
+            .iter()
+            .filter(|t| of(t) == Some(value.as_str()))
+            .count() as u64;
+        gauge.record(n, &[KeyValue::new(key, value.clone())]);
     }
 }
 
@@ -212,8 +225,8 @@ pub(crate) fn pass(number: u32, tasks: &[Object]) -> Current {
         .sum();
     let i = instruments();
     i.inbox.record(depth, &[]);
-    // A Task with no status yet is Pending.
-    count(&i.tasks, "fleet.phase", PHASES, tasks, |t| {
+    // A Task with no status yet is Pending, as the phase's default.
+    count(&i.tasks, "fleet.phase", phases(), tasks, |t| {
         Some(
             t.status
                 .get("phase")
@@ -224,7 +237,7 @@ pub(crate) fn pass(number: u32, tasks: &[Object]) -> Current {
     count(
         &i.sessions,
         "fleet.session.state",
-        SESSION_STATES,
+        session_states(),
         tasks,
         |t| t.status.get("sessionState").and_then(|v| v.as_str()),
     );

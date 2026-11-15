@@ -33,9 +33,13 @@ static TELEMETRY: OnceLock<std::sync::Mutex<Option<Telemetry>>> = OnceLock::new(
 /// logs through `tracing` too, so letting other targets through would feed
 /// each export back into the next.
 ///
-/// An error is the reason nothing is exported, for the caller to log once
-/// the subscriber is up.
-pub fn init<S>(version: &str, instance: &str) -> Result<Option<impl Layer<S>>, String>
+/// An error is the reason nothing is exported, and the second value why the
+/// logs alone are not (an unsupported logs exporter or protocol), for the
+/// caller to log once the subscriber is up.
+pub fn init<S>(
+    version: &str,
+    instance: &str,
+) -> Result<(Option<impl Layer<S>>, Option<String>), String>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
@@ -43,7 +47,11 @@ where
         "thurbox",
         version,
         &[KeyValue::new("thurbox.instance", instance.to_string())],
+        true,
     )?;
+    let logs_off = telemetry
+        .logs_off()
+        .map(|why| format!("diagnostic logs are not exported: {why}"));
     let bridge = telemetry.logs().map(|provider| {
         let filter = Targets::new()
             .with_target("thurbox", LevelFilter::WARN)
@@ -51,7 +59,7 @@ where
         OpenTelemetryTracingBridge::new(provider).with_filter(filter)
     });
     let _ = TELEMETRY.set(std::sync::Mutex::new(Some(telemetry)));
-    Ok(bridge)
+    Ok((bridge, logs_off))
 }
 
 /// Send what the batch processors still hold and stop them, within

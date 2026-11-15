@@ -26,8 +26,8 @@ fn main() {
     // Each verb is one span, `runtime-mux VERB`, under the caller's
     // TRACEPARENT; off unless the OTEL_* variables ask (docs/observability.md).
     // A view runs as long as a viewer watches, so it records nothing.
-    let telemetry =
-        otel_env::init("runtime-mux", env!("CARGO_PKG_VERSION"), &[]).unwrap_or_else(|why| {
+    let telemetry = otel_env::init("runtime-mux", env!("CARGO_PKG_VERSION"), &[], false)
+        .unwrap_or_else(|why| {
             eprintln!("warning: telemetry is off: {why}");
             otel_env::Telemetry::default()
         });
@@ -48,8 +48,12 @@ fn main() {
         }
         answer
     };
-    telemetry.shutdown();
+    // The answer first: its caller waits for this process to exit, and
+    // the flush below is bounded far inside that caller's deadline, so a
+    // stalled collector never turns an answer into a timeout.
     println!("{answer}");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    telemetry.shutdown_within(otel_env::CALL_SHUTDOWN_BOUND);
 }
 
 /// Answer one protocol verb with the request on stdin.

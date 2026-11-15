@@ -3386,3 +3386,50 @@ fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
         );
     }
 }
+
+/// A collector that accepts and never answers changes no runtime answer:
+/// `runtime-mux` and the `workspace-git` it runs answer first and flush
+/// their telemetry within a bound far inside Fleet's call deadline, so a
+/// Task still starts under a short `callTimeoutMs`.
+#[test]
+fn a_stalled_collector_never_times_out_a_runtime_call() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let endpoint = format!("http://{}", stalled.local_addr().expect("address"));
+    let sockets = Sockets::new("otel-stall");
+    let mut env = mux_env("runtime-mux-otel-stall", &program, &sockets);
+    let config = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        config.replace(
+            "callTimeoutMs = 10000",
+            "callTimeoutMs = 2000\nworkspaceTimeoutMs = 2000",
+        ),
+    )
+    .expect("config");
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    assert!(
+        status["session"]["id"].is_string(),
+        "the start answered within the deadline: {status:#}"
+    );
+    drop(stalled);
+}

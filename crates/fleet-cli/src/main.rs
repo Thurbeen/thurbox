@@ -469,7 +469,7 @@ fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let name = matches.subcommand_name().unwrap_or_default().to_string();
-    let telemetry = otel_env::init("fleet", VERSION, &[]).unwrap_or_else(|why| {
+    let telemetry = otel_env::init("fleet", VERSION, &[], false).unwrap_or_else(|why| {
         eprintln!("warning: telemetry is off: {why}");
         otel_env::Telemetry::default()
     });

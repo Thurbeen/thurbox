@@ -149,7 +149,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         env!("THURBOX_VERSION"),
         &thurbox::backend::instance::local_socket_name(),
     ) {
-        Ok(bridge) => (bridge, None),
+        Ok((bridge, logs_off)) => (bridge, logs_off),
         Err(e) => (None, Some(format!("telemetry is off: {e}"))),
     };
     tracing_subscriber::registry()

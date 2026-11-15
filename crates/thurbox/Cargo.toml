@@ -85,7 +85,7 @@ toml_edit = "0.25"
 # command it runs. `otel-env` owns the SDK and the OTLP exporter.
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry-appender-tracing = { version = "0.33.1", default-features = false }
-otel-env = { path = "../otel-env", features = ["logs"] }
+otel-env = { path = "../otel-env" }
 
 # System metrics
 sysinfo = "0.39"
