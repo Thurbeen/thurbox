@@ -45,7 +45,7 @@ cannot change them.
 | `model` | string | no | The model the harness runs. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
 | `configRef` | `{name}` | no | A [TaskConfig](task-config.md) with execution defaults. |
 | `env` | object of strings | no | Environment values. They override inherited ones. |
-| `pauseAfterMs` | integer, at least 1 | no | Pause the session once its agent was idle this long. Overrides the TaskConfig's. Absent with no TaskConfig value: never. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
+| `pauseAfterMs` | integer, at least 1 | no | Pause the session once its agent was idle this long. Overrides the TaskConfig's, including [the default TaskConfig](task-config.md#the-default-taskconfig)'s. Absent with no TaskConfig value: never. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 | `brief` | string | no | The brief, sent once to the ready session. Empty or absent: an interactive Task, which `fleet amend` refuses. A blank brief is refused. |
 | `amendments` | array | no | Additions to the brief, oldest first. Only `fleet amend` appends one. See [Amendments](#amendments). |
 | `workspace` | array of URLs | yes | What the session works in. `[]` is the runtime's default directory. See [Workspace](workspace.md). |
@@ -74,7 +74,7 @@ repositories.
 | `phase` | TaskController | See [Lifecycle](#lifecycle). |
 | `conditions` | TaskController | One entry per [condition type](../controllers/task.md#conditions): `status`, `reason`, `message`, `lastTransitionTime`, `observedGeneration`. |
 | `observedGeneration` | TaskController | The spec generation it last acted on. |
-| `execution` | TaskController | The frozen launch: harness, place, model and the identity of each source, without values. Only for a Task with `configRef` or `env`. See [TaskConfig](task-config.md#resolution-and-freezing). |
+| `execution` | TaskController | The frozen launch: harness, place, model and the identity of each source, without values. Only for a Task with `configRef`, `env` or [the default TaskConfig](task-config.md#the-default-taskconfig). See [TaskConfig](task-config.md#resolution-and-freezing). |
 | `session` | TaskController | `{id, host, key}`: the session's runtime id, place and Fleet's key. See [Session](session.md). |
 | `sessionState` | TaskController | What the runtime last proved: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. An Unknown answer keeps the last state. |
 | `agentState`, `activity` | TaskController | What the agent does (`working`, `attention`, `idle`, `unknown`) and where that came from: its hooks or a screen rule. See [Session](session.md#agent-state). |

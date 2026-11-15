@@ -67,7 +67,7 @@ that may be paused, or while a send waits for its prompt proof.
 | --- | --- | --- | --- |
 | `Gone` | A readable session list no longer shows the Session under its key, or shows another Session there. | `find` is `Known(None)`, or names a different Session. | `inspect` answers `none` for the key. |
 | `Lost` | The runtime holds the Session, but its agent's window is gone, as after a host reboot. | `lost` is `Known(true)`. | `inspect` answers `exited` for the key. |
-| `Paused` | The agent is stopped, by Fleet or by anyone else. The row, workspace and conversation are kept. | `paused` is `Known(true)`. | Never: `paused` is Unknown, because the adapter cannot pause. |
+| `Paused` | The agent is stopped, by Fleet or by anyone else. The row, workspace and conversation are kept. | `paused` is `Known(true)`. | `inspect` answers `paused` for the key, on a runtime whose manifest declares `pause`. On any other runtime, `paused` is Unknown. |
 | `Idle` | The agent waits for input. | Its hooks last reported `idle`. | The same: the adapter reports no activity. |
 | `Running` | The runtime holds the Session and nothing proves its agent stopped, lost or idle. | Its hooks last reported `working`, `prompt` or `blocked`, or any proof of presence: `find` names the Session, `lost` or `paused` is `Known(false)`. | `inspect` answers `running` for the key. |
 
