@@ -3,8 +3,8 @@
 //! table in Fleet's config is parsed here into the host model the backends
 //! are built from ([`HostDef`]). The commands runtime-mux runs on a remote
 //! place outside its multiplexer run here too: the readiness probe, the
-//! check for a binary on the place's `PATH`, `exec`, and the check of a
-//! `file://` workspace.
+//! check for a binary on the place's `PATH`, `exec`, `workspace-git`,
+//! `browse` and `branches`.
 //!
 //! ```text
 //! request.place ──parse──▶ None (local) ──▶ this machine's backend
@@ -276,8 +276,9 @@ fn script_command(host: &HostDef, path: &str, script: &str, args: &[&str]) -> Co
 }
 
 /// The probe that `fleet` is on the place's `PATH`, which its agents' hooks
-/// run to report.
-const FLEET_PROBE: &str = "command -v fleet >/dev/null 2>&1 || echo @missing";
+/// run to report, and `workspace-git`, which makes its workspaces.
+const FLEET_PROBE: &str = "command -v fleet >/dev/null 2>&1 || echo @missing; \
+     command -v workspace-git >/dev/null 2>&1 || echo @noworkspace";
 
 /// Why the place cannot run a session now, if it cannot: the launcher does
 /// not reach it, its multiplexer is missing or too old, or `fleet` is not on
@@ -306,6 +307,11 @@ pub fn readiness(
         if ran.stdout.contains("@missing") {
             return Err(format!(
                 "place {name:?}: `fleet` is not on its PATH, so its agents' hooks cannot report their state; install fleet there, or add its directory to the place's path_prepend"
+            ));
+        }
+        if ran.stdout.contains("@noworkspace") {
+            return Err(format!(
+                "place {name:?}: `workspace-git` is not on its PATH, so no workspace can be made there; install it there (it ships beside runtime-mux), or add its directory to the place's path_prepend"
             ));
         }
     }
@@ -369,65 +375,201 @@ pub fn exec_command(
     ))
 }
 
-/// What a `workspace` call on a remote place answers.
-pub enum Workspace {
-    /// One directory per URL, each a directory on the place.
-    Dirs(Vec<String>),
-    /// Nothing can be made: why.
-    Failed(String),
-    /// The place did not answer.
-    Unknown(String),
+/// How long a `workspace-git` call on a place may take: a first clone of a
+/// repository can take minutes. Fleet's own bound on a `workspace` call
+/// (600 s unless configured) ends it first.
+const WORKSPACE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// `workspace-git <verb>` on the place, with `request` on its stdin: its
+/// exit code and what it printed. `Err` when the place did not answer.
+pub fn workspace_git(
+    host: &HostDef,
+    verb: &str,
+    request: &[u8],
+) -> Result<(Option<i32>, String, String), String> {
+    let argv = ["workspace-git".to_string(), verb.to_string()];
+    let mut cmd = exec_command(host, &argv, None, Instant::now() + PROBE_TIMEOUT)?;
+    cmd.stdin(Stdio::piped());
+    run_fed(cmd, request, WORKSPACE_TIMEOUT)
 }
 
-/// A remote place's workspace: `file://` paths already on the place, used
-/// as they are. Nothing is made there yet, so a `git+…` URL is refused, and
-/// nothing is removed at a release.
-pub fn workspace(host: &HostDef, urls: &[String]) -> Workspace {
-    let name = &host.name;
-    let mut dirs = Vec::new();
-    for url in urls {
-        let path = match url.strip_prefix("file://") {
-            Some(path) if !path.contains(['?', '#']) => percent_decode(path),
-            Some(_) => {
-                return Workspace::Failed(format!(
-                    "{url}: a file:// URL takes no query or fragment"
-                ))
-            }
-            None => {
-                let scheme = url.split("://").next().unwrap_or(url);
-                return Workspace::Failed(format!(
-                    "{url}: a {scheme} workspace is not yet supported on a remote place ({name:?}); name a directory already on the place as a file:// URL"
-                ));
-            }
-        };
-        match path {
-            Some(path) if path.starts_with('/') => dirs.push(path),
-            _ => return Workspace::Failed(format!("{url} names no absolute path")),
-        }
-    }
-    if dirs.is_empty() {
-        return Workspace::Dirs(dirs);
-    }
-    let args: Vec<&str> = dirs.iter().map(String::as_str).collect();
-    let ran = match run_script(
+/// The place's home directory, as its login shell reads it.
+pub fn home(host: &HostDef) -> Result<String, String> {
+    env(host, PROBE_TIMEOUT)
+        .and_then(|env| env.home)
+        .ok_or_else(|| {
+            format!(
+                "place {:?}: its home could not be read; check `{}`",
+                host.name,
+                reach(host)
+            )
+        })
+}
+
+/// `command` through `sh -c` in `dir` on the place, with the place's `PATH`:
+/// a workspace step. `Err` names why it did not succeed.
+pub fn run_in(host: &HostDef, dir: &str, command: &str) -> Result<(), String> {
+    let ran = run_script(
         host,
-        "for d; do [ -d \"$d\" ] || printf '@missing %s\\n' \"$d\"; done",
-        &args,
+        "cd \"$1\" || exit 126; sh -c \"$2\"",
+        &[dir, command],
+        Instant::now() + WORKSPACE_TIMEOUT,
+    )?;
+    if ran.ok {
+        return Ok(());
+    }
+    Err(format!(
+        "`{command}` in {dir} on place {:?} failed: {}",
+        host.name,
+        last_line(&ran.stderr)
+    ))
+}
+
+/// Whether `path` is a file on the place; `false` when it cannot tell.
+pub fn is_file(host: &HostDef, path: &str) -> bool {
+    run_script(
+        host,
+        "[ -f \"$1\" ]",
+        &[path],
         Instant::now() + PROBE_TIMEOUT,
-    ) {
+    )
+    .is_ok_and(|ran| ran.ok)
+}
+
+/// An empty file at `path` on the place. Best effort.
+pub fn touch(host: &HostDef, path: &str) {
+    let _ = run_script(host, ": > \"$1\"", &[path], Instant::now() + PROBE_TIMEOUT);
+}
+
+/// What a read of the place answers: `Ok(Ok(_))` the reading, `Ok(Err(why))`
+/// a reading that failed there, `Err(why)` a place that did not answer.
+pub type Reading<T> = Result<Result<T, String>, String>;
+
+/// The subdirectories of `dir`, or of the place's home when `None`, each
+/// with whether it is a git work tree by the rule `browse` reads one with
+/// on this machine: a `.git` directory holding `HEAD`, `objects` and
+/// `refs`, or a `.git` file naming one. The directory as read, and its
+/// entries unsorted. Each entry is one NUL-ended record, so any name
+/// arrives whole.
+pub fn browse(host: &HostDef, dir: Option<&str>) -> Reading<(String, Vec<(String, bool)>)> {
+    const SCRIPT: &str = "d=${1:-$HOME}; printf '%s\\0' \"$d\"; \
+        if ! [ -d \"$d\" ]; then printf '@failed: no such directory\\0'; exit 0; fi; \
+        if ! [ -r \"$d\" ] || ! [ -x \"$d\" ]; then printf '@failed: permission denied\\0'; exit 0; fi; \
+        for e in \"$d\"/* \"$d\"/.[!.]* \"$d\"/..?*; do \
+          [ -d \"$e\" ] || continue; r=0; \
+          if [ -d \"$e/.git\" ]; then \
+            [ -f \"$e/.git/HEAD\" ] && [ -d \"$e/.git/objects\" ] && [ -d \"$e/.git/refs\" ] && r=1; \
+          elif [ -f \"$e/.git\" ] && [ \"$(head -c 8 \"$e/.git\")\" = 'gitdir: ' ]; then r=1; fi; \
+          printf '%s%s\\0' \"$r\" \"${e##*/}\"; \
+        done";
+    let ran = match read(host, SCRIPT, &[dir.unwrap_or_default()])? {
         Ok(ran) => ran,
-        Err(why) => return Workspace::Unknown(format!("place {name:?} did not answer: {why}")),
+        Err(why) => return Ok(Err(why)),
     };
-    if !ran.ok {
-        return Workspace::Unknown(format!(
+    let mut records = ran.split('\0');
+    let dir = records.next().unwrap_or_default().to_string();
+    let mut entries = Vec::new();
+    for record in records.filter(|r| !r.is_empty()) {
+        if let Some(why) = record.strip_prefix("@failed") {
+            return Ok(Err(format!("{dir}{why}")));
+        }
+        let (repo, name) = record.split_at(1);
+        entries.push((name.to_string(), repo == "1"));
+    }
+    Ok(Ok((dir, entries)))
+}
+
+/// What `branches` reads of a repository on the place: its refs under
+/// `refs/heads` and `refs/remotes/origin`, `origin/HEAD`'s target and the
+/// branch checked out, each as git prints it, or why there is none.
+pub fn git_refs(host: &HostDef, repo: &str) -> Reading<[String; 3]> {
+    const SCRIPT: &str = "r=$1; \
+        if [ -d \"$r/.git\" ]; then \
+          [ -f \"$r/.git/HEAD\" ] && [ -d \"$r/.git/objects\" ] && [ -d \"$r/.git/refs\" ] || r=; \
+        elif ! { [ -f \"$r/.git\" ] && [ \"$(head -c 8 \"$r/.git\")\" = 'gitdir: ' ]; }; then r=; fi; \
+        if [ -z \"$r\" ]; then printf '@norepo'; exit 0; fi; \
+        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+          GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE; \
+        GIT_CEILING_DIRECTORIES=${r%/*}; export GIT_CEILING_DIRECTORIES; \
+        cd \"$r\" || exit 1; \
+        git for-each-ref --format='%(refname)' refs/heads refs/remotes/origin || exit 1; \
+        printf '\\0'; git symbolic-ref -q refs/remotes/origin/HEAD; \
+        printf '\\0'; git symbolic-ref -q --short HEAD; exit 0";
+    let ran = match read(host, SCRIPT, &[repo])? {
+        Ok(ran) => ran,
+        Err(why) => return Ok(Err(why)),
+    };
+    if ran == "@norepo" {
+        return Ok(Err(format!("{repo} is no git repository")));
+    }
+    let mut parts = ran.splitn(3, '\0').map(str::to_string);
+    let mut next = || parts.next().unwrap_or_default();
+    Ok(Ok([next(), next(), next()]))
+}
+
+/// A read-only script's stdout on the place: `Ok(Err(_))` when it failed
+/// there, `Err(_)` when the place did not answer.
+fn read(host: &HostDef, script: &str, args: &[&str]) -> Reading<String> {
+    let name = &host.name;
+    let ran = run_script(host, script, args, Instant::now() + PROBE_TIMEOUT)
+        .map_err(|why| format!("place {name:?} did not answer: {why}"))?;
+    if ran.unreached {
+        return Err(format!(
             "place {name:?} cannot be reached: {}",
             last_line(&ran.stderr)
         ));
     }
-    if let Some(missing) = ran.stdout.lines().find_map(|l| l.strip_prefix("@missing ")) {
-        return Workspace::Failed(format!("{missing} is not a directory on place {name:?}"));
+    if !ran.ok {
+        return Ok(Err(last_line(&ran.stderr)));
     }
-    Workspace::Dirs(dirs)
+    Ok(Ok(ran.stdout))
+}
+
+/// Run `cmd`, a server's waiter ([`WindowLifecycle::server_waiter`](crate::contract::WindowLifecycle::server_waiter)), left
+/// to run after this program exits: on a WSL place it is the `wsl.exe`
+/// client that keeps the distro, and so the server, running. WSL stops a
+/// distro, and every process in it, soon after its last `wsl.exe` client
+/// exits, and each `runtime-mux` call is one such client that exits at once.
+/// Best effort: a waiter that cannot start leaves the server to WSL's idle
+/// stop.
+pub fn run_detached(mut cmd: Command) {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+            fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+        }
+        /// `STD_INPUT_HANDLE`, `STD_OUTPUT_HANDLE`, `STD_ERROR_HANDLE`.
+        const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+        const HANDLE_FLAG_INHERIT: u32 = 1;
+        // A child inherits every inheritable handle of its parent, and this
+        // program's own stdout is its caller's pipe: a waiter holding it
+        // open would keep the caller from ever reading the answer's end.
+        for which in STD_HANDLES {
+            // SAFETY: plain calls on this process's own standard handles; a
+            // missing one is null or invalid, which the call refuses.
+            unsafe {
+                SetHandleInformation(GetStdHandle(which), HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+        /// No window, a process group of its own, and out of the caller's
+        /// job, which a caller may kill whole when it ends.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+        if cmd.spawn().is_ok() {
+            return;
+        }
+        // A job that refuses a breakaway: the waiter stays in it.
+        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    }
+    let _ = cmd.spawn();
 }
 
 /// The time left until `deadline`.
@@ -494,25 +636,6 @@ pub fn remove_assets(host: &HostDef, key: &str) {
     );
 }
 
-/// A URL path's `%XX` escapes decoded; `None` when one is malformed or the
-/// result is not UTF-8.
-fn percent_decode(path: &str) -> Option<String> {
-    let bytes = path.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
 fn last_line(text: &str) -> String {
     let line = text
         .lines()
@@ -536,13 +659,44 @@ fn run_bounded(
     run_piped(cmd, timeout)
 }
 
+/// [`run_piped`] with `input` written to `cmd`'s piped stdin, from a thread
+/// of its own so a command that answers before it reads all of it never
+/// blocks the writer against the reader.
+fn run_fed(
+    mut cmd: Command,
+    input: &[u8],
+    timeout: Duration,
+) -> Result<(Option<i32>, String, String), String> {
+    use std::io::Write;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("cannot run {:?}: {e}", cmd.get_program()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let input = input.to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    wait_bounded(child, timeout)
+}
+
 /// [`run_bounded`] with the stdin `cmd` already has.
 fn run_piped(mut cmd: Command, timeout: Duration) -> Result<(Option<i32>, String, String), String> {
-    let mut child = cmd
+    let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cannot run {:?}: {e}", cmd.get_program()))?;
+    wait_bounded(child, timeout)
+}
+
+/// `child` waited for to its end or killed at `timeout`: its exit code and
+/// what it printed on its piped stdout and stderr.
+fn wait_bounded(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<(Option<i32>, String, String), String> {
     let read = |pipe: Option<Box<dyn Read + Send>>| {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -717,25 +871,5 @@ mod tests {
             let got = parse(&place(name, config.clone())).unwrap_err();
             assert!(got.contains(why), "{config}: {got}");
         }
-    }
-
-    #[test]
-    fn only_a_file_url_is_a_remote_workspace() {
-        let host = parse(&place("devbox", json!({"kind": "ssh", "destination": "d"})))
-            .unwrap()
-            .unwrap();
-        match workspace(&host, &["git+https://example.test/app.git".into()]) {
-            Workspace::Failed(why) => {
-                assert!(why.contains("not yet supported on a remote place"), "{why}")
-            }
-            _ => panic!("a git+ URL is refused"),
-        }
-        match workspace(&host, &["file://relative".into()]) {
-            Workspace::Failed(why) => assert!(why.contains("no absolute path"), "{why}"),
-            _ => panic!("a relative path is refused"),
-        }
-        assert!(matches!(workspace(&host, &[]), Workspace::Dirs(d) if d.is_empty()));
-        assert_eq!(percent_decode("/a%20b").as_deref(), Some("/a b"));
-        assert_eq!(percent_decode("/a%2"), None);
     }
 }

@@ -1,6 +1,9 @@
 //! The `workspace` verb's side of the runtime (docs/runtime/README.md,
-//! "Workspaces"): runtime-mux runs the `workspace-git` program on this
-//! machine and runs its own configured steps in what that program makes.
+//! "Workspaces"): runtime-mux runs the `workspace-git` program at the place,
+//! and runs its own configured steps in what that program makes. On this
+//! machine the program is the one below; on a remote place it is the one on
+//! the place's `PATH`, run over the place's launcher, under the place's
+//! `~/.local/share/runtime-mux/workspaces`.
 //!
 //! The runtime's config is a TOML file, at `RUNTIME_MUX_CONFIG` or
 //! `${XDG_CONFIG_HOME:-~/.config}/runtime-mux/config.toml`; a missing file is
@@ -27,6 +30,11 @@ use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+use crate::HostDef;
+
+/// Where a remote place keeps its workspaces, under its home.
+const PLACE_ROOT: &str = ".local/share/runtime-mux/workspaces";
 
 /// The URL schemes runtime-mux makes a directory for: `workspace-git`'s.
 pub const SCHEMES: &[&str] = &["git+https", "git+ssh", "git+file", "file"];
@@ -86,6 +94,8 @@ impl Step {
 /// The runtime's workspace settings, loaded once per call.
 #[derive(Debug)]
 pub struct Workspaces {
+    /// The remote place the workspaces are on; `None` for this machine.
+    place: Option<HostDef>,
     root: PathBuf,
     program: PathBuf,
     preserve_days: Option<u64>,
@@ -118,12 +128,29 @@ impl Workspaces {
                 .join("runtime-mux/workspaces"),
         };
         Ok(Workspaces {
+            place: None,
             root,
             program: section.program.unwrap_or_else(default_program),
             preserve_days: section.preserve.days,
             setup: section.setup,
             teardown: section.teardown,
         })
+    }
+
+    /// These settings for `place`: this machine's as loaded, or a remote
+    /// place's. A remote place takes the config's preserve days and steps,
+    /// and keeps its workspaces under its own home: the config's `root` and
+    /// `program` name this machine's.
+    /// `Err` when the place does not answer.
+    pub fn at(mut self, place: Option<&HostDef>) -> Result<Workspaces, String> {
+        if let Some(host) = place {
+            let home = crate::place::home(host)?;
+            // Joined with `/` as the place spells a path, whatever this
+            // machine joins with: `wsl.exe` runs this program on Windows.
+            self.root = PathBuf::from(format!("{}/{PLACE_ROOT}", home.trim_end_matches('/')));
+            self.place = Some(host.clone());
+        }
+        Ok(self)
     }
 
     /// The `workspace` verb's answer: `workspace-git`'s, then this runtime's
@@ -146,8 +173,16 @@ impl Workspaces {
                 None => known(answer),
             };
         };
-        let done = self.root.join(key).join(SETUP_DONE);
-        if made["adopted"] == true && done.is_file() {
+        // With no step for its URLs, there is nothing to run or mark.
+        if !self
+            .setup
+            .iter()
+            .any(|step| urls.iter().any(|url| step.applies_to(url)))
+        {
+            return known(answer);
+        }
+        let done = PathBuf::from(format!("{}/{key}/{SETUP_DONE}", self.root.display()));
+        if made["adopted"] == true && self.is_file(&done) {
             return known(answer);
         }
         let dirs: Vec<String> = made["dirs"]
@@ -158,7 +193,7 @@ impl Workspaces {
                     .collect()
             })
             .unwrap_or_default();
-        if let Err(why) = run_steps(&self.setup, urls, &dirs) {
+        if let Err(why) = self.run_steps(&self.setup, urls, &dirs) {
             return match self.call("discard", &json!({ "root": self.root, "key": key })) {
                 Ok(discarded) if discarded == json!("discarded") => {
                     known(json!({ "failed": { "why": why } }))
@@ -173,7 +208,12 @@ impl Workspaces {
         }
         // A marker that cannot be written only costs the steps again on the
         // next call.
-        let _ = std::fs::write(&done, "");
+        match &self.place {
+            Some(host) => crate::place::touch(host, &done.to_string_lossy()),
+            None => {
+                let _ = std::fs::write(&done, "");
+            }
+        }
         known(answer)
     }
 
@@ -193,7 +233,7 @@ impl Workspaces {
                     })
                     .unwrap_or_default()
             };
-            let _ = run_steps(&self.teardown, &strings("urls"), &strings("dirs"));
+            let _ = self.run_steps(&self.teardown, &strings("urls"), &strings("dirs"));
         } else if found != json!("none") {
             return Err(format!("workspace-git inspect answered {found}"));
         }
@@ -204,8 +244,29 @@ impl Workspaces {
     }
 
     /// One `workspace-git <verb>` call, under the current span: its root
-    /// span joins this call's trace, and it names itself.
+    /// span joins this call's trace, and it names itself. On a remote place
+    /// it carries no telemetry ([`crate::shell::strip_telemetry_env`]).
     fn call(&self, verb: &str, request: &Value) -> Result<Value, Call> {
+        if let Some(host) = &self.place {
+            let (code, stdout, stderr) =
+                crate::place::workspace_git(host, verb, request.to_string().as_bytes())
+                    .map_err(Call::Unanswered)?;
+            // `sh` exits 127 when it cannot find the program: nothing ran.
+            if code == Some(127) {
+                return Err(Call::NotRun(format!(
+                    "cannot run workspace-git on place {:?}: {}",
+                    host.name,
+                    stderr.trim()
+                )));
+            }
+            return serde_json::from_str(&stdout).map_err(|e| {
+                Call::Unanswered(format!(
+                    "workspace-git {verb} on place {:?} answered no JSON ({e}): {}",
+                    host.name,
+                    stderr.trim()
+                ))
+            });
+        }
         let mut cmd = Command::new(&self.program);
         cmd.env_remove("OTEL_SERVICE_NAME")
             .env_remove(otel_env::TRACEPARENT);
@@ -237,6 +298,31 @@ impl Workspaces {
     }
 }
 
+impl Workspaces {
+    /// Each step's commands in the directory made for each URL it matches,
+    /// in order, at the place; the first failure stops them.
+    fn run_steps(&self, steps: &[Step], urls: &[String], dirs: &[String]) -> Result<(), String> {
+        for (url, dir) in urls.iter().zip(dirs) {
+            for step in steps.iter().filter(|s| s.applies_to(url)) {
+                for command in &step.run {
+                    match &self.place {
+                        Some(host) => crate::place::run_in(host, dir, command)?,
+                        None => run_in(Path::new(dir), command)?,
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        match &self.place {
+            Some(host) => crate::place::is_file(host, &path.to_string_lossy()),
+            None => path.is_file(),
+        }
+    }
+}
+
 enum Call {
     /// The program did not start: nothing was made.
     NotRun(String),
@@ -258,19 +344,6 @@ fn known(value: Value) -> Value {
 
 fn unknown(why: impl std::fmt::Display) -> Value {
     json!({ "unknown": { "why": why.to_string() } })
-}
-
-/// Each step's commands in the directory made for each URL it matches, in
-/// order; the first failure stops them.
-fn run_steps(steps: &[Step], urls: &[String], dirs: &[String]) -> Result<(), String> {
-    for (url, dir) in urls.iter().zip(dirs) {
-        for step in steps.iter().filter(|s| s.applies_to(url)) {
-            for command in &step.run {
-                run_in(Path::new(dir), command)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn run_in(dir: &Path, command: &str) -> Result<(), String> {

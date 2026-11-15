@@ -143,12 +143,13 @@ registry = { use = ["host", "contract"] }
 # the contract and nothing that builds one.
 protocol = { use = ["host", "contract", "identity", "place", "workspace"] }
 # A request's place: its table parsed into a host, and the commands run on a
-# remote place outside its multiplexer (readiness, `exec`, a workspace's
-# directories), through the place's launcher and with its `PATH`.
+# remote place outside its multiplexer (readiness, `exec`, `workspace-git`,
+# `browse`, `branches`), through the place's launcher and with its `PATH`.
 place = { use = ["host", "shell", "host_path", "contract"] }
 # The `workspace` verb's side: the runtime's config, the workspace-git program
-# it runs, and its setup and teardown steps.
-workspace = { use = [] }
+# it runs, and its setup and teardown steps; on a remote place, through
+# `place`.
+workspace = { use = ["host", "place"] }
 # One pane as a terminal stream, over one backend it is handed.
 view = { use = ["contract"] }
 # What fills the registry: the only module that names an adapter.

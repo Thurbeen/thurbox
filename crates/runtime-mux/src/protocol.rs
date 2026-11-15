@@ -148,21 +148,23 @@ pub fn serve_with(
     };
     let backend = backend.as_ref();
     let place = place.as_ref();
-    // What reads or writes this machine's disk does not serve a remote place
-    // yet: it would answer about the wrong machine.
     // The backend's commands lead with the place's login `PATH`: read it,
     // or take it from the cache, before the first of them. `exec` reads it
     // inside its own deadline.
     if let Some(host) = place.filter(|_| verb != "exec") {
         crate::place::warm(host);
     }
-    if let Some(host) = place.filter(|_| matches!(verb, "attach" | "shell" | "browse" | "branches"))
-    {
-        return unknown(format!(
-            "{verb} is not yet supported on a remote place ({:?})",
-            host.name
-        ));
-    }
+    // A view of a remote place's pane names the place, so the view builds
+    // that place's backend and reads the pane over its connection.
+    let view = match (place, request.get("place")) {
+        (Some(_), Some(named)) => {
+            let mut argv = view.to_vec();
+            argv.extend(["--place".to_string(), named.to_string()]);
+            argv
+        }
+        _ => view.to_vec(),
+    };
+    let view = view.as_slice();
     let result = match verb {
         "start" => parse(request).map(|r| start(backend, place, pauses, r)),
         "inspect" => parse(request).map(|r: Keyed| inspect(backend, pauses, &r.key)),
@@ -176,30 +178,23 @@ pub fn serve_with(
                 return stopped;
             }
             process_done();
-            // A remote place's workspace is a directory already there,
-            // which a release never removes: nothing was made.
-            if place.is_some() {
-                return stopped;
-            }
-            match Workspaces::load().and_then(|w| w.release(&r.key)) {
+            match Workspaces::load()
+                .and_then(|w| w.at(place))
+                .and_then(|w| w.release(&r.key))
+            {
                 Ok(()) => stopped,
                 Err(why) => unknown(format!(
                     "the process stopped; the workspace was not released: {why}"
                 )),
             }
         }),
-        "workspace" => parse(request).map(|r: Workspace| match place {
-            Some(host) => match crate::place::workspace(host, &r.urls) {
-                crate::place::Workspace::Dirs(dirs) => {
-                    known(json!({ "made": { "dirs": dirs, "adopted": false } }))
-                }
-                crate::place::Workspace::Failed(why) => known(json!({ "failed": { "why": why } })),
-                crate::place::Workspace::Unknown(why) => unknown(why),
-            },
-            None => match Workspaces::load() {
+        "workspace" => parse(request).map(|r: Workspace| match Workspaces::load() {
+            // A place that does not answer may answer the next call.
+            Ok(workspaces) => match workspaces.at(place) {
                 Ok(workspaces) => workspaces.make(&r.key, &r.urls),
-                Err(why) => known(json!({ "failed": { "why": why } })),
+                Err(why) => unknown(why),
             },
+            Err(why) => known(json!({ "failed": { "why": why } })),
         }),
         "list" => Ok(list(backend, pauses)),
         "input" => parse(request).map(|r| input(backend, r)),
@@ -207,8 +202,8 @@ pub fn serve_with(
         "exec" => parse(request).map(|r: Exec| exec(place, r)),
         "attach" => parse(request).map(|r: Keyed| attach(backend, &r.key, view)),
         "shell" => parse(request).map(|r: Keyed| shell(backend, &r.key, view)),
-        "browse" => parse(request).map(browse),
-        "branches" => parse(request).map(branches),
+        "browse" => parse(request).map(|r| browse(place, r)),
+        "branches" => parse(request).map(|r| branches(place, r)),
         other => Err(format!("unknown verb {other:?}")),
     };
     result.unwrap_or_else(unknown)
@@ -221,18 +216,32 @@ struct Browse {
 }
 
 impl Validate for Browse {
+    /// The directory is the place's: [`browse`] checks it by the place's
+    /// rules ([`absolute_on`]).
     fn validate(&self) -> Result<(), String> {
-        match &self.dir {
-            Some(dir) if !dir.is_absolute() => Err("dir must be an absolute path".into()),
-            _ => Ok(()),
-        }
+        Ok(())
     }
 }
 
 /// `browse`: the subdirectories of `dir`, by name, each marked when it is a
 /// git checkout, so a creation flow can pick a repository on the place.
 /// Files are left out. A directory that cannot be read is a failed browse.
-fn browse(request: Browse) -> Value {
+/// A remote place is read over its launcher ([`crate::place::browse`]).
+fn browse(place: Option<&HostDef>, request: Browse) -> Value {
+    let platform = place.map_or(crate::Platform::local(), HostDef::platform);
+    if let Some(dir) = &request.dir {
+        if !absolute_on(&dir.to_string_lossy(), platform) {
+            return unknown("dir must be an absolute path");
+        }
+    }
+    if let Some(host) = place {
+        let dir = request.dir.as_ref().map(|d| d.to_string_lossy());
+        return match crate::place::browse(host, dir.as_deref()) {
+            Err(why) => unknown(why),
+            Ok(Err(why)) => known(json!({ "failed": { "why": why } })),
+            Ok(Ok((dir, entries))) => listing(dir, entries),
+        };
+    }
     let dir = match request.dir.or_else(home) {
         Some(dir) => dir,
         None => return known(json!({ "failed": { "why": "this place has no home directory" } })),
@@ -241,7 +250,7 @@ fn browse(request: Browse) -> Value {
         Ok(read) => read,
         Err(e) => return known(json!({ "failed": { "why": format!("{}: {e}", dir.display()) } })),
     };
-    let mut entries: Vec<(String, bool)> = read
+    let entries: Vec<(String, bool)> = read
         .filter_map(Result::ok)
         // `path().is_dir()` follows a symlink to a directory.
         .filter(|entry| entry.path().is_dir())
@@ -250,12 +259,18 @@ fn browse(request: Browse) -> Value {
             Some((name, is_repository(&entry.path())))
         })
         .collect();
+    listing(dir.display().to_string(), entries)
+}
+
+/// A `browse` answer: `dir`, and its subdirectories sorted by name, each
+/// with whether it is a git work tree.
+fn listing(dir: String, mut entries: Vec<(String, bool)>) -> Value {
     entries.sort();
     let entries: Vec<Value> = entries
         .into_iter()
         .map(|(name, repo)| json!({ "name": name, "repo": repo }))
         .collect();
-    known(json!({ "listing": { "dir": dir.display().to_string(), "entries": entries } }))
+    known(json!({ "listing": { "dir": dir, "entries": entries } }))
 }
 
 /// The home directory of the user this program runs as.
@@ -287,10 +302,9 @@ struct Branches {
 }
 
 impl Validate for Branches {
+    /// The repository is the place's: [`branches`] checks it by the place's
+    /// rules ([`absolute_on`]).
     fn validate(&self) -> Result<(), String> {
-        if !self.repo.is_absolute() {
-            return Err("repo must be an absolute path".into());
-        }
         Ok(())
     }
 }
@@ -300,9 +314,24 @@ impl Validate for Branches {
 /// as they are (no fetch), and the one a new branch starts from by default:
 /// `origin`'s default branch (`origin/HEAD`, else `origin/main`, else
 /// `origin/master`), else the branch checked out, else the first.
-fn branches(request: Branches) -> Value {
+fn branches(place: Option<&HostDef>, request: Branches) -> Value {
     let repo = &request.repo;
+    let platform = place.map_or(crate::Platform::local(), HostDef::platform);
+    if !absolute_on(&repo.to_string_lossy(), platform) {
+        return unknown("repo must be an absolute path");
+    }
     let failed = |why: String| known(json!({ "failed": { "why": why } }));
+    // A remote place's repository is read there, by the same rules, in one
+    // call ([`crate::place::git_refs`]).
+    if let Some(host) = place {
+        return match crate::place::git_refs(host, &repo.to_string_lossy()) {
+            Err(why) => unknown(why),
+            Ok(Err(why)) => failed(why),
+            Ok(Ok([refs, upstream, checked_out])) => {
+                branch_list(&refs, Some(upstream), Some(checked_out))
+            }
+        };
+    }
     // The repository itself, as `browse` marks one: a directory inside a
     // checkout is not its repository.
     if !is_repository(repo) {
@@ -320,6 +349,15 @@ fn branches(request: Branches) -> Value {
         Ok(refs) => refs,
         Err(why) => return failed(why),
     };
+    let upstream = git_out(repo, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]).ok();
+    let checked_out = git_out(repo, &["symbolic-ref", "-q", "--short", "HEAD"]).ok();
+    branch_list(&refs, upstream, checked_out)
+}
+
+/// The `branches` answer from what git printed: `refs`, the repository's
+/// refs under `refs/heads` and `refs/remotes/origin`; `upstream`,
+/// `origin/HEAD`'s target; `checked_out`, the branch checked out.
+fn branch_list(refs: &str, upstream: Option<String>, checked_out: Option<String>) -> Value {
     let mut local = Vec::new();
     let mut remote = Vec::new();
     for line in refs.lines().map(str::trim) {
@@ -338,12 +376,9 @@ fn branches(request: Branches) -> Value {
     // called `origin/main`.
     let in_remote = |name: &str| remote.iter().any(|n| n == name);
     let in_local = |name: &str| local.iter().any(|n| n == name);
-    let upstream = git_out(repo, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
-        .ok()
-        .and_then(|r| r.trim().strip_prefix("refs/remotes/").map(str::to_string));
-    let checked_out = git_out(repo, &["symbolic-ref", "-q", "--short", "HEAD"])
-        .ok()
-        .map(|b| b.trim().to_string());
+    let upstream =
+        upstream.and_then(|r| r.trim().strip_prefix("refs/remotes/").map(str::to_string));
+    let checked_out = checked_out.map(|b| b.trim().to_string());
     let default = upstream
         .filter(|name| in_remote(name))
         .or_else(|| {
@@ -395,7 +430,7 @@ fn git_out(repo: &std::path::Path, args: &[&str]) -> Result<String, String> {
 
 /// A version 2 request's `place`, checked and parsed: every request but
 /// `manifest` names one. `None` is `local`.
-fn check_place(place: Option<&Value>) -> Result<Option<HostDef>, String> {
+pub fn check_place(place: Option<&Value>) -> Result<Option<HostDef>, String> {
     let place = place.ok_or("a version 2 request names its place")?;
     let place: Place =
         serde_json::from_value(place.clone()).map_err(|e| format!("bad place: {e}"))?;

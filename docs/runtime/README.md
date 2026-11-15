@@ -310,8 +310,9 @@ request.place ──▶ local ─────────▶ this machine's mult
   Unknown and names what is wrong, and `manifest` reports the place not
   ready.
 - `local` is ready when the multiplexer answers. A remote place is ready
-  when its launcher reaches it without a prompt, `fleet` is on its `PATH`,
-  and its multiplexer answers at tmux 3.2 or newer, or psmux 3.3.8 or newer.
+  when its launcher reaches it without a prompt, `fleet` and
+  `workspace-git` are on its `PATH`, and its multiplexer answers at tmux 3.2
+  or newer, or psmux 3.3.8 or newer.
   `why` names what is missing and the command that shows or fixes it.
 - `manifest` probes each place on a thread of its own, and waits 8 s for
   all of them together. A place that has not answered by then is not
@@ -344,13 +345,27 @@ request.place ──▶ local ─────────▶ this machine's mult
   machine's: `/…` on a POSIX place, a drive or UNC path on a Windows one.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
   run on the place. A pause mark of a remote key stays on this machine.
-- A remote place's workspace is a directory already on the place: each URL
-  is `file://`, and `runtime-mux` checks that the directory is there. A
-  `git+` URL answers `failed`: cloning on a remote place is not supported
-  yet. A release removes nothing on the place.
-- `attach`, `shell`, `browse` and `branches` answer Unknown on a remote
-  place: they read this machine's disk or server, and are not supported
-  there yet.
+- `workspace` and a releasing `stop` run `workspace-git` on the place, from
+  the place's `PATH`, over the same launcher. The workspaces are under
+  `~/.local/share/runtime-mux/workspaces` on the place. A `git+` URL gets a
+  worktree there, on the key's own branch, with the same `#ref`, preserved
+  refs and retention as on `local` ([workspace-git](#workspace-git-the-default-for-git-urls)). The
+  config's `preserve.days` and its setup and teardown steps apply on the
+  place too; its `root` and `program` are this machine's only.
+- `browse` and `branches` read the place's folders and repositories with
+  one `sh` script over the launcher. A `browse` without `dir` lists the
+  place's home.
+- `attach` and `shell` answer with `runtime-mux view --place <place>`. The
+  view builds that place's backend and reads the pane through its control
+  connection over ssh or `wsl.exe`, as the other verbs do.
+- A call whose place does not answer is Unknown, and names the place.
+- WSL stops a distro, and every process in it, soon after its last
+  `wsl.exe` client exits. Each `runtime-mux` call is such a client. So a
+  `start` or a `shell` on a WSL place also starts one waiter: a detached
+  `wsl.exe` that runs `flock -n` and `tmux wait-for` on the place's server.
+  The waiter keeps the distro running while that server runs, and exits
+  with it. A second waiter for the same server exits at once. The distro
+  needs `flock` (util-linux).
 
 #### Signals on a remote place
 
@@ -705,8 +720,11 @@ the protocol, held to the same rules by `fleet runtime check`.
 
 ### runtime-mux's workspaces
 
-`runtime-mux` runs the `workspace-git` program on this machine, so a session
-sees the same paths. Its own config file holds the settings: the file at
+`runtime-mux` runs the `workspace-git` program on the session's place, so a
+session sees the same paths. On a remote place it is the place's own
+`workspace-git`, and the root is `~/.local/share/runtime-mux/workspaces`
+there ([runtime-mux's places](#runtime-muxs-places)). Its own config file,
+on this machine, holds the settings: the file at
 `RUNTIME_MUX_CONFIG`, else `${XDG_CONFIG_HOME:-~/.config}/runtime-mux/config.toml`.
 A missing file gives the defaults. An unknown key is refused.
 
