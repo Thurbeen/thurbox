@@ -209,14 +209,21 @@ impl LocalServer {
         }
     }
 
-    /// `tmux …` against this server, as a person would type it.
-    fn command_line(&self, args: &str) -> String {
+    /// `tmux …` against this server, as a person would paste it: every word
+    /// shell-quoted, so a data directory with a space stays one word.
+    fn command_line(&self, args: &[&str]) -> String {
+        let q = crate::shell::posix_quote;
         let env = self
             .tmpdir
             .as_ref()
-            .map(|d| format!("TMUX_TMPDIR={d} "))
+            .map(|d| format!("TMUX_TMPDIR={} ", q(d)))
             .unwrap_or_default();
-        format!("{env}tmux -L {} {args}", self.socket)
+        let words: Vec<String> = ["tmux", "-L", &self.socket]
+            .iter()
+            .chain(args)
+            .map(|w| q(w))
+            .collect();
+        format!("{env}{}", words.join(" "))
     }
 
     /// Every window on the server as `session:window`. `None` when there is
@@ -258,7 +265,7 @@ fn heartbeat_in(server: &LocalServer, windows: Option<&str>) -> Option<Finding> 
                  `thurbox-cli automation tick`, a command this thurbox no longer has"
             ),
         )
-        .fix(server.command_line(&format!("kill-window -t {target}"))),
+        .fix(server.command_line(&["kill-window", "-t", target])),
     )
 }
 
@@ -751,6 +758,24 @@ mod tests {
         assert_eq!(
             finding.fix.as_deref(),
             Some("TMUX_TMPDIR=/data/tmux tmux -L thurbox kill-window -t thurbox:automation-heartbeat")
+        );
+    }
+
+    /// A path with a space stays one word in the printed command.
+    #[test]
+    fn the_heartbeat_fix_quotes_its_paths() {
+        let server = LocalServer {
+            socket: "thurbox".into(),
+            tmpdir: Some("/home/me/My Data/tmux".into()),
+        };
+        let finding =
+            heartbeat_in(&server, Some("my session:automation-heartbeat\n")).expect("a finding");
+        assert_eq!(
+            finding.fix.as_deref(),
+            Some(
+                "TMUX_TMPDIR='/home/me/My Data/tmux' tmux -L thurbox kill-window -t \
+                 'my session:automation-heartbeat'"
+            )
         );
     }
 

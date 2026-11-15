@@ -335,7 +335,7 @@ telemetry = { use = ["session"] }
 # syntax check passes all of them) and `config` (the interface directory and
 # its `ui.json` overrides). Both are kernel-owned surfaces asked about from
 # outside.
-cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "fleet_link"], path_only = [
+cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "fleet_link", "shell"], path_only = [
   "kernel", "backend", "config::file", "config::interface_state",
   "config::settings", "config::themes", "update::self_update",
   "update::version_check",
