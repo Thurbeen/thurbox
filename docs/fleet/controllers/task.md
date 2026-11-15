@@ -1,5 +1,7 @@
 # Task controller
 
+![TaskController: a Task, the runtime port and the agent's signals go in; a pure plan comes back; runtime effects and the Task status come out](task-flow.svg)
+
 A Task runs one agent session for one brief. Its controller decides the next
 step from stored Task state and explicit observations. The manager performs
 that decision through the store and runtime ports.

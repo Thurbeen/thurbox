@@ -1,12 +1,19 @@
 # TaskConfig resource
 
-TaskConfig supplies reusable execution defaults for a [Task](task.md).
-It is passive data: it has no controller, status or finalizer. Its spec is
-mutable; editing it affects future resolutions, while existing frozen launches
-keep their original values. Brief, workspace and outputs always belong to
-each Task. TaskConfig does not define task templates.
+![TaskConfig: its spec and EnvProviders go in; the manager resolves them once per Task; status.execution and a private snapshot come out](task-config.svg)
 
-Save this manifest as `task-config.json`:
+## What it is for
+
+A TaskConfig holds execution defaults that many [Tasks](task.md) share: the
+harness, the place, the model, the environment and the idle pause. It is
+passive data. It has no controller and no status.
+
+## When you write one
+
+Write a TaskConfig when several Tasks run the same way. Each Task then names
+it in `spec.configRef`, and keeps only its own brief, workspace and outputs.
+
+## Example
 
 ```json
 {
@@ -22,28 +29,7 @@ Save this manifest as `task-config.json`:
 }
 ```
 
-## Fields
-
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `harness` | no | Default harness. The Task or this config must supply one. |
-| `host` | no | Default runtime host name; ultimately defaults to `local`. |
-| `model` | no | Default model. A runtime under `[runtimes]` passes no model to its harness and refuses a Task that has one. |
-| `envFrom` | no | Ordered references to [EnvProvider](env-provider.md), each `{"name":"provider"}`. |
-| `env` | no | String environment map; overrides all referenced provider values. |
-| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. A session on a runtime that cannot pause, or whose hooks report no activity, never pauses either. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
-
-All fields are optional; unknown fields are refused. Harness/host/model must
-be nonempty, contain no NUL and not start with `-`. References use the same
-lowercase DNS-like names as resources. No `ownerReferences` or supplied status
-is allowed. Names are scoped to the current store; references do not load
-files or fetch resources from a different Fleet installation.
-
-TaskConfig is a JSON resource applied with `fleet apply`, separate from the
-native [Fleet TOML configuration](../configuration.md#native-fleet-configuration-fleettoml). There is
-no `[taskConfig]` section in that file and no implicit global TaskConfig.
-
-## Referencing and overriding defaults
+A Task that uses it:
 
 ```json
 {
@@ -60,91 +46,89 @@ no `[taskConfig]` section in that file and no implicit global TaskConfig.
 }
 ```
 
-An explicitly present Task harness, host, model or `pauseAfterMs` overrides
-the corresponding config default. Explicit `model: null` disables an
-inherited model. Explicit `host: "local"` overrides a remote default;
-omitting host inherits it.
-The Task spec, including its reference and whether these fields were present,
-is immutable except `dispatch` and `forge`; `fleet amend` appends to
-`spec.amendments` (see [Amendments](task.md#amendments)). Existing Tasks
-need no reference and retain
-their original behavior. To dispatch the example, apply the same Task with
-`dispatch: true` after preparing its workspace and providers.
+`fleet apply` accepts a reference to a TaskConfig or an EnvProvider that
+does not exist yet. The manager checks every reference when it resolves the
+launch.
 
-Environment precedence, lowest to highest:
+## Spec
 
-```text
-provider.data -> provider.sources (list order)
-              -> TaskConfig.envFrom (list order)
-              -> TaskConfig.env -> Task.env
-```
+You write the spec with `fleet apply`. You can change it at any time. A
+change applies to Tasks that resolve their launch after it.
 
-Later sources win, including case variants, retaining the winning spelling.
-Each map refuses case collisions and invalid names. See the
-[environment JSON format](../configuration.md#environment-json-file-and-command-output) for key,
-value and size rules. Literal `env` is visible in resource reads and is not
-secret storage. Use external provider sources when values must stay out of
-manifests. The native model-variable selection is frozen with the launch.
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `harness` | string | no | The default harness. The Task or this TaskConfig must give one. |
+| `host` | string | no | The default place: `<runtime>/<place>`, or `local`. Without one, a Task runs on `local`. |
+| `model` | string | no | The default model. A runtime under `[runtimes]` passes no model to its harness, and refuses a Task that has one. |
+| `envFrom` | array of `{name}` | no | [EnvProviders](env-provider.md), in merge order. |
+| `env` | object of strings | no | Environment values. They override every EnvProvider value. |
+| `pauseAfterMs` | integer, at least 1 | no | Pause a Task's session once its agent was idle this long. Absent: never. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 
-## Resolution and freezing
+`harness`, `host` and `model` may not be empty, contain NUL or start with
+`-`. Any other field is refused.
+
+A Task overrides a default when it gives the field itself. A Task with
+`"model": null` drops an inherited model. A Task with `"host": "local"`
+overrides another default place. The environment merges in this order, and
+a later value wins, case variants included:
 
 ```text
-Task dispatch enabled
-  -> validate config/provider references and execution settings
-  -> resolve sources through Store/Runtime ports
-  -> persist private snapshot under Task UID and manager lease
-  -> persist status.execution identity
-  -> ordinary Task probes, intent, spawn and brief
+EnvProvider data -> EnvProvider sources -> TaskConfig envFrom (in order)
+  -> TaskConfig env -> Task env
 ```
 
-Undispatched Tasks consume current defaults when enabled. The first successful
-resolution is frozen before runtime probes/effects. `status.execution` records
-harness, host, model, `pauseAfterMs`, and every source
-kind/name/UID/generation, without resolved environment values. A missing,
-deleting, corrupt or invalid reference
-blocks launch observably in `fleet reconcile`; correcting the input allows
-retry. Fleet never launches a partial/defaulted wrong worker.
+`env` is visible to anyone who reads the resource. It is not a place for
+secrets: use an EnvProvider file or command source.
 
-Retries and manager restarts reuse the snapshot, including a crash between
-snapshot and status writes. Config/provider edits, deletion, name reuse,
-changed files or command output cannot redirect an existing execution or
-create another session/brief. Providers are not polled for refresh.
+## Status
 
-Private plaintext snapshots live at `launches/<Task UID>.json` inside the
-store, outside resource reads. Unix directory/files use 0700/0600, including
-temporary writes; exposed snapshots are refused. Windows inherits the store
-ACL: keep it user-private, including custom data paths. Snapshots are not
-encrypted and backups require equivalent protection. They remain through
-conclusion and are removed on final Task deletion; interrupted private temp
-writes are cleaned on store open.
+None. Nobody writes the status of a TaskConfig.
 
-A missing/corrupt snapshot for an already frozen Task blocks re-resolution.
-Restore a protected backup or deliberately release/delete and recreate the
-Task. Do not delete its snapshot to refresh credentials mid-run. The exec
-runtime passes the environment in the `start` request on the program's
-stdin. Values never enter Task status, effect intents, error output or
-process arguments. The session receives this
-environment, not the manager's `OTEL_*` variables; see
-[telemetry](../configuration.md#opentelemetry-export).
+## Lifecycle
 
-## Commands and compatibility
+A TaskConfig has no phases. Deletion removes it at once. A Task that has not
+resolved its launch then blocks with an error in `fleet reconcile`. A Task
+that already resolved it continues.
+
+### Resolution and freezing
+
+```text
+Task with configRef or env, dispatch: true
+  -> check every TaskConfig and EnvProvider reference
+  -> resolve the sources through the store and the runtime port
+  -> write a private snapshot, launches/<Task uid>.json, under the lease
+  -> write status.execution: harness, place, model, pauseAfterMs and the
+     kind, name, uid and generation of each source, without values
+  -> spawn and brief as usual
+```
+
+The first resolution that succeeds is frozen. Retries and manager restarts
+reuse the snapshot. A later edit, deletion or recreation of a TaskConfig or
+an EnvProvider never changes a Task that resolved its launch. A missing,
+deleting or invalid reference blocks the launch with an error in
+`fleet reconcile`. Fleet never starts a session with a partial launch.
+
+The snapshot is plaintext. On Unix its directory and files are 0700 and
+0600. On Windows it inherits the store's ACL. The store removes it when it
+deletes the Task. A Task whose snapshot is missing after its launch was
+frozen blocks: restore the snapshot from a protected backup, or delete and
+recreate the Task. The environment reaches the session in the runtime's
+`start` request on stdin. It never enters a status, an intent, an error or
+an argument list.
+
+## Related kinds
+
+- A [Task](task.md) names a TaskConfig in `spec.configRef`.
+- A TaskConfig names [EnvProviders](env-provider.md) in `spec.envFrom`.
+- A TaskConfig is a resource, separate from
+  [`fleet.toml`](../configuration.md#native-fleet-configuration-fleettoml).
+  There is no global TaskConfig.
+
+## Commands
 
 ```sh
-fleet --config fleet.toml apply -f env-provider.json
-fleet --config fleet.toml apply -f task-config.json
-fleet --config fleet.toml apply -f task.json
-fleet --config fleet.toml get taskconfig reviewer
-fleet --config fleet.toml list taskconfigs --json
-fleet --config fleet.toml status taskconfig reviewer --json
-fleet --config fleet.toml reconcile
-fleet --config fleet.toml delete taskconfig reviewer
+fleet apply -f task-config.json
+fleet get taskconfig reviewer
+fleet list taskconfigs --json
+fleet delete taskconfig reviewer
 ```
-
-Apply config/provider resources before reconciling a dispatched Task. Apply
-can store a reference whose target is not present yet; reconcile validates all
-references before running a provider command. Passive status reports current
-spec generation and no lifecycle phase. Deletion removes the config
-immediately; unresolved Tasks then block, while frozen Tasks continue.
-
-API/store versions are `fleet/v1alpha1` and format 1. `fleet version --json` advertises
-served kinds and configuration versions.

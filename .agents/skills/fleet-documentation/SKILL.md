@@ -19,7 +19,13 @@ runtimes'. Start from the document that owns the subject:
 - Each page under `docs/fleet/controllers/` owns one controller: its
   resource, interface and state machine.
 - Each page under `docs/fleet/resources/` owns one kind's manifest fields
-  and semantics.
+  and semantics, under fixed headings: What it is for, When you write one,
+  Example, Spec, Status, Lifecycle, Related kinds.
+  `crates/fleet-cli/tests/e2e_doc_examples.rs` applies every JSON block of
+  each Example section, and runs the example plugin that
+  [Write a plugin](../../../docs/fleet/plugins.md) builds.
+- Each resource and controller page starts with a small SVG, inputs, what
+  it does, outputs: `resources/<kind>.svg`, `controllers/<name>-flow.svg`.
 - [Configuration](../../../docs/fleet/configuration.md) owns user
   configuration.
 - [Contracts](../../../docs/fleet/contracts.md) owns integration guarantees

@@ -630,7 +630,7 @@ Arrays, nested objects, numbers, booleans and null values are refused. The
 same key/value rules apply to literal EnvProvider `data`, TaskConfig `env`
 and Task `env`. Across maps, later values replace case variants and retain
 the winning spelling on every platform. See
-[the complete precedence](resources/task-config.md#referencing-and-overriding-defaults).
+[the complete precedence](resources/task-config.md#spec).
 
 A file must be a regular file at an absolute path on the manager. There is
 no lookup beside the TOML config, resource manifest, Task workspace or remote

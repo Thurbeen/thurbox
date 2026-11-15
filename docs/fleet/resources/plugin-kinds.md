@@ -1,126 +1,100 @@
-# Plugin-defined kinds
+# Plugin kinds
 
-Registered plugin kinds are served alongside Fleet’s built-in resources.
+![Plugin kinds: a spec and the plugin's observations go in; the Plugin controller runs the plugin; the status and effects come out](plugin-kinds.svg)
 
-A plugin declares the kinds it reconciles in its manifest, and the store
-serves them beside Task, TaskConfig, EnvProvider, ChangeRequest, Conversation
-and Listener while the plugin is registered. They have Fleet's envelope, a
-spec the plugin's schema validates, and a status the plugin owns. This page
-defines what is common to every plugin kind; the
-[Plugin controller](../controllers/plugin.md) defines how they are
-reconciled.
+## What it is for
+
+A plugin kind is a resource kind that a registered plugin defines and
+reconciles. The store serves it beside the built-in kinds while the plugin
+is registered. It has Fleet's envelope, a spec that the plugin's JSON Schema
+validates, and a status that the plugin owns.
+
+## When you write one
+
+Write objects of a plugin kind when a plugin you registered serves it. To
+make a new kind, write a plugin: [Write a plugin](../plugins.md) is the
+step-by-step guide.
 
 ## Example
 
-Two kinds of an issues plugin registered as `github-issues`. A person applies
-the source; the plugin creates the mirrors.
+An object of the `File` kind of the [example plugin](../plugins.md), which
+keeps one file's content:
 
 ```json
 {
   "apiVersion": "fleet/v1alpha1",
-  "kind": "IssueSource",
-  "metadata": {"name": "app"},
-  "spec": {"repo": "OWNER/app", "labels": ["fleet"]}
+  "kind": "File",
+  "metadata": {"name": "hello"},
+  "spec": {"name": "hello.txt", "content": "Hello from Fleet.\n"}
 }
 ```
-
-```json
-{
-  "apiVersion": "fleet/v1alpha1",
-  "kind": "Issue",
-  "metadata": {"name": "issue-88", "labels": {"fleet.dev/plugin": "github-issues", "source": "app"}},
-  "spec": {"source": "app", "number": 88, "url": "https://github.com/OWNER/app/issues/88"},
-  "status": {
-    "phase": "tasked",
-    "title": "Retry a lost brief",
-    "task": {"name": "issue-88-review", "uid": "…"},
-    "observedGeneration": 1,
-    "conditions": [{"type": "Tasked", "status": "True", "reason": "Created",
-                    "message": "Task issue-88-review created", "lastTransitionTime": 1730000000000,
-                    "observedGeneration": 1}],
-    "notBefore": 1730000300000,
-    "effects": {
-      "comment/88/1": {"intent": {"at": 1730000100000, "generation": 1},
-                       "receipt": {"at": 1730000101000, "outcome": {"done": {"commentUrl": "…"}}}}
-    },
-    "host": {"observedAt": 1730000100000}
-  }
-}
-```
-
-## Metadata
-
-`apiVersion` is `fleet/v1alpha1`. `kind` is the manifest's CamelCase name;
-the command line takes it lowercased. `metadata.name` is a lowercase
-DNS-like name of at most 253 characters, which `apply` requires and a
-plugin's `creates` derives from facts. The store assigns `uid`,
-`generation`, `resourceVersion` and creation time, and the finalizer
-`fleet.dev/plugin/<plugin>` when the kind declared one. `ownerReferences`
-are refused, as on every kind.
-
-Labels are free, except `fleet.dev/plugin`: the store sets it to the plugin's
-name on every object created through a plugin's plan, Tasks included, and
-refuses it from `apply`. It is how `tasks = "own"` recognises a plugin's
-Tasks and how a person sees who made an object.
 
 ## Spec
 
-Written by people through `fleet apply`, or by the plugin through `creates`.
-Validated against the kind's `spec` schema on every write; what the schema
-does not allow is refused with the schema's message. The schema is the
-plugin author's and should set `additionalProperties: false`, as every
-built-in kind refuses unknown fields; the manifest is accepted either way.
+You write the spec with `fleet apply`, or the plugin writes it through the
+`creates` of its plan. The store validates it against the kind's `spec`
+schema on each write.
 
-The spec is mutable, and a change increments `generation` and makes the
-object due, unless the kind declared `immutableSpec: true`. A plugin reads
-`metadata.generation` and writes `status.observedGeneration` when it has
-acted on it, by convention; nothing enforces that field.
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| any | as the schema says | as the schema says | The plugin's manifest defines the fields. For `File`: `name`, a file name, and `content`, a string. |
+
+The spec can change, and each change increments `metadata.generation`. A
+kind with `immutableSpec: true` refuses changes after creation.
 
 ## Status
 
-Written by the plugin, through the manager, as field manager
-`plugin/<name>`. Everything in it is the plugin's, validated against the
-kind's `status` schema when the manifest gives one, except three reserved
-fields the host writes under the same owner:
+The plugin writes the status, through the manager, as field manager
+`plugin/<name>`. If the manifest gives a `status` schema, the manager checks
+the plugin's fields against it. Three fields are reserved: the manager writes
+them, and a plan that names one is refused.
 
-| Field | Meaning |
-| --- | --- |
-| `notBefore` | Earliest next pass, Unix milliseconds: the plan's, else `now + pollMs`. |
-| `effects` | Per effect key: `intent {at, generation}`, written before the effect runs; `receipt {at, outcome}`, written after, `outcome` one of `done`, `failed` or `unknown` with the plugin's payload or reason. Newest 100 keys. |
-| `host` | The host's bookkeeping: `observedAt`, the last pass; `generation`, the spec generation that pass read; `error`, what failed on the last pass and why, absent when nothing did; `verbs`, the outcome of each `creates`, `amends`, `patches`, `appends`, `declares` and `deletes` entry of the last pass, by index. |
+| Field | Writer | Meaning |
+| --- | --- | --- |
+| the plugin's fields | the plugin | Anything the schema allows. `fleet status` shows `phase`, `conditions` and `observedGeneration` when present. |
+| `notBefore` | the manager | The earliest next pass: the plan's `notBefore`, else `now + pollMs`. |
+| `effects` | the manager | Per effect key, `intent {at, generation}` written before the effect and `receipt {at, outcome}` after it. `outcome` is `done`, `failed` or `unknown`. The newest 100 keys. |
+| `host` | the manager | `observedAt`, the last pass; `generation`, the spec generation it read; `error`, why the last pass failed; `verbs`, the result of each `creates`, `amends`, `patches`, `appends`, `declares` and `deletes` entry. |
 
-A plan that names a reserved field is refused. `fleet apply` refuses a
-supplied status on every kind.
+## Lifecycle
 
-Conventions `fleet status` understands: `phase`, a
-string; `conditions`, in Fleet's shape; `observedGeneration`. None is
-required.
+The plugin defines the phases. The manager makes an object due when its
+`notBefore` passes, when its spec has a new generation, and while it is
+deleting.
 
-## Deletion
+```text
+fleet apply ──▶ due ──▶ probes / observe ──▶ reconcile ──▶ status, intents
+                 ▲                                           │
+                 └─── notBefore passes, or spec changes ◀── effects, receipts
+```
 
-`fleet delete <kind> NAME` removes an object of a kind without a finalizer
-at once; the plugin finds it gone. A kind with a finalizer is reconciled
-while deleting until its plan says `removeFinalizer`, so the plugin can
-retire what it made. A plugin retires its own objects with `delete: true`
-in a plan, fenced on `uid` and `resourceVersion` like a ChangeRequest's
-retention. Deleting an object deletes nothing else: a Task a mirror created
-stays until the mirror's plan, or a person, deletes it.
+Deletion:
+
+- A kind without a finalizer is deleted at once.
+- A kind with `finalizer: true` gets the finalizer `fleet.dev/plugin/<name>`.
+  The plugin reconciles the deleting object until its plan says
+  `removeFinalizer: true`.
+- A plan with `delete: true` deletes the object itself.
+
+An object of a kind whose plugin left the config stays readable. The manager
+reports it and never reconciles it.
+
+## Related kinds
+
+A plugin can act on [Tasks](task.md) through its plan, as a person does:
+create one, set `dispatch` and `forge`, amend it, send it a message, declare
+a change for it, or delete it. With `tasks = "own"` it acts only on the
+Tasks it created, which carry the label `fleet.dev/plugin: <name>`.
+[Plugin operations](task.md#plugin-operations) lists each verb.
 
 ## Commands
 
 ```sh
-fleet --config fleet.toml list plugins --json
-fleet --config fleet.toml apply -f issue-source.json
-fleet --config fleet.toml get issuesource app
-fleet --config fleet.toml list issue --json
-fleet --config fleet.toml status issue issue-88 --json
-fleet --config fleet.toml delete issue issue-88
+fleet list plugins --json
+fleet apply -f hello.json
+fleet get file hello
+fleet status file hello --json
+fleet delete file hello
 ```
 
-`list plugins` prints each registered plugin, its kinds, its protocol and
-whether its current manifest call succeeded. The other verbs take a plugin
-kind as they take `task` or `changerequest`; `apply` of a plugin kind loads
-the config to find the plugin and asks it for its manifest, one bounded call
-cached for the process, to validate the spec. A kind whose plugin is not in
-the config is unknown, and an object of a kind whose plugin was removed stays
-readable and is reported by the manager, never reconciled.
+The command line takes a plugin kind lowercased, as it takes `task`.

@@ -1,5 +1,7 @@
 # Forge controller
 
+![ForgeController: declared changes, their ChangeRequests and the ready policy go in; status.forge, inbox entries and MarkReady come out](forge-flow.svg)
+
 ForgeController is a second controller over the [Task](../resources/task.md).
 It is not a kind of its own and creates nothing. It reads the
 [ChangeRequests](../resources/change-request.md) a Task's worker declared,
