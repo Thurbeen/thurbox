@@ -20,7 +20,7 @@ publish = false
 
 [workspace.dependencies]
 fleet-plugin = { path = "crates/fleet-plugin" }
-jsonschema = { version = "0.60.1", default-features = false }
+jsonschema = { version = "0.61.0", default-features = false }
 fleet-api = { path = "crates/fleet-api" }
 fleet-controllers = { path = "crates/fleet-controllers" }
 fleet-store = { path = "crates/fleet-store" }
