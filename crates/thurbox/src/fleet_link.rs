@@ -254,6 +254,7 @@ impl FleetLink {
         args: &[&str],
         timeout: std::time::Duration,
     ) -> Result<std::process::Output, String> {
+        let _span = command_span(args.first().copied().unwrap_or_default());
         let mut command = self.command(args);
         command
             .stdin(Stdio::null())
@@ -373,8 +374,9 @@ impl FleetLink {
     }
 }
 
-/// The span `fleet VERB` around one command the interface runs, current
-/// until dropped: the `fleet` it starts joins its trace through
+/// The span `fleet VERB` around one command the interface runs and waits
+/// for ([`FleetLink::run`], [`FleetLink::bounded_output`]), current until
+/// dropped: the `fleet` it starts joins its trace through
 /// `TRACEPARENT`. A no-op unless the OTEL_* variables turned tracing on.
 fn command_span(verb: &str) -> opentelemetry::ContextGuard {
     use opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
