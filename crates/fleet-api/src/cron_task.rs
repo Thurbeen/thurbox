@@ -117,6 +117,9 @@ pub struct EffectRecord {
     pub attempts: u32,
     /// The Task the effect is about.
     pub task: String,
+    /// For a create: the scheduled time it is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled: Option<Millis>,
 }
 
 /// CronTask status. CronTaskController owns all of it.

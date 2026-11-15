@@ -100,8 +100,9 @@ impl Manager<'_> {
             }
         }
         // Intent first (written above), each effect under a fresh lease,
-        // receipt after, under the effect's key. Retires run before the
-        // create, so Replace never has two Tasks running at once.
+        // receipt after, under the effect's key. A retire only marks the
+        // Task deleting: under Replace the controller plans the replacement
+        // only once the old Task is gone from the listing, in a later pass.
         for effect in &plan.effects {
             *lease = self.store.renew_lease(lease, ttl)?;
             let Action::RetireScheduled { name, uid, running } = &effect.action else {

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 430" role="img" aria-labelledby="title desc">
 <title id="title">CronTask controller: one scheduled time</title>
-<desc id="desc">At each scheduled time the controller skips the time when the CronTask is suspended, when the time came later than its starting deadline, or when the Forbid policy finds a Task that still runs. With the Replace policy it deletes the running Task first. Then it writes the create's intent, the manager creates the Task, and the manager writes the receipt. The next reconcile is at the next scheduled time.</desc>
+<desc id="desc">At each scheduled time the controller skips the time when the CronTask is suspended, when the time came later than its starting deadline, or when the Forbid policy finds a Task that still runs. With the Replace policy it deletes the running Task, and the new Task waits until the old one is gone. Then it writes the create's intent, the manager creates the Task, and the manager writes the receipt. The next reconcile is at the next scheduled time.</desc>
 <style>
   svg { color-scheme:light dark }
   @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
@@ -24,7 +24,7 @@
 <g text-anchor="middle" font-size="12">
 <text x="105" y="199">notBefore came</text>
 <text x="345" y="199">suspend, deadline, Forbid</text>
-<text x="595" y="199">delete running Tasks</text>
+<text x="595" y="199">delete, wait until gone</text>
 <text x="875" y="199">intent, create, receipt</text>
 <text x="345" y="339">Skipped=True with its reason</text>
 </g>

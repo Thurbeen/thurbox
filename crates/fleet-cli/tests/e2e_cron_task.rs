@@ -108,6 +108,61 @@ impl World {
             .collect()
     }
 
+    /// Every agent on the fake runtime finishes its turn: what lets the
+    /// Task controller release a session.
+    fn agents_rest(&self) {
+        FakeHost::open(&self._env.fake)
+            .expect("fake host")
+            .update(|s| s.sessions.values_mut().for_each(|x| x.at_rest = true))
+            .expect("agents at rest");
+    }
+
+    /// Let the clock run from `from`, two minutes a sweep, until the old
+    /// Task's session is released and the replacement exists.
+    fn until_released(&self, from: u64) {
+        for step in 1..=60 {
+            if names_of_all(self) == ["nightly-29914740"] {
+                return;
+            }
+            self.at(from + step * 2 * MINUTE);
+            self.reconcile();
+        }
+    }
+
+    /// As if the manager wrote the create's intent for the scheduled time
+    /// `at` and died before the create: the record has no receipt, and no
+    /// Task exists.
+    fn crash_before_create(&self, at: u64) {
+        let lease = self
+            .store
+            .acquire_lease("test-crash", 30_000)
+            .expect("lease");
+        let Observation::Known(Some(obj)) = self.store.get("CronTask", "nightly") else {
+            panic!("CronTask/nightly");
+        };
+        let minutes = at / MINUTE;
+        let mut status = obj.status.clone();
+        status["effects"][format!("create/{minutes}")] = json!({
+            "intent": {"action": "create", "at": at, "generation": obj.metadata.generation},
+            "attempts": 1,
+            "task": format!("nightly-{minutes}"),
+            "scheduled": at,
+        });
+        status["lastConsidered"] = json!(at);
+        status["notBefore"] = json!(at);
+        self.store
+            .update_status(
+                "CronTask",
+                "nightly",
+                status,
+                obj.metadata.resource_version,
+                FieldManager::CronTaskController,
+                Some(&lease),
+            )
+            .expect("intent written");
+        self.store.release_lease(&lease).expect("release");
+    }
+
     /// What the TaskController does when a worker's result lands: the Task
     /// is Concluded.
     fn conclude(&self, task: &str) {
@@ -231,11 +286,88 @@ fn replace_retires_the_running_task_before_it_creates() {
     w.reconcile();
     w.at(MONDAY_3AM + DAY);
     w.reconcile();
+    w.agents_rest();
+    w.until_released(MONDAY_3AM + DAY);
     assert_eq!(
         names(&w.tasks_of("nightly")),
         ["nightly-29914740"],
         "only the new Task is left running"
     );
+}
+
+/// Replace never runs two agents at once: the old Task is only marked for
+/// deletion, its session is released when its agent is at rest, and the
+/// replacement is created only once the old Task is gone.
+#[test]
+fn replace_waits_until_the_old_task_is_gone() {
+    let w = World::new("cron-replace-wait", MONDAY_3AM - MINUTE);
+    w.apply(nightly(json!({"concurrencyPolicy": "Replace"})));
+    w.at(MONDAY_3AM);
+    w.reconcile();
+    for step in 0..5 {
+        w.at(MONDAY_3AM + DAY + step * 2 * MINUTE);
+        w.reconcile();
+    }
+    let Observation::Known(all) = w.store.list("Task") else {
+        panic!("list Task");
+    };
+    let names: Vec<&str> = all.iter().map(|t| t.metadata.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["nightly-29913300"],
+        "no replacement while the old agent works"
+    );
+    assert!(all[0].is_deleting(), "the old Task is being released");
+    let st = w.cron_task("nightly")["status"].clone();
+    support::assert_condition(&st, "Skipped", "False", "Replacing");
+
+    w.agents_rest();
+    w.until_released(MONDAY_3AM + DAY + 10 * MINUTE);
+    assert_eq!(names_of_all(&w), ["nightly-29914740"]);
+}
+
+/// Every Task in the store, by name.
+fn names_of_all(w: &World) -> Vec<String> {
+    let Observation::Known(all) = w.store.list("Task") else {
+        panic!("list Task");
+    };
+    all.into_iter().map(|t| t.metadata.name).collect()
+}
+
+/// A create recovered after a crash counts as running: Forbid skips the
+/// time that came while the manager was down.
+#[test]
+fn a_recovered_create_counts_as_running_under_forbid() {
+    let w = World::new("cron-crash-forbid", MONDAY_3AM - MINUTE);
+    w.apply(nightly(json!({})));
+    w.reconcile();
+    w.crash_before_create(MONDAY_3AM);
+    w.at(MONDAY_3AM + DAY + MINUTE);
+    w.reconcile();
+    assert_eq!(names(&w.tasks_of("nightly")), ["nightly-29913300"]);
+}
+
+/// A create recovered after a crash obeys the limits in force now.
+#[test]
+fn a_recovered_create_obeys_suspend_and_the_deadline() {
+    let w = World::new("cron-crash-suspend", MONDAY_3AM - MINUTE);
+    w.apply(nightly(json!({})));
+    w.reconcile();
+    w.crash_before_create(MONDAY_3AM);
+    w.apply(nightly(json!({"suspend": true})));
+    w.at(MONDAY_3AM + MINUTE);
+    w.reconcile();
+    assert!(w.tasks_of("nightly").is_empty(), "suspended");
+
+    let d = World::new("cron-crash-deadline", MONDAY_3AM - MINUTE);
+    d.apply(nightly(json!({"startingDeadlineSeconds": 600})));
+    d.reconcile();
+    d.crash_before_create(MONDAY_3AM);
+    d.at(MONDAY_3AM + 30 * MINUTE);
+    d.reconcile();
+    assert!(d.tasks_of("nightly").is_empty(), "past its deadline");
+    let st = d.cron_task("nightly")["status"].clone();
+    support::assert_condition(&st, "Skipped", "True", "MissedDeadline");
 }
 
 #[test]
@@ -339,6 +471,10 @@ fn the_cli_takes_shows_and_deletes_a_cron_task_and_refuses_a_bad_one() {
     let mut bad = nightly(json!({}));
     bad["spec"]["template"]["spec"]["host"] = json!("");
     env.apply(bad).code(1).stderr_has("spec.template.spec");
+    let mut amended = nightly(json!({}));
+    amended["spec"]["template"]["spec"]["amendments"] =
+        json!([{"text": "and the docs", "from": "cli/me", "at": 1, "generation": 2}]);
+    env.apply(amended).code(1).stderr_has("amendments");
     let mut labelled = nightly(json!({}));
     labelled["spec"]["template"]["metadata"]["labels"]["crontask.fleet.dev/uid"] = json!("x");
     env.apply(labelled)

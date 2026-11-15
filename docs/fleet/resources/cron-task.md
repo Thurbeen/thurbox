@@ -63,7 +63,7 @@ change applies from the next scheduled time.
 | `schedule` | yes | Five cron fields (minute, hour, day of month, month, day of week), or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Fleet evaluates it in UTC. A seconds field is refused. |
 | `template.spec` | yes | The spec of each Task. `fleet apply` validates it as a Task spec. |
 | `template.metadata.labels` | no | Labels for each Task. The `crontask.fleet.dev/` and `gateway.fleet.dev/` labels are refused: only a controller sets them. |
-| `concurrencyPolicy` | no | What happens at a scheduled time while an earlier Task of this CronTask is not Concluded. `Forbid` (the default) skips the time. `Allow` creates the Task. `Replace` deletes the earlier Task, then creates the new one. |
+| `concurrencyPolicy` | no | What happens at a scheduled time while an earlier Task of this CronTask is not Concluded. `Forbid` (the default) skips the time. `Allow` creates the Task. `Replace` deletes the earlier Task, and creates the new one only when the earlier one is gone. |
 | `startingDeadlineSeconds` | no | A scheduled time that the controller sees more than this many seconds late is skipped. Without it, a late time is never skipped. |
 | `suspend` | no | `true` stops new Tasks. The Tasks that run continue. |
 | `historyLimit` | no | How many Concluded Tasks to keep, from 0 to 100. The default is 3. The controller deletes the older ones. |

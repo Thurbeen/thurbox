@@ -38,12 +38,28 @@ At a scheduled time `T`, the controller applies these rules in order:
 2. `startingDeadlineSeconds` is set, and now is later than `T` plus the
    deadline: skip `T`. `Skipped` is True with reason `MissedDeadline`.
 3. `concurrencyPolicy` is `Forbid`, and a Task of this CronTask is not
-   Concluded: skip `T`. `Skipped` is True with reason `Forbidden`.
+   Concluded, or a create is still pending: skip `T`. `Skipped` is True
+   with reason `Forbidden`.
 4. `concurrencyPolicy` is `Replace`: delete each Task of this CronTask that
-   is not Concluded.
-5. Create the Task for `T`. `Skipped` is False with reason `Created`.
+   is not Concluded, and give up a create that is still pending.
+5. Write the create's intent for `T`. `Skipped` is False with reason
+   `Created`.
 
-A Task that is deleting does not count as running.
+Then the controller makes each pending create, under the limits in force
+at that moment:
+
+- `suspend` is true: the create is given up.
+- The deadline passed: the create is given up. `Skipped` is True with
+  reason `MissedDeadline`.
+- `concurrencyPolicy` is `Replace`, and another Task of this CronTask is
+  not Concluded or is being deleted: the create waits. `Skipped` is False
+  with reason `Replacing`. The controller looks again after one minute. A
+  delete only marks the old Task, and the Task controller releases its
+  session when the agent is at rest. The new Task is created only when the
+  old one is gone from the store, so two agents never work at once.
+- Otherwise the manager creates the Task.
+
+A Task that is deleting does not count as running for `Forbid`.
 
 ### Conditions
 
@@ -54,7 +70,8 @@ A Task that is deleting does not count as running.
 | `Scheduled` | False | `InvalidSchedule` | The schedule does not parse. |
 | `Skipped` | True | `MissedDeadline` | The last scheduled time came later than its deadline. |
 | `Skipped` | True | `Forbidden` | A Task still ran at the last scheduled time. |
-| `Skipped` | False | `Created` | The last scheduled time created its Task. |
+| `Skipped` | False | `Created` | The last scheduled time decided to create its Task. |
+| `Skipped` | False | `Replacing` | The Task waits for the Task it replaces to be released. |
 
 ## CronTask controller interface
 
@@ -89,8 +106,8 @@ For each due CronTask the manager does these steps:
 3. It performs the create with `Store::create_fenced`. Then it writes the
    receipt under the key.
 
-The deletes come before the create, so `Replace` never has two Tasks that
-run at once.
+A delete only marks the Task. Under `Replace` the controller plans the
+replacement in a later pass, once the old Task is gone from the listing.
 
 ### Recovery
 
@@ -99,8 +116,10 @@ writes. The controller answers it from the Task listing:
 
 - The Task exists and carries this CronTask's uid: the controller records
   the receipt `Created`, with `adopted` true.
-- The Task does not exist: the controller plans the create again under the
-  same key and the same name.
+- The Task does not exist: the create is pending again. The controller
+  makes it under the same key and the same name, under the limits in force
+  now (`suspend`, the deadline, `Replace`), and it counts as a running Task
+  for `Forbid`.
 - A create that the store refused three times is given up, with the
   receipt `Failed`.
 

@@ -220,6 +220,16 @@ fn validate_cron_task_spec(spec: &Value) -> Result<(), StoreError> {
             )));
         }
     }
+    // An amendment is a stamped `fleet amend` of one Task; a template has
+    // none to copy, and the store refuses a Task created with one.
+    if s.template.spec["amendments"]
+        .as_array()
+        .is_some_and(|a| !a.is_empty())
+    {
+        return Err(StoreError::Invalid(
+            "spec.template.spec.amendments: a template has no amendments; `fleet amend` adds them to one Task".into(),
+        ));
+    }
     validate_spec(task::KIND, &s.template.spec)
         .map_err(|e| StoreError::Invalid(format!("spec.template.spec: {e}")))
 }

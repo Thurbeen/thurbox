@@ -166,13 +166,12 @@ impl Pass<'_, '_> {
             self.cond(SCHEDULED, ConditionStatus::True, "Scheduled", "");
             self.decide(&schedule);
         }
+        self.flush_creates();
         self.st.active = self
-            .input
-            .tasks
-            .iter()
-            .filter(|t| !concluded(t) && !t.is_deleting())
-            .map(|t| t.metadata.name.clone())
-            .chain(self.creates.iter().map(|c| c.object.metadata.name.clone()))
+            .alive()
+            .into_iter()
+            .map(|(name, _)| name)
+            .chain(self.pending_creates().into_iter().map(|(_, r)| r.task))
             .collect();
         self.st.next_schedule_time = schedule.first_after(self.now());
         self.st.not_before = if self.recovering {
@@ -214,16 +213,15 @@ impl Pass<'_, '_> {
             );
             return;
         }
-        let running: Vec<(String, String)> = self
-            .input
-            .tasks
-            .iter()
-            .filter(|t| !concluded(t) && !t.is_deleting())
-            .map(|t| (t.metadata.name.clone(), t.metadata.uid.clone()))
-            .collect();
+        let running = self.alive();
+        let pending = self.pending_creates();
         match self.spec.concurrency_policy {
-            ConcurrencyPolicy::Forbid if !running.is_empty() => {
-                let names: Vec<&str> = running.iter().map(|(n, _)| n.as_str()).collect();
+            ConcurrencyPolicy::Forbid if !running.is_empty() || !pending.is_empty() => {
+                let names: Vec<&str> = running
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .chain(pending.iter().map(|(_, r)| r.task.as_str()))
+                    .collect();
                 self.cond(
                     SKIPPED,
                     ConditionStatus::True,
@@ -236,6 +234,9 @@ impl Pass<'_, '_> {
                 for (name, uid) in running {
                     self.plan_retire(&name, &uid, true);
                 }
+                for (key, _) in pending {
+                    self.give_up(&key, format!("replaced by the time {at}"));
+                }
             }
             _ => {}
         }
@@ -244,7 +245,7 @@ impl Pass<'_, '_> {
             return;
         }
         let name = cron_task::task_name(&self.input.object.metadata.name, at);
-        self.plan_create(&key, &name);
+        self.write_create_intent(&key, &name, at);
         self.st.last_schedule_time = Some(at);
         self.cond(
             SKIPPED,
@@ -252,6 +253,94 @@ impl Pass<'_, '_> {
             "Created",
             format!("Task/{name}"),
         );
+    }
+
+    /// This CronTask's Tasks that run: not Concluded and not being deleted.
+    fn alive(&self) -> Vec<(String, String)> {
+        self.input
+            .tasks
+            .iter()
+            .filter(|t| !concluded(t) && !t.is_deleting())
+            .map(|t| (t.metadata.name.clone(), t.metadata.uid.clone()))
+            .collect()
+    }
+
+    /// Creates decided but not made: an intent whose Task is not in the
+    /// listing and that was not given up. Each counts as a running Task.
+    fn pending_creates(&self) -> Vec<(String, EffectRecord)> {
+        self.st
+            .effects
+            .iter()
+            .filter(|(_, r)| r.intent.action == CREATE_ACTION && self.task(&r.task).is_none())
+            .filter(|(_, r)| match r.receipt.as_ref().map(|x| &x.outcome) {
+                None | Some(Observation::Unknown { .. }) => true,
+                Some(Observation::Known(EffectOutcome::Failed { .. })) => {
+                    r.attempts < MAX_CREATE_ATTEMPTS
+                }
+                Some(Observation::Known(_)) => false,
+            })
+            .map(|(k, r)| (k.clone(), r.clone()))
+            .collect()
+    }
+
+    /// Make each pending create now, under the limits in force now: a
+    /// suspended CronTask or a passed deadline gives it up; under Replace it
+    /// waits until every other Task of this CronTask is Concluded or gone,
+    /// so two agents never work at once.
+    fn flush_creates(&mut self) {
+        for (key, record) in self.pending_creates() {
+            let scheduled = record.scheduled.unwrap_or(record.intent.at);
+            if self.spec.suspend {
+                self.give_up(&key, "the CronTask is suspended".into());
+                continue;
+            }
+            if let Some(deadline) = self.spec.starting_deadline_ms()
+                && self.now().saturating_sub(scheduled) > deadline
+            {
+                let late = (self.now() - scheduled) / 1000;
+                self.cond(
+                    SKIPPED,
+                    ConditionStatus::True,
+                    "MissedDeadline",
+                    format!(
+                        "the time {scheduled} came {late}s ago, past startingDeadlineSeconds {}",
+                        deadline / 1000
+                    ),
+                );
+                self.give_up(&key, "past startingDeadlineSeconds".into());
+                continue;
+            }
+            if self.spec.concurrency_policy == ConcurrencyPolicy::Replace
+                && self
+                    .input
+                    .tasks
+                    .iter()
+                    .any(|t| t.metadata.name != record.task && (!concluded(t) || t.is_deleting()))
+            {
+                self.cond(
+                    SKIPPED,
+                    ConditionStatus::False,
+                    "Replacing",
+                    format!(
+                        "Task/{} waits for the Task it replaces to be released",
+                        record.task
+                    ),
+                );
+                self.recovering = true;
+                continue;
+            }
+            // A retry: look again soon if this attempt fails too.
+            self.recovering |= record.attempts > 0;
+            self.plan_create(&key, &record.task);
+        }
+    }
+
+    /// Record that a create will not be made, with why.
+    fn give_up(&mut self, key: &str, why: String) {
+        self.recover(key, EffectOutcome::Failed { why });
+        if let Some(record) = self.st.effects.get_mut(key) {
+            record.attempts = record.attempts.max(MAX_CREATE_ATTEMPTS);
+        }
     }
 
     fn intent(&self, action: &str) -> Intent {
@@ -262,22 +351,30 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Write the create's intent under `key` and ask the manager for it.
-    fn plan_create(&mut self, key: &str, name: &str) {
+    /// Write the create's intent for the scheduled time `at` under `key`.
+    /// `flush_creates` asks the manager for it when the limits allow.
+    fn write_create_intent(&mut self, key: &str, name: &str, at: Millis) {
         let intent = self.intent(CREATE_ACTION);
-        let record = self
-            .st
-            .effects
-            .entry(key.to_string())
-            .or_insert_with(|| EffectRecord {
-                intent: intent.clone(),
+        self.st.effects.insert(
+            key.to_string(),
+            EffectRecord {
+                intent,
                 receipt: None,
                 attempts: 0,
                 task: name.to_string(),
-            });
-        record.intent = intent;
-        record.receipt = None;
-        record.attempts += 1;
+                scheduled: Some(at),
+            },
+        );
+    }
+
+    /// Renew the create's intent under `key` and ask the manager for it.
+    fn plan_create(&mut self, key: &str, name: &str) {
+        let intent = self.intent(CREATE_ACTION);
+        if let Some(record) = self.st.effects.get_mut(key) {
+            record.intent = intent;
+            record.receipt = None;
+            record.attempts += 1;
+        }
         self.creates.push(Create {
             key: key.to_string(),
             object: self.task_object(name),
@@ -303,6 +400,7 @@ impl Pass<'_, '_> {
                 receipt: None,
                 attempts: 0,
                 task: name.to_string(),
+                scheduled: None,
             });
         record.intent = intent;
         record.receipt = None;
@@ -355,23 +453,11 @@ impl Pass<'_, '_> {
             }
             let found = self.task(&record.task).map(|t| t.metadata.uid.clone());
             if creating {
+                // Adopt a Task an earlier attempt made; an absent one is a
+                // pending create, which `flush_creates` decides about.
                 if let Some(uid) = found {
                     self.recover(&key, EffectOutcome::Created { uid, adopted: true });
-                    continue;
                 }
-                if record.attempts >= MAX_CREATE_ATTEMPTS {
-                    if outcome.is_none() || matches!(outcome, Some(Observation::Unknown { .. })) {
-                        self.recover(
-                            &key,
-                            EffectOutcome::Failed {
-                                why: format!("{MAX_CREATE_ATTEMPTS} attempts made no Task"),
-                            },
-                        );
-                    }
-                    continue;
-                }
-                self.plan_create(&key, &record.task);
-                self.recovering = true;
             } else if let Some(uid) = found {
                 // The store refused: the Task is not this CronTask's to
                 // delete any more. Nothing is tried again.
