@@ -11,10 +11,11 @@
 #   * The profile starts with ZERO sessions and an EMPTY repo memory. The
 #     tutorial's subject is the first launch, and a seeded list would show a
 #     screen the reader cannot have yet.
-#   * agents.toml is left for thurbox to seed, so the agent step shows the
-#     built-in registry a fresh install really has. (Only when `claude` — the
-#     seeded default — is installed; otherwise two stub agents are registered, so
-#     the agent step is still reached rather than skipped.)
+#   * Fleet has NO config: the first `thurbox` runs `fleet init` itself, which
+#     is what a reader's first launch does, and the first screenshot shows the
+#     notice it leaves. The agent step lists the harnesses Fleet ships; when
+#     `claude` is not installed, a stand-in `claude` that runs a shell is put on
+#     PATH, so the session still starts.
 #   * thurbox runs in a detached tmux session, `tmux send-keys` presses the
 #     real chords (`Ctrl+/` is sent as its actual byte), and each screenshot is
 #     `capture-pane -e` rasterised by agg — the same asciicast→agg→ffmpeg chain
@@ -25,7 +26,7 @@
 # tmux server, nor your agent credentials.
 #
 # Requirements: cargo, git, tmux, agg, ffmpeg, python3, jq. A coding
-# agent CLI is optional (see agents.toml above). agg ships no font, so FONT_DIR
+# agent CLI is optional (see the agent section below). agg ships no font, so FONT_DIR
 # is provisioned under target/fonts: JetBrains Mono (whose box-drawing glyphs
 # tile, which is what keeps a pane border from rendering as a dashed line), plus
 # Noto Sans Symbols 2 for `⑂` (U+2442), the mark the session list puts on a
@@ -37,7 +38,8 @@
 #   OUTPUT_DIR  where the PNGs go (default: <repo>/media/tutorial)
 #
 # Env: THEME (default doom), COLS, ROWS, FONT_SIZE, LINE_HEIGHT, FONT_DIR,
-# FONT_FAMILY.
+# FONT_FAMILY, TEXT_DIR (also keep each frame as plain text there, to check a
+# re-record against the prose without opening the PNGs).
 set -euo pipefail
 
 log() { printf '[tutorial] %s\n' "$*" >&2; }
@@ -152,8 +154,10 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 # screenshots in the wrong theme, with nothing failing.
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
 mkdir -p "$CFG_DIR"
-# The sessions are this sandbox's Fleet Tasks (exports FLEET_CONFIG).
-tbx_sandbox_fleet
+# runtime-mux's workspaces inside the sandbox. No Fleet config: the first
+# launch writes it, at the per-user path under the sandbox's XDG_CONFIG_HOME.
+tbx_sandbox_runtime
+unset FLEET_CONFIG
 
 cleanup() {
     tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
@@ -188,23 +192,17 @@ for repo in api-server web-app; do
         commit -q -m "chore: init $repo"
 done
 
-# --- Agent registry ----------------------------------------------------------
+# --- The agent ----------------------------------------------------------------
+# The claude-code harness launches `claude`. Without it installed, a stand-in
+# that runs a shell lets the session start, so the running-session screenshot
+# still has a live terminal in it.
+mkdir -p "$HOME/.local/bin"
 if [ "$HAS_CLAUDE" -eq 0 ]; then
-    log "claude not installed — registering stub agents so the flow still renders"
-    cat > "$CFG_DIR/agents.toml" <<'AGENTS'
-default = "shell"
-
-[[agents]]
-name = "shell"
-command = "sh"
-args = ["-c", "echo 'tutorial stub agent'; exec sh"]
-
-[[agents]]
-name = "shell-2"
-command = "sh"
-args = ["-c", "echo 'tutorial stub agent'; exec sh"]
-AGENTS
+    log "claude not installed — a stand-in claude runs a shell"
+    printf '#!/bin/sh\necho "tutorial stand-in agent"\nexec sh\n' > "$HOME/.local/bin/claude"
+    chmod +x "$HOME/.local/bin/claude"
 fi
+export PATH="$HOME/.local/bin:$PATH"
 
 # --- Keep the agent's own first-run chrome off the screenshots ---------------
 # A fresh HOME means a fresh agent CLI: update banners and trust dialogs would
@@ -217,37 +215,20 @@ export CODEX_DISABLE_UPDATE_CHECK=1
 export npm_config_update_notifier=false
 export NO_UPDATE_NOTIFIER=1
 
-# The session created below runs in a WORKTREE, which is a directory the agent
-# has never seen either — and an untrusted one puts a dialog over the headline
-# screenshot. Its path is deterministic
-# (`<data>/worktrees/<fnv1a(repo path)>/<branch>`, git::worktree::worktree_path),
-# so it can be trusted before it exists.
+# The session created below runs in a worktree the runtime makes under the
+# sandbox's workspace root, a directory the agent has never seen. The two
+# repositories are trusted up front; the worktree's name is the runtime's, and
+# the agent's own permission mode keeps a trust dialog off the screenshot.
 TUTORIAL_BRANCH="rate-limit"
-REPO_HASH=$(python3 - "$CODE_DIR/api-server" <<'PYHASH'
-import sys
-
-# FNV-1a 64, matching git::worktree::stable_repo_hash. Deliberately a fixed
-# algorithm there, which is what makes predicting the path here legitimate.
-h = 0xCBF29CE484222325
-for byte in sys.argv[1].encode():
-    h = ((h ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-print(f"{h:016x}")
-PYHASH
-)
-WORKTREE_DIR="$XDG_DATA_HOME/thurbox-dev/worktrees/$REPO_HASH/$TUTORIAL_BRANCH"
 
 # Each path twice: as thurbox spells it, and resolved. HOME is a symlink (above),
 # and an agent that canonicalises its cwd would not find the trust entry filed
-# under the pretty spelling — which is the trust dialog back over the headline
-# screenshot.
+# under the pretty spelling.
 trusted_paths=()
-for path in "$CODE_DIR/api-server" "$CODE_DIR/web-app" "$WORKTREE_DIR"; do
-    # -m, not -f: the worktree does not exist yet, and -f fails on a path whose
-    # parent directories are still missing.
-    trusted_paths+=("$path" "$(readlink -m "$path")")
+for path in "$CODE_DIR/api-server" "$CODE_DIR/web-app"; do
+    trusted_paths+=("$path" "$(readlink -f "$path")")
 done
 
-mkdir -p "$HOME/.local/bin"
 jq -n '{hasCompletedOnboarding: true,
         projects: ($ARGS.positional
                    | map({(.): {hasTrustDialogAccepted: true}}) | add)}' \
@@ -261,13 +242,14 @@ fi
 # --- Profile state, before the first frame ----------------------------------
 printf '{"theme": "%s"}\n' "$THEME" > "$CFG_DIR/interface.json"
 
-# Tripwire: the sessions must live in this sandbox. A FLEET_CONFIG outside it
-# means the isolation broke and the dev binary would read a real Fleet store —
-# the tutorial's first screenshot would then be of somebody's actual work.
-case "${FLEET_CONFIG:-}" in
-    "$TBX_SANDBOX_ROOT"/*) ;;
-    *) die "FLEET_CONFIG (${FLEET_CONFIG:-unset}) is outside the sandbox — aborting" ;;
+# Tripwire: the sessions must live in this sandbox. Fleet's config is found
+# under XDG_CONFIG_HOME; one that resolves outside the sandbox means the
+# isolation broke and the first launch would set up, or read, a real Fleet.
+case "$(readlink -f "$XDG_CONFIG_HOME")" in
+    "$(readlink -f "$TBX_SANDBOX_ROOT")"/*) ;;
+    *) die "XDG_CONFIG_HOME ($XDG_CONFIG_HOME) is outside the sandbox — aborting" ;;
 esac
+[ -z "${FLEET_CONFIG:-}" ] || die "FLEET_CONFIG is set — aborting"
 
 # --- The recording terminal --------------------------------------------------
 # `status off` because the pane has to own every row it was given, and
@@ -315,6 +297,10 @@ shot() {
     mkdir -p "$work"
 
     tmux -L "$SOCK" capture-pane -p -e -N -t "$TARGET" > "$work/$stem.ansi"
+    if [ -n "${TEXT_DIR:-}" ]; then
+        mkdir -p "$TEXT_DIR"
+        tmux -L "$SOCK" capture-pane -p -t "$TARGET" > "$TEXT_DIR/$stem.txt"
+    fi
     local geom
     geom=$(tmux -L "$SOCK" display -p -t "$TARGET" \
         '#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag}')
@@ -360,59 +346,66 @@ sleep 6
 # 01 — first launch: an empty session list beside an empty centre pane.
 shot first-launch
 
-# 02 — Ctrl+N opens the creation flow on the repo step. Memory is empty, so the
+# 02 — Ctrl+N opens the creation flow on the place step: where the session
+# runs. A fresh setup has one, `local`. (The Fleet step before it is skipped
+# while settings.toml lists one Fleet.)
+send C-n; sleep 3
+shot place-picker
+
+# 03 — enter takes the place and opens the repo step. Memory is empty, so the
 # only row is the interface directory the kernel offers on its own account.
-send C-n; sleep 2
+send Enter; sleep 2
 shot repo-picker
 
-# 03 — tab moves focus to the path field. The trailing slash is what makes the
+# 04 — tab moves focus to the path field. The trailing slash is what makes the
 # next tab browse rather than complete: a completion needs a prefix to extend.
 send Tab; sleep 1
 # shellcheck disable=SC2088 # a literal `~` is what gets typed; the kernel expands it
 write "~/code/"; sleep 2
 shot add-repo-path
 
-# 04 — tab again: the browse dropdown lists that directory, marking which
+# 05 — tab again: the browse dropdown lists that directory, marking which
 # subdirectories are git repositories.
 send Tab; sleep 3
 shot browse-directory
 
-# 05 — enter on a git row adds it to repo memory, selects it, and puts focus back
+# 06 — enter on a git row adds it to repo memory, selects it, and puts focus back
 # on the search with the cursor on the row just added.
 send Enter; sleep 3
 shot repo-added
 
-# 06 — `alt+w` gives the selected repository its own worktree.
+# 07 — `alt+w` gives the selected repository its own worktree.
 send M-w; sleep 2
 shot worktree-mode
 
-# 07 — enter leaves the repo step. Worktree mode is what makes the base-branch
+# 08 — enter leaves the repo step. Worktree mode is what makes the base-branch
 # step appear at all.
 send Enter; sleep 3
 shot base-branch
 
-# 08 — the session name. The placeholder is the suggestion `enter` would take.
+# 09 — the session name. The placeholder is the suggestion `enter` would take.
 send Enter; sleep 2
 write "$TUTORIAL_BRANCH"; sleep 2
 shot session-name
 
-# 09 — the branch name, prefilled from the session name.
+# 10 — the branch name, prefilled from the session name.
 send Enter; sleep 2
 shot branch-name
 
-# 10 — the agent. Skipped when only one agent is defined; a fresh install seeds
+# 11 — the agent. Skipped when only one agent is defined; a fresh install seeds
 # the built-in registry, so it is not.
 send Enter; sleep 2
 shot agent-picker
 
-# 11 — created: the worktree, the tmux window and the agent, with the session
-# selected in the list.
+# 12 — created: a Fleet Task, whose runtime makes the worktree and starts the
+# agent in it, with the session selected in the list.
 send Enter; sleep 12
 shot session-running
 
-# 12 — the second session is cheaper than the first: the repository is in memory
+# 13 — the second session is cheaper than the first: the repository is in memory
 # now, so the picker opens with it already listed and `space` is all it takes.
 send C-n; sleep 3
+send Enter; sleep 2
 shot repo-remembered
 send Escape; sleep 1
 
@@ -420,14 +413,14 @@ send Escape; sleep 1
 # passed through to the agent, which is what makes it the way out.
 send C-h; sleep 1
 
-# 13 — search: matches highlight inside the panes being searched rather than
+# 14 — search: matches highlight inside the panes being searched rather than
 # being reprinted in the strip.
 search; sleep 1
 write "rate"; sleep 2
 shot search
 send Escape; sleep 1
 
-# 14 — the key list, rendered from the live registry.
+# 15 — the key list, rendered from the live registry.
 send C-g; sleep 2
 shot keybindings
 send Escape; sleep 1
@@ -435,7 +428,7 @@ send Escape; sleep 1
 # Quit: detaches, leaving every agent running under the sandbox's tmux.
 send C-q; sleep 3
 
-# 15 — the other half of the tutorial: the same sessions from `fleet`, which is
+# 16 — the other half of the tutorial: the same sessions from `fleet`, which is
 # what an agent inside a session reaches for. Its own tmux session
 # because the TUI's window closed with the TUI.
 tmux -L "$SOCK" -f "$TMUX_CONF" new-session -d -s cli -x "$COLS" -y "$ROWS" \
