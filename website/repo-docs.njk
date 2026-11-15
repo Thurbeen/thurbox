@@ -1,0 +1,18 @@
+---
+# One page per Markdown file under docs/fleet and docs/runtime (listRepoDocs
+# in eleventy.config.js). The output path is assigned in website.11tydata.js.
+pagination:
+  data: repoDocs
+  size: 1
+  alias: repoDoc
+  addAllPagesToCollections: true
+layout: docs.njk
+eleventyComputed:
+  title: '{{ repoDoc.title }} — {{ repoDoc.product }} Docs'
+  description: '{{ repoDoc.description }}'
+  breadcrumb: '{{ repoDoc.title }}'
+  currentPage: '{{ repoDoc.currentPage }}'
+  root: '{{ repoDoc.root }}'
+  docsBase: '{{ repoDoc.docsBase }}'
+---
+{{ repoDoc.body | renderContent("md", { repoDoc: repoDoc, repoDocs: repoDocs }) | safe }}

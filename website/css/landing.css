@@ -354,6 +354,7 @@
 }
 
 .flow__name {
+  overflow-wrap: anywhere;
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -442,8 +443,10 @@
   }
 }
 
-/* Narrow: the flow stacks, and each wire turns vertical between its boxes. */
-@media (max-width: 767px) {
+/* Below the xl step a row of three boxes and three wires does not fit (each box
+   needs about 150px for RUNTIME-MUX): the flow stacks, and each wire turns
+   vertical between its boxes. */
+@media (max-width: 1023px) {
   .flow {
     padding: var(--space-md);
     border-width: 6px;

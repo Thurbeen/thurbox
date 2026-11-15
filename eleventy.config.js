@@ -15,7 +15,9 @@
 // button, and Prism token spans. This keeps highlighting entirely at build
 // time (zero client-side JS) and out of the hand-written page bodies.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { RenderPlugin } from '@11ty/eleventy';
 import { parse } from 'node-html-parser';
 import Prism from 'prismjs';
 import loadLanguages from 'prismjs/components/index.js';
@@ -160,6 +162,168 @@ function writeCoreBundle() {
   return bundle.length;
 }
 
+// ---- The repository's Fleet and runtime docs, rendered as pages ----
+// docs/fleet and docs/runtime are the one source of these pages: each
+// Markdown file there becomes /docs/<same path>.html (a README becomes the
+// directory's index.html) through the paginated website/repo-docs.njk. The
+// files are read on every build, so a new or renamed page needs no change here.
+const RENDERED_DOCS = ['docs/fleet', 'docs/runtime'];
+
+const REPO_URL = 'https://github.com/Thurbeen/thurbox';
+
+// A repository document the site does not render, linked from one it does:
+// the website page that covers it, relative to /docs/. A `path#fragment` key
+// maps one section; the bare path is the fallback, since GitHub's heading ids
+// mean nothing on the site's own page. A document missing here loses its link
+// and keeps its text.
+const DOC_ON_SITE = {
+  'docs/README.md': 'architecture.html#components',
+  'docs/where-sessions-run.md': 'architecture.html#places',
+  'docs/thurbox/architecture.md#adr-42-hosts-belong-to-runtimes': 'architecture.html#places',
+  'docs/thurbox/architecture.md': 'architecture.html',
+  'docs/thurbox/config.md#fleets--the-fleets-that-manage-sessions': 'configuration.html#fleets',
+  'docs/thurbox/config.md': 'configuration.html',
+};
+
+const docUrl = (src) =>
+  `/${src.replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html')}`;
+
+// A site URL as a link from the page at `fromUrl`: the site links relatively,
+// so it also works opened from disk.
+const relativeUrl = (fromUrl, toUrl) => path.posix.relative(path.posix.dirname(fromUrl), toUrl);
+
+// The first paragraph under the title, as plain text, for the meta description.
+function summary(body) {
+  const para = body
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .find((block) => block && !/^(#|\||```|!\[|[-*] )/.test(block));
+  const plain = (para || '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[`*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return plain.length > 200 ? `${plain.slice(0, 197).replace(/\s+\S*$/, '')}…` : plain;
+}
+
+function listRepoDocs() {
+  return RENDERED_DOCS.flatMap((dir) =>
+    readdirSync(dir, { recursive: true })
+      .filter((file) => file.endsWith('.md'))
+      .sort()
+      .map((file) => {
+        const src = `${dir}/${file}`;
+        const url = docUrl(src);
+        const source = readFileSync(src, 'utf8');
+        const title = (source.match(/^# (.+)$/m) || [, file])[1].replace(/`/g, '');
+        const depth = url.split('/').length - 3; // directories below /docs/
+        const area = src.split('/')[2]; // resources, controllers, or a page
+        return {
+          src,
+          url,
+          title,
+          description: summary(source.replace(/^# .+$/m, '')),
+          body: source,
+          root: Array(depth + 1)
+            .fill('..')
+            .join('/'),
+          docsBase: '../'.repeat(depth),
+          product: dir === 'docs/fleet' ? 'Fleet' : 'Runtime',
+          // The sidebar entry this page sits under, if any.
+          currentPage:
+            {
+              'docs/fleet/README.md': 'fleet-reference',
+              'docs/fleet/configuration.md': 'fleet-configuration',
+            }[src] ?? (dir === 'docs/fleet' && file.includes('/') ? `fleet-${area}` : ''),
+        };
+      }),
+  );
+}
+
+// Where a link in the rendered document `fromSrc` goes, or null to drop it.
+function rewriteHref(href, fromSrc, renderedSet) {
+  if (/^([a-z][a-z0-9+.-]*:|#|\/\/)/i.test(href)) return href;
+  const [rawPath, fragment] = href.split(/#(.*)/s);
+  const hash = fragment === undefined ? '' : `#${fragment}`;
+  const target = path.posix.normalize(
+    path.posix.join(path.posix.dirname(fromSrc), decodeURI(rawPath)),
+  );
+  const fromUrl = docUrl(fromSrc);
+  if (renderedSet.has(target)) return relativeUrl(fromUrl, docUrl(target)) + hash;
+  if (target.startsWith('docs/')) {
+    const mapped = DOC_ON_SITE[target + hash] ?? DOC_ON_SITE[target];
+    if (mapped) return relativeUrl(fromUrl, `/docs/${mapped}`);
+    if (target.endsWith('.md')) {
+      console.warn(`[11ty] ${fromSrc}: no site page for ${href}; the link is dropped`);
+      return null;
+    }
+    return href; // a file beside the docs, copied with them (the SVGs)
+  }
+  // Source code and examples stay on GitHub.
+  const kind = existsSync(target) && statSync(target).isDirectory() ? 'tree' : 'blob';
+  return `${REPO_URL}/${kind}/main/${target}${hash}`;
+}
+
+// GitHub's heading ids (github-slugger): lower-case, drop punctuation, spaces
+// to hyphens, and -1, -2… on a repeat. The docs' own `#fragment` links are
+// written against these.
+function githubSlug(text, seen) {
+  const base = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
+    .replace(/ /g, '-');
+  let slug = base;
+  for (let n = 1; seen.has(slug); n++) slug = `${base}-${n}`;
+  seen.add(slug);
+  return slug;
+}
+
+// A markdown-it core rule: heading ids and anchors, and the links rewritten
+// for the page's place on the site. The page passes { repoDoc } as the render
+// environment; anything else rendered as Markdown is left alone.
+function repoDocRule(state) {
+  const doc = state.env && state.env.repoDoc;
+  if (!doc) return;
+  const renderedSet = new Set(state.env.repoDocs.map((d) => d.src));
+  const seen = new Set();
+  state.tokens.forEach((token, i) => {
+    if (token.type === 'heading_open') {
+      const inline = state.tokens[i + 1];
+      const text = inline.children
+        .filter((c) => c.type === 'text' || c.type === 'code_inline')
+        .map((c) => c.content)
+        .join('');
+      const id = githubSlug(text, seen);
+      token.attrSet('id', id);
+      if (token.tag !== 'h1') {
+        const anchor = new state.Token('html_inline', '', 0);
+        anchor.content = ` <a href="#${id}" class="heading-anchor">#</a>`;
+        inline.children.push(anchor);
+      }
+    }
+    if (token.type !== 'inline' || !token.children) return;
+    const kept = [];
+    let dropping = false;
+    for (const child of token.children) {
+      if (child.type === 'link_open') {
+        const href = rewriteHref(child.attrGet('href'), doc.src, renderedSet);
+        if (href === null) {
+          dropping = true;
+          continue;
+        }
+        child.attrSet('href', href);
+      } else if (child.type === 'link_close' && dropping) {
+        dropping = false;
+        continue;
+      } else if (child.type === 'image') {
+        child.attrSet('src', rewriteHref(child.attrGet('src'), doc.src, renderedSet) ?? '');
+      }
+      kept.push(child);
+    }
+    token.children = kept;
+  });
+}
+
 export default function (eleventyConfig) {
   // Runs on every build and rebuild, so `--serve` keeps the bundle fresh.
   eleventyConfig.on('eleventy.after', () => {
@@ -184,6 +348,16 @@ export default function (eleventyConfig) {
   eleventyConfig.addPassthroughCopy('website/robots.txt');
   eleventyConfig.addPassthroughCopy('website/CNAME');
   eleventyConfig.addPassthroughCopy('website/llms.txt');
+
+  // The repository docs rendered as pages (see listRepoDocs), their diagrams
+  // beside them, and a rebuild under --serve when one changes.
+  eleventyConfig.addPlugin(RenderPlugin);
+  eleventyConfig.addGlobalData('repoDocs', listRepoDocs);
+  eleventyConfig.amendLibrary('md', (md) => md.core.ruler.push('repo_doc', repoDocRule));
+  for (const dir of RENDERED_DOCS) {
+    eleventyConfig.addPassthroughCopy(`${dir}/**/*.svg`);
+    eleventyConfig.addWatchTarget(`${dir}/`);
+  }
 
   // Build-time syntax highlighting. Runs on rendered HTML output only, so the
   // page bodies stay verbatim in source. Blocks without a `language-*` class

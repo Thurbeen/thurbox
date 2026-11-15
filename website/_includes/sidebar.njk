@@ -1,15 +1,20 @@
 {#- Two products, two groups: Fleet (the engine, usable on its own) and thurbox
-    (the interface on top of one or more Fleets), then the pages about both. -#}
+    (the interface on top of one or more Fleets), then the pages about both.
+    Hrefs are relative to /docs/; a page below it (the rendered docs/fleet
+    pages) sets docsBase to the way back up. -#}
 {%- set sections = [
   { heading: "Fleet", links: [
     { slug: "fleet", href: "fleet.html", label: "What is Fleet" },
     { slug: "fleet-install", href: "fleet-install.html", label: "Install" },
     { slug: "fleet-commands", href: "fleet-commands.html", label: "init, up and apply" },
-    { href: "fleet.html#resources-and-controllers", label: "Resources and controllers" },
     { href: "fleet.html#places-and-runtimes", label: "Places and runtimes" },
     { slug: "agents", href: "agents.html", label: "Agents" },
     { slug: "orchestration", href: "orchestration.html", label: "Orchestration" },
-    { slug: "fleet-features", href: "fleet-features.html", label: "Features" }
+    { slug: "fleet-features", href: "fleet-features.html", label: "Features" },
+    { slug: "fleet-reference", href: "fleet/index.html", label: "Reference" },
+    { slug: "fleet-resources", href: "fleet/index.html#resources", label: "Resources" },
+    { slug: "fleet-controllers", href: "fleet/index.html#controllers", label: "Controllers" },
+    { slug: "fleet-configuration", href: "fleet/configuration.html", label: "Configuration" }
   ]},
   { heading: "thurbox", links: [
     { slug: "thurbox", href: "thurbox.html", label: "What is thurbox" },
@@ -34,7 +39,7 @@
     {%- for link in section.links %}
     <li>
       <a
-        href="{{ link.href }}"
+        href="{{ docsBase }}{{ link.href }}"
         {%- if link.slug == currentPage %} class="current-page"{% endif %}
         >{{ link.label }}</a
       >

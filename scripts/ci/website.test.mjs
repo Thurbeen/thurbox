@@ -49,10 +49,9 @@ const retiredFleet = [
 // Fleet v1: the Python control plane that installed as a Thurbox extension.
 const fleetV1 = [/uv run fleet/, /\/fleet-onboarding/, /Mission Control/, /Kanban/, /result\.md/, /--kind result/];
 
-test('orchestration page leads with Fleet, its docs in this repository and Fleet Lens', () => {
+test('orchestration page leads with Fleet, its reference on this site and Fleet Lens', () => {
   const page = built('docs/orchestration.html');
-  const docs = 'https://github.com/Thurbeen/thurbox/tree/main/docs/fleet';
-  assert.ok(page.querySelector(`a[href="${docs}"]`), "links Fleet's docs in this repository");
+  assert.ok(page.querySelector('a[href="fleet/index.html"]'), "links Fleet's reference");
   assert.ok(page.querySelector('a[href="https://github.com/Thurbeen/thurbox-fleetlens"]'), 'links Fleet Lens');
   const h2s = page.querySelectorAll('h2').map((h) => h.getAttribute('id'));
   assert.equal(h2s[0], 'fleet', 'Fleet is the first section');
@@ -88,7 +87,7 @@ test('the site describes only what exists', () => {
     }
     const copy = text(page);
     assert.doesNotMatch(copy, /soft_delete|agents\.toml/, `${path} names a removed key or file`);
-    if (!['docs/configuration.html', 'docs/architecture.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
+    if (!['docs/configuration.html', 'docs/architecture.html', 'docs/runtime/runtime-mux.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
   }
   const llms = readFileSync('_site/llms.txt', 'utf8');
   assert.doesNotMatch(llms, /extensions\.html|agents\.toml/);
@@ -187,4 +186,67 @@ test('the docs sidebar gives Fleet and thurbox a group each', () => {
   for (const page of ['fleet', 'fleet-install', 'fleet-commands', 'fleet-features', 'thurbox', 'thurbox-features']) {
     assert.ok(existsSync(`_site/docs/${page}.html`), `docs/${page}.html exists`);
   }
+});
+
+// The Markdown pages rendered from the repository (repo-docs.njk), as
+// [source, built path]: a README is its directory's index.html.
+const repoDocs = ['docs/fleet', 'docs/runtime'].flatMap((dir) =>
+  readdirSync(dir, { recursive: true })
+    .filter((file) => file.endsWith('.md'))
+    .map((file) => [`${dir}/${file}`, `${dir}/${file}`.replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html')]),
+);
+
+test('no page links to the documentation on GitHub', () => {
+  for (const path of pages()) {
+    for (const link of built(path).querySelectorAll('a[href]')) {
+      const href = link.getAttribute('href');
+      assert.doesNotMatch(href, /github\.com\/Thurbeen\/thurbox\/(tree|blob)\/main\/docs\b/, `${path} links ${href}`);
+    }
+  }
+  assert.doesNotMatch(readFileSync('_site/llms.txt', 'utf8'), /github\.com\/Thurbeen\/thurbox\/(tree|blob)\/main\/docs\b/);
+});
+
+test("every page of Fleet's docs is on the site, and its links and images resolve", () => {
+  assert.ok(repoDocs.some(([src]) => src === 'docs/fleet/resources/task.md'), 'read docs/fleet');
+  const parsed = new Map();
+  const ids = (path) => {
+    if (!parsed.has(path)) parsed.set(path, new Set(built(path).querySelectorAll('[id]').map((n) => n.id)));
+    return parsed.get(path);
+  };
+  for (const [src, path] of repoDocs) {
+    assert.ok(existsSync(`_site/${path}`), `${src} is rendered at ${path}`);
+    const page = built(path);
+    assert.ok(page.querySelector('.docs-content h1'), `${path} has its title`);
+    const dir = path.split('/').slice(0, -1).join('/');
+    const refs = [
+      ...page.querySelectorAll('a[href]').map((a) => a.getAttribute('href')),
+      ...page.querySelectorAll('.docs-content img[src]').map((img) => img.getAttribute('src')),
+    ];
+    for (const ref of refs) {
+      if (/^[a-z]+:/i.test(ref)) continue;
+      const [file, fragment] = ref.split('#');
+      const target = file ? new URL(file, `file:///${dir}/`).pathname.slice(1) : path;
+      assert.ok(existsSync(`_site/${target}`), `${path}: ${ref} is not built`);
+      if (fragment && target.endsWith('.html')) {
+        assert.ok(ids(target).has(fragment), `${path}: ${ref} names no id on ${target}`);
+      }
+    }
+  }
+});
+
+test('the docs sidebar reaches the rendered Fleet reference from every depth', () => {
+  for (const path of ['docs/index.html', 'docs/fleet/index.html', 'docs/fleet/resources/task.html']) {
+    const page = built(path);
+    const dir = path.split('/').slice(0, -1).join('/');
+    const hrefs = page.querySelectorAll('.docs-sidebar a').map((a) => a.getAttribute('href'));
+    assert.ok(hrefs.length > 0, `${path} has a sidebar`);
+    for (const href of hrefs) {
+      const target = new URL(href.split('#')[0], `file:///${dir}/`).pathname.slice(1);
+      assert.ok(existsSync(`_site/${target}`), `${path}: sidebar ${href} is not built`);
+    }
+    assert.ok(hrefs.some((h) => h.endsWith('fleet/index.html')), `${path} links the Fleet reference`);
+  }
+  const forge = built('docs/fleet/controllers/forge.html');
+  assert.ok(forge.querySelectorAll('.docs-toc a').length > 2, 'the on-this-page rail lists the headings');
+  assert.ok(forge.querySelector('.docs-content img[src="forge.svg"]'), 'the state diagram is beside the page');
 });

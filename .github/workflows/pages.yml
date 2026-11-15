@@ -13,6 +13,10 @@ on:
       - 'eleventy.config.js'
       - 'package.json'
       - 'package-lock.json'
+      # The docs pages under /docs/fleet and /docs/runtime are rendered from
+      # these (eleventy.config.js, listRepoDocs).
+      - 'docs/fleet/**'
+      - 'docs/runtime/**'
   # scripts/demo/publish-media.sh dispatches this after it replaces the
   # recordings on the `media` release, which no push to main announces.
   workflow_dispatch:

@@ -183,7 +183,7 @@ thurbox-cli config show       # effective config + where each value came from</c
               </tr>
               <tr>
                 <td>Run sessions on another machine</td>
-                <td>a Fleet there, listed in <code>settings.toml</code>'s <code>[fleets.&lt;name&gt;]</code>; or a place in Fleet's <code>[runtimes.&lt;name&gt;.places]</code> (<a href="https://github.com/Thurbeen/thurbox/blob/main/docs/where-sessions-run.md">Where sessions run</a>)</td>
+                <td>a Fleet there, listed in <code>settings.toml</code>'s <code>[fleets.&lt;name&gt;]</code>; or a place in Fleet's <code>[runtimes.&lt;name&gt;.places]</code> (<a href="architecture.html#places">Fleets and places</a>; <a href="fleet/configuration.html#runtimes-and-their-places">runtimes and their places</a>)</td>
               </tr>
               <tr>
                 <td>Turn a whole TUI feature on/off (mouse, notifications&hellip;)</td>
@@ -858,11 +858,9 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             <code>thurbox-cli version --json</code>
             reports it as
             <code>tmux_socket</code>
-            . The full rules are in
-            <a
-              href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#relocating-an-instance-thurbox_data_dir"
-              >docs/thurbox/config.md &rarr; Relocating an instance</a
-            >.
+            . The full rules are in the repository's
+            <code>docs/thurbox/config.md</code>
+            (&ldquo;Relocating an instance&rdquo;).
           </p>
           <p>
             Editor resolution order:
