@@ -1,0 +1,71 @@
+---
+layout: docs.njk
+title: 'Get started with Thurbox — Thurbox Docs'
+description: 'Install Thurbox, launch it, create a first session, and the keys you use every day.'
+currentPage: 'thurbox-get-started'
+breadcrumb: 'Get started'
+---
+<h1>Get started with Thurbox</h1>
+<p>
+  Thurbox is the terminal interface on top of Fleet. You need tmux (psmux on Windows), git, and a
+  coding-agent CLI that is installed and logged in (<a href="agents.html">Agents</a>).
+</p>
+
+<h2 id="install">
+  1. Install
+  <a href="#install" class="heading-anchor">#</a>
+</h2>
+<pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
+<p>
+  This installs <code>thurbox</code>, <code>thurbox-cli</code> and Fleet. Windows and the
+  packages are on <a href="installation.html">Install</a>.
+</p>
+
+<h2 id="launch">
+  2. Launch it
+  <a href="#launch" class="heading-anchor">#</a>
+</h2>
+<pre><code class="language-bash">thurbox-cli doctor   # checks each Fleet, its runtime and its agents
+thurbox</code></pre>
+<p>
+  On a machine with no Fleet config, the first <code>thurbox</code> runs <code>fleet init</code>
+  and says where it wrote the config, then starts Fleet's manager. The session list is on the
+  left and the agent terminal on the right.
+</p>
+
+<h2 id="first-session">
+  3. Create a first session
+  <a href="#first-session" class="heading-anchor">#</a>
+</h2>
+<p>
+  Press <kbd>Ctrl</kbd>+<kbd>N</kbd>. Pick the place (<code>local</code> is this machine), add a
+  repository with <kbd>Tab</kbd>, give it a worktree with <kbd>Alt</kbd>+<kbd>W</kbd>, name the
+  session, and pick an agent. <kbd>Enter</kbd> creates it: a Fleet Task, with the agent running in
+  the right pane. Everything you type goes to it.
+</p>
+
+<h2 id="keys">
+  4. The keys you need
+  <a href="#keys" class="heading-anchor">#</a>
+</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Key</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>N</kbd></td><td>New session</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>J</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>Next / previous session</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>H</kbd> / <kbd>Ctrl</kbd>+<kbd>L</kbd></td><td>Move focus between panes</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>/</kbd></td><td>Search sessions and their screens</td></tr>
+    <tr><td><kbd>F1</kbd></td><td>Every key, rebindable</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit; every agent keeps running</td></tr>
+  </tbody>
+</table>
+<p>
+  Next: the <a href="tutorial.html">tutorial</a> walks the same steps with screenshots,
+  <a href="configuration.html">Configuration</a> covers every file, and
+  <a href="configuration.html#fleets">Fleets</a> adds a Fleet on another machine.
+</p>

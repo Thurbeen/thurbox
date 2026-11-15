@@ -4,20 +4,21 @@
     pages) sets docsBase to the way back up. -#}
 {%- set sections = [
   { heading: "Fleet", links: [
+    { slug: "fleet-get-started", href: "fleet-get-started.html", label: "Get started" },
     { slug: "fleet", href: "fleet.html", label: "What is Fleet" },
+    { slug: "fleet-places", href: "fleet-places.html", label: "Places and runtimes" },
+    { slug: "fleet-resources", href: "fleet/index.html#resource-kinds", label: "Resources", sub: "resources" },
+    { slug: "fleet-controllers", href: "fleet/index.html#controllers", label: "Controllers", sub: "controllers" },
     { slug: "fleet-install", href: "fleet-install.html", label: "Install" },
-    { slug: "fleet-commands", href: "fleet-commands.html", label: "init, up and apply" },
-    { href: "fleet.html#places-and-runtimes", label: "Places and runtimes" },
     { slug: "agents", href: "agents.html", label: "Agents" },
     { slug: "orchestration", href: "orchestration.html", label: "Orchestration" },
     { slug: "fleet-features", href: "fleet-features.html", label: "Features" },
     { slug: "fleet-reference", href: "fleet/index.html", label: "Reference" },
-    { slug: "fleet-resources", href: "fleet/index.html#resource-kinds", label: "Resources" },
-    { slug: "fleet-controllers", href: "fleet/index.html#controllers", label: "Controllers" },
     { slug: "fleet-configuration", href: "fleet/configuration.html", label: "Configuration" }
   ]},
-  { heading: "thurbox", links: [
-    { slug: "thurbox", href: "thurbox.html", label: "What is thurbox" },
+  { heading: "Thurbox", links: [
+    { slug: "thurbox-get-started", href: "thurbox-get-started.html", label: "Get started" },
+    { slug: "thurbox", href: "thurbox.html", label: "What is Thurbox" },
     { slug: "installation", href: "installation.html", label: "Install" },
     { slug: "interface", href: "interface.html", label: "The interface" },
     { slug: "keybindings", href: "keybindings.html", label: "Keybindings" },
@@ -45,6 +46,23 @@
         {%- if link.slug == currentPage %} class="current-page"{% endif %}
         >{{ link.label }}</a
       >
+      {%- if link.sub %}
+      {#- One entry per page in docs/fleet/<sub>/, read from the rendered docs,
+          so a new page there joins the list with no change here. #}
+      <ul class="docs-sidebar__sub">
+        {%- for d in repoDocs %}
+        {%- if d.src.startsWith("docs/fleet/" + link.sub + "/") %}
+        <li>
+          <a
+            href="{{ docsBase }}{{ d.url | replace("/docs/", "") }}"
+            {%- if repoDoc and repoDoc.src == d.src %} class="current-page"{% endif %}
+            >{{ d.title | replace(" resource", "") | replace(" controller", "") }}</a
+          >
+        </li>
+        {%- endif %}
+        {%- endfor %}
+      </ul>
+      {%- endif %}
     </li>
     {%- endfor %}
   </ul>

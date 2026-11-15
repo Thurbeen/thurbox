@@ -85,6 +85,16 @@
   border-left: 2px solid transparent;
 }
 
+.docs-sidebar .docs-sidebar__sub {
+  margin: 0 0 var(--space-xs) var(--space-md);
+  border-left: 1px solid var(--border);
+}
+
+.docs-sidebar .docs-sidebar__sub a {
+  padding: 0.2rem 0.75rem;
+  font-size: 0.8125rem;
+}
+
 .docs-sidebar a:hover {
   color: var(--text-primary);
   background: var(--bg-secondary);

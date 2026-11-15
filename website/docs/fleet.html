@@ -30,7 +30,7 @@ breadcrumb: 'What is Fleet'
 </ul>
 <p>
   <code>fleet up</code> keeps every Task moving. It is the manager: run it in a terminal or as a
-  service. <a href="fleet-commands.html">init, up and apply</a> shows the commands.
+  service. <a href="fleet-get-started.html">Get started</a> shows the commands.
 </p>
 
 <h2 id="resources-and-controllers">
@@ -62,33 +62,8 @@ breadcrumb: 'What is Fleet'
   <a href="fleet/index.html">Fleet's reference</a>: <a href="fleet/index.html#resource-kinds">resources</a> and <a href="fleet/index.html#controllers">controllers</a>.
 </p>
 
-<h2 id="places-and-runtimes">
-  Places and runtimes
-  <a href="#places-and-runtimes" class="heading-anchor">#</a>
-</h2>
 <p>
-  Fleet starts no process itself. It asks a <strong>runtime</strong>: a program that starts and
-  stops processes and speaks the runtime protocol. <code>runtime-mux</code> is the runtime Fleet
-  ships; it runs each session in a tmux window (psmux on native Windows).
-</p>
-<p>
-  A <strong>place</strong> is where a runtime runs a session, named
-  <code>&lt;runtime&gt;/&lt;place&gt;</code>. <code>local</code> is the Fleet's own machine, and
-  it is the place <code>fleet init</code> sets up. The runtime also makes each session's
-  workspace there: a <code>git+</code> URL becomes a git worktree of its own.
-</p>
-<img
-  src="../assets/overview.svg"
-  alt="thurbox follows several Fleets; each Fleet's runtime runs sessions at its places"
-  width="1100"
-  height="520"
-  loading="lazy"
-/>
-<p>
-  Runtimes and places are tables in Fleet's config; see
-  <a href="fleet/configuration.html#runtimes-and-their-places">Fleet's configuration</a>
-  and
-  <a href="architecture.html#places">Fleets and places</a>.
+  Fleet runs each session at a <a href="fleet-places.html">place, through a runtime</a>.
 </p>
 
 <h2 id="next">
@@ -97,6 +72,6 @@ breadcrumb: 'What is Fleet'
 </h2>
 <ul>
   <li><a href="fleet-install.html">Install Fleet</a>, alone or with thurbox</li>
-  <li><a href="fleet-commands.html">init, up and apply</a>: your first Task</li>
+  <li><a href="fleet-get-started.html">Get started</a>: your first Task</li>
   <li><a href="fleet-features.html">Fleet features</a></li>
 </ul>

@@ -166,7 +166,14 @@ test('homepage presents Fleet and thurbox apart, links each official plugin, and
 
 test('the docs sidebar gives Fleet and thurbox a group each', () => {
   const groups = built('docs/index.html').querySelectorAll('.docs-sidebar h4').map((h) => h.textContent.trim());
-  assert.deepEqual(groups.slice(0, 2), ['Fleet', 'thurbox']);
+  assert.deepEqual(groups.slice(0, 2), ['Fleet', 'Thurbox']);
+  // Resources and Controllers list every page of their directory, read from it.
+  const subs = built('docs/index.html').querySelectorAll('.docs-sidebar__sub a').map((a) => a.getAttribute('href'));
+  for (const dir of ['resources', 'controllers']) {
+    for (const file of readdirSync(`docs/fleet/${dir}`).filter((f) => f.endsWith('.md'))) {
+      assert.ok(subs.includes(`fleet/${dir}/${file.replace(/\.md$/, '.html')}`), `the sidebar lists ${dir}/${file}`);
+    }
+  }
   // The published URL of the old single page stays, as a pointer to the two pages.
   const moved = built('docs/features.html');
   for (const page of ['fleet-features.html', 'thurbox-features.html']) {
@@ -183,7 +190,7 @@ test('the docs sidebar gives Fleet and thurbox a group each', () => {
   for (const [, from, page, id] of targets) {
     if (id) assert.ok(built(`docs/${page}`).querySelector(`[id="${id}"]`), `#${from} -> ${page}#${id} exists`);
   }
-  for (const page of ['fleet', 'fleet-install', 'fleet-commands', 'fleet-features', 'thurbox', 'thurbox-features']) {
+  for (const page of ['fleet-get-started', 'fleet', 'fleet-places', 'fleet-install', 'fleet-features', 'thurbox-get-started', 'thurbox', 'thurbox-features']) {
     assert.ok(existsSync(`_site/docs/${page}.html`), `docs/${page}.html exists`);
   }
 });

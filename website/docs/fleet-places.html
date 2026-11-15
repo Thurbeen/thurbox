@@ -1,0 +1,32 @@
+---
+layout: docs.njk
+title: 'Places and runtimes — Fleet Docs'
+description: 'Where a Fleet runs its sessions: a runtime starts and stops processes, at places named <runtime>/<place>.'
+currentPage: 'fleet-places'
+breadcrumb: 'Places and runtimes'
+---
+<h1>Places and runtimes</h1>
+<p>
+  Fleet starts no process itself. It asks a <strong>runtime</strong>: a program that starts and
+  stops processes and speaks the runtime protocol. <code>runtime-mux</code> is the runtime Fleet
+  ships; it runs each session in a tmux window (psmux on native Windows).
+</p>
+<p>
+  A <strong>place</strong> is where a runtime runs a session, named
+  <code>&lt;runtime&gt;/&lt;place&gt;</code>. <code>local</code> is the Fleet's own machine, and
+  it is the place <code>fleet init</code> sets up. The runtime also makes each session's
+  workspace there: a <code>git+</code> URL becomes a git worktree of its own.
+</p>
+<img
+  src="../assets/overview.svg"
+  alt="thurbox follows several Fleets; each Fleet's runtime runs sessions at its places"
+  width="1100"
+  height="520"
+  loading="lazy"
+/>
+<p>
+  Runtimes and places are tables in Fleet's config; see
+  <a href="fleet/configuration.html#runtimes-and-their-places">Fleet's configuration</a>
+  and
+  <a href="architecture.html#places">Fleets and places</a>.
+</p>

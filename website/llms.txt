@@ -41,7 +41,8 @@
 - [FAQ](https://thurbox.thurbeen.eu/docs/faq.html): short answers to the most common questions (what it is, how it differs, install, platforms, license).
 - [What is Fleet](https://thurbox.thurbeen.eu/docs/fleet.html): Fleet, the engine — sessions as Tasks, resources and controllers, places and runtimes. Fleet runs on its own, headless, with no thurbox.
 - [Install Fleet](https://thurbox.thurbeen.eu/docs/fleet-install.html): Fleet alone — the install script, then `fleet init` and `fleet up`, and a systemd user unit that keeps `fleet up` running.
-- [init, up and apply](https://thurbox.thurbeen.eu/docs/fleet-commands.html): Fleet's first commands and a Task's JSON.
+- [Get started with Fleet](https://thurbox.thurbeen.eu/docs/fleet-get-started.html): install Fleet alone, a first Task, following it and reading its result.
+- [Get started with Thurbox](https://thurbox.thurbeen.eu/docs/thurbox-get-started.html): install, first launch, a first session and the essential keys.
 - [Fleet reference](https://thurbox.thurbeen.eu/docs/fleet/index.html): Fleet's architecture, contracts and configuration, one page per resource (Task, Session, TaskConfig, EnvProvider, ChangeRequest, Conversation, Listener, plugin kinds) and per controller (Task, ChangeRequest, Forge, Plugin, Gateway); the runtimes are at https://thurbox.thurbeen.eu/docs/runtime/index.html.
 - [Fleet features](https://thurbox.thurbeen.eu/docs/fleet-features.html): sessions as Tasks, harness profiles, worktrees made by the runtime, places, messages between agents, the headless CLI.
 - [What is thurbox](https://thurbox.thurbeen.eu/docs/thurbox.html): thurbox, the terminal interface on top of one or more Fleets.

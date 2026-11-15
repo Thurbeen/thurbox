@@ -1,0 +1,77 @@
+---
+layout: docs.njk
+title: 'Get started with Fleet — Fleet Docs'
+description: 'Install Fleet alone, set it up, run a first Task, follow it, send it a message and read its result.'
+currentPage: 'fleet-get-started'
+breadcrumb: 'Get started'
+---
+<h1>Get started with Fleet</h1>
+<p>
+  Fleet runs on its own, with no thurbox. These steps take it from nothing to a coding agent
+  working on a Task. You need tmux (psmux on Windows), git, and a coding-agent CLI that is
+  installed and logged in (<a href="agents.html">Agents</a>).
+</p>
+
+<h2 id="install">
+  1. Install Fleet
+  <a href="#install" class="heading-anchor">#</a>
+</h2>
+<pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only</code></pre>
+<p>
+  This puts <code>fleet</code>, <code>runtime-mux</code> and <code>workspace-git</code> in
+  <code>~/.local/bin</code>. Windows, a 2.x note and a service for <code>fleet up</code> are on
+  <a href="fleet-install.html">Install Fleet</a>.
+</p>
+
+<h2 id="set-up">
+  2. Set it up and start the manager
+  <a href="#set-up" class="heading-anchor">#</a>
+</h2>
+<pre><code class="language-bash">fleet init     # writes ~/.config/fleet/config.toml, offline
+fleet doctor   # checks each agent's program and the runtime
+fleet up       # the manager: keep it running in its own terminal</code></pre>
+<p>
+  <code>fleet up</code> keeps every Task moving until you press <kbd>Ctrl</kbd>+<kbd>C</kbd>. The
+  sessions keep running when it stops, and the next <code>fleet up</code> picks them up again.
+</p>
+
+<h2 id="apply">
+  3. Apply a first Task
+  <a href="#apply" class="heading-anchor">#</a>
+</h2>
+<p>A Task is a JSON file. This one runs Claude Code in a new worktree of a local repository:</p>
+<pre data-title="fix-login.json"><code class="language-json">{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "Task",
+  "metadata": {"name": "fix-login"},
+  "spec": {
+    "harness": "claude",
+    "brief": "Fix the login redirect and run the tests.",
+    "workspace": ["git+file:///home/me/app"],
+    "dispatch": true
+  }
+}</code></pre>
+<pre><code class="language-bash">fleet apply -f fix-login.json</code></pre>
+<p>
+  <code>harness</code> names the agent, <code>brief</code> is its first prompt, and
+  <code>workspace</code> lists what it works in (<code>file://</code> for a directory as it is).
+  Nothing starts while <code>dispatch</code> is <code>false</code>. Every field is in
+  <a href="fleet/resources/task.html">the Task resource</a>.
+</p>
+
+<h2 id="follow">
+  4. Follow it, talk to it, read its result
+  <a href="#follow" class="heading-anchor">#</a>
+</h2>
+<pre><code class="language-bash">fleet list task                          # every Task and its phase
+fleet watch --json                       # one event per change, until Ctrl+C
+fleet send fix-login "Run the tests too" # a message for its agent
+fleet status task fix-login --json       # status.result once the agent records one
+fleet delete task fix-login              # stop it and remove its worktree</code></pre>
+<p>
+  The agent reports its answer with <code>fleet result</code>, which fills
+  <code>status.result</code>. <code>fleet attach fix-login</code> prints the command that opens
+  its terminal, and <code>fleet --help</code> lists every command. Next:
+  <a href="fleet/index.html">how Fleet works</a>, and the <a href="thurbox-get-started.html">Thurbox</a>
+  interface to watch every session at once.
+</p>
