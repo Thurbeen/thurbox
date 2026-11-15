@@ -3261,7 +3261,8 @@ fn a_runtime_without_browse_is_refused_by_name() {
 /// the `runtime-mux` it runs and in the `workspace-git` that one runs, each
 /// under its own `service.name`. `TRACEPARENT` carries the context over each
 /// process boundary, and every span about the Task, from its spawn to its
-/// release, is in one trace. The agent's window inherits none of it.
+/// release, is in one trace. The agent's window inherits none of it, and
+/// gets its own telemetry from its harness profile instead.
 #[test]
 fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
     use support::otlp::{Collector, Span};
@@ -3400,13 +3401,36 @@ fn one_otel_setup_traces_a_task_through_fleet_runtime_mux_and_workspace_git() {
         );
     }
 
+    // The agent's window inherits none of Fleet's telemetry: it carries only
+    // its own, from its harness profile, pointed at the same collector and
+    // tagged with its Task (docs/observability.md, *Coding agents*).
     let seen = fs::read_to_string(&env_log).expect("the agent's environment");
-    for line in seen.lines() {
-        assert!(
-            !line.starts_with("OTEL_") && !line.starts_with("TRACEPARENT="),
-            "the agent inherited {line}"
-        );
-    }
+    let otel: std::collections::BTreeMap<&str, &str> = seen
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| k.starts_with("OTEL_") || k.starts_with("TRACE"))
+        .collect();
+    assert_eq!(
+        otel.keys().copied().collect::<Vec<_>>(),
+        [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+            "OTEL_LOGS_EXPORTER",
+            "OTEL_METRICS_EXPORTER",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "OTEL_SERVICE_NAME",
+        ],
+        "{seen}"
+    );
+    assert_eq!(otel["OTEL_EXPORTER_OTLP_ENDPOINT"], collector.endpoint);
+    assert_eq!(otel["OTEL_SERVICE_NAME"], "claude");
+    let resource = otel["OTEL_RESOURCE_ATTRIBUTES"];
+    assert!(resource.contains("fleet.task=t1"), "{resource}");
+    assert!(
+        !resource.contains("deployment.environment.name"),
+        "{resource}"
+    );
+    assert!(seen.contains("CLAUDE_CODE_ENABLE_TELEMETRY=1\n"), "{seen}");
 }
 
 /// A collector that accepts and never answers changes no runtime answer:
