@@ -318,7 +318,8 @@ distro = "Ubuntu-24.04"
   the command that shows or fixes it.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
   run on the place. A harness's hook files, such as pi's extension, are
-  copied to the place at each start.
+  copied to the place at each start that names them. A native-Windows place
+  refuses such a start: it runs only harnesses whose hooks are inline.
 - A Task asks the runtime about its own place only. A place that does not
   answer is reported not ready after 8 s, and never holds up a Task on
   another place.

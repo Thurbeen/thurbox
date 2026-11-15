@@ -324,11 +324,13 @@ request.place ──▶ local ─────────▶ this machine's mult
   `exec` reads it inside its own deadline, and runs with `path_prepend`
   alone when it cannot. `start` looks for the agent on that `PATH` first,
   and answers `failed` when it is not there.
-- A `start` whose `env` names `FLEET_ASSET_DIR`, a directory on this
-  machine, copies it to `~/.local/state/fleet/assets/<key>` on the place.
-  Every word of `argv` and every value of `env` that names the directory
-  names the copy instead, so a harness's hook file, such as pi's extension,
-  is the place's own. A `stop` removes the copy.
+- A `start` whose `argv` or `env` names a file in `FLEET_ASSET_DIR`, a
+  directory on this machine, copies that directory to
+  `~/.local/state/fleet/assets/<key>` on the place. Every word of `argv` and
+  every value of `env` that names the directory names the copy instead, so
+  a harness's hook file, such as pi's extension, is the place's own. A
+  `stop` removes the copy. A launch that names none of its files copies
+  nothing. A native-Windows place refuses a launch that needs the files.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
   run on the place. A pause mark of a remote key stays on this machine.
 - A remote place's workspace is a directory already on the place: each URL
@@ -354,11 +356,13 @@ Fleet:  runtime exec: tail -c 1MiB <that file> ──▶ fold ──▶ session 
 - Fleet reads the file's last MiB through the runtime's `exec`, over the
   connection the runtime has to the place. A file not written yet is a
   session that reported nothing. An `exec` that fails is Unknown.
-- Before a revive or a resume, Fleet keeps the restart's time in its own
-  data, `<data dir>/signals/<key>.started`, and writes nothing on the place.
-  A state reported before that time is the previous process's: readiness
-  and trust wait for the new process's own report. The place's clock must
-  agree with Fleet's.
+- Before a revive or a resume, Fleet reads the file's length through
+  `exec` and keeps it in its own data, `<data dir>/signals/<key>.started`.
+  It writes nothing on the place. A state in the file before that length is
+  the previous process's: readiness and trust wait for the new process's
+  own report. No time is compared, so the place's clock need not agree with
+  Fleet's. A file shorter than the kept length was made again, and is read
+  whole.
 - The runtime writes no signal line and knows nothing of their format. A
   runtime without `exec` still starts, stops and revives the session, and
   its state stays Unknown.

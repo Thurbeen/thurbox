@@ -181,24 +181,15 @@ impl Reported {
         r
     }
 
-    /// [`Reported::fold`] of a file whose agent was started again at
-    /// `since`, a time Fleet keeps rather than a line in the file: a state
-    /// reported before it is the previous process's, so until a later one
-    /// the state is [`State::Started`]. Prompts and the conversation are
-    /// kept, as a `Started` line keeps them.
-    pub fn fold_since(text: &str, since: Option<Millis>) -> Reported {
-        let mut r = Reported::fold(text);
-        let Some(since) = since else {
-            return r;
-        };
-        r.state = Some(State::Started);
-        for line in text.lines() {
-            if let Ok(s) = serde_json::from_str::<Signal>(line)
-                && s.at >= since
-            {
-                r.state = Some(s.state);
-            }
-        }
+    /// [`Reported::fold`] of a file whose agent was started again when the
+    /// file held `before`: `after` is what was appended since. A state in
+    /// `before` is the previous process's, so until a state in `after` the
+    /// state is [`State::Started`]. Prompts and the conversation of both are
+    /// kept, as a `Started` line keeps them. No time is compared: a place's
+    /// clock need not agree with Fleet's.
+    pub fn fold_restarted(before: &str, after: &str) -> Reported {
+        let mut r = Reported::fold(&format!("{before}\n{after}"));
+        r.state = Some(Reported::fold(after).state.unwrap_or(State::Started));
         r
     }
 
@@ -260,22 +251,20 @@ mod tests {
 
     #[test]
     fn a_restart_hides_the_states_reported_before_it() {
-        let text = [
-            json!({"at": 1, "state": "idle", "conversation": "c1"}),
-            json!({"at": 5, "state": "working"}),
-        ]
-        .iter()
-        .map(|l| format!("{l}\n"))
-        .collect::<String>();
-        let r = Reported::fold_since(&text, Some(10));
+        // The previous process's report is stamped later than the new one's:
+        // only where each line sits in the file counts.
+        let before = format!(
+            "{}\n",
+            json!({"at": 900, "state": "idle", "conversation": "c1"})
+        );
+        let r = Reported::fold_restarted(&before, "");
         assert_eq!(r.state, Some(State::Started));
         assert!(!r.reported());
         assert_eq!(r.conversation.as_deref(), Some("c1"));
-        assert_eq!(
-            Reported::fold_since(&text, Some(5)).state,
-            Some(State::Working)
-        );
-        assert_eq!(Reported::fold_since(&text, None), Reported::fold(&text));
+        let after = format!("{}\n", json!({"at": 1, "state": "working"}));
+        let r = Reported::fold_restarted(&before, &after);
+        assert_eq!(r.state, Some(State::Working));
+        assert_eq!(r.conversation.as_deref(), Some("c1"));
     }
 
     #[test]

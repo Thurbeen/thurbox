@@ -815,11 +815,13 @@ fn start(
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
 }
 
-/// A start on a remote place with the files Fleet names as
-/// `FLEET_ASSET_DIR` on this machine, such as a harness's hook extension:
-/// the directory is copied to the place, and every word of `argv` and every
-/// value of `env` that names it names the copy instead. A directory that is
-/// not on this machine is left as it is: it may already be the place's.
+/// A start on a remote place whose launch names a file of the directory
+/// Fleet passes as `FLEET_ASSET_DIR`, such as pi's hook extension: the
+/// directory is copied to the place, and every word of `argv` and every
+/// value of `env` that names it names the copy instead. A launch that names
+/// none of its files copies nothing, so it starts on any place. A directory
+/// that is not on this machine is left as it is: it may already be the
+/// place's.
 fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
     let Some(local) = request
         .env
@@ -829,6 +831,14 @@ fn place_assets(host: &HostDef, request: &mut Start) -> Result<(), String> {
     else {
         return Ok(());
     };
+    let named = request.argv.iter().any(|word| word.contains(&local))
+        || request
+            .env
+            .iter()
+            .any(|(name, value)| name != ASSET_DIR_ENV && value.contains(&local));
+    if !named {
+        return Ok(());
+    }
     let remote = crate::place::copy_assets(host, &request.key, std::path::Path::new(&local))?;
     for word in request.argv.iter_mut().chain(request.env.values_mut()) {
         if word.contains(&local) {
@@ -1198,6 +1208,33 @@ fn kill_tree(child: &mut std::process::Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A launch that names no file of Fleet's asset directory starts on any
+    /// place, a native-Windows one included; one that names a file is
+    /// refused there, by why, since the files cannot be copied to it yet.
+    #[test]
+    fn a_windows_place_refuses_only_a_launch_that_needs_the_asset_files() {
+        let assets = tempfile::tempdir().expect("an asset dir");
+        let dir = assets.path().to_string_lossy().into_owned();
+        let windows = HostDef {
+            name: "winbox".into(),
+            destination: "me@winbox".into(),
+            multiplexer: Some("psmux".into()),
+            ..HostDef::default()
+        };
+        let start = |argv: &[&str]| Start {
+            key: "k.one".into(),
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+            env: HashMap::from([(ASSET_DIR_ENV.to_string(), dir.clone())]),
+            dir: None,
+        };
+        let mut bare = start(&["codex"]);
+        assert_eq!(place_assets(&windows, &mut bare), Ok(()));
+        assert_eq!(bare.argv, ["codex"]);
+        let mut pi = start(&["pi", "-e", &format!("{dir}/fleet-pi.ts")]);
+        let why = place_assets(&windows, &mut pi).unwrap_err();
+        assert!(why.contains("native-Windows"), "{why}");
+    }
 
     #[test]
     fn every_key_has_a_window_name_of_its_own_and_reads_back() {

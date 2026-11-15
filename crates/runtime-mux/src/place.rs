@@ -438,7 +438,7 @@ pub fn copy_assets(host: &HostDef, key: &str, local: &Path) -> Result<String, St
     let name = &host.name;
     if host.platform() != Platform::Posix {
         return Err(format!(
-            "place {name:?}: copying the harness's files to a native-Windows place is not supported yet"
+            "place {name:?}: this harness's hook files cannot be copied to a native-Windows place yet; run it on a POSIX place, or use a harness whose hooks are inline, such as claude or codex"
         ));
     }
     let home = env(host, PROBE_TIMEOUT)

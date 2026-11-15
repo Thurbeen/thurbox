@@ -68,21 +68,32 @@ impl FileSignals {
 }
 
 impl FileSignals {
-    /// Keep `at` as when the session under `key` on another host was last
-    /// started: its file there is the place's, which Fleet does not write,
-    /// so the restart is kept here instead.
-    pub fn mark_started(&self, key: &str, at: fleet_api::Millis) -> io::Result<()> {
+    /// Keep `offset`, the length of the place's signal file when the session
+    /// under `key` on another host was last started: what the file holds
+    /// past it is the new process's. Fleet does not write that file, so the
+    /// restart is kept here, and as a length rather than a time, so a
+    /// place's clock need not agree with Fleet's.
+    pub fn mark_started(&self, key: &str, offset: u64) -> io::Result<()> {
         let path = self
             .started_path(key)
             .ok_or_else(|| io::Error::other("the session key is not a plain name"))?;
         let tmp = path.with_extension("started.tmp");
-        fs::write(&tmp, at.to_string())?;
+        fs::write(&tmp, offset.to_string())?;
         fs::rename(&tmp, &path)
     }
 
-    /// When the session under `key` on another host was last started, as
+    /// Forget the restart of the session under `key`, when the length of its
+    /// file could not be read: nothing is filtered.
+    pub fn clear_started(&self, key: &str) -> io::Result<()> {
+        match self.started_path(key).map(fs::remove_file) {
+            Some(Err(e)) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// The length the place's file had at the session's last start, as
     /// [`FileSignals::mark_started`] kept it.
-    pub fn started(&self, key: &str) -> Option<fleet_api::Millis> {
+    pub fn started(&self, key: &str) -> Option<u64> {
         let path = self.started_path(key)?;
         fs::read_to_string(path).ok()?.trim().parse().ok()
     }

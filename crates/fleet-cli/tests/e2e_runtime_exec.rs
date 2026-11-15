@@ -3958,3 +3958,106 @@ fn a_lost_session_on_a_place_without_exec_is_revived() {
     remote.tmux(&["send-keys", "-t", &pane, "C-c"]);
     reconcile_until(&env, "revived without exec", |_| starts(&work).len() >= 2);
 }
+
+/// [`SLOW_CLAUDE`] on a place whose clock runs 10 minutes ahead of Fleet's:
+/// its idle reports carry the place's time. A resumed one reports nothing at
+/// its start.
+const SKEWED_CLAUDE: &str = r#"#!/bin/sh
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+file="$HOME/${FLEET_SIGNAL_FILE#\~/}"
+mkdir -p "${file%/*}"
+idle() { printf '{"at":%s,"state":"idle"}\n' "$(( $(date +%s) * 1000 + 600000 ))" >> "$file"; }
+case " $* " in *" --resume "*) ;; *) idle ;; esac
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$line" >> "$PWD/typed.log"
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
+  idle
+done
+"#;
+
+/// A revive on a place whose clock is ahead of Fleet's waits for the new
+/// process's own report: what the previous process reported, however late
+/// its clock says it was, is not the new one's.
+#[test]
+fn a_revive_on_a_place_with_a_skewed_clock_waits_for_the_new_report() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("ssh-skew");
+    let remote = Sockets::new("ssh-skew-place");
+    let mut env = mux_env("runtime-mux-ssh-skew", &program, &sockets);
+    let home = env.root.join("place-home");
+    let Some(sshd) = Sshd::start(&env.root.join("sshd"), &home, &remote) else {
+        return;
+    };
+    let bin = env.root.join("place-bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, SKEWED_CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let cfg = fs::read_to_string(&env.config).expect("config");
+    fs::write(
+        &env.config,
+        format!(
+            "{cfg}\n[runtimes.mux.places.local]\n{}",
+            sshd.place("box", &[&bin, fleet_dir])
+        ),
+    )
+    .expect("config");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&path));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["host"] = json!("mux/box");
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "briefed", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let typed = || {
+        fs::read_to_string(work.join("typed.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    assert_eq!(typed(), 1, "the brief");
+
+    let listed = remote.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    remote.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    reconcile_until(&env, "revived", |_| starts(&work).len() >= 2);
+    // The previous process's last report is idle, stamped 10 minutes after
+    // the restart by Fleet's clock; the new one has said nothing.
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert_eq!(typed(), 1, "nothing typed before the new agent reports");
+
+    // The new agent reports, with the place's clock: the note goes.
+    let file = home
+        .join(".local/state/fleet/signals")
+        .join(format!("{}.jsonl", env.session_key("t1")));
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        + 600_000;
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .and_then(|mut f| writeln!(f, "{{\"at\":{at},\"state\":\"idle\"}}"))
+        .expect("the place's signal file");
+    reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
+}
