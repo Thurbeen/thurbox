@@ -57,7 +57,10 @@ $DownloadUrl = if ($env:THURBOX_DOWNLOAD_URL) { $env:THURBOX_DOWNLOAD_URL } else
 # thurbox: BINARIES and FLEET_BINARIES in scripts/ci/release-archive.sh.
 $Binaries = @('thurbox', 'thurbox-cli', 'fleet', 'runtime-mux', 'workspace-git')
 $FleetBinaries = @('fleet', 'runtime-mux', 'workspace-git')
-if (-not $FleetOnly -and $env:THURBOX_FLEET_ONLY -and $env:THURBOX_FLEET_ONLY -ne '0') { $FleetOnly = [switch]$true }
+# The env var is a default: an explicit -FleetOnly or -FleetOnly:$false wins.
+if (-not $PSBoundParameters.ContainsKey('FleetOnly') -and $env:THURBOX_FLEET_ONLY -and $env:THURBOX_FLEET_ONLY -ne '0') {
+    $FleetOnly = [switch]$true
+}
 # What this run installs.
 $Programs = if ($FleetOnly) { $FleetBinaries } else { $Binaries }
 if (-not $InstallDir) {

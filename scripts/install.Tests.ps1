@@ -411,6 +411,15 @@ Describe 'A fleet-only install' {
         $text | Should -Not -Match 'Launch the TUI'
     }
 
+    It 'lets an explicit -FleetOnly:$false win over THURBOX_FLEET_ONLY' {
+        $env:THURBOX_FLEET_ONLY = '1'
+        . $script:ScriptPath -FleetOnly:$false
+        Invoke-Install
+        foreach ($name in $script:Shipped) {
+            Test-Path -LiteralPath (Join-Path $script:Dest "$name.exe") | Should -BeTrue
+        }
+    }
+
     It 'installs every shipped program without it' {
         . $script:ScriptPath
         Invoke-Install
