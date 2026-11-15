@@ -89,7 +89,7 @@ pub type HostKey = String;
 pub const WANT_BOOKMARKS: &str = "want_bookmarks";
 pub const WANT_BROWSE: &str = "want_browse";
 /// A repository whose branches the flow offers for a worktree: its path,
-/// as the flow chose it, or `<host>\0<path>` on a remote Fleet's place.
+/// as the flow chose it, or `<host>\0<path>` on a place elsewhere.
 pub const WANT_BRANCHES: &str = "want_branches";
 
 /// What the flow is asking about right now.
@@ -107,7 +107,7 @@ pub struct Wants {
     pub bookmarks: Option<HostKey>,
     pub browse: Option<(HostKey, String)>,
     /// A repository whose branches are asked for: its path on this
-    /// machine, or `<host>\0<path>` on a remote Fleet's place.
+    /// machine, or `<host>\0<path>` on a place elsewhere.
     pub branches: Option<String>,
 }
 
@@ -255,12 +255,14 @@ pub struct RepoStore {
     /// Why the last fetch of a repository's `origin` failed, while its
     /// branches are listed from the refs already there.
     fetch_notes: HashMap<String, String>,
-    /// The Fleets on other machines: a host key `<fleet>/<place>` naming one
-    /// is read on that place, through that Fleet (`fleet runtime browse`,
-    /// `branches`), never on this machine's disk.
-    remote: Vec<crate::fleet_link::FleetLink>,
+    /// The Fleets thurbox follows: a host key `<fleet>/<place>` naming a
+    /// place on another machine (any place of a Fleet elsewhere, or a place
+    /// of this machine's Fleet other than its `local`) is read on that place,
+    /// through that Fleet (`fleet runtime browse`, `branches`), never on this
+    /// machine's disk.
+    fleets: Vec<crate::fleet_link::FleetLink>,
     /// The absolute directory a listing answered for, where it was asked as
-    /// `~` of a remote place whose home is not known here.
+    /// `~` of a place elsewhere whose home is not known here.
     resolved: HashMap<PathKey, String>,
     tx: Sender<Done>,
     rx: Receiver<Done>,
@@ -269,7 +271,7 @@ pub struct RepoStore {
 impl RepoStore {
     /// A store that reads this machine only: the creation flow browses and
     /// scans local folders, and a path remembered for another place is kept
-    /// as typed. [`Self::with_fleets`] also reads remote Fleets' places.
+    /// as typed. [`Self::with_fleets`] also reads the places elsewhere.
     pub fn new() -> Self {
         let (tx, rx) = channel();
         Self {
@@ -280,27 +282,30 @@ impl RepoStore {
             branches_inflight: std::collections::HashSet::new(),
             fetched: std::collections::HashSet::new(),
             fetch_notes: HashMap::new(),
-            remote: Vec::new(),
+            fleets: Vec::new(),
             resolved: HashMap::new(),
             tx,
             rx,
         }
     }
 
-    /// A store that also reads the places of the Fleets on other machines
-    /// among `fleets`, each through its own link.
+    /// A store that also reads the places elsewhere of `fleets`, each
+    /// through its own link.
     pub fn with_fleets(fleets: &[crate::fleet_link::FleetLink]) -> Self {
         Self {
-            remote: fleets.iter().filter(|l| !l.is_local()).cloned().collect(),
+            fleets: fleets.to_vec(),
             ..Self::new()
         }
     }
 
-    /// The remote Fleet and its place a host key `<fleet>/<place>` names, or
-    /// `None` for a key of this machine.
+    /// The Fleet and its place a host key `<fleet>/<place>` names, or `None`
+    /// for a key of this machine: a local Fleet's `local` is read here.
     fn remote_place(&self, host: &str) -> Option<(crate::fleet_link::FleetLink, String)> {
         let (fleet, place) = host.split_once('/')?;
-        let link = self.remote.iter().find(|link| link.name() == fleet)?;
+        let link = self.fleets.iter().find(|link| link.name() == fleet)?;
+        if link.is_local() && place == "local" {
+            return None;
+        }
         Some((link.clone(), place.to_string()))
     }
 
@@ -344,8 +349,8 @@ impl RepoStore {
         if self.branches_inflight.contains(repo) {
             return;
         }
-        // `<host>\0<repo>`: a repository of a remote Fleet's place, read
-        // there through Fleet, as that machine last fetched it.
+        // `<host>\0<repo>`: a repository of a place elsewhere, read there
+        // through Fleet, as that machine last fetched it.
         if let Some((link, place, path)) = repo
             .split_once('\0')
             .and_then(|(host, path)| self.remote_place(host).map(|(l, p)| (l, p, path)))
@@ -477,7 +482,7 @@ impl RepoStore {
 
         let dir = dir.to_string();
         let tx = self.tx.clone();
-        // A remote Fleet's place is listed there, through Fleet: never this
+        // A place elsewhere is listed there, through Fleet: never this
         // machine's directory of the same name.
         if let Some((link, place)) = self.remote_place(host) {
             std::thread::spawn(move || {
@@ -637,8 +642,9 @@ impl Default for RepoStore {
 
 use super::bookmarks::Bookmark;
 
-/// `fleet <args> --json`'s answer from a remote Fleet, bounded as a probe of
-/// it is, or why there is none. A runtime that does not offer the verb says
+/// `fleet <args> --json`'s answer about a place elsewhere, bounded as a
+/// probe of its Fleet is, or why there is none: the place's own words, such
+/// as a runtime tool missing from its `PATH`. A runtime that does not offer the verb says
 /// so in plain words: the flow takes a typed path instead.
 fn ask_place(
     link: &crate::fleet_link::FleetLink,
@@ -665,7 +671,7 @@ fn ask_place(
         .map_err(|e| format!("fleet runtime {verb} answered no JSON: {e}"))
 }
 
-/// The subdirectories of `dir` on a remote Fleet's `place`
+/// The subdirectories of `dir` on a Fleet's `place` elsewhere
 /// (`fleet runtime browse`), each marked when it is a git work tree.
 ///
 /// A bare `~` is a home not known here: the runtime is asked with no
@@ -712,7 +718,7 @@ fn listing_of(answer: &serde_json::Value) -> Listing {
     )
 }
 
-/// The branches of the repository at `repo` on a remote Fleet's `place`
+/// The branches of the repository at `repo` on a Fleet's `place` elsewhere
 /// (`fleet runtime branches`), as that machine last fetched them.
 fn remote_branches(link: &crate::fleet_link::FleetLink, place: &str, repo: &str) -> BranchListing {
     match ask_place(
@@ -738,8 +744,8 @@ fn remote_branches(link: &crate::fleet_link::FleetLink, place: &str, repo: &str)
 ///
 /// v1's `rebuild_repo_picker_rows`. This machine's folders are scanned right
 /// here, every time, because a `readdir` is free, so the rows are what a
-/// folder holds now rather than what it held at import. Another Fleet host's
-/// paths are paths on that machine, which thurbox does not read: they are
+/// folder holds now rather than what it held at import. A place elsewhere
+/// has paths on that machine, browsed there but not scanned: they are
 /// offered as remembered.
 fn read_bookmarks(host: &str) -> Vec<BookmarkRow> {
     let bookmarks = super::bookmarks::list(host);
@@ -939,6 +945,21 @@ fn row(path: &Path, parent: Option<String>, is_parent: bool, is_git: Option<bool
 
 #[cfg(test)]
 mod tests {
+    /// A Fleet on this machine reads its `local` on this disk and every other
+    /// place of it through its link, as a Fleet elsewhere reads all of its.
+    #[test]
+    fn only_this_machines_local_place_is_read_here() {
+        let store = super::RepoStore::with_fleets(&[crate::fleet_link::FleetLink::local("fleet")]);
+        assert!(store.remote_place("local/local").is_none());
+        assert!(store.remote_place("").is_none());
+        assert!(store.remote_place("/srv").is_none(), "no Fleet named ``");
+        let (link, place) = store
+            .remote_place("local/mux/box")
+            .expect("a place elsewhere");
+        assert!(link.is_local());
+        assert_eq!(place, "mux/box");
+    }
+
     /// A remote Fleet's place is listed and its branches read through that
     /// Fleet's link (`fleet runtime browse` / `branches`), never from this
     /// machine; a runtime that does not offer `browse` is said plainly, so

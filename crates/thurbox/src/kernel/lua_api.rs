@@ -386,7 +386,7 @@ pub static FLEET: Class = Class {
         leaf("transport", "string")
             .doc("How it is reached: `local Fleet`, `ssh <destination>` or `wsl <distro>`."),
         leaf("remote", "boolean")
-            .doc("It runs on another machine, whose folders thurbox does not read."),
+            .doc("It runs on another machine: its places are read there, through it."),
         leaf(
             "state",
             "\"connecting\"|\"up\"|\"down\"|\"unreachable\"|\"unknown\"|\"incompatible\"",
@@ -593,6 +593,9 @@ pub static BROWSE: Class = Class {
     fields: &[
         leaf("host", "string"),
         leaf("dir", "string"),
+        leaf("home", "string").opt().doc(
+            "The home `host`'s runtime named when its `~` was listed: a typed `~` there is this. Nil until it has been listed.",
+        ),
         leaf("loading", "boolean"),
         leaf("error", "string").opt(),
         field("entries", Ty::List(&BROWSE_ENTRY)),

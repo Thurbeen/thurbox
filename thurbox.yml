@@ -342,6 +342,8 @@ globals:
     property: read-only
   thurbox.browse.dir:
     property: read-only
+  thurbox.browse.home:
+    property: read-only
   thurbox.browse.loading:
     property: read-only
   thurbox.browse.error:

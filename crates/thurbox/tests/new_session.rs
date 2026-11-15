@@ -778,6 +778,42 @@ fn a_remote_fleets_path_starts_at_its_own_home() {
     );
 }
 
+/// A remote Fleet's home is the home of its own `local` only: another
+/// place of it is another machine, whose path field starts empty until that
+/// place names its home.
+#[test]
+fn a_remote_fleets_home_prefills_only_its_own_local() {
+    let mut world = World::default();
+    world.snapshot.fleets = three_fleets();
+    world.snapshot.fleets[0].home = Some("/home/box".into());
+
+    let host = host();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Repos on box/mux/wsl-dev"), "{screen}");
+    assert!(
+        !screen.contains("/home/box/"),
+        "box's home is not wsl-dev's: {screen}"
+    );
+    assert!(
+        screen.contains("type an absolute path on box/mux/wsl-dev, or a clone URL"),
+        "{screen}"
+    );
+
+    let host = self::host();
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Repos on box/local"), "{screen}");
+    assert!(screen.contains("/home/box/"), "{screen}");
+}
+
 // ── Opening and closing ────────────────────────────────────────────────────
 
 #[test]
@@ -2455,6 +2491,7 @@ fn an_existing_worktree_opens_as_it_is() {
         },
     ));
     open(&host, &world);
+    assert!(drawn(&host, &world).contains("→ expand worktrees"));
     press(&host, &world, "right");
     let screen = drawn(&host, &world);
     assert!(
@@ -2530,8 +2567,10 @@ impl StubFleet {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\ncase \"$1\" in\n  get) exit 3 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude\",\"claude-code\",\"codex\"]}}' ;;\n  runtime) echo '{{\"hosts\":{hosts}}}' ;;\n  repositories) echo '{{\"repositories\":{{\"https://example.invalid/thurbox\":\"/src/thurbox\"}}}}' ;;\n  *) echo \"$@\" >> '{0}'; cat >> '{0}' ;;\nesac\n",
-                dir.path().join("asked").display()
+                "#!/bin/sh\ncase \"$1 $2\" in\n  'runtime browse') echo \"$@\" >> '{0}.browse'; echo '{1}'; exit 0 ;;\n  'runtime branches') case \"$4\" in */notes) echo 'error: workspace-git is not on the PATH of mux/box' >&2; exit 1 ;; esac; echo '{2}'; exit 0 ;;\nesac\ncase \"$1\" in\n  get) exit 3 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude\",\"claude-code\",\"codex\"]}}' ;;\n  runtime) echo '{{\"hosts\":{hosts}}}' ;;\n  repositories) echo '{{\"repositories\":{{\"https://example.invalid/thurbox\":\"/src/thurbox\"}}}}' ;;\n  *) echo \"$@\" >> '{0}'; cat >> '{0}' ;;\nesac\n",
+                dir.path().join("asked").display(),
+                REMOTE_HOME_LISTING,
+                REMOTE_BRANCHES,
             ),
         )
         .expect("fleet");
@@ -2637,6 +2676,324 @@ fn a_typed_repository_is_remembered_on_the_fleet_engine() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+
+/// What the stand-in `fleet` answers to `runtime browse` on any place: the
+/// place's home, `/home/box`, with a repository and a plain directory.
+#[cfg(unix)]
+const REMOTE_HOME_LISTING: &str =
+    r#"{"dir":"/home/box","entries":[{"name":"app","repo":true},{"name":"notes","repo":false}]}"#;
+
+/// What it answers to `runtime branches`, except for `…/notes`, whose
+/// branches fail as a place without `workspace-git` fails them.
+#[cfg(unix)]
+const REMOTE_BRANCHES: &str = r#"{"default":"main","names":["dev","main"]}"#;
+
+/// Ask the store for what the flow asks, as the loop does each iteration,
+/// and wait until every read it started has answered.
+#[cfg(unix)]
+fn serve(host: &LuaHost, world: &mut World) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        drawn(host, world);
+        world.wants = Wants::new(
+            host.shared_string("want_bookmarks"),
+            host.shared_string("want_browse"),
+        )
+        .with_branches(host.shared_string("want_branches"));
+        world.repos.serve(&world.wants);
+        world.repos.poll();
+        if !world.repos.in_flight() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a read never answered"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// The local Fleet's place `mux/box` is another machine. Its folders and
+/// branches are read there, through `fleet runtime browse` and `branches`,
+/// never on this machine's disk, and a worktree of a repository there is
+/// the runtime's to make: the Task names it `git+file://` on that path.
+#[cfg(unix)]
+#[test]
+fn a_place_on_another_machine_is_browsed_and_given_a_worktree_there() {
+    let stub = StubFleet::new("[\"local\",\"mux/box\"]");
+    let link = thurbox::fleet_link::FleetLink::local(stub.program.to_string_lossy());
+    let host = host();
+    let mut world = World {
+        repos: RepoStore::with_fleets(&[link]),
+        ..World::default()
+    };
+    let mux_box = HostRow {
+        name: "mux/box".into(),
+        detail: "a mux place".into(),
+        backend: "mux/box".into(),
+        ready: Some(true),
+        why: None,
+    };
+    world.snapshot.fleets = vec![fleet(
+        "local",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host(), mux_box],
+        &["claude"],
+    )];
+
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    serve(&host, &mut world);
+    // The path field opens on the place's home, which the runtime names.
+    press(&host, &world, "tab");
+    serve(&host, &mut world);
+    press(&host, &world, "tab");
+    serve(&host, &mut world);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("Browse /home/box"), "{screen}");
+    assert!(
+        screen.contains("app") && screen.contains("notes"),
+        "{screen}"
+    );
+    let browsed = std::fs::read_to_string(stub.dir.path().join("asked.browse"))
+        .expect("the place was browsed through Fleet");
+    assert!(
+        browsed
+            .lines()
+            .any(|line| line == "runtime browse mux/box --json"),
+        "{browsed}"
+    );
+
+    // Picking `app` remembers it for this place, under the Fleet's key.
+    press(&host, &world, "enter");
+    let commands = host.drain_commands();
+    assert!(
+        matches!(
+            &commands[..],
+            [Command::Bookmark { host, path, .. }]
+                if host == "local/mux/box" && path == "/home/box/app"
+        ),
+        "{commands:?}"
+    );
+    stub.run(commands).expect("the bookmark");
+    world.repos.invalidate_bookmarks();
+    serve(&host, &mut world);
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("/home/box/app"), "{screen}");
+    // A place elsewhere lists no existing worktrees: `→` is not offered,
+    // and pressing it asks for nothing.
+    assert!(!screen.contains("expand worktrees"), "{screen}");
+    press(&host, &world, "right");
+    drawn(&host, &world);
+    assert_eq!(host.shared_string("want_branches"), None);
+
+    // A worktree there: its branches are the place's.
+    press(&host, &world, "alt+w");
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("[wt]"), "{screen}");
+    press(&host, &world, "enter");
+    serve(&host, &mut world);
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("dev") && screen.contains("main"),
+        "{screen}"
+    );
+    press(&host, &world, "enter");
+    type_text(&host, &world, "feat");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let commands = host.drain_commands();
+    assert!(
+        matches!(
+            &commands[..],
+            [Command::Create { repo, worktree: Some(true), base: Some(base), host: Some(h), .. }]
+                if repo == "/home/box/app" && base == "main" && h == "mux/box"
+        ),
+        "{commands:?}"
+    );
+    stub.run(commands).expect("the create");
+    let task = stub.applied();
+    assert_eq!(
+        task["spec"]["workspace"],
+        serde_json::json!(["git+file:///home/box/app?branch=feat#main"])
+    );
+    assert_eq!(task["spec"]["host"], "mux/box");
+}
+
+/// A typed `~` on a place elsewhere is that place's home, which its own
+/// `~` listing names: until it has, any `~…` asks for `~` first, and then
+/// both the listing and the remembered path are under that home.
+#[cfg(unix)]
+#[test]
+fn a_typed_home_on_a_place_elsewhere_is_that_places_home() {
+    let stub = StubFleet::new("[\"local\",\"mux/box\"]");
+    let link = thurbox::fleet_link::FleetLink::local(stub.program.to_string_lossy());
+    let host = host();
+    let mut world = World {
+        repos: RepoStore::with_fleets(&[link]),
+        ..World::default()
+    };
+    let mux_box = HostRow {
+        name: "mux/box".into(),
+        detail: "a mux place".into(),
+        backend: "mux/box".into(),
+        ready: Some(true),
+        why: None,
+    };
+    world.snapshot.fleets = vec![fleet(
+        "local",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host(), mux_box],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    serve(&host, &mut world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, "~/app/");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0~"),
+        "the home is asked for first"
+    );
+    // Before the home is known, `enter` remembers nothing: saved as typed,
+    // `~/app` would be refused on the place.
+    press(&host, &world, "backspace");
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty());
+    let screen = drawn(&host, &world);
+    assert!(screen.contains("asking mux/box for its home"), "{screen}");
+    type_text(&host, &world, "/");
+    serve(&host, &mut world);
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0/home/box/app"),
+        "then `~/app` is listed under it"
+    );
+    press(&host, &world, "backspace");
+    press(&host, &world, "enter");
+    let commands = host.drain_commands();
+    assert!(
+        matches!(
+            &commands[..],
+            [Command::Bookmark { host, path, .. }]
+                if host == "local/mux/box" && path == "/home/box/app"
+        ),
+        "{commands:?}"
+    );
+}
+
+/// Another login's home (`~user/…`) is not known on a place elsewhere: the
+/// flow says so rather than listing the login's own home, and remembers
+/// nothing.
+#[test]
+fn another_logins_home_on_a_place_elsewhere_is_refused() {
+    let host = host();
+    let mut world = World::default();
+    let mux_box = HostRow {
+        name: "mux/box".into(),
+        detail: "a mux place".into(),
+        backend: "mux/box".into(),
+        ready: Some(true),
+        why: None,
+    };
+    world.snapshot.fleets = vec![fleet(
+        "local",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host(), mux_box],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    press(&host, &world, "tab");
+    // `~` is listed first, so the place's home is known: the refusal, not
+    // the wait for the home, is what keeps `~bob/app` from being saved.
+    type_text(&host, &world, "~/");
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0~")
+    );
+    world
+        .repos
+        .set_listing_for_test("local/mux/box", "~", Listing::Ready(Vec::new()));
+    world
+        .repos
+        .set_resolved_dir_for_test("local/mux/box", "~", "/home/box");
+    world.wants.browse = Some(("local/mux/box".into(), "~".into()));
+    drawn(&host, &world);
+    assert_eq!(
+        host.shared_string("want_browse").as_deref(),
+        Some("local/mux/box\0/home/box"),
+        "the home is known"
+    );
+    press(&host, &world, "backspace");
+    press(&host, &world, "backspace");
+    type_text(&host, &world, "~bob/app");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("only ~ and ~/… are supported on mux/box"),
+        "{screen}"
+    );
+    assert_eq!(host.shared_string("want_browse"), None, "no listing");
+    press(&host, &world, "enter");
+    assert!(host.drain_commands().is_empty(), "nothing remembered");
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("only ~ and ~/… are supported on mux/box"),
+        "{screen}"
+    );
+}
+
+/// A place that cannot list a repository's branches says why in the
+/// dialog, in the place's own words.
+#[cfg(unix)]
+#[test]
+fn a_places_refusal_to_list_branches_is_shown() {
+    let stub = StubFleet::new("[\"local\",\"mux/box\"]");
+    let link = thurbox::fleet_link::FleetLink::local(stub.program.to_string_lossy());
+    let host = host();
+    let mut repos = RepoStore::with_fleets(&[link]);
+    repos.set_bookmarks_for_test("local/mux/box", vec![bookmark("/home/box/notes", None)]);
+    let mut world = World {
+        repos,
+        ..World::default()
+    };
+    let mux_box = HostRow {
+        name: "mux/box".into(),
+        detail: "a mux place".into(),
+        backend: "mux/box".into(),
+        ready: Some(true),
+        why: None,
+    };
+    world.snapshot.fleets = vec![fleet(
+        "local",
+        "local Fleet",
+        FleetState::Up,
+        vec![local_host(), mux_box],
+        &["claude"],
+    )];
+    press(&host, &world, "ctrl+n");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    serve(&host, &mut world);
+    press(&host, &world, "alt+w");
+    press(&host, &world, "enter");
+    serve(&host, &mut world);
+    let screen = drawn(&host, &world);
+    assert!(
+        screen.contains("workspace-git is not on the PATH of mux/box"),
+        "{screen}"
+    );
 }
 
 /// The host picker names a route (`ssh:devbox`); Fleet names the same

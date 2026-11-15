@@ -274,9 +274,12 @@ the setup, `thurbox-cli config show` prints every resolved path,
   agent in any session to change it, or read [plugins.md](plugins.md).
   `Ctrl+,` then `]` lists every pane and turns one off; `F10` reloads.
 - **Run several agents on one job**: [orchestration.md](orchestration.md).
-- **Run sessions on another machine**: put a Fleet there and list it in
-  `settings.toml` `[fleets]`; its sessions run there while the TUI stays here
-  ([Where sessions run](../where-sessions-run.md)).
+- **Run sessions on another machine**: give your Fleet an ssh or wsl place,
+  or put a Fleet there and list it in `settings.toml` `[fleets]`; its
+  sessions run there while the TUI stays here
+  ([Where sessions run](../where-sessions-run.md)). Pick that place in the
+  place step, and the repository and branch steps browse its folders and
+  branches there.
 - **Configure it**: [config.md](config.md) starts with a working setup and
   lists every config file, environment variable and setting;
   [features.md](features.md) says why each one behaves the way it does.
