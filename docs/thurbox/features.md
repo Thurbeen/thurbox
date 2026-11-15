@@ -1108,11 +1108,12 @@ network — see *Feature Flags*) cover staying current:
   request a day.
 - **`auto_update`** adds a silent self-update on TUI startup and the
   `thurbox-cli update` command, which downloads, checksum-verifies, and
-  replaces the installed binaries with the latest release. `--force`
+  replaces every installed program the release ships with the latest release. `--force`
   bypasses the up-to-date and dev-build guards. On Windows the artifact is
   a zip, and a running `thurbox.exe` cannot be renamed over, so the swap
-  there moves the old binary aside as `.thurbox.exe.old` first, and rolls
-  both binaries back if either fails — see `[features]` in `docs/thurbox/config.md`.
+  there moves each old program aside (`.thurbox.exe.old`) first, and puts
+  back every program already swapped if one fails — see `[features]` in
+  `docs/thurbox/config.md`.
 
 Both are on by default for 1.0 so a fresh install stays current on its
 own; set them to `false` if you'd rather make no network calls or have
