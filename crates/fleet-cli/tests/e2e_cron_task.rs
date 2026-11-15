@@ -541,3 +541,75 @@ fn the_cli_takes_shows_and_deletes_a_cron_task_and_refuses_a_bad_one() {
         .stdout_has("CronTask/nightly deleted");
     env.fleet(&["get", "crontask", "nightly"]).code(3);
 }
+
+/// The OTLP half of `a_cron_tasks_create_and_retire_are_spans`: its parent
+/// runs this test alone in a process of its own, with the OTEL_* variables
+/// set, so the manager's spans reach the parent's collector. A Replace
+/// CronTask fires twice: the first time creates a Task, the second retires
+/// it before it creates the next.
+#[test]
+#[ignore = "run by a_cron_tasks_create_and_retire_are_spans with OTEL_* set"]
+fn cron_task_effects_under_otel() {
+    let telemetry = otel_env::init("fleet", "test", &[], false).expect("telemetry");
+    {
+        let w = World::new("cron-otel", MONDAY_3AM - MINUTE);
+        w.apply(nightly(json!({"concurrencyPolicy": "Replace"})));
+        w.at(MONDAY_3AM);
+        w.reconcile();
+        w.at(MONDAY_3AM + DAY);
+        w.reconcile();
+    }
+    telemetry.shutdown();
+}
+
+/// A CronTask's create and retire are `effect` spans, counted in
+/// `fleet.effects` like a Task's effects.
+#[test]
+fn a_cron_tasks_create_and_retire_are_spans() {
+    let collector = support::otlp::Collector::start();
+    let mut child = std::process::Command::new(std::env::current_exe().expect("this test"));
+    child.args(["cron_task_effects_under_otel", "--exact", "--ignored"]);
+    for (key, _) in std::env::vars() {
+        if key.starts_with("OTEL_") || key == "TRACEPARENT" {
+            child.env_remove(key);
+        }
+    }
+    let out = child
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint)
+        .output()
+        .expect("the child test");
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let spans = collector.spans();
+    for (kind, outcome) in [("create", "created"), ("retireScheduled", "deleted")] {
+        let span = spans
+            .iter()
+            .find(|s| s.name == format!("effect {kind}"))
+            .unwrap_or_else(|| {
+                let names: std::collections::BTreeSet<_> =
+                    spans.iter().map(|s| s.name.clone()).collect();
+                panic!("no `effect {kind}` span in {names:#?}")
+            });
+        assert_eq!(span.attrs["fleet.effect"], kind, "{span:#?}");
+        assert_eq!(span.attrs["fleet.outcome"], outcome, "{span:#?}");
+        assert_eq!(span.attrs["fleet.kind"], "CronTask", "{span:#?}");
+        assert_eq!(span.attrs["fleet.name"], "nightly", "{span:#?}");
+        let parent = spans
+            .iter()
+            .find(|s| s.span_id == span.parent)
+            .expect("the effect's reconcile");
+        assert_eq!(parent.name, "reconcile CronTask", "{span:#?}");
+    }
+    let points = collector.points();
+    for kind in ["create", "retireScheduled"] {
+        assert!(
+            points.iter().any(|p| p.metric == "fleet.effects"
+                && p.attrs.get("fleet.effect").map(String::as_str) == Some(kind)),
+            "{kind} in fleet.effects: {points:#?}"
+        );
+    }
+}
