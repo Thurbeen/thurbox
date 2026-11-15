@@ -133,6 +133,12 @@ impl World {
     /// `at` and died before the create: the record has no receipt, and no
     /// Task exists.
     fn crash_before_create(&self, at: u64) {
+        self.crash_with(at, 1, None);
+    }
+
+    /// The create's intent for `at`, after `attempts` attempts, the last
+    /// one answered with `receipt` (none: the manager died before it).
+    fn crash_with(&self, at: u64, attempts: u32, receipt: Option<Value>) {
         let lease = self
             .store
             .acquire_lease("test-crash", 30_000)
@@ -144,10 +150,13 @@ impl World {
         let mut status = obj.status.clone();
         status["effects"][format!("create/{minutes}")] = json!({
             "intent": {"action": "create", "at": at, "generation": obj.metadata.generation},
-            "attempts": 1,
+            "attempts": attempts,
             "task": format!("nightly-{minutes}"),
             "scheduled": at,
         });
+        if let Some(receipt) = receipt {
+            status["effects"][format!("create/{minutes}")]["receipt"] = receipt;
+        }
         status["lastConsidered"] = json!(at);
         status["notBefore"] = json!(at);
         self.store
@@ -345,6 +354,47 @@ fn a_recovered_create_counts_as_running_under_forbid() {
     w.at(MONDAY_3AM + DAY + MINUTE);
     w.reconcile();
     assert_eq!(names(&w.tasks_of("nightly")), ["nightly-29913300"]);
+}
+
+/// A pending create whose deadline passed is given up before Forbid looks
+/// at the current time, so it never blocks today's run.
+#[test]
+fn an_expired_pending_create_does_not_block_the_next_time() {
+    let w = World::new("cron-crash-expired", MONDAY_3AM - MINUTE);
+    w.apply(nightly(json!({"startingDeadlineSeconds": 600})));
+    w.reconcile();
+    w.crash_before_create(MONDAY_3AM);
+    w.at(MONDAY_3AM + DAY + MINUTE);
+    w.reconcile();
+    assert_eq!(names(&w.tasks_of("nightly")), ["nightly-29914740"]);
+}
+
+/// A create whose outcome stayed Unknown is tried again, never dropped, and
+/// says so in `NeedsAttention` until it is settled.
+#[test]
+fn a_create_unknown_three_times_needs_attention_and_is_retried() {
+    let w = World::new("cron-unknown", MONDAY_3AM - MINUTE);
+    w.apply(nightly(json!({})));
+    w.reconcile();
+    w.crash_with(
+        MONDAY_3AM,
+        3,
+        Some(json!({"action": "create", "at": MONDAY_3AM,
+                    "outcome": {"unknown": {"why": "the store could not tell"}}})),
+    );
+    w.at(MONDAY_3AM + MINUTE);
+    w.reconcile();
+    let st = w.cron_task("nightly")["status"].clone();
+    support::assert_condition(&st, "NeedsAttention", "True", "CreateUnknown");
+    assert_eq!(
+        names(&w.tasks_of("nightly")),
+        ["nightly-29913300"],
+        "retried"
+    );
+    w.at(MONDAY_3AM + 3 * MINUTE);
+    w.reconcile();
+    let st = w.cron_task("nightly")["status"].clone();
+    support::assert_condition(&st, "NeedsAttention", "False", "Resolved");
 }
 
 /// A create recovered after a crash obeys the limits in force now.

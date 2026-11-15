@@ -46,6 +46,9 @@ pub mod conditions {
     pub const SCHEDULED: &str = "Scheduled";
     /// Whether the last scheduled time was skipped, and why.
     pub const SKIPPED: &str = "Skipped";
+    /// A create's outcome stayed Unknown through several attempts. It is
+    /// tried again, never dropped, and it holds later times under Forbid.
+    pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
 
@@ -153,6 +156,9 @@ impl Pass<'_, '_> {
         };
         self.settle_effects();
         self.prune_history();
+        // Before Forbid counts pending creates against a new time: one the
+        // limits in force no longer allow must not block it.
+        self.discard_stale_creates();
         if self.spec.suspend {
             self.st.phase = Phase::Suspended;
             self.cond(
@@ -166,6 +172,7 @@ impl Pass<'_, '_> {
             self.cond(SCHEDULED, ConditionStatus::True, "Scheduled", "");
             self.decide(&schedule);
         }
+        self.attention();
         self.flush_creates();
         self.st.active = self
             .alive()
@@ -283,11 +290,46 @@ impl Pass<'_, '_> {
             .collect()
     }
 
-    /// Make each pending create now, under the limits in force now: a
-    /// suspended CronTask or a passed deadline gives it up; under Replace it
-    /// waits until every other Task of this CronTask is Concluded or gone,
-    /// so two agents never work at once.
-    fn flush_creates(&mut self) {
+    /// Raise `NeedsAttention` while a pending create's outcome stayed
+    /// Unknown through `MAX_CREATE_ATTEMPTS` attempts; clear it once none
+    /// does. Unknown is never read as absence, so the create is retried,
+    /// not given up.
+    fn attention(&mut self) {
+        let stuck: Vec<String> = self
+            .pending_creates()
+            .into_iter()
+            .filter(|(_, r)| {
+                r.attempts >= MAX_CREATE_ATTEMPTS
+                    && matches!(
+                        r.receipt.as_ref().map(|x| &x.outcome),
+                        Some(Observation::Unknown { .. })
+                    )
+            })
+            .map(|(_, r)| r.task)
+            .collect();
+        if !stuck.is_empty() {
+            self.cond(
+                NEEDS_ATTENTION,
+                ConditionStatus::True,
+                "CreateUnknown",
+                format!(
+                    "the store could not say whether Task {} was created; it is tried again every minute",
+                    stuck.join(", ")
+                ),
+            );
+        } else if self
+            .st
+            .conditions
+            .iter()
+            .any(|c| c.type_ == NEEDS_ATTENTION && c.status == ConditionStatus::True)
+        {
+            self.cond(NEEDS_ATTENTION, ConditionStatus::False, "Resolved", "");
+        }
+    }
+
+    /// Give up each pending create the limits in force now no longer allow:
+    /// the CronTask is suspended, or its scheduled time is past the deadline.
+    fn discard_stale_creates(&mut self) {
         for (key, record) in self.pending_creates() {
             let scheduled = record.scheduled.unwrap_or(record.intent.at);
             if self.spec.suspend {
@@ -308,8 +350,16 @@ impl Pass<'_, '_> {
                     ),
                 );
                 self.give_up(&key, "past startingDeadlineSeconds".into());
-                continue;
             }
+        }
+    }
+
+    /// Make each pending create now. Under Replace it waits until every
+    /// other Task of this CronTask is Concluded or gone, so two agents
+    /// never work at once.
+    fn flush_creates(&mut self) {
+        self.discard_stale_creates();
+        for (key, record) in self.pending_creates() {
             if self.spec.concurrency_policy == ConcurrencyPolicy::Replace
                 && self
                     .input

@@ -32,6 +32,10 @@ Kubernetes CronJob does.
 
 ![CronTask state machine: at each scheduled time the controller skips the time when the CronTask is suspended, when the deadline passed, or when Forbid finds a Task that runs; with Replace it deletes the running Task first; then it writes the intent, the manager creates the Task, and the receipt is written](cron-task.svg)
 
+First, the controller gives up each pending create that the limits in
+force no longer allow: the CronTask is suspended, or the create's scheduled
+time is past its deadline. Such a create never blocks a later time.
+
 At a scheduled time `T`, the controller applies these rules in order:
 
 1. `suspend` is true: no decision. The phase is `Suspended`.
@@ -72,6 +76,8 @@ A Task that is deleting does not count as running for `Forbid`.
 | `Skipped` | True | `Forbidden` | A Task still ran at the last scheduled time. |
 | `Skipped` | False | `Created` | The last scheduled time decided to create its Task. |
 | `Skipped` | False | `Replacing` | The Task waits for the Task it replaces to be released. |
+| `NeedsAttention` | True | `CreateUnknown` | The store could not say, through three attempts, whether a create happened. |
+| `NeedsAttention` | False | `Resolved` | No create is in doubt any more. |
 
 ## CronTask controller interface
 
@@ -122,6 +128,11 @@ writes. The controller answers it from the Task listing:
   for `Forbid`.
 - A create that the store refused three times is given up, with the
   receipt `Failed`.
+- A create whose outcome is Unknown is tried again every minute, with no
+  limit: Fleet never reads Unknown as absence, so it never drops the create.
+  While it waits it counts as a running Task, so under `Forbid` it holds
+  later times. After three Unknown attempts `NeedsAttention` is True with
+  reason `CreateUnknown`.
 
 A create that finds a Task with the same name but without this uid is
 refused. The controller never takes another CronTask's Task.
