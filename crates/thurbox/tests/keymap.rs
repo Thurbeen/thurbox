@@ -182,9 +182,9 @@ fn fire(host: &LuaHost, chord: &str) {
 /// counted rather than forgotten.
 const GLOBAL_CHORDS: [(&str, &str); 19] = [
     ("ctrl+n", "new_session.open"),
-    // Reassigned deliberately, not reused quietly: v1 spent it on the
-    // automations pane, and the palette is the way *into* that pane — and every
-    // other — once it returns. See `CHORDS_AWAITING_THEIR_PANE`, which it left.
+    // Reassigned deliberately, not reused quietly: v1 spent it on an
+    // automations pane thurbox no longer has. See `CHORDS_AWAITING_THEIR_PANE`,
+    // which it left.
     ("ctrl+p", "palette.open"),
     // One declaration, three spellings: the kernel folds the encodings a
     // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.

@@ -213,11 +213,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     }
     let fleet = fleets.in_force().clone();
     let links = fleets.all().to_vec();
-    // Automations fire while the interface runs; `thurbox-cli automation
-    // tick` fires them from an OS timer otherwise.
-    if startup_settings.features.automations {
-        thurbox::kernel::automations::keep_ticking(fleets.clone());
-    }
     let snapshots = SnapshotStore::with_source(
         Box::new(thurbox::kernel::snapshot::fleet::FleetWatches::new(
             fleet.name(),

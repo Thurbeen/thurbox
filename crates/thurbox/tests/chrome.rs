@@ -16,7 +16,7 @@ use thurbox::kernel::host::{LuaHost, Published, RenderContext};
 use thurbox::kernel::layout::{resolve, SlotRect};
 use thurbox::kernel::node::ClickVerb;
 use thurbox::kernel::registry::Registry;
-use thurbox::kernel::snapshot::{AutomationRow, SessionRow, Snapshot};
+use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
@@ -59,27 +59,13 @@ fn session(name: &str, branch: &str) -> SessionRow {
     }
 }
 
-fn automation(id: i64, name: &str) -> AutomationRow {
-    AutomationRow {
-        id,
-        name: name.into(),
-        schedule: "0 3 * * *".into(),
-        action: "send".into(),
-        enabled: true,
-        ..AutomationRow::default()
-    }
-}
-
 /// The two-session world the v1/v2 captures were taken against.
-fn world(automations: usize) -> Snapshot {
+fn world() -> Snapshot {
     Snapshot {
         sessions: vec![
             session("fix-osc52", "fix/osc52"),
             session("add-wsl", "feat/wsl"),
         ],
-        automations: (0..automations)
-            .map(|n| automation(n as i64 + 1, &format!("nightly-{n}")))
-            .collect(),
         ..Snapshot::default()
     }
 }
@@ -137,7 +123,7 @@ fn index_of(host: &LuaHost, plugin: &str) -> usize {
 }
 
 /// A pane rendered but not painted, purely so it publishes into `store` — the
-/// bus a neighbour reads to learn which session or automation is selected.
+/// bus a neighbour reads to learn which session is selected.
 /// Given a column of its own, because a pane too small to draw returns early
 /// before it publishes anything.
 fn prime(host: &LuaHost, plugin: &str) {
@@ -262,7 +248,6 @@ fn band_state<'a>(
         update_available: None,
         session: Some("fix-osc52"),
         session_count: 3,
-        automation_count: 0,
         focus_label: "agent",
         message,
         progress: None,
@@ -488,14 +473,6 @@ fn the_left_cluster_gives_up_its_parts_tail_first() {
         "the badge outlives the rest: {narrow}"
     );
     assert!(!narrow.contains("Focus"), "the hints go first: {narrow}");
-
-    // An automation count only appears when there is one, and it is not a
-    // pluralised word — v1 writes `automation(s)`.
-    assert!(!wide.contains("automation"), "none configured: {wide}");
-    let mut busy = band_state(&registry, &themes, None);
-    busy.automation_count = 2;
-    let with_autos = band_row(thurbox::kernel::bands::Band::Action, &busy, 160);
-    assert!(with_autos.contains("2 automation(s)"), "{with_autos}");
 }
 
 #[test]
@@ -640,7 +617,7 @@ fn a_hovered_entry_lights_and_its_neighbours_do_not() {
 fn a_band_is_placed_by_the_arrangement_and_omitting_it_is_not_an_error() {
     // The whole point of bands being slots: `ui/layout.lua` decides.
     let host = host();
-    let placed = slots(&host, &world(0), 160, 40);
+    let placed = slots(&host, &world(), 160, 40);
     let names: Vec<&str> = placed.iter().map(|s| s.slot.as_str()).collect();
     assert!(names.contains(&"header"), "{names:?}");
     assert!(names.contains(&"footer"), "{names:?}");
@@ -648,7 +625,7 @@ fn a_band_is_placed_by_the_arrangement_and_omitting_it_is_not_an_error() {
     assert!(!names.contains(&"status"), "{names:?}");
 
     // Under 20 rows the identity band is surrendered first, as v1 does.
-    let short = slots(&host, &world(0), 160, 12);
+    let short = slots(&host, &world(), 160, 12);
     let short_names: Vec<&str> = short.iter().map(|s| s.slot.as_str()).collect();
     assert!(!short_names.contains(&"header"), "{short_names:?}");
     assert!(
@@ -671,7 +648,7 @@ fn the_two_panes_split_the_width_between_the_bands() {
     // columns went with their plugins, and so did their slots — a slot no plugin
     // can fill would reserve a rect for nothing.
     let host = host();
-    let placed = slots(&host, &world(0), 160, 40);
+    let placed = slots(&host, &world(), 160, 40);
     assert_eq!(pane_slots(&placed), ["sessions", "center"]);
 
     let sessions = rect_of(&placed, "sessions").expect("a session column");
@@ -691,7 +668,7 @@ fn the_two_panes_split_the_width_between_the_bands() {
 fn below_the_two_panel_threshold_only_the_centre_is_placed() {
     // v1 `compute_layout`: under 80 columns there is room for the agent alone.
     let host = host();
-    let placed = slots(&host, &world(0), 79, 24);
+    let placed = slots(&host, &world(), 79, 24);
     assert_eq!(pane_slots(&placed), ["center"]);
     assert_eq!(rect_of(&placed, "center").expect("centre").width, 79);
 }
@@ -700,7 +677,7 @@ fn below_the_two_panel_threshold_only_the_centre_is_placed() {
 fn hiding_the_session_list_gives_the_centre_the_whole_width() {
     // v1's F9. The centre is never dropped, so it absorbs the freed columns.
     let host = host();
-    let placed = slots(&host, &world(0), 160, 40);
+    let placed = slots(&host, &world(), 160, 40);
     assert_eq!(rect_of(&placed, "center").expect("centre").width, 120);
 
     host.on_action(
@@ -709,7 +686,7 @@ fn hiding_the_session_list_gives_the_centre_the_whole_width() {
     )
     .expect("toggle");
 
-    let placed = slots(&host, &world(0), 160, 40);
+    let placed = slots(&host, &world(), 160, 40);
     assert_eq!(pane_slots(&placed), ["center"]);
     assert_eq!(rect_of(&placed, "center").expect("centre").width, 160);
 }
@@ -727,7 +704,7 @@ const FOCUSABLE: [&str; 3] = ["sessions", "agent", "search"];
 fn framed(host: &LuaHost, pane: &str, focused: bool, theme: &str) -> ratatui::buffer::Buffer {
     let mut themes = Themes::load(None);
     themes.preview(theme).expect("a shipped theme");
-    publish(host, &world(0), &themes);
+    publish(host, &world(), &themes);
     // The session list publishes the selection the agent pane reads.
     let sessions = host.index_of("sessions").expect("sessions");
     host.render(
@@ -947,7 +924,7 @@ return {
     .expect("write");
     let host = LuaHost::new(ui);
     assert!(host.error.is_none(), "{:?}", host.error);
-    publish(&host, &world(0), &Themes::load(None));
+    publish(&host, &world(), &Themes::load(None));
     let node = host
         .render(
             host.index_of("shape").expect("shape"),
@@ -975,7 +952,7 @@ fn the_empty_agent_pane_still_says_it_has_focus() {
     let host = host();
     let empty = Snapshot {
         sessions: Vec::new(),
-        ..world(0)
+        ..world()
     };
     publish(&host, &empty, &Themes::load(None));
     let paint = |focused| {
@@ -1032,7 +1009,7 @@ return {
     .expect("write");
     let host = LuaHost::new(ui);
     assert!(host.error.is_none(), "{:?}", host.error);
-    publish(&host, &world(0), &Themes::load(None));
+    publish(&host, &world(), &Themes::load(None));
     let index = host.index_of("notes").expect("notes");
     let paint = |focused| {
         let node = host
@@ -1058,7 +1035,7 @@ return {
 
 /// The agent pane's top border row.
 fn agent_border(host: &LuaHost, width: u16) -> String {
-    screen(host, &world(0), &["sessions"], "agent", width, 10)
+    screen(host, &world(), &["sessions"], "agent", width, 10)
         .lines()
         .next()
         .expect("a border row")

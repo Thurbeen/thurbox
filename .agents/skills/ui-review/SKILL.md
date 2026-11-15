@@ -30,7 +30,7 @@ Tasks in the sandbox's own store, so the build includes `fleet` and `runtime-mux
 ## Phase 1 — Capture
 
 Resolve the skill directory and run the capture script. It builds the dev binaries,
-sets up the sandbox, seeds sessions and an automation, and runs VHS to emit one PNG
+sets up the sandbox, seeds sessions, and runs VHS to emit one PNG
 per UI state plus a `manifest.json` describing them.
 
 ```bash

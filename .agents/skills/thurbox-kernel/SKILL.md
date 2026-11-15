@@ -112,7 +112,7 @@ crate graph and `runtime-mux`'s module rules.
   need, and `input` encodes keys for an agent's terminal. The agents
   themselves are Fleet's harness profiles.
 - **`config/`** — thurbox's own config files beside `config.toml`
-  (`automations`, `hosts`, `interface_state`, `settings`, `themes`).
+  (`interface_state`, `settings`, `themes`).
   `config::file` is the one loader every config
   file goes through: its path,
   seeding it on first run, parsing it with unknown keys reported, degrading to
@@ -125,7 +125,7 @@ crate graph and `runtime-mux`'s module rules.
   scrollback and the data directory; `wiring::local_only`: this machine's
   adapters).
 - **`session/`** — plain data: `SessionState` (`hook_status`, the one
-  vocabulary every surface prints), the automation schedule, settings, `PluginSpec`/`PluginLock`/`PackageManifest`
+  vocabulary every surface prints), settings, `PluginSpec`/`PluginLock`/`PackageManifest`
   (`plugin_spec`, so the kernel and the CLI share one definition) and `review`;
   plus runtime-mux's `SessionId`, host model, routes and `hyperlink` table,
   re-exported. Holds no process state, reads no environment and names no
@@ -160,8 +160,8 @@ crate graph and `runtime-mux`'s module rules.
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
   panes.
 - **`fleet_link`** — `FleetLink`, the one place a `fleet …` call becomes a
-  process: the kernel's commands, watch, manager, attach and automations and
-  `doctor`'s probes all go through it, on this machine or through a `shell`
+  process: the kernel's commands, watch, manager and attach and `doctor`'s
+  probes all go through it, on this machine or through a `shell`
   launcher (ssh, WSL), with stdin, stdout and exit codes unchanged. Nothing
   else in `kernel` or `cli` starts Fleet. A link is built from a
   `[fleets.<name>]` entry of `settings.toml` (`FleetLink::of`). The session
@@ -458,7 +458,7 @@ them out, per call; `layout.lua` has an env that never holds either.
 **Driving sessions needs `sessions`.** `Command::requires` is an exhaustive match
 with no catch-all (a new verb must decide; `every_verb_states_what_it_requires`
 pins each): `send`, `create`, `plugin` and `delete` (Fleet has no undo
-window, so every delete is for good) need `sessions`; `open` and an exec automation's command need
+window, so every delete is for good) need `sessions`; `open` needs
 `run`; `program` needs `program`; an `action` naming `kernel.paste` needs
 `sessions`, and every request carries the chain of plugins it came through
 (`LuaHost::acting_for`, `drain_requests`), allowed only with what every member

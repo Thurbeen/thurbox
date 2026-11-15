@@ -1735,8 +1735,8 @@ mod tests {
     }
 
     /// The binary is held to the floor before it starts a server, as the
-    /// running server is before a pane is named: the heartbeat asks a
-    /// backend's `check_available` first, so an old psmux is refused there too,
+    /// running server is before a pane is named: a backend's
+    /// `check_available` is asked first, so an old psmux is refused there too,
     /// with the binary's advice and never the server's `kill-server`.
     #[test]
     fn an_old_psmux_banner_is_refused_before_a_server_starts() {

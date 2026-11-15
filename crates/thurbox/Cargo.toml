@@ -23,8 +23,8 @@ categories = ["command-line-utilities"]
 # The multiplexer runtime: session backends, hosts and launchers (ADR-41).
 # Linked directly until Fleet drives the runtimes; crates/architecture.toml.
 runtime-mux = { path = "../runtime-mux" }
-# An exec automation runs in a process group (a job object on Windows), so
-# its deadline ends what it started too.
+# A `fleet` call runs in a process group (a job object on Windows), so its
+# deadline ends what it started too.
 process-wrap = { workspace = true }
 # The stream pane speaks the terminal stream (kernel::terminal::stream_pane).
 term-stream = { path = "../term-stream" }
@@ -105,10 +105,8 @@ serde_json = "1"
 # CLI argument parsing (thurbox-cli)
 clap = { version = "4", features = ["derive"] }
 
-# Date/time + cron scheduling (automations)
+# Date/time
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-chrono-tz = "0.10"
-cron = "0.17"
 serde_ignored = "0.1.14"
 
 # OS notifications. Linux-only: dbus with action callbacks (click-to-focus
@@ -173,8 +171,8 @@ tempfile = "3"
 # the normal `cargo nextest --all`.
 proptest = "1"
 
-# The OTLP wire types, to decode what `automation tick` exports in
-# tests/telemetry_export.rs. Both already in the tree through opentelemetry-otlp.
+# The OTLP wire types, to decode what the interface exports in
+# tests/tui_e2e.rs. Both already in the tree through opentelemetry-otlp.
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "metrics", "logs"] }
 prost = "0.14"
 

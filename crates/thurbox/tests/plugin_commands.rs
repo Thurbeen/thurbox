@@ -888,7 +888,7 @@ fn a_lock_without_the_files_entry_grants_nothing_to_it() {
 }
 
 /// A pane holding no grant that replaces the shared `type` with one that asks
-/// for a program and writes an exec automation, then calls the real one.
+/// for a program and sends to a session, then calls the real one.
 const LURE: &str = r#"local real = type
 type = function(value)
   if run then

@@ -500,44 +500,13 @@
 ---@field agents? thurbox.Agent[] Nil until this Fleet has said which harnesses it has.
 ---@field places? thurbox.Host[] Every place this Fleet defines, `local` first. Nil until it answers.
 
----@class (exact) thurbox.AutomationRun
----@field id integer
----@field started_at integer Unix millis.
----@field status "running"|"success"|"error"|"skipped"|"timed_out"
----@field detail string What the run reported: the error, the skip reason or an exec's output tail. The only log a run keeps.
----@field session? string The session it sent to or spawned, when it recorded one.
-
----@class (exact) thurbox.Automation
----@field id integer
----@field name string
----@field schedule string The cron expression, or `once`.
----@field action "send"|"spawn"|"exec"
----@field enabled boolean
----@field last_outcome? string
----@field last_detail? string
----@field runs thurbox.AutomationRun[] The ten most recent, newest first.
----@field trigger string `cron:<expr>` or `at:<unix_millis>`: what an edit's `trigger` takes back unchanged.
----@field timezone? string IANA name; nil is the system's own.
----@field prompt string What a send or spawn types; an exec automation runs `command` and ignores it.
----@field session? string A send's target session.
----@field repo? string A spawn's repository.
----@field branch? string A spawn's worktree branch.
----@field base? string
----@field agent? string
----@field extra_repos integer Further repositories a multi-repo spawn spans.
----@field command? string An exec automation's command line.
----@field created_at integer Unix millis.
----@field updated_at integer
----@field last_run_at? integer
----@field next_run_at? integer Nil while disabled, and once a schedule has no future occurrence.
-
 --- A command this interface accepted but has not finished.
 ---@class (exact) thurbox.InFlight
 ---@field id integer
 ---@field kind string
 ---@field session string
 ---@field phase string
----@field subject? string A `create`'s repository name, a `bookmark` write's path as issued, or an `automation`'s `#<id>` (a create's name).
+---@field subject? string A `create`'s repository name, or a `bookmark` write's path as issued.
 ---@field host? string The machine a creation will land on; nil for this one.
 ---@field error? string
 
@@ -600,7 +569,6 @@
 ---@field ok? boolean
 
 ---@class (exact) thurbox.Features
----@field automations boolean
 ---@field shell_pane boolean
 ---@field perf_hud boolean
 ---@field mouse boolean
@@ -792,7 +760,6 @@
 ---@field repo_branches thurbox.RepoBranches
 ---@field hosts? thurbox.Host[] Every place the Fleet in force defines, `local` first (its `backend` is empty) when Fleet defines it. Nil until Fleet answers.
 ---@field fleets thurbox.Fleet[] Every Fleet `settings.toml` lists, by name, each with its own agents and places.
----@field automations thurbox.Automation[]
 ---@field commands thurbox.InFlight[]
 ---@field diffs table<string, thurbox.Diff>
 ---@field links table<string, thurbox.Link[]> Keyed by SURFACE, not by session: a session's companion shell is `<id>#shell` and has links of its own.
@@ -952,29 +919,6 @@ function require(name) end
 ---@field number integer The task to dispatch.
 ---@field session? string A session to type it into instead of the task's own action.
 
---- Without `action`: enable, disable, run or delete automation `number`. With
---- `action = "create"` or `"edit"` (which needs `number`): the fields below,
---- validated as `thurbox-cli automation create` validates them, a mistake
---- reported as `command.failed`. An edit leaves out what it does not change.
----@class (exact) thurbox.cmd.Automation
----@field number? integer The automation; every use but a create needs it.
----@field flag? boolean Enable or disable it.
----@field force? boolean Run it now.
----@field reset? boolean Delete it.
----@field action? "create"|"edit"
----@field name? string
----@field trigger? string `hourly`|`daily`|`weekdays`|`weekly`|`cron:<expr>`|`at:<unix_millis>`.
----@field time? string `HH:MM`, for a preset.
----@field weekday? integer 0..7 (0 and 7 are Sunday), for `weekly`.
----@field timezone? string IANA name; `""` is the system's own.
----@field prompt? string
----@field session? string Create: send to this session.
----@field repo? string Create: spawn a session in this repository.
----@field branch? string Create: the spawn's worktree branch.
----@field base? string
----@field agent? string
----@field command? string Create, or edit an exec one: run this command line. Sending it at all, even unchanged, needs the issuing file to hold `run`; refused as `command.failed` otherwise, so an edit that keeps the command leaves it out.
-
 --- A repository a session spans besides its first.
 ---@class (exact) thurbox.cmd.CreateExtra
 ---@field path string An absolute path on the session's host (`~` only on this machine).
@@ -1084,7 +1028,7 @@ function require(name) end
 ---@field level? "info"|"success"|"error" Defaults to `info`; anything else is refused.
 
 ---@alias thurbox.Verb
----| "emit" | "plugin" | "set" | "task" | "dispatch" | "automation"
+---| "emit" | "plugin" | "set" | "task" | "dispatch"
 ---| "create" | "bookmark" | "focus" | "open" | "theme" | "order" | "program"
 ---| "delete" | "restore" | "restart" | "send" | "reorder" | "fork"
 ---| "sync" | "rename" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
@@ -1099,7 +1043,6 @@ function require(name) end
 ---@overload fun(verb: "set", opts: thurbox.cmd.Set)
 ---@overload fun(verb: "task", opts: thurbox.cmd.Task)
 ---@overload fun(verb: "dispatch", opts: thurbox.cmd.Dispatch)
----@overload fun(verb: "automation", opts: thurbox.cmd.Automation)
 ---@overload fun(verb: "create", opts: thurbox.cmd.Create)
 ---@overload fun(verb: "bookmark", opts: thurbox.cmd.Bookmark)
 ---@overload fun(verb: "focus", opts: thurbox.cmd.Focus)

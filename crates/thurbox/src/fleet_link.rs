@@ -1,7 +1,7 @@
 //! How thurbox reaches a Fleet: the one place a `fleet …` invocation becomes
 //! a process (ADR-41). Every call thurbox makes of Fleet's command line —
-//! the commands, the watch, the manager, an attach, an automation's fire,
-//! `doctor`'s probes — is built here, so a Fleet on another machine is a
+//! the commands, the watch, the manager, an attach, `doctor`'s
+//! probes — is built here, so a Fleet on another machine is a
 //! launcher on the link rather than a change at each call site.
 //!
 //! The launcher is the runtime's ([`crate::shell::launch`]): over ssh each
@@ -472,7 +472,7 @@ pub fn incompatible(answer: &serde_json::Value) -> Option<String> {
 ///
 /// Every Fleet a command reaches through it is admitted first: its
 /// `fleet version --json` must speak [`TASK_API`] ([`incompatible`]), so no
-/// path, an automation's included, can send anything else to a Fleet
+/// path can send anything else to a Fleet
 /// thurbox cannot speak to. A verdict is kept, shared by the clones; a
 /// Fleet that did not answer is asked again next time.
 #[derive(Debug, Clone)]

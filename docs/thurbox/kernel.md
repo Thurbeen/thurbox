@@ -192,8 +192,8 @@ A capability asked for through `command` cannot be absent, since every plugin
 has `command`. Those are gated where the command is applied instead: the queue
 records the path each plugin's own `command` was built with, and
 `Command::requires`/`Command::refusal` decide whether that plugin holds what
-the command needs before the loop applies it — `run` for an exec automation's
-command line or a URL opened unasked, `sessions` for every verb that drives an
+the command needs before the loop applies it — `run` for a URL opened
+unasked, `sessions` for every verb that drives an
 agent or loses something for good. Every variant answers in one exhaustive
 `match` with no catch-all arm, so a new verb does not compile until it decides. An
 `action` runs the declaring plugin's handler, so every request carries the

@@ -1190,7 +1190,7 @@ pane = {
   },
 
   -- The one event this pane needs: a create THIS interface finished.
-  -- A session `thurbox-cli`, an automation or another instance made arrives as
+  -- A session `thurbox-cli` or another instance made arrives as
   -- `session.created` instead, and subscribing to that would let a background
   -- spawn take the keyboard out from under you — so it deliberately is not
   -- subscribed to.

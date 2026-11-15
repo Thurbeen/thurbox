@@ -1758,23 +1758,6 @@ mod tests {
         fn take_hook_state_events(&self) -> Vec<(String, String)> {
             Vec::new()
         }
-
-        fn ensure_heartbeat(
-            &self,
-            _: &std::path::Path,
-            _: &[String],
-            _: std::time::Duration,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
-        }
-
-        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
-
-        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
     }
 
     #[cfg(unix)]

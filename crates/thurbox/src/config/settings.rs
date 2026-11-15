@@ -50,11 +50,8 @@ config_version = 1
 # git_poll_secs = 5
 
 # Feature flags: turn whole TUI features off. All default to true.
-# Disabling `automations` stops the TUI firing the schedules in
-# automations.json; `thurbox-cli automation` keeps working. Data is never
-# touched, so re-enabling a flag is lossless.
+# Data is never touched, so re-enabling a flag is lossless.
 # [features]
-# automations = true      # the TUI fires automation schedules
 # shell_pane = true       # Ctrl+T per-session shell
 # perf_hud = true         # F12 perf HUD overlay (live counters + timing)
 # mouse = true            # mouse capture: clicks, wheel, drag-select, hover
@@ -295,7 +292,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     }
     if let Some(features) = doc["features"].as_table_mut() {
         let f = &settings.features;
-        set_table_bool(features, "automations", f.automations);
         set_table_bool(features, "shell_pane", f.shell_pane);
         set_table_bool(features, "perf_hud", f.perf_hud);
         set_table_bool(features, "mouse", f.mouse);
@@ -352,7 +348,6 @@ mod tests {
             "two_panel_min_cols",
             "git_poll_secs",
             "[features]",
-            "automations",
             "shell_pane",
             "perf_hud",
             "notifications",
@@ -387,7 +382,7 @@ mod tests {
             "info_panel",
             "code_review",
             "also_on_waiting",
-            "on_automation_failure",
+            "automation",
         ] {
             assert!(
                 !SEED_SETTINGS_TOML.contains(key),
@@ -559,11 +554,11 @@ mod tests {
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "[features]\nautomations = false\n").unwrap();
+        std::fs::write(&path, "[features]\nmouse = false\n").unwrap();
 
         let (s, warnings) = load_or_seed_with_warnings();
         assert!(warnings.is_empty(), "got: {warnings:?}");
-        assert!(!s.features.automations);
+        assert!(!s.features.mouse);
         assert!(s.features.perf_hud, "untouched flags stay enabled");
     }
 

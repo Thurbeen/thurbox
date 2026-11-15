@@ -113,11 +113,10 @@ impl Profile {
         for sub in ["home", "config", "data", "bin"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        // No update check, no version check (both reach the network), and no
-        // automation heartbeat (it would arm a tmux keeper window on startup).
+        // No update check and no version check: both reach the network.
         std::fs::write(
             root.path().join("config/settings.toml"),
-            "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+            "[features]\nversion_check = false\nauto_update = false\n",
         )
         .expect("seed settings");
         // A per-user Fleet config already there: thurbox runs `fleet init` on
@@ -1005,7 +1004,7 @@ fn f12_shows_the_per_pane_cost_table() {
     let profile = Profile::new();
     std::fs::write(
         profile.path("config/settings.toml"),
-        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n\
+        "[features]\nversion_check = false\nauto_update = false\n\
          perf_hud = true\n",
     )
     .expect("seed settings");
@@ -1268,6 +1267,52 @@ fn thurbox_keeps_no_hosts_toml() {
         );
     }
     assert!(!profile.path("config/hosts.toml").exists());
+}
+
+/// thurbox schedules nothing of its own: work on a timer is an outside
+/// timer's. The interface, left to its defaults, writes no
+/// `automations.json`; `thurbox-cli` has no `automation` command; and
+/// `doctor` says a leftover file is no longer read.
+#[test]
+fn thurbox_keeps_no_automations() {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/settings.toml"),
+        "[features]\nversion_check = false\nauto_update = false\n",
+    )
+    .expect("default features");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(tui.quit().success());
+    assert!(
+        !profile.path("config/automations.json").exists(),
+        "the interface wrote an automations.json"
+    );
+
+    let cli = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        cmd.args(args).output().expect("thurbox-cli")
+    };
+    let automation = cli(&["automation", "list"]);
+    assert_eq!(automation.status.code(), Some(2), "{automation:?}");
+    let said = String::from_utf8_lossy(&automation.stdout);
+    assert!(
+        said.contains("unrecognized subcommand 'automation'"),
+        "{said}"
+    );
+
+    std::fs::write(profile.path("config/automations.json"), "{}").expect("leftover");
+    let doctor = cli(&["--json", "doctor"]);
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).expect("doctor JSON");
+    let check = report["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|c| c["key"] == "automations-json")
+        .unwrap_or_else(|| panic!("no automations-json check: {report}"));
+    assert_eq!(check["level"], "warn", "{check}");
 }
 
 #[test]

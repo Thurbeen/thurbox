@@ -135,24 +135,21 @@ control connection it was asked on. The paint's `resize` and the input loop's
 `claim_size` and `is_dead` never wait for the question: they send nothing on a
 connection not yet admitted.
 
-## Status channel and heartbeat
+## Status channel
 
 `SessionBackend`'s `StatusChannel` role (`crates/runtime-mux/src/contract.rs`)
-carries a hook's state and a heartbeat process:
+carries a hook's state:
 
 - `hook_signal_command` — the command a hook in this backend's panes runs, with
   the state word appended. `None` means the backend has no channel.
 - `record_hook_state`, `hook_states`, `take_hook_state_events` — write a pane's
   state, read every pane's state in one round trip, and drain the changes an
   attached connection received.
-- `ensure_heartbeat`, `heartbeat_running`, `stop_heartbeat` — keep a program
-  running every interval on the backend's machine with no interface attached.
 
 No method has a default body: a backend with no channel answers `None` or
 `Err`, and a reader treats an unanswered question as no news, never as idle.
 On a tmux-protocol server the channel is the `@thurbox_state` pane option, its
-subscription and its poll, and the heartbeat is a detached
-`automation-heartbeat` window. Each adapter says whether it has a channel
+subscription and its poll. Each adapter says whether it has a channel
 (`TmuxCompatible::HOOK_STATUS`); psmux does not.
 
 The contract suite (`crates/runtime-mux/tests/support/backend_contract.rs`)

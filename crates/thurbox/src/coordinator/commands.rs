@@ -33,8 +33,7 @@ impl App {
     /// Refuse a plugin's command that needs a grant its issuer does not hold,
     /// reporting why. `true` = refused, and nothing else is done with it.
     ///
-    /// Here rather than on a worker, which knows no grant: an exec automation's
-    /// command is a command line the heartbeat runs, and `send`, `create`,
+    /// Here rather than on a worker, which knows no grant: `send`, `create`,
     /// `restart` and a force `delete` drive an agent or destroy a worktree, so
     /// each is checked before anything applies it — against every plugin in
     /// the chain the request came through, so the least-privileged one decides.

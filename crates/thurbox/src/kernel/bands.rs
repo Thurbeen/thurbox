@@ -119,7 +119,6 @@ pub struct BandState<'a> {
     /// The selected session's name, when there is one.
     pub session: Option<&'a str>,
     pub session_count: usize,
-    pub automation_count: usize,
     /// The focused surface's name, for the action band's left cluster.
     pub focus_label: &'a str,
     /// What just happened, and how severe. `None` leaves the message band with
@@ -422,14 +421,6 @@ fn left_spans(state: &BandState<'_>) -> Vec<Span<'static>> {
         format!(" {} session(s) ", state.session_count),
         state.style("text_secondary"),
     ));
-    if state.automation_count > 0 {
-        spans.push(Span::styled(
-            format!(" {} automation(s) ", state.automation_count),
-            state.style("text_primary").bg(state
-                .colour("accent")
-                .unwrap_or(ratatui::style::Color::Reset)),
-        ));
-    }
 
     let key = state.style("keybind_hint").add_modifier(Modifier::BOLD);
     let desc = state.style("text_muted");
@@ -983,7 +974,6 @@ mod tests {
             update_available: None,
             session: None,
             session_count: 0,
-            automation_count: 0,
             focus_label: "Terminal",
             message: None,
             progress: None,

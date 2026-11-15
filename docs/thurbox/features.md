@@ -466,7 +466,7 @@ the new session and give the agent pane the keyboard, exactly as `Enter` on its
 row would. It is the *list's* setting rather than a core one because the list
 owns the selection — it subscribes to `session.post_create` and does there what
 `Enter` does. That event fires only for a create **this interface** performed,
-which is what keeps an automation or a second instance from taking the keyboard
+which is what keeps a timer or a second instance from taking the keyboard
 out from under you; and the cursor only *follows* the new id, so moving it
 yourself in the meantime wins.
 
@@ -658,7 +658,7 @@ overlap. A handful of keys stay fixed (shown in the F1 panel under
 (`j`/`k`/`Enter`/`Esc`) and the terminal's catch-all PTY forwarding.
 
 **Readline editing in modal text fields.** Thurbox's own text inputs
-(session name, repo-picker path & search, automation editor)
+(session name, repo-picker path & search)
 accept the standard emacs/readline
 line-editing chords, so the muscle memory that works in a terminal works
 there too: `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+B`/`Ctrl+F` (move
@@ -786,71 +786,11 @@ honored as the fallback when no command is set.
 
 ---
 
-## Automations
+## Scheduling work
 
-An automation is a named, scheduled run. When it fires it does one of three
-things:
-
-- **send**: queue its prompt for a session, `fleet send <task> <prompt>`;
-- **spawn**: create a session in a repository, an interactive Task applied
-  with `fleet apply --create-only` and named after the automation and the
-  second it fired, then queue its prompt for it;
-- **exec**: run a command headlessly on this machine (`sh -c`, `cmd /C` on
-  Windows), in its `--cwd` or the home directory, with its `--env` variables
-  and `THURBOX_AUTOMATION_NAME`. It runs as the leader of a process group (in
-  a job object on Windows), and the whole group is killed once it exits or its
-  deadline passes, so a child it left in the background does not outlive the
-  run. Each stream is read to its end, so a command that prints a lot still
-  runs to its end; its exit code and the last 4096 characters of its output
-  are the run's detail.
-
-`edit` moves the next run only when it changes when the automation fires (its
-trigger, timezone, or enabled state): an edit of the prompt, command or
-deadline never cancels a run that is due. `--time` and `--weekday` say when
-within a `--trigger` preset, so either one without a trigger is refused.
-
-The trigger is a preset (`hourly`, `daily`, `weekdays`, `weekly`, with
-`--time HH:MM` and `--weekday`), `cron:"<expr>"` or `at:<unix millis>`,
-evaluated in `--timezone` or the system's own. A preset is stored as the cron
-expression it spells.
-
-```bash
-thurbox-cli automation create --name nightly --trigger daily --time 03:00 \
-  --session review-main --prompt "review what landed today"
-thurbox-cli automation create --name sync --trigger hourly --command "make sync"
-thurbox-cli automation list
-thurbox-cli automation show nightly          # its schedule and its last 20 runs
-thurbox-cli automation edit nightly --disable
-thurbox-cli automation run sync              # fire now, answer with the run
-thurbox-cli automation tick                  # fire whatever is due
-thurbox-cli automation remove sync
-```
-
-### Where they live, and who fires them
-
-Fleet has no schedule kind (ADR-41), so automations are thurbox's: one plain
-file, `automations.json` beside `settings.toml`, holding each automation's
-definition and its schedule state (last and next run, recent runs). Only what a
-fire does to a session goes through Fleet.
-
-Two firers share the file:
-
-- the interface ticks every 15 seconds while it runs, with
-  `[features] automations` on (the default);
-- `thurbox-cli automation tick` is the same tick for an OS timer (a cron line,
-  a systemd timer), so a schedule keeps firing with no interface open.
-
-A fire is **claimed in the file before it runs**: under the lock every process
-takes for the file, the tick records the run as running and moves the next run
-on, then releases the lock, runs, and records the outcome under the lock again.
-Two firers therefore never fire one occurrence twice, and the lock is never
-held while a run takes its time. A run still marked running past its deadline
-(its firer hung or died) is recorded as timed out by the next tick. Fires in
-one tick run one after another. A missed occurrence while nothing ticked is
-not caught up: the next tick fires once and schedules the occurrence after it.
-
-A file that does not parse is an error rather than an empty list: a tick that
-read it as empty and wrote it back would lose every automation.
+thurbox schedules nothing of its own. To run work on a timer, have cron or a
+systemd timer run `fleet apply -f task.yaml` to start a Task, or
+`fleet send TASK TEXT` to prompt a session that already runs.
 
 ---
 
@@ -975,7 +915,7 @@ them would take `Ctrl+N` from new-session everywhere. Recorded in
 
 ## Feature Flags (`[features]` in settings.toml)
 
-Whole features can be switched off declaratively: `automations`,
+Whole features can be switched off declaratively:
 `shell_pane`, `perf_hud`, `mouse`, `notifications` — all default `true`.
 `file_viewer`, `global_search`, `info_panel` and `code_review` are retired:
 nothing read them, and a file that sets one loads with a notice
@@ -989,13 +929,8 @@ startup + `thurbox-cli update`). See `docs/thurbox/config.md`.
 feature hides its pane, consumes its keybinding with an explanatory
 status toast (the chord never reaches the PTY), and contributes no
 global-search results — but its data and the `thurbox-cli` surface
-stay fully functional, so flipping a flag back on is lossless. The one
-deliberate exception is `automations = false`, which also stops the
-interface ticking due schedules —
-"disable automations" should actually stop scheduled work, not just
-hide a list. Explicit `thurbox-cli automation` commands, `automation tick`
-from an OS timer included, keep working, because typing a command is unambiguous
-intent. `mouse = false` is similarly a hard gate at the boundary:
+stay fully functional, so flipping a flag back on is lossless.
+`mouse = false` is a hard gate at the boundary:
 terminal mouse capture is never enabled (so the terminal keeps its
 native selection/URL handling) and any stray mouse event is dropped
 before dispatch.
@@ -1361,7 +1296,7 @@ and the user alt-tabs back themselves.
 The edge is detected on the interface's snapshot, so session-state
 notifications fire only while the interface runs. What does notify headlessly
 is explicit:
-`thurbox-cli notify send` (a script or an Exec automation asks for it). It
+`thurbox-cli notify send` (a script or a timer asks for it). It
 delivers synchronously, honours the same switches, and deduplicates a key
 through `notify-dedupe.json` under a file lock, so a repeat is dropped across
 processes; see
@@ -1435,9 +1370,8 @@ confined to the active pane bounds.
   selection (see the transport section below); with no selection it
   is forwarded to the terminal as SIGINT.
 - **`Ctrl+V`**: Pastes from the local clipboard. When a modal text
-  input (session name, repo-picker path or search,
-  automation editor) or an in-pane editor (automation) is
-  focused, the text is inserted into that field instead of the PTY
+  input (session name, repo-picker path or search) or an in-pane
+  editor is focused, the text is inserted into that field instead of the PTY
   (`try_paste_into_modal_input`; single-line inputs strip embedded
   newlines). While **any**
   modal is open the paste is swallowed so it can never leak into the
@@ -1702,9 +1636,8 @@ band's pills are declared by the panes.
   edits discards them, exactly like `Esc`/`Ctrl+H`.
 - **Click a pane**: focuses it; terminal and session-list clicks
   still arm drag-selection on the same press.
-- **Click a picker row** (theme, agent, host, branch,
-  automations list, F1 editor): selects and confirms it in
-  one click (Enter-equivalent — F1 starts chord capture). The repo
+- **Click a picker row** (theme, agent, host, branch, F1 editor):
+  selects and confirms it in one click (Enter-equivalent — F1 starts chord capture). The repo
   picker is the exception: a row click toggles/folds (Space), since
   Enter there confirms the whole modal.
 - **Clicks are swallowed by modals**: anywhere else on (or outside)

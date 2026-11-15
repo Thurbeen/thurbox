@@ -46,7 +46,7 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | `runtime-mux` runs sessions on `local` only | implemented |
 | Several Fleets in thurbox's `settings.toml`, `[fleets.<name>]`, over ssh or WSL; `thurbox-cli doctor` checks each | implemented |
 | The session list follows every listed Fleet; a row's id is `<fleet>:<task>`, and an unreachable Fleet's rows stay, marked unreachable | implemented |
-| Send, rename, delete and a sent automation go to the session's own Fleet | implemented |
+| Send, rename and delete go to the session's own Fleet | implemented |
 | A remote Fleet's session panes: `fleet attach` and its stream over the link | implemented |
 | The new-session modal's Fleet step, then the chosen Fleet's places and agents; creation goes to that Fleet | implemented |
 | The modal browses a remote Fleet's folders and lists a repository's branches there, through Fleet | implemented |

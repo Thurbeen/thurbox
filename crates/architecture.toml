@@ -305,9 +305,6 @@ agent = { use = [] }
 # so a consumer names the config it reads; none reaches another, so a file's
 # degradation is its own.
 config = { use = [] }
-# automations.json beside settings.toml: the schedule thurbox keeps while
-# Fleet has no schedule kind. The schedule math is `session`'s.
-"config::automations" = { use = ["session", "config::file"] }
 "config::file" = { use = ["paths"] }
 # What the interface remembers between runs (`interface.json`): data in, the
 # editor mode's type from `session`.
@@ -339,9 +336,9 @@ telemetry = { use = ["session"] }
 # its `ui.json` overrides). Both are kernel-owned surfaces asked about from
 # outside.
 cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "fleet_link"], path_only = [
-  "kernel", "backend", "config::file", "config::automations",
-  "config::interface_state", "config::settings", "config::themes",
-  "update::self_update", "update::version_check",
+  "kernel", "backend", "config::file", "config::interface_state",
+  "config::settings", "config::themes", "update::self_update",
+  "update::version_check",
 ] }
 # The plugin kernel: hosts the Lua VM the whole UI is written in. Builds the
 # snapshot plugins render from Fleet's rows (`session` for the types, `paths`
@@ -358,9 +355,8 @@ cli = { use = ["session", "paths", "notifications", "ui_control", "theme", "flee
 # are path-only, as `cli`'s are, so every one into the side-effect layer is
 # visible at its call site.
 kernel = { use = ["session", "paths", "git", "notifications", "theme", "fleet_link"], path_only = [
-  "agent::fetch", "backend", "config::automations",
-  "config::interface_state", "config::settings", "config::themes",
-  "update::self_update", "update::version_check",
+  "agent::fetch", "backend", "config::interface_state", "config::settings",
+  "config::themes", "update::self_update", "update::version_check",
 ] }
 # The one way to a Fleet's command line (ADR-41): every `fleet` call the
 # kernel and the CLI make becomes a process here, on this machine or through

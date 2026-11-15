@@ -116,7 +116,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   and arbitrary vt100 byte streams.
 - **`tests/tui_e2e.rs`** (unix) — the real binary on a real pty, via `libc`'s
   `openpty` (no PTY crate), fully isolated (private HOME/config/data, a short
-  private `TMUX_TMPDIR`, inherited `INPUTRC` scrubbed, network and heartbeat
+  private `TMUX_TMPDIR`, inherited `INPUTRC` scrubbed, network
   features off). It asserts what no `TestBackend` test can: the boot frame, the
   kernel overlays opening and closing,
   the search strip taking focus, a column toggle reflowing with no screen clear,

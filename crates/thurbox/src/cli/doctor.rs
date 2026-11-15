@@ -111,6 +111,9 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
     findings.extend(retired_hosts_finding(
         crate::config::file::path("hosts.toml").as_deref(),
     ));
+    findings.extend(retired_automations_finding(
+        crate::config::file::path("automations.json").as_deref(),
+    ));
     // Sessions of a Fleet on another machine run in that machine's
     // multiplexer: this one needs none unless a Fleet runs here.
     if listed.iter().any(|(_, def)| def.transport.is_local()) {
@@ -149,6 +152,27 @@ fn retired_hosts_finding(path: Option<&std::path::Path>) -> Option<Finding> {
         )
         .fix(format!(
             "list each machine's Fleet under [fleets] in settings.toml, then delete {}",
+            path.display()
+        )),
+    )
+}
+
+/// A warning for an `automations.json` an earlier thurbox fired: nothing
+/// reads it any more, and saying so is all this does. `None` when there is
+/// no such file.
+fn retired_automations_finding(path: Option<&std::path::Path>) -> Option<Finding> {
+    let path = path.filter(|path| path.is_file())?;
+    Some(
+        Finding::new(
+            "automations-json",
+            Level::Warn,
+            "automations.json is no longer read; thurbox schedules nothing of its own \
+             (see docs/thurbox/features.md, Scheduling work)"
+                .into(),
+        )
+        .fix(format!(
+            "schedule the work with a cron job or systemd timer that runs `fleet apply -f \
+             task.yaml` or `fleet send TASK TEXT`, then delete {}",
             path.display()
         )),
     )
@@ -554,6 +578,31 @@ mod tests {
             finding.detail,
             "hosts.toml is no longer read; list remote Fleets under [fleets] in settings.toml \
              (see docs/where-sessions-run.md)"
+        );
+        let fix = finding.fix.expect("a fix");
+        assert!(fix.contains(&path.display().to_string()), "{fix}");
+    }
+
+    /// An `automations.json` left by an earlier thurbox is reported as
+    /// unread, with the fix; none at all reports nothing.
+    #[test]
+    fn a_left_over_automations_json_is_a_warning_with_its_fix() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("automations.json");
+        assert!(
+            retired_automations_finding(Some(&path)).is_none(),
+            "no file, no finding"
+        );
+        std::fs::write(&path, "{\"automations\":[]}").expect("automations.json");
+        let finding = retired_automations_finding(Some(&path)).expect("a finding");
+        assert_eq!(finding.key, "automations-json");
+        assert_eq!(finding.level, Level::Warn);
+        assert!(
+            finding
+                .detail
+                .starts_with("automations.json is no longer read"),
+            "{}",
+            finding.detail
         );
         let fix = finding.fix.expect("a fix");
         assert!(fix.contains(&path.display().to_string()), "{fix}");

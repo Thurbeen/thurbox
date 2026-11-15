@@ -149,12 +149,6 @@ impl LuaHost {
         self.publish_repo_reads(&table, repo_store, wants, epoch)?;
         self.publish_settings(&table, settings)?;
 
-        // Built from the snapshot alone, so it changes when the database does
-        // and not once a frame.
-        let automations = self.group("automations", [epoch.snapshot, 0, 0, 0], || {
-            build_automations(&self.lua, snapshot)
-        })?;
-        set(&table, "automations", automations)?;
         set(&table, "taken_at_ms", snapshot.taken_at_ms)?;
         // The running release, for the header banner. v1 baked it into
         // `ui::status_bar::render_header` at compile time; a plugin cannot read
@@ -371,7 +365,6 @@ impl LuaHost {
         let features = self.lua.create_table().map_err(|e| e.to_string())?;
         let flags = &settings.features;
         for (name, value) in [
-            ("automations", flags.automations),
             ("shell_pane", flags.shell_pane),
             ("perf_hud", flags.perf_hud),
             ("mouse", flags.mouse),
@@ -853,69 +846,6 @@ fn build_fleets(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
         fleets.raw_set(index + 1, item).map_err(|e| e.to_string())?;
     }
     Ok(Value::Table(fleets))
-}
-
-fn build_automations(lua: &Lua, snapshot: &Snapshot) -> Result<Value, String> {
-    let automations = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, row) in snapshot.automations.iter().enumerate() {
-        let item = lua.create_table().map_err(|e| e.to_string())?;
-        set(&item, "id", row.id)?;
-        set(&item, "name", row.name.clone())?;
-        set(&item, "schedule", row.schedule.clone())?;
-        set(&item, "action", row.action.clone())?;
-        set(&item, "enabled", row.enabled)?;
-        set(
-            &item,
-            "last_outcome",
-            opt_lua_string(lua, row.last_outcome.as_deref())?,
-        )?;
-        set(
-            &item,
-            "last_detail",
-            opt_lua_string(lua, row.last_detail.as_deref())?,
-        )?;
-        set(&item, "trigger", row.trigger.clone())?;
-        set(&item, "prompt", row.prompt.clone())?;
-        for (key, value) in [
-            ("timezone", &row.timezone),
-            ("session", &row.session),
-            ("repo", &row.repo),
-            ("branch", &row.branch),
-            ("base", &row.base),
-            ("agent", &row.agent),
-            ("command", &row.command),
-        ] {
-            set(&item, key, opt_lua_string(lua, value.as_deref())?)?;
-        }
-        set(&item, "extra_repos", row.extra_repos)?;
-        set(&item, "created_at", row.created_at)?;
-        set(&item, "updated_at", row.updated_at)?;
-        set(&item, "last_run_at", row.last_run_at)?;
-        set(&item, "next_run_at", row.next_run_at)?;
-        // The whole history, not just the last outcome: v1's run-history
-        // pane lists every recent run, and a plugin cannot reconstruct
-        // those from `last_outcome` alone.
-        let runs = lua.create_table().map_err(|e| e.to_string())?;
-        for (position, run) in row.runs.iter().enumerate() {
-            let entry = lua.create_table().map_err(|e| e.to_string())?;
-            set(&entry, "id", run.id)?;
-            set(&entry, "started_at", run.started_at)?;
-            set(&entry, "status", run.status.clone())?;
-            set(&entry, "detail", run.detail.clone())?;
-            set(
-                &entry,
-                "session",
-                opt_lua_string(lua, run.session.as_deref())?,
-            )?;
-            runs.raw_set(position + 1, entry)
-                .map_err(|e| e.to_string())?;
-        }
-        set(&item, "runs", runs)?;
-        automations
-            .raw_set(index + 1, item)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(Value::Table(automations))
 }
 
 fn build_theme(lua: &Lua, themes: &Themes) -> Result<Value, String> {

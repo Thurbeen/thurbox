@@ -353,23 +353,6 @@ pub(crate) mod stub {
         fn take_hook_state_events(&self) -> Vec<(String, String)> {
             Vec::new()
         }
-
-        fn ensure_heartbeat(
-            &self,
-            _: &std::path::Path,
-            _: &[String],
-            _: std::time::Duration,
-        ) -> crate::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
-        }
-
-        fn heartbeat_running(&self) -> crate::contract::BackendResult<bool> {
-            Ok(false)
-        }
-
-        fn stop_heartbeat(&self) -> crate::contract::BackendResult<bool> {
-            Ok(false)
-        }
     }
 
     impl SessionBackend for StubBackend {
