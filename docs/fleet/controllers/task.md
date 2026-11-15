@@ -600,8 +600,9 @@ comment = "#"                  # what starts a comment line there
 - `[install]` is what `fleet integration install` writes
   ([installed integrations](../integration.md)). Each path is inside the
   config directory, and each is listed once.
-- `[telemetry]` is used only when Fleet exports its own telemetry, and the
-  Task does not set `agentTelemetry` to `false`
+- `[telemetry]` is used only when Fleet exports its own telemetry, the
+  Task does not set `agentTelemetry` to `false`, and the Task's environment
+  names no OTLP endpoint of its own
   ([coding agents](../../observability.md#coding-agents)). Fleet replaces
   `{endpoint}` with its collector's base URL, `{protocol}` with
   `http/protobuf`, `{headers}` with `OTEL_EXPORTER_OTLP_HEADERS`, and

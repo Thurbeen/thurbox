@@ -1960,9 +1960,11 @@ impl Manager<'_> {
             }
             // The agent's own telemetry, under the Task's environment and
             // never frozen: each start takes Fleet's collector as it is
-            // then, and no header is kept in the launch snapshot.
+            // then, and no header is kept in the launch snapshot. A Task
+            // that names its own collector gets none of Fleet's.
             if let Some(collector) = &self.agent_telemetry
                 && telemetry_on
+                && !fleet_api::harness::names_collector(&spawn.env)
             {
                 let t = profiles.get(&spawn.harness).telemetry(
                     collector,

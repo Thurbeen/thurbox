@@ -178,3 +178,143 @@ fn agent_telemetry_false_on_the_task_or_its_task_config_turns_it_off() {
     let (vars, _) = session(&env, "back-on");
     assert_eq!(vars["CLAUDE_CODE_ENABLE_TELEMETRY"], "1", "{vars:#?}");
 }
+
+/// A Task's own OTLP endpoint names another collector: Fleet gives that
+/// session none of its own collector, so Fleet's headers never reach it.
+#[test]
+fn a_task_with_its_own_otlp_endpoint_gets_none_of_fleets_collector() {
+    let collector = Collector::start();
+    let mut env = Env::new("agent-otel-own-endpoint");
+    exporting(&mut env, &collector.endpoint);
+    for (name, var) in [
+        ("base", "OTEL_EXPORTER_OTLP_ENDPOINT"),
+        ("signal", "otel_exporter_otlp_metrics_endpoint"),
+    ] {
+        let mut t = task(name, true);
+        t["spec"]["env"] = json!({ var: "http://elsewhere:4318" });
+        env.apply(t).ok();
+    }
+    env.apply(object(
+        "TaskConfig",
+        "elsewhere",
+        json!({"env": {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://elsewhere:4318/v1/traces"}}),
+    ))
+    .ok();
+    let mut configured = task("configured", true);
+    configured["spec"]["configRef"] = json!({"name": "elsewhere"});
+    env.apply(configured).ok();
+    env.reconcile().ok();
+    for name in ["base", "signal", "configured"] {
+        let (vars, _) = session(&env, name);
+        let fleets: Vec<_> = vars
+            .iter()
+            .filter(|(k, v)| {
+                v.contains(&collector.endpoint)
+                    || v.contains("agent-header")
+                    || k.as_str() == "CLAUDE_CODE_ENABLE_TELEMETRY"
+                    || k.as_str() == "OTEL_RESOURCE_ATTRIBUTES"
+            })
+            .collect();
+        assert!(fleets.is_empty(), "{name}: {vars:#?}");
+    }
+}
+
+/// A revive and a resume start the agent again with Fleet's collector as
+/// it is then: a changed endpoint and headers reach the new start.
+#[test]
+fn a_revive_and_a_resume_take_fleets_collector_as_it_is_then() {
+    let first = Collector::start();
+    let second = Collector::start();
+    let mut env = Env::new("agent-otel-restart");
+    exporting(&mut env, &first.endpoint);
+    let mut cx = task("cx", true);
+    cx["spec"]["harness"] = json!("codex");
+    env.apply(json!([
+        object("TaskConfig", "pausing", json!({"pauseAfterMs": 600_000})),
+        task("t1", true),
+        cx
+    ]))
+    .ok();
+    let mut paused = task("p1", true);
+    paused["spec"]["configRef"] = json!({"name": "pausing"});
+    env.apply(paused).ok();
+    env.reconcile().ok();
+    assert_eq!(session(&env, "t1").0["OTEL_EXPORTER_OTLP_HEADERS"], HEADERS);
+
+    // Fleet now exports elsewhere, with other headers.
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &second.endpoint);
+    env.set_var("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer second");
+    let host = env.host();
+    for name in ["t1", "cx"] {
+        host.update(|s| {
+            let x = s.sessions.get_mut(&env.session_key(name)).unwrap();
+            x.lost = true;
+            x.ready = false;
+        })
+        .unwrap();
+    }
+    // p1 goes idle long enough to pause, then a message resumes it.
+    signal_idle(&env, "p1");
+    env.reconcile().ok();
+    expire_idle(&env, "p1");
+    env.reconcile().ok();
+    assert!(
+        env.host()
+            .session(&env.session_key("p1"))
+            .unwrap()
+            .unwrap()
+            .paused
+    );
+    env.fleet(&["send", "p1", "wake up"]).ok();
+    env.reconcile().ok();
+    assert!(env.calls("revive") >= 2 && env.calls("resume") >= 1);
+
+    for name in ["t1", "p1"] {
+        let (vars, _) = session(&env, name);
+        assert_eq!(
+            vars["OTEL_EXPORTER_OTLP_ENDPOINT"], second.endpoint,
+            "{name}: {vars:#?}"
+        );
+        assert_eq!(
+            vars["OTEL_EXPORTER_OTLP_HEADERS"], "authorization=Bearer second",
+            "{name}"
+        );
+    }
+    let restarted = env
+        .host()
+        .session(&env.session_key("cx"))
+        .unwrap()
+        .unwrap()
+        .restarts;
+    let last = restarted.last().expect("a revive");
+    assert!(
+        last.iter()
+            .any(|a| a.contains(&format!("{}/v1/logs", second.endpoint))),
+        "{last:#?}"
+    );
+    assert!(
+        !last.iter().any(|a| a.contains(&first.endpoint)),
+        "{last:#?}"
+    );
+}
+
+/// The agent's hooks report it idle, as `fleet signal` writes it.
+fn signal_idle(env: &Env, name: &str) {
+    let file = env
+        .data
+        .join("signals")
+        .join(format!("{}.jsonl", env.session_key(name)));
+    let mut cmd = env.command(&["signal", "idle"]);
+    cmd.env("FLEET_SIGNAL_FILE", &file);
+    support::wait(cmd.spawn().expect("fleet signal")).ok();
+}
+
+/// Let the Task's idle time run past `pauseAfterMs` now.
+fn expire_idle(env: &Env, name: &str) {
+    let path = env.object_path("Task", name);
+    let mut obj: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(obj["status"]["idleSince"].is_u64(), "{:#}", obj["status"]);
+    obj["status"]["idleSince"] = json!(0);
+    std::fs::write(&path, obj.to_string()).unwrap();
+}

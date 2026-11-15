@@ -255,6 +255,18 @@ pub struct Collector {
     pub headers: Option<String>,
 }
 
+/// Whether `env` names a collector of its own: any variable, in any case,
+/// whose name holds `OTLP` and ends in `ENDPOINT`, such as
+/// `OTEL_EXPORTER_OTLP_ENDPOINT`, a signal's own endpoint or qwen's
+/// `QWEN_TELEMETRY_OTLP_ENDPOINT`. A session whose Task names one gets none
+/// of Fleet's collector: Fleet's headers would go to the other one.
+pub fn names_collector(env: &BTreeMap<String, String>) -> bool {
+    env.keys().any(|k| {
+        let k = k.to_ascii_uppercase();
+        k.contains("OTLP") && k.ends_with("ENDPOINT")
+    })
+}
+
 /// The arguments and variables [`Profile::telemetry`] renders.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentTelemetry {
@@ -1318,6 +1330,26 @@ mod tests {
                     p.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn an_otlp_endpoint_in_any_case_names_a_collector() {
+        let env = |k: &str| BTreeMap::from([(k.to_string(), "http://x".to_string())]);
+        for k in [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "otel_exporter_otlp_traces_endpoint",
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+            "QWEN_TELEMETRY_OTLP_ENDPOINT",
+        ] {
+            assert!(names_collector(&env(k)), "{k}");
+        }
+        for k in [
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_SERVICE_NAME",
+            "ENDPOINT",
+        ] {
+            assert!(!names_collector(&env(k)), "{k}");
         }
     }
 

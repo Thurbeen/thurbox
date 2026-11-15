@@ -248,6 +248,11 @@ Fleet turns on an agent's telemetry when all of these are true:
   name a collector for the agent.
 - The harness profile has a `[telemetry]` table.
 - The Task, or its TaskConfig, does not set `agentTelemetry` to `false`.
+- The Task's environment names no collector of its own: no variable whose
+  name holds `OTLP` and ends in `ENDPOINT`, in any case. Examples are
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and
+  `QWEN_TELEMETRY_OTLP_ENDPOINT`. Such a Task gets none of Fleet's
+  collector values: not the endpoint, and not the headers.
 
 Fleet gives the agent:
 
@@ -262,8 +267,9 @@ To find the telemetry of one Task's agent, search for the resource
 attribute `fleet.task=<Task name>`.
 
 Fleet adds these variables and arguments at each start of the session: a
-spawn, a revive and a resume. The launch snapshot does not keep them. The
-Task's own environment wins over each variable.
+spawn, a revive and a resume. So a start after a change of Fleet's
+collector gets the new endpoint and headers. The launch snapshot does not
+keep them. The Task's own environment wins over each variable.
 
 | Harness | Supported | What Fleet sets | Content switches left off | Source |
 | --- | --- | --- | --- | --- |

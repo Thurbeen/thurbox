@@ -121,7 +121,8 @@ pub struct FakeSession {
     /// Each argv a revive or a resume started it again with, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restarts: Vec<Vec<String>>,
-    /// The environment the spawn started the agent with.
+    /// The environment the agent's last start gave it: the spawn's, or the
+    /// last revive's or resume's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
 }
@@ -737,10 +738,16 @@ impl Runtime for FakeRuntime {
         &self,
         session: &SessionRef,
         conversation: Option<&str>,
-        _: &SpawnSpec,
+        launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
-        let conversation = conversation.map(str::to_string);
+        // The launch the manager completed for this start, as a runtime that
+        // runs a program is given it: its argv and environment.
+        let argv = match launch.launch_argv() {
+            Ok(argv) => profile(&launch.harness).resume(&argv, conversation),
+            Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+        };
+        let env = launch.env.clone();
         self.effect("revive", move |s| {
             let ready = !s.spawn_not_ready;
             let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone) else {
@@ -751,7 +758,7 @@ impl Runtime for FakeRuntime {
             if x.lost {
                 x.lost = false;
                 x.ready = ready;
-                let argv = profile(&x.harness).resume(&x.argv, conversation.as_deref());
+                x.env = env;
                 x.restarts.push(argv);
                 s.log.push(format!("revive {key}"));
             }
@@ -788,10 +795,16 @@ impl Runtime for FakeRuntime {
         &self,
         session: &SessionRef,
         conversation: Option<&str>,
-        _: &SpawnSpec,
+        launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
-        let conversation = conversation.map(str::to_string);
+        // The launch the manager completed for this start, as a runtime that
+        // runs a program is given it: its argv and environment.
+        let argv = match launch.launch_argv() {
+            Ok(argv) => profile(&launch.harness).resume(&argv, conversation),
+            Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+        };
+        let env = launch.env.clone();
         self.effect("resume", move |s| {
             let ready = !s.spawn_not_ready;
             let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone) else {
@@ -803,7 +816,7 @@ impl Runtime for FakeRuntime {
                 x.paused = false;
                 x.ready = ready;
                 x.at_rest = false;
-                let argv = profile(&x.harness).resume(&x.argv, conversation.as_deref());
+                x.env = env;
                 x.restarts.push(argv);
                 s.log.push(format!("resume {key}"));
             }
