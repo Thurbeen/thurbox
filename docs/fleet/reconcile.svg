@@ -53,7 +53,7 @@
 <path class="arrow" d="M165 330 V228"/>
 <text x="175" y="282" font-size="13" class="muted">next pass</text>
 <text x="30" y="500" font-size="14">Unknown never means absent: an Unknown answer keeps the last status, and the controller waits for a Known one.</text>
-<text x="30" y="520" font-size="14">A crash between 4 and 6 leaves an intent with no receipt: the next pass asks the port by the</text>
-<text x="30" y="540" font-size="14">effect&#x27;s key, and never runs the effect twice.</text>
+<text x="30" y="520" font-size="14">A crash between 4 and 6 leaves an intent with no receipt. An unsafe effect (Spawn) is looked up by</text>
+<text x="30" y="540" font-size="14">its key before it acts again; a safe one (CleanWorkspace) runs again after a wait.</text>
 </g>
 </svg>

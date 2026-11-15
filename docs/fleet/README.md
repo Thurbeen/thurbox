@@ -102,8 +102,10 @@ Three rules apply to every controller:
 1. **Intent before effect.** The manager writes the planned status, with
    the effect's intent, before it runs the effect. It writes the receipt
    after. Each effect has a deterministic key. After a crash, an intent
-   with no receipt is a question: the next pass asks the port by the key,
-   and does not run the effect again.
+   with no receipt is a question. For an effect that is not safe to
+   repeat, such as `Spawn`, the next pass looks the result up by the key
+   before it acts again. An effect that is safe to repeat, such as
+   `CleanWorkspace`, runs again after a wait.
 2. **Unknown never means absent.** Every observation is Known or Unknown.
    An Unknown answer (a timeout, an unreadable file, a corrupt record)
    keeps the last status. Only a Known answer can say that a session or a
@@ -133,7 +135,9 @@ running:
 
 1. You run `fleet apply -f fix-login.json`. The store creates the Task in
    phase `Pending`, with the `fleet.dev/release` finalizer.
-2. The manager freezes the launch into `status.execution`.
+2. This Task names no `configRef` and no `env`, so the manager has no
+   launch to freeze. A Task with either gets its launch frozen into
+   `status.execution` before the first effect.
 3. TaskController plans `Materialize`. The runtime's `workspace` call
    makes the workspace on the place.
 4. TaskController plans `Spawn`, and the phase is `Spawning`. The
@@ -160,12 +164,19 @@ running:
     writes `status.result`.
 13. TaskController sets the phase to `Concluded`. The session stays, and
     later inbox entries still reach it.
-14. When the ready policy holds (the worker is done and idle),
-    ForgeController plans `MarkReady`. The forge port takes the draft out
-    of draft.
+14. When a ready policy is selected and holds, ForgeController plans
+    `MarkReady`. The forge port takes the draft out of draft. No policy is
+    selected by default: `fleet init` writes three policies but no
+    `forge.draftPolicy`. Set `draftPolicy = "checks"` under `[forge]`, or
+    `spec.forge.draft.policy` on the Task. See
+    [ready policies](controllers/forge.md#ready-policies) for the checks
+    that each policy adds to "the worker is done and idle".
 15. You run `fleet delete task fix-login`. The phase is `Releasing`.
 16. TaskController plans `Release`. The runtime's `stop` call ends the
-    session. Then the finalizer goes, and the store deletes the Task.
+    session.
+17. TaskController plans `CleanWorkspace`. The runtime's `stop` call with
+    `release` removes the workspace, and the receipt says `Deleted`. Then
+    the finalizer goes, and the store deletes the Task.
 
 ## Reference pages
 
