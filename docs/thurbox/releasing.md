@@ -172,12 +172,16 @@ the next major; cut the release it owed by dispatching with an explicit
 3.0.0 therefore takes one deliberate step: a reviewed pull request that sets
 `RELEASE_LINE = 3` and does what the list above asks. `main` carries `feat!:`
 commits since v2.88.0, so the push that merges it computes v3.0.0 with
-`cog bump --auto`, and the Release run cuts it with no dispatch. Merge that pull
-request only after v2.89.0 is published from `v2.x`. Tags v2.84.0–v2.88.0 sit
-on `main` but their releases were never published, so v2.83.6 is the newest
-2.x anyone installed, `v2.x` branches from it, and v2.89.0 is the first
-published 2.x with the line rule; it must be out before 3.0.0 is "Latest". `v2.x` is
-branched from the last 2.x commit; `cog.toml` already allows `v*.x`. A 2.x
+`cog bump --auto`, and the Release run cuts it with no dispatch.
+
+No 2.x release has to come first. Tags v2.84.0–v2.88.0 sit on `main`, but their
+releases were never published, so v2.83.6 is the newest 2.x anyone installed.
+Every installed 2.x is already safe on a 3.x "Latest": v2.2.3–v2.83.6 report
+3.x and install nothing (`crosses_major`), and v1.x and v2.0.0–v2.2.2 fail on
+the missing `thurbox-v<V>-checksums.txt` (rule 1). A line-rule 2.x from
+`v2.x` (v2.89.0, the first published 2.x with the line rule) is an optional
+follow-up: it lets v2 installs keep receiving 2.x fixes after 3.0.0. `v2.x`
+branches from v2.83.6; `cog.toml` already allows `v*.x`. A 2.x
 maintenance release is cut by dispatching `cd.yml` from `v2.x` with an explicit
 version: it is tagged and built, published without "Latest" while a 3.x tag is
 higher, and still pushed to the 2.x package names as the newest 2.x.
