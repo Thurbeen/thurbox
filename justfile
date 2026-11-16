@@ -26,12 +26,14 @@ test-one NAME:
     cargo nextest run -E 'test({{NAME}})'
 
 # Run the bats suites: the install script, the pull-request-title checker, the
-# winget packaging scripts and the Windows harness's psmux gate probes. Not
+# release-line gate, the winget packaging scripts and the Windows harness's
+# psmux gate probes. Not
 # part of `just test` (which is cargo's), and needs bats on PATH (the title
 # checker's suite skips without `cog`).
 test-scripts:
     bats scripts/install.bats
     bats scripts/ci/check-pr-title.bats
+    bats scripts/ci/release-line.bats
     bats packaging/winget/winget.bats
     bats scripts/dev/e2e/windows-vm.bats
 

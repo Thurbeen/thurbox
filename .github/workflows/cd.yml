@@ -18,6 +18,14 @@ on:
   push:
     branches: [main]
 
+# The major the existing package names carry: Homebrew `thurbox`, AUR
+# `thurbox`/`thurbox-bin`, Chocolatey `thurbox`, winget `Thurbeen.thurbox`.
+# They stay on it for good, so nobody moves to a new major through a package
+# upgrade they did not choose; a new major ships under names of its own. See
+# docs/RELEASING.md, "v2 and v3".
+env:
+  PACKAGE_CHANNELS_MAJOR: "2"
+
 # Prevent concurrent releases
 concurrency:
   group: release-${{ github.ref }}
@@ -45,6 +53,11 @@ jobs:
       # tag points at "the current thurbox" rather than at a version, so a 1.8.x
       # cut would drag all of it backwards past 2.x. See the `newest` step.
       newest: ${{ steps.newest.outputs.newest }}
+      # Whether this cut goes to the existing package names: the newest release
+      # of PACKAGE_CHANNELS_MAJOR. Not `newest`: once a later major exists, a
+      # 2.x maintenance release is behind the highest tag yet is still exactly
+      # what those names' users should get. See the `line` step.
+      channels: ${{ steps.line.outputs.channels }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -179,11 +192,11 @@ jobs:
           #
           # So compare the cut against every tag that exists. Behind the highest
           # one means this is a maintenance release: still tagged, still built,
-          # still published with its binaries, but not marked latest and not
-          # pushed to any channel. The version is the whole test — not the ref —
-          # because that is the property those consumers care about, and a hotfix
-          # cut from some other ref that *is* the newest version should still
-          # ship everywhere.
+          # still published with its binaries, but not marked latest. The
+          # version is the whole test — not the ref — because that is the
+          # property the installers care about. The package channels are decided
+          # by major instead (the `line` step): a 2.x cut behind a 3.x tag is
+          # still the newest 2.x, which is what the existing package names carry.
           TARGET="${{ steps.parse.outputs.version }}"
           HIGHEST="$(git tag --list 'v*' | sort -V | tail -1)"
           echo "cutting ${TARGET:-(nothing)}; highest existing tag ${HIGHEST:-(none)}"
@@ -196,8 +209,25 @@ jobs:
             echo "$TARGET leads the line — release as latest, push to every channel"
           else
             echo "newest=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::$TARGET is behind $HIGHEST — cutting it as a maintenance release: tagged and published with binaries, but not marked latest and not pushed to Homebrew/AUR/Chocolatey/winget."
+            echo "::notice::$TARGET is behind $HIGHEST — cutting it as a maintenance release: tagged and published with binaries, but not marked latest."
           fi
+
+      - name: Is this release on the source's major line
+        id: line
+        # Only for a cut that will happen: a span the relevance gate already
+        # suppressed tags nothing, so there is nothing to refuse.
+        if: steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false'
+        # `shell: bash` is what turns on pipefail; the default shell would let
+        # `tee` swallow the script's refusal.
+        shell: bash
+        run: |
+          # Refuses — failing the run before anything is tagged — a version
+          # whose major is not the source's RELEASE_LINE, which is what stops a
+          # `BREAKING CHANGE:` footer from cutting the next major on its own.
+          # Also decides `channels`. The rules and their tests are in
+          # scripts/ci/release-line.{sh,bats}.
+          scripts/ci/release-line.sh "${{ steps.parse.outputs.version }}" "$PACKAGE_CHANNELS_MAJOR" \
+            | tee -a "$GITHUB_OUTPUT"
 
   # Create git tag (only if release needed)
   create-tag:
@@ -422,7 +452,7 @@ jobs:
     name: Publish AUR (${{ matrix.pkgname }})
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
-      && needs.check-release.outputs.newest == 'true'
+      && needs.check-release.outputs.channels == 'true'
     runs-on: ubuntu-latest
     # Hoisted so the publish step can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
@@ -469,7 +499,7 @@ jobs:
     name: Publish Homebrew formula
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
-      && needs.check-release.outputs.newest == 'true'
+      && needs.check-release.outputs.channels == 'true'
     runs-on: ubuntu-latest
     # Hoisted so the push step can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
@@ -541,7 +571,7 @@ jobs:
     name: Publish Chocolatey package
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
-      && needs.check-release.outputs.newest == 'true'
+      && needs.check-release.outputs.channels == 'true'
     runs-on: windows-latest
     # Hoisted so the steps can be skipped when the secret is unset
     # (the `secrets` context cannot be used directly in an `if` condition).
@@ -692,7 +722,7 @@ jobs:
     name: Publish winget manifest
     needs: [check-release, create-tag, publish]
     if: needs.check-release.outputs.should_release == 'true'
-      && needs.check-release.outputs.newest == 'true'
+      && needs.check-release.outputs.channels == 'true'
     runs-on: windows-latest
     continue-on-error: true
     # Hoisted so the steps can be skipped when the secret is unset

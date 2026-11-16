@@ -63,7 +63,7 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 if [ -z "$output" ]; then
-    printf '%s' '{"tag_name":"v1.2.3"}'
+    printf '%s' '[{"tag_name":"v2.1.3"}]'
     exit 0
 fi
 printf '%s' 'partial checksum' > "$output"
@@ -175,7 +175,7 @@ fn interrupted_cli_update_recovers_only_abandoned_scratch() {
             .filter_map(Result::ok)
             .map(|entry| entry.path())
             .find(|path| {
-                std::fs::read(path.join("thurbox-v1.2.3-checksums.txt"))
+                std::fs::read(path.join("thurbox-v2.1.3-checksums.txt"))
                     .is_ok_and(|bytes| bytes == b"partial checksum")
             })
         {
