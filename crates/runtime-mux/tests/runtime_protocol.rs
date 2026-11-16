@@ -39,16 +39,24 @@ impl Runtime {
     }
 
     fn call(&self, verb: &str, request: Value) -> Value {
+        self.call_on(None, verb, request)
+    }
+
+    fn call_on(&self, socket: Option<&str>, verb: &str, request: Value) -> Value {
         let mut command = Command::new(env!("CARGO_BIN_EXE_runtime-mux"));
         // The guard pins the interface's socket name, as a runtime started
         // from a thurbox pane inherits it; the runtime must not use it.
         self.server.scope(&mut command);
         command.env("XDG_DATA_HOME", self.server.tmpdir().join("data"));
         command.envs(self.env.iter().map(|(k, v)| (k, v)));
-        let mut child = command
+        command
             .arg(verb)
             .env_remove("TMUX")
-            .env_remove("RUNTIME_MUX_SOCKET")
+            .env_remove("RUNTIME_MUX_SOCKET");
+        if let Some(socket) = socket {
+            command.env("RUNTIME_MUX_SOCKET", socket);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -465,6 +473,30 @@ fn a_started_key_reads_exited_once_its_server_is_gone_until_a_stop() {
         "stopped"
     );
     assert_eq!(rt.inspect("rebooted")["known"], "none");
+}
+
+#[test]
+fn a_stop_on_another_server_keeps_a_started_keys_record() {
+    let Some(rt) = Runtime::new() else { return };
+    let (id, _) = started(&rt.start("x.started-k", &["sleep", "300"]));
+    let other = rt.call_on(
+        Some("runtime-mux.started-x"),
+        "stop",
+        json!({"protocol": 1, "key": "k"}),
+    );
+    assert_eq!(other["known"], "stopped", "{other}");
+    Command::new("tmux")
+        .env("TMUX_TMPDIR", rt.server.tmpdir())
+        .env_remove("TMUX")
+        .args(["-L", SOCKET, "kill-server"])
+        .output()
+        .expect("run tmux");
+    let answer = rt.inspect_until("x.started-k", |a| a.get("known").is_some());
+    assert_eq!(
+        answer["known"],
+        json!({"exited": {"id": id, "code": null}}),
+        "{answer}"
+    );
 }
 
 #[test]

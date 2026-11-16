@@ -321,7 +321,11 @@ fn kept(server: &str) -> protocol::Kept {
     let (sockets, prefix) = private_dir();
     let started = match &sockets {
         Ok(sockets) => runtime_mux::workspace::data_dir()
-            .map(|data| data.join("started").join(sockets_digest(sockets)))
+            .map(|data| {
+                data.join("started")
+                    .join(sockets_digest(sockets))
+                    .join(hex(server))
+            })
             .ok_or_else(|| "no HOME to keep the started keys in".to_string()),
         Err(e) => Err(format!("no directory for the tmux sockets: {e}")),
     };
@@ -331,8 +335,12 @@ fn kept(server: &str) -> protocol::Kept {
             format!("{prefix}runtime-mux-{server}.paused-"),
             "pause mark",
         ),
-        started: protocol::Marks::new(started, format!("{server}.started-"), "start record"),
+        started: protocol::Marks::new(started, String::new(), "start record"),
     }
+}
+
+fn hex(text: &str) -> String {
+    text.bytes().map(|b| format!("{b:02x}")).collect()
 }
 
 fn sockets_digest(sockets: &std::path::Path) -> String {

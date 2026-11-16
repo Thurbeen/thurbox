@@ -112,8 +112,10 @@ a pane kept after its program exits is how `inspect` reports the code; a
 
 - A `start` writes the record, a file that holds the key's pane id, under
   `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/started/`, which a reboot
-  keeps. The record is `<digest>/<socket>[@<place>].started-<key>`, where
-  `<digest>` names the private directory that holds the server's socket.
+  keeps. The record is `<digest>/<server>/<key>`. `<digest>` names the
+  private directory that holds the server's socket. `<server>` is the
+  server's name, `<socket>` or `<socket>@<place>`, in hexadecimal, so no
+  key or place name can make two servers share a directory.
 - A `stop` removes the record.
 - `inspect` answers `{"exited": {"id", "code": null}}` for a key with a
   record and no window. Fleet then revives the session on its
