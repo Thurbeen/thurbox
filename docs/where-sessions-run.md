@@ -110,7 +110,8 @@ when the laptop sleeps.
 3. On box, install a user systemd unit that runs `fleet up`.
    thurbox never starts `fleet up` on a remote Fleet. A user service does not
    read your login `PATH`: set `Environment=PATH` to the directories that hold
-   `fleet`, `runtime-mux`, `tmux` and your coding agents. `fleet up` starts
+   `fleet`, `runtime-mux`, `workspace-git`, `tmux`, `git` and your coding
+   agents. `fleet up` starts
    the tmux server that holds the sessions, so the server is in the unit's
    cgroup: `KillMode=process` keeps it, and the sessions, when the unit
    stops or restarts.

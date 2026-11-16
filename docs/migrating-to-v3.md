@@ -11,9 +11,8 @@ setups that 3.x allows.
 ## Who needs to migrate
 
 - You run thurbox 2.x or Fleet 2, and you want 3.x.
-- You do not have to migrate. A 2.x install never updates itself to 3.x.
-  Install with `VERSION=v2.x.y` (`THURBOX_VERSION` on Windows) to stay on
-  2.x.
+- You want to stay on 2.x. A 2.x install never updates itself to 3.x.
+  Install with `VERSION=v2.x.y` (`THURBOX_VERSION` on Windows) to keep 2.x.
 - A new user has nothing to migrate. Start at the
   [README](../README.md#install).
 
@@ -38,7 +37,7 @@ config again and you start your work again as Fleet 3 Tasks.
 Both lines use the same paths: `~/.config/thurbox`, `~/.local/share/thurbox`,
 `~/.config/fleet` and `~/.local/share/fleet` (the native per-user
 directories on macOS and Windows). Both install the same program names.
-Thus 3.x replaces 2.x on a machine. The two lines cannot run side by side.
+3.x replaces 2.x on a machine. The two lines cannot run side by side.
 
 ## Before you install
 
@@ -59,8 +58,9 @@ Thus 3.x replaces 2.x on a machine. The two lines cannot run side by side.
 
 ## 1. Install 3.x on every machine
 
-Run the install script again. It is the only path from 2.x to 3.x:
+Run the install script again. No updater moves 2.x to 3.x:
 `thurbox-cli update`, Homebrew, the AUR, Chocolatey and winget stay on 2.x.
+A Nix flake input that follows `main`, or a source build, gives 3.x too.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
@@ -96,9 +96,13 @@ key against [the configuration reference](fleet/configuration.md):
 - Each remote machine: add it as a place under `[runtimes.mux.places]`
   ([remote places](fleet/configuration.md#remote-places-on-runtime-mux)).
 
-Do not copy Fleet 2's `[runtime]` table, with its `kind = "thurbox"`, `cli`,
-`keyPrefix` and `[runtime.repositories]`, or a `[workspaces]` section.
-Fleet 3 refuses a config that has them.
+Do not copy these. Fleet 3 refuses a config that has one:
+
+- Fleet 2's `[runtime]` table, with its `kind = "thurbox"`, `cli`,
+  `keyPrefix` and `[runtime.repositories]`.
+- `[hosts]`. A Task names a place instead.
+- `[starter]`. `fleet up` starts no starter Task.
+- `[workspaces]`. Each runtime makes its own workspaces.
 
 Keep `config.toml.v2` and `store-v1.v2` as the record of your 2.x work.
 Fleet 3 never reads or changes them.
@@ -123,8 +127,9 @@ Write each Task with the Fleet 3 shape
 }
 ```
 
-- `spec.workspace` lists URLs. A `git+` URL gets its own worktree, on the
-  branch `<task name>.<task uid>`, under the runtime's folder:
+- `spec.workspace` lists URLs. A `git+` URL gets its own worktree, on a
+  branch named after the runtime's session key (`<keyPrefix>.<task uid>`
+  for `runtime-mux`), under the runtime's folder:
   `~/.local/share/runtime-mux/workspaces/<key>/<repository>/` for
   `runtime-mux`. Add `?branch=NAME` to continue a branch you pushed from 2.x.
 - A `git+file://` URL uses a checkout on the place itself. A `file://` URL
@@ -132,6 +137,10 @@ Write each Task with the Fleet 3 shape
 - `spec.host` names a place, `<runtime>/<place>`. `fleet runtime places`
   lists them.
 - Remove `spec.model`.
+- Deleting a Task removes its worktree. `workspace-git` keeps the branch,
+  and commits the work that exists only in the worktree to
+  `refs/fleet/preserved/<key>/<name>`. It prunes those refs after
+  `preserve.days`, 30 by default.
 
 In thurbox, `Ctrl+N` writes the Task for you.
 
@@ -211,7 +220,8 @@ dialog: the Task's `WorkspaceTrusted` condition says that the session waits
 ([workspace trust](fleet/contracts.md#workspace-trust)). Codex and pi get a
 launch flag that trusts the workspace.
 
-Answer the dialog in the session, and the brief follows. A setting that
+Kimi Code and GitHub Copilot CLI ask their own folder trust in the same
+way. Answer the dialog in the session, and the brief follows. A setting that
 trusts the whole runtime folder ahead of time is an open point: see
 [Open points](#open-points).
 
@@ -237,32 +247,22 @@ and names it at startup with the reason. `thurbox-cli config validate`
 passes a retired key and fails any other unknown key. A save from the
 settings panel removes the retired keys.
 
-| Retired key | Why |
-| --- | --- |
-| `multiplexer` | Fleet's runtime runs every session's terminal. |
-| `[remote]` | thurbox lists no sessions through other hosts. |
-| `[telemetry]` | The standard `OTEL_*` variables configure telemetry. |
-| `[fleet]` | List the Fleets as `[fleets.<name>]`. |
-| `audit_retention_days`, `deleted_retention_days` | thurbox keeps no session database. |
-| `features.soft_delete` | Fleet deletes a session at once. |
-| `three_panel_min_cols`, `features.file_viewer` | The interface has neither. |
-| `features.info_panel`, `features.code_review`, `features.global_search` | Switch a pane off in the Interface tab. |
-| `notifications.also_on_waiting` | Fleet reports no finished state. |
-
-The list is `RETIRED_KEYS` in
-[`session/settings.rs`](../crates/thurbox/src/session/settings.rs).
+[The retired keys](thurbox/config.md#retired-keys) lists each one with
+its reason. Remove them, or save once from the settings panel.
 `thurbox-cli doctor` warns about a `hosts.toml` or an `automations.json`
 that 2.x left, and names what replaces it.
 
 ## 8. Set up remote places
 
-A 2.x remote machine was a `hosts.toml` entry. In 3.x it is one of two
-things ([Where sessions run](where-sessions-run.md)):
+A 2.x remote machine or WSL distro was a `hosts.toml` entry. In 3.x it is
+one of two things ([Where sessions run](where-sessions-run.md)):
 
-- **A place of your Fleet.** Add it under `[runtimes.mux.places.<name>]`.
-  The place needs `ssh -o BatchMode=yes <destination> true` to succeed,
+- **A place of your Fleet.** Add it under `[runtimes.mux.places.<name>]`,
+  with `kind = "ssh"` or `kind = "wsl"`. An ssh place needs
+  `ssh -o BatchMode=yes <destination> true` to succeed,
   tmux 3.2 or newer, Fleet 3's `fleet` and your agents on its `PATH`, and
-  `workspace-git` and `git` for a `git+` workspace. Its sessions run on its
+  `workspace-git` and `git` for a `git+` workspace. A WSL place also needs
+  `flock`. Its sessions run on its
   `runtime-mux` socket, and its workspaces under its own
   `~/.local/share/runtime-mux/workspaces`. `fleet doctor` names what is
   missing.
@@ -271,21 +271,25 @@ things ([Where sessions run](where-sessions-run.md)):
   `settings.toml`.
 
 A machine that a configuration tool manages, such as NixOS, needs the same
-programs at a 3.x release, and the service for a Fleet of its own.
+programs at a 3.x release, and the service for a Fleet of its own. See
+[Open points](#open-points).
 
 ## 9. Remove what 2.x left
 
 Remove each item only after you have checked that it holds no work you keep.
 
-- **2.x sessions.** They run on the `thurbox` tmux socket, on this machine
-  and on each remote machine. Fleet 3 does not see them. List them, then end
-  each one you do not need:
+- **2.x sessions.** They run on the `thurbox` tmux socket. thurbox keeps
+  that socket under its data directory, so name the directory to tmux.
+  Fleet 3 does not see these sessions. List them, then end each one you do
+  not need:
 
   ```sh
-  tmux -L thurbox list-sessions
-  tmux -L thurbox kill-session -t NAME
+  TMUX_TMPDIR=~/.local/share/thurbox/tmux tmux -L thurbox list-sessions
+  TMUX_TMPDIR=~/.local/share/thurbox/tmux tmux -L thurbox kill-session -t NAME
   ```
 
+  Do the same on each 2.x remote machine, with the socket its `hosts.toml`
+  entry named.
 - **The automation heartbeat and timer.** `thurbox-cli doctor` names a
   heartbeat window and an enabled `thurbox-automations.timer` that still run
   `thurbox-cli automation tick`, and prints the command that removes each.
@@ -293,10 +297,6 @@ Remove each item only after you have checked that it holds no work you keep.
   `~/.local/share/thurbox/worktrees` by default, on each machine. In each
   repository, `git worktree list` shows them. Push or save their work, then
   run `git worktree remove PATH` and `git worktree prune`.
-- **Preserved refs.** A runtime can keep a deleted Task's uncommitted work
-  under `refs/fleet/preserved/*` in a checkout. List them with
-  `git for-each-ref refs/fleet/preserved`. Delete one with
-  `git update-ref -d REF` only after you have checked its commits.
 - **Files 3.x does not read.** `hosts.toml`, `agents.toml`,
   `automations.json` and `hooks.toml` in `~/.config/thurbox`, and
   `thurbox.db` and `automation-tick.*` in `~/.local/share/thurbox`.
@@ -319,21 +319,26 @@ fleet list task
 thurbox-cli doctor
 ```
 
-`thurbox-cli doctor` reports each Fleet, its runtime, its agents, and each
-2.x file it finds.
+`thurbox-cli doctor` reports each Fleet, its runtime and its agents. It
+also reports a 2.x `hosts.toml` or `automations.json`, the automation
+heartbeat window and the automation timer. It does not check the other 2.x
+files.
 
 ## Open points
 
-These points have no recorded answer yet:
+This page does not cover these points yet:
 
 - **Trust the runtime folder ahead of time.** No documented setting makes
   Claude Code trust every directory under the runtime's folder. Until one
   is recorded, answer the dialog once per Task.
 - **Plugins.** Each plugin documents its own Fleet 3 install. This page does
   not name a plugin's version.
-- **OpenTelemetry after the cutover.** No check of a migrated install's
-  export is recorded here yet.
-- **A remote place under NixOS.** No recorded module or configuration exists
-  here yet.
+- **OpenTelemetry after the cutover.** [Observability](observability.md)
+  owns the variables. This page names no check of a migrated install's
+  export.
+- **A remote place under NixOS.** The flake's NixOS and Home Manager
+  modules (`programs.thurbox`) install `thurbox` and `thurbox-cli` only.
+  They install no `fleet` or `workspace-git`, and no service for
+  `fleet up`. Provide those another way.
 - **The 2.x update notice.** A 2.x `thurbox-cli version --check` links the
   `v2.x` branch's release notes, not this page.

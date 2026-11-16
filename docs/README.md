@@ -104,7 +104,7 @@ docs/
 ├── README.md                  the system: this page
 ├── constitution.md            the rules for every component, and each one's own
 ├── where-sessions-run.md      Fleets and places: where a session runs
-├── migrating-to-v3.md       moving a 2.x install to 3.x
+├── migrating-to-v3.md         moving a 2.x install to 3.x
 ├── observability.md           OpenTelemetry: one setup for every program
 ├── components.svg
 ├── thurbox/                   the interface
