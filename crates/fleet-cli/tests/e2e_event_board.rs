@@ -655,3 +655,56 @@ fn a_session_without_an_outbox_refuses_to_publish() {
     env.reconcile().ok();
     assert!(list(&env, &[]).is_empty(), "no fallback to cli/USER");
 }
+
+#[test]
+fn a_line_left_by_a_session_that_is_gone_is_still_ingested() {
+    let env = session_env("event-session-gone");
+    let outbox = session_var(&env, "FLEET_EVENT_FILE");
+    env.host().vanish(&env.session_key("a")).unwrap();
+    env.reconcile().ok();
+    assert_eq!(env.get("a")["status"]["sessionState"], "Gone");
+    append_raw(
+        &outbox,
+        "{\"board\":\"shared\",\"type\":\"last.words\",\"data\":1}\n",
+    );
+    env.reconcile().ok();
+    let events = list(&env, &[]);
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!(events[0]["type"], "last.words");
+}
+
+#[test]
+fn a_released_session_keeps_its_task_until_its_outbox_is_read() {
+    let env = session_env("event-session-release");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    publish_inside(&env, &borrowed(&vars), &["--type", "first", "--data", "1"]).ok();
+    env.reconcile().ok();
+    append_raw(
+        &outbox,
+        "{\"board\":\"shared\",\"type\":\"before.release\",\"data\":1}\n",
+    );
+    let held = std::fs::read(&outbox).unwrap();
+    std::fs::remove_file(&outbox).unwrap();
+    std::fs::create_dir(&outbox).unwrap();
+    env.host().set_at_rest(&env.session_key("a"), true).unwrap();
+    env.fleet(&["delete", "task", "a"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let task = env.get("a");
+    assert!(
+        task["status"]["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "Released" && c["reason"] == "OutboxUnread"),
+        "an unread outbox holds the Task: {:#}",
+        task["status"]
+    );
+    std::fs::remove_dir(&outbox).unwrap();
+    std::fs::write(&outbox, held).unwrap();
+    env.reconcile().ok();
+    env.get_absent("a");
+    let types: Vec<Value> = list(&env, &[]).iter().map(|e| e["type"].clone()).collect();
+    assert_eq!(types, vec![json!("first"), json!("before.release")]);
+}

@@ -543,6 +543,9 @@ pub struct Observations {
     /// `Known(None)` means the runtime proved it made no workspace under the
     /// key.
     pub workspace: Option<Observation<Option<crate::workspace::WorkspaceRef>>>,
+    /// Whether the session's outbox holds no whole line still to ingest,
+    /// as the manager's ingest found it this pass. `None`: not asked.
+    pub outbox_drained: Option<Observation<bool>>,
 }
 
 /// `task/<name>/<uid>/<action>[/<attempt>]`: deterministic, so a repeat is

@@ -894,7 +894,7 @@ refused.
   publish`). A session with `FLEET_SIGNAL_FILE` and no `FLEET_EVENT_FILE`
   refuses, and never falls back to `cli/<user>`. On each pass, before the
   Task's controllers, the manager reads the outbox of each Task whose
-  `status.session` is set and whose `sessionState` is not `Gone`, from
+  `status.session` is set, `Gone` or not, from
   `status.outbox.offset`, at most `event::MAX_OUTBOX_READ` bytes: through
   the signal port on this machine, or through the runtime's `exec`
   (`fleet signal-read --from <offset> <file>`) on a place. The pure
@@ -910,7 +910,14 @@ refused.
   `Forbidden`), is skipped: `status.outbox.skipped` counts it and
   `lastSkipped` says why. Any other store error stops the pass's ingest at
   that line. An outbox that cannot be read is Unknown: the offset stays and
-  nothing is concluded. `e2e_event_board` drives it through the real
+  nothing is concluded. The ingest also answers the `outbox_drained`
+  observation: Known(true) when every whole line is in (or there is no
+  outbox), Known(false) when the read hit its cap or the status write
+  conflicted, Unknown when the outbox or the store could not tell. After a
+  Known `Released` receipt, TaskController keeps the finalizer until it is
+  Known(true): `Released=False/OutboxDraining`, or `Unknown/OutboxUnread`.
+  The release stopped the session, so the read after it is the last one;
+  a torn last line then never completes and is left. `e2e_event_board` drives it through the real
   binary.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.

@@ -357,15 +357,19 @@ impl Manager<'_> {
             for obj in &tasks {
                 let ingested = match self.ingest_outbox(obj, &tasks, lease, opts.lease_ttl, report)
                 {
-                    Ok(written) => written,
+                    Ok(ingested) => ingested,
                     Err(e @ StoreError::LeaseLost(_)) => return Err(e),
                     Err(e) => {
                         report.errors.push(format!("{} outbox: {e}", obj.key()));
-                        None
+                        outbox::Ingested {
+                            written: None,
+                            drained: Observation::unknown(e.to_string()),
+                        }
                     }
                 };
-                busy |= ingested.is_some();
-                let obj = ingested.as_ref().unwrap_or(obj);
+                busy |= ingested.written.is_some();
+                let outbox_drained = ingested.drained;
+                let obj = ingested.written.as_ref().unwrap_or(obj);
                 let task_due = self.due(obj);
                 let forge_due = ForgeController::due(obj, now);
                 let gateway_due = {
@@ -394,7 +398,15 @@ impl Manager<'_> {
                         "TaskController",
                         obj,
                         || self.clock.now(),
-                        || self.reconcile_task(obj, lease, opts.lease_ttl, report),
+                        || {
+                            self.reconcile_task(
+                                obj,
+                                outbox_drained.clone(),
+                                lease,
+                                opts.lease_ttl,
+                                report,
+                            )
+                        },
                     );
                     busy |= self.tally(step, &obj.key(), report)?;
                     moved = true;
@@ -1857,6 +1869,7 @@ impl Manager<'_> {
     fn reconcile_task(
         &self,
         obj: &Object,
+        outbox_drained: Observation<bool>,
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
@@ -1921,7 +1934,10 @@ impl Manager<'_> {
         }
         let mut input = TaskInput {
             task: obj,
-            observations: Observations::default(),
+            observations: Observations {
+                outbox_drained: Some(outbox_drained),
+                ..Observations::default()
+            },
             now: self.clock.now(),
         };
         let ctl = TaskController;

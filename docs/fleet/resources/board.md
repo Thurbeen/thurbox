@@ -107,9 +107,9 @@ Fleet:    TaskController reads the outbox ──▶ append as the Task ──▶
 2. It appends one JSON line to the outbox and prints the line's offset,
    for example `shared git.push queued at outbox offset 0`. The Board does
    not have the event yet.
-3. On each pass, TaskController reads the outbox of each session that is
-   not `Gone`, from the offset in `status.outbox`. It reads only whole
-   lines, at most 512 KiB per pass.
+3. On each pass, TaskController reads the outbox of each Task that has a
+   session, also when the session is `Gone`. It reads from the offset in
+   `status.outbox`. It reads only whole lines, at most 512 KiB per pass.
 4. TaskController appends each event to its Board, under the lease. The
    source is the Task: `{task, uid, lineage}`. Then it writes the new
    offset to `status.outbox`.
@@ -136,6 +136,11 @@ These rules apply:
   The next lines continue.
 - When TaskController cannot read the outbox, the offset stays. It
   concludes nothing.
+- A deleted Task keeps its finalizer after the release until its outbox
+  holds no whole line still to ingest. Until then its `Released` condition
+  is `False/OutboxDraining`, or `Unknown/OutboxUnread` when the outbox
+  cannot be read. The release stops the session first, so no line comes
+  after the last read.
 - A session that has `FLEET_SIGNAL_FILE` but no `FLEET_EVENT_FILE` refuses
   to publish. It never publishes as `cli/<user>`.
 

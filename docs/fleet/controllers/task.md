@@ -723,6 +723,13 @@ For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. The finalizer remains while release is failed or ambiguous. It is removed
 only after Known Released, or when there is no session to release.
 
+After Known Released, the finalizer also waits for the session's event
+outbox: the manager's ingest must find no whole line left to read
+(`outbox_drained`). A line still to ingest keeps
+`Released=False/OutboxDraining`; an outbox that cannot be read keeps
+`Released=Unknown/OutboxUnread`. See
+[Board](../resources/board.md#publishing-from-a-session).
+
 When the runtime made the workspace, the release is followed by
 `CleanWorkspace`, the runtime's `stop` with `release`:
 

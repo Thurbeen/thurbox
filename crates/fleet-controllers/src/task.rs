@@ -1698,6 +1698,9 @@ impl Pass<'_, '_> {
                     outcome: Observation::Known(EffectOutcome::Released),
                     ..
                 }) => {
+                    if !self.outbox_drained() {
+                        return;
+                    }
                     self.cond(RELEASED, ConditionStatus::True, "Released", "");
                     self.let_go();
                     return;
@@ -1772,6 +1775,28 @@ impl Pass<'_, '_> {
             format!("attempt {attempt}"),
         );
         self.intend(key, Action::Release { session });
+    }
+
+    /// Whether nothing the released session published is left unread: the
+    /// Task keeps its finalizer until its outbox is ingested, and an outbox
+    /// that cannot be read is no proof that it is.
+    fn outbox_drained(&mut self) -> bool {
+        match self.input.observations.outbox_drained.clone() {
+            None | Some(Observation::Known(true)) => true,
+            Some(Observation::Known(false)) => {
+                self.cond(
+                    RELEASED,
+                    ConditionStatus::False,
+                    "OutboxDraining",
+                    "the session's outbox has lines still to ingest",
+                );
+                false
+            }
+            Some(Observation::Unknown { why }) => {
+                self.cond(RELEASED, ConditionStatus::Unknown, "OutboxUnread", why);
+                false
+            }
+        }
     }
 
     fn release_grace_over(&self) -> bool {
