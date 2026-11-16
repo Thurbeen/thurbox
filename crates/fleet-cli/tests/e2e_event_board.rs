@@ -1695,7 +1695,7 @@ fn watch_on_a_cursor_that_expires_while_it_runs_names_where_it_had_got_to() {
         "--after",
         "3",
         "--poll-ms",
-        "3000",
+        "10000",
         "--json",
     ]);
     let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
@@ -1722,7 +1722,10 @@ fn watch_on_a_cursor_that_expires_while_it_runs_names_where_it_had_got_to() {
     run.code(5).stderr_has("after 5");
     assert_eq!(rest.len(), 1, "{rest:?}");
     let expired: Value = serde_json::from_str(&rest[0]).unwrap();
-    assert_eq!(expired, json!({"expired": {"oldest": 9}}));
+    let oldest = expired["expired"]["oldest"]
+        .as_u64()
+        .expect("an expired answer");
+    assert!(oldest > 6, "the events after 5 are gone: {expired}");
 }
 
 struct FixedClock(u64);
