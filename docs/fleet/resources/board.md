@@ -138,6 +138,9 @@ These rules apply:
 - When the outbox is shorter than the offset, the file was made again.
   TaskController reads it from the start, and `generation` goes up by one.
 - A line has at most 64 KiB. A line without its newline waits for it.
+- TaskController skips a longer line whole. When it skips the line before
+  its newline arrives, it sets `status.outbox.discarding` and passes over
+  the rest of the line up to that newline. The rest never becomes an event.
 - The outbox holds event payloads, so it is private. On Unix, Fleet and
   `fleet event publish` make it with mode 0600, and its directory with
   mode 0700.

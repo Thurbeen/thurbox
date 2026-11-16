@@ -911,7 +911,9 @@ refused.
   without blocking and without following a symlink, so a FIFO or a symlink
   the session put there reads as Unknown. The pure
   `event::ingest` turns the whole lines into publishes; a last line without
-  its newline waits. A file shorter than the offset was made again: it is
+  its newline waits. A line over 64 KiB is skipped whole: one skipped before
+  its newline sets `status.outbox.discarding`, and the next reads pass over
+  its bytes up to that newline. A file shorter than the offset was made again: it is
   read from 0 under the next `generation`. A line without a key gets
   `outbox-<generation>-<offset>`. The source is `event::task_source` of the
   Task: its name, uid and parent-label lineage; a line's own fields never

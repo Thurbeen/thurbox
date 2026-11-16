@@ -369,6 +369,10 @@ pub struct OutboxCursor {
     /// nothing reads the outbox again until the session is back.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub closed: bool,
+    /// The bytes at `offset` continue a line already skipped as too long:
+    /// they are passed over up to its newline, never read as a line.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discarding: bool,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -391,6 +395,9 @@ pub struct OutboxEntry {
     pub offset: u64,
     pub end: u64,
     pub line: Result<(String, Publish), String>,
+    /// A line skipped before its newline was read: the cursor passes over
+    /// the rest of it (`OutboxCursor::discarding`).
+    pub torn: bool,
 }
 
 /// The whole lines of `read`, oldest first, and the cursor they continue:
@@ -403,12 +410,24 @@ pub fn ingest(cursor: &OutboxCursor, read: &OutboxRead) -> (OutboxCursor, Vec<Ou
     if read.start < cursor.offset {
         from.generation += 1;
         from.offset = read.start;
+        from.discarding = false;
     }
+    let base = from.offset;
     let mut entries = Vec::new();
     let mut at = 0;
+    if from.discarding {
+        match read.bytes.iter().position(|&b| b == b'\n') {
+            Some(n) => {
+                at = n + 1;
+                from.discarding = false;
+            }
+            None => at = read.bytes.len(),
+        }
+        from.offset = base + at as u64;
+    }
     while at < read.bytes.len() {
         let rest = &read.bytes[at..];
-        let offset = from.offset + at as u64;
+        let offset = base + at as u64;
         let Some(n) = rest.iter().position(|&b| b == b'\n') else {
             if rest.len() >= MAX_OUTBOX_LINE {
                 entries.push(OutboxEntry {
@@ -418,6 +437,7 @@ pub fn ingest(cursor: &OutboxCursor, read: &OutboxRead) -> (OutboxCursor, Vec<Ou
                         "{} bytes with no newline; a line is at most {MAX_OUTBOX_LINE}",
                         rest.len()
                     )),
+                    torn: true,
                 });
             }
             break;
@@ -434,6 +454,7 @@ pub fn ingest(cursor: &OutboxCursor, read: &OutboxRead) -> (OutboxCursor, Vec<Ou
             offset,
             end: offset + n as u64 + 1,
             line,
+            torn: false,
         });
         at += n + 1;
     }
@@ -682,6 +703,28 @@ mod tests {
         assert!(entries[0].line.is_err());
         let (_, entries) = ingest(&OutboxCursor::default(), &read(0, &long[1..]));
         assert!(entries.is_empty(), "a shorter torn line waits");
+    }
+
+    #[test]
+    fn the_tail_of_a_line_skipped_as_too_long_never_becomes_an_event() {
+        let head = " ".repeat(MAX_OUTBOX_LINE);
+        let (from, entries) = ingest(&OutboxCursor::default(), &read(0, &head));
+        assert!(entries[0].torn);
+        let mut cursor = from;
+        cursor.skip(entries[0].offset, entries[0].end, "too long");
+        cursor.discarding = true;
+        let tail = line("shared", "smuggled", None);
+        let next = line("shared", "after", None);
+        let at = cursor.offset;
+        let (from, entries) = ingest(&cursor, &read(at, &format!("  {tail}{next}")));
+        let tail_end = at + 2 + tail.len() as u64;
+        assert_eq!((from.offset, from.discarding), (tail_end, false));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].offset, tail_end);
+        assert_eq!(entries[0].line.as_ref().unwrap().1.event_type, "after");
+        let (from, entries) = ingest(&cursor, &read(at, "no newline yet"));
+        assert!(entries.is_empty());
+        assert_eq!((from.offset, from.discarding), (at + 14, true));
     }
 
     #[test]

@@ -642,6 +642,24 @@ fn a_torn_last_line_waits_for_its_newline() {
 }
 
 #[test]
+fn the_tail_of_a_line_too_long_to_read_never_becomes_an_event() {
+    let env = session_env("event-session-overlong-tail");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    append_raw(&outbox, &" ".repeat(fleet_api::event::MAX_OUTBOX_LINE));
+    env.reconcile().ok();
+    assert_eq!(env.get("a")["status"]["outbox"]["skipped"], 1);
+    append_raw(
+        &outbox,
+        "{\"board\":\"shared\",\"type\":\"smuggled\",\"data\":1}\n{\"board\":\"shared\",\"type\":\"after\",\"data\":1}\n",
+    );
+    env.reconcile().ok();
+    let types: Vec<Value> = list(&env, &[]).iter().map(|e| e["type"].clone()).collect();
+    assert_eq!(types, vec![Value::from("after")]);
+    assert_eq!(env.get("a")["status"]["outbox"]["skipped"], 1);
+}
+
+#[test]
 fn a_session_without_an_outbox_refuses_to_publish() {
     let env = session_env("event-session-no-outbox");
     let signal = session_var(&env, "FLEET_SIGNAL_FILE");

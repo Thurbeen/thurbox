@@ -151,6 +151,7 @@ impl Manager<'_> {
                         break;
                     }
                     next.skip(entry.offset, entry.end, &why);
+                    next.discarding = entry.torn;
                     continue;
                 }
             };
