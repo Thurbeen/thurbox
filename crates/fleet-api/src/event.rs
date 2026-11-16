@@ -736,11 +736,20 @@ mod tests {
                 uid: "ux".into()
             }]
         );
-        let reused = task("o2", "u8", Some(("root", "old")));
-        let Source::Task(s) = task_source(&reused, lookup) else {
+        let under_a_recreated_parent = task("o2", "u8", Some(("mid", "old")));
+        let Source::Task(s) = task_source(&under_a_recreated_parent, lookup) else {
             panic!("a task source")
         };
-        assert_eq!(s.lineage.len(), 1, "a parent under another uid ends it");
+        let names: Vec<_> = s
+            .lineage
+            .iter()
+            .map(|r| (r.task.as_str(), r.uid.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("mid", "old")],
+            "a parent recreated under another uid is named, and its ancestors are not"
+        );
     }
 
     #[test]
