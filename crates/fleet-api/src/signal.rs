@@ -96,18 +96,22 @@ impl Signal {
         fields: &Payload,
     ) -> Signal {
         let mut prompts = Vec::new();
+        let mut report = |text: &str| {
+            prompts.push(prompt_digest(text));
+            if let Some(inside) = fields.paste.as_deref().and_then(|t| without_tag(text, t)) {
+                prompts.push(prompt_digest(&inside));
+            }
+        };
         if let Some(p) = payload {
             for name in &fields.prompt {
                 match &p[name] {
-                    serde_json::Value::String(text) => prompts.push(prompt_digest(text)),
+                    serde_json::Value::String(text) => report(text),
                     // Codex's `input-messages` are strings; Kimi's prompt
                     // is a list of parts, each text one `{"text": ...}`.
                     serde_json::Value::Array(list) => {
-                        prompts.extend(
-                            list.iter()
-                                .filter_map(|m| m.as_str().or_else(|| m["text"].as_str()))
-                                .map(prompt_digest),
-                        );
+                        list.iter()
+                            .filter_map(|m| m.as_str().or_else(|| m["text"].as_str()))
+                            .for_each(&mut report);
                     }
                     _ => {}
                 }
@@ -234,6 +238,35 @@ pub fn prompt_digest(text: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// `text` without its `<tag …>` and `</tag …>` tags, when it has any.
+fn without_tag(text: &str, tag: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut found = false;
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..at]);
+        let open = &rest[at + 1..];
+        let after = open
+            .strip_prefix('/')
+            .unwrap_or(open)
+            .strip_prefix(tag)
+            .filter(|r| r.starts_with([' ', '>']))
+            .and_then(|r| r.find('>').map(|end| &r[end + 1..]));
+        match after {
+            Some(after) => {
+                found = true;
+                rest = after;
+            }
+            None => {
+                out.push('<');
+                rest = open;
+            }
+        }
+    }
+    out.push_str(rest);
+    found.then_some(out)
+}
+
 /// The signal port: where a session's file is, and what it says.
 pub trait Signals {
     /// The file to pass a session on `host` under `key`, as the session
@@ -311,6 +344,7 @@ mod tests {
         let fields = Payload {
             prompt: vec!["user_message".into()],
             conversation: vec!["sessionID".into()],
+            paste: None,
         };
         let hook = json!({"user_message": "brief", "sessionID": "o1", "session_id": "no"});
         let s = Signal::from_hook_with(1, State::Prompt, Some(&hook), &fields);
@@ -320,5 +354,27 @@ mod tests {
         let claude = json!({"prompt": "brief", "session_id": "abc"});
         let s = Signal::from_hook_with(1, State::Prompt, Some(&claude), &fields);
         assert!(s.prompts.is_empty() && s.conversation.is_none());
+    }
+
+    #[test]
+    fn a_wrapped_paste_is_also_reported_as_the_text_inside_it() {
+        let fields = Payload {
+            paste: Some("pasted_content".into()),
+            ..Payload::default()
+        };
+        let brief = "Find it.\n\nFix it.";
+        let wrapped =
+            format!("\n\n<pasted_content id=\"ab12\">\n{brief}\n</pasted_content id=\"ab12\">\n");
+        let claude = json!({"prompt": wrapped, "session_id": "abc"});
+        let s = Signal::from_hook_with(1, State::Prompt, Some(&claude), &fields);
+        assert_eq!(
+            s.prompts,
+            vec![prompt_digest(&wrapped), prompt_digest(brief)]
+        );
+        let typed = json!({"prompt": "a <pasted_contents> b", "session_id": "abc"});
+        let s = Signal::from_hook_with(1, State::Prompt, Some(&typed), &fields);
+        assert_eq!(s.prompts, vec![prompt_digest("a <pasted_contents> b")]);
+        let s = Signal::from_hook(1, State::Prompt, Some(&claude));
+        assert_eq!(s.prompts, vec![prompt_digest(&wrapped)]);
     }
 }

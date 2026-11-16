@@ -892,6 +892,51 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
     );
 }
 
+/// Claude Code 2.1.325 at its composer: it asks for extended keys and
+/// bracketed paste, keeps a paste's line breaks until Enter, and hands its
+/// prompt hook the paste wrapped in `<pasted_content id="…">` tags.
+const PASTING_CLAUDE: &str = r#"#!/bin/sh
+fleet signal idle
+stty raw -echo
+printf '\033[>4;2m\033[?2004h'
+perl -e '
+$/ = "\r";
+while (defined(my $text = <STDIN>)) {
+  chomp $text;
+  $text =~ s/\e\[20[01]~//g;
+  open(my $log, ">", "typed.log") or die; print $log $text; close $log;
+  my $json = "\n\n<pasted_content id=\"ab12\">\n$text\n</pasted_content id=\"ab12\">\n";
+  $json =~ s/(["\\])/\\$1/g;
+  $json =~ s/\n/\\n/g;
+  system("fleet", "signal", "prompt", "{\"prompt\":\"$json\",\"session_id\":\"conv-1\"}");
+  system("fleet", "signal", "idle");
+}'
+"#;
+
+#[test]
+fn a_multi_line_brief_reaches_claude_code_whole_and_its_wrapped_paste_proves_it() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("paste");
+    let mut env = mux_env("runtime-mux-paste", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", PASTING_CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let brief = "Find the cause.\n\nThen fix it:\n1. a test\n2. the fix";
+    let mut task = support::task("t1", true);
+    task["spec"]["brief"] = json!(brief);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "typed", |_| work.join("typed.log").is_file());
+    let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    assert_eq!(typed, brief, "the agent reads the brief's line breaks");
+    reconcile_until(&env, "briefed on the wrapped paste's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+}
+
 /// [`CLAUDE`], except that it logs each line typed to it, and a resumed one
 /// reports nothing at its start, as an agent still starting.
 const SLOW_CLAUDE: &str = r#"#!/bin/sh

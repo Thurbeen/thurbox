@@ -381,17 +381,41 @@ mod tests {
     }
 
     #[test]
-    fn paste_prompt_args_wraps_literally_for_tmux() {
+    fn paste_prompt_args_type_the_wrapped_bytes_as_hex_for_tmux() {
         assert_eq!(
-            Tmux::paste_args("thurbox:tb-demo", "line one\nline two").concat(),
-            vec![
+            Tmux::paste_args("thurbox:tb-demo", "a\n\nb").concat(),
+            [
                 "send-keys",
                 "-t",
                 "thurbox:tb-demo",
-                "-l",
-                "\x1b[200~line one\nline two\x1b[201~",
+                "-H",
+                "1b",
+                "5b",
+                "32",
+                "30",
+                "30",
+                "7e",
+                "61",
+                "0a",
+                "0a",
+                "62",
+                "1b",
+                "5b",
+                "32",
+                "30",
+                "31",
+                "7e",
             ]
         );
+    }
+
+    #[test]
+    fn a_long_paste_is_typed_by_several_commands() {
+        let text = "x".repeat(2000);
+        let argvs = Tmux::paste_args("%3", &text);
+        assert!(argvs.len() > 1, "{}", argvs.len());
+        let bytes: Vec<String> = argvs.iter().flat_map(|a| a[4..].to_vec()).collect();
+        assert_eq!(bytes.len(), text.len() + 12);
     }
 
     #[test]

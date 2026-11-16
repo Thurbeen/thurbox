@@ -16,8 +16,10 @@
 /// of several, so a second would drop Fleet's hooks or the other's. Only a
 /// permission prompt needs a person: Claude Code also notifies after 60 s of
 /// input idle (`idle_prompt`), which a matcher-less hook would report as
-/// attention. Its telemetry exports metrics and events; its `OTEL_LOG_*`
-/// content switches stay unset, which is off.
+/// attention. Since 2.1.325 its prompt hook gets a typed brief, a bracketed
+/// paste, wrapped in `<pasted_content id="…">` tags. Its telemetry exports
+/// metrics and events; its `OTEL_LOG_*` content switches stay unset, which
+/// is off.
 pub const CLAUDE: &str = r#"
 name = "claude"
 program = "claude"
@@ -40,6 +42,7 @@ mode = "dialog"
 [payload]
 prompt = ["prompt"]
 conversation = ["session_id"]
+paste = "pasted_content"
 
 [telemetry]
 env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1", OTEL_METRICS_EXPORTER = "otlp", OTEL_LOGS_EXPORTER = "otlp", OTEL_EXPORTER_OTLP_ENDPOINT = "{endpoint}", OTEL_EXPORTER_OTLP_PROTOCOL = "{protocol}", OTEL_EXPORTER_OTLP_HEADERS = "{headers}", OTEL_SERVICE_NAME = "claude", OTEL_RESOURCE_ATTRIBUTES = "{resource}" }
