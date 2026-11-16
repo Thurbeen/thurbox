@@ -2083,11 +2083,15 @@ fn effect_in_flight(st: &TaskStatus, key: &str, action: &str) -> bool {
 }
 
 fn watched(obj: &Object, spec: &TaskSpec, st: &TaskStatus) -> bool {
-    !obj.is_deleting() && (pause_candidate(spec, st) || in_flight(obj, st))
+    !obj.is_deleting()
+        && (pause_candidate(spec, st)
+            || in_flight(obj, st)
+            || (spec.dispatch && wake_requested(st)))
 }
 
-/// Whether a Task's session activity is watched: it may be paused, or a
-/// pause or resume waits for its outcome. The manager reconciles such a
+/// Whether a Task's session activity is watched: it may be paused, a
+/// pause or resume waits for its outcome, or a view asked for it while
+/// paused. The manager reconciles such a
 /// Concluded Task on every sweep. An undecodable Task is not watched.
 pub fn watches_activity(obj: &Object) -> bool {
     decode(obj).is_ok_and(|(spec, st)| watched(obj, &spec, &st))

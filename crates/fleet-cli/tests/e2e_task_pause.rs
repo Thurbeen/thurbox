@@ -402,3 +402,40 @@ fn a_view_on_a_paused_held_task_says_so_at_once() {
     env.reconcile().ok();
     assert_eq!(env.calls("resume"), 0);
 }
+
+#[test]
+fn a_view_opened_on_a_paused_concluded_task_resumes_it() {
+    let env = setup("pause-view-concluded", vec![task("t1")]);
+    env.reconcile().ok();
+    env.fleet(&[
+        "result",
+        "t1",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://example.invalid/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    set_activity(&env, Some("idle"));
+    env.reconcile().ok();
+    expire_idle(&env, "t1");
+    env.reconcile().ok();
+    assert_condition(&env.status("t1"), "Paused", "True", "Idle");
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+
+    let mut attach = env.spawn(&["attach", "t1", "--json"]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while attach.try_wait().expect("attach").is_none() && std::time::Instant::now() < deadline {
+        env.reconcile().ok();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = attach.kill();
+    let run = wait(attach);
+    assert!(!run.stderr.contains("is paused"), "{}", run.stderr);
+    assert_eq!(env.calls("resume"), 1);
+    assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+}

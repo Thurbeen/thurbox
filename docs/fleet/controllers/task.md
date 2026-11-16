@@ -90,6 +90,9 @@ reconciles a Concluded Task only in these cases:
 - Its session may be paused: see
   [pausing an idle session](#pausing-an-idle-session). The manager then
   reconciles it on every sweep, so that its activity is watched.
+- It is paused and dispatched, and a view asked for it at or after the
+  pause (`status.wakeRequestedAt`). The manager then reconciles it on every
+  sweep until it resumes.
 
 Deletion takes precedence over normal progress, including Stalled and
 Concluded. With no deletion, Stalled is terminal. Concluded is terminal
