@@ -593,7 +593,7 @@ comment = "#"                  # what starts a comment line there
   string. A root with a control character fails the spawn.
 - An omitted `[payload]` list is the default one, shown above.
 - `[payload] paste` names the tag that the agent puts around a pasted
-  text. `fleet signal` then also reports the prompt without the tags. The
+  text. `fleet signal` then also reports the text inside that wrapper. The
   runtime types a brief as a bracketed paste. Claude Code 2.1.325 gives its
   prompt hook that paste inside `<pasted_content id="…">` tags.
 - An unknown key is an error. Each command that reads the profiles stops,

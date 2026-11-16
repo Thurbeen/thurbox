@@ -64,9 +64,10 @@ it. Each harness profile names the fields in its `[payload]` table
 | conversation | `session_id`, `thread-id` | a string | resume the agent on its conversation |
 
 - Fleet stores a prompt only as a digest. It never stores the prompt text.
-- A profile can name a paste tag in `[payload] paste`. A prompt with
-  `<tag …>` or `</tag …>` tags then gives two digests: one of the prompt,
-  and one of the prompt without the tags.
+- A profile can name a paste tag in `[payload] paste`. A prompt that is
+  all one `<tag …>…</tag …>` wrapper then gives two digests: one of the
+  prompt, and one of the text inside the wrapper. A tag inside the text
+  stays part of the text.
 - Fleet reads the first conversation field that is a string. An empty
   string is no conversation.
 - Nonempty `background_tasks` or `session_crons` lists turn `idle` into

@@ -98,8 +98,8 @@ impl Signal {
         let mut prompts = Vec::new();
         let mut report = |text: &str| {
             prompts.push(prompt_digest(text));
-            if let Some(inside) = fields.paste.as_deref().and_then(|t| without_tag(text, t)) {
-                prompts.push(prompt_digest(&inside));
+            if let Some(inside) = fields.paste.as_deref().and_then(|t| inside_tag(text, t)) {
+                prompts.push(prompt_digest(inside));
             }
         };
         if let Some(p) = payload {
@@ -238,33 +238,15 @@ pub fn prompt_digest(text: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// `text` without its `<tag …>` and `</tag …>` tags, when it has any.
-fn without_tag(text: &str, tag: &str) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    let mut found = false;
-    while let Some(at) = rest.find('<') {
-        out.push_str(&rest[..at]);
-        let open = &rest[at + 1..];
-        let after = open
-            .strip_prefix('/')
-            .unwrap_or(open)
-            .strip_prefix(tag)
-            .filter(|r| r.starts_with([' ', '>']))
-            .and_then(|r| r.find('>').map(|end| &r[end + 1..]));
-        match after {
-            Some(after) => {
-                found = true;
-                rest = after;
-            }
-            None => {
-                out.push('<');
-                rest = open;
-            }
-        }
-    }
-    out.push_str(rest);
-    found.then_some(out)
+/// The text inside `<tag …>…</tag …>` when that wrapper is the whole of
+/// `text`; a tag inside it is part of the text.
+fn inside_tag<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let named = |t: &'a str| t.strip_prefix(tag).filter(|r| r.starts_with([' ', '>']));
+    let open = named(text.trim().strip_prefix('<')?)?;
+    let body = &open[open.find('>')? + 1..];
+    let close = body.rfind("</")?;
+    let end = named(&body[close + 2..])?;
+    (end.find('>')? == end.len() - 1).then(|| &body[..close])
 }
 
 /// The signal port: where a session's file is, and what it says.
@@ -376,5 +358,19 @@ mod tests {
         assert_eq!(s.prompts, vec![prompt_digest("a <pasted_contents> b")]);
         let s = Signal::from_hook(1, State::Prompt, Some(&claude));
         assert_eq!(s.prompts, vec![prompt_digest(&wrapped)]);
+    }
+
+    #[test]
+    fn a_tag_inside_the_paste_is_part_of_the_text() {
+        let fields = Payload {
+            paste: Some("pasted_content".into()),
+            ..Payload::default()
+        };
+        let brief = "Why does <pasted_content id=\"x\">a</pasted_content id=\"x\"> break?";
+        let wrapped =
+            format!("<pasted_content id=\"ab12\">\n{brief}\n</pasted_content id=\"ab12\">");
+        let claude = json!({"prompt": wrapped, "session_id": "abc"});
+        let s = Signal::from_hook_with(1, State::Prompt, Some(&claude), &fields);
+        assert!(s.prompts.contains(&prompt_digest(brief)), "{:?}", s.prompts);
     }
 }
