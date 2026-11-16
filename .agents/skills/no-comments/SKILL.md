@@ -15,20 +15,22 @@ they fall under an exception below.
 
 - Legal or license headers.
 - Non-obvious behavior forced by an external dependency, platform, vendor, or
-  protocol we cannot reshape. Surprises in our own code are meat. Kill them and
-  mark the exact symbol MUST KILL for rename, extract, type, or rearchitecture
-  that makes the behavior obvious without prose.
-- `// prettier-ignore`. Lint suppressions survive only when their rule is
+  protocol we cannot reshape, including `// SAFETY:` notes that justify an
+  unsafe block.
+- Lint suppressions, such as `// prettier-ignore`, only when their rule is
   faulty, pedantic, or style-only.
-  Directives a tool reads: generated-region markers, type annotations,
-  shebangs, and the lint suppressions above.
+- Directives a tool reads: generated-region markers, type annotations, and
+  shebangs.
 - Doc comments that define a public API contract.
 - Issue or RFC links that explain a constraint code cannot express.
 
 ## MUST KILL
 
 When our own code needs explanation, replace the comment with one marker on the
-exact symbol: `MUST KILL: <rename|extract|type|rearchitect> — <what would make it obvious>`.
+exact symbol. Surprises in our own code are not an exception: kill them with a
+rename, extract, type, or rearchitecture that makes the behavior obvious
+without prose, and until then mark the symbol:
+`MUST KILL: <rename|extract|type|rearchitect> — <what would make it obvious>`.
 
 ```rust
 // MUST KILL: type — a `Seconds` newtype would make the unit obvious
@@ -74,5 +76,6 @@ let _ = set_option("extended-keys-format", "csi-u");
 
 ## Review
 
-Reviewers (thurview, Greptile) flag any new comment outside the exceptions.
+Reviewers flag any new comment outside the exceptions: thurview reads
+`docs/thurbox/review.md`, which points here.
 Formatting is automatic: let `cargo fmt` and `stylua` wrap and indent.
