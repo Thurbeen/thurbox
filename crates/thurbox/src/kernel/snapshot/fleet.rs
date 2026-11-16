@@ -546,7 +546,7 @@ fn now_ms() -> i64 {
 }
 
 /// Ask Fleet which places it defines (`fleet runtime places --json`), again
-/// every [`RETRY`] until it answers: the places the creation flow offers
+/// every `retry` ([`RETRY`]) until it answers: the places the creation flow offers
 /// are Fleet's.
 fn read_places(link: &FleetLink, tx: &Sender<Update>, retry: Duration) {
     let machine = machine(link);
@@ -631,8 +631,8 @@ fn ask(link: &FleetLink, args: &[&str]) -> Option<Value> {
         .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
 }
 
-/// Ask Fleet for its `version --json` every [`MANAGER_CHECK`], [`RETRY`]
-/// while it does not answer: which harnesses it has profiles for (the
+/// Ask Fleet for its `version --json` at `cadence` (every [`MANAGER_CHECK`], [`RETRY`]
+/// while it does not answer): which harnesses it has profiles for (the
 /// agents the creation flow offers are Fleet's, and thurbox keeps no list
 /// of its own), and whether its manager runs. Only a change is sent.
 ///
@@ -910,7 +910,7 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
 }
 
 /// Keep a `fleet up` running while the source does: start one, and when it
-/// exits, say why and start another after [`MANAGER_CHECK`]. One that
+/// exits, say why and start another `every` ([`MANAGER_CHECK`]) later. One that
 /// exits for a held lease is no error: another manager runs.
 fn keep_manager(link: &FleetLink, tx: &Sender<Update>, every: Duration) {
     loop {

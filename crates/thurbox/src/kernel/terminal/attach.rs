@@ -166,7 +166,7 @@ impl Terminals {
     /// Attach a Fleet session's pane on a worker, through the stream `fleet
     /// attach` names ([`super::fleet`]). A row whose Task has no session yet
     /// (no key) has nothing to attach to; a failed attempt is made again
-    /// after [`ATTACH_RETRY_INTERVAL`], and a stream that ended is attached
+    /// after `retry_after` ([`ATTACH_RETRY_INTERVAL`]), and a stream that ended is attached
     /// afresh, since `drop_lost_panes` drops a pane whose output ended.
     fn attach_fleet(&mut self, row: &crate::kernel::snapshot::SessionRow, rows: u16, cols: u16) {
         // The Fleet the row's id names; a row of no listed Fleet has no
