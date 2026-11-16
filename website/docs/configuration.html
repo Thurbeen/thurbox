@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Configuration — Thurbox Docs'
-description: 'Every config file and knob Thurbox reads: settings.toml feature flags, themes.toml, the editable ui/ interface and ui.json, interface.json, and environment variables.'
+description: 'Every config file and knob Thurbox reads: the Fleets in settings.toml, feature flags, themes.toml, the editable ui/ interface and ui.json, interface.json, and environment variables.'
 currentPage: 'configuration'
 breadcrumb: 'Configuration'
 ---
@@ -34,13 +34,10 @@ breadcrumb: 'Configuration'
 
           <h2 id="multiplexers">Multiplexer selection</h2>
           <p>
-            Adapters are available for tmux (minimum 3.2), psmux (minimum 3.3.8),
-            and RMUX (minimum 0.10.0).
-            A session's terminal belongs to Fleet's runtime: <code>runtime-mux</code>
-            starts it on this platform's default multiplexer, tmux on Linux and
-            macOS and psmux on Windows. The top-level <code>multiplexer</code> key in
-            <code>settings.toml</code> is accepted and ignored since 3.0. The
-            companion shell opens beside the session, on the same multiplexer.
+            A session's terminal belongs to Fleet's runtime. <code>runtime-mux</code> starts it in
+            this platform's multiplexer: tmux (3.2 or later) on Linux and macOS, psmux (3.3.8 or
+            later) on Windows. Thurbox does not read a top-level <code>multiplexer</code> key in
+            <code>settings.toml</code>, and names one at startup.
           </p>
           <h2 id="files">
             Files at a glance
@@ -121,27 +118,7 @@ breadcrumb: 'Configuration'
                 <td>Interface tab (or <code>thurbox-cli plugin</code>)</td>
                 <td>startup</td>
                 <td>
-                  what a plugin may do: files trusted and plugins turned off. Older releases kept
-                  both in <code>ui.json</code>; the first start moves them here
-                </td>
-              </tr>
-              <tr>
-                <td><code>~/.config/thurbox/keybindings.json</code></td>
-                <td>JSON</td>
-                <td>&mdash;</td>
-                <td>boot (migration only)</td>
-                <td>
-                  the v1 chord-override file, kept so v1 rebindings still migrate. Read at boot
-                  <em>only</em>
-                  when
-                  <code>ui.json</code>
-                  carries no
-                  <code>bindings</code>
-                  ; the six v1 action names it recognises become
-                  <code>ui.json</code>
-                  overrides. New rebindings go to
-                  <code>ui.json</code>
-                  .
+                  what a plugin may do: files trusted and plugins turned off
                 </td>
               </tr>
               <tr>
@@ -170,15 +147,17 @@ breadcrumb: 'Configuration'
             feature flags apply immediately; the
             <code>[notifications]</code>
             knobs, the
-            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            <code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             feature flags, and the write-once scalars take effect on the next launch and the toast says so.
             A change to
+            <code>[fleets]</code>
+            or
             <code>themes.toml</code>
             needs a restart.
           </p>
           <p>
             Config problems land in the log file. Unknown TOML keys are tolerated and reported by
-            name, while syntax/type errors fall back to defaults. Check everything from the command line:
+            name, while a syntax or type error falls back to the defaults. Check everything from the command line:
           </p>
           <pre><code class="language-bash">thurbox-cli config validate   # strict parse of every file; exit 1 on problems
 thurbox-cli config show       # effective config + where each value came from</code></pre>
@@ -204,7 +183,7 @@ thurbox-cli config show       # effective config + where each value came from</c
               </tr>
               <tr>
                 <td>Run sessions on another machine</td>
-                <td>a Fleet there, listed in <code>settings.toml</code>'s <code>[fleets.&lt;name&gt;]</code>; or a place in Fleet's <code>[runtimes.&lt;name&gt;.places]</code> (<a href="https://github.com/Thurbeen/thurbox/blob/main/docs/where-sessions-run.md">Where sessions run</a>)</td>
+                <td>a Fleet there, listed in <code>settings.toml</code>'s <code>[fleets.&lt;name&gt;]</code>; or a place in Fleet's <code>[runtimes.&lt;name&gt;.places]</code> (<a href="architecture.html#places">Fleets and places</a>; <a href="fleet/configuration.html#runtimes-and-their-places">runtimes and their places</a>)</td>
               </tr>
               <tr>
                 <td>Turn a whole TUI feature on/off (mouse, notifications&hellip;)</td>
@@ -233,23 +212,166 @@ thurbox-cli config show       # effective config + where each value came from</c
             </tbody>
           </table>
 
-          <h2 id="fleet">
-            The Fleet in use
-            <a href="#fleet" class="heading-anchor">#</a>
+          <h2 id="fleets">
+            Fleets
+            <a href="#fleets" class="heading-anchor">#</a>
           </h2>
           <p>
-            Every session is a Fleet Task. Thurbox reads them through
-            <code>fleet watch</code>, acts on them through <code>fleet apply</code>,
-            <code>send</code> and <code>delete</code>, and keeps a <code>fleet up</code> running.
-            <code>[fleet] program</code> in <code>settings.toml</code> names the <code>fleet</code>
-            binary (default <code>fleet</code> on <code>PATH</code>). Fleet reads its own config as it
-            does anywhere: <code>FLEET_CONFIG</code>, then its per-user file.
-            <code>thurbox-cli doctor</code>, <code>config show</code> and
-            <code>version --json</code> report the Fleet in force.
+            Every session is a Task of a Fleet. Thurbox follows each Fleet through its command line:
+            <code>fleet watch</code> for the session list, and <code>fleet apply</code>,
+            <code>send</code> and <code>delete</code> for your actions. The agents a session can run
+            are that Fleet's harness profiles (<a href="agents.html">Agents</a>).
           </p>
-          <p id="agents-toml">
-            The agents are Fleet's harness profiles (<a href="agents.html">Agents</a>).
+          <img src="../assets/overview.svg" alt="thurbox follows several Fleets; each Fleet runs runtimes, and each runtime runs sessions on its places" width="1100" height="520" loading="lazy">
+          <p>
+            The <code>[fleets.&lt;name&gt;]</code> tables in <code>settings.toml</code> list the
+            Fleets to follow. Each table is one Fleet: on this machine, over ssh, or in a WSL
+            distro. With no <code>[fleets]</code> table, Thurbox follows one Fleet: the
+            <code>fleet</code> on this machine. Once the file lists a Fleet, Thurbox follows only
+            the listed Fleets, so add this machine's Fleet too if you want it. A change takes effect
+            on the next launch.
           </p>
+          <pre data-title="settings.toml"><code class="language-toml">[fleets.laptop]
+transport = "local"                     # the default
+program = "fleet"                       # the default: a name on PATH or a path
+
+[fleets.box]
+transport = { ssh = "me@box", ssh_opts = ["-p", "2222"] }
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
+config = "/home/me/.config/fleet/config.toml"   # optional: `fleet --config &lt;path&gt;`
+
+[fleets.ubuntu]
+transport = { wsl = "Ubuntu" }</code></pre>
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Default</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>transport</code></td>
+                <td><code>"local"</code></td>
+                <td>
+                  how Thurbox runs <code>fleet</code>: <code>"local"</code>,
+                  <code>{ ssh = "&lt;destination&gt;", ssh_opts = [...] }</code> or
+                  <code>{ wsl = "&lt;distro&gt;" }</code>
+                </td>
+              </tr>
+              <tr>
+                <td><code>program</code></td>
+                <td><code>"fleet"</code></td>
+                <td>
+                  the <code>fleet</code> program on that machine. ssh runs it with that machine's
+                  non-login <code>PATH</code>, so give a full path when <code>fleet</code> is in
+                  <code>~/.local/bin</code>, where the install script puts it
+                </td>
+              </tr>
+              <tr>
+                <td><code>config</code></td>
+                <td>none</td>
+                <td>
+                  Fleet's config file, given as <code>fleet --config &lt;path&gt;</code>. Without
+                  it, Fleet reads <code>FLEET_CONFIG</code>, then its per-user file
+                  (<code>~/.config/fleet/config.toml</code>)
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <ul>
+            <li>
+              <strong>One list.</strong>
+              The session list follows every listed Fleet as one list. A session of a Fleet on
+              another machine shows its Fleet, and its place when the place is not
+              <code>local</code>.
+            </li>
+            <li>
+              <strong>Unreachable Fleets.</strong>
+              When Thurbox cannot reach a Fleet, that Fleet's sessions stay in the list, marked
+              unreachable. Thurbox tries again every 2 seconds.
+            </li>
+            <li>
+              <strong>Each command goes to its session's own Fleet.</strong>
+              Send, rename and delete go to the Fleet that holds the session. The new-session
+              modal (<code>Ctrl+N</code>) asks for the Fleet first, and skips that step when only
+              one is listed.
+            </li>
+            <li>
+              <strong>The manager.</strong>
+              For a Fleet on this machine, Thurbox starts <code>fleet up</code> when no manager
+              runs. It never starts one on another machine or in WSL: keep a
+              <code>fleet up</code> running there yourself.
+            </li>
+            <li>
+              <strong>Compatibility.</strong>
+              Thurbox first asks each Fleet for <code>fleet version --json</code>. A Fleet that does
+              not speak <code>fleet/v1alpha1</code> shows as incompatible and gets no command.
+            </li>
+          </ul>
+          <p>
+            <code>thurbox-cli doctor</code> checks each listed Fleet: whether Thurbox can reach it,
+            and whether its manager runs.
+          </p>
+
+          <h3 id="fleet-ssh">A Fleet on another machine</h3>
+          <p>
+            Run the Fleet on the machine where the agents should work, here <code>box</code>. The
+            agents keep working when your laptop sleeps.
+          </p>
+          <ol>
+            <li>
+              On box, install <code>fleet</code>, <code>runtime-mux</code>, tmux and a coding agent
+              (<a href="installation.html#fleet">Installation</a>), then run
+              <code>fleet init</code>.
+            </li>
+            <li>
+              On box, install a user systemd unit that runs <code>fleet up</code>. A user service
+              does not read your login <code>PATH</code>: set <code>Environment=PATH</code> to the
+              directories that hold <code>fleet</code>, <code>runtime-mux</code>, tmux and your
+              coding agents. The unit below assumes the install script's
+              <code>~/.local/bin</code>; adjust both paths for another install location.
+            </li>
+            <li>
+              On the laptop, add a <code>[fleets.box]</code> table with
+              <code>transport = { ssh = "me@box" }</code> and the full <code>program</code> path.
+            </li>
+            <li>Run <code>thurbox-cli doctor</code>, then start <code>thurbox</code>.</li>
+          </ol>
+          <pre data-title="~/.config/systemd/user/fleet.service"><code class="language-ini">[Unit]
+Description=Fleet manager
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/fleet up
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target</code></pre>
+          <pre><code class="language-bash">loginctl enable-linger "$USER"
+systemctl --user enable --now fleet.service</code></pre>
+          <p>
+            Each ssh call uses <code>BatchMode</code> and a shared connection, so authentication
+            comes from your <code>~/.ssh/config</code> and agent; Thurbox never handles
+            credentials. In the new-session modal you browse box's folders, starting at box's home
+            (<code>~</code> is that home), pick a remembered repository, or paste a clone URL, which
+            the runtime clones there. <code>Alt+W</code> gives a repository a worktree there: its
+            base branch comes from box's branches, and the runtime makes the worktree on box.
+          </p>
+
+          <h3 id="fleet-wsl">A Fleet in WSL</h3>
+          <p>
+            On Windows, a Fleet can run inside a WSL distro. Install <code>fleet</code>,
+            <code>runtime-mux</code>, tmux and a coding agent in the distro, run
+            <code>fleet init</code> there. Keep <code>fleet up</code> running with the same user
+            systemd unit as <a href="#fleet-ssh">a Fleet on another machine</a>, installed inside
+            the distro (systemd must be on: <code>[boot] systemd=true</code> in
+            <code>/etc/wsl.conf</code>). Then add the distro on the Windows side:
+          </p>
+          <pre data-title="settings.toml"><code class="language-toml">[fleets.ubuntu]
+transport = { wsl = "Ubuntu" }</code></pre>
 
           <h2 id="settings-toml">
             settings.toml
@@ -264,7 +386,7 @@ thurbox-cli config show       # effective config + where each value came from</c
             via mtime poll: the UI-panel feature flags apply immediately, while the
             <code>[notifications]</code>
             knobs, the
-            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            <code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             feature flags, and the write-once scalars take effect on the next launch.
           </p>
           <div class="info-box">
@@ -332,7 +454,7 @@ thurbox-cli config show       # effective config + where each value came from</c
             A complete <code>settings.toml</code> showing every knob at its default &mdash; copy
             this and uncomment what you want to change (the UI-panel feature flags apply live; the
             <code>[notifications]</code> knobs, the
-            <code>automations</code>/<code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
+            <code>mouse</code>/<code>notifications</code>/<code>version_check</code>/<code>auto_update</code>
             flags, and the write-once scalars take effect on the next launch):
           </p>
           <pre data-title="settings.toml"><code class="language-toml">config_version = 1
@@ -344,8 +466,8 @@ two_panel_min_cols    = 80     # width below which only the terminal renders
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
-automations   = true
 shell_pane    = true
+perf_hud      = true
 mouse         = true
 notifications = true
 version_check = true           # makes a network call
@@ -357,14 +479,14 @@ suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications</code></pre>
 
-          <h3><code>[features]</code> &mdash; whole-feature switches</h3>
+          <h3 id="features"><code>[features]</code> &mdash; whole-feature switches</h3>
           <p>
             Switch off behaviour that reaches outside the interface.
             <strong>All default to <code>true</code></strong>
             &mdash; <code>version_check</code> and <code>auto_update</code> included, which both
             reach the network.
             <code>shell_pane</code> and <code>perf_hud</code> apply
-            <strong>live</strong> on save; <code>automations</code>, <code>mouse</code>,
+            <strong>live</strong> on save; <code>mouse</code>,
             <code>notifications</code>, <code>version_check</code> and <code>auto_update</code>, and
             the write-once scalars, wait for the next launch. Data is never touched, so re-enabling a
             flag is lossless.
@@ -387,14 +509,14 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             </thead>
             <tbody>
               <tr>
-                <td><code>automations</code></td>
-                <td><code>true</code></td>
-                <td>the interface's own firing of due automations, every 15 seconds. <code>thurbox-cli automation tick</code> from an OS timer fires them with no interface open</td>
-              </tr>
-              <tr>
                 <td><code>shell_pane</code></td>
                 <td><code>true</code></td>
                 <td>per-session shell toggle (<code>Ctrl+T</code>)</td>
+              </tr>
+              <tr>
+                <td><code>perf_hud</code></td>
+                <td><code>true</code></td>
+                <td>the performance HUD (<code>F12</code>)</td>
               </tr>
               <tr>
                 <td><code>mouse</code></td>
@@ -425,11 +547,6 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             </tbody>
           </table>
           <p>
-            <code>automations = false</code>
-            is the one flag with teeth beyond the UI: it also stops the TUI from firing due
-            schedules (explicit
-            <code>thurbox-cli automation</code>
-            commands still work).
             <code>mouse = false</code>
             skips terminal mouse capture entirely, so the terminal keeps its native mouse behavior.
             <code>notifications = false</code>
@@ -691,6 +808,10 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             Environment variables
             <a href="#environment" class="heading-anchor">#</a>
           </h2>
+          <p>
+            Traces and metrics use the standard <code>OTEL_*</code> variables, the same for Thurbox,
+            Fleet and the runtimes: see <a href="observability.html">Observability</a>.
+          </p>
           <table>
             <thead>
               <tr>
@@ -741,11 +862,9 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
             <code>thurbox-cli version --json</code>
             reports it as
             <code>tmux_socket</code>
-            . The full rules are in
-            <a
-              href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#relocating-an-instance-thurbox_data_dir"
-              >docs/thurbox/config.md &rarr; Relocating an instance</a
-            >.
+            . The full rules are in the repository's
+            <code>docs/thurbox/config.md</code>
+            (&ldquo;Relocating an instance&rdquo;).
           </p>
           <p>
             Editor resolution order:

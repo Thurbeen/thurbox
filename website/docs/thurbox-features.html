@@ -1,0 +1,469 @@
+---
+layout: docs.njk
+title: 'thurbox features — thurbox Docs'
+description: 'thurbox features: a Lua-plugin interface you can rearrange, one session list across Fleets, global search, the responsive layout, themes, OS notifications, mouse navigation and settings.'
+currentPage: 'thurbox-features'
+breadcrumb: 'thurbox features'
+---
+<h1>thurbox features</h1>
+<p>
+  What the interface adds on top of Fleet. For what runs the sessions, see
+  <a href="fleet-features.html">Fleet features</a>.
+</p>
+
+<h2 id="customizable-interface">
+            A customizable interface
+            <a href="#customizable-interface" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            There is no interface compiled into the binary. thurbox boots a kernel, reads a
+            directory, and draws whatever Lua it finds there &mdash; so every pane, the session list
+            included, is a file you can move, turn off, delete, rewrite, or install from someone
+            else. You do not have to write any of it yourself:
+            <a href="interface.html#ask-the-agent">ask the agent you already have running</a>.
+            The full tour is
+            <a href="interface.html">The Interface</a>.
+          </p>
+
+          <h3 id="where-surfaces-live">
+            Where each surface lives
+            <a href="#where-surfaces-live" class="heading-anchor">#</a>
+          </h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Surface</th>
+                <th>Kind</th>
+                <th>Where it lives</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Session list</td>
+                <td>bundled</td>
+                <td><code>10_sessions.lua</code></td>
+              </tr>
+              <tr>
+                <td>Agent terminal</td>
+                <td>bundled</td>
+                <td><code>20_agent.lua</code></td>
+              </tr>
+              <tr>
+                <td><a href="#global-search">Global search</a></td>
+                <td>bundled</td>
+                <td><code>65_search.lua</code></td>
+              </tr>
+              <tr>
+                <td>Session creation</td>
+                <td>bundled</td>
+                <td><code>70_new_session.lua</code> (a float)</td>
+              </tr>
+              <tr>
+                <td><a href="#responsive-ui">The arrangement</a></td>
+                <td>bundled</td>
+                <td><code>ui/layout.lua</code></td>
+              </tr>
+              <tr>
+                <td><a href="#themes">Themes</a> &middot; settings &middot; help</td>
+                <td>kernel chrome</td>
+                <td><kbd>Ctrl</kbd>+<kbd>Y</kbd> &middot; <kbd>Ctrl</kbd>+<kbd>,</kbd> &middot; <kbd>F1</kbd></td>
+              </tr>
+              <tr>
+                <td>Code review</td>
+                <td>installable</td>
+                <td><a href="https://github.com/Thurbeen/thurbox-code-review" target="_blank" rel="noopener">thurbox-code-review</a></td>
+              </tr>
+              <tr>
+                <td>Info panel</td>
+                <td>installable</td>
+                <td><a href="https://github.com/Thurbeen/thurbox-info-panel" target="_blank" rel="noopener">thurbox-info-panel</a></td>
+              </tr>
+              <tr>
+                <td>CPU / RAM gauges</td>
+                <td>installable</td>
+                <td><code>thurbox-cli plugin install top</code></td>
+              </tr>
+              <tr>
+                <td>Panes anyone else wrote</td>
+                <td>installable</td>
+                <td><code>ui/plugins.toml</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            <strong>Bundled</strong>
+            means it ships with thurbox and is yours to edit, move or delete &mdash; the
+            arrangement included.
+            <strong>Installable</strong>
+            ones sit in
+            <code>plugins.toml</code>
+            on exactly the same terms: the review pane claims its chord by itself, and the info
+            panel wants one
+            <code>layout.lua</code>
+            line.
+          </p>
+
+          <h2 id="session-list">
+            The session list
+            <a href="#session-list" class="heading-anchor">#</a>
+          </h2>
+          <div class="info-box warning">
+            <p>
+              <strong>Heads up:</strong>
+              what the session list can show depends on the signals each agent CLI exposes.
+            </p>
+          </div>
+          <p>
+            Every session of every Fleet thurbox follows, in one list, with the agent's live
+            terminal beside it. Each session is a Fleet Task
+            (<a href="fleet-features.html#sessions-as-tasks">Sessions as Tasks</a>), so quitting
+            thurbox leaves it running.
+          </p>
+          <ul>
+            <li>
+              Create a session with
+              <code>Ctrl+N</code>
+              : Fleet &rarr; place &rarr; repository &rarr; name and branch &rarr; agent. The Fleet
+              step is skipped when only one Fleet is listed. The places and agents offered are the
+              chosen Fleet's, and the agent step is skipped when that Fleet offers one harness.
+              <kbd>Alt</kbd>+<kbd>W</kbd> gives a repository a worktree of its own.
+            </li>
+            <li>
+              Rename a session with
+              <code>Ctrl+E</code>
+              from the session list. The name is the Task's <code>thurbox.dev/name</code> label.
+            </li>
+            <li>
+              Each row shows the agent's live activity when the CLI reports one (via its terminal
+              title), next to a colored status dot.
+            </li>
+            <li>
+              Open URLs in terminal output with <code>Ctrl+Click</code>. Select text with a mouse
+              drag, copy with <code>Ctrl+C</code>, paste with <code>Ctrl+V</code>. With no
+              selection, <code>Ctrl+C</code> sends SIGINT to the active session.
+            </li>
+            <li>Toggle a shell pane beside the agent with <code>Ctrl+T</code>.</li>
+            <li>
+              Reorder the list by hand: with the session list focused,
+              <code>Shift+J</code> / <code>Shift+K</code> move the selected session (and its nested
+              children) down/up, and <code>Shift+S</code> sorts sessions by name within each repo
+              group. A status change only recolors the dot, never moves a row, and the order
+              survives restarts.
+            </li>
+            <li>
+              <code>Ctrl+Q</code> quits and leaves every session running.
+              <code>Ctrl+D</code> deletes the session's Task
+              (<code>fleet delete task</code>): Fleet stops the agent and removes its worktree,
+              keeping its branch, and its uncommitted work under
+              <code>refs/fleet/preserved/</code> for 30 days.
+              There is no undo.
+            </li>
+          </ul>
+
+<h3 id="parent-sessions">
+            Parent Sessions (Lead / Worker)
+            <a href="#parent-sessions" class="heading-anchor">#</a>
+          </h3>
+          <p>
+            A Task can name a <strong>parent</strong> with its
+            <code>gateway.fleet.dev/parent</code> label, so a <em>lead</em> session that spawns
+            <em>workers</em> shows them under it.
+          </p>
+          <ul>
+            <li>
+              In the session list, children nest under their parent
+              <strong>within the same repo group</strong>.
+              <code>Ctrl+J</code> / <code>Ctrl+K</code> navigation walks the tree exactly as rendered.
+            </li>
+            <li>
+              The link is <strong>informational only</strong> &mdash; deleting a lead never deletes
+              its workers. A dangling parent renders the child as a top-level session again.
+            </li>
+          </ul>
+
+                    
+<h2 id="several-fleets">
+            Several Fleets
+            <a href="#several-fleets" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            thurbox can follow several Fleets. List them in
+            <code>~/.config/thurbox/settings.toml</code>. With no <code>[fleets]</code> table,
+            thurbox uses one Fleet on this machine. Once the file lists a Fleet, thurbox uses only
+            the listed Fleets.
+          </p>
+          <pre data-title="~/.config/thurbox/settings.toml"><code class="language-toml">[fleets.laptop]
+transport = "local"                     # the default
+
+[fleets.box]
+transport = { ssh = "me@box" }
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
+
+[fleets.ubuntu]
+transport = { wsl = "Ubuntu" }</code></pre>
+          <ul>
+            <li>
+              A row shows its Fleet, and its place when the place is not <code>local</code>. A
+              Fleet that cannot be reached keeps its rows, marked unreachable.
+            </li>
+            <li>
+              Each command for a session goes to that session's own Fleet. A new session goes to
+              the Fleet picked in the new-session flow, which browses that Fleet's folders and
+              branches, on whichever machine it runs.
+            </li>
+            <li>
+              The agent's pane and its companion shell are the streams <code>fleet attach</code>
+              and <code>fleet shell</code> name, over the link to the session's Fleet.
+            </li>
+            <li>
+              thurbox starts <code>fleet up</code> for a Fleet on this machine when no manager
+              runs. It never starts one on another machine: run it there as a service
+              (<a href="fleet-install.html#service">Keep fleet up running</a>).
+            </li>
+            <li>
+              <code>thurbox-cli doctor</code> checks each listed Fleet and says which one cannot be
+              reached. Every key is in <a href="configuration.html#fleets">Configuration</a>.
+            </li>
+          </ul>
+
+<h2 id="global-search">
+            Global Search
+            <a href="#global-search" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Press
+            <code>Ctrl+/</code>
+            to open a non-modal search strip across the top of the interface. A result carries the
+            pane it belongs to, so
+            <strong>search grows a scope whenever a pane returns</strong>
+            &mdash; sessions is the scope that has a pane today.
+          </p>
+          <ul>
+            <li>
+              <strong>Sessions</strong>
+              match on name, agent, worktree branch and repository
+              <em>and</em>
+              on the
+              <strong>text on the agent's screen</strong>
+              &mdash; the half that finds a session by the error in it.
+            </li>
+            <li>
+              Matches highlight
+              <strong>live in the pane itself</strong>
+              &mdash; matching rows accented, the rest dimmed &mdash; rather than being reprinted in
+              the strip. Moving the selection previews it in the list; <code>Esc</code> puts back
+              exactly what you were looking at.
+            </li>
+            <li>
+              Metadata matching is subsequence (typing
+              <code>oc52</code>
+              finds
+              <code>fix-osc52</code>
+              ); screen text is matched as a substring, because fuzzy matching against a whole
+              terminal screen matches everything. A session whose metadata already matched is not
+              scanned twice.
+            </li>
+            <li>
+              <strong>Nobody pays for it while it is closed.</strong>
+              Reading every agent's screen every frame would be a permanent cost for a feature in
+              occasional use, so the strip leaves its query where the kernel can see it and the screen
+              text is served only while it is actually asking.
+            </li>
+          </ul>
+
+          <h2 id="responsive-ui">
+            Responsive layout
+            <a href="#responsive-ui" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The arrangement adapts to the terminal size, and
+            <strong>the thresholds are a file you can edit</strong>
+            &mdash;
+            <code>ui/layout.lua</code>
+            , not a breakpoint compiled into the binary. It ships arranging two panes between three
+            chrome bands:
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Terminal size</th>
+                <th>Arrangement</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>&lt; 80 cols</td>
+                <td>Centre pane only &mdash; the session column is dropped</td>
+              </tr>
+              <tr>
+                <td>&gt;= 80 cols</td>
+                <td>Session column (25%, min 20 cols) + centre pane</td>
+              </tr>
+              <tr>
+                <td>&lt; 20 rows</td>
+                <td>The header band is dropped to keep the panes usable</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The centre pane is never dropped &mdash; it takes whatever the session column leaves.
+            Everything else is yours: change a percentage, reorder the bands, or delete a line to drop
+            one. The function only
+            <em>arranges</em>
+            , so it never calls a plugin and a mistake in it cannot break one. See
+            <a href="interface.html">the interface</a>
+            for how it is resolved before any plugin draws.
+          </p>
+          <h2 id="themes">
+            Themes
+            <a href="#themes" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Thirty-six built-in palettes (twenty-eight dark, eight light) switch live with
+            <code>Ctrl+Y</code>
+            (or
+            <code>F4</code>
+            ) and persist across restarts.
+          </p>
+
+          <h2 id="os-notifications">
+            OS Notifications
+            <a href="#os-notifications" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            When a session crosses into a
+            <strong>needs-you</strong>
+            state &mdash; the agent rang the terminal bell or emitted an OSC 9 / OSC 777
+            notification (usually because it is waiting on an answer or has finished a task)
+            &mdash; Thurbox fires an OS desktop notification, so you can react without watching
+            the TUI. The notification body is the agent's last OSC message, or
+            <code>Waiting for input</code>
+            otherwise.
+          </p>
+          <ul>
+            <li>
+              <strong>Linux</strong>
+              dispatches over dbus and supports
+              <strong>click-to-focus</strong>
+              : clicking the banner switches the TUI to that session on its next tick.
+              <strong>macOS</strong>
+              shows the banner but ignores clicks (the modern notification API requires a signed
+              app bundle, which Thurbox is not).
+            </li>
+            <li>
+              It fires
+              <strong>only while the TUI is open</strong>
+              &mdash; the terminal parser that watches for the bell does not run headless &mdash;
+              and is deduplicated per session, with the session you are currently viewing skipped
+              by default.
+            </li>
+            <li>
+              Tune it in the
+              <code>[notifications]</code>
+              block of
+              <code>settings.toml</code>
+              (
+              <a href="configuration.html#notifications">see Configuration</a>
+              ): opt into the timing-only
+              <code>Busy &rarr; Waiting</code>
+              edge for agents that never ring a bell, toggle the sound, or change the dedup floor.
+              Turn the whole feature off with
+              <code>[features] notifications = false</code>
+              .
+            </li>
+          </ul>
+
+          <h2 id="mouse-navigation">
+            Mouse Navigation
+            <a href="#mouse-navigation" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The whole TUI is clickable (on by default; disable with the
+            <code>mouse</code>
+            feature flag below):
+          </p>
+          <ul>
+            <li>
+              <strong>Click a row</strong>
+              in any pane to select it and focus that pane. A plugin gets the hit for free: it
+              returns the rects it drew, and the kernel matches the click against them.
+            </li>
+            <li>
+              <strong>Click a picker row</strong>
+              (theme, Fleet, place, agent, branch, &hellip;) to select
+              <em>and</em>
+              confirm in one click. Open modals swallow stray clicks, so a misclick never discards
+              typed input.
+            </li>
+            <li>
+              <strong>Hover</strong>
+              underlines the row under the pointer; the
+              <strong>mouse wheel</strong>
+              scrolls the focused terminal and steps the selection while a modal is open (with a
+              draggable scrollbar on long lists).
+            </li>
+            <li>
+              <strong>Drag</strong>
+              selects terminal text (
+              <code>Ctrl+C</code>
+              copies);
+              <code>Ctrl+Click</code>
+              opens a URL.
+            </li>
+          </ul>
+
+          <h2 id="feature-flags">
+            Feature Flags
+            <a href="#feature-flags" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            Behaviour that reaches outside the interface is switched in
+            <code>~/.config/thurbox/settings.toml</code>
+            under
+            <code>[features]</code>
+            (seeded commented-out, so the defaults apply when absent). Every flag defaults to
+            <code>true</code>
+            &mdash; including
+            <code>version_check</code>
+            and
+            <code>auto_update</code>
+            , which reach the network, so they are the two most worth knowing you can turn off.
+          </p>
+          <div class="info-box">
+            <p>
+              <strong>A pane is not switched off here.</strong>
+              Panes are files, so turning one off is
+              <code>space</code>
+              on its row in the Interface tab &mdash; a decision recorded in
+              <code>plugin-state.json</code>
+              beside your trust grants. That is strictly more than a flag could do: it works for a
+              plugin you wrote, which no compiled-in flag could ever have known about.
+            </p>
+          </div>
+          <pre data-title="settings.toml"><code class="language-toml">[features]
+shell_pane = true     # Ctrl+T per-session shell
+mouse = true          # mouse capture: clicks, wheel, drag-select, hover
+notifications = true  # OS desktop alerts when a session needs attention
+perf_hud = true       # F12 live counters
+version_check = true  # GitHub update check (makes a network call)
+auto_update = true    # download+verify+replace the binaries on startup (never across a major)</code></pre>
+          <p>
+            You don't have to hand-edit the file: press
+            <code>Ctrl+,</code>
+            (or
+            <code>F6</code>
+            ) to open the
+            <strong>Settings panel</strong>
+            &mdash; a modal that views and edits all of
+            <code>settings.toml</code>
+            (the
+            <code>[features]</code>
+            toggles, the
+            <code>[notifications]</code>
+            knobs, and the scalars). Edits apply on
+            <code>Ctrl+S</code>
+            (
+            <code>Esc</code>
+            discards); the file is also live-reloaded, so feature flags and notification knobs take
+            effect immediately.
+          </p>

@@ -1,16 +1,91 @@
 ---
 layout: docs.njk
 title: 'Recipes — Thurbox Docs'
-description: 'Worked Thurbox recipes: start a session per package of a monorepo from one script, with Fleet.'
+description: 'Worked recipes: VEGA, a Task that dispatches worker Tasks, a nightly review on a CronTask, and a session per package of a monorepo from one script.'
 currentPage: 'recipes'
 breadcrumb: 'Recipes'
 ---
 <h1>Recipes</h1>
 <p>
-  Every session is a Fleet Task, so a recipe is a script over
-  <a href="features.html#headless-cli">Fleet's command line</a>. Everything it starts shows up in
+  Every session is a Fleet Task, so a recipe is a script or a Task over
+  <a href="fleet-features.html#headless-cli">Fleet's command line</a>. Everything it starts shows up in
   your running Thurbox within a tick.
 </p>
+
+<h2 id="vega">
+  VEGA: one Task that runs the others
+  <a href="#vega" class="heading-anchor">#</a>
+</h2>
+<p>
+  <a href="https://github.com/Thurbeen/vega" target="_blank" rel="noopener">VEGA</a> is a mission
+  control Task. You give it a request; it splits the work and applies one worker Task per piece,
+  each in a workspace of its own. It never does the work itself. Fleet relays each worker's
+  questions and result back to VEGA, and VEGA tells you what is dispatched, what is done and what
+  needs you.
+</p>
+<img
+  src="../assets/vega.svg"
+  alt="You send VEGA a request; VEGA applies worker Tasks; each worker's result goes back through VEGA's inbox to you"
+  width="816"
+  height="300"
+  loading="lazy"
+/>
+
+<h3 id="vega-install">Install</h3>
+<p>
+  VEGA needs Fleet v3 (Thurbox's installer, or <code>install.sh --fleet-only</code>),
+  <code>jq</code>, and a coding-agent CLI on <code>PATH</code> that is logged in.
+</p>
+<pre><code class="language-bash">git clone https://github.com/Thurbeen/vega
+cd vega
+./install.sh            # optional: --harness NAME, --config PATH</code></pre>
+<p>
+  On Windows (PowerShell 7) it is <code>./install.ps1</code>, with <code>-Harness</code> and
+  <code>-Config</code>. The installer can run again safely: it runs <code>fleet init</code> only
+  when there is no config, picks the first agent on <code>PATH</code>, and applies the Task
+  <code>vega</code> over the clone's <code>workspace/</code>. Claude Code asks once whether to
+  trust that folder; answer in VEGA's session. <code>git pull</code> updates it, and
+  <code>./install.sh --uninstall</code> (<code>-Uninstall</code>) deletes the Task
+  <code>vega</code>, leaving its workers and the clone.
+</p>
+
+<h3 id="vega-talk">Talk to it</h3>
+<pre><code class="language-bash">fleet send vega "Add a dark mode to the website, and open a draft PR"
+fleet list task                     # VEGA, and the workers it applied
+fleet status task vega --json       # its state</code></pre>
+<p>
+  In Thurbox, VEGA is the session <code>vega</code>: select it and type, and its workers appear in
+  the list as they start. Thurbox runs <code>fleet up</code> for you; with Fleet alone, run it
+  yourself.
+</p>
+
+<h2 id="nightly">
+  A nightly review
+  <a href="#nightly" class="heading-anchor">#</a>
+</h2>
+<p>
+  A <a href="fleet/resources/cron-task.html">CronTask</a> runs the same brief on a schedule: at
+  each time it creates a new Task from its template, and Thurbox shows each one as a session.
+</p>
+<pre data-title="nightly-review.json"><code class="language-json">{
+  "apiVersion": "fleet/v1alpha1",
+  "kind": "CronTask",
+  "metadata": {"name": "nightly-review"},
+  "spec": {
+    "schedule": "0 3 * * 1-5",
+    "concurrencyPolicy": "Forbid",
+    "template": {
+      "spec": {
+        "harness": "claude",
+        "brief": "Review what landed today and report what needs attention.",
+        "workspace": ["git+file:///home/me/app"],
+        "dispatch": true
+      }
+    }
+  }
+}</code></pre>
+<pre><code class="language-bash">fleet apply -f nightly-review.json
+fleet list crontask</code></pre>
 
 <h2 id="monorepo">
   A session per package of a monorepo
@@ -28,7 +103,7 @@ repo=/home/me/code/mono
 for pkg in api web worker; do
   printf '{"apiVersion":"fleet/v1alpha1","kind":"Task",
     "metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},
-    "spec":{"harness":"claude-code","host":"local",
+    "spec":{"harness":"claude",
             "workspace":["git+file://%s?branch=%s"],
             "dispatch":true}}' \
     "$pkg" "$pkg" "$repo" "$pkg" | fleet apply --create-only -f -
@@ -37,6 +112,6 @@ done
 fleet list task</code></pre>
 <p>
   <code>fleet send</code> queues each message, and Fleet delivers it once the agent is ready.
-  <code>fleet delete task &lt;name&gt;</code> ends a session and removes its worktree, keeping
-  work that exists nowhere else under <code>refs/fleet/preserved/</code> in the runtime's mirror.
+  <code>fleet delete task &lt;name&gt;</code> ends a session and removes its worktree. Its branch
+  stays, and uncommitted work is kept under <code>refs/fleet/preserved/</code> for 30 days.
 </p>

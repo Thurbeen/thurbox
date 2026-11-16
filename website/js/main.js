@@ -421,6 +421,39 @@
     });
   }
 
+  // ---- Scroll reveal (home page) ----
+  // landing.css hides a [data-reveal] group's children only under html.js-motion,
+  // which is set here and only when motion is welcome, so the page reads in full
+  // with JS off or reduced motion. ?nomotion skips it for full-page screenshots.
+  var revealGroups = document.querySelectorAll('[data-reveal]');
+  if (
+    revealGroups.length > 0 &&
+    'IntersectionObserver' in window &&
+    window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: no-preference)').matches &&
+    !/[?&]nomotion\b/.test(window.location.search)
+  ) {
+    revealGroups.forEach(function (group) {
+      Array.prototype.forEach.call(group.children, function (child, i) {
+        child.style.setProperty('--reveal-i', String(i));
+      });
+    });
+    document.documentElement.classList.add('js-motion');
+    var revealObserver = new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
+          entry.target.classList.add('is-revealed');
+          revealObserver.unobserve(entry.target);
+        });
+      },
+      { rootMargin: '0px 0px -10% 0px', threshold: 0.1 },
+    );
+    revealGroups.forEach(function (group) {
+      revealObserver.observe(group);
+    });
+  }
+
   // ---- Mobile sidebar toggle (docs pages) ----
   var sidebarToggle = document.getElementById('sidebar-toggle');
   var sidebar = document.querySelector('.docs-sidebar');
@@ -629,275 +662,4 @@
       true,
     );
   }
-
-  /* ── The panel lab ────────────────────────────────────────────────────────
-   *
-   * Demonstrates the one claim the page rests on: a pane is a file, and what an
-   * arrangement file does with the set of files it is given. So the rects are
-   * COMPUTED from the enabled set rather than picked from a table of finished
-   * layouts -- a table would have to enumerate every combination.
-   *
-   * This models what `ui/layout.lua` does with the plugins actually loaded: the
-   * kernel publishes the slots a loaded plugin claims (`ctx.slots`) and the
-   * arrangement declines to reserve one nothing will fill. It did NOT once --
-   * gating the session column on the F9 toggle alone left a disabled plugin's
-   * column reserved and empty, which the UI review caught as a blocker and
-   * `a_disabled_pane_does_not_reserve_its_column` now holds.
-   */
-  (function panelLab() {
-    var screen = document.getElementById('ui-lab-screen');
-    if (!screen) return;
-
-    var COLUMNS = ['sessions', 'agent', 'yours'];
-    var WEIGHT = { sessions: 1, agent: 2.4, yours: 1 };
-    // The real strip is three rows of a thirty-row screen. It gets a little
-    // more here because this mockup adds a row the terminal does not draw: the
-    // name of the file that painted the pane.
-    var FOOTER = 22;
-
-    // The `stacked right` arrangement, mirroring examples/lua/layout.lua's own
-    // numbers so the widget and the file it advertises cannot drift: a 30%-wide
-    // right column split 55/45 between tasks and top, top to bottom.
-    var STACK = ['tasks', 'top'];
-    var STACK_SHARE = { tasks: 55, top: 45 };
-    var STACK_WIDTH = 30;
-    var SESSIONS_WIDTH = 25;
-
-    var panes = {};
-    Array.prototype.forEach.call(screen.querySelectorAll('.ui-pane'), function (el) {
-      panes[el.getAttribute('data-pane')] = el;
-    });
-
-    var on = {
-      sessions: true,
-      agent: true,
-      search: true,
-      yours: false,
-      tasks: false,
-      top: false,
-    };
-    var mode = 'columns';
-
-    function place(el, x, y, w, h) {
-      el.style.left = x + '%';
-      el.style.top = y + '%';
-      el.style.width = w + '%';
-      el.style.height = h + '%';
-    }
-
-    // sessions | agent | (tasks over top).
-    //
-    // Honours each pane's own switch the way the real `layout.lua` honours
-    // `ctx.slots`: a stack slot whose plugin is not loaded is not reserved, so
-    // turning one off gives its row to the other rather than leaving a hole — and
-    // turning both off drops the column, not just its contents.
-    function placeStack(bodyH) {
-      panes.yours.setAttribute('data-off', 'true');
-      var stack = STACK.filter(function (id) {
-        return on[id];
-      });
-      var right = stack.length ? STACK_WIDTH : 0;
-      var left = on.sessions ? SESSIONS_WIDTH : 0;
-      if (on.sessions) place(panes.sessions, 0, 0, left, bodyH);
-      if (on.agent) place(panes.agent, left, 0, 100 - left - right, bodyH);
-
-      var total = stack.reduce(function (sum, id) {
-        return sum + STACK_SHARE[id];
-      }, 0);
-      var offset = 0;
-      stack.forEach(function (id) {
-        var share = (STACK_SHARE[id] / total) * bodyH;
-        place(panes[id], 100 - right, offset, right, share);
-        offset += share;
-      });
-    }
-
-    function render() {
-      var live = COLUMNS.filter(function (id) {
-        return on[id];
-      });
-      var footer = on.search ? FOOTER : 0;
-      var bodyH = 100 - footer;
-
-      Object.keys(panes).forEach(function (id) {
-        panes[id].setAttribute('data-off', on[id] ? 'false' : 'true');
-      });
-
-      if (on.search) place(panes.search, 0, bodyH, 100, footer);
-
-      // The right stack only exists in its own arrangement; elsewhere the two
-      // demo panes have no slot, which is exactly what happens in the app when
-      // you copy the plugins and not the layout.
-      if (mode !== 'stack') {
-        STACK.forEach(function (id) {
-          panes[id].setAttribute('data-off', 'true');
-        });
-      }
-      if (mode === 'stack') {
-        placeStack(bodyH);
-        return;
-      }
-
-      // Focus gives the whole body to the agent when it is loaded; the others
-      // keep their rect so they fade rather than jump on the way back.
-      if (mode === 'focus' && on.agent) {
-        place(panes.agent, 0, 0, 100, bodyH);
-        live
-          .filter(function (id) {
-            return id !== 'agent';
-          })
-          .forEach(function (id) {
-            panes[id].setAttribute('data-off', 'true');
-          });
-        return;
-      }
-
-      var total = live.reduce(function (sum, id) {
-        return sum + WEIGHT[id];
-      }, 0);
-      if (!total) return;
-
-      var offset = 0;
-      live.forEach(function (id) {
-        var share = (WEIGHT[id] / total) * 100;
-        if (mode === 'rows') {
-          place(panes[id], 0, (offset / 100) * bodyH, 100, (share / 100) * bodyH);
-        } else {
-          place(panes[id], offset, 0, share, bodyH);
-        }
-        offset += share;
-      });
-    }
-
-    var hint = document.getElementById('ui-lab-hint');
-    var timer = null;
-    var taken = false;
-    var done = false;
-
-    function takeOver() {
-      if (taken) return;
-      taken = true;
-      if (timer) window.clearInterval(timer);
-      timer = null;
-      if (hint) hint.textContent = 'Yours now. Every pane above is one file.';
-    }
-
-    function setMode(next) {
-      mode = next;
-      Array.prototype.forEach.call(document.querySelectorAll('.ui-lab__btn'), function (btn) {
-        btn.setAttribute(
-          'aria-pressed',
-          btn.getAttribute('data-arrangement') === next ? 'true' : 'false',
-        );
-      });
-      render();
-    }
-
-    function setPane(id, enabled) {
-      on[id] = enabled;
-      var chip = document.querySelector('.ui-lab__chip[data-toggle="' + id + '"]');
-      if (chip) chip.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-      render();
-    }
-
-    Array.prototype.forEach.call(document.querySelectorAll('.ui-lab__btn'), function (btn) {
-      btn.addEventListener('click', function () {
-        takeOver();
-        setMode(btn.getAttribute('data-arrangement'));
-      });
-    });
-
-    Array.prototype.forEach.call(document.querySelectorAll('.ui-lab__chip'), function (chip) {
-      chip.addEventListener('click', function () {
-        takeOver();
-        var id = chip.getAttribute('data-toggle');
-        setPane(id, chip.getAttribute('aria-pressed') !== 'true');
-      });
-    });
-
-    render();
-
-    // Autoplay so the movement is seen without being asked for. Skipped
-    // entirely when motion is not wanted, and stopped for good on first input.
-    var still = window.matchMedia('(prefers-reduced-motion: reduce)');
-    if (still.matches) {
-      if (hint) hint.textContent = 'Click a layout or a file to rearrange it.';
-      return;
-    }
-
-    var SCRIPT = [
-      function () {
-        setPane('yours', true);
-      },
-      function () {
-        setMode('rows');
-      },
-      function () {
-        setPane('search', false);
-      },
-      function () {
-        setMode('columns');
-      },
-      function () {
-        setPane('sessions', false);
-      },
-      function () {
-        setMode('focus');
-      },
-      // The shipped demo: two example panes stacked to the right of the agent.
-      // Last in the sequence because it is the most to take in, and it is where
-      // the autoplay stops — so it is what a reader is left looking at.
-      function () {
-        setMode('columns');
-        setPane('sessions', true);
-        setPane('yours', false);
-        setPane('search', true);
-      },
-      function () {
-        setPane('tasks', true);
-        setPane('top', true);
-        setMode('stack');
-      },
-    ];
-    var step = 0;
-
-    function play() {
-      if (taken) return;
-      if (step >= SCRIPT.length) {
-        // One pass, then stop for good. These transitions animate `left`/`top`/
-        // `width`/`height` -- layout properties, so each frame is a reflow on the
-        // main thread rather than compositor work. Looping that forever taxes the
-        // whole page (and reads as restless); one pass shows the point and then
-        // the section goes quiet until someone touches it.
-        stopAutoplay();
-        if (hint) hint.textContent = 'Your turn — click a layout or a file.';
-        return;
-      }
-      SCRIPT[step]();
-      step += 1;
-    }
-
-    function stopAutoplay() {
-      if (timer) window.clearInterval(timer);
-      timer = null;
-      done = true;
-    }
-
-    if (!('IntersectionObserver' in window)) return;
-    var watcher = new IntersectionObserver(
-      function (entries) {
-        entries.forEach(function (entry) {
-          if (entry.isIntersecting && !taken && !done && !timer) {
-            timer = window.setInterval(play, 2300);
-          } else if (!entry.isIntersecting && timer) {
-            // Off screen is not "taken over": stop the work, keep the offer.
-            window.clearInterval(timer);
-            timer = null;
-          }
-        });
-      },
-      { threshold: 0.35 },
-    );
-    watcher.observe(screen);
-  })();
 })();

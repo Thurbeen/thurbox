@@ -12,7 +12,7 @@
 # to borrow the one field of the session model that spawns a pty. thurbox-doom
 # asks the kernel for a *program pane* of its own (`Capability::Program`), so the
 # recording needs no agent to install and no transcript tidied up on screen:
-# install the plugin, grant it the capability, press `f7`.
+# install the plugin, grant it the capability, press `f5`.
 #
 #   https://github.com/Thurbeen/thurbox-doom
 #
@@ -42,7 +42,7 @@
 #   local checkout)
 #   optionally any of claude / codex / opencode / agy — one session each, so the
 #   session list beside Doom is not empty. Missing ones are skipped; their panes
-#   never appear in the kept window, which starts long after `f7`.
+#   never appear in the kept window, which starts long after `f5`.
 #   a font directory for agg, which ships none. Point FONT_DIR at it. A Nerd Font
 #   covers everything on its own
 #   (https://github.com/ryanoasis/nerd-fonts/releases -> JetBrainsMono.tar.xz);
@@ -75,9 +75,9 @@ DOOM_PLUGIN_SRC="${DOOM_PLUGIN_SRC:-git+https://github.com/Thurbeen/thurbox-doom
 # --- The recording's phases, in seconds since thurbox launched ---------------
 # thurbox boots, adopts the seeded sessions and loads the plugin.
 BOOT_SECS="${BOOT_SECS:-10}"
-# How long Doom runs after `f7` before Ctrl+Q ends the recording.
+# How long Doom runs after `f5` before Ctrl+Q ends the recording.
 DOOM_SECS="${DOOM_SECS:-60}"
-# Window kept from the raw cast. Doom's attract sequence, timed from `f7`: the
+# Window kept from the raw cast. Doom's attract sequence, timed from `f5`: the
 # title screen for ~5 s, DEMO1 for ~15 s, then the id credits page — which is
 # *static*, and a clip that lands on it is 5 seconds of a still image. DEMO2
 # starts at ~27 s and runs well past 90, so the window is taken from there:
@@ -258,7 +258,7 @@ PYTRUST
 
 # --- The session list beside Doom: one session per installed agent CLI --------
 # Real CLIs, because the rows are the real thing or they are a mock-up. No agent
-# pane is ever in the kept window — that starts half a minute after `f7`, with
+# pane is ever in the kept window — that starts half a minute after `f5`, with
 # Doom on screen throughout — so nothing an agent prints, account name or past
 # conversation or a trust prompt, can reach the clip.
 agents=()
@@ -294,11 +294,11 @@ tmux -L thurbox-doom-rec new-session -d -x "$COLS" -y "$ROWS" -c "$REPO" -s r \
 send() { tmux -L thurbox-doom-rec send-keys -t r "$@"; }
 
 sleep "$BOOT_SECS"
-# `f7` is the plugin's global chord, so it reaches a pane that is not on screen
+# `f5` is the plugin's global chord, so it reaches a pane that is not on screen
 # yet — Doom takes the `center` switch slot, behind the agent. The pane asks for
 # its program on the first frame it draws, which is this one, so Doom starts
 # here and the phase arithmetic above is timed from it.
-send F7
+send F5
 sleep "$DOOM_SECS"
 send C-q                     # thurbox quit -> asciinema finalises the cast
 sleep 6

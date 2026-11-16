@@ -1402,13 +1402,13 @@ the way you would treat a shell profile someone sent you.
 
 **The kernel's bounds**, which a plugin cannot raise: output is capped per stream
 and flagged when truncated, a run times out (30 s by default, `timeout = n` up to
-ten minutes), and four run at once with the rest queued. A run happens in the
-session's working directory, and for a remote session **on that session's host** —
-which is what makes `docker compose ps` mean the right containers.
+ten minutes), and four run at once with the rest queued. A run happens **on
+this machine only**, in the session's working directory — which is what makes
+`docker compose ps` mean the right containers. A run for a session on another
+machine fails, and says so.
 
-**Some programs need this machine instead**: its microphone, its display, its
-clipboard. A remote session's host cannot stand in for those, so ask for the
-machine thurbox runs on:
+**Some programs need no session**: its microphone, its display, its clipboard.
+Ask for the machine thurbox runs on:
 
 ```lua
 run("start", "thurbox-voice start --session " .. id, { machine = "local" })
@@ -1416,11 +1416,11 @@ run("start", "thurbox-voice start --session " .. id, { machine = "local" })
 
 It runs in your home directory whatever session is selected, and needs no
 `session`. If you give one anyway, it is not where the program runs; `machine`
-decides that. A `machine` other than `"session"` (the default), `"local"`, or
-`"host:<exact-name>"` fails the call rather than falling back, because guessing would run the program
-somewhere you did not ask for. This grants nothing new: a local session's runs
-already execute here as you, so it is the same `run` capability and the same
-trust.
+decides that. A `machine` other than `"session"` (the default) or `"local"` fails
+rather than falling back, because guessing would run the program somewhere you
+did not ask for: `"host:<name>"` names another machine, and its run fails.
+This grants nothing new: a session's runs already execute here as you, so it is
+the same `run` capability and the same trust.
 
 **Retire keys explicitly.** Answers belong to `(plugin, key)`, not to the
 program or target. A fresh or in-flight key ignores another request even if its

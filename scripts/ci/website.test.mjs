@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { posix } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'node-html-parser';
+import { RENDERED_DOCS } from '../../eleventy.config.js';
 
 // Reads the built site, so run it after `npm run build:website`.
 const built = (path) => parse(readFileSync(`_site/${path}`, 'utf8'));
@@ -32,31 +34,12 @@ test('homepage does not promote performance', () => {
   assert.doesNotMatch(text(home), /benchmark|five-way|frames a second|% of one core|Herdr/i);
 });
 
-test('plugin catalog lists Automations with its repository, install command and current requirements', () => {
-  const repo = 'https://github.com/Thurbeen/thurbox-automations';
-  const card = built('plugins.html')
-    .querySelectorAll('[data-plugin]')
-    .find((c) => c.querySelector('h2 a')?.getAttribute('href') === repo);
-  assert.ok(card, 'a catalog card links to the thurbox-automations repository');
-  assert.equal(card.getAttribute('data-badge'), 'official');
-  assert.equal(
-    text(parse(card.querySelector('pre').innerHTML)).trim(),
-    'thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-automations',
-  );
-  const copy = text(card);
-  assert.match(copy, /run history|recent runs/i);
-  assert.match(copy, /2\.56\.5/);
-  assert.match(copy, /2\.57\.0/, 'names the release that brought create and edit');
-  assert.doesNotMatch(copy, /need a release with/i, 'create and edit have shipped');
-  const gif = card.querySelector('img').getAttribute('src');
-  assert.equal(gif, 'https://raw.githubusercontent.com/Thurbeen/thurbox-automations/main/media/demo.gif');
-});
-
-test('features page points automations at their pane', () => {
-  const features = built('docs/features.html');
-  const repo = 'https://github.com/Thurbeen/thurbox-automations';
-  assert.ok(features.querySelector(`a[href="${repo}"]`), 'links the automations pane');
-  assert.doesNotMatch(text(features), /No pane, but they still fire/);
+test('the site names no thurbox automations', () => {
+  for (const path of pages()) {
+    const page = built(path);
+    assert.doesNotMatch(text(page), /automations?\.json|thurbox-cli automation|thurbox-automations/i, `${path} names automations`);
+    assert.ok(!page.querySelector('a[href*="thurbox-automations"]'), `${path} links the automations pane`);
+  }
 });
 
 const retiredFleet = [
@@ -68,22 +51,19 @@ const retiredFleet = [
 // Fleet v1: the Python control plane that installed as a Thurbox extension.
 const fleetV1 = [/uv run fleet/, /\/fleet-onboarding/, /Mission Control/, /Kanban/, /result\.md/, /--kind result/];
 
-test('orchestration page leads with Fleet v2, its release installer and Fleet Lens', () => {
+test('orchestration page leads with Fleet, its reference on this site and Fleet Lens', () => {
   const page = built('docs/orchestration.html');
-  const fleet = 'https://github.com/Thurbeen/fleet';
-  assert.ok(page.querySelector(`a[href="${fleet}"]`), 'links the Fleet repository');
+  assert.ok(page.querySelector('a[href="fleet/index.html"]'), "links Fleet's reference");
   assert.ok(page.querySelector('a[href="https://github.com/Thurbeen/thurbox-fleetlens"]'), 'links Fleet Lens');
   const h2s = page.querySelectorAll('h2').map((h) => h.getAttribute('id'));
   assert.equal(h2s[0], 'fleet', 'Fleet is the first section');
   const copy = text(page);
   const code = page.querySelectorAll('pre').map((pre) => text(parse(pre.innerHTML))).join('\n');
-  assert.match(
-    code,
-    /curl -fsSL https:\/\/github\.com\/Thurbeen\/fleet\/releases\/latest\/download\/install-release\.sh \| sh/,
-  );
+  assert.match(code, /curl -fsSL https:\/\/raw\.githubusercontent\.com\/Thurbeen\/thurbox\/main\/scripts\/install\.sh \| sh/);
   assert.match(code, /thurbox-cli plugin install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
   assert.match(copy, /fleet result/, 'the worker reports its own result');
   for (const stale of [...retiredFleet, ...fleetV1]) assert.doesNotMatch(copy, stale);
+  assert.doesNotMatch(page.innerHTML, /github\.com\/Thurbeen\/fleet\b|install-release\.sh/, 'no link to the old Fleet repository');
   assert.doesNotMatch(page.innerHTML, /raw\.githubusercontent\.com\/Thurbeen\/fleet\//, 'no file from Fleet v1');
 });
 
@@ -109,7 +89,7 @@ test('the site describes only what exists', () => {
     }
     const copy = text(page);
     assert.doesNotMatch(copy, /soft_delete|agents\.toml/, `${path} names a removed key or file`);
-    if (!['docs/configuration.html', 'docs/architecture.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
+    if (!['docs/configuration.html', 'docs/architecture.html', 'docs/runtime/index.html', 'docs/runtime/runtime-mux.html', 'docs/thurbox/architecture.html'].includes(path)) assert.doesNotMatch(copy, /RMUX/, `${path} offers RMUX`);
   }
   const llms = readFileSync('_site/llms.txt', 'utf8');
   assert.doesNotMatch(llms, /extensions\.html|agents\.toml/);
@@ -135,10 +115,43 @@ test('plugin catalog lists Fleet Lens in place of the Fleet v1 extension', () =>
   );
 });
 
-test('homepage links each official plugin from the interface section, and stays light on commands', () => {
+test('homepage presents Fleet and thurbox apart, links each official plugin, and stays light on commands', () => {
   const home = built('index.html');
-  const section = home.querySelector('#customizable');
-  const plugins = ['info-panel', 'code-review', 'automations', 'auto-continue', 'fleetlens', 'doom'];
+  const install = 'curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh';
+  // One string per code block, one line per command.
+  const code = (node) =>
+    node.querySelectorAll('pre').map((pre) => parse(pre.innerHTML).textContent.trim().split(/\s*\n\s*/));
+
+  // The interface first, then the engine: the bands, the hero's buttons and the
+  // first steps all run thurbox, then Fleet.
+  const bands = home.querySelectorAll('section.product').map((s) => s.getAttribute('id'));
+  assert.deepEqual(bands, ['thurbox', 'fleet'], 'the thurbox band comes before the Fleet band');
+  const ctas = home.querySelectorAll('.hero-ctas a').map((a) => a.getAttribute('href'));
+  assert.deepEqual(ctas, ['#thurbox', '#fleet'], 'the hero leads with thurbox');
+  const starts = home.querySelectorAll('.get-started').map((s) => s.getAttribute('id'));
+  assert.deepEqual(starts, ['thurbox-start', 'fleet-start'], 'thurbox gets started first');
+
+  // Fleet stands on its own: its own band, its own first steps, no thurbox in them.
+  const fleet = home.querySelector('#fleet');
+  assert.match(text(fleet), /works on its own/i, 'Fleet is said to run without thurbox');
+  const fleetStart = code(home.querySelector('#fleet-start'));
+  assert.equal(fleetStart.length, 1);
+  assert.deepEqual(fleetStart[0], [`${install} -s -- --fleet-only`, 'fleet init', 'fleet doctor', 'fleet up']);
+  // Every fleet subcommand the band shows is a variant of the CLI's Command enum.
+  const cli = readFileSync('crates/fleet-cli/src/main.rs', 'utf8');
+  for (const line of code(fleet).flat().filter((l) => l.startsWith('fleet '))) {
+    const verb = line.split(' ')[1];
+    const variant = verb[0].toUpperCase() + verb.slice(1);
+    assert.match(cli, new RegExp(`^    ${variant}\\b`, 'm'), `${line}: fleet ${verb} exists`);
+  }
+
+  // thurbox: the full install, then the program.
+  const thurboxStart = code(home.querySelector('#thurbox-start'));
+  assert.deepEqual(thurboxStart, [[install, 'thurbox']]);
+  assert.ok(home.querySelector('#thurbox video'), 'the demo is in the thurbox band');
+
+  const section = home.querySelector('#plugins');
+  const plugins = ['info-panel', 'code-review', 'auto-continue', 'fleetlens', 'doom'];
   for (const name of plugins) {
     const repo = `https://github.com/Thurbeen/thurbox-${name}`;
     const link = section.querySelector(`a[href="${repo}"]`);
@@ -146,11 +159,159 @@ test('homepage links each official plugin from the interface section, and stays 
     assert.ok(text(link.parentNode).trim().length > `thurbox-${name}`.length, `${name} says what it does`);
   }
   assert.ok(section.querySelector('a[href="plugins.html"]'), 'points at the full catalog');
+  assert.ok(home.querySelector('#thurbox #plugins'), 'the plugins sit under thurbox');
   assert.doesNotMatch(home.innerHTML, /thurbox-discord|thurbox-plugin-orchestrator|thurbox-ask/);
-  // An install line is enough for a first visit; the rest lives in the docs.
+  // The first steps and one short Fleet example are the only code blocks.
   const codeBlocks = home.querySelectorAll('pre').filter((pre) => /language-/.test(pre.innerHTML));
-  assert.equal(codeBlocks.length, 3, 'the install lines are the only code blocks');
+  assert.equal(codeBlocks.length, 3, 'two install blocks and the Fleet example');
   assert.doesNotMatch(text(home), /thurbox-cli (plugin|session) /);
   assert.ok(home.querySelector('a[href="docs/installation.html"]'), 'other install routes are linked');
-  assert.match(text(home.querySelector('#how-it-works')), /Run thurbox\. The session/, 'no space before the period');
+  assert.ok(home.querySelector('a[href="docs/fleet-install.html"]'), 'installing Fleet alone is linked');
+  const fit = home.querySelector('#how-they-fit');
+  const flow = text(fit.querySelector('figure.flow'));
+  for (const word of ['thurbox', 'Fleet laptop', 'Fleet box', 'ssh', 'WSL', 'runtime-mux', 'workspace-git', 'workspace provider', 'local']) {
+    assert.match(flow, new RegExp(word), `the overview reads "${word}" as text`);
+  }
+  assert.doesNotMatch(text(fit), / \./, 'no space before a period');
+});
+
+test('the docs sidebar gives Fleet and thurbox a group each', () => {
+  const groups = built('docs/index.html').querySelectorAll('.docs-sidebar h4').map((h) => h.textContent.trim());
+  assert.deepEqual(groups.slice(0, 2), ['Fleet', 'Thurbox']);
+  const workspaceLinks = built('docs/index.html')
+    .querySelectorAll('.docs-sidebar a')
+    .filter((a) => a.getAttribute('href') === 'fleet/resources/workspace.html');
+  assert.equal(workspaceLinks.length, 1, 'Workspaces is listed once, as its own entry');
+  assert.ok(
+    built('docs/index.html').querySelector('.docs-sidebar__sub a[href="fleet/plugins.html"]'),
+    'Controllers lists the plugin guide',
+  );
+  // Resources and Controllers list every page of their directory, read from it.
+  const subs = built('docs/index.html').querySelectorAll('.docs-sidebar__sub a').map((a) => a.getAttribute('href'));
+  for (const dir of ['resources', 'controllers']) {
+    // workspace.md has a top-level entry of its own (sidebar.njk's ownEntries).
+    for (const file of readdirSync(`docs/fleet/${dir}`).filter((f) => f.endsWith('.md') && f !== 'workspace.md')) {
+      assert.ok(subs.includes(`fleet/${dir}/${file.replace(/\.md$/, '.html')}`), `the sidebar lists ${dir}/${file}`);
+    }
+  }
+  // The published URL of the old single page stays, as a pointer to the two pages.
+  const moved = built('docs/features.html');
+  for (const page of ['fleet-features.html', 'thurbox-features.html']) {
+    assert.ok(moved.querySelector(`.docs-content a[href="${page}"]`), `docs/features.html links ${page}`);
+  }
+  // Every section of the old page goes to an id that exists on its new page.
+  const script = moved.querySelector('#features-moved').textContent;
+  const targets = [...script.matchAll(/'?([a-z-]+)'?: '([a-z-]+\.html)(?:#([a-z-]+))?'/g)];
+  const oldIds = ['agent-definitions', 'automations', 'customizable-interface', 'feature-flags', 'git-worktrees',
+    'global-search', 'headless-cli', 'inter-session-messages', 'mouse-navigation', 'os-notifications',
+    'parent-sessions', 'remote-ssh-sessions', 'responsive-ui', 'session-orchestration', 'session-persistence',
+    'themes', 'where-surfaces-live'];
+  assert.deepEqual(targets.map((m) => m[1]).sort(), oldIds);
+  for (const [, from, page, id] of targets) {
+    if (id) assert.ok(built(`docs/${page}`).querySelector(`[id="${id}"]`), `#${from} -> ${page}#${id} exists`);
+  }
+  for (const page of ['fleet-get-started', 'fleet', 'fleet-places', 'fleet-install', 'fleet-features', 'thurbox-get-started', 'thurbox', 'thurbox-features']) {
+    assert.ok(existsSync(`_site/docs/${page}.html`), `docs/${page}.html exists`);
+  }
+});
+
+// The Markdown pages rendered from the repository (repo-docs.njk), as
+// [source, built path]: a README is its directory's index.html.
+const repoDocs = ['docs/fleet', 'docs/runtime', 'docs/thurbox/plugins.md', 'docs/thurbox/kernel.md'].flatMap((entry) =>
+  (entry.endsWith('.md') ? [entry.split('/').pop()] : readdirSync(entry, { recursive: true }))
+    .map((file) => (entry.endsWith('.md') ? [entry.replace(/\/[^/]+$/, ''), file] : [entry, file]))
+    .filter(([, file]) => file.endsWith('.md'))
+    .map(([dir, file]) => [`${dir}/${file}`, `${dir}/${file}`.replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html')]),
+);
+
+test('no page links to the documentation on GitHub', () => {
+  for (const path of pages()) {
+    for (const link of built(path).querySelectorAll('a[href]')) {
+      const href = link.getAttribute('href');
+      assert.doesNotMatch(href, /github\.com\/Thurbeen\/thurbox\/(tree|blob)\/main\/docs\b/, `${path} links ${href}`);
+    }
+  }
+  assert.doesNotMatch(readFileSync('_site/llms.txt', 'utf8'), /github\.com\/Thurbeen\/thurbox\/(tree|blob)\/main\/docs\b/);
+});
+
+test("every page of Fleet's docs is on the site, and its links and images resolve", () => {
+  assert.ok(repoDocs.some(([src]) => src === 'docs/fleet/resources/task.md'), 'read docs/fleet');
+  const parsed = new Map();
+  const ids = (path) => {
+    if (!parsed.has(path)) parsed.set(path, new Set(built(path).querySelectorAll('[id]').map((n) => n.id)));
+    return parsed.get(path);
+  };
+  for (const [src, path] of repoDocs) {
+    assert.ok(existsSync(`_site/${path}`), `${src} is rendered at ${path}`);
+    const page = built(path);
+    assert.ok(page.querySelector('.docs-content h1'), `${path} has its title`);
+    const dir = path.split('/').slice(0, -1).join('/');
+    const refs = [
+      ...page.querySelectorAll('a[href]').map((a) => a.getAttribute('href')),
+      ...page.querySelectorAll('.docs-content img[src]').map((img) => img.getAttribute('src')),
+    ];
+    for (const ref of refs) {
+      if (/^[a-z]+:/i.test(ref)) continue;
+      const [file, fragment] = ref.split('#');
+      const target = file ? new URL(file, `file:///${dir}/`).pathname.slice(1) : path;
+      assert.ok(existsSync(`_site/${target}`), `${path}: ${ref} is not built`);
+      if (fragment && target.endsWith('.html')) {
+        assert.ok(ids(target).has(fragment), `${path}: ${ref} names no id on ${target}`);
+      }
+    }
+  }
+});
+
+test('the docs sidebar reaches the rendered Fleet reference from every depth', () => {
+  for (const path of ['docs/index.html', 'docs/fleet/index.html', 'docs/fleet/resources/task.html']) {
+    const page = built(path);
+    const dir = path.split('/').slice(0, -1).join('/');
+    const hrefs = page.querySelectorAll('.docs-sidebar a').map((a) => a.getAttribute('href'));
+    assert.ok(hrefs.length > 0, `${path} has a sidebar`);
+    for (const href of hrefs) {
+      const target = new URL(href.split('#')[0], `file:///${dir}/`).pathname.slice(1);
+      assert.ok(existsSync(`_site/${target}`), `${path}: sidebar ${href} is not built`);
+    }
+    assert.ok(hrefs.some((h) => h.endsWith('fleet/index.html')), `${path} links the Fleet reference`);
+  }
+  const forge = built('docs/fleet/controllers/forge.html');
+  assert.ok(forge.querySelectorAll('.docs-toc a').length > 2, 'the on-this-page rail lists the headings');
+  assert.ok(forge.querySelector('.docs-content img[src="forge.svg"]'), 'the state diagram is beside the page');
+});
+
+test('the site redeploys when a rendered doc changes', () => {
+  const workflow = readFileSync('.github/workflows/pages.yml', 'utf8');
+  const paths = [...workflow.matchAll(/^\s+- '([^']+)'$/gm)].map((m) => m[1]);
+  for (const entry of RENDERED_DOCS) {
+    const want = entry.endsWith('.md') ? entry : `${entry}/**`;
+    assert.ok(paths.includes(want), `pages.yml's push paths list ${want}`);
+  }
+});
+
+// The node test has no layout engine, so the overflow at 320px is checked by
+// its cause: a grid track whose minimum is a bare length cannot shrink below
+// it, and on the narrowest phones the overview's cards then ran out of the
+// frame. Every track minimum on the home page is clamped with min(…, 100%).
+test("the home page's grid tracks shrink to a phone's width", () => {
+  const css = readFileSync('website/css/landing.css', 'utf8');
+  assert.doesNotMatch(css, /minmax\(\s*\d+(\.\d+)?(rem|px|em)\s*,/, 'a minmax() minimum is wrapped in min(…, 100%)');
+});
+
+// A link to a section lands on that section: on this site, the id exists on
+// the built page it names; a repository doc the site does not render is
+// linked on GitHub, where its heading anchors live.
+test('every link to a section on the site lands on an element with that id', () => {
+  for (const path of pages()) {
+    const page = built(path);
+    const base = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+    for (const link of page.querySelectorAll('a[href*="#"]')) {
+      const href = link.getAttribute('href');
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')) continue;
+      const [target, fragment] = href.split('#');
+      if (!fragment) continue;
+      const file = target ? posix.normalize(base + target) : path;
+      if (!file.endsWith('.html') || !existsSync(`_site/${file}`)) continue;
+      assert.ok(built(file).querySelector(`[id="${fragment}"]`), `${path}: ${href} names no id on ${file}`);
+    }
+  }
 });

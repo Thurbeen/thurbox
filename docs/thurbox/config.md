@@ -51,7 +51,7 @@ transport = "local"
 
 [fleets.box]
 transport = { ssh = "me@box" }
-program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
 ```
 
 [`[fleets]`](#fleets--the-fleets-that-manage-sessions) has every key, and
@@ -550,7 +550,7 @@ program = "fleet"                       # the default: a name on PATH or a path
 
 [fleets.box]
 transport = { ssh = "me@box", ssh_opts = ["-p", "2222"] }
-program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
 config = "/home/me/.config/fleet/config.toml"   # optional: `fleet --config <path>`
 
 [fleets.ubuntu]
@@ -568,7 +568,7 @@ a place.
   or `{ wsl = "<distro>" }`. Over ssh, each call is one `ssh` with
   `BatchMode`, `ConnectTimeout=5` and a shared master connection. `program`
   (default `fleet`) is found on that machine; ssh runs it with that machine's
-  non-login `PATH`, so give a path when `fleet` is in `~/.cargo/bin`.
+  non-login `PATH`, so give a path when `fleet` is in `~/.local/bin`.
   `config`, when set, is given as `fleet --config <path>` before every verb.
 - No `[fleets]` table means one Fleet, `local`: `fleet` on this machine. Once
   the file lists a Fleet, thurbox uses only the listed Fleets, so a machine

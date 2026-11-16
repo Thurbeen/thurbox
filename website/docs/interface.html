@@ -21,8 +21,8 @@ breadcrumb: 'Interface'
 <p>
   Not a setting, and not a theme: the panes themselves are files. thurbox ships a small set and
   reads whatever is in the directory, so adding one is adding a file and removing one is deleting
-  it. Your sessions, worktrees and automations are untouched by any of it &mdash; sessions are
-  Fleet's, and automations live in <code>automations.json</code>, not the interface.
+  it. Your sessions and worktrees are untouched by any of it &mdash; they are Fleet's, not the
+  interface's.
 </p>
 
 <h2 id="ask-the-agent">
@@ -159,7 +159,7 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   and the loaders are not in its world at all, and a lint enforces their absence. Reads are served
   from a snapshot and return instantly; writes are commands the kernel performs. So no plugin,
   including one nobody has written yet, can freeze the interface on a slow git fetch or an
-  unreachable host.
+  unreachable Fleet.
 </p>
 
 
@@ -177,8 +177,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   <code>docker compose ps</code>
   or
   <code>npm outdated</code>
-  in a session's working directory &mdash; and on that session's own host for a remote session. It is
-  bounded: output is capped, a run times out, four run at once.
+  in a session's working directory, on this machine. A session on another machine is refused a run.
+  It is bounded: output is capped, a run times out, four run at once.
 </p>
 <p>
   <strong>Running a program you interact with.</strong>
@@ -327,10 +327,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
 <p>
   A broken plugin does not cost you the interface: the error is reported in place, and the bundled
   copy stands in until the file loads again. The full author's guide, including the mistakes that
-  are invisible until runtime, is
-  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/plugins.md">docs/thurbox/plugins.md</a>; the
-  kernel's own shape and constraints are in
-  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/kernel.md">docs/thurbox/kernel.md</a>.
+  are invisible until runtime, is <a href="thurbox/plugins.html">Writing a pane</a>; the kernel's
+  own shape and constraints are in <a href="thurbox/kernel.html">The kernel</a>.
 </p>
 
 <h2 id="when-a-pane-breaks">
@@ -382,11 +380,8 @@ columns[#columns + 1] = { slot = "center" }</code></pre>
   is also the key for bisecting which of several files is at fault. Both reload immediately. With
   no terminal to trust,
   <code>thurbox-cli plugin check</code>
-  reports the same failure and exits non-zero. Full detail:
-  <a
-    href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/plugins.md#when-something-goes-wrong"
-    >docs/thurbox/plugins.md &rarr; When something goes wrong</a
-  >.
+  reports the same failure and exits non-zero. Full detail: the repository's
+  <a href="thurbox/plugins.html#when-something-goes-wrong">Writing a pane, &ldquo;When something goes wrong&rdquo;</a>.
 </p>
 
 <h2 id="installable-panes">

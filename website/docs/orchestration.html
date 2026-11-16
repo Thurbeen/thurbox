@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Orchestration — Thurbox Docs'
-description: 'Fleet, an orchestrator built on Thurbox: install it, run one agent session per Task, and browse its resources from Thurbox with the Fleet Lens pane. Then the Thurbox primitives it uses.'
+description: 'Fleet, the engine behind Thurbox: one agent session per Task, the Task loop, Fleet Lens in Thurbox, and driving sessions from a script.'
 currentPage: 'orchestration'
 breadcrumb: 'Orchestration'
 ---
@@ -9,10 +9,8 @@ breadcrumb: 'Orchestration'
 <p>
   Running agents across many repos raises a question that one repo never does:
   <strong>where does the plan live?</strong>
-  One ready-made answer is
-  <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener">Fleet</a>
-  , an orchestrator that runs its agent sessions in Thurbox. This page starts there, then walks
-  through the Thurbox primitives it is built from, for when you want to drive them yourself.
+  In Thurbox the answer is Fleet, the engine that manages every session. This page shows how Fleet
+  runs a Task, how to browse it from Thurbox, and how to drive sessions yourself.
 </p>
 
 <h2 id="fleet">
@@ -20,21 +18,21 @@ breadcrumb: 'Orchestration'
   <a href="#fleet" class="heading-anchor">#</a>
 </h2>
 <p>
-  <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener">Fleet</a>
-  is a standalone program, not a Thurbox extension. A Task is a resource that names a harness (the
-  agent), a host, a workspace and a brief. Fleet starts one Thurbox session for it, sends the brief
-  once, records the result the worker reports, and releases the session when you delete the Task.
+  Fleet lives in Thurbox's repository (<code>crates/fleet-*</code>), and its
+  <a href="fleet/index.html">reference</a> is on this site. A Task is one unit of work. It names a harness (the agent), a place, a workspace
+  and a brief. Fleet runs one session for it, sends the brief once, records the result the worker
+  reports, and releases the session when you delete the Task.
 </p>
 <ul>
   <li>
     <strong>Resources, not chat.</strong>
     Tasks, the ChangeRequests they declare, and the configuration they run with are stored as
-    versioned resources on disk, so the plan outlives every session.
+    versioned resources, so the plan outlives every session.
   </li>
   <li>
     <strong>Isolated workers.</strong>
-    A Task's workspace is a list of URLs its runtime makes: a git URL becomes a worktree of its own,
-    and a <code>file://</code> URL is a directory used as it is.
+    Each Task works in a <a href="fleet/resources/workspace.html">workspace</a> of its own, which
+    its runtime makes.
   </li>
   <li>
     <strong>A reconcile loop.</strong>
@@ -49,29 +47,17 @@ breadcrumb: 'Orchestration'
 
 <h3 id="fleet-install">Install</h3>
 <p>
-  Fleet ships one binary for Linux, x86_64 and aarch64; it has no Windows or macOS release. To run
-  real sessions it needs Thurbox with
-  <code>thurbox-cli</code>
-  on
-  <code>PATH</code>
-  , and an agent CLI that is installed and logged in.
+  Thurbox's install script installs <code>fleet</code> and <code>runtime-mux</code> with Thurbox.
+  This needs a 3.x release: until one is published, the script installs the latest 2.x release,
+  which has no Fleet. A <a href="installation.html#from-source">source build</a> also builds them.
 </p>
-<pre data-wrap><code class="language-bash">curl -fsSL https://github.com/Thurbeen/fleet/releases/latest/download/install-release.sh | sh
-fleet init     # the config, offline
-fleet up       # the manager; keep it running in its own terminal</code></pre>
+<pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
+thurbox        # the first run writes Fleet's config with fleet init</code></pre>
 <p>
-  Fleet's
-  <a href="https://github.com/Thurbeen/fleet#setup" target="_blank" rel="noopener">README</a>
-  covers setup, updates and uninstalling, and its
-  <a
-    href="https://github.com/Thurbeen/fleet/blob/main/docs/configuration/init.md"
-    target="_blank"
-    rel="noopener"
-    >initialization guide</a
-  >
-  covers the config and
-  <code>fleet up</code>
-  .
+  Thurbox starts <code>fleet up</code> for a Fleet on this machine when no manager runs. A Fleet on
+  another machine needs a user systemd unit there that runs <code>fleet up</code>; see
+  <a href="fleet-install.html#service">Keep fleet up running</a>. To run Fleet alone, see
+  <a href="fleet-install.html#fleet-alone">Fleet alone</a>.
 </p>
 
 <h3 id="fleet-lens">Fleet Lens, in Thurbox</h3>
@@ -105,7 +91,7 @@ fleet up       # the manager; keep it running in its own terminal</code></pre>
 <pre data-wrap><code class="language-bash">thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-fleetlens
 thurbox-cli plugin check</code></pre>
 <p>
-  It needs Thurbox 2.76.2 or later. Then trust it, because it runs
+  Then trust it, because it runs
   <code>fleet</code>
   : Settings (
   <kbd>Ctrl</kbd>+<kbd>,</kbd>
@@ -130,9 +116,10 @@ thurbox-cli plugin check</code></pre>
                                                   │ fleet result
 fleet delete ─▶ release session ◀── Concluded ◀───┘</code></pre>
 <p>
-  While
-  <code>fleet up</code>
-  runs, you drive Tasks with the CLI:
+  Every Task shows up in the Thurbox session list within a tick, because the interface follows
+  <code>fleet watch</code>. A Task that names a parent with its
+  <code>gateway.fleet.dev/parent</code> label nests under that parent, so a lead's workers sit under
+  the lead. Deleting a lead deletes none of its workers.
 </p>
 <table>
   <thead>
@@ -144,19 +131,26 @@ fleet delete ─▶ release session ◀── Concluded ◀───┘</code></
   <tbody>
     <tr>
       <td><code>fleet apply -f task.json</code></td>
-      <td>Creates or updates a Task; <code>dispatch: true</code> lets it start</td>
+      <td>
+        Creates or updates a Task; <code>--create-only</code> refuses a name that is taken, and
+        <code>dispatch: true</code> lets it start
+      </td>
     </tr>
     <tr>
-      <td><code>fleet list task</code> &middot; <code>fleet status task &lt;name&gt;</code></td>
-      <td>Every Task and its phase; one Task's conditions: Spawned, Briefed, Concluded</td>
+      <td><code>fleet list task</code> &middot; <code>fleet status task &lt;name&gt; --json</code></td>
+      <td>Every Task; one Task's status and conditions: Spawned, Briefed, Concluded</td>
     </tr>
     <tr>
       <td><code>fleet send &lt;name&gt; &lt;text&gt;</code></td>
-      <td>Messages the running session</td>
+      <td>Types into the session's agent</td>
     </tr>
     <tr>
       <td><code>fleet result &lt;name&gt; --generation N --outcome &hellip;</code></td>
       <td>The worker's own report; only that concludes a Task</td>
+    </tr>
+    <tr>
+      <td><code>fleet watch --json</code></td>
+      <td>Follows every change, one event per line</td>
     </tr>
     <tr>
       <td><code>fleet delete task &lt;name&gt;</code></td>
@@ -165,38 +159,30 @@ fleet delete ─▶ release session ◀── Concluded ◀───┘</code></
   </tbody>
 </table>
 <p>
-  <code>fleet up</code>
-  holds one manager lease and sweeps once a second by default. Ctrl-C releases the lease and keeps
-  the sessions, so a restarted
-  <code>fleet up</code>
-  reconnects to them. Fleet passes no credentials to a session: they stay with the agent and its
-  host.
+  Stopping <code>fleet up</code> keeps the sessions, so a restarted manager reconnects to them.
+  Fleet passes no credentials to a session: they stay with the agent.
 </p>
+
 <h2 id="just-ask">
   Start by just asking
   <a href="#just-ask" class="heading-anchor">#</a>
 </h2>
 <p>
-  You do not have to write the orchestration yourself. Every session is a Fleet Task, and a
-  session's agent can run Fleet's command line like any other command, so from inside any session
-  you can ask for a fleet in English.
+  You do not have to write the orchestration yourself. A session's agent can run Fleet's command
+  line like any other command, so from inside any session you can ask for a fleet in English.
 </p>
 <ul class="prompts">
   <li>
     Using Fleet, start a session per crate of this repository, and send each one a prompt to
     refactor its crate. Then list the Tasks.
   </li>
-  <li>
-    Create a nightly automation that sends &ldquo;triage new issues&rdquo; to the
-    <code>triage</code>
-    session on weekdays at 09:00.
-  </li>
 </ul>
 <p>
   The commands the agent reaches for are <code>fleet apply --create-only</code>,
-  <code>fleet send</code>, <code>fleet list task</code> and
-  <code>thurbox-cli automation create</code>. Everything it does shows up in your running TUI
-  within a tick, because the TUI follows <code>fleet watch</code>. The
+  <code>fleet send</code> and <code>fleet list task</code>. To schedule work, apply a
+  <a href="fleet/resources/cron-task.html">CronTask</a>: it creates a Task at each time of its
+  schedule. To prompt one long-lived session on a timer instead, run <code>fleet send</code>
+  from a cron job or a systemd timer. The
   <a href="recipes.html">recipes</a>
   page has the same thing written as bash, if you would rather commit a script.
 </p>
@@ -209,5 +195,6 @@ fleet delete ─▶ release session ◀── Concluded ◀───┘</code></
   A session's state is Fleet's <code>status.sessionState</code>, which the agent's own hooks report
   through <code>fleet signal</code>. Wait for a state with a bound on the wait, and read the Task
   again when the wait ends: a timeout is not evidence that the agent finished. A worker's outcome is
-  its <code>status.result</code>, never the state of its terminal.
+  its <code>status.result</code>, written by <code>fleet result</code>, never the state of its
+  terminal.
 </p>

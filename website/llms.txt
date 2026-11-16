@@ -4,25 +4,28 @@
 > through Fleet's harness profiles — running inside persistent tmux panes. Every
 > session is a Fleet Task: Fleet starts it in the repository you pick and keeps
 > it running, so sessions survive crashes and restarts. It is written in Rust,
-> open source under the MIT license, and runs on Linux, macOS, and Windows
-> (plus remote hosts over SSH). Fleet's `fleet` command line drives the same
+> open source under the MIT license, and runs on Linux, macOS, and Windows.
+> It can follow several Fleets, on this machine or on another one over ssh or
+> WSL, as one list of sessions. Fleet's `fleet` command line drives the same
 > sessions for scripting; `thurbox-cli` covers the interface's own files.
 >
 > Installing: run
 > `curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh`
 > on Linux/macOS, or
 > `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex`
-> on Windows, or `nix profile install github:Thurbeen/thurbox` with Nix, then
-> run `thurbox`. That is the whole setup — config, themes and the interface
-> itself are seeded on first launch.
+> on Windows. Both scripts also install `fleet` and `runtime-mux`; this needs a
+> 3.x release (until one exists they install the latest 2.x, which has no
+> Fleet). Nix (`nix profile install github:Thurbeen/thurbox`) ships thurbox
+> only. Then run `thurbox`; on a machine with no Fleet config it runs `fleet init` first. Config, themes and the interface itself are seeded on
+> first launch.
 >
 > Its defining feature is that the interface is fully customizable: no UI is
 > compiled into the binary. thurbox boots a Rust kernel that reads a
 > directory of Lua files and draws whatever it finds, so every pane — the
 > session list included — is a file the user can move, turn off, delete,
 > rewrite, or install from someone else, with no recompile and no restart. The
-> arrangement (`ui/layout.lua`), the Fleets it follows, themes, keybindings and
-> settings are all data files. Because the interface is
+> arrangement (`ui/layout.lua`), the Fleets it follows (`settings.toml`),
+> themes, keybindings and settings are all data files. Because the interface is
 > plain text in a directory, the usual way to change it is to ask a coding
 > session for the change in English — the directory ships an `AGENTS.md` that
 > tells whichever CLI is running how the interface is put together, so "add my
@@ -36,15 +39,22 @@
 - [Documentation hub](https://thurbox.thurbeen.eu/docs/index.html): entry point to all Thurbox documentation.
 - [Tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html): onboarding walkthrough with screenshots — adding a repository to the picker, creating a first session in a repository, the everyday keybindings, and the equivalent fleet commands.
 - [FAQ](https://thurbox.thurbeen.eu/docs/faq.html): short answers to the most common questions (what it is, how it differs, install, platforms, license).
-- [Features](https://thurbox.thurbeen.eu/docs/features.html): the customizable interface, sessions, agent definitions, git worktrees, sessions on other Fleet hosts, automations, global search, headless CLI.
+- [What is Fleet](https://thurbox.thurbeen.eu/docs/fleet.html): Fleet, the engine — sessions as Tasks, resources and controllers, places and runtimes. Fleet runs on its own, headless, with no thurbox.
+- [Install Fleet](https://thurbox.thurbeen.eu/docs/fleet-install.html): Fleet alone — the install script, then `fleet init` and `fleet up`, and a systemd user unit that keeps `fleet up` running.
+- [Get started with Fleet](https://thurbox.thurbeen.eu/docs/fleet-get-started.html): install Fleet alone, a first Task, following it and reading its result.
+- [Get started with Thurbox](https://thurbox.thurbeen.eu/docs/thurbox-get-started.html): install, first launch, a first session and the essential keys.
+- [Fleet reference](https://thurbox.thurbeen.eu/docs/fleet/index.html): Fleet's architecture, contracts and configuration, one page per resource (Task, Session, TaskConfig, EnvProvider, ChangeRequest, Conversation, Listener, plugin kinds) and per controller (Task, ChangeRequest, Forge, Plugin, Gateway); the runtimes are at https://thurbox.thurbeen.eu/docs/runtime/index.html.
+- [Fleet features](https://thurbox.thurbeen.eu/docs/fleet-features.html): sessions as Tasks, harness profiles, worktrees made by the runtime, places, messages between agents, the headless CLI.
+- [What is thurbox](https://thurbox.thurbeen.eu/docs/thurbox.html): thurbox, the terminal interface on top of one or more Fleets.
+- [thurbox features](https://thurbox.thurbeen.eu/docs/thurbox-features.html): the customizable interface, the session list, several Fleets, global search, layout, themes, notifications, settings.
 - [Agents](https://thurbox.thurbeen.eu/docs/agents.html): the agents are the harness profiles Fleet bundles (claude, codex, pi, opencode, kilo, omp, qwen, copilot, kimi).
 - [Comparison](https://thurbox.thurbeen.eu/docs/comparison.html): how Thurbox compares to Conductor, Claude Squad, Cursor, and other parallel coding-agent tools.
 - [Installation](https://thurbox.thurbeen.eu/docs/installation.html): install via curl, Homebrew, AUR, Nix/NixOS, winget, Chocolatey, or from source; prerequisites; running it; how to pin a specific version.
-- [Orchestration](https://thurbox.thurbeen.eu/docs/orchestration.html): Fleet (https://github.com/Thurbeen/fleet), an orchestrator that runs one Thurbox session per Task — install, its Task loop, and the Fleet Lens pane (https://github.com/Thurbeen/thurbox-fleetlens) that browses it from Thurbox — plus asking an agent to spin up sessions with thurbox-cli, and the Thurbox primitives Fleet is built on.
-- [Configuration](https://thurbox.thurbeen.eu/docs/configuration.html): every config file and knob — settings.toml, themes, keybindings, and the Fleet thurbox uses.
+- [Orchestration](https://thurbox.thurbeen.eu/docs/orchestration.html): Fleet, the engine in this repository that runs one session per Task — installing it, its Task loop, the Fleet Lens pane (https://github.com/Thurbeen/thurbox-fleetlens) that browses it from Thurbox, asking an agent to spin up sessions with fleet, and reading a session's state.
+- [Configuration](https://thurbox.thurbeen.eu/docs/configuration.html): every config file and knob — settings.toml and its [fleets] table, themes, keybindings, and environment variables.
 - [The Interface](https://thurbox.thurbeen.eu/docs/interface.html): every pane is an editable Lua plugin — how to move, disable, replace or write one, how a plugin reacts to events and puts actions in the Ctrl+P command palette, how to have a coding agent do it for you, what the kernel refuses a plugin, and the panes you install (thurbox-code-review, thurbox-info-panel).
-- [Architecture](https://thurbox.thurbeen.eu/docs/architecture.html): the Lua-on-Rust plugin kernel and its five rules, module isolation, the tmux session backend, and the decisions behind them.
-- [Recipes](https://thurbox.thurbeen.eu/docs/recipes.html): worked patterns for orchestrating multi-session, multi-repo workflows.
+- [Architecture](https://thurbox.thurbeen.eu/docs/architecture.html): the three components (thurbox, Fleet, the runtimes), Fleets and places, the Lua-on-Rust plugin kernel and its five rules, module isolation, and the decisions behind them.
+- [Recipes](https://thurbox.thurbeen.eu/docs/recipes.html): a script that starts a session per package of a monorepo with fleet.
 
 ## Optional
 

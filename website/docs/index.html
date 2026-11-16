@@ -1,97 +1,138 @@
 ---
 layout: docs.njk
-title: 'Documentation — Thurbox'
-description: 'Thurbox documentation — installation, features, keybindings, and architecture.'
+title: 'Documentation — Fleet and thurbox'
+description: 'Documentation for Fleet, the engine that runs coding-agent sessions, and thurbox, the terminal interface on top of it.'
 currentPage: 'index'
 ---
 <h1>Documentation</h1>
-          <p>Everything you need to get started with Thurbox and make the most of its features.</p>
+<p>
+  Two products. <strong>Fleet</strong> runs coding-agent sessions, on its own or under thurbox.
+  <strong>thurbox</strong> is the terminal interface on top of one or more Fleets.
+</p>
 
-          <div class="docs-hub-grid">
-            <a href="installation.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2913;</div>
-                <h3>Installation</h3>
-                <p>
-                  Install from binary or source. Platform detection, prerequisites, and
-                  configuration.
-                </p>
-              </div>
-            </a>
-            <a href="tutorial.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x25B6;&#xFE0E;</div>
-                <h3>Tutorial</h3>
-                <p>
-                  The first ten minutes, with screenshots: add a repository, create a worktree
-                  session, and the keys and commands you use every day.
-                </p>
-              </div>
-            </a>
-            <a href="features.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2732;</div>
-                <h3>Features</h3>
-                <p>Per-session coding agents, worktrees, automations, and the responsive UI.</p>
-              </div>
-            </a>
-            <a href="comparison.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2696;&#xFE0E;</div>
-                <h3>Comparison</h3>
-                <p>
-                  How Thurbox stacks up against other parallel coding-agent tools: real tmux, TUI
-                  footprint, native vendor CLI, and multi-repo sessions.
-                </p>
-              </div>
-            </a>
-            <a href="faq.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x003F;</div>
-                <h3>FAQ</h3>
-                <p>
-                  Short answers to common questions: what Thurbox is, how it
-                  differs, supported agents and platforms, install, and license.
-                </p>
-              </div>
-            </a>
-            <a href="configuration.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2699;&#xFE0E;</div>
-                <h3>Configuration</h3>
-                <p>
-                  Every config file and knob in one place:
-                  hosts, settings, the Fleet in use, feature flags, themes, keybindings, and env vars.
-                </p>
-              </div>
-            </a>
-            <a href="keybindings.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2328;&#xFE0E;</div>
-                <h3>Keybindings</h3>
-                <p>
-                  Vim-inspired keyboard shortcuts for navigation, session management, and terminal
-                  control.
-                </p>
-              </div>
-            </a>
-            <a href="architecture.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x25A6;</div>
-                <h3>Architecture</h3>
-                <p>
-                  The Lua plugin kernel, the event loop, module isolation, the session backend, and
-                  design principles.
-                </p>
-              </div>
-            </a>
-            <a href="interface.html" class="docs-hub-card">
-              <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2732;&#xFE0E;</div>
-                <h3>The Interface</h3>
-                <p>
-                  Every pane is a Lua plugin you can move, turn off, delete or write yourself.
-                </p>
-              </div>
-            </a>
-          </div>
+<h2 id="fleet" class="docs-hub-category">Fleet</h2>
+<p class="docs-hub-category-desc">The engine: sessions as Tasks, headless.</p>
+<div class="docs-hub-grid">
+  <a href="fleet-get-started.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2385;</div>
+      <h3>Get started</h3>
+      <p>Install Fleet alone, run a first Task, follow it and read its result.</p>
+    </div>
+  </a>
+  <a href="fleet.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x25A3;</div>
+      <h3>What is Fleet</h3>
+      <p>Tasks, resources and controllers, places and runtimes.</p>
+    </div>
+  </a>
+  <a href="fleet-install.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2913;</div>
+      <h3>Install Fleet</h3>
+      <p>Fleet alone, with no thurbox, and a service that keeps it running.</p>
+    </div>
+  </a>
+  <a href="fleet-features.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2732;</div>
+      <h3>Fleet features</h3>
+      <p>Agents, worktrees, places, messages and the headless CLI.</p>
+    </div>
+  </a>
+</div>
+
+<h2 id="thurbox" class="docs-hub-category">Thurbox</h2>
+<p class="docs-hub-category-desc">The interface: every session of every Fleet in one list.</p>
+<div class="docs-hub-grid">
+  <a href="thurbox-get-started.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2385;</div>
+      <h3>Get started</h3>
+      <p>Install, launch, a first session and the keys you need.</p>
+    </div>
+  </a>
+  <a href="thurbox.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x25EB;</div>
+      <h3>What is Thurbox</h3>
+      <p>What it shows, what it keeps, and your first steps.</p>
+    </div>
+  </a>
+  <a href="installation.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2913;</div>
+      <h3>Install Thurbox</h3>
+      <p>The install script, package managers, source builds, uninstall.</p>
+    </div>
+  </a>
+  <a href="interface.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2732;&#xFE0E;</div>
+      <h3>The interface</h3>
+      <p>Every pane is a Lua plugin you can move, turn off, delete or write.</p>
+    </div>
+  </a>
+  <a href="thurbox-features.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x229E;</div>
+      <h3>Thurbox features</h3>
+      <p>The session list, several Fleets, search, layout, themes, notifications.</p>
+    </div>
+  </a>
+  <a href="keybindings.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2328;&#xFE0E;</div>
+      <h3>Keybindings</h3>
+      <p>Every key, and how to rebind one.</p>
+    </div>
+  </a>
+  <a href="configuration.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2699;&#xFE0E;</div>
+      <h3>Configuration</h3>
+      <p>Settings, the Fleets thurbox follows, themes and environment variables.</p>
+    </div>
+  </a>
+</div>
+
+<h2 id="both" class="docs-hub-category">Both</h2>
+<p class="docs-hub-category-desc">Walkthroughs and background for Fleet and thurbox together.</p>
+<div class="docs-hub-grid">
+  <a href="tutorial.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x25B6;&#xFE0E;</div>
+      <h3>Tutorial</h3>
+      <p>The first ten minutes, with screenshots.</p>
+    </div>
+  </a>
+  <a href="recipes.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2263;</div>
+      <h3>Recipes</h3>
+      <p>Worked scripts, such as a session per package of a monorepo.</p>
+    </div>
+  </a>
+  <a href="comparison.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x2696;&#xFE0E;</div>
+      <h3>Comparison</h3>
+      <p>How it compares with other parallel coding-agent tools.</p>
+    </div>
+  </a>
+  <a href="faq.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x003F;</div>
+      <h3>FAQ</h3>
+      <p>Short answers to common questions.</p>
+    </div>
+  </a>
+  <a href="architecture.html" class="docs-hub-card">
+    <div class="card">
+      <div class="card-icon" aria-hidden="true">&#x25A6;</div>
+      <h3>Architecture</h3>
+      <p>thurbox, Fleet and the runtimes, and the decisions behind them.</p>
+    </div>
+  </a>
+</div>

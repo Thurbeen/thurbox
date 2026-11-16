@@ -194,8 +194,14 @@ tbx_fleet_task_name() {
 tbx_fleet_session() {
     task="$(tbx_fleet_task_name "$1")"
     fleet get task "$task" >/dev/null 2>&1 && return 0
-    printf '{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},"spec":{"harness":"%s","host":"local","workspace":["file://%s"],"dispatch":true}}\n' \
-        "$task" "$1" "${3:-claude-code}" "$2" | fleet apply --create-only -f - >/dev/null
+    # A path is the directory as it is; a URL (`git+file://<repo>?branch=…`)
+    # is passed through, so the runtime makes that worktree.
+    case "$2" in
+        *://*) url="$2" ;;
+        *) url="file://$2" ;;
+    esac
+    printf '{"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"%s","labels":{"thurbox.dev/name":"%s"}},"spec":{"harness":"%s","host":"local","workspace":["%s"],"dispatch":true}}\n' \
+        "$task" "$1" "${3:-claude-code}" "$url" | fleet apply --create-only -f - >/dev/null
 }
 
 # _tbx_fleet_is_ours <pid> <root> — whether that process runs on the Fleet

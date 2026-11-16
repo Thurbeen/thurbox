@@ -68,19 +68,11 @@
   margin: 0;
 }
 
-.docs-sidebar li.nav-subheading {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  opacity: 0.75;
-  padding: 0.35rem 0.75rem 0.15rem;
-  margin-top: var(--space-xs);
-}
-
-.docs-sidebar li.nav-subheading:first-child {
-  margin-top: 0;
+/* Navigation lists, not prose: their position says "link", so they skip the
+   underline base.css gives a link in a list item. */
+.docs-sidebar li a,
+.docs-toc li a {
+  text-decoration: none;
 }
 
 .docs-sidebar a {
@@ -91,6 +83,16 @@
   border-radius: var(--border-radius-sm);
   transition: all var(--transition);
   border-left: 2px solid transparent;
+}
+
+.docs-sidebar .docs-sidebar__sub {
+  margin: 0 0 var(--space-xs) var(--space-md);
+  border-left: 1px solid var(--border);
+}
+
+.docs-sidebar .docs-sidebar__sub a {
+  padding: 0.2rem 0.75rem;
+  font-size: 0.8125rem;
 }
 
 .docs-sidebar a:hover {
@@ -226,6 +228,13 @@ h3:hover .heading-anchor {
 
 .heading-anchor:hover {
   color: var(--cyan);
+}
+
+/* A block in a language the build does not highlight (nix) stays a bare <pre>
+   with no scrolling body of its own: it scrolls by itself instead of widening
+   the page. */
+.docs-content > pre {
+  overflow-x: auto;
 }
 
 /* ---- Docs-specific table styling ---- */

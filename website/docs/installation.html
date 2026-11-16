@@ -1,11 +1,26 @@
 ---
 layout: docs.njk
 title: 'Installation — Thurbox Docs'
-description: 'Install Thurbox from binary or source. Platform detection, checksums, prerequisites.'
+description: 'Install Thurbox with Fleet and runtime-mux, check the setup with thurbox-cli doctor, and start it.'
 currentPage: 'installation'
 breadcrumb: 'Installation'
 ---
 <h1>Installation</h1>
+
+          <p>
+            Thurbox needs three programs on your <code>PATH</code>: <code>thurbox</code> (with
+            <code>thurbox-cli</code>), <code>fleet</code> and <code>runtime-mux</code>. Fleet
+            manages the sessions, and <code>runtime-mux</code> runs them in tmux (psmux on native
+            Windows). Install them in this order:
+          </p>
+          <ol>
+            <li>
+              Install them with the install script (<a href="#from-binary">From Binary</a>). The
+              other packages ship <code>thurbox</code> and <code>thurbox-cli</code> only
+              (<a href="#fleet">Fleet and runtime-mux</a>).
+            </li>
+            <li>Run <code>thurbox-cli doctor</code>, then <code>thurbox</code> (<a href="#first-run">First run</a>).</li>
+          </ol>
 
           <h2 id="from-binary">
             From Binary
@@ -14,20 +29,27 @@ breadcrumb: 'Installation'
 
           <p>
             One command on Linux and macOS. The install script downloads the latest release,
-            detects your platform, verifies checksums, and installs both binaries &mdash;
-            <code>thurbox</code>
-            (the TUI) and
-            <code>thurbox-cli</code>
-            (the headless one) &mdash; to
-            <code>~/.local/bin</code>
-            .
+            detects your platform, verifies checksums, and installs
+            <code>thurbox</code>, <code>thurbox-cli</code>, <code>fleet</code>,
+            <code>runtime-mux</code> and <code>workspace-git</code> to
+            <code>~/.local/bin</code>. When it is done, it points at <code>fleet init</code>.
+          </p>
+          <p>
+            Thurbox v3 needs a 3.x release. Until one is published, the script installs the latest
+            2.x release, which has no Fleet; pin a 3.x tag with <a href="#specific-version"><code>VERSION</code></a>
+            once one exists.
           </p>
 
           <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
-          <p>Then run it:</p>
-
-          <pre><code class="language-bash">thurbox</code></pre>
+          <div class="info-box">
+            <p>
+              <strong>Upgrading from 2.x.</strong>
+              A 2.x install updates only within 2.x: neither the in-app update nor
+              <code>thurbox-cli update</code> (<code>--force</code> included) moves it to 3.x. Run the
+              install script again.
+            </p>
+          </div>
 
           <p>The script handles:</p>
           <ul>
@@ -57,7 +79,7 @@ breadcrumb: 'Installation'
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <h3 id="specific-version">Specific version</h3>
-          <pre data-wrap><code class="language-bash">export VERSION=v2.5.4
+          <pre data-wrap><code class="language-bash">export VERSION=vX.Y.Z   # a tag from the releases page
 curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
           <p>
             Without a pin you get the newest release. Every version is on the
@@ -70,9 +92,10 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
               <strong>Native Windows defaults to psmux.</strong>
               Install
               <a href="https://github.com/psmux/psmux">psmux</a>, a drop-in tmux
-              clone on ConPTY that speaks the same control-mode protocol. (A WSL distro is a remote host and runs tmux
-              inside the distro.) psmux is a bit less
-              stable, so please report anything you hit.
+              clone on ConPTY that speaks the same control-mode protocol. psmux is a bit less
+              stable, so please report anything you hit. To run sessions in a WSL distro instead,
+              install Fleet inside the distro and follow it from Windows
+              (<a href="configuration.html#fleets">Fleets</a>).
             </p>
           </div>
           <p>
@@ -87,8 +110,10 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
           <pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex</code></pre>
           <p>
             Set
-            <code>$env:THURBOX_VERSION = 'v2.5.4'</code>
-            before that line to pin a specific version instead of taking the newest.
+            <code>$env:THURBOX_VERSION = 'vX.Y.Z'</code>
+            before that line to pin a specific version instead of taking the newest. It installs
+            the same five programs. Until a 3.x release is published, the newest is a 2.x release
+            with no Fleet.
           </p>
 
           <h3>Available platforms</h3>
@@ -290,21 +315,29 @@ nix profile install github:Thurbeen/thurbox          # install into your profile
             <code>homeManagerModules.default</code>
             offers the same
             <code>programs.thurbox</code>
-            options under Home Manager. The only other option,
-            <code>programs.thurbox.automations.enable</code>
-            , sets up the user timer from
-            <code>packaging/systemd</code>
-            (or the launchd agent from
-            <code>packaging/launchd</code>
-            under Home Manager on macOS) so automations keep firing after a reboot.
+            options under Home Manager.
           </p>
           <p>
             A flake build isn't a release. It reports its version as
             <code>0.0.0-unstable-&lt;date&gt;+&lt;commit&gt;</code>
             and never updates itself, because Nix owns the binary. To pin a version, point the input at a
             tag, for example
-            <code>github:Thurbeen/thurbox/v2.30.3</code>
+            <code>github:Thurbeen/thurbox/vX.Y.Z</code>
             .
+          </p>
+
+          <h2 id="fleet">
+            Fleet and runtime-mux
+            <a href="#fleet" class="heading-anchor">#</a>
+          </h2>
+          <p>
+            The install scripts (<code>install.sh</code> and <code>install.ps1</code>) ship
+            <code>fleet</code>, <code>runtime-mux</code> and <code>workspace-git</code> beside
+            Thurbox. Homebrew, the AUR, Nix, winget and Chocolatey ship <code>thurbox</code> and
+            <code>thurbox-cli</code> only: run the install script as well, or
+            <a href="#from-source">build from source</a>. To install Fleet alone, with no thurbox, see
+            <a href="fleet-install.html">Install Fleet</a>. Every Fleet resource and controller is in
+            <a href="fleet/index.html">Fleet's reference</a>.
           </p>
 
           <h2 id="from-source">
@@ -317,11 +350,20 @@ cd thurbox
 cargo build --release</code></pre>
 
           <p>
-            The binaries will be at
-            <code>target/release/thurbox</code>
+            This builds every program in the repository. The binaries are in
+            <code>target/release/</code>:
+            <code>thurbox</code>,
+            <code>thurbox-cli</code>,
+            <code>fleet</code>,
+            <code>runtime-mux</code>
             and
-            <code>target/release/thurbox-cli</code>
-            . Requires Rust 1.95+.
+            <code>workspace-git</code>.
+            A source build is a development build (version
+            <code>0.0.0-dev</code>): it uses
+            <code>thurbox-dev</code>
+            in place of
+            <code>thurbox</code>
+            in its paths and its tmux socket.
           </p>
 
           <h2 id="prerequisites">
@@ -339,9 +381,14 @@ cargo build --release</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td><strong>tmux >= 3.2</strong> (or <strong>psmux >= 3.3.8</strong> on Windows)</td>
+                <td><strong>fleet</strong> and <strong>runtime-mux</strong> on <code>PATH</code></td>
                 <td>Yes</td>
-                <td>Session backend</td>
+                <td>Fleet manages the sessions; <code>runtime-mux</code> runs them (<a href="#fleet">install</a>)</td>
+              </tr>
+              <tr>
+                <td><strong>tmux >= 3.2</strong> (or <strong>psmux >= 3.3.8</strong> on native Windows)</td>
+                <td>Yes</td>
+                <td>The multiplexer <code>runtime-mux</code> runs sessions in</td>
               </tr>
               <tr>
                 <td><strong>A coding-agent CLI</strong></td>
@@ -364,12 +411,25 @@ cargo build --release</code></pre>
                 <td>Worktree features</td>
               </tr>
               <tr>
-                <td>Rust 1.95+</td>
-                <td>Optional</td>
-                <td>Building from source</td>
+                <td>Rust (rustup)</td>
+                <td>For Fleet</td>
+                <td>Building Fleet, <code>runtime-mux</code>, or Thurbox from source</td>
               </tr>
             </tbody>
           </table>
+
+          <h2 id="first-run">
+            First run
+            <a href="#first-run" class="heading-anchor">#</a>
+          </h2>
+          <pre><code class="language-bash">thurbox-cli doctor   # checks each Fleet, runtime-mux and the multiplexer
+thurbox</code></pre>
+          <p>
+            <code>thurbox-cli doctor</code> names anything that is missing and how to install it.
+            On a machine with no Fleet config, the first <code>thurbox</code> runs
+            <code>fleet init</code> and says where it wrote the config. Thurbox starts
+            <code>fleet up</code> on this machine when no Fleet manager runs.
+          </p>
 
           <h2 id="quick-start">
             Quick Start
@@ -387,8 +447,8 @@ cargo build --release</code></pre>
               <strong>Create a session</strong>
               &mdash; press
               <code>Ctrl+N</code>
-              to open the repo picker. Pick repos (optionally a worktree), name the session, then
-              choose an agent.
+              . Pick a place and a repository (optionally a worktree, <code>Alt+W</code>), name
+              the session and its branch, then choose an agent.
             </li>
             <li>
               <strong>Work with the agent</strong>
@@ -411,7 +471,8 @@ cargo build --release</code></pre>
               <strong>Quit</strong>
               &mdash;
               <code>Ctrl+Q</code>
-              detaches all sessions (tmux keeps them running). They resume on next launch.
+              closes the interface. Fleet keeps every session running, and Thurbox shows them again
+              on next launch.
             </li>
             <li>
               <strong>Make it yours</strong>
@@ -435,12 +496,12 @@ cargo build --release</code></pre>
           </h2>
 
           <p>
-            Every session is a Fleet Task, so session state is Fleet's. Thurbox keeps its own
-            state in plain files under <code>~/.local/share/thurbox</code> (
-            <code>$XDG_DATA_HOME</code>
-            respected) and its configuration under <code>~/.config/thurbox</code>. Logs go to
-            <code>~/.local/share/thurbox/thurbox.log</code>
-            .
+            Every session is a Fleet Task, so session state is Fleet's. Thurbox keeps no database.
+            Its configuration and its own state (session order, theme, keybindings, settings) are
+            plain files under <code>~/.config/thurbox</code>; bookmarks and logs are under
+            <code>~/.local/share/thurbox</code> (<code>$XDG_CONFIG_HOME</code> and
+            <code>$XDG_DATA_HOME</code> respected). To follow a Fleet on another machine or in WSL,
+            see <a href="configuration.html#fleets">Fleets</a>.
           </p>
 
           <h2 id="uninstall">
@@ -448,61 +509,77 @@ cargo build --release</code></pre>
             <a href="#uninstall" class="heading-anchor">#</a>
           </h2>
           <p>
-            Removing the binary is not enough on its own: agent sessions keep running in tmux,
-            Thurbox has written hook and skill files into your coding agents' own directories, and
-            every worktree it created is registered in the repository it came from. Go through the
-            steps below in order, because steps 1 and 2 need
-            <code>thurbox-cli</code>
-            , which step 3 removes. The paths are the defaults on Linux and macOS; Windows and remote
-            hosts follow in step 5.
+            Every session is a Fleet Task, and Fleet keeps it running after Thurbox quits. Removing
+            the binaries does not stop the sessions or remove their worktrees. Go through the steps
+            below in order, because steps 1 and 2 need <code>fleet</code> and
+            <code>thurbox-cli</code>, which step 3 removes. The paths are the defaults on Linux and
+            macOS; Windows and other machines follow in step 5.
           </p>
           <div class="info-box">
             <p>
               <strong>Moved something?</strong>
               <code>thurbox-cli version --json</code>
-              prints the tmux socket in use (<code>tmux_socket</code>) and the data directory
-              (<code>data_dir</code>). They differ from the defaults for a development build
-              (<code>thurbox-dev</code>), under
+              prints Thurbox's tmux socket (<code>tmux_socket</code>), its directory
+              (<code>tmux_tmpdir</code>) and the data directory (<code>data_dir</code>). They
+              differ from the defaults for a development build (<code>thurbox-dev</code>), under
               <code>THURBOX_DATA_DIR</code>
               or
               <code>THURBOX_SOCKET</code>
-              , and the data directory follows
-              <code>$XDG_DATA_HOME</code>
               . The config directory follows
               <code>THURBOX_CONFIG_DIR</code>
               , then
               <code>$XDG_CONFIG_HOME</code>
-              . Substitute your values below.
+              . Fleet's config follows <code>FLEET_CONFIG</code>. Substitute your values below.
             </p>
           </div>
 
-          <h3 id="uninstall-stop">1. Stop sessions</h3>
+          <h3 id="uninstall-stop">1. Delete sessions and stop Fleet</h3>
           <p>
-            Quit the TUI, then stop each multiplexer server Thurbox used. The command below
-            stops the default POSIX tmux server, including its agent sessions.
+            Quit the TUI. Delete each session with <code>fleet delete task &lt;name&gt;</code>.
+            The Fleet manager then stops the agent and removes the session's git worktree, so
+            keep it running until <code>fleet list task</code> lists nothing. Only then stop the
+            manager and remove Fleet's files. Each session's branch stays in the source repository,
+            and its uncommitted work is kept under <code>refs/fleet/preserved/</code> for 30 days.
             <strong>Destructive:</strong>
-            this ends every running agent session, and any unsaved agent conversation with it.
+            this ends the agent session, and any unsaved agent conversation with it.
           </p>
-          <pre data-wrap><code class="language-bash">thurbox-cli version --json      # note tmux_socket and data_dir
-tmux -L thurbox kill-server     # stops every session</code></pre>
+          <pre data-wrap><code class="language-bash">fleet list task
+fleet delete task &lt;name&gt;       # once per session
+fleet list task                 # repeat until it lists nothing</code></pre>
           <p>
-            For psmux use <code>psmux -L &lt;socket&gt; kill-server</code>.
-            Use the actual socket reported above. Remote servers must be stopped on their hosts.
+            Then stop this Fleet's manager, and only it: <code>fleet version --json</code> names
+            the process that holds the lease (<code>fleet-up-&lt;pid&gt;</code>), so another
+            Fleet on the same machine keeps running. The snippet signals that PID only while the
+            lease is held and the process is still Fleet's <code>up</code> (also when it runs as
+            <code>fleet --config &lt;path&gt; up</code>).
           </p>
+          <pre data-wrap><code class="language-bash">pid=$(fleet version --json | jq -r 'select(.manager.held == true) | .manager.holder | ltrimstr("fleet-up-")')
+[ -n "$pid" ] &amp;&amp; ps -p "$pid" -o args= | grep -qE '(^|/)fleet( .*)? up( |$)' &amp;&amp; kill "$pid"
+tmux -L runtime-mux kill-server # runtime-mux's tmux server; skip it if another Fleet still uses it</code></pre>
+          <p>
+            Thurbox runs companion shells (<code>Ctrl+T</code>) on its own tmux socket. Stop that
+            server with the socket and directory <code>thurbox-cli version --json</code> reports:
+          </p>
+          <pre data-wrap><code class="language-bash">TMUX_TMPDIR=~/.local/share/thurbox/tmux tmux -L thurbox kill-server</code></pre>
 
-          <h3 id="uninstall-other-tools">2. Remove what Thurbox added to other tools</h3>
+          <h3 id="uninstall-other-tools">2. Remove what Fleet added to other tools</h3>
           <p>
-            Beyond the git worktrees and branches of step 4 and the Windows
-            <code>PATH</code>
-            entry of step 5, Thurbox v3 writes nothing outside its own directories: no agent
-            hooks or skills, no shell completions, no shell profile, no tmux or git config, and no
-            services.
+            Thurbox writes nothing outside its own directories, except the git worktrees of step 1
+            and the Windows <code>PATH</code> entry of step 5. Fleet writes into an agent's own
+            config directory only when you ran <code>fleet integration install</code>. Remove
+            those integrations:
           </p>
+          <pre><code class="language-bash">fleet integration status --all
+fleet integration uninstall --all</code></pre>
+
           <h3 id="uninstall-binaries">3. Remove the binaries</h3>
-          <p>Every install method ships both <code>thurbox</code> and <code>thurbox-cli</code>.</p>
-          <pre data-wrap><code class="language-bash"># curl one-liner (the tarball also puts a LICENSE file next to the binaries)
-rm -f ~/.local/bin/thurbox ~/.local/bin/thurbox-cli ~/.local/bin/LICENSE
-# ...or in the directory you set INSTALL_DIR to
+          <p>
+            Every install method ships <code>thurbox</code> and <code>thurbox-cli</code>; the install
+            scripts also ship <code>fleet</code>, <code>runtime-mux</code> and
+            <code>workspace-git</code>.
+          </p>
+          <pre data-wrap><code class="language-bash"># install.sh: the five programs and the LICENSE beside them, in ~/.local/bin or your INSTALL_DIR
+cd ~/.local/bin &amp;&amp; rm -f thurbox thurbox-cli fleet runtime-mux workspace-git LICENSE
 
 brew uninstall thurbox          # Homebrew
 paru -R thurbox-bin             # Arch (AUR), prebuilt package
@@ -521,53 +598,51 @@ nix profile remove thurbox      # Nix, installed with nix profile install</code>
             <code>sudo nixos-rebuild switch</code>
             or
             <code>home-manager switch</code>
-            . If you had turned on
-            <code>automations.enable</code>
-            , the rebuild removes the timer too. The store copy stays until
+            . The store copy stays until
             <code>nix-collect-garbage</code>
             .
           </p>
           <p>
             A
             <a href="#from-source">source build</a>
-            installs nothing: delete the clone, and any copy of
-            <code>target/release/thurbox</code>
-            or
-            <code>thurbox-cli</code>
-            you put on your
+            installs nothing: delete the clone, and any copy of its binaries you put on your
             <code>PATH</code>
             . Windows is in step 5.
           </p>
 
-          <h3 id="uninstall-state">4. Optionally remove worktrees, config and state</h3>
+          <h3 id="uninstall-state">4. Optionally remove config and state</h3>
           <p>
-            Delete each session you no longer want with <code>fleet delete task &lt;name&gt;</code>
-            before uninstalling; <code>fleet list task</code> lists what is left. Each session
-            had a git worktree of Fleet's, which the delete removes, keeping committed work that
-            exists nowhere else under <code>refs/fleet/preserved/</code> in the source
-            repository.
-          </p>
-          <p>
-            Then delete Thurbox's own directories.
+            Delete Thurbox's and Fleet's own directories.
             <strong>Destructive:</strong>
-            this erases Thurbox's state and logs, your theme, keybindings and interface customisations (a later reinstall starts from
-            scratch).
+            this erases Thurbox's settings, theme, keybindings, interface customisations and logs,
+            and Fleet's config, harness profiles and store (a later reinstall starts from scratch).
           </p>
-          <pre data-wrap><code class="language-bash">rm -rf ~/.local/share/thurbox ~/.config/thurbox</code></pre>
+          <pre data-wrap><code class="language-bash">rm -rf ~/.local/share/thurbox ~/.config/thurbox
+rm -rf ~/.local/share/fleet ~/.config/fleet</code></pre>
 
-          <h3 id="uninstall-windows">5. Windows and remote hosts</h3>
+          <h3 id="uninstall-windows">5. Windows and other machines</h3>
           <p>
             <strong>Windows.</strong>
-            The same steps, in PowerShell. Sessions run on psmux instead of tmux; the agent files of
-            step 2 sit under
-            <code>%USERPROFILE%</code>
-            . Configuration lives in
+            The same steps, in PowerShell. Sessions run on psmux instead of tmux. Thurbox's
+            configuration lives in
             <code>%APPDATA%\thurbox</code>
-            and state in
+            and its state in
             <code>%LOCALAPPDATA%\thurbox</code>
+            ; Fleet's config is in
+            <code>%APPDATA%\fleet</code>
+            and its store in
+            <code>%LOCALAPPDATA%\fleet</code>
             .
           </p>
-          <pre data-wrap><code class="language-powershell"># 1. Stop sessions (destructive: ends every running agent session)
+          <pre data-wrap><code class="language-powershell"># 1. Delete sessions with fleet delete task, wait until fleet list task
+#    lists nothing, then stop this Fleet's manager (fleet.exe is in the
+#    install directory, so it must not be running when step 3 removes it)
+$lease = (fleet version --json | ConvertFrom-Json).manager
+if ($lease.held) {
+  $p = Get-Process -Id ($lease.holder -replace '^fleet-up-', '') -ErrorAction SilentlyContinue
+  if ($p -and $p.ProcessName -eq 'fleet') { Stop-Process -Id $p.Id }
+}
+psmux -L runtime-mux kill-server   # runtime-mux's psmux server; skip it if another Fleet still uses it
 psmux -L thurbox kill-server
 
 # 3. Remove the binaries
@@ -580,11 +655,9 @@ $path = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';' |
   Where-Object { $_ -and $_ -ne $dir }
 [Environment]::SetEnvironmentVariable('Path', ($path -join ';'), 'User')
 
-# 4. Optional (destructive): worktrees, then config and state
-Get-ChildItem "$env:LOCALAPPDATA\thurbox\worktrees\*\*" -Directory | ForEach-Object {
-  git -C $_.FullName worktree remove --force $_.FullName
-}
-Remove-Item -Recurse -Force "$env:APPDATA\thurbox", "$env:LOCALAPPDATA\thurbox"</code></pre>
+# 4. Optional (destructive): config and state
+Remove-Item -Recurse -Force "$env:APPDATA\thurbox", "$env:LOCALAPPDATA\thurbox",
+  "$env:APPDATA\fleet", "$env:LOCALAPPDATA\fleet"</code></pre>
           <p>
             <strong>Remote hosts.</strong>
             Sessions Thurbox v2 ran on an
@@ -624,3 +697,14 @@ rm -rf ~/.local/share/thurbox ~/.config/thurbox</code></pre>
           <p>
             A Windows host is the same with psmux and the Windows paths above.
           </p>
+          <p>
+            <strong>A Fleet on another machine or in WSL.</strong>
+            Its sessions run there, and Thurbox never cleans that machine up for you. Delete its
+            sessions from Thurbox or with <code>fleet delete task</code> there, wait until
+            <code>fleet list task</code> there lists nothing, then remove its
+            <code>[fleets.&lt;name&gt;]</code> table from Thurbox's <code>settings.toml</code>. To
+            remove Fleet from that machine, stop its manager only then, and follow steps 1 to 4 there,
+            through <code>ssh &lt;machine&gt;</code> or <code>wsl -d &lt;distro&gt;</code>:
+          </p>
+          <pre data-wrap><code class="language-bash">systemctl --user disable --now fleet.service
+rm ~/.config/systemd/user/fleet.service</code></pre>

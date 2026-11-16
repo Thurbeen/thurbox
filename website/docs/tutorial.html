@@ -1,49 +1,50 @@
 ---
 layout: docs.njk
 title: 'Tutorial — Thurbox Docs'
-description: 'Onboarding walkthrough with screenshots: add a repository, create your first worktree session, and the keys and fleet commands you use every day.'
+description: 'Onboarding walkthrough with screenshots: pick a place, add a repository, create your first worktree session, and the keys and fleet commands you use every day.'
 currentPage: 'tutorial'
 breadcrumb: 'Tutorial'
 extraCss: ['tutorial.css']
 ---
 <h1>Tutorial: your first sessions</h1>
 <p>
-  The first ten minutes of Thurbox &mdash; from an empty screen to two coding agents running side by
-  side, each on its own git worktree, plus the handful of commands you will use every day.
+  The first ten minutes of Thurbox &mdash; from an empty screen to a coding agent running on its own
+  git worktree, and the handful of keys you will use every day.
 </p>
 <p class="tutorial-note">
   Every screenshot below is the real TUI, captured by driving it through this exact sequence
   (<code>scripts/demo/record-tutorial.sh</code> in the repository). The paths in them
-  (<code>/tmp/tutorial-home/code/&hellip;</code>) come from the throwaway sandbox the capture runs
-  in; yours will be your own <code>~/code</code>, <code>~/src</code>, or wherever you keep
-  repositories.
+  (<code>/tmp/tutorial-home/&hellip;</code>) come from the throwaway sandbox the capture runs in;
+  yours will be your own home.
 </p>
 
 <h2 id="before-you-start">
   Before you start
   <a href="#before-you-start" class="heading-anchor">#</a>
 </h2>
-<p>Install Thurbox &mdash; both the TUI and the headless companion binary:</p>
+<p>
+  Install Thurbox. The installer puts <code>thurbox</code>, <code>thurbox-cli</code>,
+  <code>fleet</code> and <code>runtime-mux</code> in <code>~/.local/bin</code>:
+</p>
 <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 <p>
-  Windows, Homebrew, AUR, Nix, winget and Chocolatey are on the
-  <a href="installation.html">Installation</a> page. Fleet runs every session, so
-  <code>fleet</code> and <code>runtime-mux</code> must be on your <code>PATH</code> as well. You also need:
+  This needs a 3.x release; until one is published, the script installs the latest 2.x, which has no
+  Fleet. Windows and the other routes are on the <a href="installation.html">Installation</a> page.
+  You also need:
 </p>
 <ul>
   <li>
     <strong>tmux &ge; 3.2</strong> (or <a href="https://github.com/psmux/psmux">psmux &ge; 3.3.8</a> on native
-    Windows) &mdash; Fleet's runtime runs your agents in it, so they stay alive when Thurbox is closed
+    Windows) &mdash; Fleet's runtime runs your agents in it, so they keep running when Thurbox is closed
   </li>
   <li><strong>git</strong></li>
   <li>
     <strong>at least one coding-agent CLI</strong> that Fleet has a harness profile for
-    (<a href="agents.html">Agents</a>)
+    (<a href="agents.html">Agents</a>): Claude Code, Codex, opencode and others
   </li>
 </ul>
 <p>
-  Nothing to configure. On first launch Thurbox seeds <code>~/.config/thurbox/</code> with the themes
-  and the interface itself.
+  <code>thurbox-cli doctor</code> checks all of this and prints a fix for each missing piece.
 </p>
 
 <h2 id="launch">
@@ -55,32 +56,58 @@ extraCss: ['tutorial.css']
   <img
     loading="lazy"
     src="../assets/tutorial/01-first-launch.png"
-    alt="An empty Thurbox: the session list on the left, an empty agent pane on the right"
+    alt="An empty Thurbox: the session list on the left, an empty agent pane on the right, and the notice that Fleet was set up"
   />
-  <figcaption>First launch &mdash; no sessions yet, and the list says so.</figcaption>
+  <figcaption>First launch &mdash; no sessions yet, and the notice that Fleet was set up.</figcaption>
 </figure>
 <p>
   Two panes between two bars: the <strong>session list</strong> on the left, the
   <strong>agent terminal</strong> on the right, and the keys you need on the footer.
 </p>
+<p>
+  There was nothing to configure. On a machine with no Fleet config, the first <code>thurbox</code>
+  runs <code>fleet init</code>, and the notice at the bottom says where it wrote the config. Fleet
+  manages every session; Thurbox starts its manager, <code>fleet up</code>, when none runs.
+</p>
 
-<h2 id="add-a-repository">
-  2. Add a repository
-  <a href="#add-a-repository" class="heading-anchor">#</a>
+<h2 id="place">
+  2. Pick a place
+  <a href="#place" class="heading-anchor">#</a>
 </h2>
 <p class="step-key"><kbd>Ctrl</kbd>+<kbd>N</kbd> &mdash; open the creation flow</p>
+<p>
+  The flow first asks <strong>where the session runs</strong>: a place of Fleet's runtime. A fresh
+  setup has one, <code>local</code>, which is this machine.
+</p>
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/02-repo-picker.png"
+    src="../assets/tutorial/02-place-picker.png"
+    alt="The place step, with local, this machine, ready"
+  />
+  <figcaption>The place step. <kbd>Enter</kbd> takes the place.</figcaption>
+</figure>
+<p>
+  With several Fleets in <code>settings.toml</code>, a Fleet step comes before this one
+  (<a href="thurbox-features.html#several-fleets">Several Fleets</a>).
+</p>
+
+<h2 id="add-a-repository">
+  3. Add a repository
+  <a href="#add-a-repository" class="heading-anchor">#</a>
+</h2>
+<p>
+  The repo step opens with its search focused: type any part of a repository's path and the list
+  narrows to the fuzzy matches, best first.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/03-repo-picker.png"
     alt="The repo picker, with only the interface directory listed"
   />
   <figcaption>The repo step. On a fresh install, memory holds one row you did not add.</figcaption>
 </figure>
-<p>
-  The flow asks for the host first &mdash; this machine, or a host Fleet's config names &mdash;
-  then opens the repo step.
-</p>
 <p>
   The list is Thurbox's <strong>repo memory</strong> &mdash; the repositories you have used before.
   The one row already there is your own interface directory, offered because editing the panes is a
@@ -92,22 +119,21 @@ extraCss: ['tutorial.css']
   your remembered repositories share (home, while there are none), so a bare name lands next to
   them; typing <code>/</code> or <code>~</code> first replaces it with a path of your own.
 </p>
-<p>
-  A folder that does not exist yet reads <strong>Create folder</strong>: <kbd>Enter</kbd> asks what
-  goes into it &mdash; a new git repository (<code>git init</code>), a clone of an existing one
-  (paste its URL), or nothing &mdash; makes it, and adds it.
-</p>
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/03-add-repo-path.png"
+    src="../assets/tutorial/04-add-repo-path.png"
     alt="Typing ~/code/ into the Add Repo Path field"
   />
   <figcaption>The path field, with the footer naming what each key does from here.</figcaption>
 </figure>
 <p>Two ways to finish:</p>
 <ul>
-  <li><kbd>Enter</kbd> adds the path you typed, if it is a repository.</li>
+  <li>
+    <kbd>Enter</kbd> adds the path you typed, if it is a repository. A folder that does not exist yet
+    reads <strong>Create folder</strong>: <kbd>Enter</kbd> then asks what goes into it &mdash; a new
+    git repository, a clone of an existing one, or nothing &mdash; makes it, and adds it.
+  </li>
   <li>
     <kbd>Tab</kbd> browses instead &mdash; a listing of that directory, marking which subdirectories
     are git repositories.
@@ -116,7 +142,7 @@ extraCss: ['tutorial.css']
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/04-browse-directory.png"
+    src="../assets/tutorial/05-browse-directory.png"
     alt="The browse dropdown listing ~/code, with a git marker beside two entries"
   />
   <figcaption>
@@ -130,12 +156,12 @@ extraCss: ['tutorial.css']
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/05-repo-added.png"
-    alt="The repository added to the list"
+    src="../assets/tutorial/06-repo-added.png"
+    alt="The repository added to the list and ticked"
   />
   <figcaption>Remembered. Adding it once is the last time you type that path.</figcaption>
 </figure>
-<p>The rest of what this step can do, all on the list:</p>
+<p>The footer names the rest. Letters always go to the search, so the list's own keys are ones you cannot type:</p>
 <table>
   <thead>
     <tr>
@@ -144,7 +170,7 @@ extraCss: ['tutorial.css']
     </tr>
   </thead>
   <tbody>
-    <tr><td>any letter</td><td>Filter the list &mdash; the search is focused from the start</td></tr>
+    <tr><td><kbd>&uarr;</kbd> / <kbd>&darr;</kbd></td><td>Move the cursor</td></tr>
     <tr>
       <td><kbd>Space</kbd></td>
       <td>Tick a repository (<code>[x]</code>); every ticked one goes into the session</td>
@@ -158,6 +184,10 @@ extraCss: ['tutorial.css']
       <td>Open or close a repository's existing worktrees</td>
     </tr>
     <tr>
+      <td><kbd>Enter</kbd></td>
+      <td>Go on with the ticked repositories, or the one under the cursor</td>
+    </tr>
+    <tr>
       <td><kbd>Del</kbd> / <kbd>Alt</kbd>+<kbd>D</kbd></td>
       <td>Forget a remembered repository</td>
     </tr>
@@ -168,31 +198,60 @@ extraCss: ['tutorial.css']
         and every git subdirectory is added under one header
       </td>
     </tr>
+    <tr><td><kbd>Esc</kbd></td><td>Clear the search; a second <kbd>Esc</kbd> closes the flow</td></tr>
     <tr><td><kbd>Tab</kbd></td><td>Move between the search and the path field</td></tr>
   </tbody>
 </table>
 
 <h2 id="worktree">
-  3. Choose its worktree
+  4. Give it a worktree
   <a href="#worktree" class="heading-anchor">#</a>
 </h2>
 <p>
-  A ticked repository runs as it is unless you press <kbd>Alt</kbd>+<kbd>W</kbd> on it: then it
-  gets a <strong>git worktree of its own</strong> (<code>[wt]</code>), so the agent never works in
-  your checkout. Two more steps follow: <strong>Base Branch</strong>, what the new branch starts
-  from (<code>origin</code> is fetched first, and the upstream's default branch,
-  <code>origin/main</code>, is under the cursor), and, after the name, <strong>Branch Name</strong>,
-  prefilled from it. A branch that exists is checked out. Tick several repositories and the session
-  spans them all, one worktree each on the same branch. No configuration is needed: the runtime
-  makes each worktree from the repository's path.
+  A ticked repository runs as it is unless you press <kbd>Alt</kbd>+<kbd>W</kbd> on it. Then it
+  gets a <strong>git worktree of its own</strong> (<code>[wt]</code>), and the agent never works in
+  your checkout.
 </p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/07-worktree-mode.png"
+    alt="The repository marked [wt]"
+  />
+  <figcaption>The repository, marked for a worktree.</figcaption>
+</figure>
 <p>
-  A directory that is no git repository is refused a worktree and runs as it is, and so does a
-  session on another Fleet host.
+  Two more questions follow. <strong>Base Branch</strong> asks what the new branch starts from, with
+  the repository's default branch under the cursor:
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/08-base-branch.png"
+    alt="The base-branch step, main selected"
+  />
+  <figcaption>The base branch.</figcaption>
+</figure>
+<p>
+  <strong>Branch Name</strong> comes after the session's name, prefilled from it
+  (<code>Fix tooltips</code> becomes <code>fix-tooltips</code>). A branch that exists is checked out.
+</p>
+<figure class="shot">
+  <img
+    loading="lazy"
+    src="../assets/tutorial/10-branch-name.png"
+    alt="The branch-name step, prefilled with rate-limit"
+  />
+  <figcaption>The branch name, prefilled from the session's name.</figcaption>
+</figure>
+<p>
+  Tick several repositories and the session spans them all, one worktree each on the same branch.
+  Fleet's runtime makes each worktree on the place, so there is nothing to configure. A directory
+  that is no git repository runs as it is.
 </p>
 
 <h2 id="name-and-agent">
-  4. Name it and pick an agent
+  5. Name it and pick an agent
   <a href="#name-and-agent" class="heading-anchor">#</a>
 </h2>
 <p>
@@ -203,47 +262,48 @@ extraCss: ['tutorial.css']
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/08-session-name.png"
+    src="../assets/tutorial/09-session-name.png"
     alt="The session name step with rate-limit typed"
   />
   <figcaption>The session name.</figcaption>
 </figure>
 <p>
-  Then the agent. This is the list of harnesses Fleet offers (<code>fleet version --json</code>
-  lists them). With only one harness, the step is skipped.
+  Then the agent: the harnesses the Fleet offers (<code>fleet version --json</code> lists them). Pick
+  one whose CLI is installed where the session runs.
 </p>
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/10-agent-picker.png"
-    alt="The agent picker"
+    src="../assets/tutorial/11-agent-picker.png"
+    alt="The agent picker, listing Fleet's harnesses"
   />
   <figcaption>
-    <kbd>Enter</kbd> creates the session: a Fleet Task, which Fleet starts in that repository with
-    the agent inside it.
+    <kbd>Enter</kbd> creates the session: a Fleet Task. Fleet's runtime makes the worktree and starts
+    the agent in it.
   </figcaption>
 </figure>
 
 <h2 id="running">
-  5. You have a session
+  6. You have a session
   <a href="#running" class="heading-anchor">#</a>
 </h2>
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/11-session-running.png"
+    src="../assets/tutorial/12-session-running.png"
     alt="The session list with one session, beside a live agent terminal"
   />
-  <figcaption>One session, grouped under its repository, beside the live agent.</figcaption>
+  <figcaption>One session, under its place and its repository, beside the live agent.</figcaption>
 </figure>
 <ul>
   <li>
-    the session row, indented under its <strong>repository</strong>, with its status dot
+    the session row, under its place (<code>local</code>) and its <strong>repository</strong>, with
+    its status dot
   </li>
   <li>
     the <strong>agent terminal</strong> on the right &mdash; a real terminal. Everything you type
     goes to the agent; <kbd>Ctrl</kbd>+<kbd>O</kbd> opens the worktree in your editor, and
-    <kbd>Ctrl</kbd>+<kbd>T</kbd> gives you a shell in the same directory
+    <kbd>Ctrl</kbd>+<kbd>T</kbd> or <kbd>F8</kbd> gives you a shell in the same directory
   </li>
   <li>
     the status dot tracks the agent through <strong>working / blocked / idle</strong>,
@@ -258,17 +318,18 @@ extraCss: ['tutorial.css']
 </p>
 
 <h2 id="second-session">
-  6. The second session is faster
+  7. The second session is faster
   <a href="#second-session" class="heading-anchor">#</a>
 </h2>
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/12-repo-remembered.png"
+    src="../assets/tutorial/13-repo-remembered.png"
     alt="The repo picker with the remembered repository listed"
   />
   <figcaption>
-    Nothing to type: move to it, <kbd>Enter</kbd>, and through the same steps.
+    Nothing to type: take the place, move to the repository, <kbd>Enter</kbd>, and through the same
+    steps.
   </figcaption>
 </figure>
 <p>
@@ -288,7 +349,7 @@ extraCss: ['tutorial.css']
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/14-keybindings.png"
+    src="../assets/tutorial/15-keybindings.png"
     alt="The keybindings help, rendered from the live registry"
   />
   <figcaption>The help screen is the registry, rendered.</figcaption>
@@ -325,7 +386,7 @@ extraCss: ['tutorial.css']
     </tr>
     <tr>
       <td><kbd>Ctrl</kbd>+<kbd>D</kbd></td>
-      <td>Delete the session (for good: Fleet keeps no undo)</td>
+      <td>Confirm deleting the session (for good: Fleet keeps no undo)</td>
     </tr>
     <tr>
       <td><kbd>Ctrl</kbd>+<kbd>Y</kbd> or <kbd>F4</kbd></td>
@@ -348,7 +409,7 @@ extraCss: ['tutorial.css']
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/13-search.png"
+    src="../assets/tutorial/14-search.png"
     alt="Search, with the query rate and its match highlighted"
   />
   <figcaption>Search is a strip, not a modal, so it never covers what it is pointing at.</figcaption>
@@ -370,7 +431,7 @@ fleet get task docs                        # one Task, its spec and status
 # Start one headlessly: an interactive Task over a directory
 echo '{"apiVersion":"fleet/v1alpha1","kind":"Task",
   "metadata":{"name":"docs","labels":{"thurbox.dev/name":"docs"}},
-  "spec":{"harness":"claude-code","host":"local",
+  "spec":{"harness":"claude",
           "workspace":["file:///home/me/code/web-app"],"dispatch":true}}' \
   | fleet apply --create-only -f -
 
@@ -382,16 +443,15 @@ fleet delete task docs</code></pre>
 <figure class="shot">
   <img
     loading="lazy"
-    src="../assets/tutorial/15-cli.png"
-    alt="fleet list task, after the tutorial's two sessions"
+    src="../assets/tutorial/16-cli.png"
+    alt="fleet list task, after the tutorial's session"
   />
-  <figcaption>The sessions the walkthrough made, as Fleet Tasks &mdash; the store the TUI reads.</figcaption>
+  <figcaption>The session the walkthrough made, as a Fleet Task &mdash; the store the TUI reads.</figcaption>
 </figure>
 <p>
-  <code>thurbox-cli</code> keeps what is the interface's own: <code>thurbox-cli config show</code> prints
-  every resolved path, <code>thurbox-cli plugin dir</code> prints the interface directory, and
-  <code>thurbox-cli --help</code> lists the rest (<code>automation</code>, <code>editor</code>,
-  <code>notify</code>, <code>update</code>, <code>doctor</code>).
+  <code>thurbox-cli</code> keeps what is the interface's own: <code>thurbox-cli doctor</code> checks the
+  setup, <code>thurbox-cli config show</code> prints every resolved path, <code>thurbox-cli plugin
+  dir</code> prints the interface directory, and <code>thurbox-cli --help</code> lists the rest.
 </p>
 
 <h2 id="next">
@@ -406,17 +466,17 @@ fleet delete task docs</code></pre>
     <kbd>F10</kbd> reloads.
   </li>
   <li>
-    <strong>Run a fleet</strong> &mdash; <a href="orchestration.html">Orchestration</a> and
+    <strong>Run several agents on one job</strong> &mdash; <a href="orchestration.html">Orchestration</a> and
     <a href="recipes.html">Recipes</a>.
   </li>
   <li>
-    <strong>Work on another machine</strong> &mdash; a host Fleet's config names is offered at
-    the host step, and its sessions run there while the TUI stays local
-    (<a href="configuration.html">Configuration</a>).
+    <strong>Run sessions on another machine</strong> &mdash; put a Fleet there and list it under
+    <code>[fleets]</code> in <code>settings.toml</code>; its sessions run there while the TUI stays
+    here (<a href="configuration.html#fleets">Configuration</a>).
   </li>
   <li>
     <strong>Configure it</strong> &mdash; <a href="configuration.html">Configuration</a> is every
-    file and knob in one place; <a href="features.html">Features</a> is why each one behaves the way
+    file and knob in one place; <a href="thurbox-features.html">thurbox features</a> and <a href="fleet-features.html">Fleet features</a> say why each one behaves the way
     it does.
   </li>
 </ul>

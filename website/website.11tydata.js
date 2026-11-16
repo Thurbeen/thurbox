@@ -9,11 +9,15 @@
 // sitemap.html. The computed permalink wins over front matter, so it is
 // special-cased here by source path (reading data.permalink instead would
 // self-reference this computed key and silently revert pages to pretty URLs).
+// The pages rendered from the repository's docs (repo-docs.njk) take the URL
+// each one's data names.
 export default {
   eleventyComputed: {
-    permalink: (data) =>
-      data.page.filePathStem === '/sitemap'
+    permalink: (data) => {
+      if (data.repoDoc) return data.repoDoc.url;
+      return data.page.filePathStem === '/sitemap'
         ? '/sitemap.xml'
-        : `${data.page.filePathStem}.html`,
+        : `${data.page.filePathStem}.html`;
+    },
   },
 };

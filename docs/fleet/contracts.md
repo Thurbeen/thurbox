@@ -1068,7 +1068,7 @@ runtime maps them onto the protocol (docs/runtime/README.md, "Workspaces"):
 
 The runtime keeps the rest: whole or nothing, work kept on release, never
 removing what it did not make. `fleet runtime check` tests a runtime that
-declares the verb, and `workspace-git` is the shipped maker for git URLs.
+declares the verb, and `workspace-git` is the shipped workspace provider for git URLs.
 
 The fake runtime makes workspaces as records on the fake host: a `file://`
 URL is its directory, and any other URL a directory named after its last

@@ -1,37 +1,43 @@
+{#- Two products, two groups: Fleet (the engine, usable on its own) and thurbox
+    (the interface on top of one or more Fleets), then the pages about both.
+    Hrefs are relative to /docs/; a page below it (the rendered docs/fleet
+    pages) sets docsBase to the way back up. -#}
+{#- Rendered docs with a top-level entry of their own, left out of the
+    generated Resources and Controllers lists. -#}
+{%- set ownEntries = ["docs/fleet/resources/workspace.md"] -%}
 {%- set sections = [
-  { heading: "Getting Started", links: [
-    { slug: "installation", href: "installation.html", label: "Installation" },
+  { heading: "Fleet", links: [
+    { slug: "fleet-get-started", href: "fleet-get-started.html", label: "Get started" },
+    { slug: "fleet", href: "fleet.html", label: "What is Fleet" },
+    { slug: "fleet-places", href: "fleet-places.html", label: "Places and runtimes" },
+    { slug: "fleet-workspace", href: "fleet/resources/workspace.html", label: "Workspaces" },
+    { slug: "fleet-resources", href: "fleet/index.html#resource-kinds", label: "Resources", sub: "resources" },
+    { slug: "fleet-controllers", href: "fleet/index.html#controllers", label: "Controllers", sub: "controllers",
+      extra: [{ src: "docs/fleet/plugins.md", href: "fleet/plugins.html", label: "Writing a plugin" }] },
+    { slug: "fleet-install", href: "fleet-install.html", label: "Install" },
+    { slug: "agents", href: "agents.html", label: "Agents" },
+    { slug: "orchestration", href: "orchestration.html", label: "Orchestration" },
+    { slug: "fleet-features", href: "fleet-features.html", label: "Features" },
+    { slug: "fleet-reference", href: "fleet/index.html", label: "Reference" },
+    { slug: "fleet-configuration", href: "fleet/configuration.html", label: "Configuration" },
+    { slug: "observability", href: "observability.html", label: "Observability" }
+  ]},
+  { heading: "Thurbox", links: [
+    { slug: "thurbox-get-started", href: "thurbox-get-started.html", label: "Get started" },
+    { slug: "thurbox", href: "thurbox.html", label: "What is Thurbox" },
+    { slug: "installation", href: "installation.html", label: "Install" },
+    { slug: "interface", href: "interface.html", label: "The interface" },
+    { slug: "keybindings", href: "keybindings.html", label: "Keybindings" },
+    { slug: "configuration", href: "configuration.html", label: "Configuration" },
+    { slug: "thurbox-features", href: "thurbox-features.html", label: "Features" },
+    { slug: "thurbox-plugins", href: "thurbox/plugins.html", label: "Writing a pane" },
+    { slug: "thurbox-kernel", href: "thurbox/kernel.html", label: "The kernel" }
+  ]},
+  { heading: "Both", links: [
     { slug: "tutorial", href: "tutorial.html", label: "Tutorial" },
     { slug: "recipes", href: "recipes.html", label: "Recipes" },
-    { slug: "orchestration", href: "orchestration.html", label: "Orchestration" },
     { slug: "comparison", href: "comparison.html", label: "Comparison" },
-    { slug: "faq", href: "faq.html", label: "FAQ" }
-  ]},
-  { heading: "Features", links: [
-    { href: "features.html#session-orchestration", label: "Sessions" },
-    { href: "features.html#agent-definitions", label: "Agent Definitions" },
-    { href: "features.html#automations", label: "Automations" },
-    { href: "features.html#git-worktrees", label: "Git Worktrees" },
-    { href: "features.html#remote-ssh-sessions", label: "Remote SSH Sessions" },
-    { href: "features.html#parent-sessions", label: "Parent Sessions" },
-    { href: "features.html#inter-session-messages", label: "Inter-Session Messages" },
-    { href: "features.html#global-search", label: "Global Search" },
-    { href: "features.html#themes", label: "Themes" },
-    { href: "features.html#os-notifications", label: "OS Notifications" },
-    { href: "features.html#mouse-navigation", label: "Mouse Navigation" },
-    { href: "features.html#feature-flags", label: "Feature Flags" },
-    { href: "features.html#session-persistence", label: "Session Persistence" },
-    { href: "features.html#headless-cli", label: "Headless CLI" }
-  ]},
-  { heading: "Agents", links: [
-    { slug: "agents", href: "agents.html", label: "Agents" }
-  ]},
-  { heading: "Configurations", links: [
-    { slug: "configuration", href: "configuration.html", label: "Configuration" },
-    { slug: "keybindings", href: "keybindings.html", label: "Keybindings" }
-  ]},
-  { heading: "Reference", links: [
-    { slug: "interface", href: "interface.html", label: "The interface" },
+    { slug: "faq", href: "faq.html", label: "FAQ" },
     { slug: "architecture", href: "architecture.html", label: "Architecture" }
   ]}
 ] -%}
@@ -40,21 +46,41 @@
   <h4>{{ section.heading }}</h4>
   <ul>
     {%- for link in section.links %}
-    {%- if link.subheading %}
-    <li class="nav-subheading">{{ link.subheading }}</li>
-    {%- else %}
     <li>
       <a
-        href="{{ link.href }}"
+        href="{{ docsBase }}{{ link.href }}"
         {%- if link.slug == currentPage %} class="current-page"{% endif %}
         >{{ link.label }}</a
       >
+      {%- if link.sub %}
+      {#- One entry per page in docs/fleet/<sub>/, read from the rendered docs,
+          so a new page there joins the list with no change here. #}
+      <ul class="docs-sidebar__sub">
+        {%- for d in repoDocs %}
+        {#- A page with an entry of its own above is not listed twice. #}
+        {%- if d.src.startsWith("docs/fleet/" + link.sub + "/") and d.src not in ownEntries %}
+        <li>
+          <a
+            href="{{ docsBase }}{{ d.url | replace("/docs/", "") }}"
+            {%- if repoDoc and repoDoc.src == d.src %} class="current-page"{% endif %}
+            >{{ d.title | replace(" resource", "") | replace(" controller", "") }}</a
+          >
+        </li>
+        {%- endif %}
+        {%- endfor %}
+        {%- for extra in link.extra or [] %}
+        <li>
+          <a
+            href="{{ docsBase }}{{ extra.href }}"
+            {%- if repoDoc and repoDoc.src == extra.src %} class="current-page"{% endif %}
+            >{{ extra.label }}</a
+          >
+        </li>
+        {%- endfor %}
+      </ul>
+      {%- endif %}
     </li>
-    {%- endif %}
     {%- endfor %}
   </ul>
   {%- endfor %}
-  {#- The "On This Page" list used to be restated here from each page's
-      `onThisPage` front matter. It is now derived from the content's heading ids
-      by the docs-toc transform and rendered as its own column (.docs-toc). -#}
 </aside>

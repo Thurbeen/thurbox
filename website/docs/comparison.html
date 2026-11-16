@@ -42,10 +42,10 @@ breadcrumb: 'Comparison'
                   <strong>Fleet's harnesses</strong>
                   &mdash; Claude Code, Codex, pi, opencode, Copilot CLI and more
                 </td>
-                <td>&mdash; (one repository per session)</td>
+                <td><strong>&#x2713;</strong> (one worktree per repository)</td>
                 <td><strong>&#x2713;</strong> (in-TUI diff, as an installable pane)</td>
                 <td>Linux &middot; macOS &middot; Windows</td>
-                <td><strong>&#x2713;</strong> (SSH hosts)</td>
+                <td><strong>&#x2713;</strong> (a Fleet over ssh or WSL)</td>
                 <td>MIT</td>
               </tr>
               <tr>
@@ -144,10 +144,9 @@ breadcrumb: 'Comparison'
           <ul>
             <li>
               <strong>External multiplexers for running sessions.</strong>
-              Agents survive closing or crashing the Thurbox interface; reattach from a terminal
-              with <code>tmux -L thurbox attach</code> for the default POSIX backend.
-              Native Windows uses psmux. (Of the tools above, Claude Squad also uses real
-              tmux.)
+              Fleet's default runtime runs each agent in tmux, or psmux on native Windows, so
+              agents survive closing or crashing the Thurbox interface. (Of the tools above,
+              Claude Squad also uses real tmux.)
             </li>
             <li>
               <strong>A TUI in a plain terminal.</strong>
@@ -156,10 +155,8 @@ breadcrumb: 'Comparison'
             </li>
             <li>
               <strong>Launches the unmodified vendor CLI.</strong>
-              Thurbox knows nothing about the agent&rsquo;s model, prompts, or tools &mdash; it just
-              runs
-              <code>command + args</code>
-              &mdash; so you get the newest agent features the day the CLI ships them, with no
+              Thurbox knows nothing about the agent&rsquo;s model, prompts, or tools &mdash; Fleet
+              just runs the agent's own CLI &mdash; so you get the newest agent features the day the CLI ships them, with no
               wrapper in the way (vs Cursor, which runs its own models).
             </li>
             <li>
@@ -185,9 +182,10 @@ breadcrumb: 'Comparison'
           </ul>
           <p>
             On top of that, Thurbox is terminal-native, runs on Windows and
-            over SSH, and ships a full headless CLI (
-            <code>thurbox-cli</code>
-            ) plus cron-like automations to drive and schedule fleets of agents with no GUI at all.
+            over SSH, and every session is a Task of Fleet, whose
+            <code>fleet</code>
+            command line drives fleets of agents
+            with no GUI at all.
             It is also the only one whose
             <strong>interface is data rather than product</strong>
             &mdash; every pane is a Lua file you can move, disable or replace, which is a kind of

@@ -1,0 +1,85 @@
+---
+layout: docs.njk
+title: 'Install Fleet — Fleet Docs'
+description: 'Install Fleet alone, with no thurbox: the install script, fleet init and fleet up, and a service that keeps fleet up running.'
+currentPage: 'fleet-install'
+breadcrumb: 'Install Fleet'
+---
+<h1>Install Fleet</h1>
+<p>
+  Fleet needs <code>fleet</code> and a runtime on your <code>PATH</code>. The installer ships
+  <code>runtime-mux</code>, the runtime that runs its sessions, and <code>workspace-git</code>,
+  its workspace provider; either can be replaced by your own
+  (<a href="fleet-places.html">Places and runtimes</a>). To use Fleet with thurbox, follow
+  <a href="installation.html">thurbox's installation</a> instead: it installs both.
+</p>
+
+<h2 id="prerequisites">
+  Prerequisites
+  <a href="#prerequisites" class="heading-anchor">#</a>
+</h2>
+<ul>
+  <li><strong>tmux &gt;= 3.2</strong>, or <strong>psmux &gt;= 3.3.8</strong> on native Windows: <code>runtime-mux</code> runs each session in one</li>
+  <li><strong>git</strong>: the worktrees the runtime makes</li>
+  <li><strong>A coding-agent CLI</strong>, installed and logged in, that Fleet has a <a href="agents.html">harness profile</a> for</li>
+</ul>
+
+<h2 id="fleet-alone">
+  Fleet alone
+  <a href="#fleet-alone" class="heading-anchor">#</a>
+</h2>
+<pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
+fleet init
+fleet doctor
+fleet up</code></pre>
+<p>
+  The installer's fleet-only mode puts <code>fleet</code>, <code>runtime-mux</code> and
+  <code>workspace-git</code> in <code>~/.local/bin</code>, and nothing else. On Windows, pass
+  <code>-FleetOnly</code> through a script block:
+</p>
+<pre data-wrap><code class="language-powershell">&amp; ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly</code></pre>
+<p>
+  Nothing updates a fleet-only install: to update it, run the installer again.
+</p>
+<p>
+  The script needs a 3.x release. Until one is published, it installs the latest 2.x release,
+  which has no Fleet.
+</p>
+<p>Then create your first Task: <a href="fleet-get-started.html">Get started</a>.</p>
+
+<h2 id="service">
+  Keep fleet up running
+  <a href="#service" class="heading-anchor">#</a>
+</h2>
+<p>
+  On a machine you do not sit at, run <code>fleet up</code> as a user systemd service. Then
+  sessions come back after a reboot, without a login. A user service does not read your login
+  <code>PATH</code>: name the directories that hold <code>fleet</code>,
+  <code>runtime-mux</code>, <code>tmux</code> and your coding agents.
+</p>
+<pre data-title="~/.config/systemd/user/fleet.service"><code class="language-toml">[Unit]
+Description=Fleet manager
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/fleet up
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target</code></pre>
+<pre><code class="language-bash">loginctl enable-linger "$USER"
+systemctl --user enable --now fleet.service</code></pre>
+<p>
+  thurbox can follow this Fleet from another machine over ssh; see
+  <a href="configuration.html#fleets">Fleets</a>.
+</p>
+
+<h2 id="from-source">
+  From source
+  <a href="#from-source" class="heading-anchor">#</a>
+</h2>
+<p>From a clone of the repository (its <code>rust-toolchain.toml</code> picks the toolchain):</p>
+<pre><code class="language-bash">cargo install --locked --path crates/fleet-cli --bin fleet
+cargo install --locked --path crates/runtime-mux
+cargo install --locked --path crates/workspace-git</code></pre>

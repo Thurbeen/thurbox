@@ -52,7 +52,7 @@ THEME="${THEME:-doom}"
 # Boot is cut from the clip: thurbox adopting the sessions and the agents
 # drawing their first screen is not something to watch.
 BOOT_SECS="${BOOT_SECS:-12}"
-POSTER_AT="${POSTER_AT:-4}"
+POSTER_AT="${POSTER_AT:-3}"
 # Short and fixed: AF_UNIX socket paths are length-limited, and HOME is under it.
 SBX="${SBX:-/tmp/thurbox-hero}"
 # Every run starts with `rm -rf "$SBX"`, so an SBX pointed at a directory this
@@ -169,13 +169,15 @@ make_repo "$HOME/ml-pipeline"
 
 # --- Agent first-run state --------------------------------------------------------
 # Trust prompts and onboarding screens would otherwise be what every pane shows.
-trusted=("$HOME/thurbox" "$HOME/website" "$HOME/api-gateway" "$HOME/ml-pipeline")
+trusted=("$HOME/thurbox" "$HOME/website" "$HOME/api-gateway" "$HOME/ml-pipeline" "$SBX/fleet/workspaces")
 seed_agent_home() {
     local home="$1"
     if [ -f "$REAL_HOME/.codex/auth.json" ]; then
         mkdir -p "$home/.codex"
         cp "$REAL_HOME/.codex/auth.json" "$home/.codex/auth.json"
         {
+            # The update notice would be what codex's pane shows.
+            printf 'check_for_update_on_startup = false\n\n'
             for p in "${trusted[@]}"; do
                 printf '[projects."%s"]\ntrust_level = "trusted"\n\n' "$p"
             done
@@ -198,13 +200,13 @@ echo 'set -g focus-events on' > "$HOME/.tmux.conf"
 # sessions carry the branch mark in the list.
 i=0
 create() { # name repo branch
-    local name="$1" repo="$2" branch="$3" agent wt
+    local name="$1" repo="$2" branch="$3" agent
     agent="$(agent_for $i)"
     [ "$agent" = claude ] && agent=claude-code
-    wt="$SBX/worktrees/$name"
     echo "==> session $name"
-    git_q -C "$repo" worktree add -q -b "$branch" "$wt" main || exit 1
-    tbx_fleet_session "$name" "$wt" "$agent" || exit 1
+    # A worktree the runtime makes, as the new-session flow asks for one, so
+    # the list groups each session under its repository.
+    tbx_fleet_session "$name" "git+file://$repo?branch=$branch#main" "$agent" || exit 1
     i=$((i + 1))
 }
 create fix-osc52-tmux "$HOME/thurbox" fix/osc52-tmux

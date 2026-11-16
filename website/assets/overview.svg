@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 520" width="1100" height="520" role="img" aria-labelledby="title desc">
+<title id="title">thurbox, its Fleets, their runtimes and places</title>
+<desc id="desc">A Doom-style diagram. thurbox shows one list of sessions from every Fleet that settings.toml lists. Fleet laptop runs on this machine, and thurbox starts its manager. Fleet box runs on another machine, and thurbox reaches it over ssh or WSL; a systemd unit there runs its manager. Each Fleet asks its runtime, runtime-mux over tmux or psmux, to start and stop each session. The runtime runs the coding agent at a place: local is the Fleet's own machine, so the laptop for Fleet laptop and box for Fleet box. A session is a Task of one Fleet and keeps running when thurbox quits.</desc>
+<defs>
+<linearGradient id="hell" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe0c8"/><stop offset=".4" stop-color="#ff3b24"/><stop offset="1" stop-color="#6a0a05"/></linearGradient>
+<linearGradient id="panel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a1517"/><stop offset="1" stop-color="#140a0b"/></linearGradient>
+<linearGradient id="metal" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a4244"/><stop offset=".5" stop-color="#2b2527"/><stop offset="1" stop-color="#1a1617"/></linearGradient>
+<linearGradient id="hudbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3335"/><stop offset="1" stop-color="#1c1819"/></linearGradient>
+<pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#2c0c0a" stroke-width="1"/></pattern>
+<filter id="gC" x="-60%" y="-60%" width="220%" height="220%"><feFlood flood-color="#00d9ff"/><feComposite in2="SourceAlpha" operator="in"/><feGaussianBlur stdDeviation="4" result="c"/><feMerge><feMergeNode in="c"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="gR" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono','Liberation Mono',monospace}.pnl{fill:url(#panel);stroke:#5e5457;stroke-width:2}.hotp{stroke:#d0301c}.bl{fill:none;stroke:#fff;stroke-opacity:.16;stroke-width:2}.bd{fill:none;stroke:#000;stroke-opacity:.6;stroke-width:2}.t{fill:#ff5a40;font-size:17px;font-weight:800;letter-spacing:1px}.l{fill:#efe2e0;font-size:13px}.dim{fill:#c4adab;font-size:12px}.lbl{fill:#a99d9f;font-size:12px;font-weight:700;letter-spacing:3px}.rule{stroke:#3d3537;stroke-width:2;stroke-dasharray:2 4}.head{fill:url(#hell);stroke:#2a0504;stroke-width:2;paint-order:stroke;font-size:30px;font-weight:900;letter-spacing:5px}.wire{fill:none;stroke:#6a1a14;stroke-width:4}.trace{fill:none;stroke:#ff3b24;stroke-width:2;stroke-dasharray:8 10;animation:trace 1.6s linear infinite}@keyframes trace{to{stroke-dashoffset:-36}}.lane{fill:none;stroke:#00e5ff;stroke-width:2;stroke-dasharray:6 6;animation:trace 1.2s linear infinite}.wl{fill:#ff6a50;font-size:11px;font-weight:800;letter-spacing:1px}.wlc{fill:#00d9ff;font-size:11px;font-weight:800;letter-spacing:1px}.ico{fill:none;stroke:#ff5a40;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.ringin{fill:none;stroke:#7a1a12;stroke-width:2.5}.glow{fill:none;stroke:#ff2a1a;stroke-width:2;stroke-linejoin:round}.spin{animation:spin 24s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.core{animation:core 4s ease-in-out infinite}@keyframes core{0%,100%{opacity:.45}50%{opacity:1}}.vb{fill:#1d0f11;stroke:#4a4144;stroke-width:1.5}.vt{fill:#efe2e0;font-size:11px;font-weight:700}.vbc{fill:#00222a;stroke:#00d9ff;stroke-width:1.5}.vtc{fill:#00d9ff;font-size:11px;font-weight:800}.led{stroke:#000;stroke-width:1;fill:#6eff6e}.blink{animation:blink 1.4s steps(1) infinite}@keyframes blink{50%{opacity:.25}}.hs{fill:#ff6a50;font-size:13px;font-weight:800;letter-spacing:1px}.hud{fill:#ff3b24;font-size:15px;font-weight:900;letter-spacing:2px}@media (prefers-reduced-motion: reduce){.trace,.lane,.spin,.core,.blink{animation:none}.core{opacity:1}}@media (prefers-color-scheme: light){.frame{stroke:#9a9093;stroke-width:1}}@media (prefers-color-scheme: dark){.frame{stroke:none}}</style></defs>
+<rect class="frame" width="1100" height="520" rx="12" fill="url(#metal)"/>
+<rect x="10" y="10" width="1080" height="500" rx="4" fill="#0e0606"/>
+<rect x="10" y="10" width="1080" height="500" fill="url(#grid)" opacity=".55"/>
+<rect x="14" y="14" width="1072" height="492" fill="none" stroke="#5e5457" stroke-width="4"/>
+<circle cx="24" cy="24" r="5" fill="#6a6164" stroke="#1a1415" stroke-width="1.5"/><path d="M21 24H27" stroke="#1a1415" stroke-width="2"/>
+<circle cx="1076" cy="24" r="5" fill="#6a6164" stroke="#1a1415" stroke-width="1.5"/><path d="M1073 24H1079" stroke="#1a1415" stroke-width="2"/>
+<circle cx="24" cy="496" r="5" fill="#6a6164" stroke="#1a1415" stroke-width="1.5"/><path d="M21 496H27" stroke="#1a1415" stroke-width="2"/>
+<circle cx="1076" cy="496" r="5" fill="#6a6164" stroke="#1a1415" stroke-width="1.5"/><path d="M1073 496H1079" stroke="#1a1415" stroke-width="2"/>
+<text class="head" x="36" y="66">ONE INTERFACE, SEVERAL FLEETS</text>
+<text class="lbl" x="36" y="104">INTERFACE</text>
+<path class="rule" d="M36 112H232"/>
+<text class="lbl" x="318" y="104">FLEET</text>
+<text class="dim" x="568" y="104" text-anchor="end">manages sessions</text>
+<path class="rule" d="M318 112H568"/>
+<text class="lbl" x="642" y="104">RUNTIME</text>
+<text class="dim" x="838" y="104" text-anchor="end">runs processes</text>
+<path class="rule" d="M642 112H838"/>
+<text class="lbl" x="914" y="104">PLACE</text>
+<path class="rule" d="M914 112H1064"/>
+<path class="wire" d="M232 186H318"/>
+<path class="trace" d="M232 186H318"/>
+<path class="wire" d="M568 186H642"/>
+<path class="trace" d="M568 186H642"/>
+<path class="wire" d="M838 186H914"/>
+<path class="trace" d="M838 186H914"/>
+<path class="wire" d="M232 326H318"/>
+<path class="lane" d="M232 326H318"/>
+<path class="wire" d="M568 326H642"/>
+<path class="trace" d="M568 326H642"/>
+<path class="wire" d="M838 326H914"/>
+<path class="trace" d="M838 326H914"/>
+<text class="wl" x="275" y="176" text-anchor="middle">FLEET</text>
+<text class="wlc" x="275" y="316" text-anchor="middle">SSH/WSL</text>
+<text class="wl" x="605" y="176" text-anchor="middle">START</text>
+<text class="wl" x="876" y="176" text-anchor="middle">RUNS</text>
+<text class="wl" x="605" y="316" text-anchor="middle">START</text>
+<text class="wl" x="876" y="316" text-anchor="middle">RUNS</text>
+<rect class="pnl hotp" x="36" y="128" width="196" height="256"/>
+<path class="bl" d="M38 382V130H230"/>
+<path class="bd" d="M230 130V382H38"/>
+<g transform="translate(52 144)"><rect class="ico" x="0" y="0" width="24" height="18" rx="2"/><path class="ico" d="M5 6l4 3-4 3M11 13h7"/></g>
+<text class="t" x="86" y="159">THURBOX</text>
+<text class="l" x="52" y="198">one list of sessions</text>
+<text class="l" x="52" y="218">from every Fleet in</text>
+<text class="l" x="52" y="238">settings.toml</text>
+<text class="dim" x="52" y="342">Ctrl+N picks a Fleet,</text>
+<text class="dim" x="52" y="360">a place, a repository</text>
+<rect class="pnl" x="318" y="128" width="250" height="116"/>
+<path class="bl" d="M320 242V130H566"/>
+<path class="bd" d="M566 130V242H320"/>
+<g class="spin" style="transform-origin:352px 162px"><circle class="ringin" cx="352" cy="162" r="18"/><path class="glow" d="M352.0 148.0 L360.3 173.4 L338.6 157.7 L365.4 157.7 L343.7 173.4Z"/></g>
+<circle class="core" cx="352" cy="162" r="4.0" fill="#ff3b24"/>
+<text class="t" x="382" y="168">FLEET LAPTOP</text>
+<text class="l" x="334" y="208">on this machine</text>
+<text class="dim" x="334" y="228">thurbox starts fleet up</text>
+<rect class="pnl" x="642" y="128" width="196" height="116"/>
+<path class="bl" d="M644 242V130H836"/>
+<path class="bd" d="M836 130V242H644"/>
+<g transform="translate(658 146)"><rect class="ico" x="0" y="0" width="24" height="20" rx="2"/><path class="ico" d="M0 7h24M8 7v13M16 7v13"/></g>
+<text class="t" x="692" y="162">RUNTIME-MUX</text>
+<text class="l" x="658" y="208">tmux · psmux</text>
+<text class="dim" x="658" y="228">keeps it alive</text>
+<rect class="pnl hotp" x="914" y="128" width="150" height="116"/>
+<path class="bl" d="M916 242V130H1062"/>
+<path class="bd" d="M1062 130V242H916"/>
+<circle class="led blink" cx="1048" cy="144" r="4"/>
+<text class="t" x="930" y="162">LOCAL</text>
+<text class="l" x="930" y="186">the laptop</text>
+<rect class="vb" x="930" y="204" width="30" height="20" rx="2"/><text class="vt" x="945" y="218" text-anchor="middle">&gt;_</text>
+<rect class="vbc" x="964" y="204" width="30" height="20" rx="2" filter="url(#gC)"/><text class="vtc" x="979" y="218" text-anchor="middle">&gt;_</text>
+<rect class="vb" x="998" y="204" width="30" height="20" rx="2"/><text class="vt" x="1013" y="218" text-anchor="middle">&gt;_</text>
+<rect class="pnl" x="318" y="268" width="250" height="116"/>
+<path class="bl" d="M320 382V270H566"/>
+<path class="bd" d="M566 270V382H320"/>
+<g class="spin" style="transform-origin:352px 302px"><circle class="ringin" cx="352" cy="302" r="18"/><path class="glow" d="M352.0 288.0 L360.3 313.4 L338.6 297.7 L365.4 297.7 L343.7 313.4Z"/></g>
+<circle class="core" cx="352" cy="302" r="4.0" fill="#ff3b24"/>
+<text class="t" x="382" y="308">FLEET BOX</text>
+<text class="l" x="334" y="348">on another machine</text>
+<text class="dim" x="334" y="368">a systemd unit runs fleet up</text>
+<rect class="pnl" x="642" y="268" width="196" height="116"/>
+<path class="bl" d="M644 382V270H836"/>
+<path class="bd" d="M836 270V382H644"/>
+<g transform="translate(658 286)"><rect class="ico" x="0" y="0" width="24" height="20" rx="2"/><path class="ico" d="M0 7h24M8 7v13M16 7v13"/></g>
+<text class="t" x="692" y="302">RUNTIME-MUX</text>
+<text class="l" x="658" y="348">tmux · psmux</text>
+<text class="dim" x="658" y="368">keeps it alive</text>
+<rect class="pnl" x="914" y="268" width="150" height="116"/>
+<path class="bl" d="M916 382V270H1062"/>
+<path class="bd" d="M1062 270V382H916"/>
+<circle class="led blink" cx="1048" cy="284" r="4"/>
+<text class="t" x="930" y="302">LOCAL</text>
+<text class="l" x="930" y="326">box</text>
+<rect class="vb" x="930" y="344" width="30" height="20" rx="2"/><text class="vt" x="945" y="358" text-anchor="middle">&gt;_</text>
+<rect class="vbc" x="964" y="344" width="30" height="20" rx="2" filter="url(#gC)"/><text class="vtc" x="979" y="358" text-anchor="middle">&gt;_</text>
+<rect class="vb" x="998" y="344" width="30" height="20" rx="2"/><text class="vt" x="1013" y="358" text-anchor="middle">&gt;_</text>
+<rect x="28" y="412" width="1044" height="76" rx="3" fill="url(#hudbg)" stroke="#5e5457" stroke-width="2"/>
+<path class="bl" d="M30 486V414H1070"/>
+<text class="hud" x="48" y="444">A SESSION IS A TASK OF ONE FLEET</text>
+<text class="l" x="48" y="468">It keeps running when thurbox quits. A Fleet that cannot be reached keeps its rows, marked unreachable.</text>
+</svg>

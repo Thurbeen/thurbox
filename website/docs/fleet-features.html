@@ -1,0 +1,122 @@
+---
+layout: docs.njk
+title: 'Fleet features — Fleet Docs'
+description: 'Fleet features: sessions as Tasks that keep running, harness profiles for every agent, worktrees made by the runtime, places, messages between agents, and a headless CLI.'
+currentPage: 'fleet-features'
+breadcrumb: 'Fleet features'
+---
+<h1>Fleet features</h1>
+<p>
+  What Fleet does, with or without thurbox. For what the interface adds, see
+  <a href="thurbox-features.html">thurbox features</a>.
+</p>
+
+<h2 id="sessions-as-tasks">
+  Sessions as Tasks
+  <a href="#sessions-as-tasks" class="heading-anchor">#</a>
+</h2>
+<p>
+  Every session is a Fleet Task. Fleet starts it, sends its brief once, keeps it running and
+  reports its status. The runtime keeps each session's terminal in a multiplexer window (tmux, or
+  psmux on native Windows), so a session survives its client quitting or crashing, and several
+  clients see the same sessions. After a reboot, the next <code>fleet up</code> brings the
+  sessions of unfinished Tasks back.
+</p>
+<p>
+  <code>fleet delete task &lt;name&gt;</code> stops the agent and releases the session. There is
+  no undo.
+</p>
+
+<h2 id="agent-definitions">
+  Agents are harness profiles
+  <a href="#agent-definitions" class="heading-anchor">#</a>
+</h2>
+<p>
+  A Task names its agent as a <strong>harness</strong>. Fleet's harness profile for it owns the
+  command, its arguments, how to resume it and how it reports its status. Fleet bundles nine, and a
+  new agent is one more profile file. See <a href="agents.html">Agents</a>.
+</p>
+
+<h2 id="git-worktrees">
+  Worktrees made by the runtime
+  <a href="#git-worktrees" class="heading-anchor">#</a>
+</h2>
+<p>
+  Each Task works in a workspace its runtime makes at its place: a git worktree of your checkout
+  on a branch of its own, or a directory as it is. Deleting the Task keeps the branch.
+  <a href="fleet/resources/workspace.html">Workspaces</a> covers where it lives, release and
+  preserved work, and several repositories in one Task.
+</p>
+
+<h2 id="places-and-runtimes">
+  Places and runtimes
+  <a href="#places-and-runtimes" class="heading-anchor">#</a>
+</h2>
+<p>
+  A <strong>runtime</strong> is a program Fleet runs to start and stop processes;
+  <code>runtime-mux</code> is the one Fleet ships, and any program that speaks the runtime protocol
+  can be another (<code>fleet runtime check -- &lt;program&gt;</code> tests one). A
+  <strong>place</strong> is where a runtime runs a session, named
+  <code>&lt;runtime&gt;/&lt;place&gt;</code>; <code>local</code> is the Fleet's own machine. A
+  Task names its place in <code>host</code>. See
+  <a href="fleet-places.html">Places and runtimes</a>.
+</p>
+
+<h2 id="inter-session-messages">
+  Messages between agents
+  <a href="#inter-session-messages" class="heading-anchor">#</a>
+</h2>
+<p>
+  <code>fleet send &lt;task&gt; &lt;text&gt;</code> queues a message for a session's agent, and
+  Fleet delivers it on its next pass, once the session is ready. One agent hands another a payload
+  this way instead of scraping its terminal. The Task's <code>status.inbox</code> records what was
+  queued and delivered, and <code>--answers &lt;id&gt;</code> marks a message as the answer to a
+  question the Task declared. A worker reports its outcome with <code>fleet result</code>.
+</p>
+
+<h2 id="scheduled-tasks">
+  Scheduled Tasks
+  <a href="#scheduled-tasks" class="heading-anchor">#</a>
+</h2>
+<p>
+  A <a href="fleet/resources/cron-task.html">CronTask</a> creates a Task at each time of a cron
+  schedule, from a Task template: a nightly review, a weekly dependency update, a check every
+  hour. Its controller keeps a short history and, by default, skips a time while the previous Task
+  still runs.
+</p>
+
+<h2 id="headless-cli">
+  Headless CLI
+  <a href="#headless-cli" class="heading-anchor">#</a>
+</h2>
+<p>
+  <code>fleet</code> drives every session from a script. thurbox reads the same Fleet, so a change
+  made either way shows in the other.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>To</th>
+      <th>Run</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>List sessions</td><td><code>fleet list task</code></td></tr>
+    <tr><td>Read one</td><td><code>fleet get task &lt;name&gt;</code> (JSON)</td></tr>
+    <tr><td>See why it is where it is</td><td><code>fleet status task &lt;name&gt; --json</code></td></tr>
+    <tr><td>Create one</td><td><code>fleet apply --create-only -f &lt;task.json&gt;</code></td></tr>
+    <tr><td>Send its agent a message</td><td><code>fleet send &lt;task&gt; &lt;text&gt;</code></td></tr>
+    <tr><td>Label it</td><td><code>fleet label task &lt;task&gt; &lt;key&gt;=&lt;value&gt;</code></td></tr>
+    <tr><td>Print the command that opens its terminal</td><td><code>fleet attach &lt;task&gt;</code></td></tr>
+    <tr><td>Follow changes</td><td><code>fleet watch --json</code></td></tr>
+    <tr><td>Delete it</td><td><code>fleet delete task &lt;name&gt;</code></td></tr>
+  </tbody>
+</table>
+<p>
+  Fleet also follows the pull requests a worker opens and can tie Tasks to chat threads; see the
+  <a href="fleet/controllers/forge.html">Forge controller</a> and the
+  <a href="fleet/controllers/gateway.html">Gateway controller</a>.
+  It follows changes on GitHub, GitLab, Azure DevOps and Bitbucket Cloud; see the
+  <a href="fleet/configuration.html#supported-forges">supported forges</a>.
+  Orchestration patterns are in <a href="orchestration.html">Orchestration</a>.
+</p>

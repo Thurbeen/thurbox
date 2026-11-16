@@ -1,0 +1,77 @@
+---
+layout: docs.njk
+title: 'What is Fleet — Fleet Docs'
+description: 'Fleet runs coding-agent sessions as Tasks, keeps them running, and works on its own, headless, with no thurbox.'
+currentPage: 'fleet'
+breadcrumb: 'What is Fleet'
+---
+<h1>What is Fleet</h1>
+<p>
+  Fleet is the engine. It runs coding-agent sessions and keeps them running. You describe each
+  session as a <strong>Task</strong> and apply it with <code>fleet apply</code>. Fleet starts the
+  agent, sends it the brief, delivers your messages, records the result the agent reports, and
+  stops the session when you delete the Task.
+</p>
+<p>
+  Fleet works on its own. It is a command line and a manager process, with no interface. thurbox
+  is one client of Fleet; a script, a cron job or another agent is another.
+</p>
+
+<h2 id="tasks">
+  Sessions are Tasks
+  <a href="#tasks" class="heading-anchor">#</a>
+</h2>
+<p>A Task is a JSON object. It names:</p>
+<ul>
+  <li>the <strong>harness</strong>: the coding agent, such as <code>claude</code> or <code>codex</code> (<a href="agents.html">Agents</a>)</li>
+  <li>the <strong>host</strong>: the place the session runs, <code>local</code> by default</li>
+  <li>the <strong>workspace</strong>: the repositories or directories the agent works in, as URLs</li>
+  <li>the <strong>brief</strong>: what to do; a Task with no brief waits for you to type</li>
+</ul>
+<p>
+  <code>fleet up</code> keeps every Task moving. It is the manager: run it in a terminal or as a
+  service. <a href="fleet-get-started.html">Get started</a> shows the commands.
+</p>
+
+<h2 id="resources-and-controllers">
+  Resources and controllers
+  <a href="#resources-and-controllers" class="heading-anchor">#</a>
+</h2>
+<p>
+  Fleet stores <strong>resources</strong>, and a <strong>controller</strong> for each kind moves
+  them toward what their spec asks for. The plan lives in the store, not in a chat, so it
+  outlives every session.
+</p>
+<table>
+  <thead>
+    <tr>
+      <th>Resource</th>
+      <th>What it is</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Task</td><td>One agent session doing one brief</td></tr>
+    <tr><td>TaskConfig</td><td>Reusable defaults for Tasks: harness, place, environment</td></tr>
+    <tr><td>EnvProvider</td><td>A source of environment values for Tasks</td></tr>
+    <tr><td>ChangeRequest</td><td>One pull or merge request a Task's agent opened, mirrored from its forge</td></tr>
+    <tr><td>Conversation, Listener</td><td>A chat thread tied to a Task, and the chat account behind it</td></tr>
+  </tbody>
+</table>
+<p>
+  Every resource and controller has its own page in
+  <a href="fleet/index.html">Fleet's reference</a>: <a href="fleet/index.html#resource-kinds">resources</a> and <a href="fleet/index.html#controllers">controllers</a>.
+</p>
+
+<p>
+  Fleet runs each session at a <a href="fleet-places.html">place, through a runtime</a>.
+</p>
+
+<h2 id="next">
+  Next
+  <a href="#next" class="heading-anchor">#</a>
+</h2>
+<ul>
+  <li><a href="fleet-install.html">Install Fleet</a>, alone or with thurbox</li>
+  <li><a href="fleet-get-started.html">Get started</a>: your first Task</li>
+  <li><a href="fleet-features.html">Fleet features</a></li>
+</ul>

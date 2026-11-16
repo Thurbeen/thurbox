@@ -79,6 +79,14 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
+  /* Type scale: the one set of font sizes body copy, ledes and small print
+     use. Display sizes (h1, h2) stay in base.css. */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --measure: 62ch;
+
   /* Spacing */
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
@@ -143,8 +151,8 @@
     0 0 0 2px var(--bevel-frame), inset 3px 3px 0 0 var(--bevel-light),
     inset -3px -3px 0 0 var(--bevel-dark);
   --bevel-glow-red:
-    0 0 0 2px #07060a, 0 0 12px rgb(232, 24, 11, 0.5), inset 2px 2px 0 0 var(--bevel-light),
-    inset -2px -2px 0 0 var(--bevel-dark);
+    0 0 0 2px var(--bevel-frame), 0 0 12px rgb(232, 24, 11, 0.5),
+    inset 2px 2px 0 0 var(--bevel-light), inset -2px -2px 0 0 var(--bevel-dark);
 
   /* HUD status-bar surfaces */
   --hud-bg: #14110e;
@@ -153,4 +161,67 @@
 
   /* CRT vignette for the screen-shell feel */
   --vignette: radial-gradient(ellipse at 50% 50%, transparent 58%, rgb(0, 0, 0, 0.6));
+
+  /* Colours the light palette has to change, named so no rule hard-codes them */
+  --on-green: #0a2e0a;
+  --green-hover: #8cff8c;
+  --glow-btn: 0 0 10px rgb(110, 255, 110, 0.5), inset 0 0 6px rgb(255, 255, 255, 0.25);
+  --glow-btn-hover: 0 0 18px rgb(110, 255, 110, 0.85), inset 0 0 8px rgb(255, 255, 255, 0.35);
+  --shadow-panel: 0 8px 30px rgb(0, 0, 0, 0.5);
+  --link-underline: rgb(110, 255, 110, 0.5);
+  --selection-bg: rgb(255, 92, 84, 0.4);
+  --selection-text: #fff;
+
+  color-scheme: dark;
+}
+
+/* The light palette. Same Doom identity - red accent, pixel headings, squared
+   bevelled panels - on warm paper: the neon tones darken until they read as
+   text on a light ground, and the glows, scanlines and vignette fade to a hint
+   because on a light ground they read as dirt rather than as light. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-primary: #f6f1ea;
+    --bg-secondary: #ede5da;
+    --bg-card: #fffcf7;
+    --bg-code: #fbf7f1;
+    --bg-hover: #e6dccf;
+    --bg-nav: rgb(246, 241, 234, 0.94);
+    --text-primary: #1d1915;
+    --text-secondary: #463e36;
+    --text-muted: #6a5f53;
+    --green: #19701d;
+    --accent: #c41a10;
+    --yellow: #8a5a00;
+    --purple: #a3245f;
+    --red: #c0150b;
+    --blue: #00658a;
+    --border: #d3c7b8;
+    --border-light: #e3d9cc;
+    --glow-red: 0 0 0 transparent;
+    --glow-red-type: none;
+    --glow-green: 0 0 0 transparent;
+    --glow-cyan: 0 0 0 transparent;
+    --scanline: rgb(0, 0, 0, 0.03);
+    --doom-red: #c8150a;
+    --doom-red-bright: #d81a0e;
+    --ember: #b8420f;
+    --bevel-light: rgb(255, 255, 255, 0.85);
+    --bevel-dark: rgb(0, 0, 0, 0.1);
+    --bevel-frame: #cdbfae;
+    --hud-bg: #ebe2d6;
+    --hud-bg-deep: #e2d7c9;
+    --hud-edge: #c7b8a5;
+    --vignette: radial-gradient(ellipse at 50% 50%, transparent 65%, rgb(80, 50, 20, 0.08));
+    --on-green: #fff;
+    --green-hover: #135716;
+    --glow-btn: 0 1px 0 rgb(0, 0, 0, 0.1);
+    --glow-btn-hover: 0 2px 6px rgb(0, 0, 0, 0.15);
+    --shadow-panel: 0 6px 20px rgb(60, 40, 20, 0.1);
+    --link-underline: rgb(25, 112, 29, 0.45);
+    --selection-bg: rgb(196, 26, 16, 0.2);
+    --selection-text: inherit;
+
+    color-scheme: light;
+  }
 }

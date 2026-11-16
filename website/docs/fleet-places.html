@@ -1,0 +1,48 @@
+---
+layout: docs.njk
+title: 'Places and runtimes — Fleet Docs'
+description: 'Where a Fleet runs its sessions: a runtime starts and stops processes, at places named <runtime>/<place>.'
+currentPage: 'fleet-places'
+breadcrumb: 'Places and runtimes'
+---
+<h1>Places and runtimes</h1>
+<p>
+  Fleet starts no process itself. It asks a <strong>runtime</strong>. A runtime is a role: any
+  program that answers <a href="runtime/index.html#the-runtime-protocol">the runtime protocol</a>
+  at a place. <code>runtime-mux</code> is the runtime Fleet ships; it runs each session in a tmux
+  window (psmux on native Windows). <code>examples/runtimes/tmux.sh</code> is a minimal one, and
+  you can write your own for containers, VMs or a remote service. <code>fleet runtime check</code>
+  tests a runtime against the protocol.
+</p>
+<p>
+  To turn a workspace URL into a directory, a runtime can run a <strong>workspace
+  provider</strong>. <code>workspace-git</code> is the provider Fleet ships, for git URLs;
+  <code>runtime-mux</code> runs whichever provider its <code>workspace.program</code> setting
+  names (<a href="runtime/index.html#two-roles">two roles</a>).
+</p>
+<img
+  src="runtime/roles.svg"
+  alt="Fleet calls a runtime, runtime-mux or yours; runtime-mux runs a workspace provider, workspace-git or yours"
+  width="980"
+  height="250"
+  loading="lazy"
+/>
+<p>
+  A <strong>place</strong> is where a runtime runs a session, named
+  <code>&lt;runtime&gt;/&lt;place&gt;</code>. <code>local</code> is the Fleet's own machine, and
+  it is the place <code>fleet init</code> sets up. The runtime also makes each session's
+  <a href="fleet/resources/workspace.html">workspace</a> there.
+</p>
+<img
+  src="../assets/overview.svg"
+  alt="thurbox follows several Fleets; each Fleet's runtime runs sessions at its places"
+  width="1100"
+  height="520"
+  loading="lazy"
+/>
+<p>
+  Runtimes and places are tables in Fleet's config; see
+  <a href="fleet/configuration.html#runtimes-and-their-places">Fleet's configuration</a>
+  and
+  <a href="architecture.html#places">Fleets and places</a>.
+</p>

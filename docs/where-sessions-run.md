@@ -113,8 +113,8 @@ when the laptop sleeps.
    Description=Fleet manager
 
    [Service]
-   Environment=PATH=%h/.cargo/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-   ExecStart=%h/.cargo/bin/fleet up
+   Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+   ExecStart=%h/.local/bin/fleet up
    Restart=on-failure
    RestartSec=15
 
@@ -136,7 +136,7 @@ when the laptop sleeps.
 
    [fleets.box]
    transport = { ssh = "me@box" }
-   program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+   program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
    ```
 
 5. Run `thurbox-cli doctor`. It reports each Fleet, and says when box cannot

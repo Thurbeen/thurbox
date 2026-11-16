@@ -12,22 +12,43 @@
 
 ![Thurbox Demo](https://github.com/Thurbeen/thurbox/releases/download/media/thurbox-demo.gif)
 
-- **Several coding agents at once**, side by side in one terminal — Claude Code, Codex, pi,
-  opencode, kilo, omp, Qwen Code, Copilot CLI and Kimi Code, and any agent Fleet gains a
-  harness profile for.
-- **A persistent multiplexer session behind every agent** — they survive crashes, restarts
-  and reboots, so quit thurbox and every agent keeps working.
-- **Agents on other machines too** — a session on another Fleet host sits in the same
-  list under its own host, beside the ones running here.
-- **A worktree per session** — a session on this machine can run in a git worktree of its
-  own (`Alt+W` in the new-session flow), so agents never fight over your checkout.
-- **Agent-neutral** — thurbox launches the vendor CLI unmodified and knows nothing about its
-  model, prompts or tools, so new agent features arrive the day that CLI ships them.
-- **An interface that is not compiled in** — every pane, the session list included, is a Lua
-  file in a directory you own; move it, turn it off, rewrite it, or install one somebody else
-  wrote.
+Thurbox runs coding agents side by side in one terminal. Each agent is a session
+that keeps working when you quit thurbox, and every pane of the interface is a Lua
+file you can change.
 
-## Installation
+- **Several coding agents at once**: Claude Code, Codex, pi, opencode, kilo, omp,
+  Qwen Code, Copilot CLI and Kimi Code, launched unmodified.
+- **Sessions that outlive the interface**: Fleet runs each session in a
+  multiplexer, so a crash, a restart or `Ctrl+Q` stops nothing.
+- **One list for every machine**: follow the Fleet on your laptop and a Fleet on
+  another machine, over ssh or in WSL, in the same session list.
+- **A worktree per session**, so agents never fight over your checkout.
+- **An interface you own**: every pane, the session list included, is a Lua file
+  in a directory you can edit.
+
+## What's new in v3
+
+- **Fleet is the engine.** Every session is a Fleet Task. thurbox keeps no
+  database of its own: it reads Fleet and draws what it reads.
+- **Several Fleets.** List them in `settings.toml` under `[fleets.<name>]`: one on
+  this machine, others over ssh or WSL. A Fleet that cannot be reached keeps its
+  sessions in the list, marked unreachable.
+- **Places.** A Fleet's runtime runs each session at a place, named
+  `<runtime>/<place>`. `local` is the Fleet's own machine. A runtime is any
+  program that speaks the runtime protocol: the shipped one, `runtime-mux`,
+  keeps sessions alive in tmux, or psmux on Windows, and you can write your
+  own. Its shipped workspace provider, `workspace-git`, makes each session's
+  git worktree, and another program can replace it too.
+- **A new-session flow in that order**: `Ctrl+N` picks a Fleet, then a place,
+  then a repository, then an agent.
+- **Agents come from Fleet.** The agents on offer are the chosen Fleet's harness
+  profiles, so adding an agent is a change to Fleet, not to thurbox.
+- **Scripts talk to Fleet.** `fleet apply`, `fleet send` and `fleet delete` drive
+  sessions while the interface shows them. `thurbox-cli doctor` checks each Fleet.
+
+![thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place](website/assets/overview.svg)
+
+## Install
 
 **Linux / macOS:**
 
@@ -41,132 +62,109 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
 ```
 
-That installs both binaries — `thurbox` (the TUI) and `thurbox-cli` (the
-headless one) — with checksum verification and platform auto-detection.
+The installer puts `thurbox` (the interface), `thurbox-cli`, `fleet`,
+`runtime-mux` and `workspace-git` on your `PATH`. This needs a v3 release: until
+one is published, the installer installs the latest 2.x release, which has no
+Fleet. You also need:
 
-You also need **tmux ≥ 3.2** (or [psmux](https://github.com/psmux/psmux) ≥ 3.3.8
-on native Windows), **git**, `fleet` and `runtime-mux` on `PATH`, and at least one
-coding-agent CLI. See [multiplexer requirements](docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup)
-for verified versions and host support.
+- **tmux ≥ 3.2**, or [psmux](https://github.com/psmux/psmux) ≥ 3.3.8 on native Windows
+- **git**
+- at least one coding-agent CLI
 
-**Nix / NixOS:**
+**Fleet on its own** needs no thurbox. The installer's fleet-only mode installs
+`fleet`, `runtime-mux` and `workspace-git`, and nothing else:
 
 ```bash
-nix run github:Thurbeen/thurbox                # try it
-nix profile install github:Thurbeen/thurbox    # install it
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh -s -- --fleet-only
 ```
 
-On NixOS, add `github:Thurbeen/thurbox` as a flake input and import
-`thurbox.nixosModules.default` with `programs.thurbox.enable = true;`. The
-[Installation page](https://thurbox.thurbeen.eu/docs/installation.html#nix)
-has the full snippet, the overlay and the Home Manager module.
+On Windows:
 
-Homebrew, the AUR, winget, Chocolatey, building from source, pinning a version
-and changing the install directory are all on the
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -FleetOnly
+```
+
+Then run `fleet init`, `fleet doctor` and `fleet up`
+([Fleet's install](https://thurbox.thurbeen.eu/docs/fleet-install.html)).
+
+**Upgrading from 2.x:** a 2.x install never updates itself to 3.x, and
+`thurbox-cli update` stays on 2.x. Run the install script again.
+
+`cargo build --release` in a clone builds every program from source. Homebrew,
+the AUR, Nix, winget, Chocolatey and uninstalling are on the
 [Installation page](https://thurbox.thurbeen.eu/docs/installation.html).
 
-**Uninstall:** removing the binaries is not enough — sessions keep running in
-the selected multiplexer. Follow the
-[uninstall steps](https://thurbox.thurbeen.eu/docs/installation.html#uninstall).
-
-## Your first session
+## First steps
 
 ```bash
+thurbox-cli doctor   # checks each Fleet, its runtime and its agents
 thurbox
 ```
 
-First launch seeds `~/.config/thurbox/` — the themes and the interface itself —
-and starts Fleet, which runs every session. It then draws a session list on the left and an agent
-terminal on the right.
+On a machine with no Fleet config, the first `thurbox` runs `fleet init`. It
+starts Fleet's manager when none runs, then draws the session list on the left
+and an agent terminal on the right.
 
-1. **`Ctrl+N`** opens the new-session flow. Pick a host and a repository, a base
-   branch, a name and a branch, then an agent from the harnesses Fleet offers. Each
-   repository can get a worktree of its own.
-2. **Talk to it.** The right pane is a live agent CLI; every key goes to it.
-3. **`Ctrl+N` again** for a second agent, on the same repository or another. `Ctrl+J` / `Ctrl+K`
-   move between sessions — the one you are not looking at keeps working.
-4. **`Ctrl+Q`** leaves the TUI without killing anything. Run `thurbox` again and
-   both agents are still mid-task, or attach to one with `fleet attach <task>`.
+1. **`Ctrl+N`** opens the new-session flow: a place, a repository (with
+   `Alt+W` for a worktree of its own), a name and a branch, then an agent.
+2. **Talk to it.** The right pane is the live agent CLI; every key goes to it.
+3. **`Ctrl+N` again** for a second agent. `Ctrl+J` / `Ctrl+K` move between
+   sessions; the one you are not looking at keeps working.
+4. **`Ctrl+Q`** leaves the interface and stops nothing. Run `thurbox` again and
+   both agents are still mid-task. `fleet list task` lists them from any shell.
 
-That is the whole product in four steps: parallel work that keeps going when you
-stop watching it.
+`F1` lists every key, and `Ctrl+P` is a command palette over the same actions.
+The [tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html) walks through it
+with screenshots.
 
-`F1` lists every key and is rendered from the live registry, so it cannot drift
-from what is running; `Ctrl+P` is a command palette over the same actions.
-For the same walkthrough with screenshots, see the
-[tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html).
+To follow a Fleet on another machine, run `fleet up` there as a user service and
+list it in `~/.config/thurbox/settings.toml`:
 
-## What else it does
+```toml
+[fleets.laptop]
+transport = "local"
 
-- **[Global search](https://thurbox.thurbeen.eu/docs/features.html#global-search)**
-  (`Ctrl+/`) — find a session by name, agent, branch or repo, *and* by the text
-  on its screen, which is the half that finds it by the error in it.
-- **[Sessions on other machines](https://thurbox.thurbeen.eu/docs/features.html#remote-ssh-sessions)**
-  — Fleet's config names the hosts and the runtime that runs each; the TUI
-  stays local and reads this machine only.
-- **[A headless CLI](https://thurbox.thurbeen.eu/docs/features.html#headless-cli)**
-  — every session is a Fleet Task, so `fleet` creates, drives and deletes
-  sessions from a script while the TUI shows them. `thurbox-cli` covers the
-  interface's own files.
-- **[Automations](https://thurbox.thurbeen.eu/docs/features.html#automations)**
-  — scheduled sends, spawns and commands in `automations.json`, fired by the
-  interface or by `thurbox-cli automation tick` from an OS timer.
-- **[Messages between sessions](https://thurbox.thurbeen.eu/docs/features.html#inter-session-messages)**
-  — `fleet send` queues a message for a session's agent, and Fleet delivers it,
-  so one agent hands another a payload instead of scraping its terminal.
-- **[OS notifications](https://thurbox.thurbeen.eu/docs/configuration.html#notifications)**,
-  **[36 themes](https://thurbox.thurbeen.eu/docs/features.html#themes)**
-  (`Ctrl+Y`) and full mouse support.
+[fleets.box]
+transport = { ssh = "me@box" }
+program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
+```
 
-Starting a session per package of a monorepo from one script is the
-[monorepo recipe](https://thurbox.thurbeen.eu/docs/recipes.html#monorepo).
+[Where sessions run](docs/where-sessions-run.md) explains Fleets and places and
+gives the systemd unit. [`[fleets]`](docs/thurbox/config.md#fleets--the-fleets-that-manage-sessions)
+lists every key, the WSL form included.
 
 ## Make it yours
 
-The binary boots a kernel, reads a directory, and draws whatever Lua it finds
-there. Panes live in `ui/plugins/*.lua`, the arrangement in `ui/layout.lua`, and
-`F10` reloads both from disk. Hosts, themes, chords and settings
-are each a file under `~/.config/thurbox/`.
-
-You do not have to learn Lua for any of it. The interface directory ships an
-`AGENTS.md` that teaches whichever CLI you run how the interface is put
-together, so from a session opened there you can just ask:
+Panes live in `ui/plugins/*.lua`, the arrangement in `ui/layout.lua`, and `F10`
+reloads both from disk. The interface directory ships an `AGENTS.md`, so from a
+session opened there you can just ask your agent:
 
 > *Add a pane on the left with CPU and RAM usage. Move the search strip to the
 > bottom and make the session column 30% wide.*
 
-Press `F10` and the change is on your screen. If a pane breaks, `Ctrl+,` then
-`]` is chrome rather than a pane, so it cannot be edited away — `r` restores a
-shipped file, `space` turns yours off.
-
-[The Interface →](https://thurbox.thurbeen.eu/docs/interface.html) ·
-[Writing a pane →](docs/thurbox/plugins.md) ·
-[Configuration →](https://thurbox.thurbeen.eu/docs/configuration.html)
-
-[**Plugins →**](https://thurbox.thurbeen.eu/plugins.html) — official and community
-panes and other add-ons, with install commands and submission details.
+[The interface](https://thurbox.thurbeen.eu/docs/interface.html) ·
+[Writing a pane](docs/thurbox/plugins.md) ·
+[Plugins](https://thurbox.thurbeen.eu/plugins.html)
 
 ## Documentation
 
 [**thurbox.thurbeen.eu/docs**](https://thurbox.thurbeen.eu/docs/) is the manual:
+[Fleet](https://thurbox.thurbeen.eu/docs/fleet.html) and its
+[features](https://thurbox.thurbeen.eu/docs/fleet-features.html),
 [installation](https://thurbox.thurbeen.eu/docs/installation.html),
 [tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html),
-[features](https://thurbox.thurbeen.eu/docs/features.html),
+[thurbox's features](https://thurbox.thurbeen.eu/docs/thurbox-features.html),
 [keybindings](https://thurbox.thurbeen.eu/docs/keybindings.html),
 [configuration](https://thurbox.thurbeen.eu/docs/configuration.html),
 [agents](https://thurbox.thurbeen.eu/docs/agents.html),
-[the interface](https://thurbox.thurbeen.eu/docs/interface.html),
-[orchestration](https://thurbox.thurbeen.eu/docs/orchestration.html),
-[architecture](https://thurbox.thurbeen.eu/docs/architecture.html),
-[a comparison with similar tools](https://thurbox.thurbeen.eu/docs/comparison.html)
-and an [FAQ](https://thurbox.thurbeen.eu/docs/faq.html).
+[the interface](https://thurbox.thurbeen.eu/docs/interface.html) and
+[architecture](https://thurbox.thurbeen.eu/docs/architecture.html).
 
-The rationale behind the decisions is in this repository, under
-[`docs/`](docs/): [constitution](docs/constitution.md) (non-negotiable
-principles), [ARCHITECTURE](docs/thurbox/architecture.md), [FEATURES](docs/thurbox/features.md),
-[CONFIG](docs/thurbox/config.md), [KERNEL](docs/thurbox/kernel.md),
-[PLUGINS](docs/thurbox/plugins.md), [ORCHESTRATION](docs/thurbox/orchestration.md),
-[DEVELOPMENT](docs/thurbox/development.md) and [RELEASING](docs/thurbox/releasing.md).
+In this repository, [`docs/`](docs/README.md) covers the whole system: thurbox
+([`docs/thurbox/`](docs/thurbox/README.md)), Fleet
+([`docs/fleet/`](docs/fleet/README.md)), the runtimes
+([`docs/runtime/`](docs/runtime/README.md)), [where sessions
+run](docs/where-sessions-run.md) and the [constitution](docs/constitution.md).
 
 ## Contributing
 
