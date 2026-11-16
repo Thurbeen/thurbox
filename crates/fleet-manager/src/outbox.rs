@@ -16,6 +16,56 @@ use crate::{Manager, RunReport};
 
 const CURSOR_WRITE_TRIES: u32 = 5;
 
+/// The most lines one append takes: well inside a pass, and one lock, one
+/// lease renewal and one fsync per segment for them all.
+const MAX_RUN: usize = 256;
+
+/// Consecutive whole lines for one board, appended together.
+#[derive(Default)]
+struct Run {
+    board: Option<String>,
+    lines: Vec<RunLine>,
+}
+
+struct RunLine {
+    offset: u64,
+    end: u64,
+    publish: event::Publish,
+}
+
+impl Run {
+    /// Whether a line for `board` can join this run.
+    fn takes(&self, board: &str) -> bool {
+        self.board.as_deref().is_none_or(|b| b == board) && self.lines.len() < MAX_RUN
+    }
+
+    fn push(&mut self, (board, publish): (String, event::Publish), offset: u64, end: u64) {
+        self.board.get_or_insert(board);
+        self.lines.push(RunLine {
+            offset,
+            end,
+            publish,
+        });
+    }
+}
+
+/// A store answer that refuses the events themselves, not one that leaves
+/// them unknown: the line is skipped.
+fn refused(e: &StoreError) -> bool {
+    matches!(
+        e,
+        StoreError::Invalid(_) | StoreError::NotFound(_) | StoreError::Forbidden(_)
+    )
+}
+
+/// The lease lost ends the sweep; any other error stops this ingest.
+fn stopped_by(e: StoreError) -> Result<Option<StoreError>, StoreError> {
+    match e {
+        StoreError::LeaseLost(_) => Err(e),
+        e => Ok(Some(e)),
+    }
+}
+
 /// What one ingest did: the Task as written, when its cursor moved, and
 /// whether the outbox holds no whole line still to ingest.
 pub(crate) struct Ingested {
@@ -88,37 +138,34 @@ impl Manager<'_> {
         let source =
             event::task_source(task, |name| tasks.iter().find(|t| t.metadata.name == name));
         let mut drained = Observation::Known((read.bytes.len() as u64) < MAX_OUTBOX_READ);
+        let mut run = Run::default();
+        let mut stopped = None;
         for entry in entries {
-            let (board, publish) = match entry.line {
+            let line = match entry.line {
                 Ok(line) => line,
                 Err(why) => {
+                    stopped = self.append_run(&mut run, &source, &mut next, lease, ttl)?;
+                    if stopped.is_some() {
+                        break;
+                    }
                     next.skip(entry.offset, entry.end, &why);
                     continue;
                 }
             };
-            *lease = self.store.renew_lease(lease, ttl)?;
-            match self.store.append_events(
-                &board,
-                &source,
-                vec![publish],
-                TaskController::MANAGER,
-                Some(lease),
-            ) {
-                Ok(_) => next.offset = entry.end,
-                Err(
-                    e @ (StoreError::Invalid(_)
-                    | StoreError::NotFound(_)
-                    | StoreError::Forbidden(_)),
-                ) => {
-                    next.skip(entry.offset, entry.end, &e.to_string());
-                }
-                Err(e @ StoreError::LeaseLost(_)) => return Err(e),
-                Err(e) => {
-                    report.unknowns.push(format!("{} outbox: {e}", task.key()));
-                    drained = Observation::unknown(e.to_string());
+            if !run.takes(&line.0) {
+                stopped = self.append_run(&mut run, &source, &mut next, lease, ttl)?;
+                if stopped.is_some() {
                     break;
                 }
             }
+            run.push(line, entry.offset, entry.end);
+        }
+        if stopped.is_none() {
+            stopped = self.append_run(&mut run, &source, &mut next, lease, ttl)?;
+        }
+        if let Some(e) = stopped {
+            report.unknowns.push(format!("{} outbox: {e}", task.key()));
+            drained = Observation::unknown(e.to_string());
         }
         next.closed = gone && drained == Observation::Known(true);
         if next == cursor {
@@ -133,6 +180,56 @@ impl Manager<'_> {
             written: Some(written),
             drained,
         })
+    }
+
+    /// Append `run` in one call, under one lock and one lease renewal, and
+    /// move `next` past it. A run the store refuses whole is appended one
+    /// line at a time, so a refused line is skipped and counted and the
+    /// others land. Answers the error that stopped it, which leaves `next`
+    /// at the last line in.
+    fn append_run(
+        &self,
+        run: &mut Run,
+        source: &event::Source,
+        next: &mut OutboxCursor,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+    ) -> Result<Option<StoreError>, StoreError> {
+        let Some(board) = run.board.take() else {
+            return Ok(None);
+        };
+        let lines = std::mem::take(&mut run.lines);
+        *lease = self.store.renew_lease(lease, ttl)?;
+        let publishes = lines.iter().map(|l| l.publish.clone()).collect();
+        match self.store.append_events(
+            &board,
+            source,
+            publishes,
+            TaskController::MANAGER,
+            Some(lease),
+        ) {
+            Ok(_) => {
+                next.offset = lines.last().map_or(next.offset, |l| l.end);
+                return Ok(None);
+            }
+            Err(e) if !refused(&e) => return stopped_by(e),
+            Err(_) => {}
+        }
+        for line in lines {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            match self.store.append_events(
+                &board,
+                source,
+                vec![line.publish],
+                TaskController::MANAGER,
+                Some(lease),
+            ) {
+                Ok(_) => next.offset = line.end,
+                Err(e) if refused(&e) => next.skip(line.offset, line.end, &e.to_string()),
+                Err(e) => return stopped_by(e),
+            }
+        }
+        Ok(None)
     }
 
     /// Write `next` to the Task's `status.outbox`, re-reading the Task and

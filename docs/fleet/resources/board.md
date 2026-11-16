@@ -113,7 +113,10 @@ Fleet:    TaskController reads the outbox ──▶ append as the Task ──▶
    read. A `Concluded` Task that is not being deleted has its outbox read
    only when the Task is due, as for its session recheck (every 5
    minutes).
-4. TaskController appends each event to its Board, under the lease. The
+4. TaskController appends the events to their Board, under the lease. It
+   appends consecutive lines for one Board together, at most 256 at a
+   time. When the Board refuses such a batch, it appends those lines one
+   at a time, so that only the refused line is skipped. The
    source is the Task: `{task, uid, lineage}`. Then it writes the new
    offset to `status.outbox`. When another writer wrote the Task first, it
    reads the Task again and writes the offset again.

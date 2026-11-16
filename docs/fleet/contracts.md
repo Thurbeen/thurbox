@@ -914,8 +914,12 @@ refused.
   read from 0 under the next `generation`. A line without a key gets
   `outbox-<generation>-<offset>`. The source is `event::task_source` of the
   Task: its name, uid and parent-label lineage; a line's own fields never
-  name it. Each publish is appended as TaskController under the lease, and
-  only then does `status.outbox` (TaskController's) move past it, so a
+  name it. Consecutive lines for one board are appended together as
+  TaskController under the lease, at most 256 in one `append_events`: one
+  lock, one lease renewal and one fsync per segment. A batch the store
+  refuses whole (`Invalid`, `NotFound`, `Forbidden`) is appended again one
+  line at a time, so only the refused line is skipped. Only then does
+  `status.outbox` (TaskController's) move past it, so a
   crash between the two re-reads lines whose keys dedupe them. A cursor
   write that conflicts with another writer, such as the worker, re-reads the
   Task and tries again, up to 5 times. Delivery is at least once: when a

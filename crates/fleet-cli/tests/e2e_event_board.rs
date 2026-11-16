@@ -792,13 +792,50 @@ fn a_concluded_task_reads_its_outbox_only_when_its_recheck_is_due() {
     assert_eq!(events[0]["type"], "after.result");
 }
 
-struct WorkerWritesDuringIngest {
+struct ObservedStore {
     inner: fleet_store::FileStore,
     task: &'static str,
+    worker_writes_once: bool,
     fired: std::cell::Cell<bool>,
+    appends: std::cell::Cell<u32>,
 }
 
-impl WorkerWritesDuringIngest {
+impl ObservedStore {
+    fn over(env: &Env, worker_writes_once: bool) -> ObservedStore {
+        ObservedStore {
+            inner: fleet_store::FileStore::open(&env.data).unwrap(),
+            task: "a",
+            worker_writes_once,
+            fired: std::cell::Cell::new(false),
+            appends: std::cell::Cell::new(0),
+        }
+    }
+
+    fn run_passes(&self, env: &Env, max_passes: u32) {
+        let runtime =
+            fleet_runtime::FakeRuntime::new(fleet_runtime::FakeHost::open(&env.fake).unwrap());
+        let signals = fleet_runtime::FileSignals::open(env.data.join("signals")).unwrap();
+        let manager = fleet_manager::Manager {
+            store: self,
+            runtime: &runtime,
+            clock: &fleet_store::SystemClock,
+            holder: "observed-store-test".into(),
+            plugins: None,
+            forge: None,
+            signals: Some(&signals),
+            agent_telemetry: None,
+            change_request_defaults: Default::default(),
+            forge_defaults: Default::default(),
+            gateway: None,
+        };
+        manager
+            .run(fleet_manager::RunOptions {
+                max_passes,
+                lease_ttl: 30_000,
+            })
+            .unwrap();
+    }
+
     fn worker_writes_task_status(&self) {
         let Observation::Known(Some(task)) = self.inner.get("Task", self.task) else {
             panic!("the Task");
@@ -818,7 +855,7 @@ impl WorkerWritesDuringIngest {
     }
 }
 
-impl Store for WorkerWritesDuringIngest {
+impl Store for ObservedStore {
     fn plugin_mutate(
         &self,
         mutation: fleet_api::plugin::Mutation,
@@ -1023,7 +1060,8 @@ impl Store for WorkerWritesDuringIngest {
         lease: Option<&LeaseToken>,
     ) -> Result<Vec<fleet_api::event::Appended>, StoreError> {
         let appended = self.inner.append_events(board, source, events, by, lease)?;
-        if !self.fired.replace(true) {
+        self.appends.set(self.appends.get() + 1);
+        if self.worker_writes_once && !self.fired.replace(true) {
             self.worker_writes_task_status();
         }
         Ok(appended)
@@ -1093,33 +1131,8 @@ fn a_cursor_write_that_conflicts_is_retried_so_retention_never_duplicates_an_eve
         .ok();
     }
 
-    let store = WorkerWritesDuringIngest {
-        inner: fleet_store::FileStore::open(&env.data).unwrap(),
-        task: "a",
-        fired: std::cell::Cell::new(false),
-    };
-    let runtime =
-        fleet_runtime::FakeRuntime::new(fleet_runtime::FakeHost::open(&env.fake).unwrap());
-    let signals = fleet_runtime::FileSignals::open(env.data.join("signals")).unwrap();
-    let manager = fleet_manager::Manager {
-        store: &store,
-        runtime: &runtime,
-        clock: &fleet_store::SystemClock,
-        holder: "conflict-test".into(),
-        plugins: None,
-        forge: None,
-        signals: Some(&signals),
-        agent_telemetry: None,
-        change_request_defaults: Default::default(),
-        forge_defaults: Default::default(),
-        gateway: None,
-    };
-    manager
-        .run(fleet_manager::RunOptions {
-            max_passes: 5,
-            lease_ttl: 30_000,
-        })
-        .unwrap();
+    let store = ObservedStore::over(&env, true);
+    store.run_passes(&env, 5);
     assert!(store.fired.get(), "the worker wrote during the ingest");
     env.reconcile().ok();
     env.reconcile().ok();
@@ -1192,4 +1205,59 @@ fn a_gone_session_is_closed_only_once_a_read_drains_its_outbox() {
     env.reconcile().ok();
     assert_eq!(bulk_events(&env), BULK_LINES);
     assert_eq!(env.get("a")["status"]["outbox"]["closed"], true);
+}
+
+#[test]
+fn five_hundred_queued_lines_land_in_one_pass_in_a_few_appends() {
+    let env = session_env("event-session-batch");
+    let outbox = session_var(&env, "FLEET_EVENT_FILE");
+    let lines: String = (0..500)
+        .map(|n| format!("{{\"board\":\"shared\",\"type\":\"small\",\"data\":{n}}}\n"))
+        .collect();
+    append_raw(&outbox, &lines);
+
+    let store = ObservedStore::over(&env, false);
+    store.run_passes(&env, 1);
+    let events = list(&env, &["--type", "small", "--limit", "10000"]);
+    assert_eq!(events.len(), 500);
+    let data: Vec<u64> = events.iter().map(|e| e["data"].as_u64().unwrap()).collect();
+    assert_eq!(data, (0..500).collect::<Vec<u64>>(), "in outbox order");
+    assert!(
+        store.appends.get() <= 4,
+        "batched: {} appends",
+        store.appends.get()
+    );
+}
+
+#[test]
+fn a_refused_line_in_a_batch_is_skipped_and_the_rest_land() {
+    let env = session_env("event-session-batch-refused");
+    env.apply(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Board",
+        "metadata": {"name": "small"},
+        "spec": {"maxDataBytes": 8}
+    }))
+    .ok();
+    let outbox = session_var(&env, "FLEET_EVENT_FILE");
+    append_raw(
+        &outbox,
+        concat!(
+            "{\"board\":\"small\",\"type\":\"ok\",\"data\":1}\n",
+            "{\"board\":\"small\",\"type\":\"too.big\",\"data\":\"0123456789\"}\n",
+            "{\"board\":\"small\",\"type\":\"ok\",\"data\":2}\n",
+        ),
+    );
+    env.reconcile().ok();
+    let types: Vec<Value> = list(&env, &["--board", "small"])
+        .iter()
+        .map(|e| e["type"].clone())
+        .collect();
+    assert_eq!(types, vec![json!("ok"), json!("ok")]);
+    let cursor = &env.get("a")["status"]["outbox"];
+    assert_eq!(cursor["skipped"], 1, "{cursor}");
+    assert!(
+        cursor["lastSkipped"].as_str().unwrap().contains("8"),
+        "{cursor}"
+    );
 }
