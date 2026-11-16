@@ -120,7 +120,9 @@ impl Manager<'_> {
         if gone && cursor.closed && !task.is_deleting() {
             return Ok(Ingested::unchanged(Observation::Known(true)));
         }
-        *lease = self.store.renew_lease(lease, ttl)?;
+        if session.host != fleet_api::task::LOCAL_HOST {
+            *lease = self.store.renew_lease(lease, ttl)?;
+        }
         let read = match self.read_outbox(&session, cursor.offset) {
             None | Some(Observation::Known(None)) => OutboxRead {
                 start: cursor.offset,

@@ -893,8 +893,9 @@ refused.
   Unix, whoever makes it (`FileSignals::open`, `fleet signal`, `fleet event
   publish`). A session with `FLEET_SIGNAL_FILE` and no `FLEET_EVENT_FILE`
   refuses, and never falls back to `cli/<user>`. On each pass, before the
-  Task's controllers, the manager renews the lease and reads the outbox of
-  each Task whose `status.session` is set, unless its session is `Gone`,
+  Task's controllers, the manager reads the outbox of each Task whose
+  `status.session` is set (renewing the lease first when the read goes to
+  another host), unless its session is `Gone`,
   `status.outbox.closed` is set and the Task is not being deleted. A
   `Concluded` Task that is not being deleted is read only when the manager's
   `due` test holds for it (its `SESSION_RECHECK_MS` recheck, or a watched
