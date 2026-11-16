@@ -223,22 +223,15 @@ jobs:
         # `shell: bash` is what turns on pipefail; the default shell would let
         # `tee` swallow the script's refusal.
         shell: bash
-        env:
-          FORCED_VERSION: ${{ inputs.version }}
         run: |
           # Holds every release while the tree carries .github/release-hold
           # (`held=true`, a clean skip, not a failure). Otherwise refuses —
           # failing the run before anything is tagged — a version
           # whose major is not the source's RELEASE_LINE, which is what stops a
           # `BREAKING CHANGE:` footer from cutting the next major on its own.
-          # An auto bump (a push, or a dispatch with no version) that would be
-          # the first release of the line is held too: a `!` footer squashed
-          # onto main computes x.0.0, and a line's first release is dispatched.
           # Also decides `channels`. The rules and their tests are in
           # scripts/ci/release-line.{sh,bats}.
-          mode=auto
-          if [ -n "$FORCED_VERSION" ]; then mode=forced; fi
-          scripts/ci/release-line.sh "${{ steps.parse.outputs.version }}" "$PACKAGE_CHANNELS_MAJOR" "$mode" \
+          scripts/ci/release-line.sh "${{ steps.parse.outputs.version }}" "$PACKAGE_CHANNELS_MAJOR" \
             | tee -a "$GITHUB_OUTPUT"
 
   # Create git tag (only if release needed)

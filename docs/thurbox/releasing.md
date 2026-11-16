@@ -166,19 +166,19 @@ major, and a squash merge can carry a branch commit's body onto `main`. So
 `cd.yml` runs `scripts/ci/release-line.sh` before tagging and **refuses any
 version whose major is not `RELEASE_LINE`** — on a push or a dispatch alike. If a
 breaking footer slips onto `main`, the Release run fails instead of tagging
-3.0.0; cut the 2.x it owed by dispatching with an explicit `version`.
+the next major; cut the release it owed by dispatching with an explicit
+`version`.
 
-3.0.0 therefore takes two deliberate steps: a reviewed pull request that sets
-`RELEASE_LINE = 3` (and does what the list above asks), then a dispatch of the
-Release workflow from `main` with `version: 3.0.0`. A push cannot cut it:
-`main` carries `feat!:` commits, so `cog bump --auto` computes 3.0.0, and
-`release-line.sh` holds an auto bump that would be the first release of its
-line (`held=true`, a clean skip). Only a dispatch with the exact version cuts a
-line's first release. `v2.x` is branched from the last 2.x commit; `cog.toml`
-already allows `v*.x`. A 2.x maintenance release is cut by dispatching
-`cd.yml` from `v2.x` with an explicit version: it is tagged and built,
-published without "Latest" while a 3.x tag is higher, and still pushed to the
-2.x package names as the newest 2.x.
+3.0.0 therefore takes one deliberate step: a reviewed pull request that sets
+`RELEASE_LINE = 3` and does what the list above asks. `main` carries `feat!:`
+commits since v2.88.0, so the push that merges it computes v3.0.0 with
+`cog bump --auto`, and the Release run cuts it with no dispatch. Merge that pull
+request only after the last 2.x before it (v2.89.0) is published from `v2.x`,
+so the newest 2.x carries the line rule before 3.0.0 is "Latest". `v2.x` is
+branched from the last 2.x commit; `cog.toml` already allows `v*.x`. A 2.x
+maintenance release is cut by dispatching `cd.yml` from `v2.x` with an explicit
+version: it is tagged and built, published without "Latest" while a 3.x tag is
+higher, and still pushed to the 2.x package names as the newest 2.x.
 
 ### The v3 hold
 

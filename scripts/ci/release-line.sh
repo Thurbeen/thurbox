@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# release-line.sh <version> <channels-major> [auto]
+# release-line.sh <version> <channels-major>
 #
 # The release gate for major versions, run by cd.yml's check-release before
 # anything is tagged. Three decisions, all printed as `key=value` lines for
@@ -20,12 +20,6 @@
 #    reviewed change to RELEASE_LINE, and every older line's updater knows only
 #    its own. Exits 1 when the version is off the line.
 #
-#    With `auto` (the version is what `cog bump --auto` computed, not a
-#    dispatched one), the first release of the line is held (`held=true`) when
-#    no tag of its major exists yet: a `!` or BREAKING CHANGE footer squashed
-#    onto main computes the line's x.0.0, and the first release of a line is
-#    cut by dispatching the Release workflow with that exact version.
-#
 # 2. `channels=true` when the version should go to the existing package names
 #    (Homebrew `thurbox`, AUR `thurbox`/`thurbox-bin`, Chocolatey `thurbox`,
 #    winget `Thurbeen.thurbox`): its major is <channels-major> and it is the
@@ -38,8 +32,7 @@
 set -euo pipefail
 
 version="${1:?usage: release-line.sh <version> <channels-major>}"
-channels_major="${2:?usage: release-line.sh <version> <channels-major> [auto]}"
-mode="${3:-}"
+channels_major="${2:?usage: release-line.sh <version> <channels-major>}"
 source_file="${THURBOX_RELEASE_LINE_SOURCE:-crates/thurbox/src/update/version_check.rs}"
 hold_file="${THURBOX_RELEASE_HOLD_FILE:-.github/release-hold}"
 
@@ -66,13 +59,6 @@ fi
 if [ "$major" != "$line" ]; then
   echo "::error::refusing to release $version: the source is on the $line.x line (RELEASE_LINE in $source_file). A new major is never cut by a commit message; change RELEASE_LINE in a reviewed pull request and dispatch the Release workflow with the exact version. See docs/thurbox/releasing.md, \"v2 and v3\"." >&2
   exit 1
-fi
-
-if [ "$mode" = auto ] && [ -z "$(git tag --list "v${major}.*")" ]; then
-  echo "::notice::not releasing $version: it would be the first $major.x release, and the first release of a line is cut by dispatching the Release workflow with its exact version, never by a commit message. See docs/thurbox/releasing.md, \"Cutting the major, and 2.x after it\"." >&2
-  echo "held=true"
-  echo "channels=false"
-  exit 0
 fi
 
 channels=false

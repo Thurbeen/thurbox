@@ -40,10 +40,7 @@ Every push to `main` automatically triggers the release workflow:
    `channels` (below). Rules: `docs/thurbox/releasing.md`, "v2 and v3".
    Before that, the same script holds every release while the tree carries
    `.github/release-hold` (`held=true`: a clean skip on a push or a dispatch);
-   `main` releases 3.x and carries no hold ("The v3 hold"). It also holds an
-   auto bump (a push, or a dispatch with no version) that would be the first
-   release of its line: a `feat!:` on `main` computes x.0.0, and a line's
-   first release is dispatched with its exact version.
+   `main` releases 3.x and carries no hold ("The v3 hold").
 4. **Automated Release** (if needed):
    - Determines semantic version (feat→minor, fix/perf→patch, breaking→major,
      which the release-line step then refuses)
