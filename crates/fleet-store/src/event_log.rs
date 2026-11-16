@@ -339,14 +339,21 @@ fn push_line<T: Serialize>(bytes: &mut Vec<u8>, value: &T) -> Result<(), StoreEr
     Ok(())
 }
 
-fn create_private_dir(dir: &Path) -> io::Result<()> {
+#[cfg(unix)]
+fn private_dir_builder() -> fs::DirBuilder {
+    use std::os::unix::fs::DirBuilderExt;
     let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    match builder.create(dir) {
+    builder.mode(0o700);
+    builder
+}
+
+#[cfg(not(unix))]
+fn private_dir_builder() -> fs::DirBuilder {
+    fs::DirBuilder::new()
+}
+
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    match private_dir_builder().create(dir) {
         Ok(()) => durable::sync_parent(dir),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e),
