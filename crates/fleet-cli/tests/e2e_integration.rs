@@ -351,13 +351,16 @@ fn a_lock_held_by_a_live_command_waits_and_one_left_by_a_killed_command_does_not
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let before = tree(&home);
-    env.fleet(&["integration", "install", "stub"])
-        .code(1)
-        .stderr_has("integrations.lock");
+    let mut install = env.spawn(&["integration", "install", "stub"]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        install.try_wait().expect("install").is_none(),
+        "install waits while a live command holds the lock"
+    );
     assert_eq!(tree(&home), before);
     holder.kill().expect("kill");
     holder.wait().expect("reap");
-    env.fleet(&["integration", "install", "stub"]).ok();
+    support::wait(install).ok();
     assert_eq!(state(&env, "stub"), "current");
 }
 

@@ -8,7 +8,6 @@ mod support;
 
 use std::fs;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 use fleet_api::change_request::{ChangeRequestDefaults, NOTE_CAP};
@@ -91,6 +90,17 @@ fn setup(name: &str) -> (Env, FakeForge, String) {
         .unwrap();
     let cr = derived_name("fake", FORGE_HOST, PROJECT, "7");
     (env, forge, cr)
+}
+
+/// Move a ChangeRequest's `status.<clock>` back by `ms` and its next poll
+/// to now, as time would.
+fn age(env: &Env, cr: &str, clock: &str, ms: u64) {
+    let path = env.object_path("ChangeRequest", cr);
+    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let at = obj["status"][clock].as_u64().unwrap();
+    obj["status"][clock] = json!(at - ms);
+    obj["status"]["notBefore"] = json!(0);
+    fs::write(&path, obj.to_string()).unwrap();
 }
 
 fn seqs(st: &Value) -> Vec<(String, u64)> {
@@ -539,8 +549,7 @@ fn a_closed_change_is_watched_slowly_and_may_reopen_or_settle() {
     env.expire_wait_of("ChangeRequest", &cr);
     env.reconcile().ok();
     assert_eq!(env.change_request_status(&cr)["phase"], "Closed");
-    thread::sleep(Duration::from_millis(2100));
-    env.expire_wait_of("ChangeRequest", &cr);
+    age(&env, &cr, "closedAt", 2000);
     env.reconcile().ok();
     let st = env.change_request_status(&cr);
     assert_eq!(st["phase"], "Settled", "{st:#}");
@@ -573,8 +582,7 @@ fn a_merged_change_settles_and_retention_deletes_it() {
         "a settled change is not polled"
     );
     env.fleet(&["get", "changerequest", &cr]).ok();
-    thread::sleep(Duration::from_millis(4100));
-    env.expire_wait_of("ChangeRequest", &cr);
+    age(&env, &cr, "settledAt", 4000);
     let report = env.reconcile().ok().json();
     assert_eq!(report["statusWrites"], 1, "the delete: {report:#}");
     env.fleet(&["get", "changerequest", &cr])
@@ -759,8 +767,7 @@ fn a_stale_delete_plan_cannot_remove_a_recreated_object() {
     env.reconcile().ok();
     let settled = env.change_request(&cr);
     assert_eq!(settled["status"]["phase"], "Settled");
-    thread::sleep(Duration::from_millis(4100));
-    env.expire_wait_of("ChangeRequest", &cr);
+    age(&env, &cr, "settledAt", 4000);
 
     // The manager, in this process, over a store that swaps the object
     // between its read and its fenced delete.
@@ -1373,7 +1380,12 @@ fn github_pull_requests_are_read_through_gh_with_pagination_and_bounded_calls() 
         assert_eq!(st["revision"], 1, "{mode}");
     }
 
-    // A hung gh costs one bound and leaves no process behind.
+    let config = fs::read_to_string(&env.config).unwrap();
+    fs::write(
+        &env.config,
+        config.replace("callTimeoutMs = 3000", "callTimeoutMs = 1000"),
+    )
+    .unwrap();
     env.stub_fault("gh", "hang", 1);
     env.expire_wait_of("ChangeRequest", &cr);
     env.reconcile().ok();
@@ -1797,8 +1809,7 @@ fn a_closed_draft_github_pull_request_is_closed_and_settles() {
     let st = env.change_request_status(&cr);
     assert_eq!(st["state"]["value"], "closed", "{st:#}");
     assert_eq!(st["phase"], "Closed", "{st:#}");
-    thread::sleep(Duration::from_millis(1100));
-    env.expire_wait_of("ChangeRequest", &cr);
+    age(&env, &cr, "closedAt", 1000);
     env.reconcile().ok();
     let st = env.change_request_status(&cr);
     assert_eq!(st["phase"], "Settled", "{st:#}");

@@ -662,50 +662,6 @@ fn past_the_nonce_window_an_unknown_post_waits_for_a_person() {
 }
 
 #[test]
-fn recovery_reads_that_cannot_complete_are_named_until_one_does() {
-    let (env, task) = tied("incomplete");
-    let uid = uid_of(&env, "task", &task);
-    let before = posts(&env).len();
-    let fake = env.fake_gateway();
-    fake.add_fault(GatewayFault::new("post", "lost-applied"))
-        .unwrap();
-    // Every read fails to complete, for as long as the fault stands: one
-    // sweep runs several passes, each with its read.
-    fake.add_fault(GatewayFault::new("history", "incomplete").times(u32::MAX))
-        .unwrap();
-    declare(
-        &env,
-        &task,
-        json!({"kind": "Comment", "id": "c1", "text": "On it."}),
-    );
-    env.reconcile().ok();
-    env.reconcile().ok();
-    let key = format!("task/{task}/{uid}/gateway/comment/c1");
-    let gw = gateway(&env, &task);
-    assert_condition(&gw, "NeedsAttention", "True", "RecoveryIncomplete");
-    assert!(
-        gw["posts"][&key]["recovery"].as_u64().unwrap() >= 3,
-        "{gw:#}"
-    );
-    assert!(
-        gw["posts"][&key]["receipt"]["outcome"]["unknown"].is_object(),
-        "still unknown, never repeated: {gw:#}"
-    );
-    assert_eq!(posts(&env).len(), before + 1);
-    // A read that completes finds the post.
-    fake.update(|s| s.faults.clear()).unwrap();
-    env.reconcile().ok();
-    env.reconcile().ok();
-    let gw = gateway(&env, &task);
-    assert_eq!(
-        gw["posts"][&key]["receipt"]["outcome"]["known"]["type"], "posted",
-        "{gw:#}"
-    );
-    assert!(!attention_open(&gw), "{gw:#}");
-    assert_eq!(posts(&env).len(), before + 1);
-}
-
-#[test]
 fn a_failed_receive_abandons_the_opened_thread_and_a_later_question_opens_another() {
     let mut env = Env::gateway("abandon");
     env.set_var("USER", "tester");

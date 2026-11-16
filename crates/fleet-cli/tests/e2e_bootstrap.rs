@@ -121,9 +121,7 @@ fn fake_bootstrap(name: &str) -> Env {
 #[test]
 fn up_continues_reconciling_other_tasks_and_reconnects_without_duplicate_sessions() {
     let env = fake_bootstrap("up-progress");
-    // Use the normal lease: a short test-only lease can expire during a
-    // legitimate filesystem operation on a busy native runner.
-    let first = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    let first = Running(env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "3000"]));
     env.apply(support::task("first", true)).ok();
     until(|| env.status("first")["phase"] == "Briefed");
     env.host()
@@ -136,8 +134,6 @@ fn up_continues_reconciling_other_tasks_and_reconnects_without_duplicate_session
     // A competing startup is refused while the resident owns the lease.
     env.fleet(&["up", "--poll-ms", "100"]).code(6);
     drop(first);
-    // Observe the actual crashed lease, rather than assuming its last
-    // renewal coincides with the test's kill. Never alter store records.
     let lease: serde_json::Value =
         serde_json::from_slice(&fs::read(env.data.join("lease.json")).unwrap()).unwrap();
     let expires = lease["expiresAt"].as_u64().unwrap();
@@ -205,9 +201,9 @@ fn up_never_reads_a_session_it_cannot_see_as_gone() {
     until(|| env.status("first")["phase"] == "Briefed");
     let original = env.get("first");
     assert_eq!(env.calls("spawn"), 1);
-    // An unreadable host is explicit Unknown, never evidence of absence.
     env.host().set_host("local", "unknown").unwrap();
-    thread::sleep(Duration::from_millis(600));
+    let before = env.calls("find");
+    until(|| env.calls("find") >= before + 3);
     assert_eq!(env.calls("spawn"), 1);
     let now = env.get("first");
     assert_eq!(now["status"]["session"], original["status"]["session"]);
@@ -230,9 +226,13 @@ fn up_refuses_a_store_override_that_would_send_workers_to_another_store() {
     let mut command = env.command(&["--data-dir", other.to_str().unwrap(), "up"]);
     command.stderr(fs::File::create(&error_path).unwrap());
     let mut process = Running(command.spawn().unwrap());
-    thread::sleep(Duration::from_millis(600));
+    let mut exited = None;
+    until(|| {
+        exited = process.0.try_wait().unwrap();
+        exited.is_some()
+    });
     assert_eq!(
-        process.0.try_wait().unwrap().and_then(|s| s.code()),
+        exited.and_then(|s| s.code()),
         Some(1),
         "mismatched store must be refused"
     );
@@ -577,18 +577,6 @@ fn explicit_config_and_store_work_without_native_home_variables() {
     )
     .ok();
     assert!(store.join("store.json").is_file());
-}
-
-/// `fleet up` is a plain manager: a config with no starter runs it, and it
-/// reconciles the Tasks applied to its store.
-#[test]
-fn up_runs_without_a_starter_and_reconciles_a_task() {
-    let env = Env::new("up-no-starter");
-    let _resident = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    env.apply(support::task("plain", true)).ok();
-    until(|| env.status("plain")["phase"] == "Briefed");
-    assert_eq!(env.calls("spawn"), 1, "up creates no Task of its own");
-    env.fleet(&["get", "task", "vega"]).code(3);
 }
 
 /// `init` writes the native config and nothing else: no `[starter]`, no

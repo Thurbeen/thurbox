@@ -513,7 +513,7 @@ fn offline_install_update_tamper_refusal_and_uninstall() {
     let e = Env::new();
     install_fixture(&e);
     let (ok, out) = installer(&e, &[]);
-    assert!(ok, "{out}");
+    assert!(ok && out.contains("PATH"), "{out}");
     let binary = e.0.join("bin/fleet");
     let first = fs::read(&binary).unwrap();
     let (ok, out) = installer(&e, &[]);
@@ -922,15 +922,6 @@ fn v2_installs_only_when_a_version_is_named() {
     // Removing an install needs no version.
     let (ok, out) = installer_with(&e, &["--uninstall"], None);
     assert!(ok, "{out}");
-}
-
-#[cfg(unix)]
-#[test]
-fn installed_binary_has_path_guidance() {
-    let e = Env::new();
-    install_fixture(&e);
-    let (ok, out) = installer(&e, &[]);
-    assert!(ok && out.contains("PATH"), "{out}");
 }
 
 #[test]

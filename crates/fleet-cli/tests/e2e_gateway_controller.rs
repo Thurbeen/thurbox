@@ -13,6 +13,7 @@ mod support;
 use std::fs;
 
 use fleet_api::gateway::{Author, AuthorKind, ConversationRef, Message};
+use fleet_api::inbox::MAX_INBOX;
 use serde_json::{Value, json};
 use support::{
     ALEX_ID, Env, GATEWAY_ACCOUNT, SAM_ID, assert_condition, conversation_name, message_event,
@@ -705,9 +706,7 @@ fn a_parent_relays_more_unread_child_items_than_its_inbox_holds_in_bounded_batch
     env.apply(child_of("c", "p", &p_uid, true)).ok();
     env.reconcile().ok();
     let c_uid = uid_of(&env, "task", "c");
-    // More unread items than the store accepts into one inbox: the child
-    // declares them while the parent is not swept, as after a downtime.
-    const BURST: usize = 30;
+    const BURST: usize = MAX_INBOX + 2;
     for i in 0..BURST {
         env.fleet(&[
             "declare",
@@ -737,7 +736,7 @@ fn a_parent_relays_more_unread_child_items_than_its_inbox_holds_in_bounded_batch
         let report = env.reconcile().ok().json();
         assert_eq!(report["errors"], json!([]), "{report:#}");
         let pending = env.status("p")["inbox"].as_array().map_or(0, Vec::len);
-        assert!(pending <= 21, "{pending} undelivered entries");
+        assert!(pending <= MAX_INBOX + 1, "{pending} undelivered entries");
         if report["idle"] == true {
             idle = true;
             break;
