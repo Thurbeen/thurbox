@@ -463,7 +463,9 @@ Describe 'A fleet-only install' {
         . $script:ScriptPath
         Invoke-Install
         $installed = @(Get-ChildItem -LiteralPath $script:Dest -Filter '*.exe' | ForEach-Object { $_.Name } | Sort-Object)
-        $installed -join ' ' | Should -Be 'thurbox-cli.exe thurbox.exe'
+        # Sorted on both sides: Windows PowerShell and pwsh order '-' differently.
+        $expected = @('thurbox.exe', 'thurbox-cli.exe') | Sort-Object
+        $installed -join ' ' | Should -Be ($expected -join ' ')
         Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -like '*/v2.89.0/thurbox-v2.89.0-checksums.txt' } -Times 1
     }
 
