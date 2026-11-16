@@ -79,7 +79,6 @@ pub fn decode_place_read(text: &str) -> Option<OutboxRead> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FileSignals;
     use fleet_api::event::Publish;
 
     fn line(t: &str) -> OutboxLine {
@@ -135,7 +134,7 @@ mod tests {
         assert_eq!(mode(&file), 0o600);
         assert_eq!(mode(file.parent().unwrap()), 0o700);
         let signals = root.join("fleet-signals");
-        FileSignals::open(&signals).expect("open");
+        crate::FileSignals::open(&signals).expect("open");
         assert_eq!(mode(&signals), 0o700);
         let _ = fs::remove_dir_all(&root);
     }
