@@ -313,7 +313,9 @@ fn the_first_report_a_session_ever_makes_can_release_a_mangled_entry() {
     env.reconcile().ok();
     env.reconcile().ok();
     assert!(
-        std::fs::read_to_string(signal_file(&env)).unwrap_or_default().is_empty(),
+        std::fs::read_to_string(signal_file(&env))
+            .unwrap_or_default()
+            .is_empty(),
         "nothing reported before the entry"
     );
     prompt_hook(&env, "firstline");
