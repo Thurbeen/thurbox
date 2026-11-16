@@ -253,16 +253,18 @@ pub trait TmuxCompatible: Send + Sync + 'static {
 
     /// The one-shot argvs that deliver `text` into `target`, in order — more
     /// than one where a single line would be too long for the server's host.
-    /// By default one: the `bracketed_paste`-wrapped bytes, taken literally
-    /// (`send-keys -l`).
+    /// By default the `bracketed_paste`-wrapped bytes as hex (`send-keys
+    /// -H`), so `extended-keys` never turns a line break into a key.
     fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
-        vec![vec![
-            "send-keys".into(),
-            "-t".into(),
-            target.into(),
-            "-l".into(),
-            bracketed_paste(text),
-        ]]
+        hex_paste(text)
+            .into_iter()
+            .map(|bytes| {
+                let mut argv: Vec<String> =
+                    vec!["send-keys".into(), "-t".into(), target.into(), "-H".into()];
+                argv.extend(bytes);
+                argv
+            })
+            .collect()
     }
 
     /// The `run-shell` script that pastes `text` into `target` on `mux -L
@@ -276,10 +278,17 @@ pub trait TmuxCompatible: Send + Sync + 'static {
             shell_escape(socket),
             shell_escape(target),
         );
-        let text = shell_escape(&bracketed_paste(text));
+        let paste: String = hex_paste(text)
+            .into_iter()
+            .map(|bytes| {
+                format!(
+                    "{mux} -L {socket} send-keys -t {target} -H {}; ",
+                    bytes.join(" ")
+                )
+            })
+            .collect();
         Ok(format!(
-            "{mux} -L {socket} send-keys -t {target} -l {text}; \
-             sleep 0.2; {mux} -L {socket} send-keys -t {target} Enter"
+            "{paste}sleep 0.2; {mux} -L {socket} send-keys -t {target} Enter"
         ))
     }
 
@@ -386,6 +395,16 @@ pub(crate) fn parse_version(word: &str) -> Option<(u32, u32, u32)> {
 /// than framing the paste themselves. The trailing `Enter` is sent separately.
 fn bracketed_paste(text: &str) -> String {
     format!("\x1b[200~{text}\x1b[201~")
+}
+
+/// [`bracketed_paste`]'s bytes as `send-keys -H` arguments, one list per
+/// command: tmux refuses a command line past its message size.
+fn hex_paste(text: &str) -> Vec<Vec<String>> {
+    bracketed_paste(text)
+        .as_bytes()
+        .chunks(control_mode::SEND_KEYS_CHUNK_BYTES)
+        .map(|chunk| chunk.iter().map(|b| format!("{b:02x}")).collect())
+        .collect()
 }
 
 /// The default pane input ([`TmuxCompatible::pane_input`]).
@@ -3806,10 +3825,6 @@ impl<M: TmuxCompatible> PaneIo for Server<M> {
         self.known_socket()?;
         let target = self.target(pane)?;
         self.refuse_exited(pane, &target)?;
-        // Bracketed-paste-wrapped either way (see `TmuxCompatible::paste_args`), so the
-        // text arrives literally: no shell is involved, and the wrap is also
-        // what keeps a leading `-` from reading as a flag and a newline from
-        // submitting the line before it.
         for paste in M::paste_args(&target, text) {
             let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
             self.one_shot(&paste[0], &argv)?;

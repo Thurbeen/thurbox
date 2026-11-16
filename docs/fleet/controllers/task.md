@@ -553,6 +553,7 @@ args = []                      # launch-override only; {root} is replaced
 [payload]                      # read by `fleet signal`
 prompt = ["prompt", "input-messages"]
 conversation = ["session_id", "thread-id"]
+paste = "pasted_content"       # omit when the agent does not wrap a paste
 
 [screen]
 rules = "codex"                # a bundled rule set; omit for the set named as the profile
@@ -591,6 +592,10 @@ comment = "#"                  # what starts a comment line there
 - In `[trust]`, `{root}` is the trust root, escaped for a double-quoted
   string. A root with a control character fails the spawn.
 - An omitted `[payload]` list is the default one, shown above.
+- `[payload] paste` names the tag that the agent puts around a pasted
+  text. `fleet signal` then also reports the text inside that wrapper. The
+  runtime types a brief as a bracketed paste. Claude Code 2.1.325 gives its
+  prompt hook that paste inside `<pasted_content id="…">` tags.
 - An unknown key is an error. Each command that reads the profiles stops,
   and names the file.
 - A harness that no profile names runs its name as a program, with no

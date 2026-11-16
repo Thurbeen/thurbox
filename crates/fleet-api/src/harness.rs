@@ -133,7 +133,9 @@ pub struct TrustSpec {
 /// The `[payload]` table: the fields of a hook's JSON that `fleet signal`
 /// reads. Each prompt field is a string or a list of strings, and every one
 /// present is a prompt; the first conversation field that is a string is
-/// the conversation. An omitted list is the default one.
+/// the conversation. An omitted list is the default one. `paste` names the
+/// tag an agent wraps a pasted text in, `<tag …>text</tag …>`: such a prompt
+/// is also reported as the text inside it, the one Fleet typed.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Payload {
@@ -141,6 +143,8 @@ pub struct Payload {
     pub prompt: Vec<String>,
     #[serde(default = "default_conversation_fields")]
     pub conversation: Vec<String>,
+    #[serde(default)]
+    pub paste: Option<String>,
 }
 
 fn default_prompt_fields() -> Vec<String> {
@@ -158,6 +162,7 @@ impl Default for Payload {
         Payload {
             prompt: default_prompt_fields(),
             conversation: default_conversation_fields(),
+            paste: None,
         }
     }
 }
