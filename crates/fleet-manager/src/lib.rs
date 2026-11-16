@@ -54,6 +54,7 @@
 
 mod cron_tasks;
 mod execution;
+mod outbox;
 pub mod plugins;
 mod telemetry;
 pub mod verbs;
@@ -354,6 +355,17 @@ impl Manager<'_> {
             }
             let now = self.clock.now();
             for obj in &tasks {
+                let ingested = match self.ingest_outbox(obj, &tasks, lease, opts.lease_ttl, report)
+                {
+                    Ok(written) => written,
+                    Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                    Err(e) => {
+                        report.errors.push(format!("{} outbox: {e}", obj.key()));
+                        None
+                    }
+                };
+                busy |= ingested.is_some();
+                let obj = ingested.as_ref().unwrap_or(obj);
                 let task_due = self.due(obj);
                 let forge_due = ForgeController::due(obj, now);
                 let gateway_due = {
@@ -1978,6 +1990,10 @@ impl Manager<'_> {
                 spawn.telemetry_args = t.args;
             }
             if let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key)) {
+                spawn.env.insert(
+                    fleet_api::event::EVENT_FILE_ENV.to_string(),
+                    fleet_api::event::outbox_file(&file),
+                );
                 spawn
                     .env
                     .insert(fleet_api::signal::SIGNAL_FILE_ENV.to_string(), file);

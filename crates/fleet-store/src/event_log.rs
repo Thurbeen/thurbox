@@ -93,6 +93,7 @@ impl FileStore {
         source: &Source,
         events: Vec<Publish>,
         by: FieldManager,
+        lease: Option<&LeaseToken>,
     ) -> Result<Vec<Appended>, StoreError> {
         if !kinds::may_append_events(&by, source) {
             return Err(StoreError::Forbidden(format!(
@@ -102,6 +103,15 @@ impl FileStore {
             )));
         }
         let _guard = self.lock()?;
+        if by.is_controller() {
+            let lease = lease.ok_or_else(|| {
+                StoreError::LeaseLost(format!(
+                    "{} appends events only under the manager lease",
+                    by.name()
+                ))
+            })?;
+            self.check_lease(lease)?;
+        }
         let mut obj = self.read_existing(board::KIND, name)?;
         if obj.is_deleting() {
             return Err(StoreError::Forbidden(format!(
@@ -136,7 +146,7 @@ impl FileStore {
         for p in events {
             let held_seq = p.key.as_deref().and_then(|key| {
                 held.iter()
-                    .find(|k| k.key == key && k.source == *source)
+                    .find(|k| k.key == key && k.source.same_publisher(source))
                     .map(|k| k.seq)
                     .or_else(|| fresh.iter().find(|e| e.same_key(source, &p)).map(|e| e.seq))
             });

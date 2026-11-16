@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::meta::Millis;
+use crate::meta::{Millis, Object};
 
 /// Event types under this prefix are Fleet's own: only a controller
 /// publishes them.
@@ -26,15 +26,82 @@ pub enum Source {
     /// `cli/<user>`: a person or a script outside any session, through the
     /// manager's publish verb.
     Cli(CliSource),
+    /// A session's Task, whose outbox TaskController ingested the event
+    /// from.
+    Task(TaskSource),
 }
 
 impl Source {
-    /// The source as `fleet event list --source` matches it.
-    pub fn name(&self) -> &str {
+    /// The source as `fleet event list --source` matches it: `cli/<user>`
+    /// or `task/<name>`.
+    pub fn name(&self) -> String {
         match self {
-            Source::Cli(c) => &c.0,
+            Source::Cli(c) => c.0.clone(),
+            Source::Task(t) => format!("{TASK_SOURCE_PREFIX}{}", t.task),
         }
     }
+
+    /// Whether `other` is the same publisher, as a key's dedupe compares
+    /// them: a Task by its name and uid, whatever its lineage.
+    pub fn same_publisher(&self, other: &Source) -> bool {
+        match (self, other) {
+            (Source::Cli(a), Source::Cli(b)) => a == b,
+            (Source::Task(a), Source::Task(b)) => a.task == b.task && a.uid == b.uid,
+            _ => false,
+        }
+    }
+}
+
+pub const TASK_SOURCE_PREFIX: &str = "task/";
+
+/// A Task as an event names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRef {
+    pub task: String,
+    pub uid: String,
+}
+
+/// The Task whose session published, and its ancestors, nearest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSource {
+    pub task: String,
+    pub uid: String,
+    pub lineage: Vec<TaskRef>,
+}
+
+/// The most ancestors a [`TaskSource`] names.
+pub const MAX_LINEAGE: usize = 16;
+
+/// The source of an event `task`'s session published. Its lineage follows
+/// the parent labels ([`PARENT_LABEL`](crate::talk::PARENT_LABEL)) through
+/// `lookup`, nearest first. It stops at a parent `lookup` does not find
+/// under the labelled uid, after naming that parent.
+pub fn task_source<'a>(task: &'a Object, lookup: impl Fn(&str) -> Option<&'a Object>) -> Source {
+    use crate::talk::{PARENT_LABEL, PARENT_UID_LABEL};
+    let mut lineage = Vec::new();
+    let mut current = task;
+    while lineage.len() < MAX_LINEAGE {
+        let labels = &current.metadata.labels;
+        let (Some(parent), Some(uid)) = (labels.get(PARENT_LABEL), labels.get(PARENT_UID_LABEL))
+        else {
+            break;
+        };
+        lineage.push(TaskRef {
+            task: parent.clone(),
+            uid: uid.clone(),
+        });
+        match lookup(parent) {
+            Some(next) if next.metadata.uid == *uid => current = next,
+            _ => break,
+        }
+    }
+    Source::Task(TaskSource {
+        task: task.metadata.name.clone(),
+        uid: task.metadata.uid.clone(),
+        lineage,
+    })
 }
 
 /// `cli/<user>`, `user` non-empty and without `/`.
@@ -124,7 +191,7 @@ impl Event {
 
     /// Whether `publish` from `source` is this event again.
     pub fn same_key(&self, source: &Source, publish: &Publish) -> bool {
-        publish.key.is_some() && self.key == publish.key && self.source == *source
+        publish.key.is_some() && self.key == publish.key && self.source.same_publisher(source)
     }
 }
 
@@ -196,6 +263,189 @@ pub fn validate_publish(p: &Publish, max_data_bytes: u64) -> Result<(), String> 
     Ok(())
 }
 
+/// The variable that names a session's outbox: the file `fleet event
+/// publish` appends to inside the session, which TaskController ingests.
+pub const EVENT_FILE_ENV: &str = "FLEET_EVENT_FILE";
+
+/// The outbox of the session whose signal file is `signal_file`: beside it,
+/// on the same host, under a name no signal file has.
+pub fn outbox_file(signal_file: &str) -> String {
+    format!("{signal_file}.events")
+}
+
+/// The most bytes of one outbox line, its newline included.
+pub const MAX_OUTBOX_LINE: usize = 64 * 1024;
+/// The most bytes of an outbox one ingest reads, from the stored offset.
+pub const MAX_OUTBOX_READ: u64 = 512 * 1024;
+
+/// One line of a session's outbox: the board, and what a publisher sets.
+/// A field it does not name, such as a source or a Task, is ignored:
+/// Fleet names the source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxLine {
+    pub board: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<String>,
+    pub data: Value,
+}
+
+impl OutboxLine {
+    pub fn new(board: &str, publish: Publish) -> OutboxLine {
+        OutboxLine {
+            board: board.to_string(),
+            event_type: publish.event_type,
+            subject: publish.subject,
+            key: publish.key,
+            correlation: publish.correlation,
+            data: publish.data,
+        }
+    }
+
+    /// The board and the publish, once they pass every check that needs no
+    /// store: the board's name, the envelope's rules and the reserved
+    /// prefix. The board's own `maxDataBytes` is checked at the append.
+    pub fn checked(self) -> Result<(String, Publish), String> {
+        crate::validate::validate_name(&self.board).map_err(|e| format!("board: {e}"))?;
+        let publish = Publish {
+            event_type: self.event_type,
+            subject: self.subject,
+            key: self.key,
+            correlation: self.correlation,
+            data: self.data,
+        };
+        validate_publish(&publish, u64::MAX)?;
+        Ok((self.board, publish))
+    }
+
+    /// The line as `fleet event publish` appends it, newline included.
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        self.clone().checked()?;
+        let mut line = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        line.push(b'\n');
+        if line.len() > MAX_OUTBOX_LINE {
+            return Err(format!(
+                "the event is {} bytes as a line; a session publishes at most {MAX_OUTBOX_LINE}",
+                line.len()
+            ));
+        }
+        Ok(line)
+    }
+}
+
+/// What a read of an outbox answers: the bytes from `start`, at most
+/// [`MAX_OUTBOX_READ`]. `start` is the offset asked for, or 0 when the file
+/// is shorter than it: the file was made again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxRead {
+    pub start: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// TaskController's place in a session's outbox (`Task.status.outbox`):
+/// the offset of the first line not ingested yet, how often the file was
+/// made again, and the lines it skipped.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutboxCursor {
+    pub offset: u64,
+    /// Bumped when the outbox is shorter than `offset`: part of each key
+    /// derived from an offset, so a new file's lines are new events.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generation: u64,
+    /// Lines that did not parse or were refused, over the Task's life.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped: u64,
+    /// Why the last skipped line was skipped, and where it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_skipped: Option<String>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl OutboxCursor {
+    /// Past the line that ends at `end`, which was skipped for `why`.
+    pub fn skip(&mut self, offset: u64, end: u64, why: &str) {
+        self.offset = end;
+        self.skipped += 1;
+        self.last_skipped = Some(format!("offset {offset}: {why}"));
+    }
+}
+
+/// One whole line of an outbox: where it starts and ends, and the board and
+/// publish it carries, or why it is skipped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutboxEntry {
+    pub offset: u64,
+    pub end: u64,
+    pub line: Result<(String, Publish), String>,
+}
+
+/// The whole lines of `read`, oldest first, and the cursor they continue:
+/// `cursor`, or the start of a file made again under the next generation.
+/// A last line with no newline yet waits for it, unless it is already
+/// longer than [`MAX_OUTBOX_LINE`]. A line without a key gets one derived
+/// from its generation and offset, so ingesting it again appends nothing.
+pub fn ingest(cursor: &OutboxCursor, read: &OutboxRead) -> (OutboxCursor, Vec<OutboxEntry>) {
+    let mut from = cursor.clone();
+    if read.start < cursor.offset {
+        from.generation += 1;
+        from.offset = read.start;
+    }
+    let mut entries = Vec::new();
+    let mut at = 0;
+    while at < read.bytes.len() {
+        let rest = &read.bytes[at..];
+        let offset = from.offset + at as u64;
+        let Some(n) = rest.iter().position(|&b| b == b'\n') else {
+            if rest.len() >= MAX_OUTBOX_LINE {
+                entries.push(OutboxEntry {
+                    offset,
+                    end: offset + rest.len() as u64,
+                    line: Err(format!(
+                        "{} bytes with no newline; a line is at most {MAX_OUTBOX_LINE}",
+                        rest.len()
+                    )),
+                });
+            }
+            break;
+        };
+        let line = if n + 1 > MAX_OUTBOX_LINE {
+            Err(format!(
+                "a line of {} bytes; at most {MAX_OUTBOX_LINE}",
+                n + 1
+            ))
+        } else {
+            parse_line(&rest[..n], from.generation, offset)
+        };
+        entries.push(OutboxEntry {
+            offset,
+            end: offset + n as u64 + 1,
+            line,
+        });
+        at += n + 1;
+    }
+    (from, entries)
+}
+
+fn parse_line(bytes: &[u8], generation: u64, offset: u64) -> Result<(String, Publish), String> {
+    let line: OutboxLine =
+        serde_json::from_slice(bytes).map_err(|e| format!("not an event: {e}"))?;
+    let (board, mut publish) = line.checked()?;
+    if publish.key.is_none() {
+        publish.key = Some(format!("outbox-{generation}-{offset}"));
+    }
+    Ok((board, publish))
+}
+
 /// A filter value: exact, or a prefix when it ends in `*`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern(String);
@@ -231,7 +481,7 @@ impl Filter {
                 .subject
                 .as_ref()
                 .is_none_or(|p| e.subject.as_deref().is_some_and(|s| p.matches(s)))
-            && self.source.as_ref().is_none_or(|s| e.source.name() == s)
+            && self.source.as_ref().is_none_or(|s| e.source.name() == *s)
             && self
                 .correlation
                 .as_ref()
@@ -323,5 +573,191 @@ mod tests {
         assert!(!Pattern::new("git.*").matches("gitx"));
         assert!(Pattern::new("git").matches("git"));
         assert!(!Pattern::new("git").matches("git.push"));
+    }
+
+    fn line(board: &str, t: &str, key: Option<&str>) -> String {
+        let mut p = publish(t);
+        p.key = key.map(str::to_string);
+        String::from_utf8(OutboxLine::new(board, p).encode().unwrap()).unwrap()
+    }
+
+    fn read(start: u64, text: &str) -> OutboxRead {
+        OutboxRead {
+            start,
+            bytes: text.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn ingest_reads_whole_lines_and_derives_a_key_from_the_offset() {
+        let a = line("shared", "a", None);
+        let b = line("other", "b", Some("mine"));
+        let text = format!("{a}{b}{{\"board\":\"shared\",");
+        let (cursor, entries) = ingest(&OutboxCursor::default(), &read(0, &text));
+        assert_eq!(cursor, OutboxCursor::default());
+        let ends: Vec<_> = entries.iter().map(|e| (e.offset, e.end)).collect();
+        let a_end = a.len() as u64;
+        assert_eq!(ends, vec![(0, a_end), (a_end, a_end + b.len() as u64)]);
+        let (board, p) = entries[0].line.clone().unwrap();
+        assert_eq!(
+            (board.as_str(), p.key.as_deref()),
+            ("shared", Some("outbox-0-0"))
+        );
+        let (board, p) = entries[1].line.clone().unwrap();
+        assert_eq!((board.as_str(), p.key.as_deref()), ("other", Some("mine")));
+    }
+
+    #[test]
+    fn ingest_continues_from_the_cursor_and_names_the_offset_in_the_file() {
+        let cursor = OutboxCursor {
+            offset: 100,
+            ..OutboxCursor::default()
+        };
+        let (from, entries) = ingest(&cursor, &read(100, &line("shared", "a", None)));
+        assert_eq!(from.offset, 100);
+        assert_eq!(entries[0].offset, 100);
+        assert_eq!(
+            entries[0].line.as_ref().unwrap().1.key.as_deref(),
+            Some("outbox-0-100")
+        );
+    }
+
+    #[test]
+    fn a_file_made_again_starts_a_new_generation_of_keys() {
+        let cursor = OutboxCursor {
+            offset: 100,
+            ..OutboxCursor::default()
+        };
+        let (from, entries) = ingest(&cursor, &read(0, &line("shared", "a", None)));
+        assert_eq!((from.offset, from.generation), (0, 1));
+        assert_eq!(
+            entries[0].line.as_ref().unwrap().1.key.as_deref(),
+            Some("outbox-1-0")
+        );
+    }
+
+    #[test]
+    fn a_bad_line_is_skipped_with_why_and_the_rest_is_read() {
+        let spoof = r#"{"board":"shared","type":"a","data":1,"source":"cli/x","task":"b"}"#;
+        let text = format!(
+            "not json\n{}\n{{\"board\":\"Bad_Name\",\"type\":\"a\",\"data\":1}}\n{spoof}\n",
+            r#"{"board":"shared","type":"fleet.x","data":1}"#
+        );
+        let (_, entries) = ingest(&OutboxCursor::default(), &read(0, &text));
+        assert_eq!(entries.len(), 4);
+        assert!(
+            entries[0]
+                .line
+                .as_ref()
+                .unwrap_err()
+                .contains("not an event")
+        );
+        assert!(entries[1].line.as_ref().unwrap_err().contains("fleet."));
+        assert!(entries[2].line.as_ref().unwrap_err().contains("board"));
+        assert_eq!(entries[3].line.as_ref().unwrap().1.event_type, "a");
+        let mut cursor = OutboxCursor::default();
+        cursor.skip(entries[0].offset, entries[0].end, "not an event");
+        assert_eq!(cursor.offset, entries[0].end);
+        assert_eq!(cursor.skipped, 1);
+        assert_eq!(
+            cursor.last_skipped.as_deref(),
+            Some("offset 0: not an event")
+        );
+    }
+
+    #[test]
+    fn an_overlong_line_is_skipped_whole_with_or_without_its_newline() {
+        let long = "x".repeat(MAX_OUTBOX_LINE);
+        let (_, entries) = ingest(&OutboxCursor::default(), &read(0, &format!("{long}\n")));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].end, MAX_OUTBOX_LINE as u64 + 1);
+        assert!(entries[0].line.is_err());
+        let (_, entries) = ingest(&OutboxCursor::default(), &read(0, &long));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].end, MAX_OUTBOX_LINE as u64);
+        assert!(entries[0].line.is_err());
+        let (_, entries) = ingest(&OutboxCursor::default(), &read(0, &long[1..]));
+        assert!(entries.is_empty(), "a shorter torn line waits");
+    }
+
+    #[test]
+    fn an_encoded_line_is_bounded_and_checked() {
+        let mut p = publish("a");
+        p.data = json!("x".repeat(MAX_OUTBOX_LINE));
+        assert!(OutboxLine::new("shared", p).encode().is_err());
+        assert!(
+            OutboxLine::new("shared", publish("fleet.a"))
+                .encode()
+                .is_err()
+        );
+        assert!(OutboxLine::new("../x", publish("a")).encode().is_err());
+    }
+
+    fn task(name: &str, uid: &str, parent: Option<(&str, &str)>) -> Object {
+        let mut labels = serde_json::Map::new();
+        if let Some((p, u)) = parent {
+            labels.insert(crate::talk::PARENT_LABEL.into(), json!(p));
+            labels.insert(crate::talk::PARENT_UID_LABEL.into(), json!(u));
+        }
+        serde_json::from_value(json!({
+            "apiVersion": crate::API_VERSION,
+            "kind": "Task",
+            "metadata": {"name": name, "uid": uid, "labels": labels},
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_task_source_names_its_ancestors_nearest_first() {
+        let root = task("root", "u0", None);
+        let mid = task("mid", "u1", Some(("root", "u0")));
+        let leaf = task("leaf", "u2", Some(("mid", "u1")));
+        let all = [&root, &mid, &leaf];
+        let lookup = |n: &str| all.iter().copied().find(|t| t.metadata.name == n);
+        let Source::Task(s) = task_source(&leaf, lookup) else {
+            panic!("a task source")
+        };
+        assert_eq!((s.task.as_str(), s.uid.as_str()), ("leaf", "u2"));
+        let names: Vec<_> = s.lineage.iter().map(|r| r.task.as_str()).collect();
+        assert_eq!(names, vec!["mid", "root"]);
+
+        let orphan = task("o", "u9", Some(("gone", "ux")));
+        let Source::Task(s) = task_source(&orphan, |_| None) else {
+            panic!("a task source")
+        };
+        assert_eq!(
+            s.lineage,
+            vec![TaskRef {
+                task: "gone".into(),
+                uid: "ux".into()
+            }]
+        );
+        let reused = task("o2", "u8", Some(("root", "old")));
+        let Source::Task(s) = task_source(&reused, lookup) else {
+            panic!("a task source")
+        };
+        assert_eq!(s.lineage.len(), 1, "a parent under another uid ends it");
+    }
+
+    #[test]
+    fn a_task_source_is_an_object_on_the_wire_and_dedupes_by_task_and_uid() {
+        let source: Source = serde_json::from_value(json!({
+            "task": "a", "uid": "u", "lineage": [{"task": "p", "uid": "v"}]
+        }))
+        .unwrap();
+        assert_eq!(source.name(), "task/a");
+        let bare = Source::Task(TaskSource {
+            task: "a".into(),
+            uid: "u".into(),
+            lineage: vec![],
+        });
+        assert!(source.same_publisher(&bare));
+        let other = Source::Task(TaskSource {
+            task: "a".into(),
+            uid: "u2".into(),
+            lineage: vec![],
+        });
+        assert!(!source.same_publisher(&other));
+        assert!(!source.same_publisher(&Source::Cli(CliSource::new("a").unwrap())));
     }
 }

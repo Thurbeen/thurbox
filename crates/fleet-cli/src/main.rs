@@ -266,6 +266,11 @@ enum Command {
         file: PathBuf,
         /// The byte offset a restart left the file at.
         since: Option<u64>,
+        /// Read a session's outbox instead: print the offset the read
+        /// starts at on a line, then the bytes from this offset on (from
+        /// the start when the file is shorter).
+        #[arg(long, value_name = "OFFSET", conflicts_with_all = ["length", "since"])]
+        from: Option<u64>,
     },
     /// A raw interactive command as a terminal stream on stdin and stdout:
     /// what `fleet attach` wraps a runtime's `tty` answer in.
@@ -402,6 +407,11 @@ enum GatewayCommand {
 #[derive(Debug, Subcommand)]
 enum EventCommand {
     /// Append one event to a Board as cli/USER, and print it with its seq.
+    ///
+    /// Inside a Fleet session (FLEET_EVENT_FILE set), append it to the
+    /// session's outbox instead, and print the line's outbox offset: Fleet
+    /// ingests it into the Board as the session's Task. A session with
+    /// FLEET_SIGNAL_FILE but no FLEET_EVENT_FILE refuses.
     Publish {
         /// The Board to publish to.
         #[arg(long, default_value = fleet_api::board::SHARED)]
@@ -616,9 +626,30 @@ fn run(cli: Cli) -> Result<(), Failure> {
         length,
         file,
         since,
+        from,
     } = &cli.command
     {
-        return cmd_signal_read(*length, file, *since);
+        return match from {
+            Some(from) => cmd_outbox_read(file, *from),
+            None => cmd_signal_read(*length, file, *since),
+        };
+    }
+    if let Command::Event {
+        command:
+            EventCommand::Publish {
+                board,
+                event_type,
+                subject,
+                key,
+                correlation,
+                data,
+                json,
+            },
+    } = &cli.command
+        && let Some(outbox) = session_outbox()?
+    {
+        let publish = publish_of(event_type, subject, key, correlation, data)?;
+        return cmd_session_publish(&outbox, board, publish, *json);
     }
     if let Command::TermBridge { argv } = &cli.command {
         return fleet_runtime::bridge::serve(argv, std::io::stdin(), std::io::stdout())
@@ -1928,8 +1959,84 @@ fn shared_board(store: &dyn Store) -> Result<(), Failure> {
     }
 }
 
+fn publish_of(
+    event_type: &str,
+    subject: &Option<String>,
+    key: &Option<String>,
+    correlation: &Option<String>,
+    data: &str,
+) -> Result<fleet_api::event::Publish, Failure> {
+    let data = serde_json::from_str(data).map_err(|e| fail(format!("--data: not JSON: {e}")))?;
+    Ok(fleet_api::event::Publish {
+        event_type: event_type.to_string(),
+        subject: subject.clone(),
+        key: key.clone(),
+        correlation: correlation.clone(),
+        data,
+    })
+}
+
+/// The outbox of the Fleet session this runs in; `None` outside one. A
+/// session Fleet gave a signal file but no outbox cannot publish: Fleet
+/// would never read what it wrote, and publishing as the user instead
+/// would name the wrong source.
+fn session_outbox() -> Result<Option<PathBuf>, Failure> {
+    use fleet_api::event::EVENT_FILE_ENV;
+    use fleet_api::signal::SIGNAL_FILE_ENV;
+    let set = |var: &str| std::env::var_os(var).filter(|v| !v.is_empty());
+    match (set(EVENT_FILE_ENV), set(SIGNAL_FILE_ENV)) {
+        (Some(outbox), _) => Ok(Some(PathBuf::from(outbox))),
+        (None, Some(_)) => Err(Failure {
+            code: exit::ERROR,
+            message: format!(
+                "this Fleet session has {SIGNAL_FILE_ENV} but no {EVENT_FILE_ENV}: Fleet reads no events from it"
+            ),
+            hint: Some("restart the session under a Fleet that passes FLEET_EVENT_FILE".into()),
+        }),
+        (None, None) => Ok(None),
+    }
+}
+
+/// `fleet event publish` inside a session: check the event as far as no
+/// store is needed, append it to the session's outbox, and print the
+/// line's offset. Fleet ingests it later, as the session's Task.
+fn cmd_session_publish(
+    outbox: &Path,
+    board: &str,
+    publish: fleet_api::event::Publish,
+    json: bool,
+) -> Result<(), Failure> {
+    let line = fleet_api::event::OutboxLine::new(board, publish);
+    line.encode().map_err(fail)?;
+    let offset = fleet_runtime::events::append(outbox, &line)
+        .map_err(|e| fail(format!("{}: {e}", outbox.display())))?;
+    if json {
+        print_json(&json!({"board": board, "type": line.event_type, "offset": offset}));
+    } else {
+        println!(
+            "{board} {} queued at outbox offset {offset}",
+            line.event_type
+        );
+    }
+    Ok(())
+}
+
+fn cmd_outbox_read(file: &Path, from: u64) -> Result<(), Failure> {
+    use std::io::Write;
+    let read = fleet_runtime::events::read_from(file, from)
+        .map_err(|e| fail(format!("{}: {e}", file.display())))?
+        .ok_or_else(|| Failure {
+            code: exit::NOT_FOUND,
+            message: format!("{} is not there", file.display()),
+            hint: None,
+        })?;
+    std::io::stdout()
+        .write_all(&fleet_runtime::events::encode_place_read(&read))
+        .map_err(|e| fail(format!("stdout: {e}")))
+}
+
 fn cmd_event(store: &dyn Store, command: EventCommand) -> Result<(), Failure> {
-    use fleet_api::event::{Filter, Page, Pattern, Publish};
+    use fleet_api::event::{Filter, Page, Pattern};
     match command {
         EventCommand::Publish {
             board,
@@ -1940,15 +2047,7 @@ fn cmd_event(store: &dyn Store, command: EventCommand) -> Result<(), Failure> {
             data,
             json,
         } => {
-            let data =
-                serde_json::from_str(&data).map_err(|e| fail(format!("--data: not JSON: {e}")))?;
-            let publish = Publish {
-                event_type,
-                subject,
-                key,
-                correlation,
-                data,
-            };
+            let publish = publish_of(&event_type, &subject, &key, &correlation, &data)?;
             let appended = publish_event(store, &board, &current_user(), publish)?;
             let e = &appended.event;
             if json {

@@ -270,6 +270,17 @@ pub trait Signals {
     /// The session's file, folded. A file never written is `Known` and
     /// empty; a file that cannot be read is Unknown.
     fn read(&self, session: &SessionRef) -> Observation<Reported>;
+    /// The session's outbox ([`crate::event::outbox_file`] of its signal
+    /// file) from the byte offset `from`, at most
+    /// [`crate::event::MAX_OUTBOX_READ`] bytes. Known(None): never written.
+    /// A file that cannot be read is Unknown.
+    fn outbox(
+        &self,
+        _session: &SessionRef,
+        _from: u64,
+    ) -> Observation<Option<crate::event::OutboxRead>> {
+        Observation::unknown("this signal port reads no outbox")
+    }
 }
 
 #[cfg(test)]

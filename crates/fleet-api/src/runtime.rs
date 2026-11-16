@@ -256,6 +256,17 @@ pub trait Runtime {
     fn signals(&self, _session: &SessionRef) -> Option<Observation<crate::signal::Reported>> {
         None
     }
+    /// The session's outbox from the byte offset `from`, as
+    /// [`crate::signal::Signals::outbox`] answers it, when the outbox is on
+    /// a host only this runtime reaches. `None`: the signal port reads it on
+    /// this machine.
+    fn outbox(
+        &self,
+        _session: &SessionRef,
+        _from: u64,
+    ) -> Option<Observation<Option<crate::event::OutboxRead>>> {
+        None
+    }
     /// Known(true) when the runtime holds the session and its agent is
     /// stopped, by Fleet or by anyone else. A running or lost session is
     /// Known(false). A runtime that cannot pause answers Unknown, so Fleet

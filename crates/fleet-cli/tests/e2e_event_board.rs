@@ -1,14 +1,18 @@
 //! The event board end to end: `fleet init` ensures Board `shared`, and the
 //! real `fleet event publish` and `fleet event list` write and read its log
 //! on a throwaway store, with the refusals, the dedupe, the filters and the
-//! retention a reader relies on.
+//! retention a reader relies on. Inside a session, `fleet event publish`
+//! appends to the session's outbox and opens no store, and TaskController
+//! ingests the outbox under the lease, as the Task whose outbox it is.
 
 mod support;
+
+use std::io::Write;
 
 use fleet_api::event::{CliSource, Filter, Page, Pattern, Publish, Source};
 use fleet_api::{DeleteOutcome, FieldManager, LeaseToken, Object, Observation, Store, StoreError};
 use serde_json::{Value, json};
-use support::Env;
+use support::{Env, wait};
 
 fn board_env(name: &str) -> Env {
     let mut env = Env::new(name);
@@ -280,7 +284,7 @@ impl Store for BusyBoard<'_> {
         };
         let source = Source::Cli(CliSource::new("busy").unwrap());
         self.inner
-            .append_events(board, &source, vec![noise], FieldManager::Cli)?;
+            .append_events(board, &source, vec![noise], FieldManager::Cli, None)?;
         self.inner.read_events(board, after, limit)
     }
     fn event_head(&self, board: &str) -> Result<u64, StoreError> {
@@ -438,4 +442,216 @@ fn a_list_shows_events_a_crash_left_past_the_board_status() {
         .map(|e| e["seq"].as_u64().unwrap())
         .collect();
     assert_eq!(seqs, vec![1]);
+}
+
+fn session_env(name: &str) -> Env {
+    let mut env = Env::new(name);
+    env.set_var("USER", "tester");
+    env.fleet(&["init"]).ok();
+    env.apply(support::task("a", true)).ok();
+    env.reconcile().ok();
+    env
+}
+
+fn session_var(env: &Env, var: &str) -> String {
+    let session = env
+        .host()
+        .session(&env.session_key("a"))
+        .unwrap()
+        .expect("a session");
+    session
+        .env
+        .get(var)
+        .cloned()
+        .unwrap_or_else(|| panic!("{var} in the session's environment"))
+}
+
+/// `fleet event publish <args>` as the session runs it: with the variables
+/// Fleet passed it.
+fn publish_inside(env: &Env, vars: &[(&str, &str)], args: &[&str]) -> support::Run {
+    let mut cmd = env.command(&[&["event", "publish"], args].concat());
+    for (k, v) in vars {
+        cmd.env(k, v);
+    }
+    wait(cmd.spawn().expect("fleet event publish"))
+}
+
+fn session_vars(env: &Env) -> Vec<(&'static str, String)> {
+    vec![
+        ("FLEET_SIGNAL_FILE", session_var(env, "FLEET_SIGNAL_FILE")),
+        ("FLEET_EVENT_FILE", session_var(env, "FLEET_EVENT_FILE")),
+    ]
+}
+
+fn borrowed<'a>(vars: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
+    vars.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
+fn append_raw(file: &str, bytes: &str) {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(file)
+        .expect("the outbox")
+        .write_all(bytes.as_bytes())
+        .expect("append");
+}
+
+#[test]
+fn a_session_publishes_through_its_outbox_and_the_event_reads_as_its_task() {
+    let env = session_env("event-session");
+    let vars = session_vars(&env);
+    let uid = env.get("a")["metadata"]["uid"].clone();
+
+    let config = std::fs::read(&env.config).unwrap();
+    std::fs::write(&env.config, "not a config").unwrap();
+    publish_inside(
+        &env,
+        &borrowed(&vars),
+        &[
+            "--type",
+            "git.push",
+            "--subject",
+            "repo/app",
+            "--data",
+            r#"{"branch":"main"}"#,
+        ],
+    )
+    .ok()
+    .stdout_has("offset 0");
+    std::fs::write(&env.config, config).unwrap();
+    assert!(
+        list(&env, &[]).is_empty(),
+        "nothing on the board before ingest"
+    );
+
+    env.reconcile().ok();
+    let events = list(&env, &[]);
+    assert_eq!(events.len(), 1, "{events:#?}");
+    let e = &events[0];
+    assert_eq!(e["type"], "git.push");
+    assert_eq!(e["subject"], "repo/app");
+    assert_eq!(e["data"], json!({"branch": "main"}));
+    assert_eq!(
+        e["source"],
+        json!({"task": "a", "uid": uid, "lineage": []}),
+        "{e}"
+    );
+    env.fleet(&["event", "list", "--source", "task/a"])
+        .ok()
+        .stdout_has("git.push")
+        .stdout_has("task/a");
+
+    let outbox = &vars[1].1;
+    append_raw(
+        outbox,
+        "{\"board\":\"shared\",\"type\":\"spoof\",\"data\":1,\"source\":\"cli/evil\",\"task\":\"b\",\"uid\":\"x\"}\n",
+    );
+    env.reconcile().ok();
+    let events = list(&env, &[]);
+    assert_eq!(events.len(), 2, "{events:#?}");
+    assert_eq!(events[1]["type"], "spoof");
+    assert_eq!(events[1]["source"]["task"], "a", "{}", events[1]);
+    assert_eq!(events[1]["source"]["uid"], uid);
+}
+
+#[test]
+fn a_reserved_type_is_refused_at_publish_and_a_bad_line_is_skipped_and_counted() {
+    let env = session_env("event-session-refused");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    publish_inside(
+        &env,
+        &borrowed(&vars),
+        &["--type", "fleet.task.phase", "--data", "{}"],
+    )
+    .code(1)
+    .stderr_has("fleet.");
+    publish_inside(
+        &env,
+        &borrowed(&vars),
+        &["--board", "Not_A_Name", "--type", "a", "--data", "{}"],
+    )
+    .code(1)
+    .stderr_has("name");
+    assert!(
+        std::fs::read(&outbox).map_or(true, |b| b.is_empty()),
+        "a refused publish writes nothing"
+    );
+
+    append_raw(
+        &outbox,
+        "{\"board\":\"shared\",\"type\":\"fleet.x\",\"data\":1}\n",
+    );
+    append_raw(&outbox, "not json\n");
+    publish_inside(&env, &borrowed(&vars), &["--type", "ok", "--data", "1"]).ok();
+    env.reconcile().ok();
+    let events = list(&env, &[]);
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!(events[0]["type"], "ok");
+    let cursor = &env.get("a")["status"]["outbox"];
+    assert_eq!(cursor["skipped"], 2, "{cursor}");
+    assert!(cursor["lastSkipped"].is_string(), "{cursor}");
+    assert_eq!(
+        cursor["offset"],
+        std::fs::metadata(&outbox).unwrap().len(),
+        "{cursor}"
+    );
+}
+
+#[test]
+fn a_retried_ingest_appends_each_line_once() {
+    let env = session_env("event-session-retry");
+    let vars = session_vars(&env);
+    publish_inside(&env, &borrowed(&vars), &["--type", "a", "--data", "1"]).ok();
+    publish_inside(
+        &env,
+        &borrowed(&vars),
+        &["--type", "b", "--key", "mine", "--data", "2"],
+    )
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(list(&env, &[]).len(), 2);
+
+    let path = env.object_path("Task", "a");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(obj["status"]["outbox"]["offset"].as_u64().unwrap() > 0);
+    obj["status"]["outbox"]["offset"] = json!(0);
+    std::fs::write(&path, obj.to_string()).unwrap();
+    env.reconcile().ok();
+    let events = list(&env, &[]);
+    let seqs: Vec<u64> = events.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, vec![1, 2], "{events:#?}");
+    assert_eq!(events[1]["key"], "mine");
+}
+
+#[test]
+fn a_torn_last_line_waits_for_its_newline() {
+    let env = session_env("event-session-torn");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    append_raw(&outbox, "{\"board\":\"shared\",\"type\":\"torn\",");
+    env.reconcile().ok();
+    assert!(list(&env, &[]).is_empty());
+    assert_eq!(env.get("a")["status"]["outbox"]["skipped"], Value::Null);
+    append_raw(&outbox, "\"data\":1}\n");
+    env.reconcile().ok();
+    let events = list(&env, &[]);
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!(events[0]["type"], "torn");
+}
+
+#[test]
+fn a_session_without_an_outbox_refuses_to_publish() {
+    let env = session_env("event-session-no-outbox");
+    let signal = session_var(&env, "FLEET_SIGNAL_FILE");
+    publish_inside(
+        &env,
+        &[("FLEET_SIGNAL_FILE", signal.as_str())],
+        &["--type", "a", "--data", "1"],
+    )
+    .code(1)
+    .stderr_has("FLEET_EVENT_FILE");
+    env.reconcile().ok();
+    assert!(list(&env, &[]).is_empty(), "no fallback to cli/USER");
 }

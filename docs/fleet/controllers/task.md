@@ -403,6 +403,11 @@ a file that cannot be read is Unknown. A session on another place gets a
 file on that place, which the runtime port reads through the runtime's
 `exec` ([signals on a remote place](../../runtime/README.md#signals-on-a-remote-place)).
 
+Each spawn also gets `FLEET_EVENT_FILE`, the session's event outbox beside
+its signal file. On each pass, the manager ingests it into the Boards as
+TaskController, under the lease, and records the offset in
+`status.outbox` ([publishing from a session](../resources/board.md#publishing-from-a-session)).
+
 The controller records the last reported conversation in
 `status.conversation`. A revive or a resume names it, so the runtime starts
 the harness profile's resume argv.

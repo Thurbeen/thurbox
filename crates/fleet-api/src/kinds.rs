@@ -170,12 +170,14 @@ pub fn inbox_source_prefix(by: FieldManager) -> Option<&'static str> {
 }
 
 /// Who may append events to a Board's log (`Store::append_events`):
-/// `fleet event publish` as `cli`, under a `cli/<user>` source. A Board's
-/// status has no owner: the append moves it.
+/// `fleet event publish` as `cli`, under a `cli/<user>` source, and
+/// TaskController, under the lease, as the Task whose session's outbox it
+/// ingests. A Board's status has no owner: the append moves it.
 pub fn may_append_events(by: &FieldManager, source: &crate::event::Source) -> bool {
+    use crate::event::Source;
     matches!(
         (by, source),
-        (FieldManager::Cli, crate::event::Source::Cli(_))
+        (FieldManager::Cli, Source::Cli(_)) | (FieldManager::TaskController, Source::Task(_))
     )
 }
 

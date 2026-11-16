@@ -458,6 +458,12 @@ Fleet:  runtime exec: fleet signal-read <that file> ──▶ fold ──▶ ses
   [<length>]`, so the place's own `fleet` reads it, on POSIX and on Windows
   alike. A file not written yet is a session that reported nothing. An
   `exec` that fails is Unknown.
+- The session's event outbox is beside the signal file, at
+  `<that file>.events`. Fleet reads it through `exec` too:
+  `fleet signal-read --from <offset> <file>` prints the offset its read
+  starts at on a line, then at most 512 KiB from there. It starts at 0
+  when the file is shorter than the offset. Exit 3 is a file not written
+  yet.
 - Before a revive or a resume, Fleet reads the file's length through
   `exec` (`fleet signal-read --length <file>`) and keeps it in its own data, `<data dir>/signals/<key>.started`.
   It writes nothing on the place. A state in the file before that length is

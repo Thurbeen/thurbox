@@ -561,6 +561,10 @@ pub struct TaskStatus {
     /// its pause.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_requested_at: Option<Millis>,
+    /// TaskController's place in the session's outbox: what it ingested
+    /// into the boards so far. Absent until a session published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox: Option<crate::event::OutboxCursor>,
 }
 
 fn is_zero(n: &u32) -> bool {

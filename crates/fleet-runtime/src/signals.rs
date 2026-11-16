@@ -19,6 +19,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fleet_api::Observation;
+use fleet_api::event::{OutboxRead, outbox_file};
 use fleet_api::signal::{MAX_LINE, Reported, Signal, Signals};
 use fleet_api::task::{LOCAL_HOST, SessionRef};
 
@@ -187,6 +188,23 @@ impl Signals for FileSignals {
             return place_file(key);
         }
         self.path(key).map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn outbox(&self, session: &SessionRef, from: u64) -> Observation<Option<OutboxRead>> {
+        if session.host != LOCAL_HOST {
+            return Observation::unknown(format!(
+                "the outbox on host {} is read through the runtime's exec, which this runtime does not offer",
+                session.host
+            ));
+        }
+        let Some(path) = self.path(&session.key) else {
+            return Observation::unknown("the session key is not a plain name");
+        };
+        let file = outbox_file(&path.to_string_lossy());
+        match crate::events::read_from(Path::new(&file), from) {
+            Ok(read) => Observation::Known(read),
+            Err(e) => Observation::unknown(format!("cannot read the outbox: {e}")),
+        }
     }
 
     fn read(&self, session: &SessionRef) -> Observation<Reported> {

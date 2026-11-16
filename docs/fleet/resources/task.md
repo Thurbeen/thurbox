@@ -87,6 +87,7 @@ repositories.
 | `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. |
 | `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |
 | `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. |
+| `outbox` | TaskController | `{offset, generation, skipped, lastSkipped}`: how far the session's event outbox is ingested into the Boards. See [Board](board.md#publishing-from-a-session). |
 | `result` | the worker, `fleet result` | The worker's claim: outcome, generation, summary, artifacts, outputs. See [Worker result](#worker-result). |
 | `declared` | the worker, `fleet declare` | Facts the worker declared, each a JSON object with a string `kind`. |
 | `forge` | ForgeController | One entry per declared change, and its conditions. See [Following declared changes](#following-declared-changes). |

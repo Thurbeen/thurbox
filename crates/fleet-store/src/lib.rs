@@ -1494,8 +1494,9 @@ impl Store for FileStore {
         source: &fleet_api::event::Source,
         events: Vec<fleet_api::event::Publish>,
         by: FieldManager,
+        lease: Option<&LeaseToken>,
     ) -> Result<Vec<fleet_api::event::Appended>, StoreError> {
-        self.append_board_events(board, source, events, by)
+        self.append_board_events(board, source, events, by, lease)
     }
 
     fn read_events(

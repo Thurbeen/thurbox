@@ -3905,6 +3905,22 @@ fn a_task_on_an_ssh_place_runs_there_and_reports_its_state() {
     assert_eq!(env.get("t1")["status"]["conversation"], "conv-1");
     assert_eq!(env.get("t1")["status"]["session"]["host"], "mux/box");
 
+    // An event published on the place, to the outbox beside its signal
+    // file, reaches the board over the same ssh, as the Task.
+    env.apply(json!({"apiVersion": "fleet/v1alpha1", "kind": "Board", "metadata": {"name": "shared"}, "spec": {}}))
+        .ok();
+    let mut publish = env.command(&["event", "publish", "--type", "place.hello", "--data", "1"]);
+    publish
+        .env("HOME", &home)
+        .env("FLEET_EVENT_FILE", format!("{file}.events"));
+    support::wait(publish.spawn().expect("fleet event publish")).ok();
+    reconcile_until(&env, "the place's event on the board", |env| {
+        env.fleet(&["event", "list", "--json"]).ok().json() != json!([])
+    });
+    let events = env.fleet(&["event", "list", "--json"]).ok().json();
+    assert_eq!(events[0]["type"], "place.hello", "{events}");
+    assert_eq!(events[0]["source"]["task"], "t1", "{events}");
+
     // The window is on the place's server; this machine's has none.
     let listed = remote.tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
     let listed = String::from_utf8_lossy(&listed.stdout).into_owned();

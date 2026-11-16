@@ -848,16 +848,19 @@ refused.
 - A Board's log is `boards/<name>/<seq>.jsonl` segments, one event per line,
   each segment named by its first `seq`, and a `<seq>.keys` file beside each
   with the `(source, key, seq)` of its keyed events. `append_events` is the
-  only writer, and in this release only `cli` calls it, through the manager's
-  `publish_event` verb, with no lease. Under the lock it checks each event
+  only writer. `cli` calls it as `cli/<user>`, through the manager's
+  `publish_event` verb, with no lease. TaskController calls it as a Task
+  (`Source::Task`), under the lease, as the next bullet says. Under the
+  lock it checks each event
   (`event::validate_publish`: the type grammar, the refused `fleet.` prefix,
   256 characters for `subject`, `key` and `correlation`, the Board's
   `maxDataBytes`) and refuses the batch whole when one fails. It then drops,
   from the oldest, each segment whose events are all older than
   `retention.maxAgeSeconds`: a segment goes when the next segment's first
   event is that old, and the newest segment when its last event is. A publish
-  whose `(source, key)` a kept segment's keys file (or the newest segment
-  itself) holds appends nothing and answers that event, so a key whose event
+  whose key the same publisher (`Source::same_publisher`: a Task by its
+  name and uid, whatever its lineage) used in a kept segment's keys file
+  (or the newest segment itself) appends nothing and answers that event, so a key whose event
   aged out can be used again. The others get the next `seq`s, from
   `status.head + 1` with no gap, and the store's time. Each line is appended
   and fsynced, then its key line; each append cuts a torn last line off the
@@ -880,6 +883,33 @@ refused.
   deleting a Board removes any log left under its name. `store_contract`
   tears a line and a keys file, drops a status write, ages segments out and
   leaves stray files.
+- A session's outbox is `event::outbox_file` of its signal file:
+  `<signal file>.events`, on the same place. Each spawn that gets
+  `FLEET_SIGNAL_FILE` gets it as `FLEET_EVENT_FILE`. Inside a session,
+  `fleet event publish` checks the line without a store (`OutboxLine::encode`:
+  the Board's name, `event::validate_publish` without the Board's
+  `maxDataBytes`, at most `event::MAX_OUTBOX_LINE` bytes) and appends it in
+  one write. A session with `FLEET_SIGNAL_FILE` and no `FLEET_EVENT_FILE`
+  refuses, and never falls back to `cli/<user>`. On each pass, before the
+  Task's controllers, the manager reads the outbox of each Task whose
+  `status.session` is set and whose `sessionState` is not `Gone`, from
+  `status.outbox.offset`, at most `event::MAX_OUTBOX_READ` bytes: through
+  the signal port on this machine, or through the runtime's `exec`
+  (`fleet signal-read --from <offset> <file>`) on a place. The pure
+  `event::ingest` turns the whole lines into publishes; a last line without
+  its newline waits. A file shorter than the offset was made again: it is
+  read from 0 under the next `generation`. A line without a key gets
+  `outbox-<generation>-<offset>`. The source is `event::task_source` of the
+  Task: its name, uid and parent-label lineage; a line's own fields never
+  name it. Each publish is appended as TaskController under the lease, and
+  only then does `status.outbox` (TaskController's) move past it, so a
+  crash between the two re-reads lines whose keys dedupe them. A line that
+  does not parse, or that the store refuses (`Invalid`, `NotFound`,
+  `Forbidden`), is skipped: `status.outbox.skipped` counts it and
+  `lastSkipped` says why. Any other store error stops the pass's ingest at
+  that line. An outbox that cannot be read is Unknown: the offset stays and
+  nothing is concluded. `e2e_event_board` drives it through the real
+  binary.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the
@@ -1403,11 +1433,12 @@ the fake host or `runtime-mux`, and, for `e2e_forge`, the fake forge
 or a stub copied as `az`, `curl`, `gh` and `glab`, across process
 restarts and injected faults; `e2e_inbox` covers `fleet send` and delivery on
 the fake host; `e2e_event_board` covers `fleet event publish` and `list`,
-the Board `fleet init` makes, the refusals, the dedupe, the filters and an
-expired cursor; `e2e_task_amend` covers `fleet amend`, its
-delivery to the same session, its refusals, `--if-generation` and the result
-rules on the fake host; `e2e_forge_controller` covers `fleet declare`,
-the join and the relay against the fake forge and the fake host.
+the Board `fleet init` makes, the refusals, the dedupe, the filters, an
+expired cursor, and a session's publish through its outbox, as its Task;
+`e2e_task_amend` covers `fleet amend`, its delivery to the same session,
+its refusals, `--if-generation` and the result rules on the fake host;
+`e2e_forge_controller` covers `fleet declare`, the join and the relay
+against the fake forge and the fake host.
 `e2e_mark_ready` covers the mark-ready effect against the fake forge and
 the fake host, and through the stub `az`, `gh` and `glab`.
 `e2e_gateway` covers the `[gateway]` section, the receive verb, the

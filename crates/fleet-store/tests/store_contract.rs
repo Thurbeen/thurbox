@@ -3378,7 +3378,13 @@ fn note(key: Option<&str>) -> fleet_api::event::Publish {
 
 fn publish(store: &FileStore, board: &str, key: Option<&str>) -> fleet_api::event::Appended {
     store
-        .append_events(board, &cli("alice"), vec![note(key)], FieldManager::Cli)
+        .append_events(
+            board,
+            &cli("alice"),
+            vec![note(key)],
+            FieldManager::Cli,
+            None,
+        )
         .unwrap()
         .pop()
         .unwrap()
@@ -3403,7 +3409,7 @@ fn a_board_log_is_appended_only_by_its_typed_mutation() {
         FieldManager::Worker,
         FieldManager::TaskController,
     ] {
-        let refused = store.append_events("b", &cli("alice"), vec![note(None)], by);
+        let refused = store.append_events("b", &cli("alice"), vec![note(None)], by, None);
         assert!(
             matches!(refused, Err(StoreError::Forbidden(_))),
             "{refused:?}"
@@ -3427,12 +3433,84 @@ fn a_board_log_is_appended_only_by_its_typed_mutation() {
             &cli("alice"),
             vec![note(Some("k")), note(Some("k")), note(None)],
             FieldManager::Cli,
+            None,
         )
         .unwrap();
     let seqs: Vec<(u64, bool)> = batch.iter().map(|a| (a.event.seq, a.duplicate)).collect();
     assert_eq!(seqs, vec![(1, false), (1, true), (2, false)]);
     let b = known(store.get("Board", "b")).unwrap();
     assert_eq!(b.status, json!({"head": 2, "oldest": 1}));
+}
+
+fn task_source(lineage: &[(&str, &str)]) -> fleet_api::event::Source {
+    fleet_api::event::Source::Task(fleet_api::event::TaskSource {
+        task: "a".into(),
+        uid: "ua".into(),
+        lineage: lineage
+            .iter()
+            .map(|(task, uid)| fleet_api::event::TaskRef {
+                task: (*task).into(),
+                uid: (*uid).into(),
+            })
+            .collect(),
+    })
+}
+
+#[test]
+fn task_controller_appends_as_a_task_only_under_the_lease() {
+    let dir = Dir::new("board-task-source");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    let source = task_source(&[]);
+    let refused = store.append_events(
+        "b",
+        &source,
+        vec![note(Some("k"))],
+        FieldManager::TaskController,
+        None,
+    );
+    assert!(
+        matches!(refused, Err(StoreError::LeaseLost(_))),
+        "{refused:?}"
+    );
+    let refused = store.append_events("b", &source, vec![note(None)], FieldManager::Cli, None);
+    assert!(
+        matches!(refused, Err(StoreError::Forbidden(_))),
+        "{refused:?}"
+    );
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let first = store
+        .append_events(
+            "b",
+            &source,
+            vec![note(Some("k"))],
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    assert_eq!(first[0].event.seq, 1);
+    let again = store
+        .append_events(
+            "b",
+            &task_source(&[("p", "up")]),
+            vec![note(Some("k"))],
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    assert!(again[0].duplicate, "the same Task, whatever its lineage");
+    assert_eq!(again[0].event.seq, 1);
+    store.release_lease(&lease).unwrap();
+    let stale = store.append_events(
+        "b",
+        &source,
+        vec![note(Some("k2"))],
+        FieldManager::TaskController,
+        Some(&lease),
+    );
+    assert!(matches!(stale, Err(StoreError::LeaseLost(_))), "{stale:?}");
 }
 
 #[test]
