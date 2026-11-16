@@ -272,3 +272,34 @@ fn an_entry_an_older_fleet_typed_is_released_by_the_next_other_prompt() {
     assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
     assert_eq!(env.calls("brief"), 3, "never a second send of the first");
 }
+
+#[test]
+fn a_report_after_the_hosts_clock_stepped_back_still_releases_a_mangled_entry() {
+    let env = setup("proof-inbox-clock-back");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    let file = signal_file(&env);
+    let offset = std::fs::metadata(&file).expect("signal file").len();
+    let an_hour_ahead = support::now_ms() + 3_600_000;
+    let before_the_step = json!({"at": an_hour_ahead, "state": "prompt", "prompts": ["0123456789abcdef"], "seq": offset});
+    let mut appended = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .expect("signal file");
+    std::io::Write::write_all(&mut appended, format!("{before_the_step}\n").as_bytes()).unwrap();
+
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&["send", "t1", "first\nline"]).ok();
+    env.reconcile().ok();
+    prompt_hook(&env, "firstline");
+    env.host().set_prompt_hook_silent(false).unwrap();
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
+    let full = full_status(&env);
+    assert_eq!(queued_texts(&full), vec!["first\nline"], "{full:#}");
+    assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
+}

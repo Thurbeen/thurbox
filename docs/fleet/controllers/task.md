@@ -406,15 +406,16 @@ controller plans the send it records the text's digest in
   for the brief; an entry stays first in line.
 - An entry or a catch-up note whose hook has reported a new prompt since
   its send was planned, and not this one, is given up on with
-  `NeedsAttention/DeliveryUnconfirmed`. It is never sent again. The send
-  records in `status.deliveryAttempts` the latest time the hook had stamped
-  on a report of another prompt. A later stamp on another prompt is the
-  evidence. Both stamps come from the hook's own clock, which is never
-  compared with Fleet's: a remote host's clock need not agree. A report of
-  a text reported before carries a new stamp, and a signal file read only
-  in part keeps its newest reports. An attempt with no boundary, as one
-  planned while the reports could not be read or by an older Fleet, records
-  it on its first pass that reads them. A text the
+  `NeedsAttention/DeliveryUnconfirmed`. It is never sent again. Each line
+  `fleet signal` appends carries `seq`, the file's length before the line.
+  The file only grows, so `seq` orders the reports and no clock does. The
+  send records in `status.deliveryAttempts` the latest `seq` of a report of
+  another prompt. A report of another prompt with a later `seq` is the
+  evidence. A report of a text reported before carries a new `seq`, and a
+  signal file read only in part keeps its newest lines. A line with no
+  `seq`, as an older Fleet wrote it, is no evidence. An attempt with no
+  boundary, as one planned while the reports could not be read or by an
+  older Fleet, records it on its first pass that reads them. A text the
   agent took in another form, as when it wraps or reflows it, holds back no
   later entry. A hook that reports nothing yet, as Codex's until its turn
   ends, keeps the entry waiting.

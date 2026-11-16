@@ -32,6 +32,12 @@ Your agent needs no Fleet library. It runs one command from its hooks.
 `fleet signal` also does nothing when `FLEET_SIGNAL_FILE` is unset. The check
 in step 2 only saves one process.
 
+Each line `fleet signal` appends carries `seq`, the file's length before
+the line. The file only grows, so `seq` orders the reports, whatever the
+host's clock says. Fleet uses that order, not the line's time, to tell
+whether the agent reported another prompt after a send. Write lines only
+through `fleet signal`, so that each one has its place.
+
 ## States
 
 | State | Run it when | Fleet shows |

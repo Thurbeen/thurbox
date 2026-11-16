@@ -168,16 +168,17 @@ impl FileSignals {
 /// Append `signal` to `file` as one line, in one write, so lines from hooks
 /// running at once never interleave.
 pub fn append(file: &Path, signal: &Signal) -> io::Result<()> {
-    let mut line = serde_json::to_vec(signal).map_err(io::Error::other)?;
+    let mut opened = OpenOptions::new().create(true).append(true).open(file)?;
+    let placed = Signal {
+        seq: Some(opened.metadata()?.len()),
+        ..signal.clone()
+    };
+    let mut line = serde_json::to_vec(&placed).map_err(io::Error::other)?;
     line.push(b'\n');
     if line.len() > MAX_LINE {
         return Err(io::Error::other("the signal is too long"));
     }
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(file)?
-        .write_all(&line)
+    opened.write_all(&line)
 }
 
 impl Signals for FileSignals {

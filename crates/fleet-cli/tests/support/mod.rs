@@ -533,7 +533,7 @@ impl Env {
             serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
         if let Some(attempts) = obj["status"]["deliveryAttempts"].as_object_mut() {
             for attempt in attempts.values_mut() {
-                attempt.as_object_mut().unwrap().remove("otherPromptAt");
+                attempt.as_object_mut().unwrap().remove("otherPromptSeq");
             }
             fs::write(&path, obj.to_string()).expect("record");
         }

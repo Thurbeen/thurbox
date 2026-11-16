@@ -1147,7 +1147,7 @@ impl Pass<'_, '_> {
 
     fn record_prompt_boundary(&mut self, key: &str) {
         let reported = match (self.st.prompts.get(key), &self.input.observations.signals) {
-            (Some(digest), Some(Observation::Known(r))) => latest_other_prompt_at(r, digest),
+            (Some(digest), Some(Observation::Known(r))) => latest_other_prompt_seq(r, digest),
             _ => return,
         };
         let attempt = self
@@ -1155,7 +1155,7 @@ impl Pass<'_, '_> {
             .delivery_attempts
             .entry(key.to_string())
             .or_default();
-        attempt.other_prompt_at.get_or_insert(reported);
+        attempt.other_prompt_seq.get_or_insert(reported);
     }
 
     fn another_prompt_reported_since(&self, key: &str) -> bool {
@@ -1163,14 +1163,14 @@ impl Pass<'_, '_> {
             .st
             .delivery_attempts
             .get(key)
-            .and_then(|a| a.other_prompt_at);
+            .and_then(|a| a.other_prompt_seq);
         match (
             before,
             self.st.prompts.get(key),
             &self.input.observations.signals,
         ) {
             (Some(before), Some(digest), Some(Observation::Known(r))) => {
-                latest_other_prompt_at(r, digest) > before
+                latest_other_prompt_seq(r, digest) > before
             }
             _ => false,
         }
@@ -1222,8 +1222,8 @@ impl Pass<'_, '_> {
             return Sent::Pending;
         }
         let digest = fleet_api::signal::prompt_digest(&text);
-        let other_prompt_at = match &self.input.observations.signals {
-            Some(Observation::Known(r)) => Some(latest_other_prompt_at(r, &digest)),
+        let other_prompt_seq = match &self.input.observations.signals {
+            Some(Observation::Known(r)) => Some(latest_other_prompt_seq(r, &digest)),
             _ => None,
         };
         let attempt = self
@@ -1233,7 +1233,7 @@ impl Pass<'_, '_> {
             .or_default();
         attempt.sends += 1;
         attempt.probe_failures = 0;
-        attempt.other_prompt_at = other_prompt_at;
+        attempt.other_prompt_seq = other_prompt_seq;
         self.st.not_before = None;
         self.st.receipts.remove(key);
         self.intend(key.to_string(), Action::Brief { session, text });
@@ -2205,12 +2205,12 @@ fn known_receipt(st: &TaskStatus, key: &str) -> bool {
         .is_some_and(|r| !r.outcome.is_unknown())
 }
 
-fn latest_other_prompt_at(reported: &fleet_api::signal::Reported, digest: &str) -> Millis {
+fn latest_other_prompt_seq(reported: &fleet_api::signal::Reported, digest: &str) -> u64 {
     reported
-        .prompts
+        .prompt_seqs
         .iter()
         .filter(|(d, _)| *d != digest)
-        .map(|(_, at)| *at)
+        .map(|(_, seq)| *seq)
         .max()
         .unwrap_or_default()
 }
