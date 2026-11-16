@@ -324,7 +324,7 @@ fn kept(server: &str) -> protocol::Kept {
             .map(|data| {
                 data.join("started")
                     .join(sockets_digest(sockets))
-                    .join(hex(server))
+                    .join(server_dir(server))
             })
             .ok_or_else(|| "no HOME to keep the started keys in".to_string()),
         Err(e) => Err(format!("no directory for the tmux sockets: {e}")),
@@ -335,12 +335,18 @@ fn kept(server: &str) -> protocol::Kept {
             format!("{prefix}runtime-mux-{server}.paused-"),
             "pause mark",
         ),
-        started: protocol::Marks::new(started, String::new(), "start record"),
+        started: protocol::Marks::new(started, "key.".to_string(), "start record"),
     }
 }
 
-fn hex(text: &str) -> String {
-    text.bytes().map(|b| format!("{b:02x}")).collect()
+const SERVER_DIR_COMPONENT: usize = 128;
+
+fn server_dir(server: &str) -> std::path::PathBuf {
+    let hex: String = server.bytes().map(|b| format!("{b:02x}")).collect();
+    hex.as_bytes()
+        .chunks(SERVER_DIR_COMPONENT)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect()
 }
 
 fn sockets_digest(sockets: &std::path::Path) -> String {
@@ -411,4 +417,24 @@ fn tmux_dir() -> std::io::Result<std::path::PathBuf> {
 fn private_dir() -> (std::io::Result<std::path::PathBuf>, String) {
     let user = std::env::var("USERNAME").unwrap_or_default();
     (Ok(std::env::temp_dir()), format!("{user}-"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::server_dir;
+
+    #[test]
+    fn a_long_server_name_fits_in_filenames_and_stays_distinct() {
+        let socket = "s".repeat(64);
+        let long = format!("{socket}@{}", "p".repeat(64));
+        let longer = format!("{long}q");
+        let dir = server_dir(&long);
+        assert!(
+            dir.components().all(|c| c.as_os_str().len() <= 255),
+            "{}",
+            dir.display()
+        );
+        assert_ne!(dir, server_dir(&longer));
+        assert_ne!(server_dir("ab"), server_dir("a/b"));
+    }
 }

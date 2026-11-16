@@ -112,10 +112,12 @@ a pane kept after its program exits is how `inspect` reports the code; a
 
 - A `start` writes the record, a file that holds the key's pane id, under
   `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/started/`, which a reboot
-  keeps. The record is `<digest>/<server>/<key>`. `<digest>` names the
+  keeps. The record is `<digest>/<server>/key.<key>`. `<digest>` names the
   private directory that holds the server's socket. `<server>` is the
-  server's name, `<socket>` or `<socket>@<place>`, in hexadecimal, so no
-  key or place name can make two servers share a directory.
+  server's name, `<socket>` or `<socket>@<place>`, in hexadecimal, split
+  into directories of at most 128 characters. So no key or place name can
+  make two servers share a directory, and a long name still fits the
+  filesystem's limit on a file name.
 - A `stop` removes the record.
 - `inspect` answers `{"exited": {"id", "code": null}}` for a key with a
   record and no window. Fleet then revives the session on its

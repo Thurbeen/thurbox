@@ -499,6 +499,49 @@ fn a_stop_on_another_server_keeps_a_started_keys_record() {
     );
 }
 
+fn kill_runtime_server(rt: &Runtime) {
+    Command::new("tmux")
+        .env("TMUX_TMPDIR", rt.server.tmpdir())
+        .env_remove("TMUX")
+        .args(["-L", SOCKET, "kill-server"])
+        .output()
+        .expect("run tmux");
+}
+
+fn exited_once_known(rt: &Runtime, key: &str, id: &str) {
+    let answer = rt.inspect_until(key, |a| a.get("known").is_some());
+    assert_eq!(
+        answer["known"],
+        json!({"exited": {"id": id, "code": null}}),
+        "{key}: {answer}"
+    );
+}
+
+#[test]
+fn a_dot_key_reads_exited_once_its_server_is_gone() {
+    let Some(rt) = Runtime::new() else { return };
+    let ids: Vec<(&str, String)> = [".", ".."]
+        .into_iter()
+        .map(|key| (key, started(&rt.start(key, &["sleep", "300"])).0))
+        .collect();
+    kill_runtime_server(&rt);
+    for (key, id) in &ids {
+        exited_once_known(&rt, key, id);
+    }
+}
+
+#[test]
+fn an_adopting_start_writes_the_record_back() {
+    let Some(rt) = Runtime::new() else { return };
+    let (id, _) = started(&rt.start("adopted", &["sleep", "300"]));
+    let records = rt.server.tmpdir().join("data/runtime-mux/started");
+    std::fs::remove_dir_all(&records).expect("the start records");
+    let (again, adopted) = started(&rt.start("adopted", &["sleep", "300"]));
+    assert!(adopted && again == id, "{again} adopted={adopted}");
+    kill_runtime_server(&rt);
+    exited_once_known(&rt, "adopted", &id);
+}
+
 #[test]
 fn input_reaches_the_process_and_capture_reads_it_back() {
     let Some(rt) = Runtime::new() else { return };
