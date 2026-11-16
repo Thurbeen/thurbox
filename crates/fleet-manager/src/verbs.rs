@@ -1,5 +1,6 @@
 //! The verbs people and workers use: spec writes (`apply`, `delete`), a
-//! person's message (`send`) and the worker's answers (`result`, `declare`).
+//! person's message (`send`), events on a board (`publish_event`,
+//! `list_events`) and the worker's answers (`result`, `declare`).
 //! The CLI calls these and nothing below them, so every rule lives here
 //! once.
 
@@ -9,6 +10,7 @@ use fleet_api::change_request::{self, ChangeRequestSpec};
 use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, Spooled,
 };
+use fleet_api::event::{Appended, CliSource, Filter, Page, Publish, Source};
 use fleet_api::follow::{DECLARED_CHANGE_REQUEST, ForgeSpec, validate_declaration};
 use fleet_api::forge::{ChangeRef, Forge};
 use fleet_api::gateway::{
@@ -578,6 +580,72 @@ pub fn send(
         "{}/{name}: kept conflicting with other writers",
         task::KIND
     )))
+}
+
+/// `fleet event publish` from outside a session: append one event to
+/// `board` as `cli/<user>`, through the store's typed append under its
+/// lock. No lease is needed. A publish whose key this source already used
+/// on the board answers the first event, marked `duplicate`.
+pub fn publish_event(
+    store: &dyn Store,
+    board: &str,
+    user: &str,
+    publish: Publish,
+) -> Result<Appended, StoreError> {
+    let source = Source::Cli(CliSource::new(user).map_err(StoreError::Invalid)?);
+    store
+        .append_events(board, &source, vec![publish], FieldManager::Cli)?
+        .pop()
+        .ok_or_else(|| StoreError::Unknown(format!("{board}: the append answered no event")))
+}
+
+/// The most events one `fleet event list` returns.
+pub const MAX_EVENT_LIST: usize = 10_000;
+const EVENT_READ_PAGE: usize = 1_000;
+
+/// `fleet event list`: the first `limit` events after `after` that `filter`
+/// keeps, oldest first, read through the store without a lock, up to the
+/// head of the Board's log when the list starts: an event published during
+/// the list is left to the next one. `Expired` when the log no longer holds
+/// every event after `after`.
+pub fn list_events(
+    store: &dyn Store,
+    board: &str,
+    after: u64,
+    filter: &Filter,
+    limit: usize,
+) -> Result<Page, StoreError> {
+    if !(1..=MAX_EVENT_LIST).contains(&limit) {
+        return Err(StoreError::Invalid(format!(
+            "limit {limit}: use 1 to {MAX_EVENT_LIST}"
+        )));
+    }
+    let end = store.event_head(board)?;
+    let mut cursor = after;
+    let mut kept = Vec::new();
+    loop {
+        let events = match store.read_events(board, cursor, EVENT_READ_PAGE)? {
+            Page::Events(events) => events,
+            expired @ Page::Expired { .. } => return Ok(expired),
+        };
+        let Some(last) = events.last() else {
+            return Ok(Page::Events(kept));
+        };
+        cursor = last.seq;
+        kept.extend(
+            events
+                .into_iter()
+                .filter(|e| e.seq <= end && filter.matches(e)),
+        );
+        if cursor >= end {
+            kept.truncate(limit);
+            return Ok(Page::Events(kept));
+        }
+        if kept.len() >= limit {
+            kept.truncate(limit);
+            return Ok(Page::Events(kept));
+        }
+    }
 }
 
 /// What `fleet amend` asks for.

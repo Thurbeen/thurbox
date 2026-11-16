@@ -98,7 +98,9 @@ resource representation.
 The store uses a fresh versioned data directory with a format marker, resource
 files, a sequence counter, a lock and the manager lease. Writes use synced
 temporary files and atomic publication under an OS file lock. Generation
-tracks spec changes; resourceVersion tracks store writes. See the
+tracks spec changes; resourceVersion tracks store writes. A Board's events
+are the one exception to whole-file writes: the store appends them to the
+Board's log segments under the same lock. See the
 [store contract](contracts.md#store) for durability and deletion rules.
 
 There is one lease for manager reconciliation. `fleet reconcile` renews it

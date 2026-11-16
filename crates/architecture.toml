@@ -92,6 +92,7 @@ forbidden_methods = [
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
   "history", "capabilities", "post", "react",
   "receive_event", "record_received", "record_beat", "record_refusal", "retire_conversation_task",
+  "append_events",
 ]
 
 # Sessions on a terminal multiplexer, local or on a host over ssh or wsl.exe.
@@ -550,7 +551,9 @@ clippy_guards = [
 
 # Who may name each field manager. Naming one is how code writes as it, and
 # how a caller of the typed inbox mutations names itself: `Cli` appends to
-# `Task.status.inbox` through the manager's `send` verb and owns nothing;
+# `Task.status.inbox` through the manager's `send` verb and to a Board's log
+# through its `publish_event` verb, and owns nothing (a Board's status moves
+# only with the store's typed append);
 # `ForgeController` owns `Task.status.forge` and `GatewayController`
 # `Task.status.gateway`, each appending through the manager's relay write.
 # `Listener` is an account's listener program,

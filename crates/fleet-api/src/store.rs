@@ -373,6 +373,42 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("record_refusal".into()))
     }
+    /// Append events to a Board's log as `source`, under the store lock,
+    /// as a caller `kinds::may_append_events` admits, with no lease. Each publish is checked as
+    /// `event::validate_publish` checks it against the Board's
+    /// `maxDataBytes`, and the batch is refused whole if one fails. A
+    /// publish whose `(source, key)` the log still holds appends nothing and
+    /// answers the event already there. The others get the next `seq`s and
+    /// the store's time. In the same write, retention drops the oldest whole
+    /// segments and the Board's `status.head` and `status.oldest` move;
+    /// nothing else of the Board changes. Retention runs first, so a key
+    /// whose event aged out can be used again.
+    fn append_events(
+        &self,
+        _board: &str,
+        _source: &crate::event::Source,
+        _events: Vec<crate::event::Publish>,
+        _by: FieldManager,
+    ) -> Result<Vec<crate::event::Appended>, StoreError> {
+        Err(StoreError::Unsupported("append_events".into()))
+    }
+    /// At most `limit` events of a Board's log with a `seq` above `after`,
+    /// oldest first; `Expired` when events after `after` are gone. Takes no
+    /// lock. `NotFound` when the Board does not exist.
+    fn read_events(
+        &self,
+        _board: &str,
+        _after: u64,
+        _limit: usize,
+    ) -> Result<crate::event::Page, StoreError> {
+        Err(StoreError::Unsupported("read_events".into()))
+    }
+    /// The last `seq` a Board's log holds, or its `status.head` when that is
+    /// later: a crash between an append and its status write leaves the log
+    /// ahead. Takes no lock. `NotFound` when the Board does not exist.
+    fn event_head(&self, _board: &str) -> Result<u64, StoreError> {
+        Err(StoreError::Unsupported("event_head".into()))
+    }
     /// Only the kind's controller, holding the lease, removes a finalizer.
     fn remove_finalizer(
         &self,

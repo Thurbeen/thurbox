@@ -24,7 +24,7 @@ use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account}
 use fleet_manager::{
     AmendRequest, DeclareOutcome, GatewaySide, Manager, RunOptions, amend, apply,
     apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
-    receive, record_result, send,
+    list_events, publish_event, receive, record_result, send,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::{FileStore, SystemClock};
@@ -219,6 +219,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Events on a Board: publish one, or list what the board holds.
+    Event {
+        #[command(subcommand)]
+        command: EventCommand,
+    },
     /// Chat accounts: what a listener runs per event and per beat, and what it starts from.
     Gateway {
         #[command(subcommand)]
@@ -383,6 +388,63 @@ enum GatewayCommand {
     },
     /// Each account's listener: accepted, resolved, inbound, last delivery.
     Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EventCommand {
+    /// Append one event to a Board as cli/USER, and print it with its seq.
+    Publish {
+        /// The Board to publish to.
+        #[arg(long, default_value = fleet_api::board::SHARED)]
+        board: String,
+        /// The event type: dot-separated segments of a-z, 0-9, '_' and '-';
+        /// the fleet. prefix is Fleet's own.
+        #[arg(long = "type", value_name = "TYPE")]
+        event_type: String,
+        /// What the event is about, such as a repository or a path.
+        #[arg(long)]
+        subject: Option<String>,
+        /// A key that makes a retried publish the same event: the board
+        /// answers the first event published under it, and appends nothing.
+        #[arg(long)]
+        key: Option<String>,
+        /// An id that ties the events of one piece of work together.
+        #[arg(long)]
+        correlation: Option<String>,
+        /// The event's data, as JSON.
+        #[arg(long, value_name = "JSON", allow_hyphen_values = true)]
+        data: String,
+        /// Print the event as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List a Board's events after a cursor, oldest first.
+    List {
+        /// The Board to read.
+        #[arg(long, default_value = fleet_api::board::SHARED)]
+        board: String,
+        /// Only events with a seq above this cursor; 0 lists from the start.
+        #[arg(long, value_name = "SEQ", default_value_t = 0)]
+        after: u64,
+        /// Only this event type; a trailing * matches a prefix.
+        #[arg(long = "type", value_name = "TYPE")]
+        event_type: Option<String>,
+        /// Only this subject; a trailing * matches a prefix.
+        #[arg(long)]
+        subject: Option<String>,
+        /// Only events from this source, such as cli/USER.
+        #[arg(long)]
+        source: Option<String>,
+        /// Only events with this correlation id.
+        #[arg(long)]
+        correlation: Option<String>,
+        /// The most events to print.
+        #[arg(long, value_name = "N", default_value_t = 100)]
+        limit: usize,
+        /// Print the events as a JSON array.
         #[arg(long)]
         json: bool,
     },
@@ -583,7 +645,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
             .or(config.data.dir.clone())
             .or_else(default_data_dir)
             .ok_or_else(|| fail("no data directory: set data.dir in the config file"))?;
-        default_task_config(&FileStore::open(&data_dir)?)?;
+        let store = FileStore::open(&data_dir)?;
+        default_task_config(&store)?;
+        shared_board(&store)?;
         // The profiles `fleet doctor` checks: the bundled ones, then the
         // user's beside this config.
         let harnesses = harness_dir(Some(&path));
@@ -996,6 +1060,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
+        Command::Event { command } => cmd_event(store, command),
         Command::Attach { task, json } => {
             let signals = open_signals(&data_dir)?;
             let runtime = open_runtime(&config, &signals)?;
@@ -1842,6 +1907,120 @@ fn agent_collector() -> Option<fleet_api::harness::Collector> {
     })
 }
 
+fn shared_board(store: &dyn Store) -> Result<(), Failure> {
+    use fleet_api::board::{BoardSpec, KIND, SHARED};
+    let obj: Object = serde_json::from_value(json!({
+        "apiVersion": fleet_api::API_VERSION,
+        "kind": KIND,
+        "metadata": {"name": SHARED},
+        "spec": BoardSpec::default(),
+    }))
+    .map_err(|e| fail(e.to_string()))?;
+    match fleet_manager::verbs::apply(store, obj, &BTreeSet::new(), true) {
+        Ok(_) | Err(StoreError::AlreadyExists(_)) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn cmd_event(store: &dyn Store, command: EventCommand) -> Result<(), Failure> {
+    use fleet_api::event::{Filter, Page, Pattern, Publish};
+    match command {
+        EventCommand::Publish {
+            board,
+            event_type,
+            subject,
+            key,
+            correlation,
+            data,
+            json,
+        } => {
+            let data =
+                serde_json::from_str(&data).map_err(|e| fail(format!("--data: not JSON: {e}")))?;
+            let publish = Publish {
+                event_type,
+                subject,
+                key,
+                correlation,
+                data,
+            };
+            let appended = publish_event(store, &board, &current_user(), publish)?;
+            let e = &appended.event;
+            if json {
+                print_json(&serde_json::to_value(e).map_err(|e| fail(e.to_string()))?);
+            } else {
+                println!(
+                    "{}/{} {} from {}{}",
+                    e.board,
+                    e.seq,
+                    e.event_type,
+                    e.source.name(),
+                    if appended.duplicate {
+                        " (already published under this key)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Ok(())
+        }
+        EventCommand::List {
+            board,
+            after,
+            event_type,
+            subject,
+            source,
+            correlation,
+            limit,
+            json,
+        } => {
+            let filter = Filter {
+                event_type: event_type.as_deref().map(Pattern::new),
+                subject: subject.as_deref().map(Pattern::new),
+                source,
+                correlation,
+            };
+            match list_events(store, &board, after, &filter, limit)? {
+                Page::Expired { oldest } => {
+                    if json {
+                        print_json(&json!({"expired": {"oldest": oldest}}));
+                    }
+                    Err(Failure {
+                        code: exit::CONFLICT,
+                        message: format!(
+                            "Board/{board}: the events after {after} are gone; the oldest {oldest} is the first it holds"
+                        ),
+                        hint: Some(format!(
+                            "list again with --after {} and accept the gap",
+                            oldest - 1
+                        )),
+                    })
+                }
+                Page::Events(events) if json => {
+                    print_json(&serde_json::to_value(&events).map_err(|e| fail(e.to_string()))?);
+                    Ok(())
+                }
+                Page::Events(events) => {
+                    println!(
+                        "{:<8} {:<14} {:<32} {:<24} SUBJECT",
+                        "SEQ", "TIME", "TYPE", "SOURCE"
+                    );
+                    for e in &events {
+                        println!(
+                            "{:<8} {:<14} {:<32} {:<24} {}",
+                            e.seq,
+                            e.time,
+                            e.event_type,
+                            e.source.name(),
+                            e.subject.as_deref().unwrap_or("-")
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
 /// Write the TaskConfig a Task with no `configRef` takes, when the store
 /// holds none: an idle session pauses after 30 minutes. One that is there is
 /// the user's, and stays as it is.
@@ -2170,6 +2349,7 @@ fn served_kind(store: &dyn Store, kind: &str) -> Result<String, Failure> {
         "conversation" => fleet_api::conversation::KIND.to_string(),
         "listener" => fleet_api::listener::KIND.to_string(),
         "crontask" => fleet_api::cron_task::KIND.to_string(),
+        "board" => fleet_api::board::KIND.to_string(),
         _ => kind.to_string(),
     };
     if let Some(served) = store

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 318" role="img" aria-labelledby="title desc">
+<title id="title">How a Board works</title>
+<desc id="desc">In: fleet event publish from outside a session, as cli/user. The store: under its lock, checks each event, keeps the first event of a repeated key, gives the next seq and drops old segments. Out: the log, which fleet event list reads after a cursor, and status.head and status.oldest.</desc>
+<style>
+  svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  @media (prefers-color-scheme: light) { .background{fill:#fff} .ink{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a} .pure{fill:#173b2d} .adapter{fill:#202a33} .process{fill:#493517} .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker></defs>
+<rect class="background" width="900" height="318" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+<text x="20" y="34" font-size="19" font-weight="700">How a Board works</text>
+<text x="20" y="70" font-size="13" font-weight="700" class="muted">in</text>
+<text x="320" y="70" font-size="13" font-weight="700" class="muted">what it does</text>
+<text x="620" y="70" font-size="13" font-weight="700" class="muted">out</text>
+<rect class="box adapter" x="20" y="164" width="260" height="58" rx="8"/>
+<text x="32" y="187" font-size="13.5" font-weight="650">fleet event publish</text>
+<text x="32" y="207" font-size="12.5" class="muted">type, subject, key, data; as cli/&lt;user&gt;</text>
+<rect class="box process" x="620" y="92" width="260" height="58" rx="8"/>
+<text x="632" y="115" font-size="13.5" font-weight="650">The log</text>
+<text x="632" y="135" font-size="12.5" class="muted">fleet event list --after SEQ</text>
+<rect class="box process" x="620" y="236" width="260" height="58" rx="8"/>
+<text x="632" y="259" font-size="13.5" font-weight="650">status.head, status.oldest</text>
+<text x="632" y="279" font-size="12.5" class="muted">the seqs the log holds</text>
+<rect class="box pure" x="320" y="92" width="260" height="202" rx="8"/>
+<text x="450" y="148" font-size="14.5" font-weight="700" text-anchor="middle">The store, under its lock</text>
+<text x="450" y="172" font-size="12.5" text-anchor="middle">checks each event;</text>
+<text x="450" y="190" font-size="12.5" text-anchor="middle">keeps the first of a repeated key;</text>
+<text x="450" y="208" font-size="12.5" text-anchor="middle">gives the next seq;</text>
+<text x="450" y="226" font-size="12.5" text-anchor="middle">drops old segments;</text>
+<text x="450" y="244" font-size="12.5" text-anchor="middle">no controller</text>
+<path class="arrow" d="M280 193 H316"/>
+<path class="arrow" d="M580 121 H616"/>
+<path class="arrow" d="M580 265 H616"/>
+</g>
+</svg>

@@ -93,7 +93,7 @@ fn rename_retrying(from: &Path, to: &Path) -> io::Result<()> {
 
 /// fsync the directory so the new name survives a crash. Windows has no
 /// directory handle to sync; NTFS journals the rename itself.
-fn sync_parent(path: &Path) -> io::Result<()> {
+pub fn sync_parent(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         if let Some(dir) = path.parent() {

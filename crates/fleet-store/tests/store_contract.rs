@@ -3351,3 +3351,270 @@ fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
         1
     );
 }
+
+fn board(name: &str, spec: Value) -> Object {
+    serde_json::from_value(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Board",
+        "metadata": {"name": name},
+        "spec": spec
+    }))
+    .unwrap()
+}
+
+fn cli(user: &str) -> fleet_api::event::Source {
+    fleet_api::event::Source::Cli(fleet_api::event::CliSource::new(user).unwrap())
+}
+
+fn note(key: Option<&str>) -> fleet_api::event::Publish {
+    fleet_api::event::Publish {
+        event_type: "note".into(),
+        subject: None,
+        key: key.map(str::to_string),
+        correlation: None,
+        data: json!(1),
+    }
+}
+
+fn publish(store: &FileStore, board: &str, key: Option<&str>) -> fleet_api::event::Appended {
+    store
+        .append_events(board, &cli("alice"), vec![note(key)], FieldManager::Cli)
+        .unwrap()
+        .pop()
+        .unwrap()
+}
+
+fn page_seqs(store: &FileStore, board: &str, after: u64) -> Vec<u64> {
+    match store.read_events(board, after, 100).unwrap() {
+        fleet_api::event::Page::Events(events) => events.iter().map(|e| e.seq).collect(),
+        expired => panic!("{expired:?}"),
+    }
+}
+
+#[test]
+fn a_board_log_is_appended_only_by_its_typed_mutation() {
+    let dir = Dir::new("board-writers");
+    let store = FileStore::open(&dir.0).unwrap();
+    let b = store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    for by in [
+        FieldManager::Apply,
+        FieldManager::Worker,
+        FieldManager::TaskController,
+    ] {
+        let refused = store.append_events("b", &cli("alice"), vec![note(None)], by);
+        assert!(
+            matches!(refused, Err(StoreError::Forbidden(_))),
+            "{refused:?}"
+        );
+    }
+    let status = store.update_status(
+        "Board",
+        "b",
+        json!({"head": 9, "oldest": 1}),
+        b.metadata.resource_version,
+        FieldManager::TaskController,
+        None,
+    );
+    assert!(
+        matches!(status, Err(StoreError::Forbidden(_))),
+        "{status:?}"
+    );
+    let batch = store
+        .append_events(
+            "b",
+            &cli("alice"),
+            vec![note(Some("k")), note(Some("k")), note(None)],
+            FieldManager::Cli,
+        )
+        .unwrap();
+    let seqs: Vec<(u64, bool)> = batch.iter().map(|a| (a.event.seq, a.duplicate)).collect();
+    assert_eq!(seqs, vec![(1, false), (1, true), (2, false)]);
+    let b = known(store.get("Board", "b")).unwrap();
+    assert_eq!(b.status, json!({"head": 2, "oldest": 1}));
+}
+
+#[test]
+fn a_torn_last_line_is_skipped_by_a_reader_and_cut_by_the_next_append() {
+    let dir = Dir::new("board-torn");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    publish(&store, "b", None);
+    let segment = dir.0.join("boards/b/00000000000000000001.jsonl");
+    let mut bytes = fs::read(&segment).unwrap();
+    bytes.extend_from_slice(br#"{"board":"b","seq":2,"#);
+    fs::write(&segment, &bytes).unwrap();
+    assert_eq!(page_seqs(&store, "b", 0), vec![1]);
+    assert_eq!(publish(&store, "b", None).event.seq, 2);
+    assert_eq!(page_seqs(&store, "b", 0), vec![1, 2]);
+}
+
+#[test]
+fn a_line_appended_before_a_crash_keeps_its_seq() {
+    let dir = Dir::new("board-crash");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    publish(&store, "b", Some("k"));
+    let path = dir.0.join("objects/Board/b.json");
+    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    obj.as_object_mut().unwrap().remove("status");
+    fs::write(&path, serde_json::to_vec(&obj).unwrap()).unwrap();
+    let again = publish(&store, "b", Some("k"));
+    assert_eq!((again.event.seq, again.duplicate), (1, true));
+    let b = known(store.get("Board", "b")).unwrap();
+    assert_eq!(
+        b.status,
+        json!({"head": 1, "oldest": 1}),
+        "a retry corrects the status"
+    );
+    assert_eq!(publish(&store, "b", None).event.seq, 2);
+}
+
+#[test]
+fn retention_by_age_drops_old_segments_and_a_key_from_them() {
+    let dir = Dir::new("board-age");
+    let clock = Arc::new(TestClock(AtomicU64::new(1_000)));
+    let store = FileStore::open_with_clock(&dir.0, clock.clone()).unwrap();
+    store
+        .create(
+            board(
+                "b",
+                json!({"retention": {"maxAgeSeconds": 60, "maxCount": 10}}),
+            ),
+            FieldManager::Apply,
+        )
+        .unwrap();
+    publish(&store, "b", Some("k"));
+    clock.advance(1_000);
+    publish(&store, "b", None);
+    clock.advance(37_000);
+    publish(&store, "b", None);
+    clock.advance(23_500);
+    assert_eq!(publish(&store, "b", None).event.seq, 4);
+    assert_eq!(
+        store.read_events("b", 0, 100).unwrap(),
+        fleet_api::event::Page::Expired { oldest: 2 }
+    );
+    assert_eq!(page_seqs(&store, "b", 1), vec![2, 3, 4]);
+    let reused = publish(&store, "b", Some("k"));
+    assert_eq!((reused.event.seq, reused.duplicate), (5, false));
+}
+
+#[test]
+fn retention_by_age_runs_before_dedupe_and_drops_the_newest_segment_too() {
+    let dir = Dir::new("board-age-newest");
+    let clock = Arc::new(TestClock(AtomicU64::new(1_000)));
+    let store = FileStore::open_with_clock(&dir.0, clock.clone()).unwrap();
+    store
+        .create(
+            board("b", json!({"retention": {"maxAgeSeconds": 60}})),
+            FieldManager::Apply,
+        )
+        .unwrap();
+    publish(&store, "b", Some("k"));
+    publish(&store, "b", None);
+    clock.advance(60_001);
+    let again = publish(&store, "b", Some("k"));
+    assert_eq!((again.event.seq, again.duplicate), (3, false));
+    assert_eq!(
+        store.read_events("b", 1, 100).unwrap(),
+        fleet_api::event::Page::Expired { oldest: 3 }
+    );
+    let b = known(store.get("Board", "b")).unwrap();
+    assert_eq!(b.status, json!({"head": 3, "oldest": 3}));
+}
+
+#[test]
+fn a_duplicate_only_publish_still_applies_retention() {
+    let dir = Dir::new("board-age-duplicate");
+    let clock = Arc::new(TestClock(AtomicU64::new(1_000)));
+    let store = FileStore::open_with_clock(&dir.0, clock.clone()).unwrap();
+    store
+        .create(
+            board(
+                "b",
+                json!({"retention": {"maxAgeSeconds": 60, "maxCount": 10}}),
+            ),
+            FieldManager::Apply,
+        )
+        .unwrap();
+    publish(&store, "b", None);
+    clock.advance(1_000);
+    publish(&store, "b", None);
+    clock.advance(38_000);
+    publish(&store, "b", Some("k"));
+    clock.advance(22_500);
+    let again = publish(&store, "b", Some("k"));
+    assert_eq!((again.event.seq, again.duplicate), (3, true));
+    let b = known(store.get("Board", "b")).unwrap();
+    assert_eq!(b.status, json!({"head": 3, "oldest": 2}));
+}
+
+#[test]
+fn a_lost_or_torn_key_sidecar_is_rebuilt_from_its_segment() {
+    let dir = Dir::new("board-sidecar");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(
+            board("b", json!({"retention": {"maxCount": 10}})),
+            FieldManager::Apply,
+        )
+        .unwrap();
+    publish(&store, "b", Some("sealed"));
+    publish(&store, "b", Some("newest"));
+    let log = dir.0.join("boards/b");
+    fs::remove_file(log.join("00000000000000000001.keys")).unwrap();
+    fs::write(log.join("00000000000000000002.keys"), b"{\"sou").unwrap();
+    for (key, seq) in [("sealed", 1), ("newest", 2)] {
+        let again = publish(&store, "b", Some(key));
+        assert_eq!((again.event.seq, again.duplicate), (seq, true), "{key}");
+    }
+}
+
+#[test]
+fn a_stray_file_in_a_board_log_is_ignored() {
+    let dir = Dir::new("board-stray");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    publish(&store, "b", None);
+    let log = dir.0.join("boards/b");
+    for stray in [
+        ".DS_Store",
+        ".00000000000000000001.jsonl.swp",
+        "1.jsonl",
+        "notes",
+    ] {
+        fs::write(log.join(stray), b"junk").unwrap();
+    }
+    assert_eq!(publish(&store, "b", None).event.seq, 2);
+    assert_eq!(page_seqs(&store, "b", 0), vec![1, 2]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_board_log_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Dir::new("board-modes");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    publish(&store, "b", Some("k"));
+    let log = dir.0.join("boards/b");
+    for path in [
+        dir.0.join("boards"),
+        log.clone(),
+        log.join("00000000000000000001.jsonl"),
+        log.join("00000000000000000001.keys"),
+    ] {
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{} is {mode:o}", path.display());
+    }
+}
