@@ -317,8 +317,8 @@
   border-top: 1px solid var(--border-light);
 }
 
-/* The overview, drawn in the doom style of assets/overview.svg: a metal frame
-   round an ember grid. It is a dark card in both palettes, as the SVG is, so
+/* The overview: the content of assets/overview.svg, drawn in the doom style.
+   A metal frame round an ember grid. It is a dark card in both palettes, so
    its colours are its own rather than the page's. */
 .flow {
   --flow-bg: #0e0606;

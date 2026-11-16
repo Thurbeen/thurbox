@@ -55,7 +55,8 @@ Older pages and Fleet's `spec.host` field use "host" for a place.
 | `fleet shell <task>` names the stream that opens that shell | implemented |
 | Every session's companion shell opens through `fleet shell` on its Fleet, at the session's place, and the runtime keeps it | implemented |
 | thurbox keeps no file of machines of its own: `hosts.toml` is retired | implemented |
-| On an ssh or WSL place: a workspace cloned there, `browse`, `branches`, and the session's pane and shell | planned |
+| On an ssh or WSL place: a workspace cloned there, `browse`, `branches`, and the session's pane and shell | implemented |
+| The new-session modal browses folders and branches on a place on another machine, of any Fleet | implemented |
 | A VM runtime | planned |
 
 ## What thurbox does on another machine
@@ -66,8 +67,10 @@ machines of its own. For a session that runs on another machine:
 - The agent's pane is the stream `fleet attach` names, and the companion
   shell (`Ctrl+T`) is the stream `fleet shell` names. Both run over the
   session's Fleet link.
-- The new-session modal reads a remote Fleet's folders and branches through
-  that Fleet (`fleet runtime browse`, `fleet runtime branches`).
+- The new-session modal reads the folders and branches of a place on another
+  machine through its Fleet (`fleet runtime browse`, `fleet runtime
+  branches`). That place is any place of a remote Fleet, or a place of this
+  machine's Fleet other than `local`.
 - Diffs, git stats and plugin runs refuse the session. They read this
   machine's disk (`SessionRow::workspace_reachable`).
 - An image dropped onto the session is refused with a message: the path
@@ -147,8 +150,9 @@ when the laptop sleeps.
 
 ### 3. One Fleet, several places
 
-Status: `runtime-mux` runs sessions on an ssh place and in a WSL distro. Each
-workspace there is a directory already on the place. No VM runtime ships yet.
+Status: `runtime-mux` runs sessions on an ssh place and in a WSL distro. It
+clones each session's workspace on the place, and the session's pane and
+shell open there. No VM runtime ships yet.
 
 One Fleet runs sessions on another machine, in a WSL distro or in a VM. Declare each place in
 Fleet's config, under its runtime
@@ -181,7 +185,7 @@ it. Nothing installs silently.
 
 ## The new-session modal
 
-Status: implemented, but for browsing a remote Fleet's folders.
+Status: implemented. No VM runtime ships yet, so `vm/sandbox` is an example.
 
 ```text
 New session · Fleet
