@@ -448,9 +448,11 @@ fn a_started_key_reads_exited_once_its_server_is_gone_until_a_stop() {
         .args(["-L", SOCKET, "kill-server"])
         .output()
         .expect("run tmux");
+    let answer = rt.inspect_until("rebooted", |a| a.get("known").is_some());
     assert_eq!(
-        rt.inspect("rebooted")["known"],
-        json!({"exited": {"id": id, "code": null}})
+        answer["known"],
+        json!({"exited": {"id": id, "code": null}}),
+        "{answer}"
     );
     let list = rt.call("list", json!({"protocol": 1}));
     assert_eq!(list["known"]["keys"], json!(["rebooted"]), "{list}");

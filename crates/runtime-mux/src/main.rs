@@ -331,7 +331,7 @@ fn kept(server: &str) -> protocol::Kept {
             format!("{prefix}runtime-mux-{server}.paused-"),
             "pause mark",
         ),
-        started: protocol::Marks::new(started, format!("{server}."), "start record"),
+        started: protocol::Marks::new(started, format!("{server}.started-"), "start record"),
     }
 }
 
