@@ -708,6 +708,17 @@ fn an_unreachable_host_keeps_its_attention_visible_when_folded() {
     assert!(!frame.contains("remote-alpha"), "{frame}");
 }
 
+#[test]
+fn an_unreachable_fleet_hides_a_stopped_rows_last_reason() {
+    let host = host();
+    let mut snapshot = snapshot();
+    snapshot.sessions[0].status = SessionState::Unreachable;
+    snapshot.sessions[0].state_why = Some("paused · idle".into());
+    let frame = list_text(&host, &snapshot, &registry_for(&host));
+    assert!(frame.contains("unreachable"), "{frame}");
+    assert!(!frame.contains("paused · idle"), "{frame}");
+}
+
 fn publish_in(host: &LuaHost, snapshot: &Snapshot) {
     publish_with(host, snapshot, &registry_for(host));
 }

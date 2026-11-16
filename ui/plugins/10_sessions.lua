@@ -122,9 +122,6 @@ local function agent_status(session)
     end
     return text, nil
   end
-  if session.state_why then
-    return session.state_why, nil
-  end
   -- Nothing the agent said can be current on a Fleet we cannot ask, so the
   -- row says why instead of showing a last message as if it were live.
   if session.status == "unreachable" then
@@ -132,6 +129,9 @@ local function agent_status(session)
       return "Fleet " .. session.fleet .. " unreachable", nil
     end
     return "unreachable", nil
+  end
+  if session.state_why then
+    return session.state_why, nil
   end
   -- The source never displaces what the agent said: a narrow list keeps the
   -- reason and drops the action, so with an action the source follows it.
