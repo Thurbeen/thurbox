@@ -1444,19 +1444,25 @@ mod tests {
 
     /// A refresh that fails once (ssh exits 255 while the place picker
     /// opens) marks the Fleet unreachable, and the next `version` poll that
-    /// answers marks it up again: the published state has one owner.
+    /// answers marks it up again: the published state has one owner. Only
+    /// the refresh is refused, and every poll is held until the refresh has
+    /// published, so no poll's own answer can stand in for it.
     #[cfg(unix)]
     #[test]
     fn a_fleet_unreachable_for_one_refresh_is_up_again_at_the_next_poll() {
         let remote = crate::fleet_link::testing::Remote::new(
             "here=$(dirname \"$0\")\n\
              case \"$1\" in\n\
-             version) [ -e \"$here/down\" ] && { echo 'no route' >&2; exit 255; }; echo '{\"apiVersions\":[\"fleet/v1alpha1\"],\"manager\":{\"held\":true}}' ;;\n\
-             runtime) [ -e \"$here/down\" ] && exit 255; echo '{\"places\":null}' ;;\n\
+             version) [ -e \"$here/refused\" ] && { rm \"$here/refused\"; echo 'no route' >&2; exit 255; }\n\
+             while [ -e \"$here/hold\" ]; do sleep 0.05; done\n\
+             echo '{\"apiVersions\":[\"fleet/v1alpha1\"],\"manager\":{\"held\":true}}' ;;\n\
+             runtime) [ -e \"$here/down\" ] && { rm \"$here/down\"; touch \"$here/refused\"; exit 255; }\n\
+             echo '{\"places\":null}' ;;\n\
              watch) exec sleep 60 ;;\n\
              esac",
         );
         let down = remote.dir().join("remote/down");
+        let hold = remote.dir().join("remote/hold");
         crate::paths::with_path(remote.path(), || {
             let mut store = super::super::SnapshotStore::with_source(
                 Box::new(FleetWatch::spawn_every(remote.link.clone(), SOON)),
@@ -1478,25 +1484,11 @@ mod tests {
                 }
             };
             until(&mut store, FleetState::Up);
-            let polls = || {
-                remote
-                    .calls()
-                    .iter()
-                    .filter(|call| call.ends_with("version --json"))
-                    .count()
-            };
-            let polled = polls();
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while polls() == polled {
-                assert!(std::time::Instant::now() < deadline, "no second poll");
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let the_logged_poll_has_answered = Duration::from_millis(200);
-            std::thread::sleep(the_logged_poll_has_answered);
+            std::fs::write(&hold, "").expect("hold");
             std::fs::write(&down, "").expect("down");
             store.want_places(Some("devbox".into()));
             until(&mut store, FleetState::Unreachable);
-            std::fs::remove_file(&down).expect("up");
+            std::fs::remove_file(&hold).expect("release");
             until(&mut store, FleetState::Up);
         });
     }
