@@ -276,8 +276,9 @@ key, never by repeating the effect blindly. The contract tests named in
 Each status field has one owner, declared in `crates/architecture.toml` and
 checked by `arch-rules`. The exceptions are the shared writes
 [contracts.md](fleet/contracts.md) lists: the inbox, `status.answered`, a
-Conversation's `status.received` and a Listener's beat fields. Every write to
-one of them is a typed store mutation.
+Conversation's `status.received`, a Listener's beat fields, and a Board's
+`status.head` and `status.oldest`. Every write to one of them is a typed store
+mutation.
 
 ### Runtimes
 

@@ -1907,9 +1907,6 @@ fn agent_collector() -> Option<fleet_api::harness::Collector> {
     })
 }
 
-/// Write the TaskConfig a Task with no `configRef` takes, when the store
-/// holds none: an idle session pauses after 30 minutes. One that is there is
-/// the user's, and stays as it is.
 fn shared_board(store: &dyn Store) -> Result<(), Failure> {
     use fleet_api::board::{BoardSpec, KIND, SHARED};
     let obj: Object = serde_json::from_value(json!({
@@ -2024,6 +2021,9 @@ fn cmd_event(store: &dyn Store, command: EventCommand) -> Result<(), Failure> {
     }
 }
 
+/// Write the TaskConfig a Task with no `configRef` takes, when the store
+/// holds none: an idle session pauses after 30 minutes. One that is there is
+/// the user's, and stays as it is.
 fn default_task_config(store: &dyn Store) -> Result<(), Failure> {
     use fleet_api::config::{DEFAULT_PAUSE_AFTER_MS, DEFAULT_TASK_CONFIG, TASK_CONFIG};
     let obj: Object = serde_json::from_value(json!({

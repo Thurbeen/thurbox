@@ -1628,11 +1628,6 @@ fn plugin_identity_and_execution_stay_behind_the_gate_and_manager() {
     }
 }
 
-/// The Gateway mirror's rules, against the real rules file: the two new
-/// controllers' field managers are named by the API and the controllers
-/// alone, the listener's by the API, the manager's verb and the store that
-/// checks it, and the four typed mutations are manager methods the CLI may
-/// not call.
 #[test]
 fn the_rules_keep_board_appends_with_the_publish_verb() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
@@ -1645,6 +1640,11 @@ fn the_rules_keep_board_appends_with_the_publish_verb() {
     );
 }
 
+/// The Gateway mirror's rules, against the real rules file: the two new
+/// controllers' field managers are named by the API and the controllers
+/// alone, the listener's by the API, the manager's verb and the store that
+/// checks it, and the four typed mutations are manager methods the CLI may
+/// not call.
 #[test]
 fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
