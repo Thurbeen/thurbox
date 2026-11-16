@@ -403,6 +403,12 @@ pub trait Store {
     ) -> Result<crate::event::Page, StoreError> {
         Err(StoreError::Unsupported("read_events".into()))
     }
+    /// The last `seq` a Board's log holds, or its `status.head` when that is
+    /// later: a crash between an append and its status write leaves the log
+    /// ahead. Takes no lock. `NotFound` when the Board does not exist.
+    fn event_head(&self, _board: &str) -> Result<u64, StoreError> {
+        Err(StoreError::Unsupported("event_head".into()))
+    }
     /// Only the kind's controller, holding the lease, removes a finalizer.
     fn remove_finalizer(
         &self,

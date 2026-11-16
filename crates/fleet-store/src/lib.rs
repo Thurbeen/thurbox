@@ -1477,6 +1477,10 @@ impl Store for FileStore {
         self.read_board_events(board, after, limit)
     }
 
+    fn event_head(&self, board: &str) -> Result<u64, StoreError> {
+        self.board_log_head(board)
+    }
+
     fn remove_finalizer(
         &self,
         kind: &str,

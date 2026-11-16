@@ -605,7 +605,7 @@ const EVENT_READ_PAGE: usize = 1_000;
 
 /// `fleet event list`: the first `limit` events after `after` that `filter`
 /// keeps, oldest first, read through the store without a lock, up to the
-/// Board's `status.head` when the list starts: an event published during
+/// head of the Board's log when the list starts: an event published during
 /// the list is left to the next one. `Expired` when the log no longer holds
 /// every event after `after`.
 pub fn list_events(
@@ -620,7 +620,7 @@ pub fn list_events(
             "limit {limit}: use 1 to {MAX_EVENT_LIST}"
         )));
     }
-    let end = board_head(store, board)?;
+    let end = store.event_head(board)?;
     let mut cursor = after;
     let mut kept = Vec::new();
     loop {
@@ -645,22 +645,6 @@ pub fn list_events(
             kept.truncate(limit);
             return Ok(Page::Events(kept));
         }
-    }
-}
-
-fn board_head(store: &dyn Store, board: &str) -> Result<u64, StoreError> {
-    match store.get(fleet_api::board::KIND, board) {
-        Observation::Known(Some(obj)) if obj.status.is_null() => Ok(0),
-        Observation::Known(Some(obj)) => {
-            serde_json::from_value::<fleet_api::board::BoardStatus>(obj.status)
-                .map(|st| st.head)
-                .map_err(|e| StoreError::Unknown(format!("Board/{board}: status: {e}")))
-        }
-        Observation::Known(None) => Err(StoreError::NotFound(format!(
-            "{}/{board}",
-            fleet_api::board::KIND
-        ))),
-        Observation::Unknown { why } => Err(StoreError::Unknown(why)),
     }
 }
 

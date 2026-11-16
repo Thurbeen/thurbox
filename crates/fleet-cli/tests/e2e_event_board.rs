@@ -262,16 +262,17 @@ fn a_deleted_board_takes_its_log_with_it() {
 struct BusyBoard<'a> {
     inner: &'a fleet_store::FileStore,
     reads: std::cell::Cell<u32>,
+    published_type: &'static str,
 }
 
 impl Store for BusyBoard<'_> {
-    fn read_events(&self, board: &str, after: u64, _limit: usize) -> Result<Page, StoreError> {
+    fn read_events(&self, board: &str, after: u64, limit: usize) -> Result<Page, StoreError> {
         self.reads.set(self.reads.get() + 1);
         if self.reads.get() > 20 {
             return Err(StoreError::Busy("the list never ended".into()));
         }
         let noise = Publish {
-            event_type: "noise".into(),
+            event_type: self.published_type.into(),
             subject: None,
             key: None,
             correlation: None,
@@ -280,7 +281,10 @@ impl Store for BusyBoard<'_> {
         let source = Source::Cli(CliSource::new("busy").unwrap());
         self.inner
             .append_events(board, &source, vec![noise], FieldManager::Cli)?;
-        self.inner.read_events(board, after, 1)
+        self.inner.read_events(board, after, limit)
+    }
+    fn event_head(&self, board: &str) -> Result<u64, StoreError> {
+        self.inner.event_head(board)
     }
     fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>> {
         self.inner.get(kind, name)
@@ -389,6 +393,7 @@ fn a_list_ends_at_the_head_it_started_from_while_others_publish() {
     let busy = BusyBoard {
         inner: &store,
         reads: std::cell::Cell::new(0),
+        published_type: "noise",
     };
     let filter = Filter {
         event_type: Some(Pattern::new("absent")),
@@ -396,4 +401,41 @@ fn a_list_ends_at_the_head_it_started_from_while_others_publish() {
     };
     let page = fleet_manager::list_events(&busy, "shared", 0, &filter, 10).unwrap();
     assert_eq!(page, Page::Events(Vec::new()));
+}
+
+#[test]
+fn a_list_keeps_no_matching_event_published_after_it_started() {
+    let env = board_env("board-busy-match");
+    publish(&env, &["--type", "wanted", "--data", "1"]);
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    let busy = BusyBoard {
+        inner: &store,
+        reads: std::cell::Cell::new(0),
+        published_type: "wanted",
+    };
+    let filter = Filter {
+        event_type: Some(Pattern::new("wanted")),
+        ..Filter::default()
+    };
+    let Page::Events(events) = fleet_manager::list_events(&busy, "shared", 0, &filter, 10).unwrap()
+    else {
+        panic!("the list expired");
+    };
+    let seqs: Vec<u64> = events.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![1]);
+}
+
+#[test]
+fn a_list_shows_events_a_crash_left_past_the_board_status() {
+    let env = board_env("board-crash-list");
+    publish(&env, &["--type", "a", "--data", "1"]);
+    let path = env.data.join("objects/Board/shared.json");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj.as_object_mut().unwrap().remove("status");
+    std::fs::write(&path, serde_json::to_vec(&obj).unwrap()).unwrap();
+    let seqs: Vec<u64> = list(&env, &[])
+        .iter()
+        .map(|e| e["seq"].as_u64().unwrap())
+        .collect();
+    assert_eq!(seqs, vec![1]);
 }

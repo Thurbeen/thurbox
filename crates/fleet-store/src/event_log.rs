@@ -300,6 +300,30 @@ impl FileStore {
             board::KIND
         )))
     }
+
+    pub(super) fn board_log_head(&self, name: &str) -> Result<u64, StoreError> {
+        for _ in 0..READ_TRIES {
+            let obj = match self.read(board::KIND, name) {
+                Observation::Known(Some(o)) => o,
+                Observation::Known(None) => {
+                    return Err(StoreError::NotFound(format!("{}/{name}", board::KIND)));
+                }
+                Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+            };
+            let head = board_status(&obj)?.head;
+            let Some(newest) = self.segments(name)?.pop() else {
+                return Ok(head);
+            };
+            if let Some(events) = read_segment(&newest.path)? {
+                let logged = events.last().map_or(newest.first - 1, |e| e.seq);
+                return Ok(head.max(logged));
+            }
+        }
+        Err(StoreError::Busy(format!(
+            "{}/{name}: the log kept changing under the read",
+            board::KIND
+        )))
+    }
 }
 
 impl NewestSegment {
