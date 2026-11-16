@@ -173,7 +173,7 @@ impl Config {
                  the store it names. Move both aside (`{config}` and `{store}`) and run \
                  `fleet init` to write a Fleet 3 config, then copy [forge] and [plugins] over by \
                  hand; or keep Fleet and thurbox 2.x (install with \
-                 VERSION=v2.x.y). See docs/thurbox/releasing.md, \"v2 and v3\"",
+                 VERSION=v2.x.y). See docs/migrating-to-v3.md",
                 path = path.display(),
                 config = move_aside(&path.display().to_string(), cfg!(windows)),
                 store = move_aside(&store.display().to_string(), cfg!(windows)),

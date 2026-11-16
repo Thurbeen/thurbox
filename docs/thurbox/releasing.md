@@ -75,7 +75,8 @@ and the release assets are the same either way.
 the same binary names. `main` releases 3.x (`RELEASE_LINE = 3`); 2.x is
 maintained on `v2.x`. **No 2.x install moves to 3.x unless its user reinstalls
 on purpose.** Everything below exists to keep that true for installs whose
-update code can no longer change.
+update code can no longer change. [Migrating to v3](../migrating-to-v3.md)
+owns the steps an operator takes to move.
 
 ### What every shipped updater does
 
@@ -138,11 +139,12 @@ The header badge only offers the line. 3.x carries the same rule with
    that follows `main` builds 3.x on its next `nix flake update`; point it at
    `v2.x` or a 2.x tag to stay on 2.x.
 5. **State**: 3.x keeps 2.x's names: the config directory `~/.config/thurbox`,
-   the data directory `~/.local/share/thurbox`, the `thurbox` tmux socket, and
-   Fleet's `~/.config/fleet` and `~/.local/share/fleet`. So 3.x replaces 2.x on
-   a machine. The two cannot run side by side: they install the same programs,
-   use one tmux server, and the agent hooks call whichever `thurbox-cli` is on
-   `PATH`. What 3.x does with what 2.x left:
+   the data directory `~/.local/share/thurbox`, the interface's `thurbox` tmux
+   socket, and Fleet's `~/.config/fleet` and `~/.local/share/fleet`. Fleet 3's
+   `runtime-mux` runs Task sessions on a socket of its own, `runtime-mux`. So
+   3.x replaces 2.x on a machine. The two cannot run side by side: they
+   install the same programs, share those directories, and the agent hooks
+   call whichever `thurbox-cli` is on `PATH`. What 3.x does with what 2.x left:
    - `settings.toml` loads. A key 3.x no longer reads is reported, not refused.
    - `hosts.toml` and `automations.json` are not read. `thurbox-cli doctor`
      warns about each and names what replaces it.
@@ -154,10 +156,9 @@ The header badge only offers the line. 3.x carries the same rule with
      `fleet init` points Fleet 3 at the same store directory, so both move
      aside together.
 
-   What a user does: back up those four directories before installing 3.x.
-   Then move Fleet 2.x's config and store aside and run `fleet init` (the
-   refusal prints both paths). To stay on 2.x instead, install with
-   `VERSION=v2.x.y`: its updater then stays on 2.x.
+   What a user does is in [Migrating to v3](../migrating-to-v3.md). To
+   stay on 2.x instead, install with `VERSION=v2.x.y`: its updater then stays
+   on 2.x.
 
 ### Cutting the major, and 2.x after it
 

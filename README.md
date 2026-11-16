@@ -66,9 +66,7 @@ irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 
 ```
 
 The installer puts `thurbox` (the interface), `thurbox-cli`, `fleet`,
-`runtime-mux` and `workspace-git` on your `PATH`. This needs a v3 release: until
-one is published, the installer installs the latest 2.x release, which has no
-Fleet. You also need:
+`runtime-mux` and `workspace-git` on your `PATH`. You also need:
 
 - **tmux ≥ 3.2**, or [psmux](https://github.com/psmux/psmux) ≥ 3.3.8 on native Windows
 - **git**
@@ -91,7 +89,9 @@ Then run `fleet init`, `fleet doctor` and `fleet up`
 ([Fleet's install](https://thurbox.thurbeen.eu/docs/fleet-install.html)).
 
 **Upgrading from 2.x:** a 2.x install never updates itself to 3.x, and
-`thurbox-cli update` stays on 2.x. Run the install script again.
+`thurbox-cli update` stays on 2.x. Run the install script again, then follow
+[Migrating to v3](docs/migrating-to-v3.md): 3.x carries over no 2.x
+session and no Fleet 2 config.
 
 `cargo build --release` in a clone builds every program from source. Homebrew,
 the AUR, Nix, winget, Chocolatey and uninstalling are on the

@@ -42,8 +42,8 @@ fleet up</code></pre>
   Nothing updates a fleet-only install: to update it, run the installer again.
 </p>
 <p>
-  The script needs a 3.x release. Until one is published, it installs the latest 2.x release,
-  which has no Fleet.
+  Moving a Fleet 2 install to Fleet 3 is a reinstall and a new config: follow the migration
+  guide the <a href="https://github.com/Thurbeen/thurbox#install">README</a> links.
 </p>
 <p>Then create your first Task: <a href="fleet-get-started.html">Get started</a>.</p>
 
@@ -56,6 +56,8 @@ fleet up</code></pre>
   sessions come back after a reboot, without a login. A user service does not read your login
   <code>PATH</code>: name the directories that hold <code>fleet</code>,
   <code>runtime-mux</code>, <code>tmux</code> and your coding agents.
+  <code>KillMode=process</code> keeps the tmux server that <code>fleet up</code> starts, and
+  every session on it, when the unit stops or restarts.
 </p>
 <pre data-title="~/.config/systemd/user/fleet.service"><code class="language-toml">[Unit]
 Description=Fleet manager
@@ -63,6 +65,7 @@ Description=Fleet manager
 [Service]
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/bin/fleet up
+KillMode=process
 Restart=on-failure
 RestartSec=15
 
