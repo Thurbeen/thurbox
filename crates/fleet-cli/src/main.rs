@@ -2562,6 +2562,27 @@ fn paused(obj: &Object) -> bool {
         .is_ok_and(|st| fleet_api::condition::is_true(&st.conditions, "Paused"))
 }
 
+fn refuse_unresumable(obj: &Object, task: &str) -> Result<(), Failure> {
+    let held = obj.spec.get("dispatch") != Some(&json!(true));
+    let stalled = obj.status.get("phase") == Some(&json!("Stalled"));
+    if !held && !stalled {
+        return Ok(());
+    }
+    let (state, hint) = if held {
+        ("held", "set spec.dispatch to true to let Fleet resume it")
+    } else {
+        (
+            "stalled",
+            "Stalled is terminal: delete the Task and apply it again",
+        )
+    };
+    Err(Failure {
+        code: exit::NOT_FOUND,
+        message: format!("Task/{task} is paused and {state}, so Fleet resumes nothing for it"),
+        hint: Some(hint.into()),
+    })
+}
+
 fn wait_for_resume(store: &dyn Store, task: &str) -> Result<(), Failure> {
     wake(store, &SystemClock, task)?;
     let deadline = std::time::Instant::now() + RESUME_WAIT;
@@ -2612,6 +2633,7 @@ fn cmd_open(
         });
     };
     if paused(&obj) {
+        refuse_unresumable(&obj, task)?;
         wait_for_resume(store, task)?;
     }
     let argv = match ask(&session) {

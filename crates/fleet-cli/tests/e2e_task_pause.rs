@@ -371,7 +371,7 @@ fn a_view_asked_for_before_the_pause_resumes_nothing() {
 }
 
 #[test]
-fn only_a_view_asks_for_a_paused_session() {
+fn task_controller_keeps_a_views_request_as_it_is() {
     let env = setup("pause-view-owner", vec![task("t1")]);
     pause(&env, "t1");
     let path = env.object_path("Task", "t1");
@@ -384,4 +384,21 @@ fn only_a_view_asks_for_a_paused_session() {
         json!(u64::MAX),
         "TaskController keeps the view's field as it is"
     );
+}
+
+#[test]
+fn a_view_on_a_paused_held_task_says_so_at_once() {
+    let env = setup("pause-view-held", vec![task("t1")]);
+    pause(&env, "t1");
+    let mut held = task("t1");
+    held["spec"]["dispatch"] = json!(false);
+    env.apply(json!([held])).ok();
+
+    let started = std::time::Instant::now();
+    env.fleet(&["attach", "t1", "--json"])
+        .code(3)
+        .stderr_has("Task/t1 is paused and held");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    env.reconcile().ok();
+    assert_eq!(env.calls("resume"), 0);
 }

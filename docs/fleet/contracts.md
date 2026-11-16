@@ -1301,7 +1301,8 @@ is wrapped as `fleet term-bridge -- <argv>`, so a view only ever gets a
 stream. On a Task with `Paused=True`, Fleet first sets
 `status.wakeRequestedAt`, which TaskController resumes the session for, and
 waits up to 60 seconds for `Paused` to leave True. A Task still paused after
-that wait exits 3 and says it is paused. A Task with no session yet, a
+that wait exits 3 and says it is paused. A paused Task that is held or
+Stalled exits 3 at once, because Fleet never resumes it. A Task with no session yet, a
 runtime that does not declare `attach` and a key the runtime holds no
 process under exit 3; an Unknown answer exits 4.
 Without `--json` the argv is printed one argument per line.

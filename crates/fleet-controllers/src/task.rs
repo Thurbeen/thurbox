@@ -2217,8 +2217,6 @@ fn latest_other_prompt_seq(reported: &fleet_api::signal::Reported, digest: &str)
         .unwrap_or_default()
 }
 
-/// The oldest inbox entry still to deliver: an entry given up on after its
-/// sends ran out stays queued but blocks nothing.
 fn wake_requested(st: &TaskStatus) -> bool {
     let paused_at = condition(&st.conditions, PAUSED)
         .filter(|c| c.status == ConditionStatus::True)
@@ -2228,6 +2226,8 @@ fn wake_requested(st: &TaskStatus) -> bool {
         .is_some_and(|(asked, paused)| asked >= paused)
 }
 
+/// The oldest inbox entry still to deliver: an entry given up on after its
+/// sends ran out stays queued but blocks nothing.
 fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
     st.inbox.iter().find(|e| {
         !st.delivery_attempts
