@@ -86,7 +86,7 @@ repositories.
 | `brief` | TaskController | `{key, generation, recovered}`: the newest brief or amendment the worker received. A result names this generation. |
 | `spawnAttempts`, `briefSends`, `materializeAttempts`, `cleanAttempts`, `releaseAttempts`, `briefProbeFailures`, `revivals`, `reviveAttempts`, `pauses`, `resumes`, `resumeAttempts`, `catchUps`, `catchUp` | TaskController | Counters and keys of bounded retries. Three failures raise `NeedsAttention`. |
 | `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |
-| `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. |
+| `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. |
 | `result` | the worker, `fleet result` | The worker's claim: outcome, generation, summary, artifacts, outputs. See [Worker result](#worker-result). |
 | `declared` | the worker, `fleet declare` | Facts the worker declared, each a JSON object with a string `kind`. |
 | `forge` | ForgeController | One entry per declared change, and its conditions. See [Following declared changes](#following-declared-changes). |
@@ -250,8 +250,9 @@ counts as delivered once the agent's prompt hook reports it through
 repeated. A harness with no prompt hook falls back on the runtime's journal.
 An entry that exhausts its sends raises
 `NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing: later
-entries are still delivered. An entry whose journal stays unreadable for 3 reads
-raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
+entries are still delivered. An entry whose journal stays unreadable for 3 reads,
+or whose prompt hook reported another prompt since the send and not this
+one, raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
 again, stays in `status.inbox`, and holds back no later entry. An entry the
 runtime only queued, where the agent does not read it, raises
 `NeedsAttention/DeliveryQueued` naming it, with the same outcome. More than

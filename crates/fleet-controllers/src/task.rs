@@ -1063,7 +1063,15 @@ impl Pass<'_, '_> {
                         via,
                         may_hold,
                     },
-                    Proof::Awaiting(_) | Proof::NotAsked => Sent::Pending,
+                    Proof::Awaiting(why) => {
+                        self.record_prompt_boundary(key);
+                        if self.another_prompt_reported_since(key) {
+                            self.give_up_unconfirmed(key, what, &why)
+                        } else {
+                            Sent::Pending
+                        }
+                    }
+                    Proof::NotAsked => Sent::Pending,
                 };
             }
             // Queued where the agent does not read it: given up, never sent
@@ -1125,20 +1133,8 @@ impl Pass<'_, '_> {
                         .entry(key.to_string())
                         .or_default();
                     attempt.probe_failures += 1;
-                    let failures = attempt.probe_failures;
-                    if failures >= MAX_ATTEMPTS {
-                        // Unknown is not absence, so the entry is never sent
-                        // again; it is given up so that later entries go out.
-                        attempt.failed = true;
-                        self.st.not_before = None;
-                        self.needs_attention(
-                            "DeliveryUnconfirmed",
-                            format!(
-                                "{what}: its delivery could not be read: {why}. It is not sent again; \
-                                 it stays in status.inbox and later entries are delivered past it"
-                            ),
-                        );
-                        return Sent::GivenUp;
+                    if attempt.probe_failures >= MAX_ATTEMPTS {
+                        return self.give_up_unconfirmed(key, what, &why);
                     }
                     self.wait_from(self.now());
                 }
@@ -1147,6 +1143,54 @@ impl Pass<'_, '_> {
             return Sent::Pending;
         }
         self.send_keyed(session, key, text, what)
+    }
+
+    fn record_prompt_boundary(&mut self, key: &str) {
+        let reported = match (self.st.prompts.get(key), &self.input.observations.signals) {
+            (Some(digest), Some(Observation::Known(r))) => latest_other_prompt_seq(r, digest),
+            _ => return,
+        };
+        let attempt = self
+            .st
+            .delivery_attempts
+            .entry(key.to_string())
+            .or_default();
+        attempt.other_prompt_seq.get_or_insert(reported);
+    }
+
+    fn another_prompt_reported_since(&self, key: &str) -> bool {
+        let before = self
+            .st
+            .delivery_attempts
+            .get(key)
+            .and_then(|a| a.other_prompt_seq);
+        match (
+            before,
+            self.st.prompts.get(key),
+            &self.input.observations.signals,
+        ) {
+            (Some(before), Some(digest), Some(Observation::Known(r))) => {
+                latest_other_prompt_seq(r, digest) > before
+            }
+            _ => false,
+        }
+    }
+
+    fn give_up_unconfirmed(&mut self, key: &str, what: &str, why: &str) -> Sent {
+        self.st
+            .delivery_attempts
+            .entry(key.to_string())
+            .or_default()
+            .failed = true;
+        self.st.not_before = None;
+        self.needs_attention(
+            "DeliveryUnconfirmed",
+            format!(
+                "{what}: its delivery could not be read: {why}. It is not sent again; \
+                 it stays in status.inbox and later entries are delivered past it"
+            ),
+        );
+        Sent::GivenUp
     }
 
     /// Send under `key`, to a session observed ready on this pass, at most
@@ -1177,6 +1221,11 @@ impl Pass<'_, '_> {
         ) {
             return Sent::Pending;
         }
+        let digest = fleet_api::signal::prompt_digest(&text);
+        let other_prompt_seq = match &self.input.observations.signals {
+            Some(Observation::Known(r)) => Some(latest_other_prompt_seq(r, &digest)),
+            _ => None,
+        };
         let attempt = self
             .st
             .delivery_attempts
@@ -1184,6 +1233,7 @@ impl Pass<'_, '_> {
             .or_default();
         attempt.sends += 1;
         attempt.probe_failures = 0;
+        attempt.other_prompt_seq = other_prompt_seq;
         self.st.not_before = None;
         self.st.receipts.remove(key);
         self.intend(key.to_string(), Action::Brief { session, text });
@@ -2153,6 +2203,16 @@ fn known_receipt(st: &TaskStatus, key: &str) -> bool {
     st.receipts
         .get(key)
         .is_some_and(|r| !r.outcome.is_unknown())
+}
+
+fn latest_other_prompt_seq(reported: &fleet_api::signal::Reported, digest: &str) -> u64 {
+    reported
+        .prompt_seqs
+        .iter()
+        .filter(|(d, _)| *d != digest)
+        .map(|(_, seq)| *seq)
+        .max()
+        .unwrap_or_default()
 }
 
 /// The oldest inbox entry still to deliver: an entry given up on after its

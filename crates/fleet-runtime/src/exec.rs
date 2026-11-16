@@ -692,6 +692,7 @@ impl ExecRuntime {
                 state: State::Started,
                 prompts: Vec::new(),
                 conversation: None,
+                seq: None,
             };
             // On another host the file is the place's: the restart is kept
             // in Fleet's own data, as the file's length then, and a start

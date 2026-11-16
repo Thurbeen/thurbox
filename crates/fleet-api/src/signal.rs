@@ -76,6 +76,11 @@ pub struct Signal {
     /// The harness's own id of the conversation, for its resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
+    /// The file's length when this line was appended, plus one: an order
+    /// of reports that no clock sets, since the file only grows. It is never
+    /// 0, which stands for no report at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 impl Signal {
@@ -148,6 +153,7 @@ impl Signal {
             state,
             prompts,
             conversation: conversation.filter(|c| !c.is_empty()),
+            seq: None,
         }
     }
 }
@@ -160,6 +166,9 @@ pub struct Reported {
     /// Every prompt digest reported, with when it was last reported: a
     /// send is proven only by a report made after it.
     pub prompts: BTreeMap<String, Millis>,
+    /// Every prompt digest reported on a line that carries its place in the
+    /// file, with its latest place: the order of reports, by no clock.
+    pub prompt_seqs: BTreeMap<String, u64>,
     /// The last conversation id reported.
     pub conversation: Option<String>,
 }
@@ -175,6 +184,10 @@ impl Reported {
             };
             r.state = Some(s.state);
             for digest in s.prompts {
+                if let Some(seq) = s.seq {
+                    let latest = r.prompt_seqs.entry(digest.clone()).or_default();
+                    *latest = (*latest).max(seq);
+                }
                 let at = r.prompts.entry(digest).or_default();
                 *at = (*at).max(s.at);
             }

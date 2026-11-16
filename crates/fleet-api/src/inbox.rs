@@ -160,6 +160,12 @@ pub struct DeliveryAttempt {
     /// later entries are delivered past it.
     #[serde(default)]
     pub failed: bool,
+    /// The latest place in the agent's signal file of a report of another
+    /// prompt than this entry's, when the boundary was recorded: a later
+    /// one is evidence the agent took a prompt that was not this one. No
+    /// clock is compared: a host's clock may differ from Fleet's or step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other_prompt_seq: Option<u64>,
 }
 
 /// The entries still to deliver: every entry but those given up on.

@@ -909,6 +909,7 @@ fn three_unreadable_delivery_probes_give_the_entry_up_unsent() {
                 sends: 1,
                 probe_failures: MAX_ATTEMPTS - 1,
                 failed: false,
+                ..Default::default()
             },
         );
     });

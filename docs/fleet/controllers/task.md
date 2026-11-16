@@ -144,7 +144,8 @@ concludes nothing.
 | Active phase | Accepted worker result for `status.brief.generation` is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
 | Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
 | Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
-| Spawned, Briefed or Concluded | Known Delivered receipt and the agent's prompt hook reported the entry (or its harness has none); or, with the answer lost, the hook reported it, or for a harness with no prompt hook the journal proves it | unchanged | Record the receipt in `status.deliveries` with the runtime's route, and remove the entry, in one write; its intent, receipt and attempt records go with it. Until the hook reports it, the entry waits, is never sent again, and later entries wait behind it. |
+| Spawned, Briefed or Concluded | Known Delivered receipt and the agent's prompt hook reported the entry (or its harness has none); or, with the answer lost, the hook reported it, or for a harness with no prompt hook the journal proves it | unchanged | Record the receipt in `status.deliveries` with the runtime's route, and remove the entry, in one write; its intent, receipt and attempt records go with it. Until the hook reports it, the entry waits and is never sent again. Later entries wait behind it. |
+| Spawned, Briefed or Concluded | Known Delivered receipt for an entry or a catch-up note; the agent's prompt hook has reported a new prompt since the send was planned, and not this one | unchanged | Raise `NeedsAttention/DeliveryUnconfirmed` naming it. It stays, marked failed, and is never sent again. Later entries are still delivered. |
 | Spawned, Briefed or Concluded | Known Queued receipt for an entry or a catch-up note | unchanged | Mark it failed and raise `NeedsAttention/DeliveryQueued` with the runtime's note. Never send it again. The entry stays in `status.inbox`, and later entries are still delivered. |
 | Spawned, Briefed or Concluded | Oldest entry is an amendment at or below `status.brief.generation`, or one never sent with a newer amendment queued behind it | unchanged | Record its receipt without a send. The worker has it already, or the newer message carries it. |
 | Briefed | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation. |
@@ -403,6 +404,22 @@ controller plans the send it records the text's digest in
 
 - A Known Delivered receipt waits for the hook: `Briefed=Unknown/AwaitingPrompt`
   for the brief; an entry stays first in line.
+- An entry or a catch-up note whose hook has reported a new prompt since
+  its send was planned, and not this one, is given up on with
+  `NeedsAttention/DeliveryUnconfirmed`. It is never sent again. Each line
+  `fleet signal` appends carries `seq`, the file's length before the line,
+  plus one, so that no report is 0. The file only grows, so `seq` orders
+  the reports and no clock does. The
+  send records in `status.deliveryAttempts` the latest `seq` of a report of
+  another prompt. A report of another prompt with a later `seq` is the
+  evidence. A report of a text reported before carries a new `seq`, and a
+  signal file read only in part keeps its newest lines. A line with no
+  `seq`, as an older Fleet wrote it, is no evidence. An attempt with no
+  boundary, as one planned while the reports could not be read or by an
+  older Fleet, records it on its first pass that reads them. A text the
+  agent took in another form, as when it wraps or reflows it, holds back no
+  later entry. A hook that reports nothing yet, as Codex's until its turn
+  ends, keeps the entry waiting.
 - A lost answer is settled by the hook's report alone, as a recovered
   delivery. It is never sent again, whatever the runtime's journal says.
 - A proven key's digest is dropped; its receipt stands.
