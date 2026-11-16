@@ -183,6 +183,8 @@ jobs:
             release_line:
               - 'scripts/ci/release-line.sh'
               - 'scripts/ci/release-line.bats'
+              - 'scripts/ci/release-floor.sh'
+              - 'scripts/ci/release-floor.bats'
               - 'src/agent/version_check.rs'
               - '.github/workflows/cd.yml'
               - '.github/workflows/ci.yml'
@@ -406,7 +408,7 @@ jobs:
       - name: Install bats-core
         run: sudo apt-get update && sudo apt-get install -y bats
       - name: Test the release-line gate
-        run: bats scripts/ci/release-line.bats
+        run: bats scripts/ci/release-line.bats scripts/ci/release-floor.bats
 
   markdown-lint:
     name: Markdown Lint

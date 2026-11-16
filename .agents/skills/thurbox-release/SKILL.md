@@ -194,7 +194,8 @@ Thurbox 1.0+ follows [Semantic Versioning](https://semver.org/):
 `0.x` line cocogitto maps breaking to a *minor* bump instead), but a new major
 is only ever cut deliberately: a reviewed PR raising `RELEASE_LINE`, then the
 explicit-version Release dispatch. Maintenance of the older line continues on a
-`v<N>.x` branch, dispatched with an explicit version.
+`v<N>.x` branch: a push there releases like a push to `main`, with the
+version floored above every tag of its major (`scripts/ci/release-floor.sh`).
 
 
 ## Installation Script

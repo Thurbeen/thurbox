@@ -34,6 +34,7 @@ test-scripts:
     bats scripts/install.bats
     bats scripts/ci/check-pr-title.bats
     bats scripts/ci/release-line.bats
+    bats scripts/ci/release-floor.bats
     bats packaging/winget/winget.bats
     bats scripts/dev/e2e/windows-vm.bats
 

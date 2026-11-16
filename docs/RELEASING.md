@@ -205,10 +205,16 @@ breaking footer slips onto `main`, the Release run fails instead of tagging
 3.0.0 therefore takes two deliberate steps: a reviewed pull request that sets
 `RELEASE_LINE = 3` (and does what the list above asks), then a dispatch of the
 Release workflow with `version: 3.0.0`. Before that pull request lands, branch
-`v2.x` from the last 2.x commit; `cog.toml` already allows `v*.x`. A 2.x
-maintenance release is cut by dispatching `cd.yml` from `v2.x` with an explicit
-version: it is tagged and built, published without "Latest" while a 3.x tag is
-higher, and still pushed to the 2.x package names as the newest 2.x.
+`v2.x` from the last 2.x commit; `cog.toml` already allows `v*.x`. A push to
+`v2.x` (a merged pull request) releases from it the way a push to `main` does.
+`cog bump --auto` bumps from the newest tag the branch reaches, which is behind
+the v2.84.0..v2.88.0 tags `main` made and never published, so
+`scripts/ci/release-floor.sh` raises an automatic version that is not above
+every tag of its major to the next minor: the first `v2.x` release is 2.89.0,
+then cog's own bumps follow it. The release is tagged and built, published
+without "Latest" while a 3.x tag is higher, and still pushed to the 2.x package
+names as the newest 2.x. A dispatch with an explicit `version` still works and
+skips the floor.
 
 ## The Nix flake is not a release channel
 
