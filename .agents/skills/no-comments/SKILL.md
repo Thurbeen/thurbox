@@ -20,6 +20,8 @@ they fall under an exception below.
   that makes the behavior obvious without prose.
 - `// prettier-ignore`. Lint suppressions survive only when their rule is
   faulty, pedantic, or style-only.
+  Directives a tool reads: generated-region markers, type annotations,
+  shebangs, and the lint suppressions above.
 - Doc comments that define a public API contract.
 - Issue or RFC links that explain a constraint code cannot express.
 
