@@ -45,8 +45,9 @@ pub fn append(file: &Path, line: &OutboxLine) -> io::Result<u64> {
 }
 
 /// The outbox `file` (`~`-rooted on a place) from the offset `from`, at
-/// most [`MAX_OUTBOX_READ`] bytes; from its start when it is shorter than
-/// `from`. `None` when it is not there.
+/// most [`MAX_OUTBOX_READ`] bytes, as UTF-8 with no byte added or removed;
+/// from its start when it is shorter than `from`. `None` when it is not
+/// there.
 pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
     let mut f = match fs::File::open(expand_home(file)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -56,7 +57,25 @@ pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
     f.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::new();
     f.take(MAX_OUTBOX_READ).read_to_end(&mut bytes)?;
-    Ok(Some(OutboxRead { start, bytes }))
+    Ok(Some(OutboxRead {
+        start,
+        bytes: with_invalid_utf8_as_ascii(bytes),
+    }))
+}
+
+/// `bytes` with each byte that is not part of valid UTF-8 replaced by `?`:
+/// a place's read crosses the runtime as text, and this keeps every byte
+/// offset as it is in the file. A line it touches no longer parses, and is
+/// skipped.
+fn with_invalid_utf8_as_ascii(mut bytes: Vec<u8>) -> Vec<u8> {
+    let mut at = 0;
+    while let Err(e) = std::str::from_utf8(&bytes[at..]) {
+        let bad = at + e.valid_up_to();
+        let end = e.error_len().map_or(bytes.len(), |n| bad + n);
+        bytes[bad..end].fill(b'?');
+        at = end;
+    }
+    bytes
 }
 
 /// What `fleet signal-read --from` prints of a read: the offset it starts
@@ -137,5 +156,38 @@ mod tests {
         crate::FileSignals::open(&signals).expect("open");
         assert_eq!(mode(&signals), 0o700);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_keeps_every_offset_across_a_place_read() {
+        let dir = std::env::temp_dir().join(format!("fleet-outbox-utf8-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("k.jsonl.events");
+        let _ = fs::remove_file(&file);
+        append(&file, &line("a")).expect("append");
+        OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("open")
+            .write_all(b"{\"board\":\"shared\",\"type\":\"\xff\xfe\",\"data\":1}\n")
+            .expect("bad line");
+        append(&file, &line("b")).expect("append");
+        let len = fs::metadata(&file).expect("meta").len();
+        let read = read_from(&file, 0).expect("read").expect("there");
+        let sent = encode_place_read(&read);
+        let received = decode_place_read(&String::from_utf8_lossy(&sent)).expect("decoded");
+        assert_eq!(received.bytes.len() as u64, len);
+        let (cursor, entries) =
+            fleet_api::event::ingest(&fleet_api::event::OutboxCursor::default(), &received);
+        let types: Vec<_> = entries
+            .iter()
+            .map(|e| e.line.as_ref().map(|(_, p)| p.event_type.clone()).ok())
+            .collect();
+        assert_eq!(types, vec![Some("a".into()), None, Some("b".into())]);
+        assert_eq!(entries.last().expect("last").end, len);
+        let again = read_from(&file, len).expect("read").expect("there");
+        assert_eq!(again.start, len, "no generation bump");
+        assert_eq!(cursor.generation, 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
