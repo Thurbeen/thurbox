@@ -321,3 +321,67 @@ fn an_agent_fleet_cannot_resume_is_never_paused() {
     assert_eq!(env.calls("pause"), 0);
     assert!(!stopped(&env));
 }
+
+#[test]
+fn a_view_opened_on_a_paused_task_resumes_it_with_no_entry() {
+    let env = setup("pause-view", vec![task("t1")]);
+    pause(&env, "t1");
+    assert!(stopped(&env));
+
+    let mut attach = env.spawn(&["attach", "t1", "--json"]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while attach.try_wait().expect("attach").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "attach never returned"
+        );
+        env.reconcile().ok();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let run = wait(attach);
+    assert!(!run.stderr.contains("is paused"), "{}", run.stderr);
+
+    assert_eq!(env.calls("resume"), 1);
+    assert!(!stopped(&env));
+    let st = env.status("t1");
+    assert_condition(&st, "Paused", "False", "Resumed");
+    assert!(
+        st["inbox"].as_array().is_none_or(Vec::is_empty),
+        "a view queues nothing: {st:#}"
+    );
+    env.reconcile().ok();
+    let texts = sent(&env);
+    assert_eq!(texts.len(), 2, "{texts:#?}");
+    assert!(texts[1].contains("paused"), "{}", texts[1]);
+}
+
+#[test]
+fn a_view_asked_for_before_the_pause_resumes_nothing() {
+    let env = setup("pause-stale-view", vec![task("t1")]);
+    pause(&env, "t1");
+    let path = env.object_path("Task", "t1");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj["status"]["wakeRequestedAt"] = json!(1);
+    std::fs::write(&path, obj.to_string()).unwrap();
+
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("resume"), 0);
+    assert!(stopped(&env));
+}
+
+#[test]
+fn only_a_view_asks_for_a_paused_session() {
+    let env = setup("pause-view-owner", vec![task("t1")]);
+    pause(&env, "t1");
+    let path = env.object_path("Task", "t1");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj["status"]["wakeRequestedAt"] = json!(u64::MAX);
+    std::fs::write(&path, obj.to_string()).unwrap();
+    env.reconcile().ok();
+    assert_eq!(
+        env.get("t1")["status"]["wakeRequestedAt"],
+        json!(u64::MAX),
+        "TaskController keeps the view's field as it is"
+    );
+}

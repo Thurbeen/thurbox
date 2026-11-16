@@ -271,6 +271,19 @@ pub trait Store {
         by: FieldManager,
         lease: Option<&LeaseToken>,
     ) -> Result<Object, StoreError>;
+    /// `fleet attach`'s and `fleet shell`'s write, compare-and-swap on
+    /// resourceVersion, as a caller `kinds::may_request_wake` admits: set
+    /// `status.wakeRequestedAt` to `at`, which asks TaskController to resume
+    /// a paused session. Refused on a deleting Task. No other field changes.
+    fn request_wake(
+        &self,
+        _name: &str,
+        _at: crate::meta::Millis,
+        _expected: u64,
+        _by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("request_wake".into()))
+    }
     /// `fleet amend`'s write, compare-and-swap on resourceVersion, as
     /// `FieldManager::Cli` only: append `amendment` to `spec.amendments`,
     /// bump `metadata.generation` to the amendment's generation, and queue

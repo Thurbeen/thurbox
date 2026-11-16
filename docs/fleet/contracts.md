@@ -300,7 +300,8 @@ Guarantees, each with its test:
   Known false. `Paused=True/Idle` changes no
   phase and raises no `WorkerGone`, `SessionLost` or revive.
 - **Resume.** An inbox entry for a paused Task plans one `Resume` under
-  `resume/<n>`; entries that arrive meanwhile wait in the inbox. Resumes
+  `resume/<n>`, and so does a `status.wakeRequestedAt` at or after the
+  `Paused=True` transition; entries that arrive meanwhile wait in the inbox. Resumes
   wait `RETRY_DELAY_MS` between tries; three resumes that leave the session
   stopped raise `NeedsAttention/ResumeFailed`, and resumes continue. Back
   (`Paused=False/Resumed`), the worker is owed the catch-up note before its
@@ -790,8 +791,8 @@ refused.
   Unknown and blocks writes to that name. A list with one bad record is
   Unknown as a whole.
 - Each status field has one owner, checked on every write, except
-  `Task.status.inbox` and `status.answered`, which have none and which no
-  status write may change. A controller writes only under the current
+  `Task.status.inbox`, `status.answered` and `status.wakeRequestedAt`,
+  which have none and which no status write may change. A controller writes only under the current
   manager lease: an expired or superseded token is refused, and the token
   only grows.
 - `status.inbox` is reached through three typed mutations, each named by
@@ -813,6 +814,10 @@ refused.
   `inbox`, refusing a key no entry holds. None changes another field;
   `store_contract` races appenders against the remover and tears the
   record.
+- `status.wakeRequestedAt` is reached through one typed mutation,
+  compare-and-swap under the lock: `request_wake` (`cli`, through the
+  manager's `wake` verb, no lease) sets it to the time of the request and
+  refuses a deleting Task. It changes no other field.
 - A Conversation's `status.received`, a Listener's `beats`, `refused`
   and `beatRevision`, and a Board's `status.head` and `status.oldest` have no
   owner either; only the store's typed `append_events` writes the Board's
@@ -1293,8 +1298,12 @@ that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream
 run where the view runs. Fleet asks the runtime serving the session's host
 for its `attach` answer. A `stream` answer is passed through; a `tty` answer
 is wrapped as `fleet term-bridge -- <argv>`, so a view only ever gets a
-stream. A Task with no session yet, a runtime that does not declare `attach`
-and a key the runtime holds no process under exit 3; an Unknown answer exits 4.
+stream. On a Task with `Paused=True`, Fleet first sets
+`status.wakeRequestedAt`, which TaskController resumes the session for, and
+waits up to 60 seconds for `Paused` to leave True. A Task still paused after
+that wait exits 3 and says it is paused. A Task with no session yet, a
+runtime that does not declare `attach` and a key the runtime holds no
+process under exit 3; an Unknown answer exits 4.
 Without `--json` the argv is printed one argument per line.
 `fleet shell TASK [--json]` is the same for an interactive shell beside the
 Task's session, on its place: Fleet asks the runtime's

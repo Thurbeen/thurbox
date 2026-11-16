@@ -24,7 +24,7 @@ use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account}
 use fleet_manager::{
     AmendRequest, DeclareOutcome, GatewaySide, Manager, RunOptions, amend, apply,
     apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
-    list_events, publish_event, receive, record_result, send,
+    list_events, publish_event, receive, record_result, send, wake,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::{FileStore, SystemClock};
@@ -2555,6 +2555,35 @@ enum Opens {
     Shell,
 }
 
+const RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn paused(obj: &Object) -> bool {
+    serde_json::from_value::<fleet_api::task::TaskStatus>(obj.status.clone())
+        .is_ok_and(|st| fleet_api::condition::is_true(&st.conditions, "Paused"))
+}
+
+fn wait_for_resume(store: &dyn Store, task: &str) -> Result<(), Failure> {
+    wake(store, &SystemClock, task)?;
+    let deadline = std::time::Instant::now() + RESUME_WAIT;
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if !paused(&get(store, fleet_api::task::KIND, task)?) {
+            return Ok(());
+        }
+    }
+    Err(Failure {
+        code: exit::NOT_FOUND,
+        message: format!(
+            "Task/{task} is paused, and Fleet did not resume it within {}s",
+            RESUME_WAIT.as_secs()
+        ),
+        hint: Some(format!(
+            "the Fleet engine resumes it on its next pass; check that it runs, then \
+             try again, or see why with `fleet get task {task}`"
+        )),
+    })
+}
+
 /// `fleet attach` and `fleet shell`: the argv that opens a terminal stream
 /// on the Task's session, as `ask` answers it. A runtime's `tty` answer is
 /// a raw interactive command, which a view never sees: it runs under
@@ -2582,6 +2611,9 @@ fn cmd_open(
             hint: Some("a stream waits for the Task's spawn".into()),
         });
     };
+    if paused(&obj) {
+        wait_for_resume(store, task)?;
+    }
     let argv = match ask(&session) {
         Observation::Known(Some(Attach::Stream { argv })) => argv,
         Observation::Known(Some(Attach::Tty { argv })) => {

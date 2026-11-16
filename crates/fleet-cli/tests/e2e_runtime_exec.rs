@@ -1098,13 +1098,10 @@ fn ask(program: &Path, sockets: &Sockets, verb: &str, request: Value) -> Value {
     serde_json::from_slice(&out.stdout).expect("JSON")
 }
 
-#[test]
-fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversation() {
-    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
-        return;
-    };
-    let sockets = Sockets::new("pause");
-    let mut env = mux_env("runtime-mux-pause", &program, &sockets);
+/// A Task on runtime-mux whose agent Fleet paused for idling, its key and
+/// its workspace.
+fn paused_on_mux(name: &str, program: &Path, sockets: &Sockets) -> (Env, String, PathBuf) {
+    let mut env = mux_env(name, program, sockets);
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let claude = bin.join("claude");
@@ -1137,6 +1134,16 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
     support::assert_condition(&status, "Paused", "True", "Idle");
     assert_eq!(status["conversation"], "conv-1", "{status:#}");
     let key = status["session"]["id"].as_str().unwrap().to_string();
+    (env, key, work)
+}
+
+#[test]
+fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversation() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("pause");
+    let (env, key, work) = paused_on_mux("runtime-mux-pause", &program, &sockets);
 
     // The agent's process is gone, and the runtime keeps its key.
     let listed = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
@@ -1196,6 +1203,50 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
         paused["reason"] == "Resumed" || paused["reason"] == "Idle",
         "{status:#}"
     );
+}
+
+#[test]
+fn attaching_to_a_paused_session_on_runtime_mux_resumes_it_and_streams_it() {
+    use support::view::View;
+    use term_stream::{Down, Size, Up};
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("attach-paused");
+    let (env, key, work) = paused_on_mux("runtime-mux-attach-paused", &program, &sockets);
+
+    let attach = std::cell::RefCell::new(env.spawn(&["attach", "t1", "--json"]));
+    reconcile_until(&env, "resumed for the view", |env| {
+        attach.borrow_mut().try_wait().expect("attach").is_some()
+            || support::condition(&env.get("t1")["status"], "Paused")["status"] == "False"
+    });
+    let run = support::wait(attach.into_inner());
+    let answer = run.ok().json();
+    let argv: Vec<String> = serde_json::from_value(answer["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some(key.as_str()),
+        "{argv:?}"
+    );
+
+    let all = starts(&work);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!(
+        &all[1][all[1].len() - 2..],
+        ["--resume", "conv-1"],
+        "{all:?}"
+    );
+    let status = env.get("t1")["status"].clone();
+    support::assert_condition(&status, "Paused", "False", "Resumed");
+    assert_eq!(status["session"]["id"], key.as_str(), "{status:#}");
+
+    let mut view = View::argv(&argv);
+    assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
+    view.send(&Up::Detach);
+    assert!(view.close().success());
 }
 
 /// An agent that exists for Fleet only as a harness profile in the user's

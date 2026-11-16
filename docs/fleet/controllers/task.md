@@ -34,7 +34,7 @@ that decision through the store and runtime ports.
    Task, retaining the session until deletion; messages sent afterwards are
    still delivered.
 6. With `pauseAfterMs` set, the controller pauses an idle session through
-   the runtime. The next inbox entry resumes it. See
+   the runtime. The next inbox entry, or a view that opens it, resumes it. See
    [pausing an idle session](#pausing-an-idle-session).
 7. Deletion enters Releasing. The finalizer holds the record until the
    recorded session is released, once proven at rest or gone. The wait for
@@ -138,7 +138,7 @@ concludes nothing.
 | Briefed or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
 | Briefed or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. |
 | Briefed, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
-| Briefed or Concluded | Paused; an inbox entry to deliver; `dispatch: true` | unchanged | Persist a resume intent and plan `Resume` under `resume/<n>`. Send nothing. |
+| Briefed or Concluded | Paused; an inbox entry to deliver, or `wakeRequestedAt` at or after the `Paused=True` transition; `dispatch: true` | unchanged | Persist a resume intent and plan `Resume` under `resume/<n>`. Send nothing. |
 | Briefed or Concluded | Known Resumed receipt, a missing/Unknown receipt with the session observed running, or a paused session observed running | unchanged | Set `Paused=False/Resumed`. When the brief has a receipt, owe a catch-up note under `catchup/<n>`. |
 | Briefed or Concluded | Failed resume receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Wait 30 seconds from the last resume, then resume again. After three resumes have left the session stopped, each further resume also raises `NeedsAttention/ResumeFailed`. |
 | Active phase | Accepted worker result for `status.brief.generation` is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
@@ -317,7 +317,7 @@ pauses only on a Known Idle answer from the runtime.
 ```text
 Briefed/Concluded ──Idle for pauseAfterMs──> Pause ──> Paused=True/Idle
         ^                                                   │
-        │                                            inbox entry
+        │                                inbox entry, or a view opened
         │                                                   v
   catch-up note, then the inbox <── Paused=False/Resumed <── Resume
 ```
@@ -345,10 +345,15 @@ These rules apply to a paused session:
 
 - An inbox entry plans one resume. Entries that arrive meanwhile wait in the
   inbox. Delivery then waits for readiness, as before.
+- A view plans one resume too. `fleet attach` and `fleet shell` set
+  `status.wakeRequestedAt` on a paused Task, then wait for `Paused` to leave
+  True before they ask the runtime for the stream. A request older than the
+  pause resumes nothing. A view queues no text: the resumed worker gets only
+  the catch-up note.
 - A resumed worker is owed the catch-up note that a revived worker gets,
   before its inbox.
 - A session stopped outside Fleet sets `Paused=True/External`. The next
-  inbox entry resumes it.
+  inbox entry, or a view, resumes it.
 - A paused session found running again sets `Paused=False/Resumed`.
 - A pause never raises WorkerGone or SessionLost, and never revives.
 - Stalled, held and deleting Tasks are never resumed.
