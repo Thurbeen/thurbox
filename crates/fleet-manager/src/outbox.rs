@@ -14,6 +14,8 @@ use fleet_controllers::TaskController;
 
 use crate::{Manager, RunReport};
 
+const CURSOR_WRITE_TRIES: u32 = 5;
+
 /// What one ingest did: the Task as written, when its cursor moved, and
 /// whether the outbox holds no whole line still to ingest.
 pub(crate) struct Ingested {
@@ -123,30 +125,58 @@ impl Manager<'_> {
             return Ok(Ingested::unchanged(drained));
         }
         *lease = self.store.renew_lease(lease, ttl)?;
-        let mut status = task.status.clone();
-        status["outbox"] =
-            serde_json::to_value(&next).map_err(|e| StoreError::Invalid(e.to_string()))?;
-        match self.store.update_status(
-            task::KIND,
-            &task.metadata.name,
-            status,
-            task.metadata.resource_version,
-            TaskController::MANAGER,
-            Some(lease),
-        ) {
-            Ok(written) => {
-                report.status_writes += 1;
-                Ok(Ingested {
-                    written: Some(written),
-                    drained,
-                })
+        let Some(written) = self.write_cursor(task, &next, lease, report)? else {
+            return Ok(Ingested::unchanged(Observation::Known(false)));
+        };
+        report.status_writes += 1;
+        Ok(Ingested {
+            written: Some(written),
+            drained,
+        })
+    }
+
+    /// Write `next` to the Task's `status.outbox`, re-reading the Task and
+    /// trying again when another writer, such as the worker, wrote first:
+    /// the events are already appended, and a cursor left behind would
+    /// read them again after retention dropped their keys. `None` when the
+    /// Task is gone, or still moving after `CURSOR_WRITE_TRIES`.
+    fn write_cursor(
+        &self,
+        task: &Object,
+        next: &OutboxCursor,
+        lease: &LeaseToken,
+        report: &mut RunReport,
+    ) -> Result<Option<Object>, StoreError> {
+        let cursor = serde_json::to_value(next).map_err(|e| StoreError::Invalid(e.to_string()))?;
+        let mut current = task.clone();
+        for _ in 0..CURSOR_WRITE_TRIES {
+            let mut status = current.status.clone();
+            status["outbox"] = cursor.clone();
+            match self.store.update_status(
+                task::KIND,
+                &current.metadata.name,
+                status,
+                current.metadata.resource_version,
+                TaskController::MANAGER,
+                Some(lease),
+            ) {
+                Ok(written) => return Ok(Some(written)),
+                Err(StoreError::Conflict { .. }) => {
+                    report.conflicts += 1;
+                    current = match self.store.get(task::KIND, &current.metadata.name) {
+                        Observation::Known(Some(fresh))
+                            if fresh.metadata.uid == task.metadata.uid =>
+                        {
+                            fresh
+                        }
+                        Observation::Known(_) => return Ok(None),
+                        Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+                    };
+                }
+                Err(e) => return Err(e),
             }
-            Err(StoreError::Conflict { .. }) => {
-                report.conflicts += 1;
-                Ok(Ingested::unchanged(Observation::Known(false)))
-            }
-            Err(e) => Err(e),
         }
+        Ok(None)
     }
 
     /// The session's outbox from `from`: through the runtime when only it

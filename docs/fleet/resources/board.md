@@ -115,7 +115,8 @@ Fleet:    TaskController reads the outbox ──▶ append as the Task ──▶
    minutes).
 4. TaskController appends each event to its Board, under the lease. The
    source is the Task: `{task, uid, lineage}`. Then it writes the new
-   offset to `status.outbox`.
+   offset to `status.outbox`. When another writer wrote the Task first, it
+   reads the Task again and writes the offset again.
 
 These rules apply:
 
@@ -127,6 +128,10 @@ These rules apply:
 - `fleet event list --source task/<name>` keeps the events of one Task.
 - A line without a `key` gets the key `outbox-<generation>-<offset>`. When
   TaskController reads the same line again, the Board appends nothing.
+- Delivery is at least once. If Fleet stops after the appends and before
+  it writes the offset, it reads those lines again. When retention already
+  dropped the key of such a line, because `maxCount` is smaller than one
+  read's lines, the Board appends that line again with a new `seq`.
 - When the outbox is shorter than the offset, the file was made again.
   TaskController reads it from the start, and `generation` goes up by one.
 - A line has at most 64 KiB. A line without its newline waits for it.

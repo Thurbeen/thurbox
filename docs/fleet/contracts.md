@@ -916,7 +916,12 @@ refused.
   Task: its name, uid and parent-label lineage; a line's own fields never
   name it. Each publish is appended as TaskController under the lease, and
   only then does `status.outbox` (TaskController's) move past it, so a
-  crash between the two re-reads lines whose keys dedupe them. A line that
+  crash between the two re-reads lines whose keys dedupe them. A cursor
+  write that conflicts with another writer, such as the worker, re-reads the
+  Task and tries again, up to 5 times. Delivery is at least once: when a
+  crash falls between the appends and the cursor write, and the same appends
+  made retention drop a re-read line's key (a `retention.maxCount` below one
+  read's batch), that line is appended again under a new `seq`. A line that
   does not parse, or that the store refuses (`Invalid`, `NotFound`,
   `Forbidden`), is skipped: `status.outbox.skipped` counts it and
   `lastSkipped` says why. Any other store error stops the pass's ingest at
