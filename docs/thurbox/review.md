@@ -119,9 +119,9 @@ the binary end to end. A src-only fix whose regression sits inline is the
 normal shape here, not a missing test; what is missing is a fix that adds
 neither.
 
-Comments explain why, never what. A stale comment is worse than none, so
-comments around touched code are fixed or deleted. This repository uses no
-TODO, FIXME or HACK markers and keeps no commented-out code.
+Code carries no comments outside the exceptions in the `no-comments` skill
+(`.agents/skills/no-comments`). Flag any new comment that falls outside them,
+and any comment outside them left near touched code.
 
 Read the change for structure as well as correctness: names that reveal intent,
 functions that do one thing, duplication folded together, dead code and unused
