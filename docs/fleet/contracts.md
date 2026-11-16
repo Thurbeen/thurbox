@@ -859,7 +859,10 @@ refused.
   rebuilds a missing or torn keys file of an older segment from that
   segment. A reader skips a torn line. The log, not the status, decides the
   next `seq`, so an append that crashed before its status write keeps its
-  `seq`. After the append, retention drops whole segments from the oldest
+  `seq`, and the write that recovers it corrects `status.head` and
+  `status.oldest`, even when it appends nothing. The directories are created
+  `0700` and the files `0600` on Unix, and each new directory's parent is
+  fsynced. After the append, retention drops whole segments from the oldest
   while the log holds more than `retention.maxCount` events, never the
   newest. Then `status.head` and `status.oldest` move, and the dropped files
   go. Stray files in the directory are ignored. No other writer, and no

@@ -167,13 +167,13 @@ impl FileStore {
         self.write_events(name, &spec, &mut segments, open_count, &fresh)?;
         dropped.extend(drop_counted(&spec, &mut segments, head));
 
-        if !fresh.is_empty() || !dropped.is_empty() {
-            let status = BoardStatus {
-                head,
-                oldest: segments.first().map_or(head + 1, |s| s.first),
-            };
+        let recorded = BoardStatus {
+            head,
+            oldest: segments.first().map_or(head + 1, |s| s.first),
+        };
+        if recorded != status {
             obj.status =
-                serde_json::to_value(status).map_err(|e| StoreError::Invalid(e.to_string()))?;
+                serde_json::to_value(recorded).map_err(|e| StoreError::Invalid(e.to_string()))?;
             obj.metadata.resource_version = self.next_rv()?;
             self.write(&obj)?;
         }
@@ -228,7 +228,9 @@ impl FileStore {
             return Ok(());
         }
         let dir = self.board_dir(name);
-        fs::create_dir_all(&dir).map_err(|e| io_unknown(&dir, e))?;
+        for created in [self.root.join("boards"), dir.clone()] {
+            create_private_dir(&created).map_err(|e| io_unknown(&created, e))?;
+        }
         let mut pending: Vec<(PathBuf, Vec<u8>, Vec<u8>)> = Vec::new();
         for e in fresh {
             if segments.is_empty() || open_count >= spec.segment_events() {
@@ -337,12 +339,30 @@ fn push_line<T: Serialize>(bytes: &mut Vec<u8>, value: &T) -> Result<(), StoreEr
     Ok(())
 }
 
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(dir) {
+        Ok(()) => durable::sync_parent(dir),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 fn append(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let created = !path.exists();
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut f = options.open(path)?;
     f.write_all(bytes)?;
     f.sync_all()?;
     if created {

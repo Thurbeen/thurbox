@@ -3466,6 +3466,12 @@ fn a_line_appended_before_a_crash_keeps_its_seq() {
     fs::write(&path, serde_json::to_vec(&obj).unwrap()).unwrap();
     let again = publish(&store, "b", Some("k"));
     assert_eq!((again.event.seq, again.duplicate), (1, true));
+    let b = known(store.get("Board", "b")).unwrap();
+    assert_eq!(
+        b.status,
+        json!({"head": 1, "oldest": 1}),
+        "a retry corrects the status"
+    );
     assert_eq!(publish(&store, "b", None).event.seq, 2);
 }
 
@@ -3589,4 +3595,26 @@ fn a_stray_file_in_a_board_log_is_ignored() {
     }
     assert_eq!(publish(&store, "b", None).event.seq, 2);
     assert_eq!(page_seqs(&store, "b", 0), vec![1, 2]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_board_log_is_private_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Dir::new("board-modes");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    publish(&store, "b", Some("k"));
+    let log = dir.0.join("boards/b");
+    for path in [
+        dir.0.join("boards"),
+        log.clone(),
+        log.join("00000000000000000001.jsonl"),
+        log.join("00000000000000000001.keys"),
+    ] {
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{} is {mode:o}", path.display());
+    }
 }
