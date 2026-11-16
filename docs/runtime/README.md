@@ -464,7 +464,9 @@ Fleet:  runtime exec: fleet signal-read <that file> ──▶ fold ──▶ ses
   starts at on a line, then at most 512 KiB from there. It starts at 0
   when the file is shorter than the offset. Each byte that is not part of
   valid UTF-8 is printed as NUL, so every offset stays as it is in the file,
-  and the line it is on fails to parse and is skipped. Exit 3 is a file not written
+  and the line it is on fails to parse and is skipped. A path that is not a
+  regular file, such as a FIFO or a symlink, is refused, and Fleet reads it
+  as Unknown. Exit 3 is a file not written
   yet.
 - Before a revive or a resume, Fleet reads the file's length through
   `exec` (`fleet signal-read --length <file>`) and keeps it in its own data, `<data dir>/signals/<key>.started`.

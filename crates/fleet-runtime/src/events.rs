@@ -47,9 +47,9 @@ pub fn append(file: &Path, line: &OutboxLine) -> io::Result<u64> {
 /// The outbox `file` (`~`-rooted on a place) from the offset `from`, at
 /// most [`MAX_OUTBOX_READ`] bytes, as UTF-8 with no byte added or removed;
 /// from its start when it is shorter than `from`. `None` when it is not
-/// there.
+/// there; an error when it is not a regular file, a symlink included.
 pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
-    let mut f = match fs::File::open(expand_home(file)) {
+    let mut f = match open_regular(&expand_home(file)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         opened => opened?,
     };
@@ -61,6 +61,29 @@ pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
         start,
         bytes: with_invalid_utf8_as_nul(bytes),
     }))
+}
+
+/// Open `path` for reading only when it is a regular file. The session
+/// controls the path: a FIFO with no writer would block the open, and a
+/// symlink would point the read at another file this process can read. On
+/// Unix the open neither blocks nor follows a symlink.
+fn open_regular(path: &Path) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(
+        &mut options,
+        libc::O_NONBLOCK | libc::O_NOFOLLOW,
+    );
+    #[cfg(not(unix))]
+    if !fs::symlink_metadata(path)?.is_file() {
+        return Err(io::Error::other("the outbox is not a regular file"));
+    }
+    let f = options.open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(io::Error::other("the outbox is not a regular file"));
+    }
+    Ok(f)
 }
 
 /// `bytes` with each byte that is not part of valid UTF-8 replaced by NUL:
@@ -194,6 +217,48 @@ mod tests {
         let again = read_from(&file, len).expect("read").expect("there");
         assert_eq!(again.start, len, "no generation bump");
         assert_eq!(cursor.generation, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_at_the_outbox_is_refused_at_once() {
+        let dir = std::env::temp_dir().join(format!("fleet-outbox-fifo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("dir");
+        let fifo = dir.join("k.jsonl.events");
+        let made = fleet_exec::run(
+            &fleet_exec::Spec::new("mkfifo", std::time::Duration::from_secs(5)).arg(&fifo),
+        );
+        assert!(
+            matches!(made, fleet_exec::Outcome::Exited { code: Some(0), .. }),
+            "{made:?}"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || tx.send(read_from(&path, 0).map(|_| ())).ok());
+        let read = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the read returns instead of blocking");
+        assert!(read.is_err(), "a FIFO is not an outbox");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_outbox_is_refused() {
+        let dir = std::env::temp_dir().join(format!("fleet-outbox-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("dir");
+        let secret = dir.join("secret");
+        fs::write(
+            &secret,
+            "{\"board\":\"shared\",\"type\":\"a\",\"data\":1}\n",
+        )
+        .expect("secret");
+        let link = dir.join("k.jsonl.events");
+        std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+        assert!(read_from(&link, 0).is_err(), "a symlink is not followed");
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -906,7 +906,9 @@ refused.
   (`fleet signal-read --from <offset> <file>`) on a place. Both reads give
   each byte that is not valid UTF-8 as NUL, so the bytes cross the runtime
   as text with every offset kept; JSON takes no raw NUL, so such a line is
-  skipped and counted. The pure
+  skipped and counted. Both open the outbox only as a regular file: on Unix
+  without blocking and without following a symlink, so a FIFO or a symlink
+  the session put there reads as Unknown. The pure
   `event::ingest` turns the whole lines into publishes; a last line without
   its newline waits. A file shorter than the offset was made again: it is
   read from 0 under the next `generation`. A line without a key gets
