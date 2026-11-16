@@ -1141,15 +1141,19 @@ impl Pass<'_, '_> {
     }
 
     fn another_prompt_reported_since(&self, key: &str) -> bool {
-        let (Some(digest), Some(intent)) = (self.st.prompts.get(key), self.st.intents.get(key))
-        else {
-            return false;
-        };
-        match &self.input.observations.signals {
-            Some(Observation::Known(r)) => r
-                .prompts
-                .iter()
-                .any(|(other, at)| other != digest && *at >= intent.at),
+        let before = self
+            .st
+            .delivery_attempts
+            .get(key)
+            .and_then(|a| a.prompts_reported);
+        match (
+            before,
+            self.st.prompts.get(key),
+            &self.input.observations.signals,
+        ) {
+            (Some(before), Some(digest), Some(Observation::Known(r))) => {
+                other_prompts(r, digest) > before
+            }
             _ => false,
         }
     }
@@ -1199,6 +1203,11 @@ impl Pass<'_, '_> {
         ) {
             return Sent::Pending;
         }
+        let digest = fleet_api::signal::prompt_digest(&text);
+        let prompts_reported = match &self.input.observations.signals {
+            Some(Observation::Known(r)) => Some(other_prompts(r, &digest)),
+            _ => None,
+        };
         let attempt = self
             .st
             .delivery_attempts
@@ -1206,6 +1215,7 @@ impl Pass<'_, '_> {
             .or_default();
         attempt.sends += 1;
         attempt.probe_failures = 0;
+        attempt.prompts_reported = prompts_reported;
         self.st.not_before = None;
         self.st.receipts.remove(key);
         self.intend(key.to_string(), Action::Brief { session, text });
@@ -2179,6 +2189,10 @@ fn known_receipt(st: &TaskStatus, key: &str) -> bool {
 
 /// The oldest inbox entry still to deliver: an entry given up on after its
 /// sends ran out stays queued but blocks nothing.
+fn other_prompts(reported: &fleet_api::signal::Reported, digest: &str) -> usize {
+    reported.prompts.keys().filter(|d| *d != digest).count()
+}
+
 fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
     st.inbox.iter().find(|e| {
         !st.delivery_attempts

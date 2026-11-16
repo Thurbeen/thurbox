@@ -160,6 +160,11 @@ pub struct DeliveryAttempt {
     /// later entries are delivered past it.
     #[serde(default)]
     pub failed: bool,
+    /// How many distinct prompts the agent's hook had reported when the
+    /// last send was planned, when its reports could be read. A count, not
+    /// a time: a remote host's clock need not agree with Fleet's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompts_reported: Option<usize>,
 }
 
 /// The entries still to deliver: every entry but those given up on.

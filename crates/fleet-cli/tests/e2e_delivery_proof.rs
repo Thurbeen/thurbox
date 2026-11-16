@@ -194,3 +194,31 @@ fn queued_texts(status: &Value) -> Vec<&str> {
         .map(|a| a.iter().map(|e| e["text"].as_str().unwrap()).collect())
         .unwrap_or_default()
 }
+
+#[test]
+fn a_report_stamped_ahead_by_a_fast_host_clock_fails_no_later_send() {
+    let env = setup("proof-inbox-clock-ahead");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    let an_hour_ahead = support::now_ms() + 3_600_000;
+    let earlier_report =
+        json!({"at": an_hour_ahead, "state": "prompt", "prompts": ["0123456789abcdef"]});
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(signal_file(&env))
+        .expect("signal file");
+    std::io::Write::write_all(&mut file, format!("{earlier_report}\n").as_bytes()).unwrap();
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&["send", "t1", "first"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let full = full_status(&env);
+    assert_eq!(queued_texts(&full), vec!["first"], "{full:#}");
+    assert!(
+        full["deliveryAttempts"]
+            .as_object()
+            .is_some_and(|a| a.values().all(|a| a["failed"] != true)),
+        "a report made before the send is no evidence against it: {full:#}"
+    );
+}
