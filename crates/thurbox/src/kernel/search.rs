@@ -1632,9 +1632,7 @@ mod tests {
         assert!(!store.running());
         assert_eq!(asked, 1);
 
-        // Something printed and the pacing interval passed: it runs again, and
-        // finding the same lines is not news — no epoch moves for it.
-        std::thread::sleep(RESCAN_INTERVAL);
+        store.dispatched = store.dispatched.map(|at| at - RESCAN_INTERVAL);
         store.serve(Some(request.clone()), 2, |_| {
             asked += 1;
             sources.clone()

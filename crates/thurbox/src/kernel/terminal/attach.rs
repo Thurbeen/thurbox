@@ -28,6 +28,7 @@ pub(super) struct Attach {
     /// the result is collected here.
     pub(super) attaching: HashMap<String, String>,
     pub(super) attached: (Sender<Attached>, Receiver<Attached>),
+    pub(super) retry_after: std::time::Duration,
 }
 
 impl Attach {
@@ -37,6 +38,7 @@ impl Attach {
             failed_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
+            retry_after: ATTACH_RETRY_INTERVAL,
         }
     }
 }
@@ -95,7 +97,7 @@ impl Terminals {
             // The same attempt would fail the same way; a different one is worth
             // making.
             if self.attach.failed.get(&row.id).is_some_and(|failure| {
-                failure.pane == candidate && failure.at.elapsed() < ATTACH_RETRY_INTERVAL
+                failure.pane == candidate && failure.at.elapsed() < self.attach.retry_after
             }) {
                 continue;
             }
@@ -179,7 +181,7 @@ impl Terminals {
         };
         if self.attach.failed.get(&row.id).is_some_and(|failure| {
             failure.pane.as_deref() == Some(key.as_str())
-                && failure.at.elapsed() < ATTACH_RETRY_INTERVAL
+                && failure.at.elapsed() < self.attach.retry_after
         }) {
             return;
         }

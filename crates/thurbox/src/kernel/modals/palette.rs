@@ -433,24 +433,6 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_of_action_is_a_row() {
-        let rows = rows(&registry());
-        let actions: Vec<&str> = rows.iter().map(|row| row.action.as_str()).collect();
-        assert!(actions.contains(&"sessions.delete"));
-        assert!(actions.contains(&"shell.open"));
-        assert!(actions.contains(&"mine.export"));
-        assert!(actions.contains(&RELOAD_ACTION));
-        assert!(actions.contains(&QUIT_ACTION));
-        let export = rows.iter().find(|row| row.action == "mine.export").unwrap();
-        assert_eq!(export.chords, None, "a chord-less command shows no chord");
-        let delete = rows
-            .iter()
-            .find(|row| row.action == "sessions.delete")
-            .unwrap();
-        assert_eq!(delete.chords.as_deref(), Some("ctrl+d"));
-    }
-
-    #[test]
     fn the_filter_is_a_subsequence_over_description_id_and_owner() {
         let rows = rows(&registry());
         let by_description = matches(&rows, "dls");

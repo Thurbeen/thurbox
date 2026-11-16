@@ -11,19 +11,11 @@
 const VERSION: &str = env!("THURBOX_VERSION");
 
 #[test]
-fn version_has_no_v_prefix() {
-    assert!(
-        !VERSION.starts_with('v'),
-        "THURBOX_VERSION must not start with 'v' (got {VERSION:?}); \
-         the UI already prepends the prefix"
-    );
-}
-
-#[test]
 fn version_starts_with_digit() {
     assert!(
         VERSION.starts_with(|c: char| c.is_ascii_digit()),
-        "THURBOX_VERSION must start with a digit (got {VERSION:?})"
+        "THURBOX_VERSION must start with a digit, never 'v' (got {VERSION:?}); \
+         the UI already prepends the prefix"
     );
 }
 

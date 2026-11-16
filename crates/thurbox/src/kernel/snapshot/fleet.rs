@@ -33,6 +33,25 @@ const RETRY: Duration = Duration::from_secs(2);
 /// holds the lease.
 const MANAGER_CHECK: Duration = Duration::from_secs(10);
 
+/// How often a [`FleetWatch`]'s workers ask Fleet again: after 2 s while
+/// it does not answer, and every 10 s once it does, unless a test needs
+/// them sooner.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct Cadence {
+    pub retry: Duration,
+    pub manager_check: Duration,
+}
+
+impl Default for Cadence {
+    fn default() -> Self {
+        Self {
+            retry: RETRY,
+            manager_check: MANAGER_CHECK,
+        }
+    }
+}
+
 /// How long a Task marked for deletion stays off the list while Fleet tears
 /// its session down. Past it, the row comes back marked so a teardown that
 /// does not end can be seen.
@@ -154,7 +173,13 @@ fn publish_state(
 impl FleetWatch {
     /// Follow the Tasks of the Fleet `link` reaches.
     pub fn spawn(link: FleetLink) -> Self {
-        Self::start(link, false)
+        Self::start(link, false, Cadence::default())
+    }
+
+    /// [`Self::spawn`], asking Fleet again at `cadence`.
+    #[doc(hidden)]
+    pub fn spawn_every(link: FleetLink, cadence: Cadence) -> Self {
+        Self::start(link, false, cadence)
     }
 
     /// [`Self::spawn`], and keep a `fleet up` running: one is started
@@ -167,10 +192,10 @@ impl FleetWatch {
     /// and thurbox never starts one through a launcher, where it would end
     /// with the connection.
     pub fn with_manager(link: FleetLink) -> Self {
-        Self::start(link, true)
+        Self::start(link, true, Cadence::default())
     }
 
-    fn start(link: FleetLink, manager: bool) -> Self {
+    fn start(link: FleetLink, manager: bool, cadence: Cadence) -> Self {
         let (tx, updates) = channel();
         // The first poll publishes the Fleet, connecting, before it answers.
         let _ = tx.send(Update::State(FleetState::Connecting, None));
@@ -209,13 +234,13 @@ impl FleetWatch {
                 }
                 if manager {
                     let (link, tx) = (link.clone(), tx.clone());
-                    std::thread::spawn(move || keep_manager(&link, &tx));
+                    std::thread::spawn(move || keep_manager(&link, &tx, cadence.manager_check));
                 }
                 {
                     let (link, tx) = (link.clone(), tx.clone());
-                    std::thread::spawn(move || read_places(&link, &tx));
+                    std::thread::spawn(move || read_places(&link, &tx, cadence.retry));
                 }
-                std::thread::spawn(move || watch(&link, &tx, &held));
+                std::thread::spawn(move || watch(&link, &tx, &held, cadence.retry));
             })
         };
         {
@@ -225,7 +250,9 @@ impl FleetWatch {
                 Arc::downgrade(&alive),
                 published.clone(),
             );
-            std::thread::spawn(move || read_version(&link, &tx, &alive, &published, admitted));
+            std::thread::spawn(move || {
+                read_version(&link, &tx, &alive, &published, admitted, cadence);
+            });
         }
         Self {
             name,
@@ -521,14 +548,14 @@ fn now_ms() -> i64 {
 /// Ask Fleet which places it defines (`fleet runtime places --json`), again
 /// every [`RETRY`] until it answers: the places the creation flow offers
 /// are Fleet's.
-fn read_places(link: &FleetLink, tx: &Sender<Update>) {
+fn read_places(link: &FleetLink, tx: &Sender<Update>, retry: Duration) {
     let machine = machine(link);
     loop {
         if let Some(answer) = ask(link, &["runtime", "places", "--json"]) {
             let _ = tx.send(Update::Places(places_from(&answer, &machine)));
             return;
         }
-        std::thread::sleep(RETRY);
+        std::thread::sleep(retry);
     }
 }
 
@@ -619,6 +646,7 @@ fn read_version(
     alive: &std::sync::Weak<()>,
     published: &Published,
     admitted: Box<dyn FnOnce() + Send>,
+    cadence: Cadence,
 ) {
     let mut admitted = Some(admitted);
     let mut harnesses = None;
@@ -658,9 +686,9 @@ fn read_version(
             return;
         }
         std::thread::sleep(if answered && harnesses.is_some() {
-            MANAGER_CHECK
+            cadence.manager_check
         } else {
-            RETRY
+            cadence.retry
         });
     }
 }
@@ -730,7 +758,7 @@ fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
 
 /// Run `fleet watch` until the source goes, starting it again whenever it
 /// ends.
-fn watch(link: &FleetLink, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
+fn watch(link: &FleetLink, tx: &Sender<Update>, held: &Mutex<Option<Child>>, retry: Duration) {
     let mut tasks: BTreeMap<String, Value> = BTreeMap::new();
     let mut removed = Vec::new();
     let mut since = 0u64;
@@ -742,7 +770,7 @@ fn watch(link: &FleetLink, tx: &Sender<Update>, held: &Mutex<Option<Child>>) {
         if tx.send(Update::Lost(why)).is_err() {
             return;
         }
-        std::thread::sleep(RETRY);
+        std::thread::sleep(retry);
     }
 }
 
@@ -884,7 +912,7 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
 /// Keep a `fleet up` running while the source does: start one, and when it
 /// exits, say why and start another after [`MANAGER_CHECK`]. One that
 /// exits for a held lease is no error: another manager runs.
-fn keep_manager(link: &FleetLink, tx: &Sender<Update>) {
+fn keep_manager(link: &FleetLink, tx: &Sender<Update>, every: Duration) {
     loop {
         let dir = crate::paths::data_directory();
         let error = match dir
@@ -901,7 +929,7 @@ fn keep_manager(link: &FleetLink, tx: &Sender<Update>) {
         if tx.send(Update::Manager(error)).is_err() {
             return;
         }
-        std::thread::sleep(MANAGER_CHECK);
+        std::thread::sleep(every);
     }
 }
 
@@ -1200,6 +1228,12 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
+    const SOON: Cadence = Cadence {
+        retry: Duration::from_millis(100),
+        manager_check: Duration::from_secs(1),
+    };
+
     #[test]
     fn a_stall_or_a_failed_revive_is_the_rows_why() {
         let why = |state: &str, kind: &str, reason: &str| {
@@ -1279,7 +1313,7 @@ mod tests {
              echo '{\"version\":\"9.0.0\",\"apiVersions\":[\"fleet/v2\"]}'",
         );
         crate::paths::with_path(remote.path(), || {
-            let mut source = FleetWatch::spawn(remote.link.clone());
+            let mut source = FleetWatch::spawn_every(remote.link.clone(), SOON);
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let mut published = None;
             while published != Some(FleetState::Incompatible) {
@@ -1425,11 +1459,11 @@ mod tests {
         let down = remote.dir().join("remote/down");
         crate::paths::with_path(remote.path(), || {
             let mut store = super::super::SnapshotStore::with_source(
-                Box::new(FleetWatch::spawn(remote.link.clone())),
+                Box::new(FleetWatch::spawn_every(remote.link.clone(), SOON)),
                 &Default::default(),
             );
             let until = |store: &mut super::super::SnapshotStore, want: FleetState| {
-                let deadline = std::time::Instant::now() + Duration::from_secs(25);
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
                 loop {
                     store.refresh_if_due();
                     let state = store.current().fleets.first().map(|f| f.state);
@@ -1444,6 +1478,21 @@ mod tests {
                 }
             };
             until(&mut store, FleetState::Up);
+            let polls = || {
+                remote
+                    .calls()
+                    .iter()
+                    .filter(|call| call.ends_with("version --json"))
+                    .count()
+            };
+            let polled = polls();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while polls() == polled {
+                assert!(std::time::Instant::now() < deadline, "no second poll");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let the_logged_poll_has_answered = Duration::from_millis(200);
+            std::thread::sleep(the_logged_poll_has_answered);
             std::fs::write(&down, "").expect("down");
             store.want_places(Some("devbox".into()));
             until(&mut store, FleetState::Unreachable);
@@ -1562,7 +1611,7 @@ mod tests {
             let (tx, _rx) = channel();
             let data = tempfile::tempdir().expect("data");
             assert_eq!(manage(&remote.link, data.path(), &tx), Ok(Some(LEASE_HELD)));
-            let mut source = FleetWatch::start(remote.link.clone(), false);
+            let mut source = FleetWatch::spawn(remote.link.clone());
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let mut read = SourceRead::default();
             while read.harnesses.is_none()
@@ -1601,28 +1650,27 @@ mod tests {
         }
     }
 
-    /// A Fleet whose `fleet version` never answers is not waited on: the
-    /// probe is stopped at its deadline and the source says the Fleet did
-    /// not answer, as unreachable, never incompatible.
+    /// A Fleet whose `fleet version` gives no answer is not silent: the
+    /// source says why, as unreachable, never incompatible. That a probe
+    /// past its deadline gives no answer is `bounded_output`'s
+    /// (`fleet_link::tests::a_probe_past_its_deadline_is_stopped_with_its_group`).
     #[cfg(unix)]
     #[test]
-    fn a_fleet_that_never_answers_its_version_is_reported_in_time() {
+    fn a_fleet_that_gives_no_version_is_reported_unreachable() {
         let bin = tempfile::tempdir().expect("bin");
-        let program = fake_fleet(bin.path(), "exec sleep 60");
-        let started = std::time::Instant::now();
-        let mut source = FleetWatch::spawn(FleetLink::local(program.to_string_lossy()));
-        let error = loop {
-            assert!(
-                started.elapsed() < Duration::from_secs(15),
-                "no error within the probe's deadline"
-            );
-            if let Some(error) = source.poll().and_then(|read| read.error) {
-                break error;
+        let missing = bin.path().join("fleet");
+        let mut source = FleetWatch::spawn(FleetLink::local(missing.to_string_lossy()));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let read = loop {
+            if let Some(read) = source.poll().filter(|read| read.error.is_some()) {
+                break read;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            assert!(std::time::Instant::now() < deadline, "no error");
+            std::thread::sleep(Duration::from_millis(20));
         };
-        assert!(error.contains("did not answer"), "{error}");
-        assert!(!error.contains("incompatible"), "{error}");
+        let error = read.error.unwrap_or_default();
+        assert!(error.contains("could not start fleet version"), "{error}");
+        assert_eq!(read.fleets[0].state, FleetState::Unreachable, "{error}");
     }
 
     /// thurbox never starts `fleet up` on a Fleet on another machine (M4):
@@ -1792,7 +1840,7 @@ mod tests {
             "[ \"$1\" = watch ] || exit 1".to_string(),
             task("gone", "u1", 1),
             event(serde_json::json!({"type": "synced", "revision": 1, "names": ["gone"]})),
-            "sleep 1".to_string(),
+            "sleep 0.3".to_string(),
             event(serde_json::json!({"type": "deleted", "revision": 2, "name": "gone"})),
             task("gone", "u2", 2),
             task("kept", "u3", 3),
@@ -1804,10 +1852,11 @@ mod tests {
         ));
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let (mut removed, mut ids) = (Vec::new(), Vec::new());
+        let slower_than_the_script_so_the_replacement_lands_in_one_poll =
+            Duration::from_millis(500);
         while !ids.iter().any(|id| id == "local:kept") {
             assert!(std::time::Instant::now() < deadline, "no second read");
-            // Slower than the script, so the replacement lands in one poll.
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(slower_than_the_script_so_the_replacement_lands_in_one_poll);
             if let Some(read) = source.poll() {
                 removed.extend(read.removed);
                 ids = read.sessions.into_iter().map(|row| row.id).collect();
@@ -1845,7 +1894,11 @@ mod tests {
         ));
         let started = std::time::Instant::now();
         let mut seen: Vec<(Duration, Vec<String>)> = Vec::new();
-        while started.elapsed() < Duration::from_secs(5) {
+        let listed_stuck = |seen: &[(Duration, Vec<String>)]| {
+            seen.iter()
+                .any(|(_, ids)| ids.iter().any(|id| id == "local:stuck"))
+        };
+        while !listed_stuck(&seen) && started.elapsed() < Duration::from_secs(10) {
             if let Some(read) = source.poll() {
                 let ids = read.sessions.iter().map(|row| row.id.clone()).collect();
                 seen.push((started.elapsed(), ids));

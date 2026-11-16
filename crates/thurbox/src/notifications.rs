@@ -332,7 +332,7 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
     if let Some(focus_cmd) = thurbox_cli_focus_command(&n.session_id) {
         cmd.arg("-execute").arg(focus_cmd);
     }
-    let status = run_notifier(&mut cmd)?.status;
+    let status = run_notifier(&mut cmd, NOTIFIER_TIMEOUT)?.status;
     if !status.success() {
         return Err(format!("terminal-notifier exited with {status}").into());
     }
@@ -404,6 +404,7 @@ fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::
             .arg("--")
             .arg(&n.body)
             .arg(&n.title),
+        NOTIFIER_TIMEOUT,
     )?
     .status;
     if !status.success() {
@@ -418,11 +419,12 @@ fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::
 /// retry, and may still show its notification after the send reported failure.
 const NOTIFIER_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Run a notifier to completion or until [`NOTIFIER_TIMEOUT`], killing and
-/// reaping it then. Its stdout is discarded; stderr is kept for the error,
-/// read on a thread of its own while it runs, so one that writes more than a
-/// pipe holds is not blocked into a false timeout.
-fn run_notifier(cmd: &mut Command) -> std::io::Result<Output> {
+/// Run a notifier to completion or until `timeout` ([`NOTIFIER_TIMEOUT`]
+/// outside tests), killing and reaping it then. Its stdout is discarded;
+/// stderr is kept for the error, read on a thread of its own while it runs,
+/// so one that writes more than a pipe holds is not blocked into a false
+/// timeout.
+fn run_notifier(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
     use std::io::Read;
 
     let mut child = cmd
@@ -437,7 +439,7 @@ fn run_notifier(cmd: &mut Command) -> std::io::Result<Output> {
             buf
         })
     });
-    let deadline = Instant::now() + NOTIFIER_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -447,7 +449,7 @@ fn run_notifier(cmd: &mut Command) -> std::io::Result<Output> {
             let _ = child.wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!("timed out after {}s", NOTIFIER_TIMEOUT.as_secs()),
+                format!("timed out after {timeout:?}"),
             ));
         }
         thread::sleep(Duration::from_millis(50));
@@ -468,12 +470,10 @@ fn run_notifier(cmd: &mut Command) -> std::io::Result<Output> {
 /// on `PATH` (also the default). Click-to-focus is not wired up here.
 fn dispatch_windows_toast(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
     let script = build_powershell_toast_script(&n.title, &n.body, n.sound);
-    let output = run_notifier(Command::new("powershell.exe").args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &script,
-    ]))
+    let output = run_notifier(
+        Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]),
+        NOTIFIER_TIMEOUT,
+    )
     .map_err(|e| match e.kind() {
         std::io::ErrorKind::TimedOut => format!("powershell.exe toast {e}"),
         _ => format!("could not run powershell.exe (WSL interop?): {e}"),
@@ -690,6 +690,35 @@ pub fn take_focus_request() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A notifier that never returns is given up on, and stopped: the tick
+    /// sends its alerts through this path, and a delivery that hangs would
+    /// stop every scheduled run behind it, or leave one more stuck process
+    /// per retry.
+    #[cfg(unix)]
+    #[test]
+    fn a_notifier_that_hangs_is_given_up_on_and_stopped() {
+        let dir = tempfile::tempdir().expect("dir");
+        let pid = dir.path().join("pid");
+        let started = Instant::now();
+        let error = run_notifier(
+            Command::new("sh")
+                .arg("-c")
+                .arg(format!("echo $$ > '{}'; exec sleep 120", pid.display())),
+            Duration::from_millis(300),
+        )
+        .expect_err("it never exits");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let left_running = std::fs::read_to_string(&pid).is_ok_and(|pid| {
+            Command::new("kill")
+                .arg(pid.trim())
+                .status()
+                .is_ok_and(|status| status.success())
+        });
+        assert!(!left_running, "the hung notifier outlived the send");
+    }
 
     fn probe(is_linux: bool, is_macos: bool, has_dbus: bool, has_ps: bool) -> HostProbe {
         HostProbe {

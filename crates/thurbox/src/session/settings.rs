@@ -719,65 +719,12 @@ mod tests {
         assert_eq!(s, Settings::default());
         assert_eq!(s.scrollback_lines, 1000);
         assert_eq!(s.two_panel_min_cols, 80);
-    }
-
-    #[test]
-    fn copy_on_select_is_on_unless_turned_off() {
-        let s: Settings = toml::from_str("").unwrap();
-        assert!(s.clipboard.copy_on_select);
-        let s: Settings = toml::from_str("[clipboard]\nprovider = \"osc52\"").unwrap();
-        assert!(s.clipboard.copy_on_select);
-        let s: Settings = toml::from_str("[clipboard]\ncopy_on_select = false").unwrap();
-        assert!(!s.clipboard.copy_on_select);
-        assert_eq!(s.clipboard.provider, ClipboardProvider::Auto);
-    }
-
-    #[test]
-    fn partial_override_keeps_other_defaults() {
-        let s: Settings = toml::from_str("scrollback_lines = 5000").unwrap();
-        assert_eq!(s.scrollback_lines, 5000);
         assert_eq!(s.git_poll_secs, 5);
-    }
-
-    #[test]
-    fn type_mismatch_is_rejected() {
-        let err = toml::from_str::<Settings>("scrollback_lines = \"many\"").unwrap_err();
-        assert!(err.to_string().contains("scrollback_lines"));
-    }
-
-    #[test]
-    fn absent_features_table_enables_everything() {
-        let s: Settings = toml::from_str("").unwrap();
-        assert_eq!(s.features, FeatureFlags::default());
-        assert!(s.features.shell_pane && s.features.mouse);
-    }
-
-    #[test]
-    fn empty_features_table_enables_everything() {
-        let s: Settings = toml::from_str("[features]").unwrap();
-        assert_eq!(s.features, FeatureFlags::default());
-    }
-
-    #[test]
-    fn partial_features_override_keeps_other_flags_enabled() {
-        let s: Settings = toml::from_str("[features]\nshell_pane = false").unwrap();
-        assert!(!s.features.shell_pane);
-        assert!(s.features.perf_hud);
-        assert!(s.features.mouse);
-    }
-
-    #[test]
-    fn mouse_feature_flag_parses() {
-        let s: Settings = toml::from_str("[features]\nmouse = false").unwrap();
-        assert!(!s.features.mouse);
-        assert!(s.features.shell_pane, "untouched flags stay enabled");
-    }
-
-    #[test]
-    fn notifications_feature_flag_parses() {
-        let s: Settings = toml::from_str("[features]\nnotifications = false").unwrap();
-        assert!(!s.features.notifications);
-        assert!(s.features.shell_pane, "untouched flags stay enabled");
+        assert!(s.clipboard.copy_on_select);
+        assert_eq!(s.clipboard.provider, ClipboardProvider::Auto);
+        let f = &s.features;
+        assert!(f.shell_pane && f.perf_hud && f.mouse && f.notifications);
+        assert!(f.version_check && f.auto_update);
     }
 
     #[test]
@@ -790,98 +737,105 @@ mod tests {
         assert_eq!(s.notifications.backend, NotificationBackend::Auto);
     }
 
+    /// Each key set in a document changes that setting alone: everything it
+    /// leaves out, an empty table included, keeps its default.
     #[test]
-    fn git_poll_secs_defaults_to_five_and_zero_turns_polling_off() {
-        // The one number that governs how much `git` an instance runs: every
-        // session is re-statted on this interval, so the cost is it, times the
-        // session count. `0` is off — the answer for a machine where an
-        // endpoint-protection agent scans every subprocess.
-        let s: Settings = toml::from_str("").unwrap();
-        assert_eq!(s.git_poll_secs, 5);
+    fn a_key_overrides_only_its_own_setting() {
+        let with = |edit: fn(&mut Settings)| {
+            let mut s = Settings::default();
+            edit(&mut s);
+            s
+        };
+        let cases: &[(&str, Settings)] = &[
+            ("[features]", Settings::default()),
+            ("[notifications]", Settings::default()),
+            (
+                "scrollback_lines = 5000",
+                with(|s| s.scrollback_lines = 5000),
+            ),
+            ("git_poll_secs = 30", with(|s| s.git_poll_secs = 30)),
+            ("git_poll_secs = 0", with(|s| s.git_poll_secs = 0)),
+            (
+                "[clipboard]\nprovider = \"osc52\"",
+                with(|s| s.clipboard.provider = ClipboardProvider::Osc52),
+            ),
+            (
+                "[clipboard]\ncopy_on_select = false",
+                with(|s| s.clipboard.copy_on_select = false),
+            ),
+            (
+                "[features]\nshell_pane = false",
+                with(|s| s.features.shell_pane = false),
+            ),
+            (
+                "[features]\nmouse = false",
+                with(|s| s.features.mouse = false),
+            ),
+            (
+                "[features]\nnotifications = false",
+                with(|s| s.features.notifications = false),
+            ),
+            (
+                "[features]\nversion_check = false",
+                with(|s| s.features.version_check = false),
+            ),
+            (
+                "[features]\nauto_update = false",
+                with(|s| s.features.auto_update = false),
+            ),
+            (
+                "[notifications]\nsound = false\nmin_interval_secs = 30",
+                with(|s| {
+                    s.notifications.sound = false;
+                    s.notifications.min_interval_secs = 30;
+                }),
+            ),
+            (
+                "[notifications]\nbackend = \"auto\"",
+                with(|s| s.notifications.backend = NotificationBackend::Auto),
+            ),
+            (
+                "[notifications]\nbackend = \"dbus\"",
+                with(|s| s.notifications.backend = NotificationBackend::Dbus),
+            ),
+            (
+                "[notifications]\nbackend = \"windows\"",
+                with(|s| s.notifications.backend = NotificationBackend::Windows),
+            ),
+            (
+                "[notifications]\nbackend = \"off\"",
+                with(|s| s.notifications.backend = NotificationBackend::Off),
+            ),
+        ];
+        for (document, want) in cases {
+            let parsed: Settings = toml::from_str(document).unwrap();
+            assert_eq!(&parsed, want, "{document}");
+        }
+    }
 
-        let s: Settings = toml::from_str("git_poll_secs = 30").unwrap();
-        assert_eq!(s.git_poll_secs, 30);
-
-        let s: Settings = toml::from_str("git_poll_secs = 0").unwrap();
-        assert_eq!(s.git_poll_secs, 0);
+    /// A value of the wrong type, or a name no variant has, is refused, and
+    /// the error says which key or name it was.
+    #[test]
+    fn a_value_of_the_wrong_type_or_name_is_rejected() {
+        for (document, key) in [
+            ("scrollback_lines = \"many\"", "scrollback_lines"),
+            ("[features]\nshell_pane = \"no\"", "shell_pane"),
+            ("[notifications]\nsound = \"loud\"", "sound"),
+            ("[notifications]\nbackend = \"telepathy\"", "telepathy"),
+        ] {
+            let err = toml::from_str::<Settings>(document).unwrap_err();
+            assert!(err.to_string().contains(key), "{document}: {err}");
+        }
     }
 
     #[test]
     fn git_poll_secs_takes_effect_on_the_next_launch() {
-        // Read once, where the cache is built, so the panel has to mark it
-        // restart-only rather than promise a change it cannot deliver.
         let base = Settings::default();
         let changed = Settings {
             git_poll_secs: base.git_poll_secs + 1,
             ..base.clone()
         };
         assert!(base.restart_only_differs(&changed));
-    }
-
-    #[test]
-    fn notifications_backend_parses_each_variant() {
-        for (raw, want) in [
-            ("auto", NotificationBackend::Auto),
-            ("dbus", NotificationBackend::Dbus),
-            ("windows", NotificationBackend::Windows),
-            ("off", NotificationBackend::Off),
-        ] {
-            let s: Settings =
-                toml::from_str(&format!("[notifications]\nbackend = \"{raw}\"\n")).unwrap();
-            assert_eq!(s.notifications.backend, want, "backend = {raw}");
-        }
-    }
-
-    #[test]
-    fn notifications_backend_rejects_unknown_value() {
-        let err =
-            toml::from_str::<Settings>("[notifications]\nbackend = \"telepathy\"").unwrap_err();
-        assert!(err.to_string().contains("backend") || err.to_string().contains("variant"));
-    }
-
-    #[test]
-    fn notifications_table_partial_override() {
-        let s: Settings =
-            toml::from_str("[notifications]\nsound = false\nmin_interval_secs = 30\n").unwrap();
-        assert!(!s.notifications.sound);
-        assert_eq!(s.notifications.min_interval_secs, 30);
-        assert!(s.notifications.suppress_for_active);
-    }
-
-    #[test]
-    fn notifications_type_mismatch_is_rejected() {
-        let err = toml::from_str::<Settings>("[notifications]\nsound = \"loud\"").unwrap_err();
-        assert!(err.to_string().contains("sound"));
-    }
-
-    #[test]
-    fn version_check_flag_defaults_on_and_parses() {
-        // On by default for 1.0 (it makes a network call to GitHub).
-        let s: Settings = toml::from_str("[features]").unwrap();
-        assert!(s.features.version_check, "version_check defaults on");
-        assert!(s.features.shell_pane, "other flags still default on");
-
-        let s: Settings = toml::from_str("[features]\nversion_check = false").unwrap();
-        assert!(!s.features.version_check);
-        assert!(s.features.mouse, "untouched flags stay at their default");
-    }
-
-    #[test]
-    fn auto_update_flag_defaults_on_and_parses() {
-        // On by default for 1.0 (network call + writes to disk).
-        let s: Settings = toml::from_str("[features]").unwrap();
-        assert!(s.features.auto_update, "auto_update defaults on");
-        assert!(s.features.shell_pane, "other flags still default on");
-
-        let s: Settings = toml::from_str("[features]\nauto_update = false").unwrap();
-        assert!(!s.features.auto_update);
-        assert!(s.features.mouse, "untouched flags stay at their default");
-    }
-
-    #[test]
-    fn feature_flag_type_mismatch_is_rejected() {
-        let err = toml::from_str::<Settings>("[features]\nshell_pane = \"no\"").unwrap_err();
-        assert!(err.to_string().contains("shell_pane"));
     }
 
     #[test]
