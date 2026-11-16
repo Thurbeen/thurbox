@@ -928,6 +928,13 @@ impl Runtime for ExecRuntime {
         u64::try_from(longest.as_millis()).unwrap_or(u64::MAX)
     }
 
+    fn env_source(
+        &self,
+        source: &fleet_api::config::EnvSource,
+    ) -> Observation<BTreeMap<String, String>> {
+        crate::resolve_env_source(source)
+    }
+
     /// A session on another host than this machine reports to a file
     /// there, read through the runtime's `exec`.
     fn signals(&self, session: &SessionRef) -> Option<Observation<Reported>> {
@@ -2040,6 +2047,26 @@ mod tests {
             "{} ms",
             runtime.operation_bound()
         );
+    }
+
+    #[test]
+    fn an_environment_source_resolves_on_the_manager() {
+        let dir = std::env::temp_dir().join(format!("fleet-exec-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("tokens.json");
+        std::fs::write(&path, r#"{"TOKEN":"t"}"#).expect("source");
+        let runtime = ExecRuntime::new(BTreeMap::from([(
+            "mux/box".to_string(),
+            ExecProgram::new("mux", "runtime-mux"),
+        )]));
+        let resolved = runtime.env_source(&fleet_api::config::EnvSource::File {
+            path: path.to_string_lossy().into_owned(),
+        });
+        assert_eq!(
+            resolved,
+            Observation::Known(BTreeMap::from([("TOKEN".to_string(), "t".to_string())]))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
