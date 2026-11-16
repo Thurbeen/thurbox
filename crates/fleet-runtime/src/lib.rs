@@ -7,6 +7,8 @@
 //!   runs nothing.
 //! - [`FileSignals`]: the signal port's adapter, one file per session on
 //!   this machine.
+//! - [`events`]: a session's outbox, which `fleet event publish` appends
+//!   to beside its signal file, and Fleet's reads of it.
 //! - [`assets`]: the plugin files Fleet ships for the harnesses that take
 //!   their hooks as a file, written beside the signal files.
 //! - [`integration`]: the hooks `fleet integration` installs into an agent's
@@ -15,6 +17,7 @@
 
 pub mod assets;
 pub mod bridge;
+pub mod events;
 pub mod exec;
 pub mod fake;
 pub mod integration;

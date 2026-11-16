@@ -387,21 +387,24 @@ pub trait Store {
         Err(StoreError::Unsupported("record_refusal".into()))
     }
     /// Append events to a Board's log as `source`, under the store lock,
-    /// as a caller `kinds::may_append_events` admits, with no lease. Each publish is checked as
+    /// as a caller `kinds::may_append_events` admits: a controller only
+    /// under the lease, `cli` with none. Each publish is checked as
     /// `event::validate_publish` checks it against the Board's
     /// `maxDataBytes`, and the batch is refused whole if one fails. A
-    /// publish whose `(source, key)` the log still holds appends nothing and
-    /// answers the event already there. The others get the next `seq`s and
-    /// the store's time. In the same write, retention drops the oldest whole
-    /// segments and the Board's `status.head` and `status.oldest` move;
-    /// nothing else of the Board changes. Retention runs first, so a key
-    /// whose event aged out can be used again.
+    /// publish whose key the same publisher (`Source::same_publisher`) used
+    /// for an event the log still holds appends nothing and answers that
+    /// event. The others get the next `seq`s and the store's time. In the
+    /// same write, retention drops the oldest whole segments and the
+    /// Board's `status.head` and `status.oldest` move; nothing else of the
+    /// Board changes. Retention runs first, so a key whose event aged out
+    /// can be used again.
     fn append_events(
         &self,
         _board: &str,
         _source: &crate::event::Source,
         _events: Vec<crate::event::Publish>,
         _by: FieldManager,
+        _lease: Option<&LeaseToken>,
     ) -> Result<Vec<crate::event::Appended>, StoreError> {
         Err(StoreError::Unsupported("append_events".into()))
     }

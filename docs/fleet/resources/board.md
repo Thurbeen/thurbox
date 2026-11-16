@@ -80,7 +80,7 @@ Each event has these fields. Their names follow CloudEvents.
 | `board` | Fleet | The Board's name. |
 | `seq` | Fleet | The event's place in the Board's order, from 1. Each event gets the next number. |
 | `time` | Fleet | When the store appended the event, in Unix milliseconds. |
-| `source` | Fleet | Who published the event: `cli/<user>` for `fleet event publish` outside a session. |
+| `source` | Fleet | Who published the event: `cli/<user>` for `fleet event publish` outside a session, or the session's Task, `{task, uid, lineage}`. See [Publishing from a session](#publishing-from-a-session). |
 | `type` | The publisher | Segments of `a-z`, `0-9`, `_` and `-`, joined by dots, at most 128 characters. `fleet.` is reserved for Fleet's controllers. |
 | `subject` | The publisher | Optional. What the event is about, at most 256 characters. |
 | `key` | The publisher | Optional. At most 256 characters. See [Lifecycle](#lifecycle). |
@@ -89,6 +89,84 @@ Each event has these fields. Their names follow CloudEvents.
 
 The store refuses an event that breaks one of these rules, and appends
 nothing.
+
+## Publishing from a session
+
+Fleet gives each session an outbox. The outbox is a file beside the
+session's signal file, on the same place. Fleet names it in
+`FLEET_EVENT_FILE`.
+
+```text
+session:  fleet event publish ──▶ outbox (one JSON line)
+Fleet:    TaskController reads the outbox ──▶ append as the Task ──▶ status.outbox
+```
+
+1. Inside a session, `fleet event publish` checks the event. It checks
+   the Board's name, the type grammar, the `fleet.` prefix and the
+   lengths. It does not open the store.
+2. It appends one JSON line to the outbox and prints the line's offset,
+   for example `shared git.push queued at outbox offset 0`. The Board does
+   not have the event yet.
+3. On each pass, TaskController reads the outbox of each Task that has a
+   session. It reads from the offset in `status.outbox`. It reads only
+   whole lines, at most 512 KiB per pass. It renews the lease before each
+   read. A `Concluded` Task that is not being deleted has its outbox read
+   only when the Task is due, as for its session recheck (every 5
+   minutes).
+4. TaskController appends the events to their Board, under the lease. It
+   appends consecutive lines for one Board together, at most 256 at a
+   time. When the Board refuses such a batch, it appends those lines one
+   at a time, so that only the refused line is skipped. The
+   source is the Task: `{task, uid, lineage}`. Then it writes the new
+   offset to `status.outbox`. When another writer wrote the Task first, it
+   reads the Task again and writes the offset again.
+
+These rules apply:
+
+- The source is always the Task whose outbox it is. A field in the line
+  that names a source or another Task has no effect.
+- `lineage` lists the Task's ancestors, nearest first, from the parent
+  labels (`gateway.fleet.dev/parent` and `-uid`). It is empty for a Task
+  without a parent.
+- `fleet event list --source task/<name>` keeps the events of one Task.
+- A line without a `key` gets the key `outbox-<generation>-<offset>`. When
+  TaskController reads the same line again, the Board appends nothing.
+- Delivery is at least once. If Fleet stops after the appends and before
+  it writes the offset, it reads those lines again. When retention already
+  dropped the key of such a line, because `maxCount` is smaller than one
+  read's lines, the Board appends that line again with a new `seq`.
+- When the outbox is shorter than the offset, the file was made again.
+  TaskController reads it from the start, and `generation` goes up by one.
+- A line has at most 64 KiB. A line without its newline waits for it.
+- TaskController skips a longer line whole. When it skips the line before
+  its newline arrives, it sets `status.outbox.discarding` and passes over
+  the rest of the line up to that newline. The rest never becomes an event.
+- The outbox holds event payloads, so it is private. On Unix, Fleet and
+  `fleet event publish` make it with mode 0600, and its directory with
+  mode 0700.
+- TaskController skips a line that does not parse, or that the Board
+  refuses, such as a Board that does not exist. It counts it in
+  `status.outbox.skipped` and writes why in `status.outbox.lastSkipped`.
+  The next lines continue.
+- When the session is `Gone`, TaskController reads its outbox until one
+  read finds no whole line left. Then it sets `status.outbox.closed` and
+  reads that outbox no more, unless the Task is being deleted. When the
+  session runs again, `closed` goes.
+- When TaskController cannot read the outbox, the offset stays. It
+  concludes nothing.
+- A deleted Task keeps its finalizer after the release until its outbox
+  holds no whole line still to ingest. The release stops the session
+  first, so no line comes after the last read.
+- While lines are still to ingest, the `Released` condition is
+  `False/OutboxDraining`, with no time limit.
+- While the outbox cannot be read, the condition is `Unknown/OutboxUnread`.
+  This lasts at most 5 minutes from the first pass that could not read it.
+  A pass that reads it starts that time again. Then Fleet gives up the
+  unread lines, and the release ends with `Released=True/OutboxGivenUp`.
+  This happens on a place without `fleet` on its `PATH`, with a `fleet`
+  older than this release, or where `exec` fails.
+- A session that has `FLEET_SIGNAL_FILE` but no `FLEET_EVENT_FILE` refuses
+  to publish. It never publishes as `cli/<user>`.
 
 ## Lifecycle
 
@@ -124,8 +202,9 @@ publish ──▶ check ──▶ drop aged segments ──▶ key held? ──y
 
 ## Related kinds
 
-- A [Task](task.md) does not write to a Board in this release. People and
-  scripts publish with `fleet event publish`, as `cli/<user>`.
+- A [Task](task.md)'s session publishes through its outbox, and
+  TaskController appends the events as the Task. People and scripts
+  outside a session publish as `cli/<user>`.
 - The [Task inbox](task.md) is different: it delivers each entry to one
   session.
 
@@ -148,6 +227,6 @@ prefix.
 | `--after SEQ` | Events with a `seq` above `SEQ`. The default is 0. |
 | `--type T` | Events of type `T`. |
 | `--subject S` | Events about `S`. |
-| `--source S` | Events from `S`, such as `cli/alex`. |
+| `--source S` | Events from `S`, such as `cli/alex` or `task/build`. |
 | `--correlation C` | Events with the correlation id `C`. |
 | `--limit N` | The first `N` events that match, 1 to 10000. The default is 100. |

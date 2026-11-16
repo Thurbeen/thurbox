@@ -115,6 +115,10 @@ file, and the bundled profile or the default names apply.
   expands `~` to its home and makes the directory. Fleet reads the file
   through the runtime's `exec`. A place without `fleet` on its `PATH`
   reports nothing, and the state stays Unknown.
+- Fleet also passes `FLEET_EVENT_FILE`, the session's event outbox:
+  the signal file's name with `.events` after it. `fleet event publish`
+  appends to it. A hook never writes to it. See
+  [Board](resources/board.md#publishing-from-a-session).
 
 ## Examples
 

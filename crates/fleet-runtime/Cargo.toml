@@ -17,5 +17,8 @@ serde.workspace = true
 serde_json.workspace = true
 term-stream.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

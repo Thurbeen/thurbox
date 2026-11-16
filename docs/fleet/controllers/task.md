@@ -399,9 +399,15 @@ the prompt and the conversation id. The harness profile's `[payload]`
 fields name them ([signal contract](../signal-contract.md)). The
 `Activity` probe reads the file through the port and answers both the
 activity and the whole report. A file never written is a report of nothing;
-a file that cannot be read is Unknown. A session on another place gets a
-file on that place, which the runtime port reads through the runtime's
+a file that cannot be read, or that is not a regular file (a FIFO, a
+symlink), is Unknown. The read neither blocks on it nor follows it. A
+session on another place gets a file on that place, which the runtime port reads through the runtime's
 `exec` ([signals on a remote place](../../runtime/README.md#signals-on-a-remote-place)).
+
+Each spawn also gets `FLEET_EVENT_FILE`, the session's event outbox beside
+its signal file. On each pass, the manager ingests it into the Boards as
+TaskController, under the lease, and records the offset in
+`status.outbox` ([publishing from a session](../resources/board.md#publishing-from-a-session)).
 
 The controller records the last reported conversation in
 `status.conversation`. A revive or a resume names it, so the runtime starts
@@ -717,6 +723,17 @@ cannot orphan an unknown session.
 For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. The finalizer remains while release is failed or ambiguous. It is removed
 only after Known Released, or when there is no session to release.
+
+After Known Released, the finalizer also waits for the session's event
+outbox: the manager's ingest must find no whole line left to read
+(`outbox_drained`). A line still to ingest keeps
+`Released=False/OutboxDraining` with no limit. An outbox that cannot be
+read keeps `Released=Unknown/OutboxUnread` for `RELEASE_GRACE_MS` (5
+minutes) from the first pass that could not read it: the condition's
+`lastTransitionTime` while its reason is `OutboxUnread`. A pass that reads
+the outbox changes the condition, and so starts that time again. Then its unread lines are given up,
+and the release ends with `Released=True/OutboxGivenUp`. See
+[Board](../resources/board.md#publishing-from-a-session).
 
 When the runtime made the workspace, the release is followed by
 `CleanWorkspace`, the runtime's `stop` with `release`:

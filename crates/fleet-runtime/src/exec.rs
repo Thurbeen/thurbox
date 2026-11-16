@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fleet_api::Observation;
+use fleet_api::event::{OutboxRead, outbox_file};
 use fleet_api::harness::{
     claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog,
     copilot_initial_composer, copilot_process, copilot_trust_dialog, kimi_initial_composer,
@@ -860,6 +861,43 @@ impl ExecRuntime {
         )
     }
 
+    /// The session's outbox on its host from the offset `from`, through
+    /// the runtime's `exec`: `fleet signal-read --from` there prints where
+    /// its read starts, then the bytes. Exit 3 is a file never written.
+    fn place_outbox(&self, session: &SessionRef, from: u64) -> Observation<Option<OutboxRead>> {
+        let Some(signals) = &self.signals else {
+            return Observation::unknown("no signal port: the outbox is not read");
+        };
+        let Some(file) = signals.file(&session.host, &session.key) else {
+            return Observation::unknown("the session key is not a plain name");
+        };
+        let file = outbox_file(&file);
+        let from = from.to_string();
+        let argv = [PLACE_READ[0], PLACE_READ[1], "--from", &from, &file];
+        bind(self.exec_on(&session.host, &argv), |ran| match ran {
+            Executed::Exited {
+                code: Some(0),
+                stdout,
+                ..
+            } => crate::events::decode_place_read(&stdout).map_or_else(
+                || Observation::unknown("fleet signal-read --from answered no offset"),
+                |read| Observation::Known(Some(read)),
+            ),
+            Executed::Exited { code: Some(3), .. } => Observation::Known(None),
+            Executed::Exited { stderr, .. } => Observation::unknown(format!(
+                "cannot read the outbox on {}: {}",
+                session.host,
+                stderr.lines().next().unwrap_or("fleet signal-read failed")
+            )),
+            Executed::Failed { why } => {
+                Observation::unknown(format!("cannot read the outbox on {}: {why}", session.host))
+            }
+            Executed::TimedOut { .. } => {
+                Observation::unknown(format!("reading the outbox on {} timed out", session.host))
+            }
+        })
+    }
+
     /// The length in bytes of the signal file `file` on `host`, 0 when it is
     /// not there, through the runtime's `exec`.
     fn place_file_length(&self, host: &str, file: &str) -> Length {
@@ -940,6 +978,12 @@ impl Runtime for ExecRuntime {
     /// there, read through the runtime's `exec`.
     fn signals(&self, session: &SessionRef) -> Option<Observation<Reported>> {
         (session.host != LOCAL_HOST).then(|| self.reported(session))
+    }
+
+    /// A session on another host than this machine publishes to an outbox
+    /// there, read through the runtime's `exec`.
+    fn outbox(&self, session: &SessionRef, from: u64) -> Option<Observation<Option<OutboxRead>>> {
+        (session.host != LOCAL_HOST).then(|| self.place_outbox(session, from))
     }
 
     fn host(&self, host: &str) -> Observation<bool> {

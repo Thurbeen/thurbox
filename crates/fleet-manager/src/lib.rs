@@ -54,6 +54,7 @@
 
 mod cron_tasks;
 mod execution;
+mod outbox;
 pub mod plugins;
 mod telemetry;
 pub mod verbs;
@@ -354,6 +355,28 @@ impl Manager<'_> {
             }
             let now = self.clock.now();
             for obj in &tasks {
+                let concluded =
+                    obj.status.get("phase").and_then(Value::as_str) == Some("Concluded");
+                let read_outbox = !concluded || obj.is_deleting() || self.due(obj);
+                let read = if read_outbox {
+                    self.ingest_outbox(obj, &tasks, lease, opts.lease_ttl, report)
+                } else {
+                    Ok(outbox::Ingested::unread())
+                };
+                let ingested = match read {
+                    Ok(ingested) => ingested,
+                    Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                    Err(e) => {
+                        report.errors.push(format!("{} outbox: {e}", obj.key()));
+                        outbox::Ingested {
+                            written: None,
+                            drained: Observation::unknown(e.to_string()),
+                        }
+                    }
+                };
+                busy |= ingested.written.is_some();
+                let outbox_drained = ingested.drained;
+                let obj = ingested.written.as_ref().unwrap_or(obj);
                 let task_due = self.due(obj);
                 let forge_due = ForgeController::due(obj, now);
                 let gateway_due = {
@@ -382,7 +405,15 @@ impl Manager<'_> {
                         "TaskController",
                         obj,
                         || self.clock.now(),
-                        || self.reconcile_task(obj, lease, opts.lease_ttl, report),
+                        || {
+                            self.reconcile_task(
+                                obj,
+                                outbox_drained.clone(),
+                                lease,
+                                opts.lease_ttl,
+                                report,
+                            )
+                        },
                     );
                     busy |= self.tally(step, &obj.key(), report)?;
                     moved = true;
@@ -1845,6 +1876,7 @@ impl Manager<'_> {
     fn reconcile_task(
         &self,
         obj: &Object,
+        outbox_drained: Observation<bool>,
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
@@ -1909,7 +1941,10 @@ impl Manager<'_> {
         }
         let mut input = TaskInput {
             task: obj,
-            observations: Observations::default(),
+            observations: Observations {
+                outbox_drained: Some(outbox_drained),
+                ..Observations::default()
+            },
             now: self.clock.now(),
         };
         let ctl = TaskController;
@@ -1978,6 +2013,10 @@ impl Manager<'_> {
                 spawn.telemetry_args = t.args;
             }
             if let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key)) {
+                spawn.env.insert(
+                    fleet_api::event::EVENT_FILE_ENV.to_string(),
+                    fleet_api::event::outbox_file(&file),
+                );
                 spawn
                     .env
                     .insert(fleet_api::signal::SIGNAL_FILE_ENV.to_string(), file);
