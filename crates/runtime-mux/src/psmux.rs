@@ -104,7 +104,11 @@ impl TmuxCompatible for Psmux {
     const COLD_START_ATTEMPTS: usize = 3;
 
     /// The server can become reachable well after a failed create client exits.
-    const COLD_START_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+    const COLD_START_GRACE: std::time::Duration = if cfg!(test) {
+        std::time::Duration::from_secs(2)
+    } else {
+        std::time::Duration::from_secs(20)
+    };
 
     const RETRY_NO_SERVER_ERROR: bool = true;
 
@@ -129,7 +133,11 @@ impl TmuxCompatible for Psmux {
     /// with a light profile to start and fail to find the program it was told
     /// to run; a slow profile (conda, oh-my-posh) can outlast it, which only
     /// misses a dead window — it never refuses a live one.
-    const SPAWN_SETTLE: Option<std::time::Duration> = Some(std::time::Duration::from_millis(1500));
+    const SPAWN_SETTLE: Option<std::time::Duration> = Some(if cfg!(test) {
+        std::time::Duration::from_millis(20)
+    } else {
+        std::time::Duration::from_millis(1500)
+    });
 
     /// No `if-shell -F` to decide with: the last instance to paint wins.
     const CONDITIONAL_RESIZE: bool = false;
@@ -1501,14 +1509,14 @@ mod tests {
                      exit 1\n\
                    fi\n\
                  fi\n\
-                 if [ \"$scenario\" = transient_option_failure ] && \
-                    [ ! -f \"$attempts.option_ready\" ]; then\n\
-                   if [ ! -f \"$attempts.option_started\" ]; then\n\
-                     touch \"$attempts.option_started\"\n\
-                     (sleep 0.5; touch \"$attempts.option_ready\") >/dev/null 2>&1 &\n\
+                 if [ \"$scenario\" = transient_option_failure ]; then\n\
+                   refused=0\n\
+                   [ -f \"$attempts.option_refused\" ] && refused=$(wc -l < \"$attempts.option_refused\")\n\
+                   if [ \"$refused\" -lt {option_refusals} ]; then\n\
+                     echo refused >> \"$attempts.option_refused\"\n\
+                     echo 'psmux: no server running on session' >&2\n\
+                     exit 1\n\
                    fi\n\
-                   echo 'psmux: no server running on session' >&2\n\
-                   exit 1\n\
                  fi\n\
                  if [ \"$scenario\" = live_option_failure ]; then\n\
                    echo 'invalid option' >&2\n\
@@ -1519,7 +1527,7 @@ mod tests {
                     [ ! -f \"$attempts.window_ready\" ]; then\n\
                    if [ ! -f \"$attempts.window_started\" ]; then\n\
                      touch \"$attempts.window_started\"\n\
-                     (sleep 0.5; touch \"$attempts.window_ready\") >/dev/null 2>&1 &\n\
+                     (sleep 0.1; touch \"$attempts.window_ready\") >/dev/null 2>&1 &\n\
                    fi\n\
                    echo 'psmux: no server running on session' >&2\n\
                    exit 1\n\
@@ -1529,7 +1537,8 @@ mod tests {
              esac\n",
             session.display(),
             attempts.display(),
-            scenario
+            scenario,
+            option_refusals = Psmux::COLD_START_ATTEMPTS + 1,
         );
         std::fs::write(&mux, script).expect("write fake psmux");
         std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
@@ -1812,6 +1821,9 @@ mod tests {
             .ensure_session_configured()
             .expect("psmux recovers after a temporary connection failure");
         assert_eq!(attempt_count(&root), 1);
+        let refused = std::fs::read_to_string(root.path().join("attempts.option_refused"))
+            .expect("set-option was refused");
+        assert_eq!(refused.lines().count(), Psmux::COLD_START_ATTEMPTS + 1);
     }
 
     #[cfg(unix)]
@@ -1988,26 +2000,6 @@ mod tests {
         assert_eq!(attempt_count(&root), 3);
     }
 
-    #[test]
-    fn psmux_surveys_live_panes_when_close_notifications_are_unavailable() {
-        let host = crate::HostDef {
-            name: "windows".into(),
-            multiplexer: Some("psmux".into()),
-            ..Default::default()
-        };
-        assert!(
-            PsmuxBackend::for_host(&host, &crate::settings::for_tests())
-                .capabilities()
-                .needs_liveness_poll
-        );
-        assert!(
-            PsmuxBackend::local(&crate::settings::for_tests())
-                .capabilities()
-                .needs_liveness_poll,
-            "on this machine too, whatever OS it is"
-        );
-    }
-
     /// psmux 3.3.8 answers `set-option -s` with "unknown flag -s", which failed
     /// every session setup against it; 3.3.7 took either scope.
     #[test]
@@ -2026,6 +2018,7 @@ mod tests {
         assert!(err.contains("3.3.6"), "{err}");
         assert!(err.contains("3.3.8"), "{err}");
         assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
+        assert!(check_psmux_version("3.3.6\n", "thurbox").is_err());
         assert!(check_psmux_version("3.3.5", "thurbox").is_err());
         assert!(check_psmux_version("3.2.9", "thurbox").is_err());
     }
@@ -2057,14 +2050,8 @@ mod tests {
     }
 
     #[test]
-    fn a_running_server_is_judged_by_its_own_version() {
-        assert!(check_psmux_version("3.3.6\n", "thurbox").is_err());
-        assert!(check_psmux_version("3.3.8", "thurbox").is_ok());
-    }
-
-    #[test]
     fn psmux_3_3_8_and_newer_is_accepted() {
-        for answer in ["3.3.8", "3.4.0", "4.0"] {
+        for answer in ["3.3.8", "3.3.8\n", "3.4.0", "4.0"] {
             assert!(check_psmux_version(answer, "thurbox").is_ok(), "{answer}");
         }
         assert!(

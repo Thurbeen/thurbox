@@ -711,6 +711,12 @@ const SSH_ERROR_EXIT: i32 = 255;
 /// enough that a link carrying nothing costs a hitch instead of a freeze.
 const LOOP_COMMAND_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
+const FRESH_SESSION_READY_WAIT: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(200)
+} else {
+    std::time::Duration::from_secs(5)
+};
+
 /// What a failed one-shot's multiplexer said is missing, given the layer that
 /// failed (`is_ssh` + the exit `code`) and its one line of `answer`.
 ///
@@ -2202,15 +2208,7 @@ impl<M: TmuxCompatible> Server<M> {
                     self.session
                 );
             }
-            // Cheap defensiveness: poll until the freshly-created session
-            // answers the session probe before applying options. (The `no server
-            // running on 'thurbox__thurbox'` failure that originally motivated
-            // this on psmux was session *nesting*, now fixed at the root by
-            // `strip_mux_nesting_env`; this poll is a harmless belt against any
-            // genuinely-async `new-session -d`, and one session probe when the
-            // first probe succeeds — which it does on the normal path, and only
-            // when a session had to be created at all.)
-            self.wait_for_session_ready(std::time::Duration::from_secs(5));
+            self.wait_for_session_ready(FRESH_SESSION_READY_WAIT);
         }
         self.apply_session_config()
     }
@@ -6293,7 +6291,7 @@ done
     }
 
     #[cfg(unix)]
-    const STALL: std::time::Duration = std::time::Duration::from_secs(3);
+    const STALL: std::time::Duration = std::time::Duration::from_secs(1);
 
     /// Block until the fake mux's log satisfies `seen`.
     #[cfg(unix)]
@@ -6618,6 +6616,8 @@ done
             &[SocketDir::Dir(root.path().display().to_string())],
             "located",
         );
+        let script = script.replacen("\"$t\" -lt 30", "\"$t\" -lt 10", 1);
+        assert!(script.contains("\"$t\" -lt 10"), "{script}");
         let starting = answer_after.map(|delay| {
             std::thread::spawn(move || {
                 std::thread::sleep(delay);

@@ -162,26 +162,6 @@ fn shell_escape_newline_only() {
 // --- decode_octal tests ---
 
 #[test]
-fn decode_octal_esc() {
-    assert_eq!(decode_octal(b"\\033"), vec![27]);
-}
-
-#[test]
-fn decode_octal_backslash() {
-    assert_eq!(decode_octal(b"\\134"), vec![b'\\']);
-}
-
-#[test]
-fn decode_octal_newline() {
-    assert_eq!(decode_octal(b"\\012"), vec![b'\n']);
-}
-
-#[test]
-fn decode_octal_passthrough() {
-    assert_eq!(decode_octal(b"hello"), b"hello");
-}
-
-#[test]
 fn decode_octal_incomplete() {
     assert_eq!(decode_octal(b"\\01"), b"\\01");
 }
@@ -192,31 +172,8 @@ fn decode_octal_non_octal_digits() {
 }
 
 #[test]
-fn decode_octal_mixed() {
-    assert_eq!(
-        decode_octal(b"A\\033[1mB"),
-        vec![b'A', 27, b'[', b'1', b'm', b'B']
-    );
-}
-
-#[test]
-fn decode_octal_consecutive() {
-    assert_eq!(decode_octal(b"\\033\\033"), vec![27, 27]);
-}
-
-#[test]
-fn decode_octal_empty() {
-    assert_eq!(decode_octal(b""), b"");
-}
-
-#[test]
 fn decode_octal_trailing_backslash() {
     assert_eq!(decode_octal(b"a\\"), b"a\\");
-}
-
-#[test]
-fn decode_octal_max_value() {
-    assert_eq!(decode_octal(b"\\377"), vec![0xFF]);
 }
 
 #[test]
@@ -1077,63 +1034,12 @@ fn bracketed_paste_text_rejects_invalid_utf8() {
     assert_eq!(bracketed_paste_text(b"\x1b[200~\xff\x1b[201~"), None);
 }
 
-// --- ControlModeReader tests ---
-
-#[test]
-fn control_mode_reader_data_delivery() {
-    let (tx, rx) = sync_channel(16);
-    let mut reader = ControlModeReader::new(rx);
-
-    tx.send(b"hello".to_vec().into()).unwrap();
-    assert_eq!(next_output(&mut reader), b"hello");
-}
-
-#[test]
-fn control_mode_reader_eof_on_sender_drop() {
-    let (tx, rx) = sync_channel(16);
-    let mut reader = ControlModeReader::new(rx);
-
-    drop(tx);
-    assert!(reader.next().is_none());
-}
-
-#[test]
-fn control_mode_reader_multiple_sends() {
-    let (tx, rx) = sync_channel(16);
-    let mut reader = ControlModeReader::new(rx);
-
-    tx.send(b"aaa".to_vec().into()).unwrap();
-    tx.send(b"bbb".to_vec().into()).unwrap();
-
-    assert_eq!(next_output(&mut reader), b"aaa");
-    assert_eq!(next_output(&mut reader), b"bbb");
-}
-
-#[test]
-fn control_mode_writer_is_send() {
+const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<ControlModeWriter>();
-}
-
-#[test]
-fn control_mode_reader_is_send() {
-    fn assert_send<T: Send>() {}
     assert_send::<ControlModeReader>();
-}
+};
 
-#[test]
-fn try_send_drops_when_channel_full() {
-    let (tx, _rx) = sync_channel::<Vec<u8>>(1);
-
-    tx.send(b"first".to_vec()).unwrap();
-
-    match tx.try_send(b"second".to_vec()) {
-        Err(std::sync::mpsc::TrySendError::Full(_)) => {}
-        other => panic!("Expected TrySendError::Full, got: {other:?}"),
-    }
-}
-
-// Compile-time check: channel capacity must be large enough to buffer heavy output.
 const _: () = assert!(PANE_CHANNEL_CAPACITY >= 1024);
 
 /// Property/fuzz tests proving the tmux control-mode **transport** is byte

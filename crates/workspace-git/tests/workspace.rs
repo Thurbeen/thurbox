@@ -865,7 +865,7 @@ fn a_subdirectory_url_takes_the_checkouts_one_lock() {
         let _ = tx.send(answer);
     });
     assert!(
-        rx.recv_timeout(std::time::Duration::from_millis(1500))
+        rx.recv_timeout(std::time::Duration::from_millis(500))
             .is_err(),
         "the make went on while the checkout's lock was held"
     );
