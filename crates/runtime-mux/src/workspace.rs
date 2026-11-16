@@ -446,6 +446,12 @@ fn config_path() -> Option<PathBuf> {
     xdg("XDG_CONFIG_HOME", ".config").map(|d| d.join("runtime-mux/config.toml"))
 }
 
+/// This program's own data on this machine: `$XDG_DATA_HOME/runtime-mux`,
+/// else `~/.local/share/runtime-mux`. It outlives a reboot.
+pub fn data_dir() -> Option<PathBuf> {
+    data_home().map(|d| d.join("runtime-mux"))
+}
+
 fn data_home() -> Option<PathBuf> {
     xdg("XDG_DATA_HOME", ".local/share")
 }

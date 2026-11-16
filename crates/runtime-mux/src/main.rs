@@ -110,7 +110,7 @@ fn serve(verb: &str) -> serde_json::Value {
             Err(answer) => return answer,
         }
     }
-    let pauses = pauses(&server);
+    let kept = kept(&server);
     // Each remote place's login `PATH` is cached beside the locks, so a call
     // does not read it again over ssh.
     keep_cache(&socket);
@@ -122,7 +122,7 @@ fn serve(verb: &str) -> serde_json::Value {
     let backends = |place: Option<&HostDef>| backend_for(&settings, place, &built);
     let answer = protocol::serve_with(
         &backends,
-        &pauses,
+        &kept,
         verb,
         &request,
         &view_argv(&settings),
@@ -317,14 +317,42 @@ fn view_pane(
     runtime_mux::view::serve(backend, &pane, std::io::stdin(), &mut std::io::stdout())
 }
 
-/// The marks of the keys paused on `server` (a socket, and the remote place
-/// it is on), beside its lock: they go with the directory this machine's
-/// server keeps its socket in.
-fn pauses(server: &str) -> protocol::Pauses {
-    let (dir, prefix) = private_dir();
-    protocol::Pauses::new(
-        dir.map_err(|e| format!("no directory for the pause marks: {e}")),
-        format!("{prefix}runtime-mux-{server}.paused-"),
+fn kept(server: &str) -> protocol::Kept {
+    let (sockets, prefix) = private_dir();
+    let started = match &sockets {
+        Ok(sockets) => runtime_mux::workspace::data_dir()
+            .map(|data| {
+                data.join("started")
+                    .join(sockets_digest(sockets))
+                    .join(server_dir(server))
+            })
+            .ok_or_else(|| "no HOME to keep the started keys in".to_string()),
+        Err(e) => Err(format!("no directory for the tmux sockets: {e}")),
+    };
+    protocol::Kept {
+        paused: protocol::Marks::new(
+            sockets.map_err(|e| format!("no directory for the pause marks: {e}")),
+            format!("{prefix}runtime-mux-{server}.paused-"),
+            "pause mark",
+        ),
+        started: protocol::Marks::new(started, "key.".to_string(), "start record"),
+    }
+}
+
+const SERVER_DIR_COMPONENT: usize = 128;
+
+fn server_dir(server: &str) -> std::path::PathBuf {
+    let hex: String = server.bytes().map(|b| format!("{b:02x}")).collect();
+    hex.as_bytes()
+        .chunks(SERVER_DIR_COMPONENT)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect()
+}
+
+fn sockets_digest(sockets: &std::path::Path) -> String {
+    format!(
+        "{:08x}",
+        runtime_mux::instance::fnv1a32(sockets.to_string_lossy().as_bytes())
     )
 }
 
@@ -389,4 +417,24 @@ fn tmux_dir() -> std::io::Result<std::path::PathBuf> {
 fn private_dir() -> (std::io::Result<std::path::PathBuf>, String) {
     let user = std::env::var("USERNAME").unwrap_or_default();
     (Ok(std::env::temp_dir()), format!("{user}-"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::server_dir;
+
+    #[test]
+    fn a_long_server_name_fits_in_filenames_and_stays_distinct() {
+        let socket = "s".repeat(64);
+        let long = format!("{socket}@{}", "p".repeat(64));
+        let longer = format!("{long}q");
+        let dir = server_dir(&long);
+        assert!(
+            dir.components().all(|c| c.as_os_str().len() <= 255),
+            "{}",
+            dir.display()
+        );
+        assert_ne!(dir, server_dir(&longer));
+        assert_ne!(server_dir("ab"), server_dir("a/b"));
+    }
 }

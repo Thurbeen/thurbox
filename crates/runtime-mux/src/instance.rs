@@ -160,7 +160,7 @@ fn derived_socket(dir: &Path) -> String {
 /// FNV-1a, 32 bits. Written out rather than reached for in `std`: this name has
 /// to be the same string in every process and every release, and neither
 /// `DefaultHasher`'s algorithm nor its seed is guaranteed to be.
-fn fnv1a32(bytes: &[u8]) -> u32 {
+pub fn fnv1a32(bytes: &[u8]) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
     for b in bytes {
         hash ^= u32::from(*b);

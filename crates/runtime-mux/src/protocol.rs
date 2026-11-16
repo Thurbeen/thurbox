@@ -2,14 +2,14 @@
 //! `runtime-mux` program answers for each verb.
 //!
 //! Each call is one request in and one answer out, `{"known": …}` or
-//! `{"unknown": {"why": …}}`. Nothing here is kept between calls: the
-//! multiplexer's server is the whole state, and a key is found again by its
-//! window's name (`name_of`), never by a record of ours.
+//! `{"unknown": {"why": …}}`. A key is found again by its window's name
+//! (`name_of`), and its window answers for it while it is there.
 //!
 //! A process is the key's agent window. A pane kept after its program exits is
-//! how `inspect` reports an exit code; a `start` replaces it. A paused key is
-//! the one thing kept outside the server: a mark ([`Pauses`]), since a pause
-//! leaves no window to keep it on.
+//! how `inspect` reports an exit code; a `start` replaces it. Two things are
+//! kept outside the server ([`Kept`]): a paused key's mark, since a pause
+//! leaves no window to keep it on, and each started key until its `stop`,
+//! since a reboot takes the server and its windows with it.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -109,7 +109,7 @@ pub fn place_of(request: &[u8]) -> Option<HostDef> {
 /// lets go of the server's lock there, so a slow teardown holds only its key.
 pub fn serve_with(
     backends: &Backends,
-    pauses: &Pauses,
+    kept: &Kept,
     verb: &str,
     request: &[u8],
     view: &[String],
@@ -166,11 +166,11 @@ pub fn serve_with(
     };
     let view = view.as_slice();
     let result = match verb {
-        "start" => parse(request).map(|r| start(backend, place, pauses, r)),
-        "inspect" => parse(request).map(|r: Keyed| inspect(backend, pauses, &r.key)),
-        "pause" => parse(request).map(|r: Keyed| pause(backend, pauses, &r.key)),
+        "start" => parse(request).map(|r| start(backend, place, kept, r)),
+        "inspect" => parse(request).map(|r: Keyed| inspect(backend, kept, &r.key)),
+        "pause" => parse(request).map(|r: Keyed| pause(backend, kept, &r.key)),
         "stop" => parse(request).map(|r: Stop| {
-            let stopped = stop(backend, pauses, &r.key);
+            let stopped = stop(backend, kept, &r.key);
             if let (Some(host), Some(_)) = (place, stopped.get("known")) {
                 crate::place::remove_assets(host, &r.key);
             }
@@ -196,7 +196,7 @@ pub fn serve_with(
             },
             Err(why) => known(json!({ "failed": { "why": why } })),
         }),
-        "list" => Ok(list(backend, pauses)),
+        "list" => Ok(list(backend, kept)),
         "input" => parse(request).map(|r| input(backend, r)),
         "capture" => parse(request).map(|r| capture(backend, r)),
         "exec" => parse(request).map(|r: Exec| exec(place, r)),
@@ -720,18 +720,19 @@ fn exited(backend: &dyn SessionBackend, pane: &str) -> Result<Option<Option<i64>
     }
 }
 
-/// Where `pause` keeps its marks: one empty file per paused key, named
-/// `<prefix><key>`, in a directory only this user can write to. `dir` is the
-/// reason none could be found, which makes every call that reads a mark
-/// Unknown.
-pub struct Pauses {
+/// Files kept outside the server, one per key, named `<prefix><key>`, in a
+/// directory only this user can write to. `what` names them in an error.
+/// `dir` is the reason none could be found, which makes every call that
+/// reads one Unknown.
+pub struct Marks {
     dir: Result<PathBuf, String>,
     prefix: String,
+    what: &'static str,
 }
 
-impl Pauses {
-    pub fn new(dir: Result<PathBuf, String>, prefix: String) -> Pauses {
-        Pauses { dir, prefix }
+impl Marks {
+    pub fn new(dir: Result<PathBuf, String>, prefix: String, what: &'static str) -> Marks {
+        Marks { dir, prefix, what }
     }
 
     fn path(&self, key: &str) -> Result<PathBuf, String> {
@@ -739,26 +740,38 @@ impl Pauses {
     }
 
     fn holds(&self, key: &str) -> Result<bool, String> {
-        let path = self.path(key)?;
-        path.try_exists()
-            .map_err(|e| format!("cannot read the pause mark {}: {e}", path.display()))
+        self.read(key).map(|text| text.is_some())
     }
 
-    fn mark(&self, key: &str) -> Result<(), String> {
+    fn read(&self, key: &str) -> Result<Option<String>, String> {
         let path = self.path(key)?;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map(drop)
-            .map_err(|e| format!("cannot write the pause mark {}: {e}", path.display()))
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!(
+                "cannot read the {} {}: {e}",
+                self.what,
+                path.display()
+            )),
+        }
+    }
+
+    fn write(&self, key: &str, text: &str) -> Result<(), String> {
+        let path = self.path(key)?;
+        let fail =
+            |e: std::io::Error| format!("cannot write the {} {}: {e}", self.what, path.display());
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(fail)?;
+        }
+        std::fs::write(&path, text).map_err(fail)
     }
 
     fn clear(&self, key: &str) -> Result<(), String> {
         let path = self.path(key)?;
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!(
-                "cannot remove the pause mark {}: {e}",
+                "cannot remove the {} {}: {e}",
+                self.what,
                 path.display()
             )),
             _ => Ok(()),
@@ -767,8 +780,17 @@ impl Pauses {
 
     fn keys(&self) -> Result<Vec<String>, String> {
         let dir = self.dir.clone()?;
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| format!("cannot list the pause marks in {}: {e}", dir.display()))?;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(format!(
+                    "cannot list the {}s in {}: {e}",
+                    self.what,
+                    dir.display()
+                ))
+            }
+        };
         Ok(entries
             .filter_map(Result::ok)
             .filter_map(|entry| {
@@ -780,10 +802,19 @@ impl Pauses {
     }
 }
 
+/// What this program keeps of a key outside the server. `paused` marks a
+/// paused key (the `pause` verb). `started` holds the pane of each key a `start`
+/// made until a `stop`, where a reboot leaves it: a key with no window reads
+/// as exited, never as stopped, so Fleet revives its session.
+pub struct Kept {
+    pub paused: Marks,
+    pub started: Marks,
+}
+
 fn start(
     backend: &dyn SessionBackend,
     place: Option<&HostDef>,
-    pauses: &Pauses,
+    kept: &Kept,
     request: Start,
 ) -> Value {
     // The one Known failure: nothing can have started without the binary.
@@ -801,7 +832,12 @@ fn start(
         }
         Ok(Located::At(pane)) => match exited(backend, &pane) {
             Err(why) => return unknown(why),
-            Ok(None) => return known(json!({ "started": { "id": pane, "adopted": true } })),
+            Ok(None) => {
+                return match kept.started.write(&request.key, &pane) {
+                    Ok(()) => known(json!({ "started": { "id": pane, "adopted": true } })),
+                    Err(why) => unknown(why),
+                }
+            }
             Ok(Some(_)) => {
                 if let Err(e) = backend.kill(&pane) {
                     return unknown(e);
@@ -847,9 +883,10 @@ fn start(
     if let Err(e) = backend.set_pane_retention(&pane, true) {
         return unknown(e);
     }
-    // After the window: while it is there, it answers for the key, so a
-    // mark left by a failed removal never hides it.
-    if let Err(why) = pauses.clear(&request.key) {
+    if let Err(why) = kept.started.write(&request.key, pane.as_str()) {
+        return unknown(why);
+    }
+    if let Err(why) = kept.paused.clear(&request.key) {
         return unknown(why);
     }
     known(json!({ "started": { "id": pane.as_str(), "adopted": false } }))
@@ -941,19 +978,20 @@ fn place_profiles(host: &HostDef, request: &mut Start) -> Result<(), String> {
     Ok(())
 }
 
-/// The key's window, else its pause mark: a window answers for the key while
-/// it is there, so a pause that has not stopped it yet reads as running. A
-/// mark is a pause only once the key's shell is closed too ([`paused`]).
-fn inspect(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
+fn inspect(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     let placed = match backend.locate(owner(&name_of(key))) {
         Ok(placed) => placed,
         Err(e) => return unknown(e),
     };
     match placed.agent {
         Located::Unknown => unknown("several windows answer to the key"),
-        Located::Absent => match pauses.holds(key) {
+        Located::Absent => match kept.paused.holds(key) {
             Ok(true) => paused(&placed.shell),
-            Ok(false) => known(json!("none")),
+            Ok(false) => match kept.started.read(key) {
+                Ok(Some(id)) => known(json!({ "exited": { "id": id, "code": null } })),
+                Ok(None) => known(json!("none")),
+                Err(why) => unknown(why),
+            },
             Err(why) => unknown(why),
         },
         Located::At(pane) => match exited(backend, &pane) {
@@ -969,12 +1007,16 @@ fn inspect(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
 /// window named as the key's shell goes, so two of them, which `shell`
 /// answers Unknown for, never keep a stop from concluding: nothing but this
 /// program makes windows on its socket, so the name alone is the key's.
-fn stop(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
+fn stop(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     let stopped = end(backend, key);
     if stopped.get("known").is_none() {
         return stopped;
     }
-    match pauses.clear(key) {
+    match kept
+        .paused
+        .clear(key)
+        .and_then(|()| kept.started.clear(key))
+    {
         Ok(()) => stopped,
         Err(why) => unknown(why),
     }
@@ -994,11 +1036,11 @@ fn paused(shell: &Located) -> Value {
 /// pause cut short at any step leaves either the agent's window, which
 /// answers for the key while it is there, or a finished pause. A mark with
 /// a shell left, as an older order could leave, is finished here.
-fn pause(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
+fn pause(backend: &dyn SessionBackend, kept: &Kept, key: &str) -> Value {
     let agent = match locate(backend, key) {
         Err(why) => return unknown(why),
         Ok(Located::Unknown) => return unknown("several windows answer to the key"),
-        Ok(Located::Absent) => match pauses.holds(key) {
+        Ok(Located::Absent) => match kept.paused.holds(key) {
             Ok(true) => None,
             Ok(false) => return known(json!("none")),
             Err(why) => return unknown(why),
@@ -1009,7 +1051,7 @@ fn pause(backend: &dyn SessionBackend, pauses: &Pauses, key: &str) -> Value {
         return unknown(e);
     }
     if let Some(pane) = agent {
-        if let Err(why) = pauses.mark(key) {
+        if let Err(why) = kept.paused.write(key, "") {
             return unknown(why);
         }
         if let Err(e) = backend.kill(&pane) {
@@ -1123,10 +1165,10 @@ fn shell(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
     known(json!({ "stream": { "argv": argv } }))
 }
 
-fn list(backend: &dyn SessionBackend, pauses: &Pauses) -> Value {
-    let paused = match pauses.keys() {
-        Ok(keys) => keys,
-        Err(why) => return unknown(why),
+fn list(backend: &dyn SessionBackend, kept: &Kept) -> Value {
+    let kept = match (kept.paused.keys(), kept.started.keys()) {
+        (Ok(paused), Ok(started)) => paused.into_iter().chain(started),
+        (Err(why), _) | (_, Err(why)) => return unknown(why),
     };
     match backend.discover() {
         Err(e) => unknown(e),
@@ -1136,7 +1178,7 @@ fn list(backend: &dyn SessionBackend, pauses: &Pauses) -> Value {
                 .iter()
                 .filter(|w| w.role == WindowRole::Agent)
                 .filter_map(|w| key_of(w.name.strip_prefix(&prefix)?))
-                .chain(paused)
+                .chain(kept)
                 .collect();
             keys.sort();
             keys.dedup();

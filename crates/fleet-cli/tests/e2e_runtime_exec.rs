@@ -937,6 +937,51 @@ fn a_multi_line_brief_reaches_claude_code_whole_and_its_wrapped_paste_proves_it(
     });
 }
 
+#[test]
+fn a_task_on_runtime_mux_is_revived_on_its_conversation_after_a_reboot() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("reboot");
+    let mut env = mux_env("runtime-mux-reboot", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "the conversation its hooks report", |env| {
+        env.get("t1")["status"]["conversation"] == "conv-1"
+    });
+    let id = env.get("t1")["status"]["session"]["id"].clone();
+
+    sockets.tmux(&["kill-server"]);
+    for entry in fs::read_dir(&sockets.0).expect("socket dir") {
+        fs::remove_dir_all(entry.expect("entry").path()).expect("tmux's private directory");
+    }
+
+    reconcile_until(&env, "revived after the reboot", |_| {
+        starts(&work).len() >= 2
+    });
+    let second = &starts(&work)[1];
+    assert_eq!(
+        &second[second.len() - 2..],
+        ["--resume", "conv-1"],
+        "{second:?}"
+    );
+    reconcile_until(&env, "the window back", |env| {
+        support::condition(&env.get("t1")["status"], "SessionLost")["status"] == "False"
+    });
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["session"]["id"], id, "{status:#}");
+    assert!(
+        status["conditions"].as_array().is_some_and(|cs| !cs
+            .iter()
+            .any(|c| c["type"] == "WorkerGone" && c["status"] == "True")),
+        "{status:#}"
+    );
+}
+
 /// [`CLAUDE`], except that it logs each line typed to it, and a resumed one
 /// reports nothing at its start, as an agent still starting.
 const SLOW_CLAUDE: &str = r#"#!/bin/sh
