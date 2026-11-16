@@ -303,3 +303,27 @@ fn a_report_after_the_hosts_clock_stepped_back_still_releases_a_mangled_entry() 
     assert_eq!(queued_texts(&full), vec!["first\nline"], "{full:#}");
     assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
 }
+
+#[test]
+fn the_first_report_a_session_ever_makes_can_release_a_mangled_entry() {
+    let env = setup("proof-inbox-first-report");
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.reconcile().ok();
+    env.fleet(&["send", "t1", "first\nline"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert!(
+        std::fs::read_to_string(signal_file(&env)).unwrap_or_default().is_empty(),
+        "nothing reported before the entry"
+    );
+    prompt_hook(&env, "firstline");
+    env.host().set_prompt_hook_silent(false).unwrap();
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
+    let full = full_status(&env);
+    assert_eq!(queued_texts(&full), vec!["first\nline"], "{full:#}");
+}

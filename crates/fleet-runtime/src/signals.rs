@@ -170,7 +170,7 @@ impl FileSignals {
 pub fn append(file: &Path, signal: &Signal) -> io::Result<()> {
     let mut opened = OpenOptions::new().create(true).append(true).open(file)?;
     let placed = Signal {
-        seq: Some(opened.metadata()?.len()),
+        seq: Some(opened.metadata()?.len() + 1),
         ..signal.clone()
     };
     let mut line = serde_json::to_vec(&placed).map_err(io::Error::other)?;

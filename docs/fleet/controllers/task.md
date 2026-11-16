@@ -407,8 +407,9 @@ controller plans the send it records the text's digest in
 - An entry or a catch-up note whose hook has reported a new prompt since
   its send was planned, and not this one, is given up on with
   `NeedsAttention/DeliveryUnconfirmed`. It is never sent again. Each line
-  `fleet signal` appends carries `seq`, the file's length before the line.
-  The file only grows, so `seq` orders the reports and no clock does. The
+  `fleet signal` appends carries `seq`, the file's length before the line,
+  plus one, so that no report is 0. The file only grows, so `seq` orders
+  the reports and no clock does. The
   send records in `status.deliveryAttempts` the latest `seq` of a report of
   another prompt. A report of another prompt with a later `seq` is the
   evidence. A report of a text reported before carries a new `seq`, and a

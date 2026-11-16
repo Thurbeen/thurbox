@@ -76,8 +76,9 @@ pub struct Signal {
     /// The harness's own id of the conversation, for its resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<String>,
-    /// The file's length when this line was appended: an order of reports
-    /// that no clock sets, since the file only grows.
+    /// The file's length when this line was appended, plus one: an order
+    /// of reports that no clock sets, since the file only grows. It is never
+    /// 0, which stands for no report at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
 }
