@@ -222,3 +222,53 @@ fn a_report_stamped_ahead_by_a_fast_host_clock_fails_no_later_send() {
         "a report made before the send is no evidence against it: {full:#}"
     );
 }
+
+#[test]
+fn a_mangled_report_of_a_text_reported_before_holds_back_no_later_entry() {
+    let env = setup("proof-inbox-mangled-again");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    env.fleet(&["send", "t1", "firstline"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
+
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&["send", "t1", "first\nline"]).ok();
+    env.reconcile().ok();
+    prompt_hook(&env, "firstline");
+    env.host().set_prompt_hook_silent(false).unwrap();
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
+    let full = full_status(&env);
+    assert_eq!(queued_texts(&full), vec!["first\nline"], "{full:#}");
+    assert_eq!(delivered_keys(&env).len(), 2, "{full:#}");
+}
+
+#[test]
+fn an_entry_an_older_fleet_typed_is_released_by_the_next_other_prompt() {
+    let env = setup("proof-inbox-legacy");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&["send", "t1", "first"]).ok();
+    env.reconcile().ok();
+    env.forget_prompt_boundaries("t1");
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("brief"), 2, "the second waits behind the first");
+
+    prompt_hook(&env, "a prompt typed by a person");
+    env.host().set_prompt_hook_silent(false).unwrap();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let full = full_status(&env);
+    assert_eq!(queued_texts(&full), vec!["first"], "{full:#}");
+    assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
+    assert_eq!(env.calls("brief"), 3, "never a second send of the first");
+}

@@ -1063,10 +1063,15 @@ impl Pass<'_, '_> {
                         via,
                         may_hold,
                     },
-                    Proof::Awaiting(why) if self.another_prompt_reported_since(key) => {
-                        self.give_up_unconfirmed(key, what, &why)
+                    Proof::Awaiting(why) => {
+                        self.record_prompt_boundary(key);
+                        if self.another_prompt_reported_since(key) {
+                            self.give_up_unconfirmed(key, what, &why)
+                        } else {
+                            Sent::Pending
+                        }
                     }
-                    Proof::Awaiting(_) | Proof::NotAsked => Sent::Pending,
+                    Proof::NotAsked => Sent::Pending,
                 };
             }
             // Queued where the agent does not read it: given up, never sent
@@ -1140,19 +1145,32 @@ impl Pass<'_, '_> {
         self.send_keyed(session, key, text, what)
     }
 
+    fn record_prompt_boundary(&mut self, key: &str) {
+        let reported = match (self.st.prompts.get(key), &self.input.observations.signals) {
+            (Some(digest), Some(Observation::Known(r))) => latest_other_prompt_at(r, digest),
+            _ => return,
+        };
+        let attempt = self
+            .st
+            .delivery_attempts
+            .entry(key.to_string())
+            .or_default();
+        attempt.other_prompt_at.get_or_insert(reported);
+    }
+
     fn another_prompt_reported_since(&self, key: &str) -> bool {
         let before = self
             .st
             .delivery_attempts
             .get(key)
-            .and_then(|a| a.prompts_reported);
+            .and_then(|a| a.other_prompt_at);
         match (
             before,
             self.st.prompts.get(key),
             &self.input.observations.signals,
         ) {
             (Some(before), Some(digest), Some(Observation::Known(r))) => {
-                other_prompts(r, digest) > before
+                latest_other_prompt_at(r, digest) > before
             }
             _ => false,
         }
@@ -1204,8 +1222,8 @@ impl Pass<'_, '_> {
             return Sent::Pending;
         }
         let digest = fleet_api::signal::prompt_digest(&text);
-        let prompts_reported = match &self.input.observations.signals {
-            Some(Observation::Known(r)) => Some(other_prompts(r, &digest)),
+        let other_prompt_at = match &self.input.observations.signals {
+            Some(Observation::Known(r)) => Some(latest_other_prompt_at(r, &digest)),
             _ => None,
         };
         let attempt = self
@@ -1215,7 +1233,7 @@ impl Pass<'_, '_> {
             .or_default();
         attempt.sends += 1;
         attempt.probe_failures = 0;
-        attempt.prompts_reported = prompts_reported;
+        attempt.other_prompt_at = other_prompt_at;
         self.st.not_before = None;
         self.st.receipts.remove(key);
         self.intend(key.to_string(), Action::Brief { session, text });
@@ -2187,12 +2205,18 @@ fn known_receipt(st: &TaskStatus, key: &str) -> bool {
         .is_some_and(|r| !r.outcome.is_unknown())
 }
 
-/// The oldest inbox entry still to deliver: an entry given up on after its
-/// sends ran out stays queued but blocks nothing.
-fn other_prompts(reported: &fleet_api::signal::Reported, digest: &str) -> usize {
-    reported.prompts.keys().filter(|d| *d != digest).count()
+fn latest_other_prompt_at(reported: &fleet_api::signal::Reported, digest: &str) -> Millis {
+    reported
+        .prompts
+        .iter()
+        .filter(|(d, _)| *d != digest)
+        .map(|(_, at)| *at)
+        .max()
+        .unwrap_or_default()
 }
 
+/// The oldest inbox entry still to deliver: an entry given up on after its
+/// sends ran out stays queued but blocks nothing.
 fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
     st.inbox.iter().find(|e| {
         !st.delivery_attempts

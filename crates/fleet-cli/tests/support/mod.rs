@@ -527,6 +527,18 @@ impl Env {
         }
     }
 
+    pub fn forget_prompt_boundaries(&self, name: &str) {
+        let path = self.object_path("Task", name);
+        let mut obj: Value =
+            serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+        if let Some(attempts) = obj["status"]["deliveryAttempts"].as_object_mut() {
+            for attempt in attempts.values_mut() {
+                attempt.as_object_mut().unwrap().remove("otherPromptAt");
+            }
+            fs::write(&path, obj.to_string()).expect("record");
+        }
+    }
+
     pub fn expire_receipts(&self, name: &str) {
         let path = self.object_path("Task", name);
         let mut obj: Value =
