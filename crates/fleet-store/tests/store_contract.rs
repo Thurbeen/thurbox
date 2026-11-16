@@ -3617,6 +3617,7 @@ fn a_board_log_is_private_to_its_owner() {
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "{} is {mode:o}", path.display());
     }
+}
 
 #[test]
 fn only_a_view_asks_for_a_wake_and_no_status_write_changes_it() {
