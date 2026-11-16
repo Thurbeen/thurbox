@@ -56,6 +56,8 @@ fleet up</code></pre>
   sessions come back after a reboot, without a login. A user service does not read your login
   <code>PATH</code>: name the directories that hold <code>fleet</code>,
   <code>runtime-mux</code>, <code>tmux</code> and your coding agents.
+  <code>KillMode=process</code> keeps the tmux server that <code>fleet up</code> starts, and
+  every session on it, when the unit stops or restarts.
 </p>
 <pre data-title="~/.config/systemd/user/fleet.service"><code class="language-toml">[Unit]
 Description=Fleet manager
@@ -63,6 +65,7 @@ Description=Fleet manager
 [Service]
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/bin/fleet up
+KillMode=process
 Restart=on-failure
 RestartSec=15
 
