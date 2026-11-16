@@ -15,16 +15,31 @@ use fleet_api::event::{MAX_OUTBOX_READ, OutboxLine, OutboxRead};
 
 use crate::signals::expand_home;
 
+/// Make `dir` and its missing parents, each readable by its owner only:
+/// an outbox holds event payloads, which are private.
+pub fn create_private_dir_all(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
+}
+
 /// Append `line` to the outbox `file` (`~`-rooted on a place) in one write,
-/// so lines from publishes running at once never interleave, making its
-/// directory when missing. Answers the offset the line starts at.
+/// so lines from publishes running at once never interleave. A new outbox
+/// and a new directory are its owner's only. Answers the offset the line
+/// starts at.
 pub fn append(file: &Path, line: &OutboxLine) -> io::Result<u64> {
     let bytes = line.encode().map_err(io::Error::other)?;
     let file = expand_home(file);
     if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
-        fs::create_dir_all(dir)?;
+        create_private_dir_all(dir)?;
     }
-    let mut f = OpenOptions::new().create(true).append(true).open(&file)?;
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut f = options.open(&file)?;
     f.write_all(&bytes)?;
     Ok(f.stream_position()? - bytes.len() as u64)
 }
@@ -64,6 +79,7 @@ pub fn decode_place_read(text: &str) -> Option<OutboxRead> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FileSignals;
     use fleet_api::event::Publish;
 
     fn line(t: &str) -> OutboxLine {
@@ -105,5 +121,22 @@ mod tests {
         assert_eq!(decode_place_read(&text), Some(tail));
         assert!(append(&file, &line("fleet.x")).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_append_makes_a_private_outbox_in_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("fleet-outbox-mode-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let file = root.join("signals").join("k.jsonl.events");
+        append(&file, &line("a")).expect("append");
+        let mode = |p: &Path| fs::metadata(p).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(mode(file.parent().unwrap()), 0o700);
+        let signals = root.join("fleet-signals");
+        FileSignals::open(&signals).expect("open");
+        assert_eq!(mode(&signals), 0o700);
+        let _ = fs::remove_dir_all(&root);
     }
 }

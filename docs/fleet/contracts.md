@@ -889,7 +889,9 @@ refused.
   `fleet event publish` checks the line without a store (`OutboxLine::encode`:
   the Board's name, `event::validate_publish` without the Board's
   `maxDataBytes`, at most `event::MAX_OUTBOX_LINE` bytes) and appends it in
-  one write. A session with `FLEET_SIGNAL_FILE` and no `FLEET_EVENT_FILE`
+  one write. A new outbox is mode 0600 and a new signals directory 0700 on
+  Unix, whoever makes it (`FileSignals::open`, `fleet signal`, `fleet event
+  publish`). A session with `FLEET_SIGNAL_FILE` and no `FLEET_EVENT_FILE`
   refuses, and never falls back to `cli/<user>`. On each pass, before the
   Task's controllers, the manager reads the outbox of each Task whose
   `status.session` is set and whose `sessionState` is not `Gone`, from

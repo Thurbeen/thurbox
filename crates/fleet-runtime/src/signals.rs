@@ -103,10 +103,10 @@ pub struct FileSignals {
 }
 
 impl FileSignals {
-    /// The adapter over `dir`, made when missing.
+    /// The adapter over `dir`, made when missing, its owner's only.
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<FileSignals> {
         let dir = dir.into();
-        fs::create_dir_all(&dir)?;
+        crate::events::create_private_dir_all(&dir)?;
         Ok(FileSignals { dir })
     }
 

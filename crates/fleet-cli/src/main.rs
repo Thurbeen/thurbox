@@ -1227,7 +1227,8 @@ fn cmd_signal(
     let on_place = file.to_string_lossy().starts_with("~/");
     let file = fleet_runtime::signals::expand_home(Path::new(&file));
     if on_place && let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| fail(format!("{}: {e}", dir.display())))?;
+        fleet_runtime::events::create_private_dir_all(dir)
+            .map_err(|e| fail(format!("{}: {e}", dir.display())))?;
     }
     fleet_runtime::signals::append(&file, &signal)
         .map_err(|e| fail(format!("{}: {e}", file.display())))
