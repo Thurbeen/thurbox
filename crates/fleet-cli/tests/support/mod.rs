@@ -527,8 +527,6 @@ impl Env {
         }
     }
 
-    /// Let every receipt of a Task age past any wait measured from it, as
-    /// time would.
     pub fn expire_receipts(&self, name: &str) {
         let path = self.object_path("Task", name);
         let mut obj: Value =

@@ -1063,8 +1063,8 @@ impl Pass<'_, '_> {
                         via,
                         may_hold,
                     },
-                    Proof::Awaiting(why) if self.proof_overdue(key) => {
-                        self.unconfirmed(key, what, &why)
+                    Proof::Awaiting(why) if self.prompt_report_overdue(key) => {
+                        self.give_up_unconfirmed(key, what, &why)
                     }
                     Proof::Awaiting(_) | Proof::NotAsked => Sent::Pending,
                 };
@@ -1129,7 +1129,7 @@ impl Pass<'_, '_> {
                         .or_default();
                     attempt.probe_failures += 1;
                     if attempt.probe_failures >= MAX_ATTEMPTS {
-                        return self.unconfirmed(key, what, &why);
+                        return self.give_up_unconfirmed(key, what, &why);
                     }
                     self.wait_from(self.now());
                 }
@@ -1140,19 +1140,15 @@ impl Pass<'_, '_> {
         self.send_keyed(session, key, text, what)
     }
 
-    /// Whether the agent's prompt hook has had [`MAX_ATTEMPTS`] retry delays
-    /// since the runtime typed the text under `key` and still not reported it.
-    fn proof_overdue(&self, key: &str) -> bool {
-        let deadline = u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS;
+    fn prompt_report_overdue(&self, key: &str) -> bool {
+        let report_window = u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS;
         self.st
             .receipts
             .get(key)
-            .is_some_and(|r| r.at.saturating_add(deadline) <= self.now())
+            .is_some_and(|r| r.at.saturating_add(report_window) <= self.now())
     }
 
-    /// Unknown is not absence: an entry nothing proves is never sent again,
-    /// and is given up on so that later entries go out.
-    fn unconfirmed(&mut self, key: &str, what: &str, why: &str) -> Sent {
+    fn give_up_unconfirmed(&mut self, key: &str, what: &str, why: &str) -> Sent {
         self.st
             .delivery_attempts
             .entry(key.to_string())
