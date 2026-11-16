@@ -728,7 +728,9 @@ outbox: the manager's ingest must find no whole line left to read
 (`outbox_drained`). A line still to ingest keeps
 `Released=False/OutboxDraining` with no limit. An outbox that cannot be
 read keeps `Released=Unknown/OutboxUnread` for `RELEASE_GRACE_MS` (5
-minutes) after the release receipt. Then its unread lines are given up,
+minutes) from the first pass that could not read it: the condition's
+`lastTransitionTime` while its reason is `OutboxUnread`. A pass that reads
+the outbox changes the condition, and so starts that time again. Then its unread lines are given up,
 and the release ends with `Released=True/OutboxGivenUp`. See
 [Board](../resources/board.md#publishing-from-a-session).
 

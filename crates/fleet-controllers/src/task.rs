@@ -45,6 +45,8 @@ pub const RETRY_DELAY_MS: Millis = 30_000;
 /// `status.sessionCheckedAt`.
 pub const SESSION_RECHECK_MS: Millis = 300_000;
 
+const OUTBOX_UNREAD: &str = "OutboxUnread";
+
 /// How long a deleted Task waits, from its `deletionTimestamp`, for its
 /// session to be proven at rest. Past it the session is released even if
 /// the agent's last report said it was busy or nothing tells.
@@ -263,6 +265,7 @@ impl TaskController {
         }
         r.observe_session();
         settle_transitions(&mut r.st.conditions, &before.conditions);
+        r.start_outbox_unread(&before);
         // A delivery is a status write even when nothing else moved: the
         // store takes the status along with the receipt.
         let status = if r.st == before && r.delivery.is_none() {
@@ -1696,10 +1699,9 @@ impl Pass<'_, '_> {
             match self.st.receipts.get(&last).cloned() {
                 Some(Receipt {
                     outcome: Observation::Known(EffectOutcome::Released),
-                    at,
                     ..
                 }) => {
-                    let Some((reason, message)) = self.outbox_settled(at) else {
+                    let Some((reason, message)) = self.outbox_settled() else {
                         return;
                     };
                     self.cond(RELEASED, ConditionStatus::True, reason, message);
@@ -1781,9 +1783,10 @@ impl Pass<'_, '_> {
     /// The `Released` reason and message once the released session's
     /// outbox no longer holds the Task, `None` while it does. A line still
     /// to ingest holds it with no limit, as each read makes progress. An
-    /// outbox that cannot be read holds it for `RELEASE_GRACE_MS` after the
-    /// release, `released_at`; then its unread lines are given up.
-    fn outbox_settled(&mut self, released_at: Millis) -> Option<(&'static str, String)> {
+    /// outbox that cannot be read holds it for `RELEASE_GRACE_MS` from the
+    /// first of an unbroken run of unread passes; then its unread lines are
+    /// given up.
+    fn outbox_settled(&mut self) -> Option<(&'static str, String)> {
         match self.input.observations.outbox_drained.clone() {
             None | Some(Observation::Known(true)) => Some(("Released", String::new())),
             Some(Observation::Known(false)) => {
@@ -1796,7 +1799,9 @@ impl Pass<'_, '_> {
                 None
             }
             Some(Observation::Unknown { why })
-                if released_at.saturating_add(RELEASE_GRACE_MS) <= self.now() =>
+                if self
+                    .outbox_unread_since()
+                    .is_some_and(|since| since.saturating_add(RELEASE_GRACE_MS) <= self.now()) =>
             {
                 Some((
                     "OutboxGivenUp",
@@ -1806,9 +1811,34 @@ impl Pass<'_, '_> {
                 ))
             }
             Some(Observation::Unknown { why }) => {
-                self.cond(RELEASED, ConditionStatus::Unknown, "OutboxUnread", why);
+                self.cond(RELEASED, ConditionStatus::Unknown, OUTBOX_UNREAD, why);
                 None
             }
+        }
+    }
+
+    /// When the run of unread outbox passes began: the `Released`
+    /// condition's transition time while its reason is `OutboxUnread`.
+    fn outbox_unread_since(&self) -> Option<Millis> {
+        condition(&self.st.conditions, RELEASED)
+            .filter(|c| c.reason == OUTBOX_UNREAD)
+            .map(|c| c.last_transition_time)
+    }
+
+    /// A first `OutboxUnread` is a transition even from another Unknown
+    /// `Released`, such as `Releasing`: its grace starts now.
+    fn start_outbox_unread(&mut self, before: &TaskStatus) {
+        let was_unread =
+            condition(&before.conditions, RELEASED).is_some_and(|c| c.reason == OUTBOX_UNREAD);
+        let now = self.now();
+        if let Some(c) = self
+            .st
+            .conditions
+            .iter_mut()
+            .find(|c| c.type_ == RELEASED && c.reason == OUTBOX_UNREAD)
+            && !was_unread
+        {
+            c.last_transition_time = now;
         }
     }
 

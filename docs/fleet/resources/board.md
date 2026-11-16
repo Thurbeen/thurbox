@@ -149,7 +149,8 @@ These rules apply:
 - While lines are still to ingest, the `Released` condition is
   `False/OutboxDraining`, with no time limit.
 - While the outbox cannot be read, the condition is `Unknown/OutboxUnread`.
-  This lasts at most 5 minutes after the release. Then Fleet gives up the
+  This lasts at most 5 minutes from the first pass that could not read it.
+  A pass that reads it starts that time again. Then Fleet gives up the
   unread lines, and the release ends with `Released=True/OutboxGivenUp`.
   This happens on a place without `fleet` on its `PATH`, with a `fleet`
   older than this release, or where `exec` fails.

@@ -590,6 +590,57 @@ fn a_released_task_drops_its_finalizer_and_failed_releases_are_bounded() {
 }
 
 #[test]
+fn an_unreadable_outbox_holds_a_released_task_for_the_grace_from_its_first_unread() {
+    let mut st = TaskStatus {
+        phase: Phase::Releasing,
+        session: Some(session()),
+        release_attempts: 1,
+        ..Default::default()
+    };
+    let mut released = receipt("release", Observation::Known(EffectOutcome::Released));
+    released.at = 0;
+    st.receipts.insert("task/t/u7/release/1".into(), released);
+    fleet_api::condition::set_condition(
+        &mut st.conditions,
+        "Released",
+        ConditionStatus::Unknown,
+        "Releasing",
+        "attempt 1",
+        1,
+        0,
+    );
+    let observed = |drained| Observations {
+        outbox_drained: Some(drained),
+        ..Default::default()
+    };
+    let unread = || observed(Observation::unknown("exec failed"));
+
+    let (plan, st) = run(&deleting(st), unread());
+    assert!(plan.remove_finalizer.is_none(), "a first unread holds it");
+    assert_eq!(cond(&st, "Released").reason, "OutboxUnread");
+    assert_eq!(cond(&st, "Released").last_transition_time, NOW);
+
+    let unread_since_now = deleting(st);
+    let (plan, st) = run_at(&unread_since_now, unread(), NOW + RELEASE_GRACE_MS - 1);
+    assert!(plan.remove_finalizer.is_none(), "held within the grace");
+    assert_eq!(cond(&st, "Released").last_transition_time, NOW);
+    let (plan, st) = run_at(&unread_since_now, unread(), NOW + RELEASE_GRACE_MS);
+    assert_eq!(plan.remove_finalizer.as_deref(), Some("fleet.dev/release"));
+    assert_eq!(cond(&st, "Released").reason, "OutboxGivenUp");
+
+    let later = NOW + RELEASE_GRACE_MS;
+    let (_, draining) = run_at(
+        &unread_since_now,
+        observed(Observation::Known(false)),
+        later - 10,
+    );
+    assert_eq!(cond(&draining, "Released").reason, "OutboxDraining");
+    let (plan, st) = run_at(&deleting(draining), unread(), later);
+    assert!(plan.remove_finalizer.is_none(), "a Known read restarts it");
+    assert_eq!(cond(&st, "Released").last_transition_time, later);
+}
+
+#[test]
 fn a_task_that_never_spawned_releases_nothing() {
     let (plan, st) = run(&deleting(TaskStatus::default()), Observations::default());
     assert!(plan.effects.is_empty());

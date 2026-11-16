@@ -925,7 +925,9 @@ refused.
   conflicted, Unknown when the outbox or the store could not tell. After a
   Known `Released` receipt, TaskController keeps the finalizer until it is
   Known(true): `Released=False/OutboxDraining` with no limit, or
-  `Unknown/OutboxUnread` for `RELEASE_GRACE_MS` after the receipt, after
+  `Unknown/OutboxUnread` for `RELEASE_GRACE_MS` from its first unread pass
+  (the condition's `lastTransitionTime` while its reason is `OutboxUnread`;
+  a first `OutboxUnread` is a transition even from `Unknown/Releasing`), after
   which the unread lines are given up (`Released=True/OutboxGivenUp`).
   The release stopped the session, so the read after it is the last one;
   a torn last line then never completes and is left. `e2e_event_board` drives it through the real

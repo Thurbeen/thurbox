@@ -735,16 +735,14 @@ fn an_outbox_that_stays_unreadable_is_given_up_after_the_release_grace() {
 
     let path = env.object_path("Task", "a");
     let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    let receipts = obj["status"]["receipts"].as_object_mut().unwrap();
-    let released: Vec<String> = receipts
-        .keys()
-        .filter(|k| k.contains("/release"))
-        .cloned()
-        .collect();
-    assert!(!released.is_empty(), "{receipts:#?}");
-    for key in released {
-        receipts[&key]["at"] = json!(0);
-    }
+    let released = obj["status"]["conditions"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|c| c["type"] == "Released")
+        .expect("a Released condition");
+    assert_eq!(released["reason"], "OutboxUnread", "{released}");
+    released["lastTransitionTime"] = json!(0);
     std::fs::write(&path, obj.to_string()).unwrap();
     env.reconcile().ok();
     env.get_absent("a");
