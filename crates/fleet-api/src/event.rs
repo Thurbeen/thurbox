@@ -365,6 +365,10 @@ pub struct OutboxCursor {
     /// Why the last skipped line was skipped, and where it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_skipped: Option<String>,
+    /// The session is gone and a read since found every whole line in:
+    /// nothing reads the outbox again until the session is back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
 }
 
 fn is_zero(n: &u64) -> bool {

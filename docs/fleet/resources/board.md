@@ -108,8 +108,9 @@ Fleet:    TaskController reads the outbox ──▶ append as the Task ──▶
    for example `shared git.push queued at outbox offset 0`. The Board does
    not have the event yet.
 3. On each pass, TaskController reads the outbox of each Task that has a
-   session, also when the session is `Gone`. It reads from the offset in
-   `status.outbox`. It reads only whole lines, at most 512 KiB per pass.
+   session. It reads from the offset in `status.outbox`. It reads only
+   whole lines, at most 512 KiB per pass. It renews the lease before each
+   read.
 4. TaskController appends each event to its Board, under the lease. The
    source is the Task: `{task, uid, lineage}`. Then it writes the new
    offset to `status.outbox`.
@@ -134,6 +135,10 @@ These rules apply:
   refuses, such as a Board that does not exist. It counts it in
   `status.outbox.skipped` and writes why in `status.outbox.lastSkipped`.
   The next lines continue.
+- When the session is `Gone`, TaskController reads its outbox until one
+  read finds no whole line left. Then it sets `status.outbox.closed` and
+  reads that outbox no more, unless the Task is being deleted. When the
+  session runs again, `closed` goes.
 - When TaskController cannot read the outbox, the offset stays. It
   concludes nothing.
 - A deleted Task keeps its finalizer after the release until its outbox

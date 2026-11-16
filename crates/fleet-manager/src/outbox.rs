@@ -7,6 +7,7 @@
 //! observation, which holds a released Task until its outbox is read.
 
 use fleet_api::event::{self, MAX_OUTBOX_READ, OutboxCursor, OutboxRead};
+use fleet_api::session::SessionState;
 use fleet_api::task::{self, SessionRef};
 use fleet_api::{LeaseToken, Millis, Object, Observation, StoreError};
 use fleet_controllers::TaskController;
@@ -30,10 +31,11 @@ impl Ingested {
 }
 
 impl Manager<'_> {
-    /// Ingest the outbox of `task`'s session, if it has one, gone or not:
-    /// what a session wrote before it ended is still its. An outbox that
-    /// cannot be read concludes nothing: the cursor stays, and `drained` is
-    /// Unknown.
+    /// Ingest the outbox of `task`'s session, if it has one. A gone
+    /// session's outbox is read until a read finds every whole line in
+    /// (`status.outbox.closed`), and while its Task is being deleted. An
+    /// outbox that cannot be read concludes nothing: the cursor stays, and
+    /// `drained` is Unknown. The lease is renewed before each read.
     pub(crate) fn ingest_outbox(
         &self,
         task: &Object,
@@ -49,13 +51,21 @@ impl Manager<'_> {
         let Some(session) = session else {
             return Ok(Ingested::unchanged(Observation::Known(true)));
         };
+        let state: Option<SessionState> =
+            serde_json::from_value(field("sessionState")).map_err(invalid)?;
+        let gone = state == Some(SessionState::Gone);
         let cursor: OutboxCursor = serde_json::from_value::<Option<OutboxCursor>>(field("outbox"))
             .map_err(invalid)?
             .unwrap_or_default();
+        if gone && cursor.closed && !task.is_deleting() {
+            return Ok(Ingested::unchanged(Observation::Known(true)));
+        }
+        *lease = self.store.renew_lease(lease, ttl)?;
         let read = match self.read_outbox(&session, cursor.offset) {
-            None | Some(Observation::Known(None)) => {
-                return Ok(Ingested::unchanged(Observation::Known(true)));
-            }
+            None | Some(Observation::Known(None)) => OutboxRead {
+                start: cursor.offset,
+                bytes: Vec::new(),
+            },
             Some(Observation::Known(Some(read))) => read,
             Some(Observation::Unknown { why }) => {
                 report
@@ -100,6 +110,7 @@ impl Manager<'_> {
                 }
             }
         }
+        next.closed = gone && drained == Observation::Known(true);
         if next == cursor {
             return Ok(Ingested::unchanged(drained));
         }

@@ -657,11 +657,12 @@ fn a_session_without_an_outbox_refuses_to_publish() {
 }
 
 #[test]
-fn a_line_left_by_a_session_that_is_gone_is_still_ingested() {
+fn a_gone_session_is_read_until_a_read_finds_it_drained_and_then_no_more() {
     let env = session_env("event-session-gone");
     let outbox = session_var(&env, "FLEET_EVENT_FILE");
     env.host().vanish(&env.session_key("a")).unwrap();
-    env.reconcile().ok();
+    env.fleet(&["reconcile", "--max-passes", "1", "--json"])
+        .ok();
     assert_eq!(env.get("a")["status"]["sessionState"], "Gone");
     append_raw(
         &outbox,
@@ -671,6 +672,18 @@ fn a_line_left_by_a_session_that_is_gone_is_still_ingested() {
     let events = list(&env, &[]);
     assert_eq!(events.len(), 1, "{events:#?}");
     assert_eq!(events[0]["type"], "last.words");
+    assert_eq!(env.get("a")["status"]["outbox"]["closed"], true);
+
+    append_raw(
+        &outbox,
+        "{\"board\":\"shared\",\"type\":\"too.late\",\"data\":1}\n",
+    );
+    env.reconcile().ok();
+    assert_eq!(
+        list(&env, &[]).len(),
+        1,
+        "a drained gone session is read no more"
+    );
 }
 
 #[test]

@@ -893,8 +893,11 @@ refused.
   Unix, whoever makes it (`FileSignals::open`, `fleet signal`, `fleet event
   publish`). A session with `FLEET_SIGNAL_FILE` and no `FLEET_EVENT_FILE`
   refuses, and never falls back to `cli/<user>`. On each pass, before the
-  Task's controllers, the manager reads the outbox of each Task whose
-  `status.session` is set, `Gone` or not, from
+  Task's controllers, the manager renews the lease and reads the outbox of
+  each Task whose `status.session` is set, unless its session is `Gone`,
+  `status.outbox.closed` is set and the Task is not being deleted. A read
+  of a `Gone` session that finds every whole line in sets `closed`; a read
+  of a session that is not `Gone` clears it. It reads from
   `status.outbox.offset`, at most `event::MAX_OUTBOX_READ` bytes: through
   the signal port on this machine, or through the runtime's `exec`
   (`fleet signal-read --from <offset> <file>`) on a place. Both reads give
