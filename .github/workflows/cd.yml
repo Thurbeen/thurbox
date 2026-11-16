@@ -223,15 +223,22 @@ jobs:
         # `shell: bash` is what turns on pipefail; the default shell would let
         # `tee` swallow the script's refusal.
         shell: bash
+        env:
+          FORCED_VERSION: ${{ inputs.version }}
         run: |
           # Holds every release while the tree carries .github/release-hold
           # (`held=true`, a clean skip, not a failure). Otherwise refuses —
           # failing the run before anything is tagged — a version
           # whose major is not the source's RELEASE_LINE, which is what stops a
           # `BREAKING CHANGE:` footer from cutting the next major on its own.
+          # An auto bump (a push, or a dispatch with no version) that would be
+          # the first release of the line is held too: a `!` footer squashed
+          # onto main computes x.0.0, and a line's first release is dispatched.
           # Also decides `channels`. The rules and their tests are in
           # scripts/ci/release-line.{sh,bats}.
-          scripts/ci/release-line.sh "${{ steps.parse.outputs.version }}" "$PACKAGE_CHANNELS_MAJOR" \
+          mode=auto
+          if [ -n "$FORCED_VERSION" ]; then mode=forced; fi
+          scripts/ci/release-line.sh "${{ steps.parse.outputs.version }}" "$PACKAGE_CHANNELS_MAJOR" "$mode" \
             | tee -a "$GITHUB_OUTPUT"
 
   # Create git tag (only if release needed)
@@ -317,6 +324,8 @@ jobs:
         env:
           THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.version }}
         run: |
+          # Fleet stamps its version from its own variable, bare (no `v`).
+          export FLEET_RELEASE_VERSION="${THURBOX_RELEASE_VERSION#v}"
           bins=()
           for bin in $(scripts/ci/release-archive.sh --binaries); do bins+=(--bin "$bin"); done
           if [ "${{ matrix.use_cross }}" = "true" ]; then
@@ -348,29 +357,33 @@ jobs:
     needs: [check-release, build]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+
       - name: Download all artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
 
+      # The sums file is thurbox-<V>-sha256sums.txt, never
+      # thurbox-v<V>-checksums.txt: every 2.x updater fetches that name first,
+      # and its absence is what makes them fail safe on a 3.x release
+      # (docs/thurbox/releasing.md, "What a 3.x release must do").
       - name: Generate SHA256 checksums
         run: |
-          VERSION="${{ needs.check-release.outputs.version }}"
-          cd artifacts
-
           # Flatten directory structure (tar.gz for Unix, zip for Windows)
-          find . \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} . \;
-
-          # Generate checksums over every release archive
-          sha256sum thurbox-*.tar.gz thurbox-*.zip > "thurbox-${VERSION}-checksums.txt"
-
-          cat "thurbox-${VERSION}-checksums.txt"
+          find artifacts \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} artifacts/ \;
+          sums="$(scripts/ci/release-archive.sh --sums "${{ needs.check-release.outputs.version }}" artifacts)"
+          cat "$sums"
 
       - name: Upload checksums
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: checksums
-          path: artifacts/thurbox-*-checksums.txt
+          path: artifacts/thurbox-*-sha256sums.txt
+          if-no-files-found: error
 
   # Generate CHANGELOG from commits
   generate-changelog:
@@ -410,7 +423,7 @@ jobs:
         run: |
           mkdir -p release-assets
           find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
-          find artifacts -type f -name "*checksums.txt" -exec cp {} release-assets/ \;
+          find artifacts -type f -name "*-sha256sums.txt" -exec cp {} release-assets/ \;
           ls -lh release-assets/
 
       - name: Create GitHub Release
@@ -478,7 +491,7 @@ jobs:
           commit_message: "Update to ${{ needs.check-release.outputs.version }}"
 
   # Publish the Homebrew formula to the tap (Thurbeen/homebrew-thurbox).
-  # Runs after `publish` so the release tarballs + checksums.txt exist.
+  # Runs after `publish` so the release tarballs + sums file exist.
   # Pushes over SSH using HOMEBREW_TAP_DEPLOY_KEY — a write-enabled deploy key
   # registered on the tap repo (the Thurbeen org blocks cross-repo PATs, so a
   # repo-scoped deploy key is the credential). Skipped automatically if the
@@ -504,7 +517,7 @@ jobs:
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
           curl -fsSL -o checksums.txt \
-            "https://github.com/${{ github.repository }}/releases/download/${VERSION}/thurbox-${VERSION}-checksums.txt"
+            "https://github.com/${{ github.repository }}/releases/download/${VERSION}/thurbox-${VERSION#v}-sha256sums.txt"
           cat checksums.txt
 
       - name: Bump formula to the release version
@@ -552,7 +565,7 @@ jobs:
   # exits green — a backed-up Chocolatey channel must never turn the whole
   # release red.
   #
-  # Runs after `publish` so the release zip + checksums.txt exist. The choco CLI
+  # Runs after `publish` so the release zip + sums file exist. The choco CLI
   # is Windows-only, so this runs on windows-latest. Requires the
   # CHOCOLATEY_API_KEY secret; skipped automatically if unset (e.g. on forks).
   publish-chocolatey:
@@ -634,7 +647,7 @@ jobs:
           $version = "${{ needs.check-release.outputs.version }}"
           $repo = "${{ github.repository }}"
           Invoke-WebRequest -UseBasicParsing `
-            -Uri "https://github.com/$repo/releases/download/$version/thurbox-$version-checksums.txt" `
+            -Uri "https://github.com/$repo/releases/download/$version/thurbox-$($version.TrimStart('v'))-sha256sums.txt" `
             -OutFile checksums.txt
           Get-Content checksums.txt
 
@@ -680,7 +693,7 @@ jobs:
           exit 1
 
   # Submit the winget manifests to microsoft/winget-pkgs.
-  # Runs after `publish` so the release zip + checksums.txt exist. wingetcreate
+  # Runs after `publish` so the release zip + sums file exist. wingetcreate
   # is Windows-only, so this runs on windows-latest. Requires the WINGET_TOKEN
   # secret (a classic PAT with `public_repo` scope that can fork/PR against
   # microsoft/winget-pkgs); skipped automatically if unset (e.g. on forks).
@@ -774,7 +787,7 @@ jobs:
           $version = "${{ needs.check-release.outputs.version }}"
           $repo = "${{ github.repository }}"
           Invoke-WebRequest -UseBasicParsing `
-            -Uri "https://github.com/$repo/releases/download/$version/thurbox-$version-checksums.txt" `
+            -Uri "https://github.com/$repo/releases/download/$version/thurbox-$($version.TrimStart('v'))-sha256sums.txt" `
             -OutFile checksums.txt
           Get-Content checksums.txt
 

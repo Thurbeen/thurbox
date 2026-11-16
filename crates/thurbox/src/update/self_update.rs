@@ -197,9 +197,10 @@ fn zip_name(version: &str, target: &str) -> String {
     format!("thurbox-v{version}-{target}.zip")
 }
 
-/// Release checksums filename for `version` (no leading `v`).
+/// Release sums filename for `version` (no leading `v`), as
+/// `scripts/ci/release-archive.sh --sums` writes it.
 fn checksums_name(version: &str) -> String {
-    format!("thurbox-v{version}-checksums.txt")
+    format!("thurbox-{version}-sha256sums.txt")
 }
 
 /// The download URL of whichever archive [`archive_name`] picks for `target`.
@@ -1139,7 +1140,10 @@ mod tests {
             tarball_name("0.114.0", "x86_64-unknown-linux-musl"),
             "thurbox-v0.114.0-x86_64-unknown-linux-musl.tar.gz"
         );
-        assert_eq!(checksums_name("0.114.0"), "thurbox-v0.114.0-checksums.txt");
+        // Never `thurbox-v<V>-checksums.txt`: every 2.x updater fetches that
+        // name first, and a 3.x release leaves it out so they fail safe
+        // (docs/thurbox/releasing.md, "What a 3.x release must do").
+        assert_eq!(checksums_name("3.0.0"), "thurbox-3.0.0-sha256sums.txt");
         let url = archive_url(RELEASE_BASE, "0.114.0", "aarch64-apple-darwin");
         assert!(url.starts_with(RELEASE_BASE), "got: {url}");
         assert!(url.contains("/v0.114.0/"), "got: {url}");
@@ -1563,15 +1567,15 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
     #[cfg(unix)]
     #[test]
     fn an_update_moves_every_shipped_program_to_the_new_release() {
-        let feed = Feed::new(&["2.85.0", "2.84.2"], "2.84.2");
-        let outcome = feed.update("2.84.2", false).unwrap();
+        let feed = Feed::new(&["3.1.0", "3.0.1"], "3.0.1");
+        let outcome = feed.update("3.0.1", false).unwrap();
         assert!(
             matches!(outcome, UpdateOutcome::Updated { .. }),
             "{outcome:?}"
         );
         for name in shipped() {
             let installed = std::fs::read_to_string(feed.install.path().join(&name)).unwrap();
-            assert_eq!(installed, "2.85.0", "{name} stayed on {installed}");
+            assert_eq!(installed, "3.1.0", "{name} stayed on {installed}");
         }
     }
 
@@ -1663,62 +1667,62 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
         }
     }
 
-    /// The v2 → v3 boundary: 3.0.0 is GitHub's "Latest", and nothing a 2.x
+    /// A major boundary: 4.0.0 is GitHub's "Latest", and nothing a 3.x
     /// updater does — the silent startup update or `thurbox-cli update --force`
     /// — may put it on disk.
     #[cfg(unix)]
     #[test]
-    fn a_v2_install_offered_v3_never_installs_it() {
-        let feed = Feed::new(&["3.0.0", "2.84.1"], "2.84.1");
+    fn an_install_offered_the_next_major_never_installs_it() {
+        let feed = Feed::new(&["4.0.0", "3.0.0"], "3.0.0");
         for force in [false, true] {
-            let outcome = feed.update("2.84.1", force).unwrap();
-            // `--force` reinstalls the newest 2.x — here the running one.
+            let outcome = feed.update("3.0.0", force).unwrap();
+            // `--force` reinstalls the newest 3.x — here the running one.
             if let UpdateOutcome::Updated { to, .. } = &outcome {
-                assert_eq!(to, "2.84.1", "force={force}");
+                assert_eq!(to, "3.0.0", "force={force}");
             }
-            assert_eq!(feed.installed().as_deref(), Some("2.84.1"), "force={force}");
+            assert_eq!(feed.installed().as_deref(), Some("3.0.0"), "force={force}");
         }
         assert_eq!(
-            feed.update("2.84.1", false).unwrap(),
+            feed.update("3.0.0", false).unwrap(),
             UpdateOutcome::UpToDate {
-                current: "2.84.1".into(),
-                latest: "2.84.1".into(),
-                next_major: Some("3.0.0".into()),
+                current: "3.0.0".into(),
+                latest: "3.0.0".into(),
+                next_major: Some("4.0.0".into()),
             },
             "3.0.0 is reported, not offered"
         );
     }
 
-    /// A 2.x maintenance release cut after 3.0.0 is not GitHub's "Latest"
-    /// (`cd.yml` publishes it with `make_latest: false`), and a 2.x install must
-    /// still find and take it.
+    /// A maintenance release cut after the next major is not GitHub's
+    /// "Latest" (`cd.yml` publishes it with `make_latest: false`), and an
+    /// install on its line must still find and take it.
     #[cfg(unix)]
     #[test]
-    fn a_v2_install_still_takes_a_2x_release_cut_after_v3() {
-        let feed = Feed::new(&["2.84.2", "3.0.0", "2.84.1"], "2.84.1");
-        let outcome = feed.update("2.84.1", false).unwrap();
+    fn an_install_still_takes_a_release_on_its_line_cut_after_the_next_major() {
+        let feed = Feed::new(&["3.0.1", "4.0.0", "3.0.0"], "3.0.0");
+        let outcome = feed.update("3.0.0", false).unwrap();
         assert_eq!(
             outcome,
             UpdateOutcome::Updated {
-                from: "2.84.1".into(),
-                to: "2.84.2".into(),
-                next_major: Some("3.0.0".into()),
+                from: "3.0.0".into(),
+                to: "3.0.1".into(),
+                next_major: Some("4.0.0".into()),
             },
-            "the 2.x is taken and 3.x still reported"
+            "the 3.x is taken and 4.x still reported"
         );
-        assert_eq!(feed.installed().as_deref(), Some("2.84.2"));
+        assert_eq!(feed.installed().as_deref(), Some("3.0.1"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_v2_install_takes_a_newer_2x_release() {
-        let feed = Feed::new(&["2.84.2", "2.84.1"], "2.84.1");
-        let outcome = feed.update("2.84.1", false).unwrap();
+    fn an_install_takes_a_newer_release_on_its_line() {
+        let feed = Feed::new(&["3.0.1", "3.0.0"], "3.0.0");
+        let outcome = feed.update("3.0.0", false).unwrap();
         assert!(
             matches!(outcome, UpdateOutcome::Updated { .. }),
             "{outcome:?}"
         );
-        assert_eq!(feed.installed().as_deref(), Some("2.84.2"));
+        assert_eq!(feed.installed().as_deref(), Some("3.0.1"));
     }
 
     #[test]

@@ -66,7 +66,7 @@ config_version = 1
 # `thurbox-cli update` does the same
 # binary update on demand. Set either to `false` to opt out.
 #
-# Neither crosses a MAJOR version: a 2.x install only ever takes 2.x releases,
+# Neither crosses a MAJOR version: a 3.x install only ever takes 3.x releases,
 # and is told when a newer major exists. Moving to one is a reinstall; no flag
 # does it, `thurbox-cli update --force` included.
 # version_check = true    # GitHub update check (TUI badge + `version --check`)

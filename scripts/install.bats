@@ -164,14 +164,57 @@
   [ "$output" = "$expected" ]
 }
 
-@test "get_binary downloads from DOWNLOAD_URL" {
+# A 3.x release names its sums file thurbox-<V>-sha256sums.txt, never
+# thurbox-v<V>-checksums.txt: that name is what every 2.x updater fetches
+# first (docs/thurbox/releasing.md, "What a 3.x release must do").
+@test "get_binary downloads from DOWNLOAD_URL, verified by the 3.x sums file" {
   tmpdir=$(mktemp -d)
   mkdir -p "$tmpdir/v9.9.9"
   printf 'payload' > "$tmpdir/v9.9.9/thurbox-v9.9.9-x86_64-unknown-linux-musl.tar.gz"
   (cd "$tmpdir/v9.9.9" && sha256sum thurbox-v9.9.9-x86_64-unknown-linux-musl.tar.gz \
-    > thurbox-v9.9.9-checksums.txt)
+    > thurbox-9.9.9-sha256sums.txt)
   mkdir "$tmpdir/work"
   run sh -c "TEST_TMPDIR=1 NO_COLOR=1 DOWNLOAD_URL='file://$tmpdir' . '${BATS_TEST_DIRNAME}/install.sh'; get_binary v9.9.9 x86_64-unknown-linux-musl '$tmpdir/work'"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$tmpdir/work/binary.tar.gz")" = "payload" ]
+  rm -rf "$tmpdir"
+}
+
+# Rule 1 of docs/thurbox/releasing.md, "What a 3.x release must do": every
+# 2.x updater fetches thurbox-v<V>-checksums.txt first, so a 3.x release that
+# never publishes that name makes them all fail safe.
+@test "a 3.x release's assets carry no thurbox-v<V>-checksums.txt" {
+  dir=$(mktemp -d)
+  for t in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
+    printf '%s' "$t" > "$dir/thurbox-v3.0.0-$t.tar.gz"
+  done
+  printf 'zip' > "$dir/thurbox-v3.0.0-x86_64-pc-windows-msvc.zip"
+  run "${BATS_TEST_DIRNAME}/ci/release-archive.sh" --sums v3.0.0 "$dir"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$dir/thurbox-3.0.0-sha256sums.txt" ]
+  [ -z "$(find "$dir" -name 'thurbox-v*-checksums.txt')" ]
+  [ "$(wc -l < "$dir/thurbox-3.0.0-sha256sums.txt")" -eq 3 ]
+  (cd "$dir" && sha256sum -c thurbox-3.0.0-sha256sums.txt)
+  rm -rf "$dir"
+}
+
+@test "the Release workflow publishes the sums file under no other name" {
+  cd_yml="${BATS_TEST_DIRNAME}/../.github/workflows/cd.yml"
+  grep -q 'release-archive.sh --sums' "$cd_yml"
+  # Comments may name the old file to say why it is gone; no step may.
+  run sh -c "grep -vE '^[[:space:]]*#' '$cd_yml' | grep -nE 'thurbox-[^ \"/]*-checksums\\.txt|\\*checksums\\.txt'"
+  [ "$status" -eq 1 ]
+}
+
+# VERSION=v2.x.y pins a 2.x release, which only has the old sums name.
+@test "get_binary verifies a 2.x release by its checksums.txt" {
+  tmpdir=$(mktemp -d)
+  mkdir -p "$tmpdir/v2.84.0"
+  printf 'payload' > "$tmpdir/v2.84.0/thurbox-v2.84.0-x86_64-unknown-linux-musl.tar.gz"
+  (cd "$tmpdir/v2.84.0" && sha256sum thurbox-v2.84.0-x86_64-unknown-linux-musl.tar.gz \
+    > thurbox-v2.84.0-checksums.txt)
+  mkdir "$tmpdir/work"
+  run sh -c "TEST_TMPDIR=1 NO_COLOR=1 DOWNLOAD_URL='file://$tmpdir' . '${BATS_TEST_DIRNAME}/install.sh'; get_binary v2.84.0 x86_64-unknown-linux-musl '$tmpdir/work'"
   [ "$status" -eq 0 ]
   [ "$(cat "$tmpdir/work/binary.tar.gz")" = "payload" ]
   rm -rf "$tmpdir"
@@ -217,7 +260,7 @@ fake_release() {
   # Named members, as release-archive.sh packs them.
   # shellcheck disable=SC2086 # one member per word
   tar -czf "$assets/v9.9.9/thurbox-v9.9.9-$target.tar.gz" -C "$tmpdir/src" $files
-  (cd "$assets/v9.9.9" && sha256sum ./*.tar.gz | sed 's| \./| |' > thurbox-v9.9.9-checksums.txt)
+  (cd "$assets/v9.9.9" && sha256sum ./*.tar.gz | sed 's| \./| |' > thurbox-9.9.9-sha256sums.txt)
 }
 
 # Sets $code and $log (stdout and stderr).

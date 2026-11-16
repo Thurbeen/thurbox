@@ -267,9 +267,22 @@ function Invoke-Install {
     try {
         Write-Info 'Downloading checksums...'
         $checksumPath = Join-Path $tmp 'checksums.txt'
-        try {
-            Invoke-WebRequest -UseBasicParsing -Uri "$base/thurbox-$ver-checksums.txt" -OutFile $checksumPath
-        } catch {
+        # A 3.x release's sums file is thurbox-<V>-sha256sums.txt: it never ships
+        # thurbox-v<V>-checksums.txt, the name every 2.x updater fetches first,
+        # so those updaters fail safe on it (docs/thurbox/releasing.md, "v2 and
+        # v3"). A pinned 2.x release has only that old name.
+        $sums = @("thurbox-$($ver.TrimStart('v'))-sha256sums.txt", "thurbox-$ver-checksums.txt")
+        $fetched = $false
+        foreach ($name in $sums) {
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri "$base/$name" -OutFile $checksumPath
+                $fetched = $true
+                break
+            } catch {
+                continue
+            }
+        }
+        if (-not $fetched) {
             throw "Release assets for $ver are not available. Check https://github.com/$Repo/releases/tag/$ver"
         }
 

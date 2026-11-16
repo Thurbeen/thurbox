@@ -15,8 +15,9 @@
 #   scripts/ci/install-e2e.sh <dist-dir> <version> [--fleet-only]
 #
 # <dist-dir> holds the archive scripts/ci/release-archive.sh packed for this
-# machine; this script serves it with a checksums file beside it, as the
-# Release workflow publishes them. Needs python3 (to serve the assets) and jq.
+# machine; this script serves it with the sums file release-archive.sh --sums
+# writes beside it, as the Release workflow publishes them. Needs python3 (to
+# serve the assets) and jq.
 #
 # The multiplexer is the machine's business, not the installer's: when none is
 # on PATH, doctor's `multiplexer` check is the one failure allowed.
@@ -26,7 +27,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 case "$#:${3:-}" in
   2: | 3:--fleet-only) ;;
-  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
 dist="$(cd "$1" && pwd)" version="$2" fleet_only="${3:-}"
 # shellcheck disable=SC2207 # one word per line; macOS's bash 3.2 has no mapfile
@@ -56,10 +57,7 @@ trap cleanup EXIT
 www="$root/www/$version"
 mkdir -p "$www"
 cp "$dist"/thurbox-* "$www/" 2>/dev/null || fail "no archive in $dist"
-sum=sha256sum
-command -v "$sum" >/dev/null || sum="shasum -a 256"
-(cd "$www" && $sum thurbox-* > "$root/checksums.txt") && mv "$root/checksums.txt" \
-  "$www/thurbox-${version}-checksums.txt"
+"$repo/scripts/ci/release-archive.sh" --sums "$version" "$www" >/dev/null
 
 port=$(( 20000 + RANDOM % 20000 ))
 "$python" -m http.server "$port" --bind 127.0.0.1 --directory "$root/www" >/dev/null 2>&1 &

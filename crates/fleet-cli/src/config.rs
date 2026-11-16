@@ -167,6 +167,17 @@ impl Config {
 
     /// The config `text` read from `path`, validated as [`Config::load`] does.
     pub fn parse(text: &str, path: &Path) -> Result<Config, String> {
+        if let Some((why, store)) = fleet_2_config(text, path) {
+            return Err(format!(
+                "config {path} is a Fleet 2.x config ({why}); this Fleet does not read it, nor \
+                 the store it names. Move both aside (`mv {path} {path}.v2` and `mv {store} \
+                 {store}.v2`) and run `fleet init` to write a Fleet 3 config, then copy [forge] \
+                 and [plugins] over by hand; or keep Fleet and thurbox 2.x (install with \
+                 VERSION=v2.x.y). See docs/thurbox/releasing.md, \"v2 and v3\"",
+                path = path.display(),
+                store = store.display()
+            ));
+        }
         let mut config: Config =
             toml::from_str(text).map_err(|e| format!("config {}: {e}", path.display()))?;
         if config.version != CONFIG_VERSION {
@@ -376,6 +387,38 @@ impl Config {
             gateway_briefs: BTreeMap::new(),
         }
     }
+}
+
+/// What marks `text`, read from `path`, as a Fleet 2.x config, which sits at
+/// the same per-user path, and the store it names. The mark is its
+/// `[runtime]`: `kind = "thurbox"` with `cli`, `callTimeoutMs`, `keyPrefix`
+/// and `repositories`, where this Fleet's `[runtime]` is only the fake. The
+/// store matters as much: it uses this Fleet's store format version, so
+/// `fleet init` would point this Fleet at it, and this Fleet cannot read the
+/// objects 2.x wrote there. `None` for any other text, including one that is
+/// not TOML: the typed parse reports that.
+fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf)> {
+    const FLEET_2_KEYS: [&str; 4] = ["cli", "callTimeoutMs", "keyPrefix", "repositories"];
+    let table: toml::Table = toml::from_str(text).ok()?;
+    let runtime = table.get("runtime")?.as_table()?;
+    let why = if runtime.get("kind").and_then(toml::Value::as_str) == Some("thurbox") {
+        "[runtime] kind = \"thurbox\"".to_string()
+    } else {
+        let key = FLEET_2_KEYS.iter().find(|k| runtime.contains_key(**k))?;
+        format!("[runtime] {key}")
+    };
+    let base = path.parent().unwrap_or(Path::new("."));
+    let store = match table
+        .get("data")
+        .and_then(|d| d.get("dir"))
+        .and_then(toml::Value::as_str)
+    {
+        Some(dir) => base.join(dir),
+        None => default_data_dir()
+            .unwrap_or_else(|| PathBuf::from("fleet"))
+            .join("store-v1"),
+    };
+    Some((why, store))
 }
 
 /// Explicit CLI path, then FLEET_CONFIG, then one native per-user location.

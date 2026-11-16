@@ -39,9 +39,11 @@ Every push to `main` automatically triggers the release workflow:
    `BREAKING CHANGE:` footer cannot cut the next major. The step also decides
    `channels` (below). Rules: `docs/thurbox/releasing.md`, "v2 and v3".
    Before that, the same script holds every release while the tree carries
-   `.github/release-hold` (`held=true`: a clean skip on a push or a dispatch).
-   `main` holds while it carries unreleased 3.x work; the 3.0.0 pull request
-   deletes the file ("The v3 hold").
+   `.github/release-hold` (`held=true`: a clean skip on a push or a dispatch);
+   `main` releases 3.x and carries no hold ("The v3 hold"). It also holds an
+   auto bump (a push, or a dispatch with no version) that would be the first
+   release of its line: a `feat!:` on `main` computes x.0.0, and a line's
+   first release is dispatched with its exact version.
 4. **Automated Release** (if needed):
    - Determines semantic version (feat→minor, fix/perf→patch, breaking→major,
      which the release-line step then refuses)
@@ -83,7 +85,11 @@ Each release includes:
 - Each archive holds `thurbox`, `thurbox-cli`, `fleet`, `runtime-mux`,
   `workspace-git` and `LICENSE`: the list is `BINARIES` in
   `scripts/ci/release-archive.sh`, the one source cd.yml builds and packs from
-- `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
+- `thurbox-{ver}-sha256sums.txt` (SHA256 sums, no `v`; written by
+  `release-archive.sh --sums`). A 3.x release never ships
+  `thurbox-v{ver}-checksums.txt`, the name every 2.x updater fetches first
+  (`docs/thurbox/releasing.md`, rule 1); the installers fall back to it only
+  for a pinned 2.x release
 - Changelog with categorized commits
 
 ### Distribution Packages
@@ -91,12 +97,14 @@ Each release includes:
 After the GitHub Release is published, `cd.yml` also updates the downstream
 package channels (each gated on its secret, skipped on forks, and run only
 when `channels` is true: the version is the newest tag of
-`PACKAGE_CHANNELS_MAJOR`, `2`. These names carry 2.x for good; a new major
-ships under names of its own):
+`PACKAGE_CHANNELS_MAJOR`, `2`. These names carry 2.x for good, from `v2.x`'s
+own `cd.yml`. A 3.x release skips every channel job; 3.x ships through the
+GitHub Release, the installers and the Nix flake until it gets names of its
+own):
 
 - **Homebrew** (`publish-homebrew`): bumps `version`/`sha256` in
   `packaging/homebrew/Formula/thurbox.rb` (via `packaging/homebrew/bump-formula.py`,
-  reading the release `checksums.txt`) and pushes it to the
+  reading the release sums file) and pushes it to the
   `Thurbeen/homebrew-thurbox` tap over SSH. Needs the `HOMEBREW_TAP_DEPLOY_KEY`
   secret (a write deploy key on the tap repo; the org blocks cross-repo PATs).
   Install: `brew install thurbeen/thurbox/thurbox`. Supports macOS arm64
@@ -109,7 +117,7 @@ ships under names of its own):
 - **Chocolatey** (`publish-chocolatey`): bumps `<version>` in
   `packaging/chocolatey/thurbox.nuspec` and `$url64`/`$checksum64` in
   `tools/chocolateyinstall.ps1` (via `packaging/chocolatey/bump-nuspec.py`,
-  reading the release `checksums.txt`), then `choco pack` + `choco push` to the
+  reading the release sums file), then `choco pack` + `choco push` to the
   community repo. Runs on `windows-latest`; needs the `CHOCOLATEY_API_KEY`
   secret. New versions go through community-repo moderation.
   Install: `choco install thurbox`. Windows x86_64 only.
@@ -127,7 +135,7 @@ ships under names of its own):
 - **winget** (`publish-winget`): bumps `PackageVersion`/`InstallerUrl`/
   `InstallerSha256`/`ReleaseNotesUrl` in the three manifests under
   `packaging/winget/manifests/` (via `packaging/winget/bump-manifests.py`,
-  reading the release `checksums.txt`), then `wingetcreate submit`s the set as a
+  reading the release sums file), then `wingetcreate submit`s the set as a
   PR to `microsoft/winget-pkgs`. Runs on `windows-latest`; needs the
   `WINGET_TOKEN` secret (a `public_repo` PAT owning a fork of
   `microsoft/winget-pkgs`). New versions go through winget-pkgs PR

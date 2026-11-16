@@ -374,7 +374,7 @@ Describe 'A fleet-only install' {
         $zip = Join-Path $script:Assets 'thurbox-v9.9.9-x86_64-pc-windows-msvc.zip'
         Compress-Archive -Path (Join-Path $src '*') -DestinationPath $zip
         $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
-        Set-Content -Path (Join-Path $script:Assets 'thurbox-v9.9.9-checksums.txt') `
+        Set-Content -Path (Join-Path $script:Assets 'thurbox-9.9.9-sha256sums.txt') `
             -Value "$hash  thurbox-v9.9.9-x86_64-pc-windows-msvc.zip"
         $env:THURBOX_VERSION = 'v9.9.9'
         $env:THURBOX_INSTALL_DIR = $script:Dest
@@ -382,7 +382,8 @@ Describe 'A fleet-only install' {
 
         $script:Printed = [System.Collections.Generic.List[string]]::new()
         Mock Write-Host { $script:Printed.Add([string]$Object) }
-        Mock Invoke-WebRequest { Copy-Item (Join-Path $script:Assets (Split-Path -Leaf $Uri)) $OutFile }
+        # A missing asset throws, as a 404 does.
+        Mock Invoke-WebRequest { Copy-Item (Join-Path $script:Assets (Split-Path -Leaf $Uri)) $OutFile -ErrorAction Stop }
         Mock Add-ToUserPath { $false }
     }
 
@@ -429,6 +430,24 @@ Describe 'A fleet-only install' {
     It 'lets an explicit -FleetOnly:$false win over THURBOX_FLEET_ONLY' {
         $env:THURBOX_FLEET_ONLY = '1'
         . $script:ScriptPath -FleetOnly:$false
+        Invoke-Install
+        foreach ($name in $script:Shipped) {
+            Test-Path -LiteralPath (Join-Path $script:Dest "$name.exe") | Should -BeTrue
+        }
+    }
+
+    # A 3.x release never ships thurbox-v<V>-checksums.txt: every 2.x updater
+    # fetches that name first (docs/thurbox/releasing.md, "v2 and v3").
+    It 'verifies a 3.x release by its sha256sums file, never asking for checksums.txt' {
+        . $script:ScriptPath
+        Invoke-Install
+        Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -like '*/thurbox-9.9.9-sha256sums.txt' } -Times 1
+        Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -like '*checksums.txt' } -Times 0
+    }
+
+    It 'verifies a pinned 2.x release by its checksums.txt' {
+        Rename-Item -LiteralPath (Join-Path $script:Assets 'thurbox-9.9.9-sha256sums.txt') -NewName 'thurbox-v9.9.9-checksums.txt'
+        . $script:ScriptPath
         Invoke-Install
         foreach ($name in $script:Shipped) {
             Test-Path -LiteralPath (Join-Path $script:Dest "$name.exe") | Should -BeTrue

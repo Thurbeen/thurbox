@@ -787,6 +787,37 @@ fn a_starter_section_is_refused_at_load() {
     assert!(!run.stderr.contains("configuration page"), "{}", run.stderr);
 }
 
+/// A Fleet 2.x config left at the per-user path, where Fleet 3 looks too, is
+/// named as one with what to do about it, not reported as an unknown field
+/// of its `[runtime]`.
+#[test]
+fn a_fleet_2_config_is_named_with_what_to_do() {
+    let env = Env::without_tools("fleet-2-config");
+    let config = env.root.join("config/fleet/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "version = 1\n\n[data]\ndir = \"store-v1\"\n\n[runtime]\ncallTimeoutMs = 120000\n\
+         cli = \"thurbox-cli\"\nkeyPrefix = \"abc\"\nkind = \"thurbox\"\n\n\
+         [runtime.repositories]\n\"https://example.invalid/r\" = \"/tmp/r\"\n",
+    )
+    .unwrap();
+    for args in [&["list", "task"][..], &["init"][..]] {
+        let run = wait(installed(&env, args).spawn().unwrap());
+        let store = config.parent().unwrap().join("store-v1");
+        run.code(1)
+            .stderr_has("is a Fleet 2.x config")
+            .stderr_has(&format!("mv {} {}.v2", store.display(), store.display()))
+            .stderr_has("fleet init")
+            .stderr_has("VERSION=v2.");
+        assert!(!run.stderr.contains("unknown field"), "{}", run.stderr);
+    }
+    assert!(
+        config.is_file(),
+        "the Fleet 2.x config is the user's to move"
+    );
+}
+
 /// `fleet version --json` reports the manager's lease under `manager`, and
 /// only reads it: no store is created, and the lease is neither taken nor
 /// renewed.

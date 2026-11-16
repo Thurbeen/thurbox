@@ -61,11 +61,32 @@ line() {
   [[ "$output" == *"channels=false"* ]]
 }
 
-@test "the real tree is held while v3 is unreleased" {
-  run env THURBOX_RELEASE_HOLD_FILE="${BATS_TEST_DIRNAME}/../../.github/release-hold" \
-    "$SCRIPT" v2.89.0 2
+# The real tree, as cd.yml runs the gate on main: its hold file, its
+# RELEASE_LINE and cd.yml's PACKAGE_CHANNELS_MAJOR.
+real() {
+  local root="${BATS_TEST_DIRNAME}/../.."
+  local channels
+  channels="$(sed -nE 's/^  PACKAGE_CHANNELS_MAJOR: "([0-9]+)"$/\1/p' "$root/.github/workflows/cd.yml")"
+  [ -n "$channels" ] || return 1
+  run env THURBOX_RELEASE_HOLD_FILE="$root/.github/release-hold" \
+    THURBOX_RELEASE_LINE_SOURCE="$root/crates/thurbox/src/update/version_check.rs" \
+    "$SCRIPT" "$1" "$channels" ${2:+"$2"}
+}
+
+@test "the real tree releases 3.0.0, to no package channel" {
+  real v3.0.0
   [ "$status" -eq 0 ]
-  [[ "$output" == *"held=true"* ]]
+  [[ "$output" == *"held=false"* ]]
+  [[ "$output" == *"line=3"* ]]
+  [[ "$output" == *"channels=false"* ]]
+}
+
+@test "the real tree refuses a 2.x that a feat or fix on main auto-bumps" {
+  real v2.85.0 auto
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing to release v2.85.0"* ]]
+  real v2.84.1
+  [ "$status" -eq 1 ]
 }
 
 @test "a breaking-change bump to the next major is refused" {
@@ -80,6 +101,33 @@ line() {
   run "$SCRIPT" 3.0.0 2
   [ "$status" -eq 0 ]
   [[ "$output" == *"line=3"* ]]
+}
+
+# A squash merge can carry a `!` or a BREAKING CHANGE footer onto main, and
+# cog bump --auto then computes the next major's x.0.0. The first release of a
+# line is cut by a dispatch with that exact version, never by a push.
+@test "an auto bump to the first release of the source's line is held for a dispatch" {
+  line 3
+  run "$SCRIPT" v3.0.0 2 auto
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"held=true"* ]]
+  [[ "$output" == *"channels=false"* ]]
+  [[ "$output" == *"dispatch"* ]]
+}
+
+@test "an auto bump on a line that has a release passes" {
+  line 3
+  git tag v3.0.0
+  run "$SCRIPT" v3.1.0 2 auto
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"held=false"* ]]
+  [[ "$output" == *"line=3"* ]]
+}
+
+@test "the real tree holds an auto-bumped 3.0.0 for the dispatch" {
+  real v3.0.0 auto
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"held=true"* ]]
 }
 
 @test "a release of an older line from a newer source is refused" {
@@ -124,7 +172,7 @@ line() {
 
 @test "reads the constant the real source declares" {
   run env THURBOX_RELEASE_LINE_SOURCE="${BATS_TEST_DIRNAME}/../../crates/thurbox/src/update/version_check.rs" \
-    "$SCRIPT" v2.84.2 2
+    "$SCRIPT" v3.0.1 2
   [ "$status" -eq 0 ]
-  [[ "$output" == *"line=2"* ]]
+  [[ "$output" == *"line=3"* ]]
 }

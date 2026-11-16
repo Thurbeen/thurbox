@@ -164,8 +164,13 @@ get_binary() {
   local base="thurbox-${version}-${target}"
   local url_base="${DOWNLOAD_URL}/${version}"
 
+  # A 3.x release's sums file is thurbox-<V>-sha256sums.txt: it never ships
+  # thurbox-v<V>-checksums.txt, the name every 2.x updater fetches first, so
+  # those updaters fail safe on it (docs/thurbox/releasing.md, "v2 and v3").
+  # A pinned 2.x release has only that old name.
   info "Downloading checksums..."
-  download "${url_base}/thurbox-${version}-checksums.txt" "$tmpdir/checksums.txt" || {
+  download "${url_base}/thurbox-${version#v}-sha256sums.txt" "$tmpdir/checksums.txt" 2>/dev/null \
+    || download "${url_base}/thurbox-${version}-checksums.txt" "$tmpdir/checksums.txt" || {
     error "Binaries not ready. Check: https://github.com/${REPO}/releases/tag/${version}"
     return 1
   }
