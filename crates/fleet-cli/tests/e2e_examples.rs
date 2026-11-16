@@ -47,4 +47,28 @@ fn shipped_example_applies_and_reconciles_in_a_fresh_isolated_store() {
     e.reconcile().ok();
     e.fleet(&["get", "Task", "example"]).code(3);
     e.assert_no_temp();
+    let mut written: Vec<String> = std::fs::read_dir(&e.root)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with("apply-"))
+        .collect();
+    written.sort();
+    assert_eq!(
+        written,
+        [
+            "data",
+            "empty-path",
+            "fake-forge",
+            "fake-host",
+            "fleet.toml",
+            "tmp"
+        ]
+    );
+    assert!(
+        std::fs::read_dir(e.root.join("empty-path"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
 }

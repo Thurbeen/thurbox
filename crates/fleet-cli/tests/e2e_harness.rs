@@ -1045,30 +1045,63 @@ fn the_copilot_hooks_report_each_event_through_fleet_signal() {
         assert_eq!(entries[0]["type"], "command", "{event}");
         let bash = entries[0]["bash"].as_str().expect(event);
         let powershell = entries[0]["powershell"].as_str().expect(event);
-        let signal = format!("fleet signal {state} ");
-        assert!(bash.contains(&signal), "{event}: {bash}");
-        assert!(powershell.contains(&signal), "{event}: {powershell}");
-        let mut runs = vec![(SH.to_vec(), bash)];
-        if let Some(pwsh) = &pwsh {
-            runs.push((
-                vec![pwsh.as_str(), "-NoProfile", "-NonInteractive", "-Command"],
-                powershell,
-            ));
-        }
-        for (shell, command) in runs {
-            assert_eq!(
-                run_hook(&env, &shell, command, (true, true), &payload),
-                [(state.to_string(), payload.clone())],
-                "{event}: {command}"
+        assert!(
+            bash.contains(&format!("fleet signal {state} ")),
+            "{event}: {bash}"
+        );
+        assert_eq!(
+            powershell,
+            COPILOT_POWERSHELL_HOOK.replace("{state}", state),
+            "{event}"
+        );
+        assert_eq!(
+            run_hook(&env, SH, bash, (true, true), &payload),
+            [(state.to_string(), payload.clone())],
+            "{event}: {bash}"
+        );
+        for outside in OUTSIDE_A_SESSION {
+            assert!(
+                run_hook(&env, SH, bash, outside, &payload).is_empty(),
+                "{event} {outside:?}: {bash}"
             );
-            for outside in [(false, true), (true, false), (false, false)] {
-                assert!(
-                    run_hook(&env, &shell, command, outside, &payload).is_empty(),
-                    "{event} {outside:?}: {command}"
-                );
-            }
+        }
+        if let Some(pwsh) = &pwsh {
+            assert_eq!(
+                run_hook(
+                    &env,
+                    &pwsh_command(pwsh),
+                    powershell,
+                    (true, true),
+                    &payload
+                ),
+                [(state.to_string(), payload.clone())],
+                "{event}: {powershell}"
+            );
         }
     }
+    if let Some(pwsh) = &pwsh {
+        let powershell = COPILOT_POWERSHELL_HOOK.replace("{state}", "idle");
+        for outside in OUTSIDE_A_SESSION {
+            assert!(
+                run_hook(&env, &pwsh_command(pwsh), &powershell, outside, &payload).is_empty(),
+                "{outside:?}: {powershell}"
+            );
+        }
+    }
+}
+
+/// Every Copilot event's PowerShell hook is this one command with its state.
+#[cfg(unix)]
+const COPILOT_POWERSHELL_HOOK: &str = "try { if ($env:FLEET_SIGNAL_FILE) { $input | fleet signal {state} 2>$null } } catch { }; exit 0";
+
+/// `(fleet on PATH, FLEET_SIGNAL_FILE set)` for each way a hook runs
+/// outside a Fleet session.
+#[cfg(unix)]
+const OUTSIDE_A_SESSION: [(bool, bool); 3] = [(false, true), (true, false), (false, false)];
+
+#[cfg(unix)]
+fn pwsh_command(pwsh: &str) -> [&str; 4] {
+    [pwsh, "-NoProfile", "-NonInteractive", "-Command"]
 }
 
 /// A plugin file is named inside a JSON string (opencode's config), where a

@@ -684,6 +684,19 @@ fn invalid_and_retired_requests_are_refused_with_a_reason() {
     let env = setup("unsupported", false);
     let run = json!({"apiVersion": "fleet/v1alpha1", "kind": "Run", "metadata": {"name": "r"}, "spec": {}});
     env.apply(run).code(1).stderr_has("unknown kind");
+    for kind in [
+        "Policy",
+        "Host",
+        "ModelProvider",
+        "Conductor",
+        "Forge",
+        "ForgeTask",
+        "ControllerPlugin",
+    ] {
+        env.apply(object(kind, "x", json!({})))
+            .code(1)
+            .stderr_has("unknown kind");
+    }
     for args in [
         &["list", "policy"][..],
         &["get", "modelprovider", "worker"][..],
@@ -777,46 +790,6 @@ fn a_runtime_section_is_the_fake_and_carries_no_repository_map() {
     );
 }
 
-#[test]
-fn the_core_runs_with_no_fleet_extension_and_no_tools_on_path() {
-    // No runtime program, no fleet extension, no Lua pane, no shell: PATH is an
-    // empty directory and HOME is the test's own. The whole lifecycle still
-    // runs, because the foundation reaches nothing outside its data
-    // directory and the configured runtime.
-    let env = Env::without_tools("no-extension");
-    env.apply(base_config()).ok();
-    env.apply(task("t1", true)).ok();
-    env.reconcile().ok();
-    assert_eq!(env.status("t1")["phase"], "Briefed");
-    env.fleet(&result_args("1", &["--output", "prUrl=\"u\""]))
-        .ok();
-    env.reconcile().ok();
-    assert_eq!(env.status("t1")["phase"], "Concluded");
-    env.host()
-        .set_at_rest(&env.session_key("t1"), true)
-        .unwrap();
-    env.fleet(&["delete", "task", "t1"]).ok();
-    env.reconcile().ok();
-    env.fleet(&["get", "task", "t1"]).code(3);
-
-    // Nothing was written outside the test's directories: no extension
-    // home, no default data directory under HOME.
-    let mut entries: Vec<String> = fs::read_dir(&env.root)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    entries.retain(|e| !e.starts_with("apply-"));
-    entries.sort();
-    assert_eq!(entries, ["data", "empty-path", "fake", "fleet.toml", "tmp"]);
-    assert!(
-        fs::read_dir(env.root.join("empty-path"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
-}
-
 /// The examples in docs/fleet/contracts.md are what the binary accepts.
 #[test]
 fn the_contract_examples_apply_as_written() {
@@ -846,51 +819,6 @@ fn the_contract_examples_apply_as_written() {
         .ok()
         .json();
     assert_eq!(st["phase"], "Briefed", "{st:#}");
-}
-
-#[test]
-fn a_task_alone_runs_from_apply_to_release_and_retired_kinds_are_refused() {
-    let env = Env::new("task-only");
-    env.apply(json!({
-        "apiVersion": "fleet/v1alpha1", "kind": "Task", "metadata": {"name": "solo"},
-        "spec": {"harness": "claude-code", "host": "local", "brief": "Do it.",
-                 "workspace": [], "dispatch": true}
-    }))
-    .ok()
-    .stdout_has("Task/solo created");
-    env.reconcile().ok();
-    let st = env.status("solo");
-    assert_eq!(st["phase"], "Briefed", "{st:#}");
-    env.fleet(&[
-        "result",
-        "solo",
-        "--generation",
-        "1",
-        "--outcome",
-        "shipped",
-    ])
-    .ok();
-    env.reconcile().ok();
-    assert_eq!(env.status("solo")["phase"], "Concluded");
-    env.host()
-        .set_at_rest(&env.session_key("solo"), true)
-        .unwrap();
-    env.fleet(&["delete", "task", "solo"]).ok();
-    env.reconcile().ok();
-    env.fleet(&["get", "task", "solo"]).code(3);
-    for kind in [
-        "Policy",
-        "Host",
-        "ModelProvider",
-        "Conductor",
-        "Forge",
-        "ForgeTask",
-        "ControllerPlugin",
-    ] {
-        env.apply(object(kind, "x", json!({})))
-            .code(1)
-            .stderr_has("unknown kind");
-    }
 }
 
 #[test]

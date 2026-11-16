@@ -531,23 +531,54 @@ fn a_redelivered_event_changes_nothing_and_edits_and_removals_move_the_mirror() 
     env.assert_no_temp();
 }
 
+/// Spool `(delivery id, fake event)` pairs on `conv` through the store, as
+/// `fleet gateway receive` would, without a process for each.
+fn spool_directly(env: &Env, conv: &str, events: impl Iterator<Item = (String, Value)>) {
+    use fleet_api::gateway::{Delivery, Verified};
+    use fleet_api::{FieldManager, Store};
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    for (id, event) in events {
+        let current = store.get("Conversation", conv);
+        let expected = current
+            .known()
+            .and_then(Option::as_ref)
+            .unwrap()
+            .metadata
+            .resource_version;
+        let delivery = Delivery {
+            id,
+            verified: Verified::Connection,
+            received_at: support::now_ms(),
+            event: serde_json::from_value(event).unwrap(),
+            direct: false,
+        };
+        store
+            .receive_event(
+                conv,
+                delivery,
+                expected,
+                FieldManager::Listener(GATEWAY_ACCOUNT.into()),
+            )
+            .unwrap();
+    }
+}
+
 #[test]
 fn the_spool_holds_a_hundred_events_and_refuses_the_next() {
     let (env, conv) = mirror("spool");
     env.reconcile().ok();
-    for i in 0..100 {
+    let event = |i: u64, text: &str| {
         let at = T0 + 300_000 + i * 1000;
-        let text = if i == 0 {
-            format!("<@{BOT}> look")
-        } else {
-            format!("message {i}")
-        };
-        env.receive(
-            &format!("Ev{i:03}"),
-            message_event(THREAD, &at.to_string(), ALEX_ID, at, &text),
-        )
+        message_event(THREAD, &at.to_string(), ALEX_ID, at, text)
+    };
+    env.receive("Ev000", event(0, &format!("<@{BOT}> look")))
         .ok();
-    }
+    spool_directly(
+        &env,
+        &conv,
+        (1..99).map(|i| (format!("Ev{i:03}"), event(i, &format!("message {i}")))),
+    );
+    env.receive("Ev099", event(99, "message 99")).ok();
     let at = T0 + 999_000;
     env.receive(
         "Ev100",
@@ -1635,10 +1666,8 @@ fn the_slack_adapter_posts_a_log_post_at_the_top_level_of_a_channel() {
 fn the_slack_adapters_unknowns_carry_slacks_reasons() {
     let (env, curl, curl_config) = slack_env("slack-faults");
     seed_slack(&env);
-    // A bound a loaded test host never reaches, and a short one for the
-    // two cases that need the stub to run past it.
     let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
-    let quick = slack_adapter(&curl, &curl_config, Duration::from_secs(2));
+    let quick = slack_adapter(&curl, &curl_config, Duration::from_millis(500));
     let t = thread(PARENT_TS);
     let since = HistoryQuery::Since { at: 0 };
     // `internal_error` and `fatal_error` are the two `ok: false` answers
@@ -2241,7 +2270,7 @@ fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
         let report = env.reconcile().ok().json();
         assert_eq!(report["errors"], json!([]), "{report:#}");
         for conv in [&a, &b, &c] {
-            if env.fleet(&["get", "conversation", conv]).code == Some(0) {
+            if env.object_path("Conversation", conv).exists() {
                 env.expire_wait_of("Conversation", conv);
             }
         }
