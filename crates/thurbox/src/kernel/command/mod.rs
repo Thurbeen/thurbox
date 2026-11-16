@@ -1952,6 +1952,27 @@ mod tests {
         assert_eq!(item.error.as_deref(), Some("no such pane"));
     }
 
+    #[test]
+    fn only_a_delete_that_succeeded_hides_its_row_for_good() {
+        let mut bus =
+            CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"));
+        let delete = |bus: &CommandBus, session: &str| {
+            bus.dispatch(Command::Delete {
+                session: session.into(),
+                force: false,
+            })
+        };
+        let refused = delete(&bus, "refused");
+        bus.finish_for_test(refused, Some("refused by fleet".into()));
+        assert!(bus.poll());
+        assert!(bus.take_deleted().is_empty());
+
+        let deleted = delete(&bus, "deleted");
+        bus.finish_for_test(deleted, None);
+        assert!(bus.poll());
+        assert_eq!(bus.take_deleted(), ["deleted"]);
+    }
+
     // ── a plugin's program is not a session ────────────────────────────────
 
     /// The command names no session, which is what keeps a program pane out of
