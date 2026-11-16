@@ -501,6 +501,108 @@ pub fn launch_on_windows(
     Ok(cmd)
 }
 
+/// A PowerShell script that runs `program` with `args` on a Windows host, in
+/// `dir` when given, with `path_prepend` put first on its `Path`, after
+/// `prelude`: statements of the caller's own, such as making the directory
+/// a copy goes to. A `~` leading an entry of `path_prepend` is the user's
+/// profile directory.
+///
+/// The program is found as PowerShell finds a command (`Get-Command`), so
+/// an npm `.cmd` shim or a `.ps1` script on the `Path` is found as an `.exe`
+/// is. The arguments ride the script once, as a PowerShell array, and are
+/// quoted on the place for the kind found there ([`WINDOWS_QUOTERS`]):
+///
+/// - an `.exe` gets one command line quoted for the C runtime, which splits
+///   it back into exactly the arguments given;
+/// - a `.cmd` or `.bat` runs under `cmd.exe /d /v:off /s /c`, with each
+///   argument quoted so that `cmd.exe` reads no metacharacter or expansion
+///   in it (Rust std's rules for a batch file, its fix of CVE-2024-24576);
+/// - a `.ps1` runs under `powershell -File`, with the C runtime's line.
+pub fn windows_program_script<S: AsRef<str>>(
+    program: &str,
+    args: &[S],
+    dir: Option<&str>,
+    path_prepend: &[String],
+    prelude: &str,
+) -> String {
+    let argv = args
+        .iter()
+        .map(|a| powershell_quote(a.as_ref()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let dir = dir
+        .map(|d| format!("$s.WorkingDirectory={}\n", powershell_quote(d)))
+        .unwrap_or_default();
+    // Terse on purpose: the script rides the command line base64'd from
+    // UTF-16, about 2.7 bytes per character, inside WINDOWS_CMD_LINE_MAX.
+    format!(
+        "$ProgressPreference='SilentlyContinue'\n\
+         {path}{prelude}\
+         {WINDOWS_QUOTERS}\
+         $v=@({argv})\n\
+         $p=(Get-Command {program} -CommandType Application,ExternalScript -EA Stop|select -First 1).Source\n\
+         $e=[IO.Path]::GetExtension($p)\n\
+         if($e-in'.cmd','.bat'){{$f=$env:ComSpec;$a='/d /v:off /s /c \"\"'+$p+'\" '+(($v|%{{&$k $_}})-join' ')+'\"'}}\
+         elseif($e-eq'.ps1'){{$f=(Get-Command powershell.exe).Source;$a='-NoProfile -ExecutionPolicy Bypass -File '+(&$q $p)+' '+(($v|%{{&$q $_}})-join' ')}}\
+         else{{$f=$p;$a=($v|%{{&$q $_}})-join' '}}\n\
+         $s=New-Object Diagnostics.ProcessStartInfo $f,$a\n\
+         $s.UseShellExecute=$false\n\
+         {dir}\
+         $x=[Diagnostics.Process]::Start($s)\n\
+         $x.WaitForExit()\n\
+         exit $x.ExitCode",
+        path = windows_path_prepend(path_prepend),
+        program = powershell_quote(program),
+    )
+}
+
+/// The two quoting rules a Windows script applies on the place, as
+/// PowerShell script blocks:
+///
+/// - `$q`: one argument for the C runtime ([`windows_arg_quote`]'s rule):
+///   as it is when it holds no whitespace or `"`; else one quoted
+///   region, each `"` escaped with the backslashes before it doubled, and
+///   the trailing backslashes doubled;
+/// - `$k`: one argument for `cmd.exe`: always one quoted region, each `"`
+///   doubled with the backslashes before it doubled, each `%` (and CR)
+///   preceded by `%%cd:~,` so no `%NAME%` expands (`%cd:~,%` is an empty
+///   substring), and a newline as a space, since `cmd.exe` ends a command
+///   at one. `!` needs nothing under `/v:off`.
+pub const WINDOWS_QUOTERS: &str = "$q={param($a)if($a-and$a-notmatch'[\\s\"]'){return $a};$o='\"';$b=0;foreach($h in $a.ToCharArray()){if($h-eq'\\'){$b++}elseif($h-eq'\"'){$o+='\\'*(2*$b+1)+'\"';$b=0}else{$o+='\\'*$b+$h;$b=0}};$o+'\\'*(2*$b)+'\"'}
+$k={param($a)$o='\"';$b=0;foreach($h in $a.ToCharArray()){if($h-eq'\\'){$b++;$o+='\\';continue};if($h-eq'\"'){$o+='\\'*$b+'\"'}elseif($h-eq'%'-or$h-eq[char]13){$o+='%%cd:~,'};$b=0;if($h-eq[char]10){$o+=' '}else{$o+=$h}};$o+'\\'*$b+'\"'}
+";
+
+/// The PowerShell statement that puts `dirs` first on `$env:Path`, empty
+/// for none. A leading `~` is `$env:USERPROFILE`.
+pub fn windows_path_prepend(dirs: &[String]) -> String {
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = dirs
+        .iter()
+        .map(|d| match d.strip_prefix('~') {
+            Some(rest) => format!("($env:USERPROFILE + {})", powershell_quote(rest)),
+            None => powershell_quote(d),
+        })
+        .collect();
+    format!(
+        "$env:Path = (@({}) -join ';') + ';' + $env:Path\n",
+        items.join(", ")
+    )
+}
+
+/// `powershell.exe -NoProfile -EncodedCommand <script>` on this machine.
+pub fn local_powershell(script: &str) -> Command {
+    use base64::Engine as _;
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut cmd = Command::new("powershell.exe");
+    off_the_terminal(&mut cmd);
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        .arg(base64::engine::general_purpose::STANDARD.encode(utf16));
+    strip_telemetry_env(&mut cmd);
+    cmd
+}
+
 /// PowerShell that starts the program `file_name` (a PowerShell expression)
 /// with `args`, waits for it and exits with its status. The arguments are one
 /// command line quoted for the C runtime ([`windows_arg_quote`]) rather than
@@ -1033,6 +1135,277 @@ mod tests {
         );
     }
     use super::*;
+
+    /// `path_prepend` goes first on a Windows `Path`, each entry quoted, a
+    /// leading `~` read as the user's profile; none adds nothing.
+    #[test]
+    fn a_windows_path_prepend_reads_tilde_as_the_profile() {
+        assert_eq!(windows_path_prepend(&[]), "");
+        assert_eq!(
+            windows_path_prepend(&["~/rp2/win".to_string(), "C:/it's/bin".to_string()]),
+            "$env:Path = (@(($env:USERPROFILE + '/rp2/win'), 'C:/it''s/bin') -join ';') + ';' + $env:Path\n"
+        );
+    }
+
+    /// The program, its directory and its argument line are each one quoted
+    /// PowerShell string, so a `'` in any of them stays text.
+    #[test]
+    fn a_windows_program_script_quotes_its_program_directory_and_arguments() {
+        let script = windows_program_script(
+            "o'prog",
+            &["it's", "two words"],
+            Some("C:/a b/it's"),
+            &["~/bin".to_string()],
+            "Prelude-Here\n",
+        );
+        assert!(script.contains("Get-Command 'o''prog'"), "{script}");
+        assert!(script.contains("$v=@('it''s', 'two words')"), "{script}");
+        assert!(
+            script.contains("$s.WorkingDirectory='C:/a b/it''s'"),
+            "{script}"
+        );
+        assert!(script.contains("($env:USERPROFILE + '/bin')"), "{script}");
+        let prelude = script.find("Prelude-Here").expect("prelude");
+        assert!(
+            prelude < script.find("Get-Command").expect("lookup"),
+            "{script}"
+        );
+    }
+
+    /// A batch shim runs under `cmd.exe /v:off` with its arguments quoted
+    /// by `$k` on the place; an `.exe` and a `.ps1` get `$q`'s C-runtime
+    /// line. The rules themselves are checked on a real Windows place.
+    #[test]
+    fn each_kind_of_windows_program_gets_its_own_quoting() {
+        let script = windows_program_script("shim", &["left&right", "%PATH%"], None, &[], "");
+        assert!(script.contains("$v=@('left&right', '%PATH%')"), "{script}");
+        assert!(
+            script.contains("$f=$env:ComSpec;$a='/d /v:off /s /c \"\"'+$p+'\" '+(($v|%{&$k $_})"),
+            "{script}"
+        );
+        assert!(script.contains("else{$f=$p;$a=($v|%{&$q $_})"), "{script}");
+        assert!(
+            WINDOWS_QUOTERS.contains("$o+='%%cd:~,'"),
+            "{WINDOWS_QUOTERS}"
+        );
+        assert!(
+            !WINDOWS_QUOTERS.contains('`'),
+            "no PowerShell escape in the blocks"
+        );
+    }
+
+    /// A PowerShell to run the quoting blocks in: Windows PowerShell on
+    /// Windows, where every host has it, else `pwsh` when it is on `PATH`.
+    fn a_powershell() -> Option<&'static str> {
+        if cfg!(windows) {
+            return Some("powershell.exe");
+        }
+        let found = std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("pwsh").is_file()));
+        found.then_some("pwsh")
+    }
+
+    /// `line` split by the C runtime's rules (UCRT, Rust, Go): whitespace
+    /// parts arguments outside quotes; `2n` backslashes before a `"` are
+    /// `n` and the quote toggles, `2n+1` are `n` and a literal `"`; inside
+    /// quotes `""` is one `"`.
+    fn crt_argv(line: &str) -> Vec<String> {
+        let chars: Vec<char> = line.chars().collect();
+        let (mut args, mut arg, mut inside, mut any, mut i) =
+            (Vec::new(), String::new(), false, false, 0);
+        while i < chars.len() {
+            match chars[i] {
+                '\\' => {
+                    let mut n = 0;
+                    while chars.get(i) == Some(&'\\') {
+                        n += 1;
+                        i += 1;
+                    }
+                    if chars.get(i) == Some(&'"') {
+                        arg.push_str(&"\\".repeat(n / 2));
+                        if n % 2 == 1 {
+                            arg.push('"');
+                            i += 1;
+                        }
+                    } else {
+                        arg.push_str(&"\\".repeat(n));
+                    }
+                    continue;
+                }
+                '"' if inside && chars.get(i + 1) == Some(&'"') => {
+                    arg.push('"');
+                    i += 1;
+                }
+                '"' => {
+                    inside = !inside;
+                    any = true;
+                }
+                ' ' | '\t' if !inside => {
+                    if any || !arg.is_empty() {
+                        args.push(std::mem::take(&mut arg));
+                    }
+                    any = false;
+                }
+                c => arg.push(c),
+            }
+            i += 1;
+        }
+        if any || !arg.is_empty() {
+            args.push(arg);
+        }
+        args
+    }
+
+    /// What `cmd.exe /v:off /c` does to `line`: the metacharacters it reads
+    /// outside quotes, each `%name%` it looks up, and the line it then runs.
+    /// A command line leaves `%%` and an unset `%name%` as they are, and
+    /// `%cd:~,%` is an empty substring of the current directory.
+    fn cmd_reads(line: &str) -> (Vec<char>, Vec<String>, String) {
+        let (mut outside, mut looked_up, mut out) = (Vec::new(), Vec::new(), String::new());
+        let chars: Vec<char> = line.chars().collect();
+        let (mut i, mut inside) = (0, false);
+        while i < chars.len() {
+            match chars[i] {
+                '"' => {
+                    inside = !inside;
+                    out.push('"');
+                }
+                '%' => match chars[i + 1..].iter().position(|c| *c == '%') {
+                    Some(0) | None => out.push('%'),
+                    Some(n) => {
+                        let name: String = chars[i + 1..i + 1 + n].iter().collect();
+                        looked_up.push(name.clone());
+                        if name == "cd:~," {
+                            i += n + 2;
+                        } else {
+                            out.push('%');
+                            i += 1;
+                        }
+                        continue;
+                    }
+                },
+                c @ ('&' | '|' | '<' | '>' | '^') if !inside => {
+                    outside.push(c);
+                    out.push(c);
+                }
+                c => out.push(c),
+            }
+            i += 1;
+        }
+        (outside, looked_up, out)
+    }
+
+    /// The quoting blocks a Windows script runs on the place, run here in a
+    /// real PowerShell on awkward arguments: `$q`'s line splits back to the
+    /// argument by the C runtime's rules, and `$k`'s line keeps `cmd.exe`
+    /// inside its quotes, expands no `%NAME%`, and then splits back to the
+    /// argument too (a newline as a space). Skipped, and said so, on a
+    /// machine without PowerShell; CI's Windows job always has it.
+    #[test]
+    fn the_windows_quoters_round_trip_awkward_arguments_in_powershell() {
+        use base64::Engine as _;
+        let Some(ps) = a_powershell() else {
+            eprintln!("skipping: no PowerShell here (pwsh is not on PATH)");
+            return;
+        };
+        let args = [
+            "x\" & echo pwned & \"y",
+            "%PATH%",
+            "!x!",
+            "a|b",
+            "trail\\",
+            "",
+            "\"q\"",
+            "left&right",
+            "with space",
+            "a\\\"b",
+            "%%cd%%",
+            "new\nline",
+            "{\"k\":\"v w\",\"p\":\"C:\\\\x\\\\\"}",
+        ];
+        let script = format!(
+            "{WINDOWS_QUOTERS}$v=@({})\nforeach($x in $v){{$e=[Text.Encoding]::UTF8;[Console]::Out.WriteLine([Convert]::ToBase64String($e.GetBytes((& $q $x)))+' '+[Convert]::ToBase64String($e.GetBytes((& $k $x))))}}",
+            args.iter().map(|a| powershell_quote(a)).collect::<Vec<_>>().join(", ")
+        );
+        let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let out = Command::new(ps)
+            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+            .arg(base64::engine::general_purpose::STANDARD.encode(utf16))
+            .output()
+            .expect("PowerShell runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let lines: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let (a, b) = l.trim().split_once(' ')?;
+                let text = |w: &str| {
+                    String::from_utf8(base64::engine::general_purpose::STANDARD.decode(w).ok()?)
+                        .ok()
+                };
+                Some((text(a)?, text(b)?))
+            })
+            .collect();
+        assert_eq!(
+            lines.len(),
+            args.len(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        for (arg, (q, k)) in args.iter().zip(&lines) {
+            assert_eq!(crt_argv(q), [*arg], "$q {arg:?} -> {q}");
+            let (outside, looked_up, after) = cmd_reads(k);
+            assert!(
+                outside.is_empty(),
+                "$k {arg:?} -> {k}: {outside:?} outside quotes"
+            );
+            assert!(
+                looked_up.iter().all(|n| n == "cd:~,"),
+                "$k {arg:?} -> {k}: looks up {looked_up:?}"
+            );
+            assert_eq!(
+                crt_argv(&after),
+                [arg.replace('\n', " ")],
+                "$k {arg:?} -> {k}"
+            );
+        }
+    }
+
+    /// The arguments ride the script once, so an `exec` with a 1,500-char
+    /// argument stays inside the command line a Windows place runs, base64
+    /// of UTF-16 and all.
+    #[test]
+    fn a_long_argument_rides_the_windows_script_once() {
+        let long = "x".repeat(1500);
+        let script = windows_program_script("tool.exe", &[long.as_str()], None, &[], "");
+        assert_eq!(script.matches(long.as_str()).count(), 1, "{script}");
+        let launcher = HostLauncher::Ssh {
+            destination: "me@win".into(),
+            ssh_opts: vec![],
+        };
+        let cmd = HostShell::PowerShell.run_script(&launcher, &script);
+        let line: usize = cmd.get_args().map(|a| a.len() + 1).sum();
+        assert!(line <= WINDOWS_CMD_LINE_MAX, "{line} chars");
+    }
+
+    /// A Windows program is resolved as PowerShell resolves a command, so an
+    /// npm `.cmd` shim or a `.ps1` script is found, and each runs under its
+    /// own interpreter; an `.exe` runs as it is.
+    #[test]
+    fn a_windows_program_is_resolved_and_run_by_its_kind() {
+        let script = windows_program_script("codex", &["exec"], None, &[], "");
+        assert!(script.contains("Get-Command 'codex'"), "{script}");
+        for kind in ["'.cmd'", "'.bat'", "'.ps1'"] {
+            assert!(script.contains(kind), "{kind}: {script}");
+        }
+        assert!(
+            script.contains("$env:ComSpec") && script.contains("/v:off"),
+            "{script}"
+        );
+    }
 
     #[test]
     fn the_local_platform_is_the_build_os_unless_simulated() {

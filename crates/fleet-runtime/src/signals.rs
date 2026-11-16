@@ -39,6 +39,54 @@ pub fn place_file(key: &str) -> Option<String> {
     plain.then(|| format!("{PLACE_DIR}/{key}.jsonl"))
 }
 
+/// The line that parts what a place's signal file held at a restart from
+/// what came after, in one read of it ([`read_split`]): not JSON, so no
+/// report is ever it.
+pub const RESTART_SPLIT: &str = "@@fleet-restart@@";
+
+/// The most of a place's signal file one read returns: the end of what it
+/// held at a restart, and the end of what came after. Together well under
+/// the 1 MiB an `exec` answer keeps of a stream, so neither the newest
+/// report nor the line between the two is cut.
+pub const PLACE_READ_BEFORE: u64 = 256 * 1024;
+pub const PLACE_READ_AFTER: u64 = 512 * 1024;
+
+/// What `fleet signal-read` prints of the signal file `file` on its own
+/// machine (`~`-rooted on a place): the end of what it held before the
+/// offset `since`, [`RESTART_SPLIT`] on a line of its own, then the end of
+/// what came after. Each part is a byte range computed from the file's
+/// length and read by seeking, so no read scans the whole file. A file
+/// shorter than `since` was made again: all of it came after. `None` when
+/// the file is not there.
+pub fn read_split(file: &Path, since: Option<u64>) -> io::Result<Option<Vec<u8>>> {
+    let mut f = match fs::File::open(expand_home(file)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        opened => opened?,
+    };
+    let len = f.metadata()?.len();
+    let since = since.filter(|&o| o <= len).unwrap_or(0);
+    let mut range = |from: u64, count: u64, out: &mut Vec<u8>| -> io::Result<()> {
+        f.seek(SeekFrom::Start(from))?;
+        (&mut f).take(count).read_to_end(out).map(drop)
+    };
+    let mut out = Vec::new();
+    let start = since.saturating_sub(PLACE_READ_BEFORE);
+    range(start, since - start, &mut out)?;
+    out.extend_from_slice(format!("\n{RESTART_SPLIT}\n").as_bytes());
+    let after = (len - since).min(PLACE_READ_AFTER);
+    range(len - after, after, &mut out)?;
+    Ok(Some(out))
+}
+
+/// The byte length of the signal file `file` (`~`-rooted on a place), 0
+/// when it is not there: where a restart starts reading new reports from.
+pub fn file_length(file: &Path) -> io::Result<u64> {
+    match fs::metadata(expand_home(file)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+        meta => Ok(meta?.len()),
+    }
+}
+
 /// `file` as `fleet signal` opens it: a leading `~/` is the user's home.
 pub fn expand_home(file: &Path) -> PathBuf {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
@@ -167,5 +215,55 @@ impl Signals for FileSignals {
             }
             Err(e) => Observation::unknown(format!("cannot read the signal file: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod place_read_tests {
+    use super::*;
+    use fleet_api::signal::State;
+
+    /// A read of a 64 MiB sparse file with the restart offset in its middle
+    /// returns its two bounded ranges and the split between them, well
+    /// under the 1 MiB `exec` keeps, and the new process's report is the
+    /// one folded. Its length is the file's; a missing file reads `None`
+    /// and has length 0.
+    #[test]
+    fn a_place_read_returns_the_two_ranges_around_the_restart() {
+        let dir = std::env::temp_dir().join(format!("fleet-place-read-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("k.jsonl");
+        let mut f = fs::File::create(&path).expect("file");
+        let half: u64 = 32 * 1024 * 1024;
+        f.write_all(b"{\"at\":1,\"state\":\"idle\"}\n")
+            .expect("old");
+        f.seek(SeekFrom::Start(half)).expect("seek");
+        f.write_all(b"\n").expect("line");
+        let offset = f.stream_position().expect("offset");
+        f.seek(SeekFrom::Start(2 * half)).expect("seek");
+        f.write_all(b"\n{\"at\":2,\"state\":\"working\"}\n")
+            .expect("new");
+        let size = f.stream_position().expect("size");
+        drop(f);
+        assert_eq!(file_length(&path).expect("length"), size);
+        let out = read_split(&path, Some(offset))
+            .expect("read")
+            .expect("there");
+        assert!(out.len() < 1024 * 1024, "{} bytes", out.len());
+        let text = String::from_utf8_lossy(&out);
+        let (before, after) = text.split_once(RESTART_SPLIT).expect("the split");
+        assert_eq!(
+            Reported::fold_restarted(before, after).state,
+            Some(State::Working)
+        );
+        // An offset past the end: the file was made again, all of it new.
+        let out = read_split(&path, Some(size + 1))
+            .expect("read")
+            .expect("there");
+        assert!(String::from_utf8_lossy(&out).starts_with(&format!("\n{RESTART_SPLIT}\n")));
+        let gone = dir.join("none.jsonl");
+        assert_eq!(read_split(&gone, None).expect("read"), None);
+        assert_eq!(file_length(&gone).expect("length"), 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -215,6 +215,26 @@ impl TmuxCompatible for Psmux {
         String::new()
     }
 
+    /// The values go to a file in the user's own temp directory on the
+    /// server's machine, over the stdin of the command that writes it; the
+    /// window's script names only the file.
+    fn private_env(
+        server: &Server<Self>,
+        env: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>> {
+        if env.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let file = stash_env(&server.located_transport(), env)?;
+        Ok(HashMap::from([(ENV_FILE.to_string(), file)]))
+    }
+
+    fn discard_private_env(server: &Server<Self>, env: &HashMap<String, String>) {
+        if let Some(file) = env.get(ENV_FILE) {
+            remove_env_file(&server.located_transport(), file);
+        }
+    }
+
     fn window_command(
         _server: &Server<Self>,
         window_name: &str,
@@ -467,6 +487,157 @@ fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
 const EXIT_REPORT: &str =
     "; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli session exited";
 
+/// The key [`TmuxCompatible::private_env`] hands a psmux window's script in
+/// place of the environment: the file that holds it. Not a valid variable
+/// name, so it never names one.
+const ENV_FILE: &str = "=runtime-mux-env-file";
+
+/// Writes the bytes whose base64 it reads from stdin (a UTF-8 JSON object)
+/// to a new file under `%LOCALAPPDATA%\\runtime-mux`, and prints its path.
+/// The file is created with an ACL of its own: only this user, its owner,
+/// may open it, whatever the directory allows. Base64 keeps the bytes clear
+/// of the console's code page.
+const STASH_SCRIPT: &str = "$ErrorActionPreference = 'Stop'\n\
+    $b = [Console]::In.ReadToEnd().Trim()\n\
+    $d = Join-Path $env:LOCALAPPDATA 'runtime-mux'\n\
+    [void][IO.Directory]::CreateDirectory($d)\n\
+    $p = Join-Path $d ('env-' + [guid]::NewGuid().ToString('N') + '.json')\n\
+    $me = [Security.Principal.WindowsIdentity]::GetCurrent().User\n\
+    $fs = New-Object Security.AccessControl.FileSecurity\n\
+    $fs.SetAccessRuleProtection($true, $false)\n\
+    $fs.SetOwner($me)\n\
+    $fs.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($me, 'FullControl', 'Allow')))\n\
+    $bytes = [Convert]::FromBase64String($b)\n\
+    $f = [IO.File]::Create($p, 4096, [IO.FileOptions]::None, $fs)\n\
+    try { $f.Write($bytes, 0, $bytes.Length) } finally { $f.Close() }\n\
+    [Console]::Out.Write($p)";
+
+/// The longest a write or a removal of a window's environment file may take:
+/// it is one ssh round trip, and window creation waits on it.
+const STASH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What the stash of `env` sends: the command, which carries no value, and
+/// its stdin.
+fn stash_request(
+    transport: &crate::tmux_compat::transport::TmuxTransport,
+    env: &HashMap<String, String>,
+) -> (Command, Vec<u8>) {
+    let json = serde_json::to_vec(env).unwrap_or_default();
+    let input = base64::engine::general_purpose::STANDARD.encode(json);
+    (
+        transport.powershell_command(STASH_SCRIPT),
+        input.into_bytes(),
+    )
+}
+
+/// `env` written to a private file on the server's machine
+/// ([`STASH_SCRIPT`]): its path there.
+fn stash_env(
+    transport: &crate::tmux_compat::transport::TmuxTransport,
+    env: &HashMap<String, String>,
+) -> Result<String> {
+    let (cmd, input) = stash_request(transport, env);
+    let out = run_fed_bounded(cmd, input, STASH_TIMEOUT)
+        .context("the window's environment was not written")?;
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || path.is_empty() {
+        bail!(
+            "the window's environment was not written: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(path)
+}
+
+/// Remove the environment file `file` on the server's machine. Best effort,
+/// bounded like the write.
+fn remove_env_file(transport: &crate::tmux_compat::transport::TmuxTransport, file: &str) {
+    let script = format!(
+        "Remove-Item -LiteralPath {} -Force -ErrorAction SilentlyContinue",
+        powershell_quote(file)
+    );
+    if let Err(e) = run_fed_bounded(
+        transport.powershell_command(&script),
+        Vec::new(),
+        STASH_TIMEOUT,
+    ) {
+        warn!("the window's environment file {file} may be left: {e:#}");
+    }
+}
+
+/// `cmd` with `input` on its stdin, run to its end or killed and reaped at
+/// `timeout`. The input is written from a thread of its own, so a command
+/// that does not read never blocks the wait.
+fn run_fed_bounded(
+    mut cmd: Command,
+    input: Vec<u8>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output> {
+    use std::io::{Read as _, Write as _};
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("cannot run {:?}", cmd.get_program()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    let reader = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut out);
+            }
+            out
+        })
+    };
+    let stdout = reader(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let stderr = reader(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("no answer within {} s", timeout.as_secs());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// The PowerShell that sets the window's environment from the file `file`
+/// and removes it, stopping the window if it cannot.
+fn env_loader(file: &str) -> String {
+    format!(
+        "$ErrorActionPreference = 'Stop'; $f = {}; \
+         (Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties | \
+         ForEach-Object {{ Set-Item -LiteralPath ('Env:' + $_.Name) -Value $_.Value }}; \
+         Remove-Item -LiteralPath $f; $ErrorActionPreference = 'Continue'; ",
+        powershell_quote(file)
+    )
+}
+
 /// Build the PowerShell script a psmux window runs: set the env vars, then
 /// launch the agent — and, in an agent window, report its exit
 /// ([`EXIT_REPORT`]).
@@ -475,9 +646,11 @@ const EXIT_REPORT: &str =
 /// process — so they are folded into the script itself (`Set-Item Env:K
 /// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). Quoting is
 /// PowerShell **single** quotes (`''` = literal `'`), so an env value — the
-/// session name in `THURBOX_SESSION_NAME` included — arrives exactly: it is a
-/// literal inside the encoded script and never rides a command line. An
-/// argument does ride one, which [`windows_native_arg`] spells.
+/// session name in `THURBOX_SESSION_NAME` included — arrives exactly. The
+/// script is the window's command line, which any process can read, so
+/// `Server` hands it the [`ENV_FILE`] its values went to instead
+/// ([`TmuxCompatible::private_env`]), and the script loads that file. An
+/// argument does ride the line, which [`windows_native_arg`] spells.
 ///
 /// The script is not what the window runs: psmux runs a single-string window
 /// command through the shell it resolves, which is `cmd.exe` on a server
@@ -495,7 +668,11 @@ fn psmux_window_powershell(
     let mut pairs: Vec<_> = env.iter().collect();
     pairs.sort();
     for (k, v) in pairs {
-        ps.push_str(&format!("Set-Item Env:{k} {}; ", powershell_quote(v)));
+        if k == ENV_FILE {
+            ps.push_str(&env_loader(v));
+        } else {
+            ps.push_str(&format!("Set-Item Env:{k} {}; ", powershell_quote(v)));
+        }
     }
     ps.push_str(&format!("& {}", powershell_quote(command)));
     for a in args {
@@ -1118,6 +1295,100 @@ impl PsmuxPaste {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text of every `-EncodedCommand` in `argv`, decoded.
+    fn decoded(argv: &[String]) -> String {
+        argv.iter()
+            .flat_map(|a| a.split(' '))
+            .filter_map(|word| base64::engine::general_purpose::STANDARD.decode(word).ok())
+            .map(|bytes| {
+                let units: Vec<u16> = bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
+                    .collect();
+                String::from_utf16_lossy(&units)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A write of the environment that never answers is killed and reaped
+    /// at its bound, and answers an error: a stalled ssh never holds up a
+    /// window's creation. Asserted on the answer, not on a clock.
+    #[cfg(unix)]
+    #[test]
+    fn a_stalled_environment_write_is_killed_at_its_bound() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec sleep 600"]);
+        let why = run_fed_bounded(
+            cmd,
+            b"input".to_vec(),
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(why.contains("no answer within"), "{why}");
+        let mut cat = Command::new("cat");
+        cat.arg("-");
+        let out = run_fed_bounded(cat, b"sent".to_vec(), std::time::Duration::from_secs(60))
+            .expect("cat answers");
+        assert_eq!(out.stdout, b"sent");
+    }
+
+    /// The environment file is created with an owner-only ACL of its own,
+    /// in the user's local app data: never in a temp directory whose
+    /// permissions another user may share.
+    #[test]
+    fn the_environment_file_is_created_owner_only() {
+        assert!(!STASH_SCRIPT.contains("GetTempPath"), "{STASH_SCRIPT}");
+        assert!(STASH_SCRIPT.contains("LOCALAPPDATA"), "{STASH_SCRIPT}");
+        assert!(
+            STASH_SCRIPT.contains("SetAccessRuleProtection($true, $false)")
+                && STASH_SCRIPT
+                    .contains("[IO.File]::Create($p, 4096, [IO.FileOptions]::None, $fs)"),
+            "{STASH_SCRIPT}"
+        );
+    }
+
+    /// A psmux window's environment is in no process's arguments, here or
+    /// on the place: the stash command carries none of it (its values go on
+    /// stdin), and the window's program names only the file they went to.
+    #[test]
+    fn a_psmux_windows_environment_is_in_no_argv() {
+        let secret = "s3cret-value-42";
+        let env = HashMap::from([("SECRET_TOKEN".to_string(), secret.to_string())]);
+        let transport = crate::tmux_compat::transport::TmuxTransport::remote(
+            crate::shell::HostLauncher::Ssh {
+                destination: "me@winbox".into(),
+                ssh_opts: vec![],
+            },
+            "psmux",
+        )
+        .with_shell(crate::shell::HostShell::PowerShell);
+        let (stash, input) = stash_request(&transport, &env);
+        let argv: Vec<String> = std::iter::once(stash.get_program())
+            .chain(stash.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let text = format!("{argv:?}{}", decoded(&argv));
+        assert!(!text.contains(secret), "{text}");
+        let sent = base64::engine::general_purpose::STANDARD
+            .decode(&input)
+            .expect("base64");
+        assert!(String::from_utf8_lossy(&sent).contains(secret));
+
+        let file = "C:/Users/me/AppData/Local/Temp/runtime-mux-env-x.json";
+        let private = HashMap::from([(ENV_FILE.to_string(), file.to_string())]);
+        let program = psmux_window_program("tb-k-agent", "claude", &[], &private).expect("program");
+        let script = decoded(std::slice::from_ref(&program));
+        assert!(
+            script.contains(file) && script.contains("Remove-Item"),
+            "{script}"
+        );
+        assert!(!format!("{program}{script}").contains(secret));
+    }
     use crate::StatusChannel;
     #[cfg(unix)]
     use crate::{PaneIo, WindowLifecycle};

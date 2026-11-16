@@ -4082,7 +4082,7 @@ fn a_restart_whose_boundary_cannot_be_read_accepts_no_old_state() {
         fs::write(
             &script,
             format!(
-                "#!/bin/sh\nreq=$(cat)\ncase $1:$req in\n  exec:*'else echo 0'*) echo '{{\"unknown\":{{\"why\":\"no answer\"}}}}' ;;\n  *) printf '%s' \"$req\" | exec '{}' \"$@\" ;;\nesac\n",
+                "#!/bin/sh\nreq=$(cat)\ncase $1:$req in\n  exec:*'\"--length\"'*) echo '{{\"unknown\":{{\"why\":\"no answer\"}}}}' ;;\n  *) printf '%s' \"$req\" | exec '{}' \"$@\" ;;\nesac\n",
                 program.display()
             ),
         )

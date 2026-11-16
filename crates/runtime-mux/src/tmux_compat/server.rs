@@ -201,6 +201,28 @@ pub trait TmuxCompatible: Send + Sync + 'static {
             .collect()
     }
 
+    /// The environment a new window is built with, from the `env` it is
+    /// asked for: as it is, for a multiplexer whose window command keeps it
+    /// out of every process's arguments. psmux's carries it in its
+    /// command, so it puts the values in a private file first.
+    fn private_env(
+        _server: &Server<Self>,
+        env: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>>
+    where
+        Self: Sized,
+    {
+        Ok(env.clone())
+    }
+
+    /// Undo what [`Self::private_env`] wrote for a window that was not
+    /// made. Nothing, by default.
+    fn discard_private_env(_server: &Server<Self>, _env: &HashMap<String, String>)
+    where
+        Self: Sized,
+    {
+    }
+
     /// The command a new window runs, as a control-mode `new-window` line
     /// carries it — or why the server could not run it.
     fn window_command(
@@ -1041,7 +1063,7 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// The transport, carrying the socket directory the server was found in —
     /// what a control-mode client is started over.
-    fn located_transport(&self) -> TmuxTransport {
+    pub(crate) fn located_transport(&self) -> TmuxTransport {
         self.host_transport().with_socket_dir(self.socket_dir())
     }
 
@@ -2870,6 +2892,41 @@ impl<M: TmuxCompatible> Server<M> {
     }
 }
 
+/// A new window's environment as its command carries it
+/// ([`TmuxCompatible::private_env`]), owned by the call that makes the
+/// window until the window exists: dropped before [`Self::keep`], on any
+/// failure, it removes what `private_env` wrote
+/// ([`TmuxCompatible::discard_private_env`]). Once the window exists, the
+/// window removes it.
+pub(crate) struct PrivateEnv<'a, M: TmuxCompatible> {
+    server: &'a Server<M>,
+    pub(crate) env: HashMap<String, String>,
+    kept: bool,
+}
+
+impl<'a, M: TmuxCompatible> PrivateEnv<'a, M> {
+    pub(crate) fn new(server: &'a Server<M>, env: &HashMap<String, String>) -> Result<Self> {
+        Ok(PrivateEnv {
+            server,
+            env: M::private_env(server, env)?,
+            kept: false,
+        })
+    }
+
+    /// The window exists: what was written is its own now.
+    pub(crate) fn keep(mut self) {
+        self.kept = true;
+    }
+}
+
+impl<M: TmuxCompatible> Drop for PrivateEnv<'_, M> {
+    fn drop(&mut self) {
+        if !self.kept {
+            M::discard_private_env(self.server, &self.env);
+        }
+    }
+}
+
 impl<M: TmuxCompatible> PaneStream for Server<M> {
     fn spawn(
         &self,
@@ -2884,7 +2941,8 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         // It is the server's code that births the pane, and one started before
         // an upgrade keeps running the old.
         self.admit_server()?;
-        let new_window = self.new_window_line(window_name, command, args, cwd, env)?;
+        let private = PrivateEnv::new(self, env)?;
+        let new_window = self.new_window_line(window_name, command, args, cwd, &private.env)?;
         let options = birth_option_commands::<M>(window_name);
         let cmds: Vec<&str> = std::iter::once(new_window.as_str())
             .chain(options.iter().map(String::as_str))
@@ -2921,6 +2979,7 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         });
 
         debug!(pane_id = %pane_id, window_id = ?window_id, "window created via control mode");
+        private.keep();
 
         let connected = self.connect_pane(&pane_id, window_id.as_deref(), rows, cols)?;
 
@@ -4705,6 +4764,9 @@ impl<M: TmuxCompatible> Server<M> {
                 format!("list the windows named {window_name} before adding one")
             })?
         };
+        // Written once for every attempt below, and the window's to remove
+        // once it exists; until then, this call's.
+        let private = PrivateEnv::new(self, spec.env)?;
         let run_new_window = || {
             let mut window = self.new_window_command(
                 &window_name,
@@ -4712,7 +4774,7 @@ impl<M: TmuxCompatible> Server<M> {
                 spec.command,
                 spec.args,
                 spec.cwd,
-                spec.env,
+                &private.env,
             )?;
             if stamped {
                 for (option, value) in [
@@ -4818,6 +4880,7 @@ impl<M: TmuxCompatible> Server<M> {
         };
         // What stamping does after writing a stamp. A server without window
         // options writes none (docs/runtime/runtime-mux.md).
+        private.keep();
         if stamped && retire {
             let _ = self.retire_duplicate_windows(session_id, spec.role);
         }
@@ -5479,6 +5542,32 @@ mod tests {
 
     type TestBackend = Server<TestMux>;
 
+    /// A window's private environment is discarded when the call that wrote
+    /// it fails before the window exists, and left to the window once it
+    /// does: an env file never outlives a launch that did not happen.
+    #[test]
+    fn a_private_env_is_discarded_unless_the_window_exists() {
+        let backend = TestBackend::with_transport(
+            TmuxTransport::local("tmux"),
+            "thurbox-test",
+            "thurbox-test",
+            "local:tmux",
+            crate::settings::DEFAULT_SCROLLBACK_LINES,
+        );
+        let env = HashMap::from([("K".to_string(), "v".to_string())]);
+        drop(PrivateEnv::new(&backend, &env).expect("written"));
+        assert_eq!(
+            DISCARDED.with(|d| d.borrow().clone()),
+            std::slice::from_ref(&env)
+        );
+        PrivateEnv::new(&backend, &env).expect("written").keep();
+        assert_eq!(
+            DISCARDED.with(|d| d.borrow().len()),
+            1,
+            "a kept env is the window's"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_unfinished_or_mixed_process_reply_is_not_typed_absence() {
@@ -5521,7 +5610,17 @@ mod tests {
         }
     }
 
+    thread_local! {
+        /// The environments [`TestMux`] was asked to discard, on this thread.
+        static DISCARDED: std::cell::RefCell<Vec<HashMap<String, String>>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
     impl TmuxCompatible for TestMux {
+        fn discard_private_env(_: &Server<Self>, env: &HashMap<String, String>) {
+            DISCARDED.with(|d| d.borrow_mut().push(env.clone()));
+        }
+
         const MULTIPLEXER: Multiplexer = Multiplexer::Tmux;
         const WINDOW_OPTIONS: bool = true;
         const WINDOW_SETTINGS: bool = true;

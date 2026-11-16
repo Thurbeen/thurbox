@@ -274,6 +274,16 @@ impl TmuxTransport {
         Some(self.shell_command(&script, &["sh", &self.mux, socket, channel]))
     }
 
+    /// A PowerShell `script` on the machine the multiplexer runs on, encoded
+    /// ([`crate::shell::HostShell::run_script`]): over the launcher, or
+    /// `powershell.exe` here when there is none.
+    pub fn powershell_command(&self, script: &str) -> Command {
+        match &self.launcher {
+            Some(launcher) => crate::shell::HostShell::PowerShell.run_script(launcher, script),
+            None => crate::shell::local_powershell(script),
+        }
+    }
+
     /// `sh -c <script> <args…>` on the machine the multiplexer runs on — the
     /// first of `args` is `$0`. For the questions only a shell there can
     /// answer: where a directory resolves, which process has a socket bound.

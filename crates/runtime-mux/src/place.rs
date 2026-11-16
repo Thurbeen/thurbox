@@ -260,6 +260,12 @@ fn run_script(
     args: &[&str],
     deadline: Instant,
 ) -> Result<Ran, String> {
+    if host.platform() != Platform::Posix {
+        return Err(format!(
+            "place {:?} is native Windows, which has no `sh` to run this in",
+            host.name
+        ));
+    }
     let cmd = script_command(host, &assignment(host, left(deadline)), script, args);
     run_bounded(cmd, left(deadline)).map(|(code, stdout, stderr)| Ran {
         ok: code == Some(0),
@@ -267,6 +273,35 @@ fn run_script(
         stdout,
         stderr,
     })
+}
+
+/// A PowerShell `script` on a native-Windows place, after its
+/// `path_prepend`, by `deadline`.
+fn run_powershell(host: &HostDef, script: &str, deadline: Instant) -> Result<Ran, String> {
+    let script = format!(
+        "$ProgressPreference = 'SilentlyContinue'\n{}{script}",
+        crate::shell::windows_path_prepend(&host.path_prepend)
+    );
+    let cmd =
+        crate::shell::HostShell::PowerShell.run_script(&HostLauncher::for_host(host), &script);
+    run_bounded(cmd, left(deadline)).map(|(code, stdout, stderr)| Ran {
+        ok: code == Some(0),
+        unreached: code == Some(255),
+        stdout,
+        stderr,
+    })
+}
+
+/// The PowerShell that prints `@missing <name>` for each of `programs` the
+/// place's `Path` does not find.
+fn windows_lookup(programs: &[&str]) -> String {
+    programs
+        .iter()
+        .map(|p| {
+            let q = crate::shell::powershell_quote(p);
+            format!("if (-not (Get-Command -Name {q} -CommandType Application -ErrorAction SilentlyContinue)) {{ '@missing ' + {q} }}\n")
+        })
+        .collect()
 }
 
 /// `script` through `sh -c` on the place, after `path`, the place's `PATH`
@@ -325,6 +360,29 @@ pub fn readiness(
                 "place {name:?}: `flock` is not in the distro, so runtime-mux cannot keep it running between calls and WSL would stop its sessions; install util-linux there"
             ));
         }
+    } else {
+        let ran = run_powershell(host, &windows_lookup(&["fleet"]), deadline).map_err(|why| {
+            format!(
+                "place {name:?} did not answer: {why}; check `{}`",
+                reach(host)
+            )
+        })?;
+        if ran.unreached || !ran.ok {
+            return Err(format!(
+                "place {name:?} cannot be reached: {}; check that `{}` succeeds without asking anything",
+                last_line(&ran.stderr),
+                reach(host)
+            ));
+        }
+        if let Some(missing) = ran
+            .stdout
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("@missing "))
+        {
+            return Err(format!(
+                "place {name:?}: `{missing}` is not on its Path; install it there, or add its directory to the place's path_prepend"
+            ));
+        }
     }
     backend.check_available().map_err(|e| {
         format!(
@@ -336,10 +394,20 @@ pub fn readiness(
 
 /// Why `program` cannot start on the place, if it is not on its `PATH`.
 pub fn missing_program(host: &HostDef, program: &str) -> Option<String> {
-    if host.platform() != Platform::Posix {
-        return None;
-    }
     let name = &host.name;
+    if host.platform() != Platform::Posix {
+        return match run_powershell(host, &windows_lookup(&[program]), Instant::now() + PROBE_TIMEOUT) {
+            Err(why) => Some(format!("place {name:?} did not answer: {why}")),
+            Ok(ran) if !ran.ok => Some(format!(
+                "place {name:?} cannot be reached: {}",
+                last_line(&ran.stderr)
+            )),
+            Ok(ran) if ran.stdout.contains("@missing") => Some(format!(
+                "{program} is not on the Path of place {name:?}: install it there, or add its directory to the place's path_prepend"
+            )),
+            Ok(_) => None,
+        };
+    }
     match run_script(
         host,
         "command -v \"$1\" >/dev/null 2>&1 || echo @missing",
@@ -360,8 +428,9 @@ pub fn missing_program(host: &HostDef, program: &str) -> Option<String> {
 
 /// `argv` on the place, in `dir` when given, with the place's `PATH`: what
 /// `exec` runs there. The `PATH` is read by `deadline`, the command's own,
-/// and when it is not, only `path_prepend` leads it. Only a POSIX place has
-/// the `sh` it runs through.
+/// and when it is not, only `path_prepend` leads it. A native-Windows place
+/// runs it from an encoded PowerShell script, with `path_prepend` first on
+/// its `Path` ([`crate::shell::windows_program_script`]).
 pub fn exec_command(
     host: &HostDef,
     argv: &[String],
@@ -369,10 +438,17 @@ pub fn exec_command(
     deadline: Instant,
 ) -> Result<Command, String> {
     if host.platform() != Platform::Posix {
-        return Err(format!(
-            "exec on place {:?}: a native-Windows place is not supported yet",
-            host.name
-        ));
+        let dir = dir.map(|d| d.to_string_lossy().into_owned());
+        let script = crate::shell::windows_program_script(
+            &argv[0],
+            &argv[1..],
+            dir.as_deref(),
+            &host.path_prepend,
+            "",
+        );
+        return Ok(
+            crate::shell::HostShell::PowerShell.run_script(&HostLauncher::for_host(host), &script)
+        );
     }
     let path = assignment(host, left(deadline));
     let dir = dir
@@ -457,6 +533,25 @@ fn percent_decode(path: &str) -> Option<String> {
 
 /// The place's home directory, as its login shell reads it.
 pub fn home(host: &HostDef) -> Result<String, String> {
+    if host.platform() != Platform::Posix {
+        // Spelled with `/`, which Windows takes, so a path built under it
+        // is one spelling.
+        return run_powershell(
+            host,
+            "[Console]::Out.Write($env:USERPROFILE)",
+            Instant::now() + PROBE_TIMEOUT,
+        )
+        .ok()
+        .filter(|ran| ran.ok && !ran.stdout.trim().is_empty())
+        .map(|ran| ran.stdout.trim().replace('\\', "/"))
+        .ok_or_else(|| {
+            format!(
+                "place {:?}: its home could not be read; check `{}`",
+                host.name,
+                reach(host)
+            )
+        });
+    }
     env(host, PROBE_TIMEOUT)
         .and_then(|env| env.home)
         .ok_or_else(|| {
@@ -534,6 +629,9 @@ pub type Reading<T> = Result<Result<T, String>, String>;
 /// entries unsorted. Each entry is one NUL-ended record, so any name
 /// arrives whole.
 pub fn browse(host: &HostDef, dir: Option<&str>) -> Reading<(String, Vec<(String, bool)>)> {
+    if let Some(why) = posix_only(host, "browse") {
+        return Ok(Err(why));
+    }
     const SCRIPT: &str = "d=${1:-$HOME}; printf '%s\\0' \"$d\"; \
         if ! [ -d \"$d\" ]; then printf '@failed: no such directory\\0'; exit 0; fi; \
         if ! [ -r \"$d\" ] || ! [ -x \"$d\" ]; then printf '@failed: permission denied\\0'; exit 0; fi; \
@@ -565,6 +663,9 @@ pub fn browse(host: &HostDef, dir: Option<&str>) -> Reading<(String, Vec<(String
 /// `refs/heads` and `refs/remotes/origin`, `origin/HEAD`'s target and the
 /// branch checked out, each as git prints it, or why there is none.
 pub fn git_refs(host: &HostDef, repo: &str) -> Reading<[String; 3]> {
+    if let Some(why) = posix_only(host, "branches") {
+        return Ok(Err(why));
+    }
     const SCRIPT: &str = "r=$1; \
         if [ -d \"$r/.git\" ]; then \
           [ -f \"$r/.git/HEAD\" ] && [ -d \"$r/.git/objects\" ] && [ -d \"$r/.git/refs\" ] || r=; \
@@ -587,6 +688,17 @@ pub fn git_refs(host: &HostDef, repo: &str) -> Reading<[String; 3]> {
     let mut parts = ran.splitn(3, '\0').map(str::to_string);
     let mut next = || parts.next().unwrap_or_default();
     Ok(Ok([next(), next(), next()]))
+}
+
+/// Why `verb` cannot run on `host`, a native-Windows place: it reads the
+/// place with an `sh` script.
+fn posix_only(host: &HostDef, verb: &str) -> Option<String> {
+    (host.platform() != Platform::Posix).then(|| {
+        format!(
+            "{verb} is not supported on place {:?}, a native-Windows place: it reads a place with `sh`",
+            host.name
+        )
+    })
 }
 
 /// A read-only script's stdout on the place: `Ok(Err(_))` when it failed
@@ -666,14 +778,7 @@ fn left(deadline: Instant) -> Duration {
 /// of `local`.
 pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<String, String> {
     let name = &host.name;
-    if host.platform() != Platform::Posix {
-        return Err(format!(
-            "place {name:?}: this harness's hook files cannot be copied to a native-Windows place yet; run it on a POSIX place, or use a harness whose hooks are inline, such as claude or codex"
-        ));
-    }
-    let home = env(host, PROBE_TIMEOUT)
-        .and_then(|env| env.home)
-        .ok_or_else(|| format!("place {name:?}: its home could not be read"))?;
+    let home = home(host)?;
     let remote = format!("{}/{under}/{key}", home.trim_end_matches('/'));
     let mut tar = Command::new("tar")
         .arg("-C")
@@ -684,10 +789,28 @@ pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("cannot run tar: {e}"))?;
-    let mut copy = HostLauncher::for_host(host).shell_c_args(
-        "rm -rf \"$1\" && mkdir -p \"$1\" && tar -xf - -C \"$1\"",
-        &["sh", &remote],
-    );
+    // Windows has had `tar.exe` since Windows 10 1803; the script makes the
+    // directory afresh, then starts it on the stream it inherits.
+    let mut copy = if host.platform() == Platform::Posix {
+        HostLauncher::for_host(host).shell_c_args(
+            "rm -rf \"$1\" && mkdir -p \"$1\" && tar -xf - -C \"$1\"",
+            &["sh", &remote],
+        )
+    } else {
+        let q = crate::shell::powershell_quote(&remote);
+        let prelude = format!(
+            "Remove-Item -LiteralPath {q} -Recurse -Force -ErrorAction SilentlyContinue\n\
+             New-Item -ItemType Directory -Force -Path {q} | Out-Null\n"
+        );
+        let script = crate::shell::windows_program_script(
+            "tar.exe",
+            &["-xf", "-", "-C", &remote],
+            None,
+            &[],
+            &prelude,
+        );
+        crate::shell::HostShell::PowerShell.run_script(&HostLauncher::for_host(host), &script)
+    };
     copy.stdin(tar.stdout.take().map_or_else(Stdio::null, Stdio::from));
     let ran = run_piped(copy, PROBE_TIMEOUT);
     let _ = tar.wait();
@@ -708,6 +831,11 @@ pub fn copy_dir(host: &HostDef, key: &str, local: &Path, under: &str) -> Result<
 /// start.
 pub fn remove_assets(host: &HostDef, key: &str) {
     if host.platform() != Platform::Posix {
+        let dirs = [ASSETS_DIR, HARNESSES_DIR]
+            .map(|under| crate::shell::powershell_quote(&format!("/{under}/{key}")))
+            .map(|rest| format!("Remove-Item -LiteralPath ($env:USERPROFILE + {rest}) -Recurse -Force -ErrorAction SilentlyContinue\n"))
+            .concat();
+        let _ = run_powershell(host, &dirs, Instant::now() + PROBE_TIMEOUT);
         return;
     }
     let _ = run_script(
@@ -883,6 +1011,81 @@ mod tests {
         );
         let why = run(PROBE_OUTPUT + 1).unwrap_err();
         assert!(why.contains("more than"), "{why}");
+    }
+
+    fn windows_place() -> HostDef {
+        parse(&place(
+            "win",
+            json!({"kind": "ssh", "destination": "me@win", "multiplexer": "psmux",
+                   "path_prepend": ["~/bin"]}),
+        ))
+        .unwrap()
+        .unwrap()
+    }
+
+    /// The text of the `-EncodedCommand` a command carries.
+    fn encoded_script(cmd: &Command) -> String {
+        use base64::Engine as _;
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = args
+            .iter()
+            .position(|a| a == "-EncodedCommand")
+            .expect("encoded");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&args[at + 1])
+            .expect("base64");
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        String::from_utf16_lossy(&units)
+    }
+
+    /// On a native-Windows place `exec` is an encoded PowerShell script over
+    /// ssh: the place's `path_prepend` first on `Path`, the directory as the
+    /// program's working directory, and the program looked up by name.
+    #[test]
+    fn a_windows_exec_runs_its_program_in_its_directory_with_the_places_path() {
+        let host = windows_place();
+        let argv = ["fleet".to_string(), "signal-read".to_string()];
+        let cmd = exec_command(&host, &argv, Some(Path::new("C:/work")), Instant::now())
+            .expect("a command");
+        assert_eq!(cmd.get_program(), "ssh");
+        let script = encoded_script(&cmd);
+        assert!(script.contains("($env:USERPROFILE + '/bin')"), "{script}");
+        assert!(script.contains("$s.WorkingDirectory='C:/work'"), "{script}");
+        assert!(script.contains("Get-Command 'fleet'"), "{script}");
+        assert!(script.contains("$v=@('signal-read')"), "{script}");
+    }
+
+    /// A Windows place's readiness looks each program up on its `Path`.
+    #[test]
+    fn a_windows_lookup_names_each_missing_program() {
+        let lookup = windows_lookup(&["fleet", "o'x"]);
+        assert!(
+            lookup.contains("Get-Command -Name 'fleet' -CommandType Application")
+                && lookup.contains("'@missing ' + 'o''x'"),
+            "{lookup}"
+        );
+    }
+
+    /// `browse` and `branches` read a place with `sh`, so a native-Windows
+    /// place refuses them by name, without asking it anything.
+    #[test]
+    fn a_windows_place_refuses_browse_and_branches_by_name() {
+        let host = windows_place();
+        for why in [
+            browse(&host, None).map(|r| r.map(|_| ())),
+            git_refs(&host, "C:/repo").map(|r| r.map(|_| ())),
+        ] {
+            let why = why.expect("an answer").unwrap_err();
+            assert!(why.contains("native-Windows"), "{why}");
+        }
     }
 
     #[test]
