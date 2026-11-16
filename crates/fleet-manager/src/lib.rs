@@ -355,8 +355,15 @@ impl Manager<'_> {
             }
             let now = self.clock.now();
             for obj in &tasks {
-                let ingested = match self.ingest_outbox(obj, &tasks, lease, opts.lease_ttl, report)
-                {
+                let concluded =
+                    obj.status.get("phase").and_then(Value::as_str) == Some("Concluded");
+                let read_outbox = !concluded || obj.is_deleting() || self.due(obj);
+                let read = if read_outbox {
+                    self.ingest_outbox(obj, &tasks, lease, opts.lease_ttl, report)
+                } else {
+                    Ok(outbox::Ingested::unread())
+                };
+                let ingested = match read {
                     Ok(ingested) => ingested,
                     Err(e @ StoreError::LeaseLost(_)) => return Err(e),
                     Err(e) => {

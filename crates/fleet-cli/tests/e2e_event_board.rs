@@ -749,3 +749,47 @@ fn an_outbox_that_stays_unreadable_is_given_up_after_the_release_grace() {
     env.reconcile().ok();
     env.get_absent("a");
 }
+
+#[test]
+fn a_concluded_task_reads_its_outbox_only_when_its_recheck_is_due() {
+    let env = Env::new("event-session-concluded");
+    env.apply(json!({"apiVersion": "fleet/v1alpha1", "kind": "Board", "metadata": {"name": "shared"}, "spec": {}}))
+        .ok();
+    env.apply(support::task("a", true)).ok();
+    env.reconcile().ok();
+    let vars = session_vars(&env);
+    env.fleet(&[
+        "result",
+        "a",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--summary",
+        "done",
+        "--output",
+        "prUrl=\"https://example.test/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.get("a")["status"]["phase"], "Concluded");
+
+    publish_inside(
+        &env,
+        &borrowed(&vars),
+        &["--type", "after.result", "--data", "1"],
+    )
+    .ok();
+    env.reconcile().ok();
+    assert!(
+        list(&env, &[]).is_empty(),
+        "not due: the outbox is not read: {:#}",
+        env.get("a")["status"]
+    );
+
+    env.expire_session_check("a");
+    env.reconcile().ok();
+    let events = list(&env, &[]);
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!(events[0]["type"], "after.result");
+}

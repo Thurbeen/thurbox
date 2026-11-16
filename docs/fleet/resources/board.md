@@ -110,7 +110,9 @@ Fleet:    TaskController reads the outbox ──▶ append as the Task ──▶
 3. On each pass, TaskController reads the outbox of each Task that has a
    session. It reads from the offset in `status.outbox`. It reads only
    whole lines, at most 512 KiB per pass. It renews the lease before each
-   read.
+   read. A `Concluded` Task that is not being deleted has its outbox read
+   only when the Task is due, as for its session recheck (every 5
+   minutes).
 4. TaskController appends each event to its Board, under the lease. The
    source is the Task: `{task, uid, lineage}`. Then it writes the new
    offset to `status.outbox`.

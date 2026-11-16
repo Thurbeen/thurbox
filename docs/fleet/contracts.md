@@ -895,7 +895,10 @@ refused.
   refuses, and never falls back to `cli/<user>`. On each pass, before the
   Task's controllers, the manager renews the lease and reads the outbox of
   each Task whose `status.session` is set, unless its session is `Gone`,
-  `status.outbox.closed` is set and the Task is not being deleted. A read
+  `status.outbox.closed` is set and the Task is not being deleted. A
+  `Concluded` Task that is not being deleted is read only when the manager's
+  `due` test holds for it (its `SESSION_RECHECK_MS` recheck, or a watched
+  activity). A read
   of a `Gone` session that finds every whole line in sets `closed`; a read
   of a session that is not `Gone` clears it. It reads from
   `status.outbox.offset`, at most `event::MAX_OUTBOX_READ` bytes: through

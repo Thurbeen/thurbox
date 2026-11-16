@@ -22,6 +22,12 @@ pub(crate) struct Ingested {
 }
 
 impl Ingested {
+    /// A Concluded Task's outbox between its rechecks: not read, and no
+    /// TaskController reconcile asks about it.
+    pub(crate) fn unread() -> Ingested {
+        Ingested::unchanged(Observation::Known(true))
+    }
+
     fn unchanged(drained: Observation<bool>) -> Ingested {
         Ingested {
             written: None,
@@ -31,7 +37,9 @@ impl Ingested {
 }
 
 impl Manager<'_> {
-    /// Ingest the outbox of `task`'s session, if it has one. A gone
+    /// Ingest the outbox of `task`'s session, if it has one. The sweep asks
+    /// for a Concluded Task that is not being deleted only when it is due
+    /// for its session recheck. A gone
     /// session's outbox is read until a read finds every whole line in
     /// (`status.outbox.closed`), and while its Task is being deleted. An
     /// outbox that cannot be read concludes nothing: the cursor stays, and
