@@ -1219,6 +1219,10 @@ mod tests {
             Some("lost · revive failed")
         );
         assert_eq!(why("Running", "Paused", "Idle"), None);
+        assert_eq!(
+            why("Paused", "Paused", "Unknown").as_deref(),
+            Some("stopped")
+        );
     }
 
     /// The places offered are Fleet's: `local` first, named `local` with no

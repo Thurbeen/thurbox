@@ -7192,6 +7192,22 @@ fn starting_a_stopped_session_asks_fleet_to_wake_it() {
     assert!(tui.quit().success());
 }
 
+#[test]
+fn the_real_fleet_takes_the_argv_start_runs() {
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let output = Command::new(profile.bin.join("fleet"))
+        .args(["attach", "--wake", "--json", "ghost"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run fleet");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(2), "a usage error: {stderr}");
+    assert!(stderr.contains("ghost"), "{stderr}");
+}
+
 /// The companion shell is the user's `$SHELL`, and a zsh started in the
 /// profile's empty HOME opens its first-run wizard instead of a prompt.
 fn plain_shell(cmd: &mut Command) {
