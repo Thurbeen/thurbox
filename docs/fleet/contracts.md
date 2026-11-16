@@ -901,8 +901,9 @@ refused.
   `status.outbox.offset`, at most `event::MAX_OUTBOX_READ` bytes: through
   the signal port on this machine, or through the runtime's `exec`
   (`fleet signal-read --from <offset> <file>`) on a place. Both reads give
-  each byte that is not valid UTF-8 as `?`, so the bytes cross the runtime as
-  text with every offset kept. The pure
+  each byte that is not valid UTF-8 as NUL, so the bytes cross the runtime
+  as text with every offset kept; JSON takes no raw NUL, so such a line is
+  skipped and counted. The pure
   `event::ingest` turns the whole lines into publishes; a last line without
   its newline waits. A file shorter than the offset was made again: it is
   read from 0 under the next `generation`. A line without a key gets

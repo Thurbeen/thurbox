@@ -59,20 +59,20 @@ pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
     f.take(MAX_OUTBOX_READ).read_to_end(&mut bytes)?;
     Ok(Some(OutboxRead {
         start,
-        bytes: with_invalid_utf8_as_ascii(bytes),
+        bytes: with_invalid_utf8_as_nul(bytes),
     }))
 }
 
-/// `bytes` with each byte that is not part of valid UTF-8 replaced by `?`:
+/// `bytes` with each byte that is not part of valid UTF-8 replaced by NUL:
 /// a place's read crosses the runtime as text, and this keeps every byte
-/// offset as it is in the file. A line it touches no longer parses, and is
-/// skipped.
-fn with_invalid_utf8_as_ascii(mut bytes: Vec<u8>) -> Vec<u8> {
+/// offset as it is in the file. JSON takes no raw NUL, in a string or out
+/// of one, so a line it touches no longer parses, and is skipped.
+fn with_invalid_utf8_as_nul(mut bytes: Vec<u8>) -> Vec<u8> {
     let mut at = 0;
     while let Err(e) = std::str::from_utf8(&bytes[at..]) {
         let bad = at + e.valid_up_to();
         let end = e.error_len().map_or(bytes.len(), |n| bad + n);
-        bytes[bad..end].fill(b'?');
+        bytes[bad..end].fill(0);
         at = end;
     }
     bytes
@@ -171,6 +171,12 @@ mod tests {
             .expect("open")
             .write_all(b"{\"board\":\"shared\",\"type\":\"\xff\xfe\",\"data\":1}\n")
             .expect("bad line");
+        OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .expect("open")
+            .write_all(b"{\"board\":\"shared\",\"type\":\"c\",\"data\":\"\xff\"}\n")
+            .expect("bad data");
         append(&file, &line("b")).expect("append");
         let len = fs::metadata(&file).expect("meta").len();
         let read = read_from(&file, 0).expect("read").expect("there");
@@ -183,7 +189,7 @@ mod tests {
             .iter()
             .map(|e| e.line.as_ref().map(|(_, p)| p.event_type.clone()).ok())
             .collect();
-        assert_eq!(types, vec![Some("a".into()), None, Some("b".into())]);
+        assert_eq!(types, vec![Some("a".into()), None, None, Some("b".into())]);
         assert_eq!(entries.last().expect("last").end, len);
         let again = read_from(&file, len).expect("read").expect("there");
         assert_eq!(again.start, len, "no generation bump");
