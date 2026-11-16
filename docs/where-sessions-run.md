@@ -151,8 +151,8 @@ when the laptop sleeps.
 ### 3. One Fleet, several places
 
 Status: `runtime-mux` runs sessions on an ssh place and in a WSL distro. It
-clones each session's workspace on the place, and the session's pane and
-shell open there. No VM runtime ships yet.
+clones each session's workspace on the place. The session's pane and shell
+open there. No VM runtime ships yet.
 
 One Fleet runs sessions on another machine, in a WSL distro or in a VM. Declare each place in
 Fleet's config, under its runtime
