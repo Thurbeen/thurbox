@@ -646,6 +646,7 @@ pub fn list_events(
             return Ok(Page::Events(kept));
         }
     }
+}
 
 /// Ask TaskController to resume a paused Task's session for a view, as an
 /// inbox entry would: `status.wakeRequestedAt` set to now. The resume is the
