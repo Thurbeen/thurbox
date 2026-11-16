@@ -316,7 +316,7 @@ fn replace_waits_until_the_old_task_is_gone() {
     w.at(MONDAY_3AM);
     w.reconcile();
     for step in 0..5 {
-        w.at(MONDAY_3AM + DAY + step * 2 * MINUTE);
+        w.at(MONDAY_3AM + DAY + step * MINUTE);
         w.reconcile();
     }
     let Observation::Known(all) = w.store.list("Task") else {

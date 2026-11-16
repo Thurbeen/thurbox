@@ -8,7 +8,7 @@ use fleet_api::runtime::{Activity, TrustGap, WorkspaceTrust};
 use fleet_api::task::{Phase, SessionRef, SessionState, TaskStatus};
 use fleet_api::{Object, Observation};
 use fleet_controllers::{
-    MAX_ATTEMPTS, RETRY_DELAY_MS, SESSION_RECHECK_MS, TaskController, TaskInput,
+    MAX_ATTEMPTS, RELEASE_GRACE_MS, RETRY_DELAY_MS, SESSION_RECHECK_MS, TaskController, TaskInput,
 };
 use serde_json::json;
 
@@ -526,6 +526,33 @@ fn release_runs_only_for_a_session_proven_at_rest_or_gone() {
         1,
         "a gone session is released without proof of rest"
     );
+}
+
+#[test]
+fn a_busy_or_unknown_session_is_released_once_the_grace_runs_out() {
+    let mut obj = deleting(TaskStatus {
+        phase: Phase::Concluded,
+        session: Some(session()),
+        ..Default::default()
+    });
+    let observed = |at_rest| Observations {
+        find: Some(Observation::Known(Some(session()))),
+        at_rest: Some(at_rest),
+        ..Default::default()
+    };
+    obj.metadata.deletion_timestamp = Some(NOW - RELEASE_GRACE_MS + 1);
+    for at_rest in [Observation::Known(false), Observation::unknown("?")] {
+        let (plan, _) = run(&obj, observed(at_rest));
+        assert!(plan.effects.is_empty(), "held within the grace");
+    }
+    obj.metadata.deletion_timestamp = Some(NOW - RELEASE_GRACE_MS);
+    for at_rest in [Observation::Known(false), Observation::unknown("?")] {
+        let (plan, st) = run(&obj, observed(at_rest));
+        assert!(
+            matches!(plan.effects[0].action, Action::Release { .. }),
+            "released past the grace: {st:#?}"
+        );
+    }
 }
 
 #[test]

@@ -83,7 +83,8 @@ at that moment:
   not Concluded or is being deleted: the create waits. `Skipped` is False
   with reason `Replacing`. The controller looks again after one minute. A
   delete only marks the old Task, and the Task controller releases its
-  session when the agent is at rest. The new Task is created only when the
+  session when the agent is at rest, or 5 minutes after the delete if the
+  agent still reports work. The new Task is created only when the
   old one is gone from the store, so two agents never work at once.
 - Otherwise the manager creates the Task.
 

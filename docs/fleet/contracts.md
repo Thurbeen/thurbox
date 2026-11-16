@@ -311,7 +311,11 @@ Guarantees, each with its test:
   catch-up note an older record keeps under `resume/<n>` is still sent
   under that key; new resume keys continue past it.
 - **Release.** The `fleet.dev/release` finalizer holds a deleted Task until
-  its session is deleted, only once the session is proven at rest or gone.
+  its session is deleted, once the session is proven at rest or gone, or
+  once `RELEASE_GRACE_MS` (5 minutes) has passed since its
+  `deletionTimestamp` while the session is busy or its rest is Unknown. A
+  stale `working` report therefore cannot hold a delete for ever. The
+  workspace clean still preserves uncommitted work.
 - **Inbox.** `fleet send TASK TEXT` appends `{key, from, text, queuedAt}` to
   `status.inbox` as `cli/<user>`, under `task/<name>/<uid>/send/<n>`, `n`
   the resourceVersion appended against. The oldest entry not given up on is

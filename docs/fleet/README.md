@@ -198,8 +198,8 @@ running:
     [ready policies](controllers/forge.md#ready-policies) for the checks
     that each policy adds to "the worker is done and idle".
 15. You run `fleet delete task fix-login`. The phase is `Releasing`.
-16. TaskController plans `Release`. The runtime's `stop` call ends the
-    session.
+16. TaskController plans `Release` once the agent is at rest, or at most 5
+    minutes after the delete. The runtime's `stop` call ends the session.
 17. TaskController plans `CleanWorkspace`. The runtime's `stop` call with
     `release` removes the workspace, and the receipt says `Deleted`. Then
     the finalizer goes, and the store deletes the Task.

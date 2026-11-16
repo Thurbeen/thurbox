@@ -1731,16 +1731,13 @@ fn preserved_refs(repository: &Path) -> Vec<String> {
     .collect()
 }
 
-/// A Task naming a local repository as a `git+file` URL runs in a worktree
-/// of that checkout under runtime-mux's workspace root, and its release keeps
-/// the work the session left uncommitted in the checkout.
-#[test]
-fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_work() {
-    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
-        return;
-    };
-    let sockets = Sockets::new("repo");
-    let mut env = mux_env("runtime-mux-repo", &program, &sockets);
+fn git_url_task_on_runtime_mux(
+    name: &str,
+    program: &Path,
+    sockets: &Sockets,
+    claude_script: &str,
+) -> (Env, PathBuf) {
+    let mut env = mux_env(name, program, sockets);
     env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
     let src = env.root.join("src");
     fs::create_dir_all(&src).expect("source");
@@ -1749,7 +1746,7 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let claude = bin.join("claude");
-    fs::write(&claude, CLAUDE).expect("harness");
+    fs::write(&claude, claude_script).expect("harness");
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
     let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
@@ -1762,6 +1759,19 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     let mut task = support::task("t1", true);
     task["spec"]["workspace"] = json!([format!("git+file://{}#main", src.display())]);
     env.apply(json!([task])).ok();
+    (env, src)
+}
+
+/// A Task naming a local repository as a `git+file` URL runs in a worktree
+/// of that checkout under runtime-mux's workspace root, and its release keeps
+/// the work the session left uncommitted in the checkout.
+#[test]
+fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_work() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("repo");
+    let (env, src) = git_url_task_on_runtime_mux("runtime-mux-repo", &program, &sockets, CLAUDE);
 
     reconcile_until(&env, "briefed in its worktree", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
@@ -1794,6 +1804,77 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     }
     assert!(!dir.exists(), "the release removed the worktree");
     // The worktree was the checkout's own, so the work is kept there.
+    let refs = preserved_refs(&src);
+    assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
+    assert_eq!(
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
+        "kept\n"
+    );
+}
+
+const CLAUDE_GONE_QUIET: &str = r#"#!/bin/sh
+fleet signal idle
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
+  fleet signal working
+done
+"#;
+
+fn backdate_deletion(env: &Env, name: &str, by: Duration) {
+    let path = env.object_path("Task", name);
+    let mut task: Value = serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+    let deleted = task["metadata"]["deletionTimestamp"]
+        .as_u64()
+        .expect("a deleting Task");
+    task["metadata"]["deletionTimestamp"] = json!(deleted - by.as_millis() as u64);
+    fs::write(&path, task.to_string()).expect("record");
+}
+
+#[test]
+fn a_deleted_task_whose_agent_last_said_working_is_released_after_the_grace() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("quiet");
+    let (env, src) =
+        git_url_task_on_runtime_mux("runtime-mux-quiet", &program, &sockets, CLAUDE_GONE_QUIET);
+    reconcile_until(&env, "briefed, its agent then working", |env| {
+        let st = &env.get("t1")["status"];
+        st["phase"] == "Briefed" && st["agentState"] == "working"
+    });
+    let dir = PathBuf::from(
+        env.get("t1")["status"]["workspace"]["dirs"][0]
+            .as_str()
+            .expect("a workspace")
+            .to_string(),
+    );
+    fs::write(dir.join("notes.txt"), "kept\n").expect("work");
+
+    env.fleet(&["delete", "task", "t1"]).ok();
+    reconcile_until(&env, "held while the agent may be working", |env| {
+        env.get("t1")["status"]["conditions"]
+            .as_array()
+            .is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| c["type"] == "Released" && c["reason"] == "SessionBusy")
+            })
+    });
+    env.reconcile();
+    assert_eq!(
+        env.fleet(&["get", "task", "t1"]).code,
+        Some(0),
+        "a session that just reported working is not released at once"
+    );
+
+    backdate_deletion(&env, "t1", Duration::from_secs(24 * 3600));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1")["status"]);
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert!(!dir.exists(), "the release removed the worktree");
     let refs = preserved_refs(&src);
     assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
     assert_eq!(
