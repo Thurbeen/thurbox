@@ -125,6 +125,7 @@ fn snapshot(sessions: usize) -> Snapshot {
                 member_dirs: vec![format!("{repo}/worktrees/w{nth}").into()],
                 meta: Default::default(),
                 deleting: None,
+                state_why: None,
                 status_source: None,
             }
         })

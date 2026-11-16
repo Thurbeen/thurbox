@@ -314,6 +314,9 @@ pub static SESSION: Class = Class {
         leaf("deleting_why", "string")
             .opt()
             .doc("Why Fleet has not finished that deletion: its `Released` condition."),
+        leaf("state_why", "string").opt().doc(
+            "Why a Fleet session is stopped, lost or gone, or stalled: `paused · idle`, `stopped · outside Fleet`, `lost · window gone`, `gone · session ended`, `stalled · <reason>`.",
+        ),
         leaf("backend", "string"),
         leaf("repo", "string").opt(),
         leaf("branch", "string").opt(),

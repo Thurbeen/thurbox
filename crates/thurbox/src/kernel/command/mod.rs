@@ -53,6 +53,8 @@ pub enum Command {
     Delete { session: String, force: bool },
     /// Paste text into a running session's agent.
     Send { session: String, text: String },
+    /// Ask Fleet to resume a stopped session's agent on its conversation.
+    Start { session: String },
     /// Persist an explicit manual order, densely renumbered.
     ///
     /// The permutation is computed by the pane that *renders* the list, because
@@ -338,6 +340,7 @@ impl Command {
             Command::Guarded { inner, .. } => inner.kind(),
             Command::Delete { .. } => "delete",
             Command::Send { .. } => "send",
+            Command::Start { .. } => "start",
             Command::Create { .. } => "create",
             Command::Rename { .. } => "rename",
             Command::Copy { .. } => "copy",
@@ -365,6 +368,7 @@ impl Command {
             Command::Guarded { session, .. } => session,
             Command::Delete { session, .. }
             | Command::Send { session, .. }
+            | Command::Start { session }
             | Command::Rename { session, .. }
             | Command::Copy { session }
             | Command::Diff { session }
@@ -447,9 +451,12 @@ impl Command {
             | Command::Plugin { .. }
             // Fleet has no undo window, so every delete is for good.
             | Command::Delete { .. } => Some(Capability::Sessions),
-            // Arrange or name what already exists; nothing is typed into an
-            // agent and nothing is lost.
-            Command::Order { .. } | Command::Rename { .. } | Command::Bookmark { .. } => None,
+            // Arrange, name or resume what already exists; nothing is typed
+            // into an agent and nothing is lost.
+            Command::Order { .. }
+            | Command::Rename { .. }
+            | Command::Start { .. }
+            | Command::Bookmark { .. } => None,
             // The interface's own state, or something the user then drives
             // themselves: a pane focused, a shell or editor opened beside a
             // session, a theme, a setting, a message, a screen copied.
@@ -831,6 +838,7 @@ impl Command {
         }
         match kind {
             "delete" => Ok(Command::Delete { session, force }),
+            "start" => Ok(Command::Start { session }),
             "send" => match text {
                 Some(text) => Ok(Command::Send { session, text }),
                 None => Err("command \"send\" needs text".to_string()),
@@ -848,7 +856,7 @@ impl Command {
             "editor" => Ok(Command::Editor { session }),
             other => Err(format!(
                 "unknown command {other:?} — try create, rename, copy, diff, delete, \
-                 send, order, theme, set, emit, action or message"
+                 start, send, order, theme, set, emit, action or message"
             )),
         }
     }

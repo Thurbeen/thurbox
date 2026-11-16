@@ -23,6 +23,7 @@ pub fn done(kind: &str, label: Option<&str>) -> Option<String> {
         "create" => "created",
         "delete" => "deleted",
         "send" => "sent to",
+        "start" => "started",
         "bookmark" => "remembered",
         // Visible where it happened, or housekeeping nobody asked for.
         _ => return None,

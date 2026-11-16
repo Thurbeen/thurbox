@@ -677,6 +677,11 @@ fn build_sessions(
             "deleting_why",
             opt_lua_string(lua, deleting.and_then(|d| d.why.as_deref()))?,
         )?;
+        set(
+            &entry,
+            "state_why",
+            opt_lua_string(lua, row.state_why.as_deref())?,
+        )?;
         let attach_error = attach_errors.get(&row.id).map(String::as_str);
         set(&entry, "backend", to_lua_string(lua, &row.backend)?)?;
         set(&entry, "repo", opt_lua_string(lua, row.repo.as_deref())?)?;

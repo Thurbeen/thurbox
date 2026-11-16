@@ -7085,6 +7085,129 @@ fn a_deletion_fleet_never_finishes_comes_back_marked_stuck() {
     assert!(tui.quit().success());
 }
 
+#[test]
+fn a_stopped_lost_or_gone_session_says_so_and_why() {
+    let profile = Profile::new();
+    let task = |name: &str, state: &str, condition: serde_json::Value| {
+        serde_json::json!({"type": "changed", "revision": 1, "object": {
+            "metadata": {"name": name, "uid": format!("u-{name}")},
+            "spec": {"harness": "claude-code", "host": "local", "workspace": []},
+            "status": {"phase": "Briefed", "sessionState": state, "agentState": "idle",
+                "conditions": [condition]},
+        }})
+    };
+    let condition = |kind: &str, reason: &str, message: &str| serde_json::json!({"type": kind, "status": "True", "reason": reason, "message": message});
+    let events = [
+        task("napping", "Paused", condition("Paused", "Idle", "")),
+        task("killed", "Paused", condition("Paused", "External", "")),
+        task(
+            "rebooted",
+            "Lost",
+            condition("SessionLost", "WindowGone", ""),
+        ),
+        task(
+            "vanished",
+            "Gone",
+            condition("WorkerGone", "SessionGone", ""),
+        ),
+    ]
+    .map(|event| format!("echo '{event}'"))
+    .join("; ");
+    let synced = serde_json::json!({"type": "synced", "revision": 1,
+        "names": ["napping", "killed", "rebooted", "vanished"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) {events}; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n"
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    let row_says = |frame: &str, name: &str, why: &str| {
+        frame
+            .lines()
+            .any(|line| line.contains(name) && line.contains(why))
+    };
+    tui.wait_until("every stopped, lost or gone row to say why", |frame| {
+        row_says(frame, "napping", "paused · idle")
+            && row_says(frame, "killed", "stopped · outside Fleet")
+            && row_says(frame, "rebooted", "lost · window gone")
+            && row_says(frame, "vanished", "gone · session ended")
+    });
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn starting_a_stopped_session_asks_fleet_to_wake_it() {
+    let profile = Profile::new();
+    let calls = profile.root.path().join("fleet-calls");
+    let woken = profile.root.path().join("woken");
+    let task = |state: &str, conditions: serde_json::Value| {
+        serde_json::json!({"type": "changed", "revision": 1, "object": {
+            "metadata": {"name": "napping", "uid": "u-napping"},
+            "spec": {"harness": "claude-code", "host": "local", "workspace": [], "dispatch": true},
+            "status": {"phase": "Briefed", "sessionState": state, "agentState": "idle",
+                "conditions": conditions},
+        }})
+    };
+    let paused = task(
+        "Paused",
+        serde_json::json!([{"type": "Paused", "status": "True", "reason": "Idle"}]),
+    );
+    let resumed = task(
+        "Running",
+        serde_json::json!([{"type": "Paused", "status": "False", "reason": "Resumed"}]),
+    );
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{resumed}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ touch '{woken}'; exit 0; }}; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            calls = calls.display(),
+            woken = woken.display(),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_until("the paused row", |frame| {
+        frame
+            .lines()
+            .any(|line| line.contains("napping") && line.contains("paused · idle"))
+    });
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"s");
+    tui.wait_until("the row to run again", |frame| {
+        frame.contains("napping") && !frame.contains("paused · idle")
+    });
+    tui.wait_for("started napping");
+    tui.send(b"s");
+    tui.wait_until_quiet();
+    std::thread::sleep(Duration::from_secs(1));
+    let calls = std::fs::read_to_string(&calls).expect("fleet's calls");
+    let wakes: Vec<&str> = calls
+        .lines()
+        .filter(|call| call.contains("--wake"))
+        .collect();
+    assert_eq!(wakes, ["attach --wake --json napping"], "{calls}");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_real_fleet_takes_the_argv_start_runs() {
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let output = Command::new(profile.bin.join("fleet"))
+        .args(["attach", "--wake", "--json", "ghost"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run fleet");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(2), "a usage error: {stderr}");
+    assert!(stderr.contains("ghost"), "{stderr}");
+}
+
 /// The companion shell is the user's `$SHELL`, and a zsh started in the
 /// profile's empty HOME opens its first-run wizard instead of a prompt.
 fn plain_shell(cmd: &mut Command) {

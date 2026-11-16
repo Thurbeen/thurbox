@@ -1162,6 +1162,34 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
                             .or_else(|| text(&c["reason"]))
                     }),
             }),
+        state_why: state_why(session_state, status),
+    }
+}
+
+fn state_why(session_state: Option<&str>, status: &Value) -> Option<String> {
+    let condition = |kind: &str| {
+        status["conditions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|c| c["type"] == kind && c["status"] == "True")
+    };
+    let reason = |kind: &str| condition(kind).and_then(|c| c["reason"].as_str());
+    if let Some(stalled) = reason("Stalled") {
+        return Some(format!("stalled · {stalled}"));
+    }
+    match session_state? {
+        "Paused" => Some(match reason("Paused") {
+            Some("Idle") => "paused · idle".to_string(),
+            Some("External") => "stopped · outside Fleet".to_string(),
+            _ => "stopped".to_string(),
+        }),
+        "Lost" => Some(match reason("NeedsAttention") {
+            Some("ReviveFailed") => "lost · revive failed".to_string(),
+            _ => "lost · window gone".to_string(),
+        }),
+        "Gone" => Some("gone · session ended".to_string()),
+        _ => None,
     }
 }
 
@@ -1171,6 +1199,31 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    #[test]
+    fn a_stall_or_a_failed_revive_is_the_rows_why() {
+        let why = |state: &str, kind: &str, reason: &str| {
+            state_why(
+                Some(state),
+                &serde_json::json!({"conditions": [
+                    {"type": kind, "status": "True", "reason": reason},
+                ]}),
+            )
+        };
+        assert_eq!(
+            why("Running", "Stalled", "SpawnAttemptsExhausted").as_deref(),
+            Some("stalled · SpawnAttemptsExhausted")
+        );
+        assert_eq!(
+            why("Lost", "NeedsAttention", "ReviveFailed").as_deref(),
+            Some("lost · revive failed")
+        );
+        assert_eq!(why("Running", "Paused", "Idle"), None);
+        assert_eq!(
+            why("Paused", "Paused", "Unknown").as_deref(),
+            Some("stopped")
+        );
+    }
 
     /// The places offered are Fleet's: `local` first, named `local` with no
     /// backend, then each other place by its `<runtime>/<place>`, each with

@@ -143,6 +143,7 @@ fn row(id: &str, name: &str) -> SessionRow {
         member_dirs: Vec::new(),
         meta: Default::default(),
         deleting: None,
+        state_why: None,
         status_source: None,
     }
 }

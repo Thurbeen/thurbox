@@ -167,6 +167,9 @@ pub struct SessionRow {
     /// has run past [`fleet::DELETION_STUCK_AFTER`], since one that has not is
     /// not published at all.
     pub deleting: Option<Deleting>,
+    /// Why a Fleet session is stopped, lost or gone, or why Fleet gave up on
+    /// it: read off the Task's conditions. `None` for a session that runs.
+    pub state_why: Option<String>,
 }
 
 /// Where a session's agent state came from: the agent's hooks, a screen
