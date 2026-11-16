@@ -478,6 +478,10 @@ fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
 /// window is still open while this runs, which is what leaves the screen there
 /// to capture.
 ///
+/// It runs however the launch ends ([`crate::shell::windows_program_script`]
+/// runs it in a `finally`), so a program that is not found still reports,
+/// with no status.
+///
 /// Piped rather than passed as an argument: `LASTEXITCODE` is unset when the
 /// program never ran, and an empty argument is dropped by Windows PowerShell
 /// 5.1, so an empty pipe is the one spelling that says "no status" the same
@@ -485,7 +489,7 @@ fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
 /// does for the environment. A machine with no `thurbox-cli` on PATH prints an
 /// error into a window that is closing anyway.
 const EXIT_REPORT: &str =
-    "; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli session exited";
+    "Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore | thurbox-cli session exited";
 
 /// The key [`TmuxCompatible::private_env`] hands a psmux window's script in
 /// place of the environment: the file that holds it. Not a valid variable
@@ -644,13 +648,20 @@ fn env_loader(file: &str) -> String {
 ///
 /// psmux ignores `new-window -e` — env vars never reach the window's
 /// process — so they are folded into the script itself (`Set-Item Env:K
-/// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). Quoting is
-/// PowerShell **single** quotes (`''` = literal `'`), so an env value — the
-/// session name in `THURBOX_SESSION_NAME` included — arrives exactly. The
-/// script is the window's command line, which any process can read, so
-/// `Server` hands it the [`ENV_FILE`] its values went to instead
-/// ([`TmuxCompatible::private_env`]), and the script loads that file. An
-/// argument does ride the line, which [`windows_native_arg`] spells.
+/// 'v'; …`). Quoting is PowerShell **single** quotes (`''` = literal `'`),
+/// so an env value — the session name in `THURBOX_SESSION_NAME` included —
+/// arrives exactly. The script is the window's command line, which any
+/// process can read, so `Server` hands it the [`ENV_FILE`] its values went
+/// to instead ([`TmuxCompatible::private_env`]), and the script loads that
+/// file.
+///
+/// The program starts as `exec` starts one on a Windows place
+/// ([`crate::shell::windows_program_script`]): found with `Get-Command`,
+/// its arguments carried once and quoted on the place for the kind of
+/// program found there, so a native program reads back exactly the
+/// arguments it was given. The `&` operator would hand them through
+/// PowerShell 5.1's own native-argument binder, which drops an empty
+/// argument and re-splits one holding a `"`.
 ///
 /// The script is not what the window runs: psmux runs a single-string window
 /// command through the shell it resolves, which is `cmd.exe` on a server
@@ -663,89 +674,26 @@ fn psmux_window_powershell(
     args: &[String],
     env: &HashMap<String, String>,
 ) -> String {
-    let mut ps = String::new();
+    let mut prelude = String::new();
     // Sort for a deterministic command (HashMap iteration order isn't).
     let mut pairs: Vec<_> = env.iter().collect();
     pairs.sort();
     for (k, v) in pairs {
         if k == ENV_FILE {
-            ps.push_str(&env_loader(v));
+            prelude.push_str(&env_loader(v));
         } else {
-            ps.push_str(&format!("Set-Item Env:{k} {}; ", powershell_quote(v)));
+            prelude.push_str(&format!("Set-Item Env:{k} {}; ", powershell_quote(v)));
         }
     }
-    ps.push_str(&format!("& {}", powershell_quote(command)));
-    for a in args {
-        ps.push(' ');
-        ps.push_str(&powershell_quote(&windows_native_arg(a)));
+    if !prelude.is_empty() {
+        prelude.push('\n');
     }
-    if WindowRole::from_window_name(window_name) == Some(WindowRole::Agent) {
-        ps.push_str(EXIT_REPORT);
-    }
-    ps
-}
-
-/// `arg` as the PowerShell string `&` hands a native program, which Windows
-/// PowerShell 5.1 turns into command-line text without escaping an embedded
-/// `"` — the program would split the argument there.
-///
-/// An argument holding `"` is therefore quoted here and passed verbatim (5.1
-/// adds no quotes of its own to text whose whitespace is already inside
-/// quotes): one quoted region with each `"` doubled, and the backslashes
-/// before a `"` doubled. A C runtime (UCRT, Rust, Go, Python) reads `""`
-/// inside quotes as a literal `"`, and `cmd.exe` — running an npm `.cmd` shim —
-/// toggles twice on it, so the whole argument stays inside its quotes and
-/// `&`, `|` or `>` in it are never syntax. `\"` would serve the runtime but
-/// let `cmd.exe` read what follows as unquoted. 5.1 does not count a `"` right
-/// after a `\` ([`ps51_requotes`]); where that would make it wrap the result
-/// a second time, the argument's `"` become spaces instead, as every argument's
-/// once did. A newline becomes a space everywhere: `cmd.exe` ends a command at
-/// one.
-fn windows_native_arg(arg: &str) -> String {
-    let arg = arg.replace('\n', " ");
-    if !arg.contains('"') {
-        return arg;
-    }
-    let mut quoted = String::from('"');
-    let mut backslashes = 0;
-    for c in arg.chars() {
-        match c {
-            '\\' => backslashes += 1,
-            '"' => {
-                quoted.push_str(&"\\".repeat(backslashes * 2));
-                quoted.push_str("\"\"");
-                backslashes = 0;
-            }
-            _ => {
-                quoted.push_str(&"\\".repeat(backslashes));
-                quoted.push(c);
-                backslashes = 0;
-            }
-        }
-    }
-    quoted.push_str(&"\\".repeat(backslashes * 2));
-    quoted.push('"');
-    if ps51_requotes(&quoted) {
-        arg.replace('"', " ")
+    let after = if WindowRole::from_window_name(window_name) == Some(WindowRole::Agent) {
+        format!("{EXIT_REPORT}\n")
     } else {
-        quoted
-    }
-}
-
-/// Whether Windows PowerShell 5.1 would wrap `arg` in quotes of its own: it
-/// has whitespace outside quotes, counting only the `"` not right after a `\`
-/// (`NeedQuotes` in its native command parameter binder).
-fn ps51_requotes(arg: &str) -> bool {
-    let (mut quotes, mut after_backslash) = (0, false);
-    for c in arg.chars() {
-        if c == '"' && !after_backslash {
-            quotes += 1;
-        } else if c.is_whitespace() && quotes % 2 == 0 {
-            return true;
-        }
-        after_backslash = c == '\\';
-    }
-    false
+        String::new()
+    };
+    crate::shell::windows_program_script(command, args, None, &[], &prelude, &after)
 }
 
 /// The program a psmux window runs: [`psmux_window_powershell`] handed to
@@ -1349,6 +1297,80 @@ mod tests {
                 && STASH_SCRIPT
                     .contains("[IO.File]::Create($p, 4096, [IO.FileOptions]::None, $fs)"),
             "{STASH_SCRIPT}"
+        );
+    }
+
+    /// The arguments a window's script carries: its `$argv = @(…)` array
+    /// of PowerShell single-quoted strings, read back.
+    fn script_argv(script: &str) -> Vec<String> {
+        let rest = script
+            .split_once("$v=@(")
+            .map(|(_, rest)| rest)
+            .unwrap_or_else(|| panic!("no $argv in the script: {script}"));
+        let mut args = Vec::new();
+        let mut chars = rest.chars().peekable();
+        loop {
+            match chars.next() {
+                Some('\'') => {
+                    let mut arg = String::new();
+                    while let Some(c) = chars.next() {
+                        if c == '\'' {
+                            if chars.peek() == Some(&'\'') {
+                                chars.next();
+                                arg.push('\'');
+                            } else {
+                                break;
+                            }
+                        } else {
+                            arg.push(c);
+                        }
+                    }
+                    args.push(arg);
+                }
+                Some(',' | ' ') => {}
+                _ => return args,
+            }
+        }
+    }
+
+    /// The arguments psmux tests a launch with: every character a shell or
+    /// a quoting layer between here and the program might read.
+    const AWKWARD_ARGS: &[&str] = &[
+        "plain",
+        "with space",
+        "\"quoted\"",
+        "it's",
+        "{}",
+        "$HOME",
+        "`tick`",
+        "{\"model\":\"x y\",\"tags\":[1,\"a\\\"b\"],\"path\":\"C:\\\\x\\\\\"}",
+        "",
+        "back\\slash\\",
+        "%PATH%",
+        "a&b|c>d<e^f",
+        "trail\\\\",
+        "new\nline",
+        "x\" & echo pwned & \"y",
+        "dir\\\" tail",
+        "\"",
+    ];
+
+    /// A psmux window's program gets its arguments byte-exact: the window's
+    /// script carries each one once, as a PowerShell literal, and quotes it
+    /// on the place for the program it finds there
+    /// ([`crate::shell::windows_program_script`]; the quoting is checked on
+    /// a real Windows place).
+    #[test]
+    fn a_psmux_window_hands_a_program_its_arguments_byte_exact() {
+        let args: Vec<String> = AWKWARD_ARGS.iter().map(|a| a.to_string()).collect();
+        let program =
+            psmux_window_program("tb-k-agent", "C:/bin/echo-argv.exe", &args, &HashMap::new())
+                .expect("program");
+        let script = decoded(std::slice::from_ref(&program));
+        assert_eq!(script_argv(&script), args, "{script}");
+        assert!(
+            !script.contains("& 'C:/bin/echo-argv.exe'"),
+            "no `&` launch: {script}"
         );
     }
 
@@ -2372,10 +2394,9 @@ mod tests {
             .strip_prefix('"')
             .and_then(|c| c.strip_suffix('"'))
             .expect("double-quoted");
-        assert_eq!(
-            decoded_script(program),
-            "& 'claude' '--session-id' 'abc-123'"
-        );
+        let script = decoded_script(program);
+        assert!(script.contains("Get-Command 'claude'"), "{script}");
+        assert_eq!(script_argv(&script), args, "{script}");
     }
 
     /// The window runs PowerShell by name, whatever shell psmux resolves: on a
@@ -2445,8 +2466,8 @@ mod tests {
 
     #[test]
     fn psmux_window_script_folds_env_as_set_item() {
-        // `Set-Item Env:K 'v'` (not `$env:K`) keeps the string `$`-free; sorted
-        // for determinism. Values with spaces survive the PS single quotes.
+        // Sorted for determinism. Values with spaces survive the PS single
+        // quotes.
         let mut env = HashMap::new();
         env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
         env.insert(
@@ -2454,19 +2475,28 @@ mod tests {
             "a 'name' λ;$HOME *".to_string(),
         );
         env.insert("B".to_string(), "x y".to_string());
-        assert_eq!(
-            psmux_window_powershell("tbs-x", "claude", &[], &env),
-            "Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; Set-Item \
-             Env:THURBOX_SESSION_NAME 'a ''name'' λ;$HOME *'; & 'claude'"
+        let script = psmux_window_powershell("tbs-x", "claude", &[], &env);
+        assert!(
+            script.contains(
+                "Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; Set-Item \
+                 Env:THURBOX_SESSION_NAME 'a ''name'' λ;$HOME *'; \n"
+            ),
+            "{script}"
         );
     }
 
+    /// An agent window reports its program's exit code once it ends; a
+    /// shell window does not.
     #[test]
     fn an_agent_window_reports_its_exit() {
-        assert_eq!(
-            psmux_window_powershell("tb-x", "claude", &[], &HashMap::new()),
-            "& 'claude'; Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore \
-             | thurbox-cli session exited"
+        let script = psmux_window_powershell("tb-x", "claude", &[], &HashMap::new());
+        let set = script
+            .find("$global:LASTEXITCODE=$x.ExitCode")
+            .expect("set");
+        let report = script.find(EXIT_REPORT).expect("report");
+        assert!(set < report && report < script.find("exit $x.ExitCode").expect("exit"));
+        assert!(
+            !psmux_window_powershell("tbs-x", "claude", &[], &HashMap::new()).contains(EXIT_REPORT)
         );
         assert!(!EXIT_REPORT.contains(['"', '\n', '$', '{', '}']));
     }
@@ -2479,47 +2509,18 @@ mod tests {
         }
     }
 
+    /// A `'` doubles inside PowerShell's quotes, and a newline stays in its
+    /// argument: the script carries the arguments as they are.
     #[test]
     fn psmux_window_script_escapes_and_sanitizes() {
-        // A literal ' doubles (PowerShell escaping); a newline in an argument
-        // is neutralized to a space. Backslash paths pass through untouched.
         let args = vec!["it's".to_string(), "say hi\nnow".to_string()];
-        let cmd = psmux_window_powershell("tbs-x", "C:\\Tools\\claude.exe", &args, &HashMap::new());
-        assert_eq!(cmd, "& 'C:\\Tools\\claude.exe' 'it''s' 'say hi now'");
-    }
-
-    /// An argument holding `"` is quoted by thurbox, not by Windows PowerShell
-    /// 5.1: each `"` doubled inside one quoted region, backslashes before a
-    /// `"` doubled, so a C runtime reads the argument back exactly and
-    /// `cmd.exe` never leaves its quotes.
-    #[test]
-    fn an_argument_keeps_its_double_quotes() {
-        let args = [
-            "review \"API\"",
-            "\"",
-            "a\\\"b",
-            "tail\\",
-            "x\" & echo pwned & \"y",
-        ]
-        .map(String::from);
-        assert_eq!(
-            psmux_window_powershell("tbs-x", "claude", &args, &HashMap::new()),
-            "& 'claude' '\"review \"\"API\"\"\"' '\"\"\"\"' '\"a\\\\\"\"b\"' 'tail\\' \
-             '\"x\"\" & echo pwned & \"\"y\"'"
+        let script =
+            psmux_window_powershell("tbs-x", "C:\\Tools\\claude.exe", &args, &HashMap::new());
+        assert!(
+            script.contains("Get-Command 'C:\\Tools\\claude.exe'"),
+            "{script}"
         );
-    }
-
-    /// Windows PowerShell 5.1 does not count a `"` right after a `\` when it
-    /// decides whether an argument needs quotes, so it would wrap a quoted
-    /// `a\" b` a second time and leave its space outside `cmd.exe`'s quotes.
-    /// That argument keeps today's spelling: its `"` becomes a space.
-    #[test]
-    fn an_argument_powershell_would_requote_is_neutralized() {
-        let args = ["dir\\\" tail".to_string()];
-        assert_eq!(
-            psmux_window_powershell("tbs-x", "claude", &args, &HashMap::new()),
-            "& 'claude' 'dir\\  tail'"
-        );
+        assert!(script.contains("$v=@('it''s', 'say hi\nnow')"), "{script}");
     }
 
     /// An environment value never rides a command line — it is a PowerShell
@@ -2529,9 +2530,10 @@ mod tests {
     fn an_env_value_keeps_its_double_quotes() {
         let name = "review \"API\"\nnext";
         let env = HashMap::from([("THURBOX_SESSION_NAME".to_string(), name.to_string())]);
-        assert_eq!(
-            psmux_window_powershell("tbs-x", "claude", &[], &env),
-            "Set-Item Env:THURBOX_SESSION_NAME 'review \"API\"\nnext'; & 'claude'"
+        let script = psmux_window_powershell("tbs-x", "claude", &[], &env);
+        assert!(
+            script.contains("Set-Item Env:THURBOX_SESSION_NAME 'review \"API\"\nnext'; "),
+            "{script}"
         );
     }
 
@@ -2605,10 +2607,10 @@ mod tests {
         let backend = PsmuxBackend::for_host(&host, &crate::settings::for_tests());
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
         let cmd = Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new()).unwrap();
-        assert_eq!(
-            decoded_script(cmd.trim_matches('"')),
-            "& 'claude'",
-            "the window's command is the PowerShell launch, never a POSIX wrap"
+        let script = decoded_script(cmd.trim_matches('"'));
+        assert!(
+            script.contains("Get-Command 'claude'") && !script.contains("/bin/sh"),
+            "the window's command is the PowerShell launch, never a POSIX wrap: {script}"
         );
     }
 
