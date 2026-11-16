@@ -179,25 +179,38 @@ fleet event publish --type git.push --data '{"branch": "main"}' --wait --timeout
 1. `fleet event publish` finds the session's key in the name of
    `FLEET_EVENT_FILE`. It refuses a name that Fleet did not make, and then
    appends nothing.
-2. It appends the line, as without `--wait`.
-3. It reads the store, with no lock, every 200 ms. It finds the Task whose
-   session has that key. The line does not name the Task.
-4. When `status.outbox.offset` of the Task is past the line, it looks for
-   the event. The event's source is that Task. Its key is the line's key,
-   or `outbox-<generation>-<offset>`.
-5. It prints the event with its `seq`, as a publish outside a session does,
+2. It reads the store, with no lock. It finds the Task whose session has
+   that key. The line does not name the Task. It keeps the Task's
+   `status.outbox` and the head of the Board.
+3. It appends the line, as without `--wait`.
+4. It reads the Task again every 200 ms. It waits until
+   `status.outbox` is past the line's end, in the generation that reads
+   the line. When the line starts below the kept `offset`, the outbox was
+   made again: that generation is the kept one plus 1. Otherwise it is the
+   kept one.
+5. Then it looks for the event. The event's source is that Task. Its key
+   is the line's key, or `outbox-<generation>-<offset>`.
+6. It prints the event with its `seq`, as a publish outside a session does,
    and exits 0.
 
 These rules apply:
 
-- When `status.outbox.lastSkipped` names the line's offset, Fleet skipped
-  the line. The command prints the reason and exits 1.
+- TaskController appends an event before it moves `status.outbox` past
+  its line. When the Board has no event for the line after that, Fleet
+  skipped the line, or retention dropped its event. The command says that
+  the line was skipped and exits 1. When `status.outbox.lastSkipped` names
+  the line's offset, it also prints that reason.
+- When the Task used the line's key before, the Board keeps the first
+  event. The command prints that event with `(already published under
+  this key)`.
+- When a read of the store fails for a moment (`Busy` or `Unknown`), the
+  command prints a warning and reads again at the next poll.
 - When the time ends first, the command prints the queued line with its
   offset, and exits 7. The line stays in the outbox, and Fleet can still
   read it in.
 - The command opens the store through `--config`, `FLEET_CONFIG` or the
   per-user config, as `fleet event list` does. A place without Fleet's
-  config cannot wait.
+  config cannot wait. Then it appends nothing.
 - Outside a session, a publish is done when it prints. There, `--wait`
   changes nothing.
 
@@ -225,8 +238,12 @@ These rules apply:
   Then it exits 0.
 - Each event that `wait` and `watch` print has its `seq`. That is the next
   cursor.
+- When a read fails for a moment (`Busy` or `Unknown`), `wait` and `watch`
+  print a warning and read again at the next poll. `wait` still stops at
+  its timeout.
 - When the cursor is older than the log, all three exit 5 and name
-  `oldest`. With `--json`, they also print `{"expired": {"oldest": N}}`.
+  `oldest` and the cursor they were at. With `--json`, they also print
+  `{"expired": {"oldest": N}}`.
 
 ## Lifecycle
 

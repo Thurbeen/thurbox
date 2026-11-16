@@ -721,25 +721,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         && let Some(outbox) = session_outbox()?
     {
         let publish = publish_of(event_type, subject, key, correlation, data)?;
-        let session_key = if *wait {
-            Some(outbox_session_key(&outbox)?)
-        } else {
-            None
-        };
         let line = fleet_api::event::OutboxLine::new(board, publish);
-        let offset = session_append(&outbox, &line)?;
-        let Some(session_key) = session_key else {
+        if !*wait {
+            let (offset, _) = session_append(&outbox, &line)?;
             print_queued(&line.board, &line.event_type, offset, *json);
             return Ok(());
-        };
+        }
+        line.encode().map_err(fail)?;
         queued = Some(Queued {
-            line: fleet_manager::verbs::QueuedLine {
-                session_key,
-                offset,
-                board: line.board.clone(),
-                key: line.key.clone(),
-            },
-            event_type: line.event_type,
+            session_key: outbox_session_key(&outbox)?,
+            outbox,
+            line,
             timeout_ms: *timeout_ms,
             json: *json,
         });
@@ -2103,10 +2095,14 @@ fn outbox_session_key(outbox: &Path) -> Result<String, Failure> {
     })
 }
 
-fn session_append(outbox: &Path, line: &fleet_api::event::OutboxLine) -> Result<u64, Failure> {
-    line.encode().map_err(fail)?;
-    fleet_runtime::events::append(outbox, line)
-        .map_err(|e| fail(format!("{}: {e}", outbox.display())))
+fn session_append(
+    outbox: &Path,
+    line: &fleet_api::event::OutboxLine,
+) -> Result<(u64, u64), Failure> {
+    let length = line.encode().map_err(fail)?.len() as u64;
+    let offset = fleet_runtime::events::append(outbox, line)
+        .map_err(|e| fail(format!("{}: {e}", outbox.display())))?;
+    Ok((offset, offset + length))
 }
 
 fn print_queued(board: &str, event_type: &str, offset: u64, json: bool) {
@@ -2118,8 +2114,9 @@ fn print_queued(board: &str, event_type: &str, offset: u64, json: bool) {
 }
 
 struct Queued {
-    line: fleet_manager::verbs::QueuedLine,
-    event_type: String,
+    session_key: String,
+    outbox: PathBuf,
+    line: fleet_api::event::OutboxLine,
     timeout_ms: u64,
     json: bool,
 }
@@ -2130,24 +2127,41 @@ fn sleep_ms(ms: u64) {
     std::thread::sleep(std::time::Duration::from_millis(ms));
 }
 
+fn warn_and_retry(e: &StoreError) {
+    eprintln!("warning: could not read the store; reading again: {e}");
+}
+
+fn with_poll<T>(every_ms: u64, f: impl FnOnce(&mut fleet_manager::verbs::Poll<'_>) -> T) -> T {
+    let mut pause = sleep_ms;
+    let mut warn = warn_and_retry;
+    f(&mut fleet_manager::verbs::Poll {
+        every_ms,
+        pause: &mut pause,
+        warn: &mut warn,
+    })
+}
+
 fn cmd_publish_wait(store: &dyn Store, queued: Queued) -> Result<(), Failure> {
-    use fleet_manager::verbs::{Ingest, wait_ingested};
-    let line = &queued.line;
+    use fleet_manager::verbs::{Ingest, before_append, wait_ingested};
+    let before = before_append(store, &queued.session_key, &queued.line.board)?;
+    let (offset, end) = session_append(&queued.outbox, &queued.line)?;
+    let line = before.queued(offset, end, &queued.line.board, queued.line.key.clone());
     let deadline = fleet_api::Clock::now(&SystemClock) + queued.timeout_ms;
-    let poll = (PUBLISH_WAIT_POLL_MS, &mut sleep_ms as &mut dyn FnMut(u64));
-    match wait_ingested(store, &SystemClock, line, deadline, poll)? {
-        Ingest::Appended(event) => print_published(&event, false, queued.json),
+    let ingest = with_poll(PUBLISH_WAIT_POLL_MS, |poll| {
+        wait_ingested(store, &SystemClock, &line, deadline, poll)
+    })?;
+    match ingest {
+        Ingest::Appended { event, duplicate } => print_published(&event, duplicate, queued.json),
         Ingest::Skipped(why) => Err(fail(format!(
-            "Fleet skipped the line at outbox offset {}: {why}",
-            line.offset
+            "Fleet skipped the line at outbox offset {offset}: {why}"
         ))),
         Ingest::Pending => {
-            print_queued(&line.board, &queued.event_type, line.offset, queued.json);
+            print_queued(&line.board, &queued.line.event_type, offset, queued.json);
             Err(Failure {
                 code: exit::TIMEOUT,
                 message: format!(
-                    "Fleet did not read the line at outbox offset {} in within {} ms",
-                    line.offset, queued.timeout_ms
+                    "Fleet did not read the line at outbox offset {offset} in within {} ms",
+                    queued.timeout_ms
                 ),
                 hint: Some("the line stays queued; check that fleet up runs".into()),
             })
@@ -2236,16 +2250,18 @@ fn cmd_event(
         } => {
             let mut cursor = filter.cursor(after);
             let deadline = fleet_api::Clock::now(&SystemClock) + timeout_ms;
-            let poll = (poll_ms, &mut sleep_ms as &mut dyn FnMut(u64));
-            match fleet_manager::verbs::wait_events(
-                store,
-                &SystemClock,
-                &mut cursor,
-                limit,
-                deadline,
-                poll,
-            )? {
-                Some(page) => print_page(&cursor.board, after, page, json),
+            let page = with_poll(poll_ms, |poll| {
+                fleet_manager::verbs::wait_events(
+                    store,
+                    &SystemClock,
+                    &mut cursor,
+                    limit,
+                    deadline,
+                    poll,
+                )
+            })?;
+            match page {
+                Some(page) => print_page(&cursor.board, cursor.after, page, json),
                 None => Err(Failure {
                     code: exit::TIMEOUT,
                     message: format!(
@@ -2328,7 +2344,6 @@ fn cmd_event_watch(
 ) -> Result<(), Failure> {
     use fleet_api::event::Page;
     use std::io::Write;
-    let after = cursor.after;
     let mut out = std::io::stdout().lock();
     loop {
         let events = match cursor.next(store, fleet_manager::verbs::MAX_EVENT_LIST) {
@@ -2337,13 +2352,10 @@ fn cmd_event_watch(
                 if json {
                     let _ = writeln!(out, "{}", json!({"expired": {"oldest": oldest}}));
                 }
-                return Err(expired_failure(&cursor.board, after, oldest));
+                return Err(expired_failure(&cursor.board, cursor.after, oldest));
             }
-            Err(StoreError::Unknown(why)) => {
-                eprintln!(
-                    "warning: could not read Board/{}; nothing assumed: {why}",
-                    cursor.board
-                );
+            Err(e) if fleet_manager::verbs::is_transient(&e) => {
+                warn_and_retry(&e);
                 Vec::new()
             }
             Err(e) => return Err(e.into()),

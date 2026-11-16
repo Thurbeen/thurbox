@@ -726,39 +726,149 @@ impl EventCursor {
     }
 }
 
+/// Whether a read that failed with `e` may work on the next poll: another
+/// writer held the store, or the store could not tell. `fleet event wait`
+/// and `watch` read again; any other error ends them.
+pub fn is_transient(e: &StoreError) -> bool {
+    matches!(e, StoreError::Busy(_) | StoreError::Unknown(_))
+}
+
+/// How a waiting verb polls: every `every_ms` through `pause`, telling
+/// `warn` of each [transient](is_transient) read it reads again after.
+pub struct Poll<'a> {
+    pub every_ms: u64,
+    pub pause: &'a mut dyn FnMut(u64),
+    pub warn: &'a mut dyn FnMut(&StoreError),
+}
+
+impl std::fmt::Debug for Poll<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Poll")
+            .field("every_ms", &self.every_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Poll<'_> {
+    fn until(&mut self, clock: &dyn Clock, deadline: fleet_api::Millis) -> bool {
+        let now = clock.now();
+        if now >= deadline {
+            return false;
+        }
+        (self.pause)(self.every_ms.min(deadline - now));
+        true
+    }
+}
+
 /// `fleet event wait`: the first answer of `cursor` that holds an event, or
-/// `Expired`, reading again every `poll_ms` through `pause` until the
-/// clock reaches `deadline`. `None` when no event came by then.
+/// `Expired`, reading again every poll until the clock reaches `deadline`.
+/// A [transient](is_transient) read is warned of and read again. `None`
+/// when no event came by then.
 pub fn wait_events(
     store: &dyn Store,
     clock: &dyn Clock,
     cursor: &mut EventCursor,
     limit: usize,
     deadline: fleet_api::Millis,
-    (poll_ms, pause): (u64, &mut dyn FnMut(u64)),
+    poll: &mut Poll<'_>,
 ) -> Result<Option<Page>, StoreError> {
     loop {
-        match cursor.next(store, limit)? {
-            Page::Events(events) if events.is_empty() => {}
-            page => return Ok(Some(page)),
+        match cursor.next(store, limit) {
+            Ok(Page::Events(events)) if events.is_empty() => {}
+            Ok(page) => return Ok(Some(page)),
+            Err(e) if is_transient(&e) => (poll.warn)(&e),
+            Err(e) => return Err(e),
         }
-        let now = clock.now();
-        if now >= deadline {
+        if !poll.until(clock, deadline) {
             return Ok(None);
         }
-        pause(poll_ms.min(deadline - now));
     }
 }
 
-/// A line `fleet event publish` appended to a session's outbox: the
-/// session's key, read from the outbox's name, where the line starts, and
-/// the board and key it names.
+/// What `fleet event publish --wait` reads before it appends its line to
+/// the outbox: the Task whose session key `session_key` is, its
+/// `status.outbox`, and the head of the line's Board (0 for a Board that is
+/// not there, whose line Fleet will skip).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeforeAppend {
+    pub task: String,
+    pub uid: String,
+    pub outbox: fleet_api::event::OutboxCursor,
+    pub head: u64,
+}
+
+/// Read [`BeforeAppend`] through the store, without a lock. The line's
+/// content is not trusted to name the Task: the session key is.
+pub fn before_append(
+    store: &dyn Store,
+    session_key: &str,
+    board: &str,
+) -> Result<BeforeAppend, StoreError> {
+    let tasks = match store.list(task::KIND) {
+        Observation::Known(tasks) => tasks,
+        Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+    };
+    let owner = tasks
+        .iter()
+        .find(|t| fleet_api::session::session_key(&t.metadata.name, &t.metadata.uid) == session_key)
+        .ok_or_else(|| StoreError::NotFound(format!("no Task runs the session {session_key}")))?;
+    let head = match store.event_head(board) {
+        Err(StoreError::NotFound(_)) => 0,
+        head => head?,
+    };
+    Ok(BeforeAppend {
+        task: owner.metadata.name.clone(),
+        uid: owner.metadata.uid.clone(),
+        outbox: outbox_of(owner)?,
+        head,
+    })
+}
+
+fn outbox_of(task: &Object) -> Result<fleet_api::event::OutboxCursor, StoreError> {
+    let status: TaskStatus = if task.status.is_null() {
+        TaskStatus::default()
+    } else {
+        typed(task::KIND, &task.status)?
+    };
+    Ok(status.outbox.unwrap_or_default())
+}
+
+impl BeforeAppend {
+    /// The line appended from `offset` to `end` of the outbox. A line that
+    /// starts below the outbox cursor is in a file made again: Fleet reads
+    /// it under the next generation, and derives its key from that one.
+    pub fn queued(&self, offset: u64, end: u64, board: &str, key: Option<String>) -> QueuedLine {
+        let generation = if offset < self.outbox.offset {
+            self.outbox.generation + 1
+        } else {
+            self.outbox.generation
+        };
+        QueuedLine {
+            task: self.task.clone(),
+            uid: self.uid.clone(),
+            board: board.to_string(),
+            key: key.unwrap_or_else(|| fleet_api::event::outbox_key(generation, offset)),
+            offset,
+            end,
+            generation,
+            head: self.head,
+        }
+    }
+}
+
+/// A line `fleet event publish --wait` appended to its session's outbox:
+/// the Task that reads it, the board and key its event has, where it lies
+/// in which generation of the outbox, and the board's head before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedLine {
-    pub session_key: String,
-    pub offset: u64,
+    pub task: String,
+    pub uid: String,
     pub board: String,
-    pub key: Option<String>,
+    pub key: String,
+    pub offset: u64,
+    pub end: u64,
+    pub generation: u64,
+    pub head: u64,
 }
 
 /// Where Fleet is with a [`QueuedLine`].
@@ -766,104 +876,118 @@ pub struct QueuedLine {
 pub enum Ingest {
     /// Not read in yet.
     Pending,
-    /// Read in: the event the board holds for it.
-    Appended(Box<BoardEvent>),
+    /// Read in: the event the board holds for it, and whether that event
+    /// was there before the line (a key the Task already used).
+    Appended {
+        event: Box<BoardEvent>,
+        duplicate: bool,
+    },
     /// Read and skipped, for this reason.
     Skipped(String),
 }
 
-/// Where Fleet is with `line`, read through the store without a lock: the
-/// Task whose session key it is, its `status.outbox`, then the event that
-/// Task published on the line's board under the line's key, or under the
-/// key Fleet derives from the line's offset. The line's content is not
-/// trusted to name the Task.
+/// Where Fleet is with `line`, read through the store without a lock.
+/// Pending until the Task's `status.outbox`, as a (generation, offset)
+/// pair, reaches the line's end. TaskController appends a line's event
+/// before it moves the cursor past it, so from then on the event is on the
+/// board: above the head read before the append, or at or below it for a
+/// key the Task already used. A line whose event is in neither place was
+/// skipped.
 pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreError> {
-    let tasks = match store.list(task::KIND) {
-        Observation::Known(tasks) => tasks,
+    let owner = match store.get(task::KIND, &line.task) {
+        Observation::Known(Some(t)) if t.metadata.uid == line.uid => t,
+        Observation::Known(_) => {
+            return Err(StoreError::NotFound(format!(
+                "{}/{} is gone; nothing reads its outbox",
+                task::KIND,
+                line.task
+            )));
+        }
         Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
     };
-    let owner = tasks
-        .iter()
-        .find(|t| {
-            fleet_api::session::session_key(&t.metadata.name, &t.metadata.uid) == line.session_key
-        })
-        .ok_or_else(|| {
-            StoreError::NotFound(format!("no Task runs the session {}", line.session_key))
-        })?;
-    let status: TaskStatus = if owner.status.is_null() {
-        TaskStatus::default()
-    } else {
-        typed(task::KIND, &owner.status)?
-    };
-    let Some(outbox) = status.outbox.filter(|o| o.offset > line.offset) else {
+    let outbox = outbox_of(&owner)?;
+    if (outbox.generation, outbox.offset) < (line.generation, line.end) {
         return Ok(Ingest::Pending);
-    };
-    if let Some(why) = outbox.skipped_at(line.offset) {
-        return Ok(Ingest::Skipped(why.to_string()));
     }
-    let key = line
-        .key
-        .clone()
-        .unwrap_or_else(|| fleet_api::event::outbox_key(outbox.generation, line.offset));
-    let found = find_published(
-        store,
-        &line.board,
-        &owner.metadata.name,
-        &owner.metadata.uid,
-        &key,
-    )?;
-    Ok(found.map_or(Ingest::Pending, |e| Ingest::Appended(Box::new(e))))
+    if let Some(event) = find_published(store, line, line.head, u64::MAX)? {
+        return Ok(Ingest::Appended {
+            event: Box::new(event),
+            duplicate: false,
+        });
+    }
+    if let Some(event) = find_published(store, line, 0, line.head)? {
+        return Ok(Ingest::Appended {
+            event: Box::new(event),
+            duplicate: true,
+        });
+    }
+    Ok(Ingest::Skipped(match outbox.skipped_at(line.offset) {
+        Some(why) => why.to_string(),
+        None => format!(
+            "offset {}: Fleet read the line past it and Board/{} holds no event for it",
+            line.offset, line.board
+        ),
+    }))
 }
 
-/// `fleet event publish --wait` inside a session: [`ingested`] every
-/// `poll_ms` until it is no longer `Pending`, or until the clock reaches
-/// `deadline`, which answers `Pending`.
+/// `fleet event publish --wait` inside a session: [`ingested`] every poll
+/// until it is no longer `Pending`, or until the clock reaches `deadline`,
+/// which answers `Pending`. A [transient](is_transient) read is warned of
+/// and read again.
 pub fn wait_ingested(
     store: &dyn Store,
     clock: &dyn Clock,
     line: &QueuedLine,
     deadline: fleet_api::Millis,
-    (poll_ms, pause): (u64, &mut dyn FnMut(u64)),
+    poll: &mut Poll<'_>,
 ) -> Result<Ingest, StoreError> {
     loop {
-        let ingest = ingested(store, line)?;
-        let now = clock.now();
-        if ingest != Ingest::Pending || now >= deadline {
-            return Ok(ingest);
+        match ingested(store, line) {
+            Ok(Ingest::Pending) => {}
+            Ok(ingest) => return Ok(ingest),
+            Err(e) if is_transient(&e) => (poll.warn)(&e),
+            Err(e) => return Err(e),
         }
-        pause(poll_ms.min(deadline - now));
+        if !poll.until(clock, deadline) {
+            return Ok(Ingest::Pending);
+        }
     }
 }
 
 fn find_published(
     store: &dyn Store,
-    board: &str,
-    task: &str,
-    uid: &str,
-    key: &str,
+    line: &QueuedLine,
+    after: u64,
+    through: u64,
 ) -> Result<Option<BoardEvent>, StoreError> {
-    let by_task =
-        |e: &BoardEvent| matches!(&e.source, Source::Task(t) if t.task == task && t.uid == uid);
-    let mut after = 0;
-    loop {
-        let events = match store.read_events(board, after, EVENT_READ_PAGE)? {
-            Page::Events(events) => events,
-            Page::Expired { oldest } => {
-                after = oldest - 1;
+    let by_task = |e: &BoardEvent| matches!(&e.source, Source::Task(t) if t.task == line.task && t.uid == line.uid);
+    let mut cursor = EventCursor {
+        board: line.board.clone(),
+        after,
+        filter: Filter::default(),
+    };
+    while cursor.after < through {
+        let events = match cursor.next(store, EVENT_READ_PAGE) {
+            Ok(Page::Events(events)) => events,
+            Ok(Page::Expired { oldest }) => {
+                cursor.after = oldest - 1;
                 continue;
             }
+            Err(StoreError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
         };
-        if let Some(e) = events
-            .iter()
-            .find(|e| e.key.as_deref() == Some(key) && by_task(e))
-        {
-            return Ok(Some(e.clone()));
+        if events.is_empty() {
+            return Ok(None);
         }
-        match events.last() {
-            Some(last) if events.len() == EVENT_READ_PAGE => after = last.seq,
-            _ => return Ok(None),
+        if let Some(e) = events
+            .into_iter()
+            .take_while(|e| e.seq <= through)
+            .find(|e| e.key.as_deref() == Some(line.key.as_str()) && by_task(e))
+        {
+            return Ok(Some(e));
         }
     }
+    Ok(None)
 }
 
 /// What `fleet amend` asks for.

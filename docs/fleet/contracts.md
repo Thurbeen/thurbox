@@ -1319,21 +1319,33 @@ highest `revision` reported is in it, and a resume skips none.
 one event to a Board, `shared` by default, through the manager's
 `publish_event` verb, as `cli/<user>`, and prints it with its `seq`. A
 refused event exits 1 and a missing Board exits 3. `--wait` changes nothing
-there. Inside a session, `--wait` first reads the session key from the
-outbox's name (`fleet_runtime::events::outbox_session_key`, the inverse of
+there. Inside a session, `--wait` reads the session key from the outbox's
+name (`fleet_runtime::events::outbox_session_key`, the inverse of
 `<key>.jsonl` and `event::outbox_file`) and refuses, appending nothing, a
-name Fleet did not make. After the append it opens the store as the
-read-only commands do (`--config`, then `FLEET_CONFIG`, then the per-user
-config) and polls the
-manager's `wait_ingested` every 200 ms, with no lock, for `--timeout-ms`
-(60000 by default): the Task whose `session_key(name, uid)` is that key,
-then its `status.outbox`. Once `offset` is past the line, a `lastSkipped`
-that names the line's offset (`OutboxCursor::skipped_at`) exits 1 with the
-reason. Otherwise it looks for the event on the line's Board whose source
-is that Task, by name and uid, and whose key is the line's own or
-`event::outbox_key(generation, offset)`, and prints it as a publish outside
-a session does. The line's own fields never name the Task. A timeout prints
-the queued line, as a publish without `--wait` does, and exits 7.
+name Fleet did not make. It opens the store as the read-only commands do
+(`--config`, then `FLEET_CONFIG`, then the per-user config), and before
+the append reads, with no lock, the manager's `before_append`: the Task
+whose `session_key(name, uid)` is that key, its `status.outbox`
+(generation `g0`, offset `o0`) and the Board's head (0 for a Board that is
+not there). The line starts at the outbox's length before the append. A
+line that starts below `o0` is in a file made again, which Fleet reads
+under `g0 + 1`; any other line under `g0`. That generation gives the
+line's key when it names none (`event::outbox_key`). The manager's
+`wait_ingested` then polls every 200 ms for `--timeout-ms` (60000 by
+default), and reads again after a `Busy` or `Unknown` read, with a warning
+on standard error. It waits until the Task's `status.outbox`, compared as a
+(generation, offset) pair, reaches (that generation, the line's end).
+TaskController appends a line's event before it moves the cursor past the
+line, so the event is then on the Board, from that Task by name and uid,
+under that key. It is first looked for above the head read before the
+append, then once from the start up to that head: an event found there is
+a key the Task already used, and prints with `(already published under
+this key)`, as a publish outside a session does. A line with no event in
+either place was skipped, or retention dropped its event: the command exits
+1 and says so, with `lastSkipped`'s reason when it names the line's offset
+(`OutboxCursor::skipped_at`). The line's own fields never name the Task. A
+timeout prints the queued line, as a publish without `--wait` does, and
+exits 7.
 `fleet event list [--board B] [--after SEQ] [--type P]
 [--subject P] [--source S] [--correlation C] [--limit N] [--json]` prints the
 first `N` (100 by default, at most 10000) events above `SEQ` that match,
@@ -1358,10 +1370,11 @@ each match, oldest first, and reads again every `--poll-ms` when a read
 holds none. With `--json` each event is one compact JSON line (NDJSON),
 flushed; without it each is one line of `list`'s table. It runs until a
 write to stdout fails, so a closed reader ends it at the next event it
-prints, with exit 0. An unreadable Board is a warning on standard error,
-and the next read tries again, as in `fleet watch`. For both, an expired
-cursor exits 5 and names `oldest`, with `{"expired": {"oldest": N}}` on
-stdout under `--json`.
+prints, with exit 0. For both, a `Busy` or `Unknown` read
+(`verbs::is_transient`) is a warning on standard error, and the next poll
+reads again, as in `fleet watch`; `wait` still ends at its timeout. An
+expired cursor exits 5 and names `oldest` and the cursor the read was at,
+with `{"expired": {"oldest": N}}` on stdout under `--json`.
 
 `fleet apply --create-only` creates each object, of every kind it takes, or
 refuses one whose name is taken with exit 5 and leaves it as it is; the

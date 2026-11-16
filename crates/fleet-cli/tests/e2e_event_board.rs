@@ -263,28 +263,52 @@ fn a_deleted_board_takes_its_log_with_it() {
     assert_eq!(event["seq"], 1);
 }
 
-struct BusyBoard<'a> {
+type ReadHook<'a> = Box<dyn Fn(&fleet_store::FileStore, &str, u32) -> Result<(), StoreError> + 'a>;
+
+struct HookedBoard<'a> {
     inner: &'a fleet_store::FileStore,
     reads: std::cell::Cell<u32>,
-    published_type: &'static str,
+    before_read: ReadHook<'a>,
 }
 
-impl Store for BusyBoard<'_> {
+impl<'a> HookedBoard<'a> {
+    fn new(inner: &'a fleet_store::FileStore, before_read: ReadHook<'a>) -> HookedBoard<'a> {
+        HookedBoard {
+            inner,
+            reads: std::cell::Cell::new(0),
+            before_read,
+        }
+    }
+}
+
+fn busy_board<'a>(
+    inner: &'a fleet_store::FileStore,
+    published_type: &'static str,
+) -> HookedBoard<'a> {
+    HookedBoard::new(
+        inner,
+        Box::new(move |store, board, reads| {
+            if reads > 20 {
+                return Err(StoreError::Busy("the list never ended".into()));
+            }
+            let noise = Publish {
+                event_type: published_type.into(),
+                subject: None,
+                key: None,
+                correlation: None,
+                data: json!(null),
+            };
+            let source = Source::Cli(CliSource::new("busy").unwrap());
+            store.append_events(board, &source, vec![noise], FieldManager::Cli, None)?;
+            Ok(())
+        }),
+    )
+}
+
+impl Store for HookedBoard<'_> {
     fn read_events(&self, board: &str, after: u64, limit: usize) -> Result<Page, StoreError> {
         self.reads.set(self.reads.get() + 1);
-        if self.reads.get() > 20 {
-            return Err(StoreError::Busy("the list never ended".into()));
-        }
-        let noise = Publish {
-            event_type: self.published_type.into(),
-            subject: None,
-            key: None,
-            correlation: None,
-            data: json!(null),
-        };
-        let source = Source::Cli(CliSource::new("busy").unwrap());
-        self.inner
-            .append_events(board, &source, vec![noise], FieldManager::Cli, None)?;
+        (self.before_read)(self.inner, board, self.reads.get())?;
         self.inner.read_events(board, after, limit)
     }
     fn event_head(&self, board: &str) -> Result<u64, StoreError> {
@@ -394,11 +418,7 @@ fn a_list_ends_at_the_head_it_started_from_while_others_publish() {
     let env = board_env("board-busy");
     publish(&env, &["--type", "wanted", "--data", "1"]);
     let store = fleet_store::FileStore::open(&env.data).unwrap();
-    let busy = BusyBoard {
-        inner: &store,
-        reads: std::cell::Cell::new(0),
-        published_type: "noise",
-    };
+    let busy = busy_board(&store, "noise");
     let filter = Filter {
         event_type: Some(Pattern::new("absent")),
         ..Filter::default()
@@ -412,11 +432,7 @@ fn a_list_keeps_no_matching_event_published_after_it_started() {
     let env = board_env("board-busy-match");
     publish(&env, &["--type", "wanted", "--data", "1"]);
     let store = fleet_store::FileStore::open(&env.data).unwrap();
-    let busy = BusyBoard {
-        inner: &store,
-        reads: std::cell::Cell::new(0),
-        published_type: "wanted",
-    };
+    let busy = busy_board(&store, "wanted");
     let filter = Filter {
         event_type: Some(Pattern::new("wanted")),
         ..Filter::default()
@@ -1530,9 +1546,19 @@ fn publish_wait_inside_a_session_prints_the_event_once_fleet_ingests_it() {
         &borrowed(&vars),
         &["--type", "keyed", "--key", "k1", "--data", "2", "--wait"],
     );
+    let first = reconcile_until_done(&env, child);
+    first.ok().stdout_has("shared/3 keyed from task/a");
+    assert!(!first.stdout.contains("already"), "{}", first.stdout);
+
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &["--type", "keyed", "--key", "k1", "--data", "3", "--wait"],
+    );
     reconcile_until_done(&env, child)
         .ok()
-        .stdout_has("shared/3 keyed from task/a");
+        .stdout_has("shared/3 keyed from task/a (already published under this key)");
+    assert_eq!(seqs(&list(&env, &[])), vec![1, 2, 3]);
 }
 
 #[test]
@@ -1565,4 +1591,286 @@ fn publish_wait_inside_a_session_reports_a_skipped_line_and_a_timeout() {
     );
     run.code(TIMED_OUT)
         .stdout_has(&format!("outbox offset {outbox_len}"));
+}
+
+fn outbox_len(outbox: &str) -> u64 {
+    std::fs::metadata(outbox).map_or(0, |m| m.len())
+}
+
+fn wait_for_append(outbox: &str, past: u64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while outbox_len(outbox) <= past {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the publish never appended"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn publish_wait_on_a_skipped_line_exits_1_though_a_later_skip_overwrote_the_reason() {
+    let env = session_env("event-session-wait-two-skips");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &[
+            "--board",
+            "nowhere",
+            "--type",
+            "first",
+            "--data",
+            "1",
+            "--wait",
+            "--timeout-ms",
+            "60000",
+        ],
+    );
+    wait_for_append(&outbox, 0);
+    append_raw(
+        &outbox,
+        "{\"board\":\"nowhere\",\"type\":\"second\",\"data\":2}\n",
+    );
+    let started = std::time::Instant::now();
+    let run = reconcile_until_done(&env, child);
+    run.code(1).stderr_has("skipped").stderr_has("offset 0");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "the wait ended long before its timeout"
+    );
+    let cursor = &env.get("a")["status"]["outbox"];
+    assert_eq!(cursor["skipped"], 2, "{cursor}");
+    assert!(
+        !cursor["lastSkipped"]
+            .as_str()
+            .unwrap()
+            .starts_with("offset 0:"),
+        "{cursor}"
+    );
+}
+
+#[test]
+fn publish_wait_in_a_remade_outbox_prints_the_new_event_not_the_old_files() {
+    let env = session_env("event-session-wait-remade");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    let padding = format!("\"{}\"", "x".repeat(100));
+    for t in ["old.a", "old.b", "old.c"] {
+        publish_inside(&env, &borrowed(&vars), &["--type", t, "--data", &padding]).ok();
+    }
+    env.reconcile().ok();
+    let cursor = env.get("a")["status"]["outbox"].clone();
+    assert_eq!(cursor["generation"], Value::Null, "{cursor}");
+    assert!(cursor["offset"].as_u64().unwrap() > 300, "{cursor}");
+    let old = list(&env, &[]);
+    assert_eq!(old[0]["key"], "outbox-0-0", "{old:#?}");
+
+    std::fs::remove_file(&outbox).unwrap();
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &["--type", "new.a", "--data", "1", "--wait", "--json"],
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let run = reconcile_until_done(&env, child);
+    run.ok();
+    let event = run.json();
+    assert_eq!(event["type"], "new.a", "{event}");
+    assert_eq!(event["key"], "outbox-1-0", "{event}");
+    assert_eq!(event["seq"], 4, "{event}");
+}
+
+#[test]
+fn watch_on_a_cursor_that_expires_while_it_runs_names_where_it_had_got_to() {
+    use std::io::BufRead;
+    let env = board_env("board-watch-expires");
+    tiny_board(&env);
+    let mut child = env.spawn(&[
+        "event",
+        "watch",
+        "--board",
+        "tiny",
+        "--after",
+        "3",
+        "--poll-ms",
+        "3000",
+        "--json",
+    ]);
+    let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    for want in [4, 5] {
+        let line = lines.next().expect("a line").expect("a line");
+        let event: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(event["seq"], want);
+    }
+    for n in 6..=10 {
+        publish(
+            &env,
+            &[
+                "--board",
+                "tiny",
+                "--type",
+                "tick",
+                "--data",
+                &n.to_string(),
+            ],
+        );
+    }
+    let rest: Vec<String> = lines.map_while(Result::ok).collect();
+    let run = wait(child);
+    run.code(5).stderr_has("after 5");
+    assert_eq!(rest.len(), 1, "{rest:?}");
+    let expired: Value = serde_json::from_str(&rest[0]).unwrap();
+    assert_eq!(expired, json!({"expired": {"oldest": 9}}));
+}
+
+struct FixedClock(u64);
+
+impl fleet_api::Clock for FixedClock {
+    fn now(&self) -> u64 {
+        self.0
+    }
+}
+
+fn cursor_on(
+    board: &str,
+    after: u64,
+    event_type: Option<&str>,
+) -> fleet_manager::verbs::EventCursor {
+    fleet_manager::verbs::EventCursor {
+        board: board.into(),
+        after,
+        filter: Filter {
+            event_type: event_type.map(Pattern::new),
+            ..Filter::default()
+        },
+    }
+}
+
+#[test]
+fn wait_reads_again_after_a_busy_or_unknown_store_and_warns_of_each() {
+    let env = board_env("board-wait-transient");
+    let event = publish(&env, &["--type", "a", "--data", "1"]);
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    let flaky = HookedBoard::new(
+        &store,
+        Box::new(|_, _, reads| match reads {
+            1 => Err(StoreError::Busy("a writer holds the lock".into())),
+            2 => Err(StoreError::Unknown("the log could not be read".into())),
+            _ => Ok(()),
+        }),
+    );
+    let mut warned = Vec::new();
+    let mut pauses = 0;
+    let mut pause = |_| pauses += 1;
+    let mut warn = |e: &StoreError| warned.push(e.to_string());
+    let mut poll = fleet_manager::verbs::Poll {
+        every_ms: 50,
+        pause: &mut pause,
+        warn: &mut warn,
+    };
+    let mut cursor = cursor_on("shared", 0, None);
+    let page = fleet_manager::verbs::wait_events(
+        &flaky,
+        &FixedClock(0),
+        &mut cursor,
+        10,
+        u64::MAX,
+        &mut poll,
+    )
+    .unwrap();
+    let Some(Page::Events(events)) = page else {
+        panic!("no events: {page:?}");
+    };
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].seq, event["seq"].as_u64().unwrap());
+    assert_eq!(warned.len(), 2, "{warned:?}");
+    assert_eq!(pauses, 2);
+
+    let refused = HookedBoard::new(
+        &store,
+        Box::new(|_, _, _| Err(StoreError::NotFound("Board/shared".into()))),
+    );
+    let mut cursor = cursor_on("shared", 0, None);
+    let mut pause = |_| {};
+    let mut warn = |_: &StoreError| panic!("not transient");
+    let mut poll = fleet_manager::verbs::Poll {
+        every_ms: 50,
+        pause: &mut pause,
+        warn: &mut warn,
+    };
+    assert!(matches!(
+        fleet_manager::verbs::wait_events(
+            &refused,
+            &FixedClock(0),
+            &mut cursor,
+            10,
+            u64::MAX,
+            &mut poll
+        ),
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+fn publish_many(store: &fleet_store::FileStore, types: impl Iterator<Item = String>) {
+    let publishes = types
+        .map(|t| Publish {
+            event_type: t,
+            subject: None,
+            key: None,
+            correlation: None,
+            data: json!(null),
+        })
+        .collect();
+    let source = Source::Cli(CliSource::new("bulk").unwrap());
+    store
+        .append_events("shared", &source, publishes, FieldManager::Cli, None)
+        .unwrap();
+}
+
+fn next_seqs(
+    cursor: &mut fleet_manager::verbs::EventCursor,
+    store: &dyn Store,
+    limit: usize,
+) -> Vec<u64> {
+    match cursor.next(store, limit).unwrap() {
+        Page::Events(events) => events.iter().map(|e| e.seq).collect(),
+        expired => panic!("{expired:?}"),
+    }
+}
+
+#[test]
+fn an_event_cursor_reads_across_a_page_boundary_and_a_limit_cut_repeats_and_skips_nothing() {
+    let env = board_env("board-cursor-pages");
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    publish_many(
+        &store,
+        (1..=2005).map(|n| {
+            if n % 2 == 0 {
+                "even".into()
+            } else {
+                "odd".into()
+            }
+        }),
+    );
+
+    let mut all = cursor_on("shared", 0, None);
+    assert_eq!(
+        next_seqs(&mut all, &store, 10_000),
+        (1..=2005).collect::<Vec<_>>()
+    );
+    assert_eq!(all.after, 2005);
+    assert!(next_seqs(&mut all, &store, 10_000).is_empty());
+
+    let mut even = cursor_on("shared", 995, Some("even"));
+    assert_eq!(next_seqs(&mut even, &store, 3), vec![996, 998, 1000]);
+    assert_eq!(even.after, 1000);
+    assert_eq!(next_seqs(&mut even, &store, 3), vec![1002, 1004, 1006]);
+    let rest = next_seqs(&mut even, &store, 10_000);
+    assert_eq!(rest, (1008..=2004).step_by(2).collect::<Vec<_>>());
+    assert_eq!(even.after, 2005, "past the odd last event it read");
+
+    publish_many(&store, ["even".to_string()].into_iter());
+    assert_eq!(next_seqs(&mut even, &store, 10), vec![2006]);
 }
