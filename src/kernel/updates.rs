@@ -97,8 +97,6 @@ impl Updates {
                     Ok(crate::agent::self_update::UpdateOutcome::UpToDate {
                         next_major, ..
                     }) => log_next_major(next_major.as_deref()),
-                    // Up to date, or a dev build — `perform_update` skips those
-                    // itself, which is why nothing is decided here.
                     Ok(_) => {}
                     Err(e) => tracing::warn!("auto-update failed: {e}"),
                 }

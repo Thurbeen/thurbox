@@ -16,9 +16,6 @@ on:
         default: ""
         type: string
   push:
-    # A push to a maintenance branch (`v2.x`) releases from it like a push to
-    # main does; scripts/ci/release-floor.sh keeps its version above every tag
-    # of its major.
     branches: [main, "v*.x"]
 
 # The major the existing package names carry: Homebrew `thurbox`, AUR
@@ -112,11 +109,6 @@ jobs:
           echo "cog output: $RAW"
           VERSION="$(printf '%s\n' "$RAW" | grep -oE '^v?[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*' | head -1 || true)"
           if [ -n "$VERSION" ]; then
-            # cog bumps from the newest tag reachable from this branch, which on
-            # `v2.x` is behind the v2.84.0..v2.88.0 tags `main` made and never
-            # published. Cut above every tag of the major instead, so the
-            # release is "Latest" and reaches the package channels; the exact
-            # version is then what create-tag tags.
             VERSION="$(scripts/ci/release-floor.sh "$VERSION")"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "version=$VERSION" >> "$GITHUB_OUTPUT"

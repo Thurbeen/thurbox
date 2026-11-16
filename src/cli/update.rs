@@ -61,13 +61,10 @@ fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
                 ("updated", "true".to_string()),
                 ("note", "restart thurbox to apply".to_string()),
             ];
-            let mut summary = format!("Updated {from} → {to}. Restart thurbox to apply.");
             if let Some(next) = &next_major {
-                let note = next_major_note(next);
-                fields.push(("next major", note.clone()));
-                summary.push(' ');
-                summary.push_str(&note);
+                fields.push(("next major", next_major_note(next)));
             }
+            let summary = updated_summary(&from, &to, next_major.as_deref());
             CommandOutput::new(
                 json!({
                     "version": from,
@@ -85,11 +82,7 @@ fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
             latest,
             next_major,
         }) => {
-            let mut summary = "Up to date — running the latest release.".to_string();
-            if let Some(next) = &next_major {
-                summary.push(' ');
-                summary.push_str(&next_major_note(next));
-            }
+            let summary = up_to_date_summary(next_major.as_deref());
             CommandOutput::new(
                 json!({
                     "version": current,
@@ -139,9 +132,53 @@ pub(super) fn next_major_note(next: &str) -> String {
     )
 }
 
+fn updated_summary(from: &str, to: &str, next_major: Option<&str>) -> String {
+    with_next_major(
+        format!("Updated {from} → {to}. Restart thurbox to apply."),
+        next_major,
+    )
+}
+
+fn up_to_date_summary(next_major: Option<&str>) -> String {
+    with_next_major(
+        "Up to date — running the latest release.".to_string(),
+        next_major,
+    )
+}
+
+pub(super) fn with_next_major(mut summary: String, next_major: Option<&str>) -> String {
+    if let Some(next) = next_major {
+        summary.push(' ');
+        summary.push_str(&next_major_note(next));
+    }
+    summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_summary_names_the_next_major_after_one_space() {
+        assert_eq!(
+            updated_summary("2.84.1", "2.84.2", Some("3.0.0")),
+            format!(
+                "Updated 2.84.1 → 2.84.2. Restart thurbox to apply. {}",
+                next_major_note("3.0.0")
+            )
+        );
+        assert_eq!(
+            up_to_date_summary(Some("3.0.0")),
+            format!(
+                "Up to date — running the latest release. {}",
+                next_major_note("3.0.0")
+            )
+        );
+        assert_eq!(
+            up_to_date_summary(None),
+            "Up to date — running the latest release."
+        );
+    }
 
     #[test]
     fn update_when_flag_disabled_prints_enable_hint() {

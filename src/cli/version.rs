@@ -84,14 +84,7 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
         Ok((releases, status)) => {
             let latest = releases.line.unwrap_or_else(|| current.to_string());
             let next_major = releases.next_major;
-            let mut summary = match &status {
-                Some(_) => format!("Update available: {current} → {latest}"),
-                None => "Up to date — running the latest release.".to_string(),
-            };
-            if let Some(next) = &next_major {
-                summary.push_str(". ");
-                summary.push_str(&super::update::next_major_note(next));
-            }
+            let summary = check_summary(current, &latest, status.is_some(), next_major.as_deref());
             let mut fields = vec![("current", current.to_string()), ("latest", latest.clone())];
             if status.is_some() {
                 fields.push(("update", "available".to_string()));
@@ -128,9 +121,35 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
     }
 }
 
+fn check_summary(current: &str, latest: &str, available: bool, next_major: Option<&str>) -> String {
+    let summary = if available {
+        format!("Update available: {current} → {latest}.")
+    } else {
+        "Up to date — running the latest release.".to_string()
+    };
+    super::update::with_next_major(summary, next_major)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_summary_names_the_next_major_after_one_space() {
+        let note = super::super::update::next_major_note("3.0.0");
+        assert_eq!(
+            check_summary("2.84.1", "2.84.1", false, Some("3.0.0")),
+            format!("Up to date — running the latest release. {note}")
+        );
+        assert_eq!(
+            check_summary("2.84.1", "2.84.2", true, Some("3.0.0")),
+            format!("Update available: 2.84.1 → 2.84.2. {note}")
+        );
+        assert_eq!(
+            check_summary("2.84.1", "2.84.2", true, None),
+            "Update available: 2.84.1 → 2.84.2."
+        );
+    }
 
     #[test]
     fn version_without_check_prints_current_version() {

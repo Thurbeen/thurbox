@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-#
-# release-floor.sh <version>
-#
-# Prints the version cd.yml should cut for an automatic release: <version>
-# itself, or the next minor above the highest tag of its major when <version>
-# is not above it.
-#
-# `cog bump --auto` bumps from the newest tag reachable from the branch. On a
-# maintenance branch that can be behind a tag of the same major made elsewhere:
-# `v2.x` branches from v2.83.6, while `main` tagged v2.84.0..v2.88.0 without
-# publishing them. Cutting v2.83.7 there would publish a release that is
-# neither "Latest" nor sent to the package channels, both of which follow the
-# highest tag. A forced dispatch version is never passed through here.
 
 set -euo pipefail
 
