@@ -804,14 +804,11 @@ fn a_fleet_2_config_is_named_with_what_to_do() {
     .unwrap();
     for args in [&["list", "task"][..], &["init"][..]] {
         let run = wait(installed(&env, args).spawn().unwrap());
-        let store = config.parent().unwrap().join("store-v1");
+        // The whole command, path included, is pinned by the test below;
+        // here the separators of a Windows path may differ from the test's.
         run.code(1)
             .stderr_has("is a Fleet 2.x config")
-            .stderr_has(&format!(
-                "mv '{}' '{}.v2'",
-                store.display(),
-                store.display()
-            ))
+            .stderr_has("store-v1.v2'")
             .stderr_has("fleet init")
             .stderr_has("VERSION=v2.");
         assert!(!run.stderr.contains("unknown field"), "{}", run.stderr);
@@ -823,7 +820,9 @@ fn a_fleet_2_config_is_named_with_what_to_do() {
 }
 
 /// The recovery commands are pasted into a shell, so a path with a space,
-/// as under `/home/Jane Doe`, is quoted rather than split.
+/// as under `/home/Jane Doe`, is quoted rather than split. Windows prints
+/// PowerShell's form instead, which the unit tests in `config.rs` pin.
+#[cfg(unix)]
 #[test]
 fn a_fleet_2_config_recovery_quotes_paths_with_spaces() {
     let env = Env::without_tools("fleet-2-config-spaces");
