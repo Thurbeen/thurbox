@@ -1797,7 +1797,8 @@ impl Manager<'_> {
             .status
             .get("inbox")
             .and_then(Value::as_array)
-            .is_none_or(Vec::is_empty);
+            .is_none_or(Vec::is_empty)
+            && obj.status.get("catchUp").is_none_or(Value::is_null);
         let recheck_due = obj
             .status
             .get("sessionCheckedAt")

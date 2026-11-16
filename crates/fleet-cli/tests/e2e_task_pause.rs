@@ -328,7 +328,7 @@ fn a_view_opened_on_a_paused_task_resumes_it_with_no_entry() {
     pause(&env, "t1");
     assert!(stopped(&env));
 
-    let mut attach = env.spawn(&["attach", "t1", "--json"]);
+    let mut attach = env.spawn(&["attach", "t1", "--wake", "--json"]);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while attach.try_wait().expect("attach").is_none() {
         assert!(
@@ -395,7 +395,7 @@ fn a_view_on_a_paused_held_task_says_so_at_once() {
     env.apply(json!([held])).ok();
 
     let started = std::time::Instant::now();
-    env.fleet(&["attach", "t1", "--json"])
+    env.fleet(&["attach", "t1", "--wake", "--json"])
         .code(3)
         .stderr_has("Task/t1 is paused and held");
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
@@ -426,7 +426,7 @@ fn a_view_opened_on_a_paused_concluded_task_resumes_it() {
     assert_condition(&env.status("t1"), "Paused", "True", "Idle");
     assert_eq!(env.status("t1")["phase"], "Concluded");
 
-    let mut attach = env.spawn(&["attach", "t1", "--json"]);
+    let mut attach = env.spawn(&["attach", "t1", "--wake", "--json"]);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while attach.try_wait().expect("attach").is_none() && std::time::Instant::now() < deadline {
         env.reconcile().ok();
@@ -438,4 +438,31 @@ fn a_view_opened_on_a_paused_concluded_task_resumes_it() {
     assert_eq!(env.calls("resume"), 1);
     assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
     assert_eq!(env.status("t1")["phase"], "Concluded");
+
+    for _ in 0..3 {
+        env.reconcile().ok();
+    }
+    let texts = sent(&env);
+    assert_eq!(texts.len(), 2, "the catch-up note is sent: {texts:#?}");
+    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
+    assert!(env.get("t1")["status"]["catchUp"].is_null());
+}
+
+#[test]
+fn a_background_attach_on_a_paused_task_says_so_and_wakes_nothing() {
+    let env = setup("pause-view-background", vec![task("t1")]);
+    pause(&env, "t1");
+
+    env.fleet(&["attach", "t1", "--json"])
+        .code(3)
+        .stderr_has("Task/t1 is paused")
+        .stderr_has("--wake");
+    env.fleet(&["shell", "t1", "--json"])
+        .code(3)
+        .stderr_has("Task/t1 is paused");
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("resume"), 0);
+    assert!(stopped(&env));
+    assert!(env.get("t1")["status"]["wakeRequestedAt"].is_null());
 }

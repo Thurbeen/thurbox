@@ -148,7 +148,7 @@ Three rules apply to every controller:
 | `forge` | ForgeController. |
 | `gateway` | GatewayController. |
 | `inbox`, `answered` | Nobody. `fleet send`, `fleet amend` and the Forge and Gateway relays append through a typed store mutation. TaskController removes an entry after it delivers it. |
-| `wakeRequestedAt` | Nobody. `fleet attach` and `fleet shell` set it through a typed store mutation. |
+| `wakeRequestedAt` | Nobody. `fleet attach --wake` and `fleet shell --wake` set it through a typed store mutation. |
 | Every other field | TaskController. |
 
 The source of this table is

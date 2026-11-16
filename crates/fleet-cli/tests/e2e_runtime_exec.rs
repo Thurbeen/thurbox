@@ -1228,7 +1228,7 @@ fn attaching_to_a_paused_session_on_runtime_mux_resumes_it_and_streams_it() {
         ),
     );
 
-    let attach = std::cell::RefCell::new(env.spawn(&["attach", "t1", "--json"]));
+    let attach = std::cell::RefCell::new(env.spawn(&["attach", "t1", "--wake", "--json"]));
     reconcile_until(&env, "resumed for the view", |env| {
         attach.borrow_mut().try_wait().expect("attach").is_some()
             || support::condition(&env.get("t1")["status"], "Paused")["status"] == "False"

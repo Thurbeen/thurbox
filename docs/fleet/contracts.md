@@ -1293,20 +1293,23 @@ The exit status is 1 only when a check fails. Warnings alone exit 0.
 With `--json`, it prints `{"checks": [...], "failed": N}`. Each check has
 `area`, `name`, `level`, `detail` and `hint`.
 
-`fleet attach TASK --json` prints `{"stream": {"argv": [...]}}`: the command
+`fleet attach TASK [--wake] --json` prints `{"stream": {"argv": [...]}}`: the command
 that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream),
 run where the view runs. Fleet asks the runtime serving the session's host
 for its `attach` answer. A `stream` answer is passed through; a `tty` answer
 is wrapped as `fleet term-bridge -- <argv>`, so a view only ever gets a
-stream. On a Task with `Paused=True`, Fleet first sets
-`status.wakeRequestedAt`, which TaskController resumes the session for, and
-waits up to 60 seconds for `Paused` to leave True. A Task still paused after
-that wait exits 3 and says it is paused. A paused Task that is held or
-Stalled exits 3 at once, because Fleet never resumes it. A Task with no session yet, a
+stream. A Task with `Paused=True` exits 3 and says it is paused, unless
+`--wake` is given: then Fleet first sets `status.wakeRequestedAt`, which
+TaskController resumes the session for, and waits up to 60 seconds for
+`Paused` to leave True. A Task still paused after that wait exits 3 and says
+it is paused. With `--wake`, a paused Task that is held or Stalled exits 3 at
+once, because Fleet never resumes it. A view that attaches every Task in the
+background, as thurbox does, never passes `--wake`, so it wakes nothing. A
+Task with no session yet, a
 runtime that does not declare `attach` and a key the runtime holds no
 process under exit 3; an Unknown answer exits 4.
 Without `--json` the argv is printed one argument per line.
-`fleet shell TASK [--json]` is the same for an interactive shell beside the
+`fleet shell TASK [--json] [--wake]` is the same for an interactive shell beside the
 Task's session, on its place: Fleet asks the runtime's
 [`shell`](../runtime/README.md#the-shell) and answers as `fleet attach` does.
 A runtime that does not declare `shell` exits 3.

@@ -180,6 +180,9 @@ enum Command {
         task: String,
         #[arg(long)]
         json: bool,
+        /// Resume a paused Task first, and wait for it to run again.
+        #[arg(long)]
+        wake: bool,
     },
     /// The command that opens an interactive shell beside a Task's session,
     /// on its place, as a terminal stream: as JSON with --json, else one
@@ -188,6 +191,9 @@ enum Command {
         task: String,
         #[arg(long)]
         json: bool,
+        /// Resume a paused Task first, and wait for it to run again.
+        #[arg(long)]
+        wake: bool,
     },
     /// Follow the Tasks: one event per changed or deleted Task, as NDJSON
     /// with --json, until Ctrl-C or --once.
@@ -1061,17 +1067,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
         Command::Event { command } => cmd_event(store, command),
-        Command::Attach { task, json } => {
+        Command::Attach { task, json, wake } => {
             let signals = open_signals(&data_dir)?;
             let runtime = open_runtime(&config, &signals)?;
-            cmd_open(store, &task, json, Opens::View, |session| {
+            cmd_open(store, &task, json, wake, Opens::View, |session| {
                 runtime.attach(session)
             })
         }
-        Command::Shell { task, json } => {
+        Command::Shell { task, json, wake } => {
             let signals = open_signals(&data_dir)?;
             let runtime = open_runtime(&config, &signals)?;
-            cmd_open(store, &task, json, Opens::Shell, |session| {
+            cmd_open(store, &task, json, wake, Opens::Shell, |session| {
                 runtime.shell(session)
             })
         }
@@ -2613,6 +2619,7 @@ fn cmd_open(
     store: &dyn Store,
     task: &str,
     json_out: bool,
+    wake_paused: bool,
     opens: Opens,
     ask: impl FnOnce(&fleet_api::task::SessionRef) -> Observation<Option<fleet_api::runtime::Attach>>,
 ) -> Result<(), Failure> {
@@ -2633,6 +2640,16 @@ fn cmd_open(
         });
     };
     if paused(&obj) {
+        if !wake_paused {
+            return Err(Failure {
+                code: exit::NOT_FOUND,
+                message: format!("Task/{task} is paused: its agent is stopped"),
+                hint: Some(format!(
+                    "add --wake to resume it and open it, or send it a message with \
+                     `fleet send {task} TEXT`"
+                )),
+            });
+        }
         refuse_unresumable(&obj, task)?;
         wait_for_resume(store, task)?;
     }

@@ -219,6 +219,7 @@ impl TaskController {
             // session that may be paused has its activity watched.
             Phase::Concluded
                 if next_entry(&st).is_some()
+                    || st.catch_up.is_some()
                     || session_recheck_due(&st, input.now)
                     || watched(input.task, &spec, &st) =>
             {
@@ -927,7 +928,7 @@ impl Pass<'_, '_> {
             // A delivery breaks the idle time: it starts again at rest.
             self.st.idle_since = None;
         }
-        if next_entry(&self.st).is_none() {
+        if next_entry(&self.st).is_none() && self.st.catch_up.is_none() {
             // At rest: a recheck. Only an answered lookup counts as one.
             if self.input.observations.find.is_some() {
                 self.st.session_checked_at = Some(self.now());

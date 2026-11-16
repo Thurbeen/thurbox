@@ -34,7 +34,7 @@ that decision through the store and runtime ports.
    Task, retaining the session until deletion; messages sent afterwards are
    still delivered.
 6. With `pauseAfterMs` set, the controller pauses an idle session through
-   the runtime. The next inbox entry, or a view that opens it, resumes it. See
+   the runtime. The next inbox entry, or `fleet attach --wake`, resumes it. See
    [pausing an idle session](#pausing-an-idle-session).
 7. Deletion enters Releasing. The finalizer holds the record until the
    recorded session is released, once proven at rest or gone. The wait for
@@ -83,16 +83,17 @@ proof of an external artifact landing. The
 The manager only reconciles Tasks whose `notBefore` is absent or due. It
 reconciles a Concluded Task only in these cases:
 
-- Its inbox is nonempty.
+- Its inbox is nonempty, or it is owed a catch-up note.
 - It is being deleted.
 - Its session recheck is due: `status.sessionCheckedAt` is absent or 5
   minutes old.
 - Its session may be paused: see
   [pausing an idle session](#pausing-an-idle-session). The manager then
   reconciles it on every sweep, so that its activity is watched.
-- It is paused and dispatched, and a view asked for it at or after the
-  pause (`status.wakeRequestedAt`). The manager then reconciles it on every
-  sweep until it resumes.
+- It is paused and dispatched, and a `--wake` of `fleet attach` or
+  `fleet shell` asked for it at or after the pause
+  (`status.wakeRequestedAt`). The manager then reconciles it on every sweep
+  until it resumes.
 
 Deletion takes precedence over normal progress, including Stalled and
 Concluded. With no deletion, Stalled is terminal. Concluded is terminal
@@ -320,7 +321,7 @@ pauses only on a Known Idle answer from the runtime.
 ```text
 Briefed/Concluded ──Idle for pauseAfterMs──> Pause ──> Paused=True/Idle
         ^                                                   │
-        │                                inbox entry, or a view opened
+        │                         inbox entry, or fleet attach --wake
         │                                                   v
   catch-up note, then the inbox <── Paused=False/Resumed <── Resume
 ```
@@ -348,22 +349,25 @@ These rules apply to a paused session:
 
 - An inbox entry plans one resume. Entries that arrive meanwhile wait in the
   inbox. Delivery then waits for readiness, as before.
-- A view plans one resume too. `fleet attach` and `fleet shell` set
-  `status.wakeRequestedAt` on a paused Task, then wait for `Paused` to leave
-  True before they ask the runtime for the stream. A request older than the
-  pause resumes nothing. A view queues no text: the resumed worker gets only
-  the catch-up note.
+- `fleet attach --wake` and `fleet shell --wake` plan one resume too. They
+  set `status.wakeRequestedAt` on a paused Task, then wait for `Paused` to
+  leave True before they ask the runtime for the stream. A request older
+  than the pause resumes nothing. A wake queues no text: the resumed worker
+  gets only the catch-up note. Without `--wake`, both exit 3 and say the
+  Task is paused, so a view that attaches every Task in the background
+  wakes nothing.
 - A resumed worker is owed the catch-up note that a revived worker gets,
   before its inbox.
 - A session stopped outside Fleet sets `Paused=True/External`. The next
-  inbox entry, or a view, resumes it.
+  inbox entry, or a wake, resumes it.
 - A paused session found running again sets `Paused=False/Resumed`.
 - A pause never raises WorkerGone or SessionLost, and never revives.
 - Stalled, held and deleting Tasks are never resumed.
 - Deleting a paused Task releases it: a stopped session is at rest.
-- A Concluded Task owed a catch-up note is not paused again until its next
-  inbox entry delivers the note. A revived Concluded Task behaves the same
-  way.
+- A Concluded Task owed a catch-up note is not paused again until the note
+  is delivered. The manager reconciles it until then, and the note is sent
+  once the session is ready, with or without an inbox entry. A revived
+  Concluded Task behaves the same way.
 
 `pauseAfterMs` absent means that Fleet never pauses the session. `fleet init`
 writes the TaskConfig `default` with `pauseAfterMs` 1800000, 30 minutes,
