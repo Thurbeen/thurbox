@@ -250,8 +250,9 @@ counts as delivered once the agent's prompt hook reports it through
 repeated. A harness with no prompt hook falls back on the runtime's journal.
 An entry that exhausts its sends raises
 `NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing: later
-entries are still delivered. An entry whose journal stays unreadable for 3 reads
-raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
+entries are still delivered. An entry whose journal stays unreadable for 3 reads,
+or which the prompt hook has not reported 90 seconds after the runtime typed
+it, raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
 again, stays in `status.inbox`, and holds back no later entry. An entry the
 runtime only queued, where the agent does not read it, raises
 `NeedsAttention/DeliveryQueued` naming it, with the same outcome. More than

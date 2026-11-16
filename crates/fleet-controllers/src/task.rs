@@ -1063,6 +1063,9 @@ impl Pass<'_, '_> {
                         via,
                         may_hold,
                     },
+                    Proof::Awaiting(why) if self.proof_overdue(key) => {
+                        self.unconfirmed(key, what, &why)
+                    }
                     Proof::Awaiting(_) | Proof::NotAsked => Sent::Pending,
                 };
             }
@@ -1125,20 +1128,8 @@ impl Pass<'_, '_> {
                         .entry(key.to_string())
                         .or_default();
                     attempt.probe_failures += 1;
-                    let failures = attempt.probe_failures;
-                    if failures >= MAX_ATTEMPTS {
-                        // Unknown is not absence, so the entry is never sent
-                        // again; it is given up so that later entries go out.
-                        attempt.failed = true;
-                        self.st.not_before = None;
-                        self.needs_attention(
-                            "DeliveryUnconfirmed",
-                            format!(
-                                "{what}: its delivery could not be read: {why}. It is not sent again; \
-                                 it stays in status.inbox and later entries are delivered past it"
-                            ),
-                        );
-                        return Sent::GivenUp;
+                    if attempt.probe_failures >= MAX_ATTEMPTS {
+                        return self.unconfirmed(key, what, &why);
                     }
                     self.wait_from(self.now());
                 }
@@ -1147,6 +1138,35 @@ impl Pass<'_, '_> {
             return Sent::Pending;
         }
         self.send_keyed(session, key, text, what)
+    }
+
+    /// Whether the agent's prompt hook has had [`MAX_ATTEMPTS`] retry delays
+    /// since the runtime typed the text under `key` and still not reported it.
+    fn proof_overdue(&self, key: &str) -> bool {
+        let deadline = u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS;
+        self.st
+            .receipts
+            .get(key)
+            .is_some_and(|r| r.at.saturating_add(deadline) <= self.now())
+    }
+
+    /// Unknown is not absence: an entry nothing proves is never sent again,
+    /// and is given up on so that later entries go out.
+    fn unconfirmed(&mut self, key: &str, what: &str, why: &str) -> Sent {
+        self.st
+            .delivery_attempts
+            .entry(key.to_string())
+            .or_default()
+            .failed = true;
+        self.st.not_before = None;
+        self.needs_attention(
+            "DeliveryUnconfirmed",
+            format!(
+                "{what}: its delivery could not be read: {why}. It is not sent again; \
+                 it stays in status.inbox and later entries are delivered past it"
+            ),
+        );
+        Sent::GivenUp
     }
 
     /// Send under `key`, to a session observed ready on this pass, at most

@@ -131,3 +131,36 @@ fn an_earlier_report_of_the_same_text_proves_no_later_send() {
     env.reconcile().ok();
     assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
 }
+
+#[test]
+fn a_typed_entry_the_agent_never_reports_holds_back_no_later_entry() {
+    let env = setup("proof-inbox-unreported");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fleet(&["send", "t1", "first"]).ok();
+    env.reconcile().ok();
+    env.host().set_prompt_hook_silent(false).unwrap();
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("brief"), 2, "the second waits behind the first");
+    env.expire_receipts("t1");
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
+    assert_eq!(
+        env.calls("brief"),
+        3,
+        "the brief, one send of each entry, never a second of the first"
+    );
+    let full = full_status(&env);
+    let queued: Vec<&str> = full["inbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(queued, vec!["first"], "the unreported entry is kept");
+    assert_eq!(delivered_keys(&env).len(), 1, "{full:#}");
+}

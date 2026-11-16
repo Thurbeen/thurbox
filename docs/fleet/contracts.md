@@ -329,7 +329,8 @@ Guarantees, each with its test:
   `status.deliveries` and the entry out of `status.inbox` in one write, and
   drops its intent, receipt and attempt records. Three refused sends raise
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
-  entries go out; three unreadable journal reads raise
+  entries go out; three unreadable journal reads, or a typed entry the
+  prompt hook has not reported 90 seconds after its receipt, raise
   `DeliveryUnconfirmed` naming the entry, which is never resent and stays while
   later entries go out; more than 20 entries still to deliver raise `InboxFull`.
   An entry given up on does not count. Such an entry can never be delivered, so
