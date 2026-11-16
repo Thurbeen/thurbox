@@ -726,8 +726,10 @@ only after Known Released, or when there is no session to release.
 After Known Released, the finalizer also waits for the session's event
 outbox: the manager's ingest must find no whole line left to read
 (`outbox_drained`). A line still to ingest keeps
-`Released=False/OutboxDraining`; an outbox that cannot be read keeps
-`Released=Unknown/OutboxUnread`. See
+`Released=False/OutboxDraining` with no limit. An outbox that cannot be
+read keeps `Released=Unknown/OutboxUnread` for `RELEASE_GRACE_MS` (5
+minutes) after the release receipt. Then its unread lines are given up,
+and the release ends with `Released=True/OutboxGivenUp`. See
 [Board](../resources/board.md#publishing-from-a-session).
 
 When the runtime made the workspace, the release is followed by

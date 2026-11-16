@@ -1696,12 +1696,13 @@ impl Pass<'_, '_> {
             match self.st.receipts.get(&last).cloned() {
                 Some(Receipt {
                     outcome: Observation::Known(EffectOutcome::Released),
+                    at,
                     ..
                 }) => {
-                    if !self.outbox_drained() {
+                    let Some((reason, message)) = self.outbox_settled(at) else {
                         return;
-                    }
-                    self.cond(RELEASED, ConditionStatus::True, "Released", "");
+                    };
+                    self.cond(RELEASED, ConditionStatus::True, reason, message);
                     self.let_go();
                     return;
                 }
@@ -1777,12 +1778,14 @@ impl Pass<'_, '_> {
         self.intend(key, Action::Release { session });
     }
 
-    /// Whether nothing the released session published is left unread: the
-    /// Task keeps its finalizer until its outbox is ingested, and an outbox
-    /// that cannot be read is no proof that it is.
-    fn outbox_drained(&mut self) -> bool {
+    /// The `Released` reason and message once the released session's
+    /// outbox no longer holds the Task, `None` while it does. A line still
+    /// to ingest holds it with no limit, as each read makes progress. An
+    /// outbox that cannot be read holds it for `RELEASE_GRACE_MS` after the
+    /// release, `released_at`; then its unread lines are given up.
+    fn outbox_settled(&mut self, released_at: Millis) -> Option<(&'static str, String)> {
         match self.input.observations.outbox_drained.clone() {
-            None | Some(Observation::Known(true)) => true,
+            None | Some(Observation::Known(true)) => Some(("Released", String::new())),
             Some(Observation::Known(false)) => {
                 self.cond(
                     RELEASED,
@@ -1790,11 +1793,21 @@ impl Pass<'_, '_> {
                     "OutboxDraining",
                     "the session's outbox has lines still to ingest",
                 );
-                false
+                None
+            }
+            Some(Observation::Unknown { why })
+                if released_at.saturating_add(RELEASE_GRACE_MS) <= self.now() =>
+            {
+                Some((
+                    "OutboxGivenUp",
+                    format!(
+                        "the outbox stayed unreadable past the release grace, and its unread lines are lost: {why}"
+                    ),
+                ))
             }
             Some(Observation::Unknown { why }) => {
                 self.cond(RELEASED, ConditionStatus::Unknown, "OutboxUnread", why);
-                false
+                None
             }
         }
     }

@@ -721,3 +721,31 @@ fn a_released_session_keeps_its_task_until_its_outbox_is_read() {
     let types: Vec<Value> = list(&env, &[]).iter().map(|e| e["type"].clone()).collect();
     assert_eq!(types, vec![json!("first"), json!("before.release")]);
 }
+
+#[test]
+fn an_outbox_that_stays_unreadable_is_given_up_after_the_release_grace() {
+    let env = session_env("event-session-unreadable");
+    let outbox = session_var(&env, "FLEET_EVENT_FILE");
+    std::fs::create_dir(&outbox).unwrap();
+    env.host().set_at_rest(&env.session_key("a"), true).unwrap();
+    env.fleet(&["delete", "task", "a"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.get("a")["status"]["phase"], "Releasing");
+
+    let path = env.object_path("Task", "a");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let receipts = obj["status"]["receipts"].as_object_mut().unwrap();
+    let released: Vec<String> = receipts
+        .keys()
+        .filter(|k| k.contains("/release"))
+        .cloned()
+        .collect();
+    assert!(!released.is_empty(), "{receipts:#?}");
+    for key in released {
+        receipts[&key]["at"] = json!(0);
+    }
+    std::fs::write(&path, obj.to_string()).unwrap();
+    env.reconcile().ok();
+    env.get_absent("a");
+}
