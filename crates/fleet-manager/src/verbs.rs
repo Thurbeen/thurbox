@@ -648,6 +648,35 @@ pub fn list_events(
     }
 }
 
+/// Ask TaskController to resume a paused Task's session for a view, as an
+/// inbox entry would: `status.wakeRequestedAt` set to now. The resume is the
+/// controller's, on its next pass. Returns the Task as written.
+pub fn wake(store: &dyn Store, clock: &dyn Clock, name: &str) -> Result<Object, StoreError> {
+    for _ in 0..CAS_TRIES {
+        let obj = match store.get(task::KIND, name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                return Err(StoreError::NotFound(format!("{}/{name}", task::KIND)));
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        };
+        match store.request_wake(
+            name,
+            clock.now(),
+            obj.metadata.resource_version,
+            FieldManager::Cli,
+        ) {
+            Ok(written) => return Ok(written),
+            Err(StoreError::Conflict { .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        task::KIND
+    )))
+}
+
 /// What `fleet amend` asks for.
 #[derive(Debug, Clone, Default)]
 pub struct AmendRequest {

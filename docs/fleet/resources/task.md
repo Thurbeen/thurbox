@@ -93,6 +93,7 @@ repositories.
 | `gateway` | GatewayController | The tie to a chat thread, the relay cursor and the posts. See [Talking in a conversation](#talking-in-a-conversation). |
 | `inbox` | nobody; typed appends | Messages queued for the session. See [Inbox](#inbox). |
 | `answered` | nobody; inbox appends | Per Question id, the entry that answered it. First answer wins. |
+| `wakeRequestedAt` | nobody; `fleet attach --wake` and `fleet shell --wake` | When a wake last asked for the session. TaskController resumes a paused session for a request made at or after its pause. See [Pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 
 ## Lifecycle
 

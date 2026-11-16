@@ -3618,3 +3618,44 @@ fn a_board_log_is_private_to_its_owner() {
         assert_eq!(mode & 0o077, 0, "{} is {mode:o}", path.display());
     }
 }
+
+#[test]
+fn only_a_view_asks_for_a_wake_and_no_status_write_changes_it() {
+    let dir = Dir::new("wake");
+    let store = FileStore::open(&dir.0).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let rv = t.metadata.resource_version;
+
+    let err = store
+        .request_wake("t", 7, rv, FieldManager::TaskController)
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+
+    let t = store.request_wake("t", 7, rv, FieldManager::Cli).unwrap();
+    assert_eq!(t.metadata.resource_version, rv + 1, "one write");
+    let st = inbox_status(&t);
+    assert_eq!(st.wake_requested_at, Some(7));
+    assert_eq!(
+        TaskStatus {
+            wake_requested_at: None,
+            ..st
+        },
+        TaskStatus::default(),
+        "no other field changes"
+    );
+
+    let mut status = t.status.clone();
+    status["wakeRequestedAt"] = json!(8);
+    let err = store
+        .update_status(
+            "Task",
+            "t",
+            status,
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Forbidden(_)), "{err}");
+}

@@ -335,7 +335,9 @@ runtime side, the protocol and the terminal stream, is
 - `fleet attach <task> --json`: the command that opens the Task's terminal
   stream ([the terminal stream](../runtime/README.md#the-terminal-stream)).
   It asks the runtime's `attach` and wraps a `tty` answer in
-  `fleet term-bridge`. thurbox opens the stream it names as a stream pane
+  `fleet term-bridge`. On a paused Task it exits 3 and says so; with
+  `--wake` it first asks TaskController to resume the session, and waits
+  for the resume. thurbox attaches without `--wake`. thurbox opens the stream it names as a stream pane
   (`crates/thurbox/src/kernel/terminal/fleet.rs`), whose backend is the stream itself.
 - `fleet shell <task> --json`: the same for an interactive shell beside the
   Task's session, on its place, from the runtime's `shell`.

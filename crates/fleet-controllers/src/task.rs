@@ -219,6 +219,7 @@ impl TaskController {
             // session that may be paused has its activity watched.
             Phase::Concluded
                 if next_entry(&st).is_some()
+                    || st.catch_up.is_some()
                     || session_recheck_due(&st, input.now)
                     || watched(input.task, &spec, &st) =>
             {
@@ -927,7 +928,7 @@ impl Pass<'_, '_> {
             // A delivery breaks the idle time: it starts again at rest.
             self.st.idle_since = None;
         }
-        if next_entry(&self.st).is_none() {
+        if next_entry(&self.st).is_none() && self.st.catch_up.is_none() {
             // At rest: a recheck. Only an answered lookup counts as one.
             if self.input.observations.find.is_some() {
                 self.st.session_checked_at = Some(self.now());
@@ -1528,7 +1529,9 @@ impl Pass<'_, '_> {
                         "the session was found stopped, and Fleet did not stop it",
                     );
                 }
-                if next_entry(&self.st).is_some() && self.spec.dispatch {
+                if (next_entry(&self.st).is_some() || wake_requested(&self.st))
+                    && self.spec.dispatch
+                {
                     self.resume_now(session);
                 }
                 true
@@ -2081,11 +2084,15 @@ fn effect_in_flight(st: &TaskStatus, key: &str, action: &str) -> bool {
 }
 
 fn watched(obj: &Object, spec: &TaskSpec, st: &TaskStatus) -> bool {
-    !obj.is_deleting() && (pause_candidate(spec, st) || in_flight(obj, st))
+    !obj.is_deleting()
+        && (pause_candidate(spec, st)
+            || in_flight(obj, st)
+            || (spec.dispatch && wake_requested(st)))
 }
 
-/// Whether a Task's session activity is watched: it may be paused, or a
-/// pause or resume waits for its outcome. The manager reconciles such a
+/// Whether a Task's session activity is watched: it may be paused, a
+/// pause or resume waits for its outcome, or a view asked for it while
+/// paused. The manager reconciles such a
 /// Concluded Task on every sweep. An undecodable Task is not watched.
 pub fn watches_activity(obj: &Object) -> bool {
     decode(obj).is_ok_and(|(spec, st)| watched(obj, &spec, &st))
@@ -2213,6 +2220,15 @@ fn latest_other_prompt_seq(reported: &fleet_api::signal::Reported, digest: &str)
         .map(|(_, seq)| *seq)
         .max()
         .unwrap_or_default()
+}
+
+fn wake_requested(st: &TaskStatus) -> bool {
+    let paused_at = condition(&st.conditions, PAUSED)
+        .filter(|c| c.status == ConditionStatus::True)
+        .map(|c| c.last_transition_time);
+    st.wake_requested_at
+        .zip(paused_at)
+        .is_some_and(|(asked, paused)| asked >= paused)
 }
 
 /// The oldest inbox entry still to deliver: an entry given up on after its

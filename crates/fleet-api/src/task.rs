@@ -555,6 +555,12 @@ pub struct TaskStatus {
     /// only by an inbox append that carries `answers`, first writer wins.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub answered: BTreeMap<String, Answer>,
+    /// When a view last asked for the session, Unix milliseconds. No owner:
+    /// written only by `fleet attach` and `fleet shell` through a typed
+    /// mutation. A paused session is resumed for a request made at or after
+    /// its pause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_requested_at: Option<Millis>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -602,7 +608,7 @@ pub const GATEWAY_FIELDS: &[&str] = &["gateway"];
 
 /// The status fields nobody owns: reached only through typed mutations.
 /// Every field in none of these lists is TaskController's.
-pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered"];
+pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered", "wakeRequestedAt"];
 
 #[cfg(test)]
 mod tests {

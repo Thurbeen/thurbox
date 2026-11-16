@@ -133,6 +133,12 @@ pub fn may_append_inbox(by: FieldManager) -> bool {
     )
 }
 
+/// Who may ask for a paused Task's session (`Store::request_wake`): `fleet
+/// attach` and `fleet shell`, as `cli`.
+pub fn may_request_wake(by: &FieldManager) -> bool {
+    *by == FieldManager::Cli
+}
+
 /// Who may replace its own status field and append the relay's entries in
 /// one write (`Store::record_relay`): the Forge controller, for
 /// `Task.status.forge`, and the Gateway controller, for

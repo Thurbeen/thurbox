@@ -321,3 +321,148 @@ fn an_agent_fleet_cannot_resume_is_never_paused() {
     assert_eq!(env.calls("pause"), 0);
     assert!(!stopped(&env));
 }
+
+#[test]
+fn a_view_opened_on_a_paused_task_resumes_it_with_no_entry() {
+    let env = setup("pause-view", vec![task("t1")]);
+    pause(&env, "t1");
+    assert!(stopped(&env));
+
+    let mut attach = env.spawn(&["attach", "t1", "--wake", "--json"]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while attach.try_wait().expect("attach").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "attach never returned"
+        );
+        env.reconcile().ok();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let run = wait(attach);
+    assert!(!run.stderr.contains("is paused"), "{}", run.stderr);
+
+    assert_eq!(env.calls("resume"), 1);
+    assert!(!stopped(&env));
+    let st = env.status("t1");
+    assert_condition(&st, "Paused", "False", "Resumed");
+    assert!(
+        st["inbox"].as_array().is_none_or(Vec::is_empty),
+        "a view queues nothing: {st:#}"
+    );
+    env.reconcile().ok();
+    let texts = sent(&env);
+    assert_eq!(texts.len(), 2, "{texts:#?}");
+    assert!(texts[1].contains("paused"), "{}", texts[1]);
+}
+
+#[test]
+fn a_view_asked_for_before_the_pause_resumes_nothing() {
+    let env = setup("pause-stale-view", vec![task("t1")]);
+    pause(&env, "t1");
+    let path = env.object_path("Task", "t1");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj["status"]["wakeRequestedAt"] = json!(1);
+    std::fs::write(&path, obj.to_string()).unwrap();
+
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("resume"), 0);
+    assert!(stopped(&env));
+}
+
+#[test]
+fn task_controller_keeps_a_views_request_as_it_is() {
+    let env = setup("pause-view-owner", vec![task("t1")]);
+    pause(&env, "t1");
+    let path = env.object_path("Task", "t1");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj["status"]["wakeRequestedAt"] = json!(u64::MAX);
+    std::fs::write(&path, obj.to_string()).unwrap();
+    env.reconcile().ok();
+    assert_eq!(
+        env.get("t1")["status"]["wakeRequestedAt"],
+        json!(u64::MAX),
+        "TaskController keeps the view's field as it is"
+    );
+}
+
+#[test]
+fn a_view_on_a_paused_held_task_says_so_at_once() {
+    let env = setup("pause-view-held", vec![task("t1")]);
+    pause(&env, "t1");
+    let mut held = task("t1");
+    held["spec"]["dispatch"] = json!(false);
+    env.apply(json!([held])).ok();
+
+    let started = std::time::Instant::now();
+    env.fleet(&["attach", "t1", "--wake", "--json"])
+        .code(3)
+        .stderr_has("Task/t1 is paused and held");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    env.reconcile().ok();
+    assert_eq!(env.calls("resume"), 0);
+}
+
+#[test]
+fn a_view_opened_on_a_paused_concluded_task_resumes_it() {
+    let env = setup("pause-view-concluded", vec![task("t1")]);
+    env.reconcile().ok();
+    env.fleet(&[
+        "result",
+        "t1",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://example.invalid/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    set_activity(&env, Some("idle"));
+    env.reconcile().ok();
+    expire_idle(&env, "t1");
+    env.reconcile().ok();
+    assert_condition(&env.status("t1"), "Paused", "True", "Idle");
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+
+    let mut attach = env.spawn(&["attach", "t1", "--wake", "--json"]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while attach.try_wait().expect("attach").is_none() && std::time::Instant::now() < deadline {
+        env.reconcile().ok();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = attach.kill();
+    let run = wait(attach);
+    assert!(!run.stderr.contains("is paused"), "{}", run.stderr);
+    assert_eq!(env.calls("resume"), 1);
+    assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+
+    for _ in 0..3 {
+        env.reconcile().ok();
+    }
+    let texts = sent(&env);
+    assert_eq!(texts.len(), 2, "the catch-up note is sent: {texts:#?}");
+    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
+    assert!(env.get("t1")["status"]["catchUp"].is_null());
+}
+
+#[test]
+fn a_background_attach_on_a_paused_task_says_so_and_wakes_nothing() {
+    let env = setup("pause-view-background", vec![task("t1")]);
+    pause(&env, "t1");
+
+    env.fleet(&["attach", "t1", "--json"])
+        .code(3)
+        .stderr_has("Task/t1 is paused")
+        .stderr_has("--wake");
+    env.fleet(&["shell", "t1", "--json"])
+        .code(3)
+        .stderr_has("Task/t1 is paused");
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(env.calls("resume"), 0);
+    assert!(stopped(&env));
+    assert!(env.get("t1")["status"]["wakeRequestedAt"].is_null());
+}

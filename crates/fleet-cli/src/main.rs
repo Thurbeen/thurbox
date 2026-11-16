@@ -24,7 +24,7 @@ use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account}
 use fleet_manager::{
     AmendRequest, DeclareOutcome, GatewaySide, Manager, RunOptions, amend, apply,
     apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
-    list_events, publish_event, receive, record_result, send,
+    list_events, publish_event, receive, record_result, send, wake,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
 use fleet_store::{FileStore, SystemClock};
@@ -180,6 +180,9 @@ enum Command {
         task: String,
         #[arg(long)]
         json: bool,
+        /// Resume a paused Task first, and wait for it to run again.
+        #[arg(long)]
+        wake: bool,
     },
     /// The command that opens an interactive shell beside a Task's session,
     /// on its place, as a terminal stream: as JSON with --json, else one
@@ -188,6 +191,9 @@ enum Command {
         task: String,
         #[arg(long)]
         json: bool,
+        /// Resume a paused Task first, and wait for it to run again.
+        #[arg(long)]
+        wake: bool,
     },
     /// Follow the Tasks: one event per changed or deleted Task, as NDJSON
     /// with --json, until Ctrl-C or --once.
@@ -1061,17 +1067,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
         Command::Event { command } => cmd_event(store, command),
-        Command::Attach { task, json } => {
+        Command::Attach { task, json, wake } => {
             let signals = open_signals(&data_dir)?;
             let runtime = open_runtime(&config, &signals)?;
-            cmd_open(store, &task, json, Opens::View, |session| {
+            cmd_open(store, &task, json, wake, Opens::View, |session| {
                 runtime.attach(session)
             })
         }
-        Command::Shell { task, json } => {
+        Command::Shell { task, json, wake } => {
             let signals = open_signals(&data_dir)?;
             let runtime = open_runtime(&config, &signals)?;
-            cmd_open(store, &task, json, Opens::Shell, |session| {
+            cmd_open(store, &task, json, wake, Opens::Shell, |session| {
                 runtime.shell(session)
             })
         }
@@ -2555,6 +2561,56 @@ enum Opens {
     Shell,
 }
 
+const RESUME_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn paused(obj: &Object) -> bool {
+    serde_json::from_value::<fleet_api::task::TaskStatus>(obj.status.clone())
+        .is_ok_and(|st| fleet_api::condition::is_true(&st.conditions, "Paused"))
+}
+
+fn refuse_unresumable(obj: &Object, task: &str) -> Result<(), Failure> {
+    let held = obj.spec.get("dispatch") != Some(&json!(true));
+    let stalled = obj.status.get("phase") == Some(&json!("Stalled"));
+    if !held && !stalled {
+        return Ok(());
+    }
+    let (state, hint) = if held {
+        ("held", "set spec.dispatch to true to let Fleet resume it")
+    } else {
+        (
+            "stalled",
+            "Stalled is terminal: delete the Task and apply it again",
+        )
+    };
+    Err(Failure {
+        code: exit::NOT_FOUND,
+        message: format!("Task/{task} is paused and {state}, so Fleet resumes nothing for it"),
+        hint: Some(hint.into()),
+    })
+}
+
+fn wait_for_resume(store: &dyn Store, task: &str) -> Result<(), Failure> {
+    wake(store, &SystemClock, task)?;
+    let deadline = std::time::Instant::now() + RESUME_WAIT;
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if !paused(&get(store, fleet_api::task::KIND, task)?) {
+            return Ok(());
+        }
+    }
+    Err(Failure {
+        code: exit::NOT_FOUND,
+        message: format!(
+            "Task/{task} is paused, and Fleet did not resume it within {}s",
+            RESUME_WAIT.as_secs()
+        ),
+        hint: Some(format!(
+            "the Fleet engine resumes it on its next pass; check that it runs, then \
+             try again, or see why with `fleet get task {task}`"
+        )),
+    })
+}
+
 /// `fleet attach` and `fleet shell`: the argv that opens a terminal stream
 /// on the Task's session, as `ask` answers it. A runtime's `tty` answer is
 /// a raw interactive command, which a view never sees: it runs under
@@ -2563,6 +2619,7 @@ fn cmd_open(
     store: &dyn Store,
     task: &str,
     json_out: bool,
+    wake_paused: bool,
     opens: Opens,
     ask: impl FnOnce(&fleet_api::task::SessionRef) -> Observation<Option<fleet_api::runtime::Attach>>,
 ) -> Result<(), Failure> {
@@ -2582,6 +2639,20 @@ fn cmd_open(
             hint: Some("a stream waits for the Task's spawn".into()),
         });
     };
+    if paused(&obj) {
+        if !wake_paused {
+            return Err(Failure {
+                code: exit::NOT_FOUND,
+                message: format!("Task/{task} is paused: its agent is stopped"),
+                hint: Some(format!(
+                    "add --wake to resume it and open it, or send it a message with \
+                     `fleet send {task} TEXT`"
+                )),
+            });
+        }
+        refuse_unresumable(&obj, task)?;
+        wait_for_resume(store, task)?;
+    }
     let argv = match ask(&session) {
         Observation::Known(Some(Attach::Stream { argv })) => argv,
         Observation::Known(Some(Attach::Tty { argv })) => {

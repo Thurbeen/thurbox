@@ -1028,6 +1028,36 @@ impl Store for FileStore {
         Ok(obj)
     }
 
+    fn request_wake(
+        &self,
+        name: &str,
+        at: fleet_api::meta::Millis,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        if !kinds::may_request_wake(&by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not write status.wakeRequestedAt",
+                by.name()
+            )));
+        }
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(task::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; nothing would resume its session",
+                obj.key()
+            )));
+        }
+        let mut st = task_status(&obj)?;
+        st.wake_requested_at = Some(at);
+        obj.status = encode_status(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
     fn amend_task(
         &self,
         name: &str,

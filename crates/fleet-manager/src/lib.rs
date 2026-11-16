@@ -90,7 +90,7 @@ pub use verbs::{
     AmendRequest, Amended, ApplyOutcome, DeclareOutcome, Declared, Received, Refusal,
     ResultOutcome, amend, apply, apply_change_request, apply_conversation, beat, conversation_name,
     declare, declare_change_request, delete, derived_name, ensure_listeners, label, list_events,
-    publish_event, receive, record_result, send,
+    publish_event, receive, record_result, send, wake,
 };
 
 /// How a bounded reconcile run ends.
@@ -1797,7 +1797,8 @@ impl Manager<'_> {
             .status
             .get("inbox")
             .and_then(Value::as_array)
-            .is_none_or(Vec::is_empty);
+            .is_none_or(Vec::is_empty)
+            && obj.status.get("catchUp").is_none_or(Value::is_null);
         let recheck_due = obj
             .status
             .get("sessionCheckedAt")
