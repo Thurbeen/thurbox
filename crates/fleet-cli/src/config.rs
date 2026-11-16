@@ -170,12 +170,15 @@ impl Config {
         if let Some((why, store)) = fleet_2_config(text, path) {
             return Err(format!(
                 "config {path} is a Fleet 2.x config ({why}); this Fleet does not read it, nor \
-                 the store it names. Move both aside (`mv {path} {path}.v2` and `mv {store} \
-                 {store}.v2`) and run `fleet init` to write a Fleet 3 config, then copy [forge] \
+                 the store it names. Move both aside (`mv {config} {config_v2}` and `mv {store} \
+                 {store_v2}`) and run `fleet init` to write a Fleet 3 config, then copy [forge] \
                  and [plugins] over by hand; or keep Fleet and thurbox 2.x (install with \
                  VERSION=v2.x.y). See docs/thurbox/releasing.md, \"v2 and v3\"",
                 path = path.display(),
-                store = store.display()
+                config = sh_quote(&path.display().to_string()),
+                config_v2 = sh_quote(&format!("{}.v2", path.display())),
+                store = sh_quote(&store.display().to_string()),
+                store_v2 = sh_quote(&format!("{}.v2", store.display())),
             ));
         }
         let mut config: Config =
@@ -419,6 +422,12 @@ fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf)> {
             .join("store-v1"),
     };
     Some((why, store))
+}
+
+/// `word` as one POSIX shell word: the recovery commands above are pasted
+/// into a shell, and a home directory may hold a space.
+fn sh_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// Explicit CLI path, then FLEET_CONFIG, then one native per-user location.

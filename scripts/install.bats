@@ -304,6 +304,28 @@ fleet_only_installed() {
   rm -rf "$tmpdir"
 }
 
+# A 2.x release, as VERSION=v2.x.y pins it: two programs, and only the old
+# sums name. Sets $assets and $dest, as fake_release does.
+fake_v2_release() {
+  tmpdir=$(mktemp -d)
+  assets="$tmpdir/www" dest="$tmpdir/bin"
+  mkdir -p "$tmpdir/src" "$assets/v2.89.0"
+  for f in thurbox thurbox-cli LICENSE; do printf '#!/bin/sh\n' > "$tmpdir/src/$f"; done
+  target=$(TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; get_target \$(detect_platform)")
+  tar -czf "$assets/v2.89.0/thurbox-v2.89.0-$target.tar.gz" -C "$tmpdir/src" thurbox thurbox-cli LICENSE
+  (cd "$assets/v2.89.0" && sha256sum ./*.tar.gz | sed 's| \./| |' > thurbox-v2.89.0-checksums.txt)
+}
+
+@test "a pinned 2.x release installs, verified by its checksums.txt" {
+  fake_v2_release
+  run_installer VERSION=v2.89.0 sh "${BATS_TEST_DIRNAME}/install.sh"
+  [ "$code" -eq 0 ]
+  [ -x "$dest/thurbox" ]
+  [ -x "$dest/thurbox-cli" ]
+  [ ! -e "$dest/fleet" ]
+  rm -rf "$tmpdir"
+}
+
 @test "THURBOX_FLEET_ONLY=0 is a full install" {
   fake_release
   run_installer THURBOX_FLEET_ONLY=0 sh "${BATS_TEST_DIRNAME}/install.sh"

@@ -807,7 +807,11 @@ fn a_fleet_2_config_is_named_with_what_to_do() {
         let store = config.parent().unwrap().join("store-v1");
         run.code(1)
             .stderr_has("is a Fleet 2.x config")
-            .stderr_has(&format!("mv {} {}.v2", store.display(), store.display()))
+            .stderr_has(&format!(
+                "mv '{}' '{}.v2'",
+                store.display(),
+                store.display()
+            ))
             .stderr_has("fleet init")
             .stderr_has("VERSION=v2.");
         assert!(!run.stderr.contains("unknown field"), "{}", run.stderr);
@@ -816,6 +820,41 @@ fn a_fleet_2_config_is_named_with_what_to_do() {
         config.is_file(),
         "the Fleet 2.x config is the user's to move"
     );
+}
+
+/// The recovery commands are pasted into a shell, so a path with a space,
+/// as under `/home/Jane Doe`, is quoted rather than split.
+#[test]
+fn a_fleet_2_config_recovery_quotes_paths_with_spaces() {
+    let env = Env::without_tools("fleet-2-config-spaces");
+    let dir = env.root.join("Jane Doe/fleet");
+    fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.toml");
+    fs::write(
+        &config,
+        "version = 1\n\n[data]\ndir = \"my store\"\n\n[runtime]\nkind = \"thurbox\"\n",
+    )
+    .unwrap();
+    let store = dir.join("my store");
+    let run = wait(
+        installed(
+            &env,
+            &["--config", config.to_str().unwrap(), "list", "task"],
+        )
+        .spawn()
+        .unwrap(),
+    );
+    run.code(1)
+        .stderr_has(&format!(
+            "mv '{}' '{}.v2'",
+            config.display(),
+            config.display()
+        ))
+        .stderr_has(&format!(
+            "mv '{}' '{}.v2'",
+            store.display(),
+            store.display()
+        ));
 }
 
 /// `fleet version --json` reports the manager's lease under `manager`, and

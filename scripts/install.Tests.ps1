@@ -445,13 +445,26 @@ Describe 'A fleet-only install' {
         Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -like '*checksums.txt' } -Times 0
     }
 
-    It 'verifies a pinned 2.x release by its checksums.txt' {
-        Rename-Item -LiteralPath (Join-Path $script:Assets 'thurbox-9.9.9-sha256sums.txt') -NewName 'thurbox-v9.9.9-checksums.txt'
+    # A 2.x release, as THURBOX_VERSION=v2.x.y pins it: two programs, and only
+    # the old sums name.
+    It 'installs a pinned 2.x release, verified by its checksums.txt' {
+        $src = Join-Path $script:Work 'src-v2'
+        New-Item -ItemType Directory -Path $src -Force | Out-Null
+        foreach ($name in 'thurbox', 'thurbox-cli') {
+            Set-Content -Path (Join-Path $src "$name.exe") -Value 'v2' -NoNewline
+        }
+        Set-Content -Path (Join-Path $src 'LICENSE') -Value 'license'
+        $archive = 'thurbox-v2.89.0-x86_64-pc-windows-msvc.zip'
+        $zip = Join-Path $script:Assets $archive
+        Compress-Archive -Path (Join-Path $src '*') -DestinationPath $zip
+        $hash = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+        Set-Content -Path (Join-Path $script:Assets 'thurbox-v2.89.0-checksums.txt') -Value "$hash  $archive"
+        $env:THURBOX_VERSION = 'v2.89.0'
         . $script:ScriptPath
         Invoke-Install
-        foreach ($name in $script:Shipped) {
-            Test-Path -LiteralPath (Join-Path $script:Dest "$name.exe") | Should -BeTrue
-        }
+        $installed = @(Get-ChildItem -LiteralPath $script:Dest -Filter '*.exe' | ForEach-Object { $_.Name } | Sort-Object)
+        $installed -join ' ' | Should -Be 'thurbox-cli.exe thurbox.exe'
+        Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -like '*/v2.89.0/thurbox-v2.89.0-checksums.txt' } -Times 1
     }
 
     It 'installs every shipped program without it' {
