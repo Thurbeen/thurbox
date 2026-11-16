@@ -1509,14 +1509,14 @@ mod tests {
                      exit 1\n\
                    fi\n\
                  fi\n\
-                 if [ \"$scenario\" = transient_option_failure ] && \
-                    [ ! -f \"$attempts.option_ready\" ]; then\n\
-                   if [ ! -f \"$attempts.option_started\" ]; then\n\
-                     touch \"$attempts.option_started\"\n\
-                     (sleep 0.1; touch \"$attempts.option_ready\") >/dev/null 2>&1 &\n\
+                 if [ \"$scenario\" = transient_option_failure ]; then\n\
+                   refused=0\n\
+                   [ -f \"$attempts.option_refused\" ] && refused=$(wc -l < \"$attempts.option_refused\")\n\
+                   if [ \"$refused\" -lt {option_refusals} ]; then\n\
+                     echo refused >> \"$attempts.option_refused\"\n\
+                     echo 'psmux: no server running on session' >&2\n\
+                     exit 1\n\
                    fi\n\
-                   echo 'psmux: no server running on session' >&2\n\
-                   exit 1\n\
                  fi\n\
                  if [ \"$scenario\" = live_option_failure ]; then\n\
                    echo 'invalid option' >&2\n\
@@ -1537,7 +1537,8 @@ mod tests {
              esac\n",
             session.display(),
             attempts.display(),
-            scenario
+            scenario,
+            option_refusals = Psmux::COLD_START_ATTEMPTS + 1,
         );
         std::fs::write(&mux, script).expect("write fake psmux");
         std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
@@ -1820,6 +1821,9 @@ mod tests {
             .ensure_session_configured()
             .expect("psmux recovers after a temporary connection failure");
         assert_eq!(attempt_count(&root), 1);
+        let refused = std::fs::read_to_string(root.path().join("attempts.option_refused"))
+            .expect("set-option was refused");
+        assert_eq!(refused.lines().count(), Psmux::COLD_START_ATTEMPTS + 1);
     }
 
     #[cfg(unix)]
