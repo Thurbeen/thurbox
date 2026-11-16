@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 452" width="900" height="452" role="img" aria-labelledby="t d">
   <title id="t">thurbox: one interface, several Fleets</title>
   <desc id="d">thurbox lists the sessions of every Fleet in settings.toml; Ctrl+N picks a Fleet, a place and a repository. Fleet laptop runs on this machine, where thurbox starts fleet up. Fleet box runs on another machine, reached over ssh or WSL, where a systemd unit runs fleet up. Each Fleet starts a runtime (runtime-mux, or yours), which runs a workspace provider (workspace-git, or yours) and runs sessions at a place: Fleet laptop at local (the laptop) and mux/devbox over ssh, Fleet box at local (box itself) and mux/wsl-dev. A session is a Task of one Fleet: it keeps running when thurbox quits, and a Fleet that cannot be reached keeps its rows, marked unreachable.</desc>
-  <style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif;fill:#e6edf3;font-size:12.5px}.m{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace}.h{font-size:20px;font-weight:600}.col{font-size:11.5px;fill:#9198a1}.n{font-size:14px;font-weight:600}.m{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;font-size:12.5px}.s{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;font-size:11px}.na{font-size:15px;font-weight:700;fill:#ff5c54}.d{fill:#9198a1;font-size:12px}.or{fill:#9198a1;font-size:11px;font-weight:400}.r{font-size:11px;fill:#9198a1}.el{font-size:10.5px;fill:#9198a1}.b{fill:#151b23;stroke:#3d444d;stroke-width:1}.ba{fill:#2a1517;stroke:#ff5c54;stroke-width:1.5}.bs{fill:#1c232c;stroke:#3d444d;stroke-width:1}.pill{fill:#151b23;stroke:#3d444d;stroke-width:1}.w{fill:none;stroke:#3d444d;stroke-width:1.5}.dot{fill:#ff5c54}.ok{fill:#6eff6e}.ft{fill:#1c232c}.fb{fill:#ff5c54}.fs{font-weight:600}</style>
+  <style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif;fill:#e6edf3;font-size:12.5px}.h{font-size:20px;font-weight:600}.col{font-size:11.5px;fill:#9198a1}.n{font-size:14px;font-weight:600}.na{font-size:15px;font-weight:700;fill:#ff5c54}.d{fill:#9198a1;font-size:12px}.m{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;font-size:12.5px}.s{font-family:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;font-size:11px}.or{fill:#9198a1;font-size:11px;font-weight:400}.r{font-size:11px;fill:#9198a1}.el{font-size:10.5px;fill:#9198a1}.b{fill:#151b23;stroke:#3d444d;stroke-width:1}.ba{fill:#2a1517;stroke:#ff5c54;stroke-width:1.5}.bs{fill:#1c232c;stroke:#3d444d;stroke-width:1}.pill{fill:#151b23;stroke:#3d444d;stroke-width:1}.w{fill:none;stroke:#3d444d;stroke-width:1.5}.dot{fill:#ff5c54}.ok{fill:#6eff6e}.ft{fill:#1c232c}.fb{fill:#ff5c54}.fs{font-weight:600}</style>
   <text x="20" y="36" class="h">One interface, several Fleets</text>
   <text x="22" y="62" class="col">interface</text>
   <text x="246" y="62" class="col">engine</text>
@@ -17,13 +17,13 @@
   <text x="36" y="320" class="d">picks a Fleet, a place</text>
   <text x="36" y="338" class="d">and a repository</text>
   <path d="M180 141H244M404 141H452" class="w"/>
-  <path d="M668 141H691M691 141V105.0H714M691 141V177.0H714" class="w"/>
-  <rect x="189.0" y="132" width="46" height="18" rx="9" class="pill"/>
-  <text x="212.0" y="144.5" class="el" text-anchor="middle">fleet</text>
-  <rect x="405.0" y="132" width="46" height="18" rx="9" class="pill"/>
-  <text x="428.0" y="144.5" class="el" text-anchor="middle">start</text>
-  <rect x="670.0" y="132" width="40" height="18" rx="9" class="pill"/>
-  <text x="690.0" y="144.5" class="el" text-anchor="middle">runs</text>
+  <path d="M668 141H691M691 141V105H714M691 141V177H714" class="w"/>
+  <rect x="189" y="132" width="46" height="18" rx="9" class="pill"/>
+  <text x="212" y="144.5" class="el" text-anchor="middle">fleet</text>
+  <rect x="405" y="132" width="46" height="18" rx="9" class="pill"/>
+  <text x="428" y="144.5" class="el" text-anchor="middle">start</text>
+  <rect x="670" y="132" width="40" height="18" rx="9" class="pill"/>
+  <text x="690" y="144.5" class="el" text-anchor="middle">runs</text>
   <rect x="244" y="76" width="160" height="130" rx="12" class="b"/>
   <circle cx="264" cy="102" r="4" class="dot"/>
   <text x="274" y="106" class="n">Fleet laptop</text>
@@ -32,10 +32,10 @@
   <text x="260" y="178" class="d m">fleet up</text>
   <rect x="452" y="76" width="216" height="130" rx="12" class="b"/>
   <text x="468" y="98" class="r">runtime</text>
-  <text x="468" y="118" class="n m">runtime-mux<tspan class="or"> &#xB7; or yours</tspan></text>
+  <text x="468" y="118" class="n m">runtime-mux<tspan class="or"> · or yours</tspan></text>
   <rect x="462" y="134" width="196" height="62" rx="8" class="bs"/>
   <text x="468" y="156" class="r">workspace provider</text>
-  <text x="468" y="176" class="n m">workspace-git<tspan class="or"> &#xB7; or yours</tspan></text>
+  <text x="468" y="176" class="n m">workspace-git<tspan class="or"> · or yours</tspan></text>
   <rect x="714" y="76" width="166" height="58" rx="10" class="b"/>
   <text x="728" y="100" class="n m">local</text>
   <text x="728" y="119" class="d">the laptop</text>
@@ -45,13 +45,13 @@
   <text x="728" y="191" class="d">devbox, over ssh</text>
   <circle cx="864" cy="168" r="3.5" class="ok"/>
   <path d="M180 291H244M404 291H452" class="w"/>
-  <path d="M668 291H691M691 291V255.0H714M691 291V327.0H714" class="w"/>
-  <rect x="177.0" y="282" width="70" height="18" rx="9" class="pill"/>
-  <text x="212.0" y="294.5" class="el" text-anchor="middle">ssh &#xB7; WSL</text>
-  <rect x="405.0" y="282" width="46" height="18" rx="9" class="pill"/>
-  <text x="428.0" y="294.5" class="el" text-anchor="middle">start</text>
-  <rect x="670.0" y="282" width="40" height="18" rx="9" class="pill"/>
-  <text x="690.0" y="294.5" class="el" text-anchor="middle">runs</text>
+  <path d="M668 291H691M691 291V255H714M691 291V327H714" class="w"/>
+  <rect x="177" y="282" width="70" height="18" rx="9" class="pill"/>
+  <text x="212" y="294.5" class="el" text-anchor="middle">ssh · WSL</text>
+  <rect x="405" y="282" width="46" height="18" rx="9" class="pill"/>
+  <text x="428" y="294.5" class="el" text-anchor="middle">start</text>
+  <rect x="670" y="282" width="40" height="18" rx="9" class="pill"/>
+  <text x="690" y="294.5" class="el" text-anchor="middle">runs</text>
   <rect x="244" y="226" width="160" height="130" rx="12" class="b"/>
   <circle cx="264" cy="252" r="4" class="dot"/>
   <text x="274" y="256" class="n">Fleet box</text>
@@ -60,10 +60,10 @@
   <text x="260" y="328" class="d m">fleet up</text>
   <rect x="452" y="226" width="216" height="130" rx="12" class="b"/>
   <text x="468" y="248" class="r">runtime</text>
-  <text x="468" y="268" class="n m">runtime-mux<tspan class="or"> &#xB7; or yours</tspan></text>
+  <text x="468" y="268" class="n m">runtime-mux<tspan class="or"> · or yours</tspan></text>
   <rect x="462" y="284" width="196" height="62" rx="8" class="bs"/>
   <text x="468" y="306" class="r">workspace provider</text>
-  <text x="468" y="326" class="n m">workspace-git<tspan class="or"> &#xB7; or yours</tspan></text>
+  <text x="468" y="326" class="n m">workspace-git<tspan class="or"> · or yours</tspan></text>
   <rect x="714" y="226" width="166" height="58" rx="10" class="b"/>
   <text x="728" y="250" class="n m">local</text>
   <text x="728" y="269" class="d">box itself</text>

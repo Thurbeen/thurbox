@@ -222,7 +222,16 @@ thurbox-cli config show       # effective config + where each value came from</c
             <code>send</code> and <code>delete</code> for your actions. The agents a session can run
             are that Fleet's harness profiles (<a href="agents.html">Agents</a>).
           </p>
-          <img src="../assets/overview.svg" alt="thurbox follows several Fleets; each Fleet runs runtimes, and each runtime runs sessions on its places" width="900" height="452" loading="lazy">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="../assets/overview-dark.svg" />
+            <img
+              src="../assets/overview-light.svg"
+              alt="thurbox follows several Fleets; each Fleet runs runtimes, and each runtime runs sessions on its places"
+              width="900"
+              height="452"
+              loading="lazy"
+            />
+          </picture>
           <p>
             The <code>[fleets.&lt;name&gt;]</code> tables in <code>settings.toml</code> list the
             Fleets to follow. Each table is one Fleet: on this machine, over ssh, or in a WSL

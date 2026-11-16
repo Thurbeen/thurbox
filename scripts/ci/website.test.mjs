@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { test } from 'node:test';
 import { parse } from 'node-html-parser';
+import { THEMES, overviewPath, overviewSvg } from '../docs/overview-svg.mjs';
 import { RENDERED_DOCS } from '../../eleventy.config.js';
 
 // Reads the built site, so run it after `npm run build:website`.
@@ -313,5 +314,27 @@ test('every link to a section on the site lands on an element with that id', () 
       if (!file.endsWith('.html') || !existsSync(`_site/${file}`)) continue;
       assert.ok(built(file).querySelector(`[id="${fragment}"]`), `${path}: ${href} names no id on ${file}`);
     }
+  }
+});
+
+test('the overview diagrams are what their generator draws', () => {
+  for (const theme of THEMES) {
+    assert.equal(
+      readFileSync(overviewPath(theme), 'utf8'),
+      overviewSvg(theme),
+      `${overviewPath(theme)} is stale: run node scripts/docs/overview-svg.mjs`,
+    );
+  }
+});
+
+test('every page shows the overview in the theme of its reader', () => {
+  for (const page of ['docs/architecture.html', 'docs/configuration.html', 'docs/fleet-places.html']) {
+    const picture = built(page).querySelector('picture');
+    assert.equal(
+      picture?.querySelector('source[media="(prefers-color-scheme: dark)"]')?.getAttribute('srcset'),
+      '../assets/overview-dark.svg',
+      `${page} has the dark overview`,
+    );
+    assert.equal(picture.querySelector('img').getAttribute('src'), '../assets/overview-light.svg', `${page} falls back to the light overview`);
   }
 });

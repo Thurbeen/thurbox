@@ -133,6 +133,7 @@ jobs:
               - 'eleventy.config.js'
               - 'scripts/ci/*plugins*.mjs'
               - 'scripts/ci/website.test.mjs'
+              - 'scripts/docs/overview-svg.mjs'
               # website.test.mjs checks the agent list against Fleet's harnesses.
               - 'crates/fleet-api/src/harness/bundled.rs'
               - 'package.json'
