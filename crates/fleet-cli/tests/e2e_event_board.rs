@@ -1877,3 +1877,94 @@ fn an_event_cursor_reads_across_a_page_boundary_and_a_limit_cut_repeats_and_skip
     publish_many(&store, ["even".to_string()].into_iter());
     assert_eq!(next_seqs(&mut even, &store, 10), vec![2006]);
 }
+
+#[test]
+fn a_busy_read_of_a_later_page_keeps_the_matches_already_read() {
+    let env = board_env("board-cursor-busy-page");
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    publish_many(
+        &store,
+        (1..=1500).map(|n| {
+            if n % 100 == 0 {
+                "hit".into()
+            } else {
+                "miss".into()
+            }
+        }),
+    );
+    let flaky = HookedBoard::new(
+        &store,
+        Box::new(|_, _, reads| match reads {
+            2 => Err(StoreError::Busy("a writer holds the lock".into())),
+            _ => Ok(()),
+        }),
+    );
+    let mut seen = Vec::new();
+    let mut cursor = cursor_on("shared", 0, Some("hit"));
+    let mut pause = |_| {};
+    let mut warn = |_: &StoreError| {};
+    let mut poll = fleet_manager::verbs::Poll {
+        every_ms: 50,
+        pause: &mut pause,
+        warn: &mut warn,
+    };
+    for _ in 0..4 {
+        match fleet_manager::verbs::wait_events(
+            &flaky,
+            &FixedClock(1),
+            &mut cursor,
+            100,
+            1,
+            &mut poll,
+        )
+        .unwrap()
+        {
+            Some(Page::Events(events)) => seen.extend(events.iter().map(|e| e.seq)),
+            Some(expired) => panic!("{expired:?}"),
+            None => {}
+        }
+    }
+    assert_eq!(seen, (100..=1500).step_by(100).collect::<Vec<_>>());
+    assert!(next_seqs(&mut cursor, &flaky, 100).is_empty());
+}
+
+#[test]
+fn publish_wait_on_a_board_made_again_since_the_append_prints_the_event_as_new() {
+    let env = session_env("event-session-wait-board-remade");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    let board = json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Board",
+        "metadata": {"name": "scratch"},
+        "spec": {}
+    });
+    env.apply(board.clone()).ok();
+    for n in 1..=3 {
+        publish(
+            &env,
+            &[
+                "--board",
+                "scratch",
+                "--type",
+                "old",
+                "--data",
+                &n.to_string(),
+            ],
+        );
+    }
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &[
+            "--board", "scratch", "--type", "new.a", "--data", "1", "--wait",
+        ],
+    );
+    wait_for_append(&outbox, 0);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    env.fleet(&["delete", "board", "scratch"]).ok();
+    env.apply(board).ok();
+    let run = reconcile_until_done(&env, child);
+    run.ok().stdout_has("scratch/1 new.a from task/a");
+    assert!(!run.stdout.contains("already"), "{}", run.stdout);
+}

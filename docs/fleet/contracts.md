@@ -1337,15 +1337,18 @@ on standard error. It waits until the Task's `status.outbox`, compared as a
 (generation, offset) pair, reaches (that generation, the line's end).
 TaskController appends a line's event before it moves the cursor past the
 line, so the event is then on the Board, from that Task by name and uid,
-under that key. It is first looked for above the head read before the
-append, then once from the start up to that head: an event found there is
-a key the Task already used, and prints with `(already published under
-this key)`, as a publish outside a session does. A line with no event in
-either place was skipped, or retention dropped its event: the command exits
-1 and says so, with `lastSkipped`'s reason when it names the line's offset
-(`OutboxCursor::skipped_at`). The line's own fields never name the Task. A
-timeout prints the queued line, as a publish without `--wait` does, and
-exits 7.
+under that key. `before_append` also keeps the Board's uid. While the
+Board's uid is the same, the event is first looked for above the head read
+before the append, then once from the start up to that head: an event found
+there is a key the Task already used, and prints with `(already published
+under this key)`, as a publish outside a session does. A Board made again
+since is searched from its start, and an event found there is new. A line
+with no event is not on the Board (skipped, dropped by retention, or in an
+outbox made again): the command exits 1 and says so, with `lastSkipped`'s
+reason when it names the line's offset (`OutboxCursor::skipped_at`). The
+line's own fields never name the Task. A timeout prints the queued line, as
+a publish without `--wait` does, and exits 7: Fleet has not read the line
+in yet, and may still, unless the outbox was made again.
 `fleet event list [--board B] [--after SEQ] [--type P]
 [--subject P] [--source S] [--correlation C] [--limit N] [--json]` prints the
 first `N` (100 by default, at most 10000) events above `SEQ` that match,
@@ -1360,7 +1363,9 @@ and `fleet event watch --after SEQ [--poll-ms MS]` take the Board and
 filters of `list` and read through the manager's `EventCursor`, with no
 lock. The cursor's `after` moves past each event a read returns, kept or
 not, and stops at the last event answered when `--limit` cuts the answer,
-so the next read repeats no event and passes none over. A torn last line
+so the next read repeats no event and passes none over. A read that
+expires or fails after some events were kept answers those, and the next
+read meets the expiry or the error again. A torn last line
 is not read until it is whole, and the log gives `seq`s with no gap, so an
 event the log gains under a read is in the next one. `wait` (the manager's
 `wait_events`) reads every `--poll-ms` (500 by default, 50 to 10000) until

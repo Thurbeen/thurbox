@@ -2153,17 +2153,17 @@ fn cmd_publish_wait(store: &dyn Store, queued: Queued) -> Result<(), Failure> {
     match ingest {
         Ingest::Appended { event, duplicate } => print_published(&event, duplicate, queued.json),
         Ingest::Skipped(why) => Err(fail(format!(
-            "Fleet skipped the line at outbox offset {offset}: {why}"
+            "the line at outbox offset {offset} was skipped or is not on the Board: {why}"
         ))),
         Ingest::Pending => {
             print_queued(&line.board, &queued.line.event_type, offset, queued.json);
             Err(Failure {
                 code: exit::TIMEOUT,
                 message: format!(
-                    "Fleet did not read the line at outbox offset {offset} in within {} ms",
+                    "Fleet has not read the line at outbox offset {offset} in within {} ms",
                     queued.timeout_ms
                 ),
-                hint: Some("the line stays queued; check that fleet up runs".into()),
+                hint: Some("Fleet may still read it in, or the outbox may have been made again; check that fleet up runs".into()),
             })
         }
     }
