@@ -453,6 +453,7 @@
 ---@field status_since_ms? integer When Fleet first saw this status from this source, in ms since the epoch.
 ---@field deleting_since_ms? integer When Fleet marked this session for deletion, in ms since the epoch. Present only on a deletion that has run past the time a teardown takes: one that has not is not listed.
 ---@field deleting_why? string Why Fleet has not finished that deletion: its `Released` condition.
+---@field state_why? string Why a Fleet session is stopped, lost or gone, or stalled: `paused · idle`, `stopped · outside Fleet`, `lost · window gone`, `gone · session ended`, `stalled · <reason>`.
 ---@field backend string
 ---@field repo? string
 ---@field branch? string
@@ -1031,7 +1032,7 @@ function require(name) end
 ---@alias thurbox.Verb
 ---| "emit" | "plugin" | "set" | "task" | "dispatch"
 ---| "create" | "bookmark" | "focus" | "open" | "theme" | "order" | "program"
----| "delete" | "restore" | "restart" | "send" | "reorder" | "fork"
+---| "delete" | "restore" | "restart" | "start" | "send" | "reorder" | "fork"
 ---| "sync" | "rename" | "copy" | "diff" | "shell" | "editor" | "action" | "message"
 
 --- The only way a plugin changes anything. Enqueues and returns; it never runs
@@ -1054,6 +1055,7 @@ function require(name) end
 ---@overload fun(verb: "delete", opts: thurbox.cmd.Delete)
 ---@overload fun(verb: "restore", opts: thurbox.cmd.Restore)
 ---@overload fun(verb: "restart", opts: thurbox.cmd.Restart)
+---@overload fun(verb: "start", opts: thurbox.cmd.Session)
 ---@overload fun(verb: "send", opts: thurbox.cmd.Send)
 ---@overload fun(verb: "reorder", opts: thurbox.cmd.Reorder)
 ---@overload fun(verb: "fork", opts: thurbox.cmd.Fork)

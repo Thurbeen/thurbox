@@ -54,6 +54,15 @@ Fleet releases its session. `FleetWatch::poll` lists it again once
 `deleting`, published as `deleting_since_ms` and `deleting_why` (the Task's
 `Released` condition); the sessions pane reads it as `deletion stuck`.
 
+A row that does not run carries `state_why`, which `state_why` in
+`src/kernel/snapshot/fleet.rs` reads off the Task's conditions: `stalled ·
+<reason>` (any state), `paused · idle`, `stopped · outside Fleet`, `lost ·
+window gone`, `lost · revive failed` or `gone · session ended`. The sessions
+pane prints it after the name. `s` on the list (or Start in its menu) sends
+the `start` command, which runs `fleet attach --wake --json <task>`: Fleet's
+controller resumes the paused agent. Fleet has no stop verb, so thurbox has
+none.
+
 ## The vocabulary
 
 `SessionState` is the one vocabulary every surface prints. Five words are an
@@ -76,11 +85,11 @@ as "the agent says it is at rest". The Fleet mapping above produces
 | `uncovered` | `status_unknown` | `◌` |
 | `unreported` | `status_unknown` | `◌` |
 | `failed` | `status_error` | `✗` |
-| `stopped` | `status_idle` (fallback) | `○` (fallback) |
+| `stopped` | `status_unknown` | `■` |
 
 The glyphs and roles live in `ui/lib/theme.lua` (`STATUS_GLYPHS`,
 `STATUS_ROLES`, `theme.status`). A word without a row there falls back to
-`idle`'s; only `stopped` relies on that fallback. The colours are theme fields,
+`idle`'s; no published word relies on that fallback. The colours are theme fields,
 so each preset and a custom theme set them.
 
 ## Animation

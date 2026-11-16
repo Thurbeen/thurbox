@@ -200,6 +200,7 @@ fn row(name: &str) -> SessionRow {
         member_dirs: Vec::new(),
         meta: BTreeMap::from([("ui.note".to_string(), "waiting for CI".to_string())]),
         deleting: None,
+        state_why: None,
         status_source: None,
     }
 }

@@ -161,6 +161,7 @@ fn one_session() -> Snapshot {
             member_dirs: Vec::new(),
             meta: Default::default(),
             deleting: None,
+            state_why: None,
             status_source: None,
         }],
         ..Snapshot::default()

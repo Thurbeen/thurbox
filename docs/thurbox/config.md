@@ -877,6 +877,10 @@ first match wins:
 | `sessionState: Idle` | idle |
 | anything else, or absent | unreported |
 
+A row that does not run also says why, from the Task's conditions: `paused ·
+idle`, `stopped · outside Fleet`, `lost · window gone`, `gone · session
+ended` or `stalled · <reason>` ([features](features.md)).
+
 thurbox installs no hooks into an agent's own config: Fleet's
 [harness profiles](../fleet/controllers/task.md#harness-profiles) do.
 

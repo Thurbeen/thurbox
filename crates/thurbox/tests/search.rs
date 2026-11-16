@@ -57,6 +57,7 @@ fn row(id: &str, name: &str, agent: &str, branch: &str) -> SessionRow {
         member_dirs: Vec::new(),
         meta: Default::default(),
         deleting: None,
+        state_why: None,
         status_source: None,
     }
 }
@@ -1217,6 +1218,7 @@ fn many_row(n: usize) -> SessionRow {
         member_dirs: Vec::new(),
         meta: Default::default(),
         deleting: None,
+        state_why: None,
         status_source: None,
     }
 }

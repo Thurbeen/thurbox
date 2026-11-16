@@ -1206,13 +1206,15 @@ never sent, so the terminal keeps its own selection and scrolling.
 ```lua
 command("delete",  { session = id })
 command("rename",  { session = id, text = "fix-osc52" })       -- refusal: command.failed
+command("start",   { session = id })
 command("create",  { repo = "/src/thing", agent = "claude" })
 command("theme",   { text = "tokyo-night" })
 ```
 
 Sessions are Fleet Tasks, so a session verb is one call of Fleet's command line:
 `create` applies a Task, `send` queues a message in its inbox, `rename` labels
-it and `delete` deletes it. A `create` names the repository and may name
+it, `start` resumes a stopped one (`fleet attach --wake`) and `delete` deletes
+it. A `create` names the repository and may name
 further ones (`extras`), whether each gets a worktree (`worktree`), its
 `branch` and the `base` a new branch starts from; the runtime makes each
 worktree. A refusal is

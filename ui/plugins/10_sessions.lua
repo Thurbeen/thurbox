@@ -122,6 +122,9 @@ local function agent_status(session)
     end
     return text, nil
   end
+  if session.state_why then
+    return session.state_why, nil
+  end
   -- Nothing the agent said can be current on a Fleet we cannot ask, so the
   -- row says why instead of showing a last message as if it were live.
   if session.status == "unreachable" then
@@ -937,6 +940,7 @@ local SESSION_MENU = {
   { label = "Open", action = "sessions.open" },
   { label = "Rename", action = "sessions.rename" },
   { label = "Open in editor", action = "sessions.editor" },
+  { label = "Start", action = "sessions.start" },
   "sep",
   { label = "Move up", action = "sessions.move_up" },
   { label = "Move down", action = "sessions.move_down" },
@@ -1242,6 +1246,7 @@ pane = {
     { key = "J", action = "sessions.move_down", desc = "move session down", group = "Sessions" },
     { key = "K", action = "sessions.move_up", desc = "move session up", group = "Sessions" },
     { key = "S", action = "sessions.sort", desc = "sort sessions by name", group = "Sessions" },
+    { key = "s", action = "sessions.start", desc = "start a stopped session", group = "Sessions" },
 
     -- v1's global session chords, which fire from any pane. Every one of them
     -- is in v1's `Action::terminal_passthrough` set — they are readline's
@@ -1764,6 +1769,13 @@ pane = {
       -- question is handed to `confirm`: this pane knows which session and what
       -- it is called, and decides nothing about how the new name is asked for.
       store.rename = { session = id, name = items[at].session.name or "" }
+    elseif action == "sessions.start" and id then
+      local session = items[at].session
+      if session.status == "stopped" then
+        command("start", { session = id })
+      else
+        command("message", { text = (session.name or "this session") .. " is not stopped" })
+      end
     elseif action == "sessions.editor" and id then
       command("editor", { session = id })
     -- A move is computed over the RENDERED items and sent whole, so a root row

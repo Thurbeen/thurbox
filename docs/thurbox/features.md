@@ -33,7 +33,7 @@ session picks its own agent and repository at creation time.
 ### Context menu (right-click)
 
 A right-click on a session row selects it and opens a menu of that session's
-actions where the pointer is: Open, Rename, Open in editor, Move up, Move down,
+actions where the pointer is: Open, Rename, Open in editor, Start, Move up, Move down,
 Delete, and Delete + worktree, each showing the chord bound to it. `j`/`k` or
 the arrows move, `enter` or a click runs the entry, and `esc` or a click
 anywhere else closes it.
@@ -110,7 +110,7 @@ snapshot maps those onto a `SessionState`
 
 | Task status | State | Colour | Glyph |
 |-------------|-------|--------|-------|
-| `sessionState: Paused` | `stopped` | green | `○` |
+| `sessionState: Paused` | `stopped` | `status_unknown` (muted grey) | `■` |
 | `sessionState: Lost`, `Gone` | `failed` | `status_error` (red) | `✗` |
 | `agentState: working` | `working` | yellow | braille spinner |
 | `agentState: attention` | `blocked` | red | `◆` |
@@ -118,6 +118,24 @@ snapshot maps those onto a `SessionState`
 | `sessionState: Running` | `running` | accent | `◉`, a spinner while its pane prints |
 | `sessionState: Idle` | `idle` | green | `○` |
 | anything else, or none | `unreported` | muted grey | `◌` |
+
+A row that does not run says why after its name, from the Task's
+conditions (`kernel::snapshot::fleet::state_why`, published as `state_why`):
+
+| Task status | Row text after the name |
+|-------------|-------------------------|
+| `Stalled=True`, any state | `stalled · <reason>`, such as `stalled · SpawnAttemptsExhausted` |
+| `Paused`, `Paused=True/Idle` | `paused · idle`: Fleet paused it after `pauseAfterMs` at rest |
+| `Paused`, `Paused=True/External` | `stopped · outside Fleet` |
+| `Lost` | `lost · window gone`; `lost · revive failed` after `NeedsAttention/ReviveFailed` |
+| `Gone` | `gone · session ended` |
+
+`s` on the session list, or Start in its menu, starts a stopped session again
+through Fleet's own contract: thurbox runs `fleet attach --wake --json
+<task>`, which asks the Task's controller to resume the agent on its
+conversation and waits for it to run. A Fleet older than
+`fleet attach --wake` refuses it, and the message band says so. Fleet has no
+verb that stops a session on request, so thurbox offers no stop.
 
 `unreported` is drawn apart from `idle` on purpose: `idle` says *the agent
 reported that it is at rest*, and `unreported` says nothing has reported at
