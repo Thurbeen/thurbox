@@ -79,7 +79,7 @@ update code can no longer change.
 
 ### What every shipped updater does
 
-Every updater from v1.0.0 to v2.85.0 resolves GitHub's `releases/latest`; the
+Every updater from v1.0.0 to v2.83.6 resolves GitHub's `releases/latest`; the
 line-rule ones read the release list. Every 2.x updater then downloads
 `releases/download/v<V>/thurbox-v<V>-checksums.txt` with `curl -fsSL` (or
 `wget`) **before** the archive, and returns an error — replacing nothing — when
@@ -88,10 +88,10 @@ that download fails. They differ only in what they do with a newer major:
 | Installed | On a 3.x "Latest" |
 |---|---|
 | v1.0.0 – v1.8.7, v2.0.0 – v2.2.2 | no major guard: would install 3.x |
-| v2.2.3 – v2.85.0 | `crosses_major`: report 3.x, install nothing, and never see a later 2.x either |
-| v2.85.1 onwards | the line rule below: install the newest 2.x, report 3.x |
+| v2.2.3 – v2.83.6 | `crosses_major`: report 3.x, install nothing, and never see a later 2.x either |
+| v2.89.0 onwards | the line rule below: install the newest 2.x, report 3.x |
 
-### The line rule (v2.85.1 onwards)
+### The line rule (v2.89.0 onwards)
 
 `update::version_check::RELEASE_LINE` is the major this source tree releases.
 The update check, the startup auto-update and `thurbox-cli update` read GitHub's
@@ -117,7 +117,7 @@ The header badge only offers the line. 3.x carries the same rule with
    `thurbox-v<V>-checksums.txt` only for a pinned 2.x release.
    `scripts/install.bats` fails when `cd.yml` names the old file.
 2. **"Latest"**: 3.0.0 is GitHub's "Latest". Fresh one-liner installs get 3.x,
-   and v2.2.3–v2.85.0 installs stop auto-updating (they see 3.x, skip it, and
+   and v2.2.3–v2.83.6 installs stop auto-updating (they see 3.x, skip it, and
    never look for a 2.x) until their user runs a 2.x installer once. That is safe
    but stale. A 2.x maintenance release cut after 3.0.0 is behind the highest
    tag, so `cd.yml`'s `newest` step publishes it with `make_latest: false`, and
@@ -173,8 +173,10 @@ the next major; cut the release it owed by dispatching with an explicit
 `RELEASE_LINE = 3` and does what the list above asks. `main` carries `feat!:`
 commits since v2.88.0, so the push that merges it computes v3.0.0 with
 `cog bump --auto`, and the Release run cuts it with no dispatch. Merge that pull
-request only after the last 2.x before it (v2.89.0) is published from `v2.x`,
-so the newest 2.x carries the line rule before 3.0.0 is "Latest". `v2.x` is
+request only after v2.89.0 is published from `v2.x`. Tags v2.84.0–v2.88.0 sit
+on `main` but their releases were never published, so v2.83.6 is the newest
+2.x anyone installed, `v2.x` branches from it, and v2.89.0 is the first
+published 2.x with the line rule; it must be out before 3.0.0 is "Latest". `v2.x` is
 branched from the last 2.x commit; `cog.toml` already allows `v*.x`. A 2.x
 maintenance release is cut by dispatching `cd.yml` from `v2.x` with an explicit
 version: it is tagged and built, published without "Latest" while a 3.x tag is
