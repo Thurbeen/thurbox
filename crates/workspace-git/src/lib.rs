@@ -1136,7 +1136,7 @@ mod tests {
         git(dir.path(), &["remote", "add", "origin", &url], &[]).expect("origin");
 
         let started = std::time::Instant::now();
-        fetch_upstream(dir.path(), std::time::Duration::from_secs(1));
+        fetch_upstream(dir.path(), std::time::Duration::from_millis(200));
 
         assert!(
             started.elapsed() < std::time::Duration::from_secs(20),

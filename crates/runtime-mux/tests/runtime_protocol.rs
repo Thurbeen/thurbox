@@ -122,7 +122,7 @@ fn the_manifest_names_the_protocol_and_the_verbs() {
     let answer = rt.call("manifest", json!({"protocol": 1}));
     assert_eq!(answer["known"]["protocol"], 2, "{answer}");
     let verbs = answer["known"]["verbs"].as_array().expect("verbs");
-    for verb in ["manifest", "start", "inspect", "stop"] {
+    for verb in ["manifest", "start", "inspect", "stop", "shell"] {
         assert!(verbs.iter().any(|v| v == verb), "{verb} in {answer}");
     }
     for verb in ["workspace", "browse", "branches"] {
@@ -225,11 +225,11 @@ fn a_remote_exec_answers_by_its_deadline() {
     let answer = rt.call(
         "exec",
         json!({"protocol": 2, "place": silent_place("silent"), "in": "host",
-               "argv": ["true"], "timeoutMs": 2000}),
+               "argv": ["true"], "timeoutMs": 500}),
     );
     let took = started.elapsed();
     assert!(answer["known"]["timedOut"].is_object(), "{answer}");
-    assert!(took < Duration::from_secs(6), "took {took:?}: {answer}");
+    assert!(took < Duration::from_secs(4), "took {took:?}: {answer}");
 }
 
 /// A place that does not answer costs `manifest` a bounded wait, well
@@ -965,6 +965,21 @@ impl Workspaces {
         self.rt.env = vec![("RUNTIME_MUX_CONFIG".into(), config.display().to_string())];
     }
 
+    fn step_waiting_for_the_gate(&self) -> String {
+        format!(
+            "i=0; while [ ! -e \"{}\" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done",
+            self.gate().display()
+        )
+    }
+
+    fn open_gate(&self) {
+        std::fs::write(self.gate(), "").expect("gate");
+    }
+
+    fn gate(&self) -> std::path::PathBuf {
+        self.base.join("gate")
+    }
+
     fn origin(&self, name: &str) -> String {
         let dir = self.base.join(name);
         std::fs::create_dir_all(&dir).expect("origin");
@@ -1066,8 +1081,9 @@ fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
         return;
     };
     let url = ws.origin("app");
+    let step = ws.step_waiting_for_the_gate();
     ws.configure(&format!(
-        "[[workspace.setup]]\nmatch = '{url}'\nrun = ['sleep 6']\n"
+        "[[workspace.setup]]\nmatch = '{url}'\nrun = ['{step}']\n"
     ));
     let ws = &ws;
     std::thread::scope(|scope| {
@@ -1086,6 +1102,7 @@ fn a_slow_workspace_call_does_not_hold_up_a_start_on_another_key() {
             waited < Duration::from_secs(3),
             "the start waited {waited:?} for another key's workspace"
         );
+        ws.open_gate();
         let made = slow.join().expect("the workspace call");
         assert!(made["known"]["made"].is_object(), "{made}");
     });
@@ -1099,8 +1116,9 @@ fn a_slow_releasing_stop_does_not_hold_up_a_start_on_another_key() {
         return;
     };
     let url = ws.origin("app");
+    let step = ws.step_waiting_for_the_gate();
     ws.configure(&format!(
-        "[[workspace.teardown]]\nmatch = '{url}'\nrun = ['printf x > ../tearing; sleep 6']\n"
+        "[[workspace.teardown]]\nmatch = '{url}'\nrun = ['printf x > ../tearing; {step}']\n"
     ));
     let made = ws.workspace("w.down", &[url.as_str()]);
     assert!(made["known"]["made"].is_object(), "{made}");
@@ -1125,6 +1143,7 @@ fn a_slow_releasing_stop_does_not_hold_up_a_start_on_another_key() {
             waited < Duration::from_secs(3),
             "the start waited {waited:?} for another key's releasing stop"
         );
+        ws.open_gate();
         let stopped = stopping.join().expect("the stop");
         assert_eq!(stopped["known"], "stopped", "{stopped}");
     });
@@ -1555,14 +1574,6 @@ fn read_when_written(file: &std::path::Path) -> String {
 fn shell_env(rt: &mut Runtime, home: &std::path::Path) {
     rt.env.push(("SHELL".into(), "/bin/sh".into()));
     rt.env.push(("HOME".into(), home.display().to_string()));
-}
-
-#[test]
-fn the_manifest_names_the_shell_verb() {
-    let Some(rt) = Runtime::new() else { return };
-    let answer = rt.call("manifest", json!({"protocol": 2}));
-    let verbs = answer["known"]["verbs"].as_array().expect("verbs");
-    assert!(verbs.iter().any(|v| v == "shell"), "{answer}");
 }
 
 #[test]
