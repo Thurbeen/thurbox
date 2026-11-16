@@ -1731,16 +1731,13 @@ fn preserved_refs(repository: &Path) -> Vec<String> {
     .collect()
 }
 
-/// A Task naming a local repository as a `git+file` URL runs in a worktree
-/// of that checkout under runtime-mux's workspace root, and its release keeps
-/// the work the session left uncommitted in the checkout.
-#[test]
-fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_work() {
-    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
-        return;
-    };
-    let sockets = Sockets::new("repo");
-    let mut env = mux_env("runtime-mux-repo", &program, &sockets);
+fn git_url_task_on_runtime_mux(
+    name: &str,
+    program: &Path,
+    sockets: &Sockets,
+    claude_script: &str,
+) -> (Env, PathBuf) {
+    let mut env = mux_env(name, program, sockets);
     env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
     let src = env.root.join("src");
     fs::create_dir_all(&src).expect("source");
@@ -1749,7 +1746,7 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let claude = bin.join("claude");
-    fs::write(&claude, CLAUDE).expect("harness");
+    fs::write(&claude, claude_script).expect("harness");
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
     let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
@@ -1762,6 +1759,19 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     let mut task = support::task("t1", true);
     task["spec"]["workspace"] = json!([format!("git+file://{}#main", src.display())]);
     env.apply(json!([task])).ok();
+    (env, src)
+}
+
+/// A Task naming a local repository as a `git+file` URL runs in a worktree
+/// of that checkout under runtime-mux's workspace root, and its release keeps
+/// the work the session left uncommitted in the checkout.
+#[test]
+fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_work() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("repo");
+    let (env, src) = git_url_task_on_runtime_mux("runtime-mux-repo", &program, &sockets, CLAUDE);
 
     reconcile_until(&env, "briefed in its worktree", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
@@ -1821,37 +1831,14 @@ fn backdate_deletion(env: &Env, name: &str, by: Duration) {
     fs::write(&path, task.to_string()).expect("record");
 }
 
-/// An agent whose hooks last said `working` and then went quiet holds its
-/// release only for a bounded time: the Task is then deleted, its session
-/// included, and the work it left uncommitted is kept.
 #[test]
 fn a_deleted_task_whose_agent_last_said_working_is_released_after_the_grace() {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
     let sockets = Sockets::new("quiet");
-    let mut env = mux_env("runtime-mux-quiet", &program, &sockets);
-    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
-    let src = env.root.join("src");
-    fs::create_dir_all(&src).expect("source");
-    git(&src, &["init", "-q", "-b", "main"]);
-    git(&src, &["commit", "-q", "--allow-empty", "-m", "first"]);
-    let bin = env.root.join("bin");
-    fs::create_dir_all(&bin).expect("bin");
-    let claude = bin.join("claude");
-    fs::write(&claude, CLAUDE_GONE_QUIET).expect("harness");
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
-    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
-    let path = std::env::var("PATH").unwrap_or_default();
-    env.only_on_path(Path::new(&format!(
-        "{}:{}:{path}",
-        bin.display(),
-        fleet_dir.display()
-    )));
-    let mut task = support::task("t1", true);
-    task["spec"]["workspace"] = json!([format!("git+file://{}#main", src.display())]);
-    env.apply(json!([task])).ok();
+    let (env, src) =
+        git_url_task_on_runtime_mux("runtime-mux-quiet", &program, &sockets, CLAUDE_GONE_QUIET);
     reconcile_until(&env, "briefed, its agent then working", |env| {
         let st = &env.get("t1")["status"];
         st["phase"] == "Briefed" && st["agentState"] == "working"
