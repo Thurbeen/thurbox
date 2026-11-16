@@ -760,11 +760,11 @@ fn a_runtime_section_is_the_fake_and_carries_no_repository_map() {
     };
     refused(
         "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"thurbox\"\n",
-        "unknown runtime kind \"thurbox\"",
+        "is a Fleet 2.x config ([runtime] kind = \"thurbox\")",
     );
     refused(
         "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"fake\"\ndir = \"fake\"\n\n[runtime.repositories]\n\"https://example.test/r\" = \"/src/r\"\n",
-        "unknown field `repositories`",
+        "is a Fleet 2.x config ([runtime] repositories)",
     );
     std::fs::write(
         &env.config,

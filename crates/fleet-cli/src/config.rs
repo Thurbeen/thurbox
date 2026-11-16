@@ -167,6 +167,18 @@ impl Config {
 
     /// The config `text` read from `path`, validated as [`Config::load`] does.
     pub fn parse(text: &str, path: &Path) -> Result<Config, String> {
+        if let Some((why, store)) = fleet_2_config(text, path) {
+            return Err(format!(
+                "config {path} is a Fleet 2.x config ({why}); this Fleet does not read it, nor \
+                 the store it names. Move both aside (`{config}` and `{store}`) and run \
+                 `fleet init` to write a Fleet 3 config, then copy [forge] and [plugins] over by \
+                 hand; or keep Fleet and thurbox 2.x (install with \
+                 VERSION=v2.x.y). See docs/thurbox/releasing.md, \"v2 and v3\"",
+                path = path.display(),
+                config = move_aside(&path.display().to_string(), cfg!(windows)),
+                store = move_aside(&store.display().to_string(), cfg!(windows)),
+            ));
+        }
         let mut config: Config =
             toml::from_str(text).map_err(|e| format!("config {}: {e}", path.display()))?;
         if config.version != CONFIG_VERSION {
@@ -378,6 +390,57 @@ impl Config {
     }
 }
 
+/// What marks `text`, read from `path`, as a Fleet 2.x config, which sits at
+/// the same per-user path, and the store it names. The mark is its
+/// `[runtime]`: `kind = "thurbox"` with `cli`, `callTimeoutMs`, `keyPrefix`
+/// and `repositories`, where this Fleet's `[runtime]` is only the fake. The
+/// store matters as much: it uses this Fleet's store format version, so
+/// `fleet init` would point this Fleet at it, and this Fleet cannot read the
+/// objects 2.x wrote there. `None` for any other text, including one that is
+/// not TOML: the typed parse reports that.
+fn fleet_2_config(text: &str, path: &Path) -> Option<(String, PathBuf)> {
+    const FLEET_2_KEYS: [&str; 4] = ["cli", "callTimeoutMs", "keyPrefix", "repositories"];
+    let table: toml::Table = toml::from_str(text).ok()?;
+    let runtime = table.get("runtime")?.as_table()?;
+    let why = if runtime.get("kind").and_then(toml::Value::as_str) == Some("thurbox") {
+        "[runtime] kind = \"thurbox\"".to_string()
+    } else {
+        let key = FLEET_2_KEYS.iter().find(|k| runtime.contains_key(**k))?;
+        format!("[runtime] {key}")
+    };
+    let base = path.parent().unwrap_or(Path::new("."));
+    let store = match table
+        .get("data")
+        .and_then(|d| d.get("dir"))
+        .and_then(toml::Value::as_str)
+    {
+        Some(dir) => base.join(dir),
+        None => default_data_dir()
+            .unwrap_or_else(|| PathBuf::from("fleet"))
+            .join("store-v1"),
+    };
+    Some((why, store))
+}
+
+/// The command that renames `path` to `<path>.v2`, for the user to paste:
+/// PowerShell's on Windows, a POSIX shell's elsewhere. Each path is quoted,
+/// as a home directory may hold a space (`/home/Jane Doe`,
+/// `C:\Users\Jane Doe`).
+fn move_aside(path: &str, windows: bool) -> String {
+    let moved = format!("{path}.v2");
+    if windows {
+        let quote = |w: &str| format!("'{}'", w.replace('\'', "''"));
+        format!(
+            "Move-Item -LiteralPath {} -Destination {}",
+            quote(path),
+            quote(&moved)
+        )
+    } else {
+        let quote = |w: &str| format!("'{}'", w.replace('\'', r"'\''"));
+        format!("mv {} {}", quote(path), quote(&moved))
+    }
+}
+
 /// Explicit CLI path, then FLEET_CONFIG, then one native per-user location.
 /// No search through the current directory or its parents.
 pub fn discover(explicit: Option<PathBuf>) -> Option<PathBuf> {
@@ -408,4 +471,35 @@ pub fn default_data_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(d).join("fleet"));
     }
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share").join("fleet"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::move_aside;
+
+    #[test]
+    fn move_aside_is_one_posix_word_per_path() {
+        assert_eq!(
+            move_aside("/home/Jane Doe/.config/fleet/config.toml", false),
+            "mv '/home/Jane Doe/.config/fleet/config.toml' '/home/Jane Doe/.config/fleet/config.toml.v2'"
+        );
+        assert_eq!(
+            move_aside("/a/it's", false),
+            r"mv '/a/it'\''s' '/a/it'\''s.v2'"
+        );
+    }
+
+    /// `%APPDATA%` sits under the user's name, which may hold a space; the
+    /// command is PowerShell's, which has no `mv` quoting of its own.
+    #[test]
+    fn move_aside_on_windows_is_powershell() {
+        assert_eq!(
+            move_aside(r"C:\Users\Jane Doe\AppData\Roaming\fleet\config.toml", true),
+            r"Move-Item -LiteralPath 'C:\Users\Jane Doe\AppData\Roaming\fleet\config.toml' -Destination 'C:\Users\Jane Doe\AppData\Roaming\fleet\config.toml.v2'"
+        );
+        assert_eq!(
+            move_aside(r"C:\Users\O'Neil\fleet", true),
+            r"Move-Item -LiteralPath 'C:\Users\O''Neil\fleet' -Destination 'C:\Users\O''Neil\fleet.v2'"
+        );
+    }
 }

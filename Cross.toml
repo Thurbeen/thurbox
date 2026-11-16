@@ -1,2 +1,2 @@
 [build.env]
-passthrough = ["THURBOX_RELEASE_VERSION"]
+passthrough = ["THURBOX_RELEASE_VERSION", "FLEET_RELEASE_VERSION"]

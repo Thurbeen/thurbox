@@ -37,7 +37,7 @@ use crate::agent::fetch::{compare_versions, is_dev_version, major_version};
 /// for `thurbox-cli update --force`. `scripts/ci/release-line.sh` reads it
 /// and refuses to cut a release on any other major, which is what makes crossing
 /// a major a source change somebody reviews rather than a commit footer.
-pub const RELEASE_LINE: u64 = 2;
+pub const RELEASE_LINE: u64 = 3;
 
 /// Where a user on this line reads what moving to the next major involves.
 pub const MIGRATION_NOTES_URL: &str =
@@ -273,38 +273,38 @@ mod tests {
     #[test]
     fn the_line_and_the_next_major_are_picked_apart() {
         let body = serde_json::json!([
-            release("v3.1.0"),
-            release("v2.84.2"),
-            release("v3.0.0"),
-            release("v2.84.1"),
-            release("v1.8.7"),
+            release("v4.1.0"),
+            release("v3.0.2"),
+            release("v4.0.0"),
+            release("v3.0.1"),
+            release("v2.84.0"),
         ])
         .to_string();
         let r = parse_releases(&body).unwrap();
-        assert_eq!(r.line.as_deref(), Some("2.84.2"));
-        assert_eq!(r.next_major.as_deref(), Some("3.1.0"));
+        assert_eq!(r.line.as_deref(), Some("3.0.2"));
+        assert_eq!(r.next_major.as_deref(), Some("4.1.0"));
     }
 
     #[test]
     fn the_newest_on_the_line_wins_whatever_the_list_order() {
-        // GitHub orders by creation date, so a 2.x hotfix of an older minor can
+        // GitHub orders by creation date, so a 3.x hotfix of an older minor can
         // come first; the version, not the position, decides.
-        let body = serde_json::json!([release("v2.9.1"), release("v2.10.0")]).to_string();
+        let body = serde_json::json!([release("v3.9.1"), release("v3.10.0")]).to_string();
         let r = parse_releases(&body).unwrap();
-        assert_eq!(r.line.as_deref(), Some("2.10.0"));
+        assert_eq!(r.line.as_deref(), Some("3.10.0"));
         assert_eq!(r.next_major, None);
     }
 
     #[test]
     fn drafts_and_prereleases_are_not_offered() {
         let body = serde_json::json!([
-            {"tag_name": "v2.99.0", "draft": true, "prerelease": false},
-            {"tag_name": "v3.0.0-rc1", "draft": false, "prerelease": true},
-            release("v2.84.1"),
+            {"tag_name": "v3.99.0", "draft": true, "prerelease": false},
+            {"tag_name": "v4.0.0-rc1", "draft": false, "prerelease": true},
+            release("v3.0.1"),
         ])
         .to_string();
         let r = parse_releases(&body).unwrap();
-        assert_eq!(r.line.as_deref(), Some("2.84.1"));
+        assert_eq!(r.line.as_deref(), Some("3.0.1"));
         assert_eq!(r.next_major, None);
     }
 
@@ -317,12 +317,12 @@ mod tests {
 
     #[test]
     fn a_cache_from_before_the_line_rule_never_offers_another_major() {
-        // Builds before this one cached GitHub's "Latest" — a 3.x tag once v3
-        // ships. Reading it must not put a v3 badge on a 2.x install.
-        assert_eq!(cached_status("2.84.1", "3.0.0"), None);
+        // Builds before the line rule cached GitHub's "Latest". Reading a
+        // cached next major must not put its badge on an install of this line.
+        assert_eq!(cached_status("3.0.1", "4.0.0"), None);
         assert_eq!(
-            cached_status("2.84.1", "2.84.2").map(|s| s.latest),
-            Some("2.84.2".to_string())
+            cached_status("3.0.1", "3.0.2").map(|s| s.latest),
+            Some("3.0.2".to_string())
         );
     }
 
