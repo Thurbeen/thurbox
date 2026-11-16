@@ -5,6 +5,8 @@
 
 mod support;
 
+use fleet_api::event::{CliSource, Filter, Page, Pattern, Publish, Source};
+use fleet_api::{DeleteOutcome, FieldManager, LeaseToken, Object, Observation, Store, StoreError};
 use serde_json::{Value, json};
 use support::Env;
 
@@ -255,4 +257,143 @@ fn a_deleted_board_takes_its_log_with_it() {
     assert!(list(&env, &["--board", "scratch"]).is_empty());
     let event = publish(&env, &["--board", "scratch", "--type", "a", "--data", "1"]);
     assert_eq!(event["seq"], 1);
+}
+
+struct BusyBoard<'a> {
+    inner: &'a fleet_store::FileStore,
+    reads: std::cell::Cell<u32>,
+}
+
+impl Store for BusyBoard<'_> {
+    fn read_events(&self, board: &str, after: u64, _limit: usize) -> Result<Page, StoreError> {
+        self.reads.set(self.reads.get() + 1);
+        if self.reads.get() > 20 {
+            return Err(StoreError::Busy("the list never ended".into()));
+        }
+        let noise = Publish {
+            event_type: "noise".into(),
+            subject: None,
+            key: None,
+            correlation: None,
+            data: json!(null),
+        };
+        let source = Source::Cli(CliSource::new("busy").unwrap());
+        self.inner
+            .append_events(board, &source, vec![noise], FieldManager::Cli)?;
+        self.inner.read_events(board, after, 1)
+    }
+    fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>> {
+        self.inner.get(kind, name)
+    }
+    fn list(&self, kind: &str) -> Observation<Vec<Object>> {
+        self.inner.list(kind)
+    }
+    fn create(&self, _: Object, _: FieldManager) -> Result<Object, StoreError> {
+        unreachable!()
+    }
+    fn update_spec(
+        &self,
+        _: &str,
+        _: &str,
+        _: Value,
+        _: Option<std::collections::BTreeMap<String, String>>,
+        _: u64,
+        _: FieldManager,
+    ) -> Result<Object, StoreError> {
+        unreachable!()
+    }
+    fn update_status(
+        &self,
+        _: &str,
+        _: &str,
+        _: Value,
+        _: u64,
+        _: FieldManager,
+        _: Option<&LeaseToken>,
+    ) -> Result<Object, StoreError> {
+        unreachable!()
+    }
+    fn delete(&self, _: &str, _: &str, _: FieldManager) -> Result<DeleteOutcome, StoreError> {
+        unreachable!()
+    }
+    fn delete_fenced(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: FieldManager,
+        _: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError> {
+        unreachable!()
+    }
+    fn append_inbox(
+        &self,
+        _: &str,
+        _: fleet_api::inbox::InboxEntry,
+        _: u64,
+        _: FieldManager,
+        _: Option<&LeaseToken>,
+    ) -> Result<Object, StoreError> {
+        unreachable!()
+    }
+    fn record_delivery(
+        &self,
+        _: &str,
+        _: Value,
+        _: fleet_api::inbox::DeliveryReceipt,
+        _: u64,
+        _: FieldManager,
+        _: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        unreachable!()
+    }
+    fn record_relay(
+        &self,
+        _: &str,
+        _: Value,
+        _: Vec<fleet_api::inbox::InboxEntry>,
+        _: u64,
+        _: FieldManager,
+        _: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        unreachable!()
+    }
+    fn remove_finalizer(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: FieldManager,
+        _: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError> {
+        unreachable!()
+    }
+    fn acquire_lease(&self, _: &str, _: u64) -> Result<LeaseToken, StoreError> {
+        unreachable!()
+    }
+    fn renew_lease(&self, _: &LeaseToken, _: u64) -> Result<LeaseToken, StoreError> {
+        unreachable!()
+    }
+    fn release_lease(&self, _: &LeaseToken) -> Result<(), StoreError> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn a_list_ends_at_the_head_it_started_from_while_others_publish() {
+    let env = board_env("board-busy");
+    publish(&env, &["--type", "wanted", "--data", "1"]);
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    let busy = BusyBoard {
+        inner: &store,
+        reads: std::cell::Cell::new(0),
+    };
+    let filter = Filter {
+        event_type: Some(Pattern::new("absent")),
+        ..Filter::default()
+    };
+    let page = fleet_manager::list_events(&busy, "shared", 0, &filter, 10).unwrap();
+    assert_eq!(page, Page::Events(Vec::new()));
 }

@@ -111,6 +111,9 @@ publish ──▶ check ──▶ drop aged segments ──▶ key held? ──y
   A key whose event the log dropped can be used again.
 - After the append, the store drops the oldest segment while the log holds
   more than `maxCount` events. The segment with the newest event stays.
+- `fleet event list` reads up to the `status.head` that it sees when it
+  starts. An event that someone publishes during the list is in the next
+  list.
 - A reader keeps its own cursor: the last `seq` it read. When the log no
   longer holds the event after the cursor, the read answers `Expired` with
   `oldest`. `fleet event list` then exits 5. The reader can continue from

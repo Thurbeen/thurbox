@@ -1249,10 +1249,11 @@ highest `revision` reported is in it, and a resume skips none.
 missing Board exits 3. `fleet event list [--board B] [--after SEQ] [--type P]
 [--subject P] [--source S] [--correlation C] [--limit N] [--json]` prints the
 first `N` (100 by default, at most 10000) events above `SEQ` that match,
-oldest first; `--json` prints them as an array. A `--type` or `--subject` value that
-ends in `*` matches a prefix. A cursor older than the log exits 5 and names
-`oldest`; with `--json` it also prints `{"expired": {"oldest": N}}`. The
-[Board page](resources/board.md#events) owns the event fields.
+oldest first, up to the Board's `status.head` when the list starts: an event
+published during the list waits for the next one; `--json` prints them as
+an array. A `--type` or `--subject` value that ends in `*` matches a prefix.
+A cursor older than the log exits 5 and names `oldest`; with `--json` it
+also prints `{"expired": {"oldest": N}}`. The [Board page](resources/board.md#events) owns the event fields.
 
 `fleet apply --create-only` creates each object, of every kind it takes, or
 refuses one whose name is taken with exit 5 and leaves it as it is; the
