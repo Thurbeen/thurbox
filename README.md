@@ -46,7 +46,10 @@ file you can change.
 - **Scripts talk to Fleet.** `fleet apply`, `fleet send` and `fleet delete` drive
   sessions while the interface shows them. `thurbox-cli doctor` checks each Fleet.
 
-![thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place](website/assets/overview.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="website/assets/overview-dark.svg">
+  <img src="website/assets/overview-light.svg" alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place">
+</picture>
 
 ## Install
 
