@@ -34,12 +34,6 @@ breadcrumb: 'Installation'
             <code>runtime-mux</code> and <code>workspace-git</code> to
             <code>~/.local/bin</code>. When it is done, it points at <code>fleet init</code>.
           </p>
-          <p>
-            Thurbox v3 needs a 3.x release. Until one is published, the script installs the latest
-            2.x release, which has no Fleet; pin a 3.x tag with <a href="#specific-version"><code>VERSION</code></a>
-            once one exists.
-          </p>
-
           <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh</code></pre>
 
           <div class="info-box">
@@ -47,7 +41,9 @@ breadcrumb: 'Installation'
               <strong>Upgrading from 2.x.</strong>
               A 2.x install updates only within 2.x: neither the in-app update nor
               <code>thurbox-cli update</code> (<code>--force</code> included) moves it to 3.x. Run the
-              install script again.
+              install script again, then follow
+              <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/migrating-to-v3.md">Migrating to v3</a>: 3.x carries over no 2.x session and no Fleet 2
+              config.
             </p>
           </div>
 
@@ -112,8 +108,7 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
             Set
             <code>$env:THURBOX_VERSION = 'vX.Y.Z'</code>
             before that line to pin a specific version instead of taking the newest. It installs
-            the same five programs. Until a 3.x release is published, the newest is a 2.x release
-            with no Fleet.
+            the same five programs.
           </p>
 
           <h3>Available platforms</h3>

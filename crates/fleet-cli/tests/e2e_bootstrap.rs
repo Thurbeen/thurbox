@@ -810,7 +810,8 @@ fn a_fleet_2_config_is_named_with_what_to_do() {
             .stderr_has("is a Fleet 2.x config")
             .stderr_has("store-v1.v2'")
             .stderr_has("fleet init")
-            .stderr_has("VERSION=v2.");
+            .stderr_has("VERSION=v2.")
+            .stderr_has("docs/migrating-to-v3.md");
         assert!(!run.stderr.contains("unknown field"), "{}", run.stderr);
     }
     assert!(

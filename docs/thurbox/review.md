@@ -345,7 +345,8 @@ docs/thurbox/orchestration.md what thurbox adds to Fleet's orchestration. docs/R
 system: the split between thurbox, Fleet and the runtimes, which page owns
 and each contract between them. docs/where-sessions-run.md owns the
 user's view of where a session runs: Fleets, places and the setups they
-allow. docs/fleet/ is Fleet's
+allow. docs/migrating-to-v3.md owns the steps that move a 2.x install
+to 3.x. docs/fleet/ is Fleet's
 documentation and docs/runtime/ the runtimes', each with a README.md index
 saying what its pages own. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md

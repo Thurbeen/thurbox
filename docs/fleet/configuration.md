@@ -68,6 +68,11 @@ loginctl enable-linger "$USER"
 systemctl --user enable fleet.service
 ```
 
+Set `KillMode=process` in that unit. The first session start runs the
+multiplexer's server from `fleet up`, so the server is in the unit's
+cgroup. systemd's default `KillMode=control-group` stops it, and every
+session on it, when the unit stops or restarts.
+
 ### Configuration and customization
 
 Reference: [native Fleet TOML](#native-fleet-configuration-fleettoml),

@@ -425,10 +425,10 @@ The panes for code review and the info panel are plugins
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)),
 switched on and off from the Interface tab like any other pane.
 
-Six keys are **retired**, because nothing read them: the top-level
-`three_panel_min_cols`, `[features]` `file_viewer`, `info_panel`,
-`code_review` and `global_search`, and `[notifications]` `also_on_waiting`.
-A file that sets one still loads and passes `thurbox-cli config validate`;
+Some keys are **retired**, because nothing reads them any more:
+`RETIRED_KEYS` in `src/session/settings.rs` lists each with its reason, and
+[Migrating to v3](../migrating-to-v3.md#7-clean-up-settingstoml) shows
+the list. A file that sets one still loads and passes `thurbox-cli config validate`;
 startup names each as no longer read, and a save from the settings panel
 removes it.
 

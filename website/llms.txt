@@ -13,9 +13,9 @@
 > `curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh`
 > on Linux/macOS, or
 > `irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex`
-> on Windows. Both scripts also install `fleet` and `runtime-mux`; this needs a
-> 3.x release (until one exists they install the latest 2.x, which has no
-> Fleet). Nix (`nix profile install github:Thurbeen/thurbox`) ships thurbox
+> on Windows. Both scripts also install `fleet` and `runtime-mux`. Moving from
+> 2.x is a reinstall: see
+> [Migrating to v3](https://github.com/Thurbeen/thurbox/blob/main/docs/migrating-to-v3.md). Nix (`nix profile install github:Thurbeen/thurbox`) ships thurbox
 > only. Then run `thurbox`; on a machine with no Fleet config it runs `fleet init` first. Config, themes and the interface itself are seeded on
 > first launch.
 >
