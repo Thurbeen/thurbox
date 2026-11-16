@@ -1100,12 +1100,17 @@ fn ask(program: &Path, sockets: &Sockets, verb: &str, request: Value) -> Value {
 
 /// A Task on runtime-mux whose agent Fleet paused for idling, its key and
 /// its workspace.
-fn paused_on_mux(name: &str, program: &Path, sockets: &Sockets) -> (Env, String, PathBuf) {
+fn paused_on_mux(
+    name: &str,
+    program: &Path,
+    sockets: &Sockets,
+    harness: &str,
+) -> (Env, String, PathBuf) {
     let mut env = mux_env(name, program, sockets);
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let claude = bin.join("claude");
-    fs::write(&claude, TYPING_CLAUDE).expect("harness");
+    fs::write(&claude, harness).expect("harness");
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
     let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
@@ -1143,7 +1148,7 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
         return;
     };
     let sockets = Sockets::new("pause");
-    let (env, key, work) = paused_on_mux("runtime-mux-pause", &program, &sockets);
+    let (env, key, work) = paused_on_mux("runtime-mux-pause", &program, &sockets, TYPING_CLAUDE);
 
     // The agent's process is gone, and the runtime keeps its key.
     let listed = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_current_path}"]);
@@ -1213,7 +1218,15 @@ fn attaching_to_a_paused_session_on_runtime_mux_resumes_it_and_streams_it() {
         return;
     };
     let sockets = Sockets::new("attach-paused");
-    let (env, key, work) = paused_on_mux("runtime-mux-attach-paused", &program, &sockets);
+    let (env, key, work) = paused_on_mux(
+        "runtime-mux-attach-paused",
+        &program,
+        &sockets,
+        &TYPING_CLAUDE.replace(
+            "fleet signal idle",
+            r#"case " $* " in *" --resume "*) fleet signal working ;; *) fleet signal idle ;; esac"#,
+        ),
+    );
 
     let attach = std::cell::RefCell::new(env.spawn(&["attach", "t1", "--json"]));
     reconcile_until(&env, "resumed for the view", |env| {
