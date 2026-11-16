@@ -1063,7 +1063,7 @@ impl Pass<'_, '_> {
                         via,
                         may_hold,
                     },
-                    Proof::Awaiting(why) if self.prompt_report_overdue(key) => {
+                    Proof::Awaiting(why) if self.another_prompt_reported_since(key) => {
                         self.give_up_unconfirmed(key, what, &why)
                     }
                     Proof::Awaiting(_) | Proof::NotAsked => Sent::Pending,
@@ -1140,12 +1140,18 @@ impl Pass<'_, '_> {
         self.send_keyed(session, key, text, what)
     }
 
-    fn prompt_report_overdue(&self, key: &str) -> bool {
-        let report_window = u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS;
-        self.st
-            .receipts
-            .get(key)
-            .is_some_and(|r| r.at.saturating_add(report_window) <= self.now())
+    fn another_prompt_reported_since(&self, key: &str) -> bool {
+        let (Some(digest), Some(intent)) = (self.st.prompts.get(key), self.st.intents.get(key))
+        else {
+            return false;
+        };
+        match &self.input.observations.signals {
+            Some(Observation::Known(r)) => r
+                .prompts
+                .iter()
+                .any(|(other, at)| other != digest && *at >= intent.at),
+            _ => false,
+        }
     }
 
     fn give_up_unconfirmed(&mut self, key: &str, what: &str, why: &str) -> Sent {
