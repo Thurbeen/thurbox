@@ -1,7 +1,7 @@
 //! Which kinds this build serves, and who may write what on each.
 
 use crate::store::FieldManager;
-use crate::{change_request, conversation, cron_task, listener, task};
+use crate::{board, change_request, conversation, cron_task, listener, task};
 
 /// Every kind this build serves, in the order `fleet version` lists them.
 /// A plugin manifest may claim none of these names.
@@ -13,6 +13,7 @@ pub const BUILT_IN: &[&str] = &[
     conversation::KIND,
     listener::KIND,
     cron_task::KIND,
+    board::KIND,
 ];
 
 /// Whether this build stores and reconciles a kind.
@@ -160,6 +161,22 @@ pub fn inbox_source_prefix(by: FieldManager) -> Option<&'static str> {
         FieldManager::GatewayController => Some(crate::talk::GATEWAY_SOURCE_PREFIX),
         _ => None,
     }
+}
+
+/// Who may append events to a Board's log (`Store::append_events`):
+/// `fleet event publish` as `cli`, under a `cli/<user>` source. A Board's
+/// status has no owner: the append moves it.
+pub fn may_append_events(by: &FieldManager, source: &crate::event::Source) -> bool {
+    matches!(
+        (by, source),
+        (FieldManager::Cli, crate::event::Source::Cli(_))
+    )
+}
+
+/// Who may publish an event type under `event::RESERVED_PREFIX`: a
+/// controller, and nobody at the command line.
+pub fn may_publish_reserved(by: &FieldManager) -> bool {
+    by.is_controller()
 }
 
 /// Who may record a delivery and remove its entry

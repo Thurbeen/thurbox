@@ -776,7 +776,7 @@ first, and the controller deletes one whose account left the config.
 ## Store
 
 A data directory holds `store.json` (format and version), `lock`, `seq`,
-`lease.json`, `objects/<Kind>/<name>.json` and `tmp/`. The default is the
+`lease.json`, `objects/<Kind>/<name>.json`, `boards/<name>/` and `tmp/`. The default is the
 platform data directory (`$XDG_DATA_HOME/fleet`, `~/.local/share/fleet`,
 `%LOCALAPPDATA%\fleet`); a non-empty directory that is not a store is
 refused.
@@ -837,6 +837,29 @@ refused.
   changes. `retire_scheduled_task`, under the lease, deletes such a Task
   only with its `uid` and its CronTask's uid label, and only once it is
   Concluded unless the CronTask's policy is `Replace`.
+- A Board's log is `boards/<name>/<seq>.jsonl` segments, one event per line,
+  each segment named by its first `seq`. `append_events` (`cli`, through the
+  manager's `publish_event` verb, no lease; a controller under the lease) is
+  the only writer. Under the lock it checks each event (`event::validate_publish`:
+  the type grammar, the `fleet.` prefix only for a controller, 256
+  characters for `subject`, `key` and `correlation`, the Board's
+  `maxDataBytes`) and refuses the batch whole when one fails. A publish whose
+  `(source, key)` an event in the log holds appends nothing and answers that
+  event. The others get the next `seq`s, from 1 with no gap, and the store's
+  time. Each line is appended and fsynced; the next append cuts a torn last
+  line, and a reader skips it. The log, not the status, decides the next
+  `seq`, so an append that crashed before its status write keeps its `seq`.
+  In the same write, retention drops whole segments from the oldest while
+  the log holds more than `retention.maxCount` events or the segment's
+  newest event is older than `retention.maxAgeSeconds`, never the newest
+  segment, and `status.head` and `status.oldest` move. No other writer, and no
+  status write, changes a Board's status. `read_events(board, after,
+  limit)` takes no lock: it answers `Expired { oldest }` when `after + 1` is
+  below the first `seq` the log holds, and otherwise the events above
+  `after`, oldest first; a segment that retention drops during the read
+  makes it read again. Creating or deleting a Board removes any log left
+  under its name. `store_contract` tears a line, drops a status write and
+  ages segments out.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the
@@ -1169,7 +1192,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|signal|runtime|integration|doctor|version`.
+init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|event|gateway|signal|runtime|integration|doctor|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -1204,6 +1227,18 @@ Task on its own, so one read can hold
 a later write and miss an earlier one; a read is reported only once the read
 after it is the same. Writes are serialized, so by then every write below the
 highest `revision` reported is in it, and a resume skips none.
+
+`fleet event publish [--board B] --type T [--subject S] [--key K]
+[--correlation C] --data JSON [--json]` appends one event to a Board,
+`shared` by default, through the manager's `publish_event` verb, as
+`cli/<user>`, and prints it with its `seq`. A refused event exits 1 and a
+missing Board exits 3. `fleet event list [--board B] [--after SEQ] [--type P]
+[--subject P] [--source S] [--correlation C] [--limit N] [--json]` prints the
+first `N` (100 by default, at most 10000) events above `SEQ` that match,
+oldest first; `--json` prints them as an array. A `--type` or `--subject` value that
+ends in `*` matches a prefix. A cursor older than the log exits 5 and names
+`oldest`; with `--json` it also prints `{"expired": {"oldest": N}}`. The
+[Board page](resources/board.md#events) owns the event fields.
 
 `fleet apply --create-only` creates each object, of every kind it takes, or
 refuses one whose name is taken with exit 5 and leaves it as it is; the
@@ -1316,7 +1351,8 @@ plugin port.
 `fleet init` creates the native per-user config offline. A config that
 exists is kept, never replaced. It also writes the TaskConfig `default`, with
 `pauseAfterMs` 1800000, into the config's store when the store holds none
-([the default TaskConfig](resources/task-config.md#the-default-taskconfig)). The
+([the default TaskConfig](resources/task-config.md#the-default-taskconfig)),
+and the Board `shared`, with the default spec, when the store holds none. The
 [initialization guide](configuration.md#configuration-and-customization)
 specifies precedence and paths.
 
@@ -1337,7 +1373,9 @@ The `e2e_*` suites drive the real `fleet` binary against an isolated store,
 the fake host or `runtime-mux`, and, for `e2e_forge`, the fake forge
 or a stub copied as `az`, `curl`, `gh` and `glab`, across process
 restarts and injected faults; `e2e_inbox` covers `fleet send` and delivery on
-the fake host; `e2e_task_amend` covers `fleet amend`, its
+the fake host; `e2e_event_board` covers `fleet event publish` and `list`,
+the Board `fleet init` makes, the refusals, the dedupe, the filters and an
+expired cursor; `e2e_task_amend` covers `fleet amend`, its
 delivery to the same session, its refusals, `--if-generation` and the result
 rules on the fake host; `e2e_forge_controller` covers `fleet declare`,
 the join and the relay against the fake forge and the fake host.

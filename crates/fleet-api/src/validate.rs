@@ -3,6 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::board::{self, BoardSpec};
 use crate::change_request::{self, ChangeRequestSpec};
 use crate::config::{ENV_PROVIDER, EnvProviderSpec, EnvSource, TASK_CONFIG, TaskConfigSpec};
 use crate::conversation::{self, ConversationSpec};
@@ -115,6 +116,10 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
             return validate_name(&s.account);
         }
         cron_task::KIND => return validate_cron_task_spec(spec),
+        board::KIND => {
+            let s: BoardSpec = typed(kind, spec)?;
+            return s.validate().map_err(StoreError::Invalid);
+        }
         _ => {}
     }
     let s: TaskSpec = typed(kind, spec)?;
@@ -324,6 +329,9 @@ pub fn validate_status(kind: &str, status: &Value) -> Result<(), StoreError> {
         cron_task::KIND => serde_json::from_value::<cron_task::CronTaskStatus>(status.clone())
             .map(|_| ())
             .map_err(|e| StoreError::Invalid(format!("CronTask status: {e}"))),
+        board::KIND => serde_json::from_value::<board::BoardStatus>(status.clone())
+            .map(|_| ())
+            .map_err(|e| StoreError::Invalid(format!("Board status: {e}"))),
         _ => Err(StoreError::Invalid(
             "passive configuration has no status".into(),
         )),

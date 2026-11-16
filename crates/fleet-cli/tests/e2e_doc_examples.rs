@@ -85,6 +85,7 @@ fn every_resource_example_applies_as_written() {
         include_str!("../../../docs/fleet/resources/plugin-kinds.md"),
         include_str!("../../../docs/fleet/resources/workspace.md"),
         include_str!("../../../docs/fleet/resources/cron-task.md"),
+        include_str!("../../../docs/fleet/resources/board.md"),
     ] {
         let docs = examples(page);
         assert!(!docs.is_empty(), "an example with no JSON block");

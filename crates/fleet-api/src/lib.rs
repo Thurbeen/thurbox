@@ -51,12 +51,14 @@
 //! assert!(seen.is_unknown());
 //! ```
 
+pub mod board;
 pub mod change_request;
 pub mod condition;
 pub mod config;
 pub mod conversation;
 pub mod cron_task;
 pub mod doctor;
+pub mod event;
 pub mod follow;
 pub mod forge;
 pub mod gateway;

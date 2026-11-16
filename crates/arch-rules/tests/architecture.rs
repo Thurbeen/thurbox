@@ -1634,6 +1634,18 @@ fn plugin_identity_and_execution_stay_behind_the_gate_and_manager() {
 /// checks it, and the four typed mutations are manager methods the CLI may
 /// not call.
 #[test]
+fn the_rules_keep_board_appends_with_the_publish_verb() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    assert!(
+        rules.crates["fleet-cli"]
+            .forbidden_methods
+            .iter()
+            .any(|m| m == "append_events"),
+        "the CLI publishes through the manager's verb, never the store's append"
+    );
+}
+
+#[test]
 fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb() {
     let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
     for writer in [

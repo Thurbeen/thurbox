@@ -9,15 +9,18 @@
 //! seq                         the last resourceVersion handed out
 //! lease.json                  the manager lease, if one is held
 //! objects/<Kind>/<name>.json  one object, spec and status together (Q6)
+//! boards/<name>/<seq>.jsonl   a Board's log: one segment, named by its first seq
 //! tmp/                        temp files; anything here at open is a crashed write
 //! ```
 //!
 //! Reads take no lock: every record is replaced atomically, so a read sees a
-//! whole old or whole new file. Every write takes the store lock, re-reads,
+//! whole old or whole new file. A board log is the one exception: it is
+//! appended to, and a reader skips a last line that is not complete. Every write takes the store lock, re-reads,
 //! checks, then writes; that is what makes create exclusive and update a
 //! compare-and-swap across processes.
 
 pub mod durable;
+mod event_log;
 mod plugin;
 
 use std::collections::BTreeMap;
@@ -332,6 +335,9 @@ impl FileStore {
             return Ok(DeleteOutcome::Marked);
         }
         let path = self.object_path(&obj.kind, &obj.metadata.name);
+        if obj.kind == fleet_api::board::KIND {
+            self.remove_board_log(&obj.metadata.name)?;
+        }
         if obj.kind == task::KIND {
             let launch = self
                 .root
@@ -1451,6 +1457,26 @@ impl Store for FileStore {
         Ok(obj)
     }
 
+    fn append_events(
+        &self,
+        board: &str,
+        source: &fleet_api::event::Source,
+        events: Vec<fleet_api::event::Publish>,
+        by: FieldManager,
+        lease: Option<&LeaseToken>,
+    ) -> Result<Vec<fleet_api::event::Appended>, StoreError> {
+        self.append_board_events(board, source, events, by, lease)
+    }
+
+    fn read_events(
+        &self,
+        board: &str,
+        after: u64,
+        limit: usize,
+    ) -> Result<fleet_api::event::Page, StoreError> {
+        self.read_board_events(board, after, limit)
+    }
+
     fn remove_finalizer(
         &self,
         kind: &str,
@@ -1657,6 +1683,9 @@ impl FileStore {
             .map(|(p, _)| vec![format!("fleet.dev/plugin/{p}")])
             .unwrap_or_else(|| kinds::finalizers_on_create(&obj.kind));
         obj.metadata.creation_timestamp = Some(self.now());
+        if obj.kind == fleet_api::board::KIND {
+            self.remove_board_log(&obj.metadata.name)?;
+        }
         let dir = self.kind_dir(&obj.kind);
         fs::create_dir_all(&dir).map_err(|e| io_unknown(&dir, e))?;
         let path = self.object_path(&obj.kind, &obj.metadata.name);
