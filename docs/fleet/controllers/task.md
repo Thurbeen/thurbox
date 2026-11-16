@@ -399,8 +399,9 @@ the prompt and the conversation id. The harness profile's `[payload]`
 fields name them ([signal contract](../signal-contract.md)). The
 `Activity` probe reads the file through the port and answers both the
 activity and the whole report. A file never written is a report of nothing;
-a file that cannot be read is Unknown. A session on another place gets a
-file on that place, which the runtime port reads through the runtime's
+a file that cannot be read, or that is not a regular file (a FIFO, a
+symlink), is Unknown. The read neither blocks on it nor follows it. A
+session on another place gets a file on that place, which the runtime port reads through the runtime's
 `exec` ([signals on a remote place](../../runtime/README.md#signals-on-a-remote-place)).
 
 Each spawn also gets `FLEET_EVENT_FILE`, the session's event outbox beside

@@ -60,7 +60,7 @@ pub const PLACE_READ_AFTER: u64 = 512 * 1024;
 /// shorter than `since` was made again: all of it came after. `None` when
 /// the file is not there.
 pub fn read_split(file: &Path, since: Option<u64>) -> io::Result<Option<Vec<u8>>> {
-    let mut f = match fs::File::open(expand_home(file)) {
+    let mut f = match crate::events::open_regular(&expand_home(file)) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         opened => opened?,
     };
@@ -218,7 +218,7 @@ impl Signals for FileSignals {
             return Observation::unknown("the session key is not a plain name");
         };
         let read = || -> io::Result<String> {
-            let mut file = fs::File::open(&path)?;
+            let mut file = crate::events::open_regular(&path)?;
             // Only the tail of a long file: the last state is at its end,
             // and the cut line is skipped as unreadable.
             let len = file.metadata()?.len();
@@ -283,6 +283,50 @@ mod place_read_tests {
         let gone = dir.join("none.jsonl");
         assert_eq!(read_split(&gone, None).expect("read"), None);
         assert_eq!(file_length(&gone).expect("length"), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_or_a_symlink_at_a_signal_file_is_unknown_at_once() {
+        let dir = std::env::temp_dir().join(format!("fleet-signal-fifo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let signals = FileSignals::open(&dir).expect("signals");
+        let fifo = dir.join("k.jsonl");
+        let made = fleet_exec::run(
+            &fleet_exec::Spec::new("mkfifo", std::time::Duration::from_secs(5)).arg(&fifo),
+        );
+        assert!(
+            matches!(made, fleet_exec::Outcome::Exited { code: Some(0), .. }),
+            "{made:?}"
+        );
+        let session = SessionRef {
+            id: "s".into(),
+            host: LOCAL_HOST.into(),
+            key: "k".into(),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (path, read_signals, read_session) = (fifo.clone(), signals.clone(), session.clone());
+        std::thread::spawn(move || {
+            let folded = read_signals.read(&read_session).is_unknown();
+            let split = read_split(&path, None).is_err();
+            tx.send((folded, split)).ok();
+        });
+        let (folded, split) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the reads return instead of blocking");
+        assert!(folded, "a FIFO folds to Unknown");
+        assert!(split, "a place read refuses a FIFO");
+
+        fs::remove_file(&fifo).expect("fifo");
+        let secret = dir.join("secret");
+        fs::write(&secret, "{\"at\":1,\"state\":\"idle\"}\n").expect("secret");
+        std::os::unix::fs::symlink(&secret, &fifo).expect("symlink");
+        assert!(
+            signals.read(&session).is_unknown(),
+            "a symlink is not followed"
+        );
+        assert!(read_split(&fifo, None).is_err(), "nor on a place");
         let _ = fs::remove_dir_all(&dir);
     }
 }

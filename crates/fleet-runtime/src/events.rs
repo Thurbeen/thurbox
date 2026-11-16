@@ -63,11 +63,11 @@ pub fn read_from(file: &Path, from: u64) -> io::Result<Option<OutboxRead>> {
     }))
 }
 
-/// Open `path` for reading only when it is a regular file. The session
-/// controls the path: a FIFO with no writer would block the open, and a
-/// symlink would point the read at another file this process can read. On
-/// Unix the open neither blocks nor follows a symlink.
-fn open_regular(path: &Path) -> io::Result<fs::File> {
+/// Open `path` for reading only when it is a regular file. A session
+/// controls its outbox and signal file: a FIFO with no writer would block
+/// the open, and a symlink would point the read at another file this
+/// process can read. On Unix the open neither blocks nor follows a symlink.
+pub(crate) fn open_regular(path: &Path) -> io::Result<fs::File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -77,11 +77,11 @@ fn open_regular(path: &Path) -> io::Result<fs::File> {
     );
     #[cfg(not(unix))]
     if !fs::symlink_metadata(path)?.is_file() {
-        return Err(io::Error::other("the outbox is not a regular file"));
+        return Err(io::Error::other("not a regular file"));
     }
     let f = options.open(path)?;
     if !f.metadata()?.is_file() {
-        return Err(io::Error::other("the outbox is not a regular file"));
+        return Err(io::Error::other("not a regular file"));
     }
     Ok(f)
 }

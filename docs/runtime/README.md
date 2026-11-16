@@ -457,7 +457,8 @@ Fleet:  runtime exec: fleet signal-read <that file> ──▶ fold ──▶ ses
   the runtime has to the place: `exec` runs `fleet signal-read <file>
   [<length>]`, so the place's own `fleet` reads it, on POSIX and on Windows
   alike. A file not written yet is a session that reported nothing. An
-  `exec` that fails is Unknown.
+  `exec` that fails is Unknown, and so is a path that is not a regular
+  file, such as a FIFO or a symlink: the read neither blocks nor follows it.
 - The session's event outbox is beside the signal file, at
   `<that file>.events`. Fleet reads it through `exec` too:
   `fleet signal-read --from <offset> <file>` prints the offset its read
