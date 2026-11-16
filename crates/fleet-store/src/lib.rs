@@ -9,14 +9,15 @@
 //! seq                         the last resourceVersion handed out
 //! lease.json                  the manager lease, if one is held
 //! objects/<Kind>/<name>.json  one object, spec and status together (Q6)
-//! boards/<name>/<seq>.jsonl   a Board's log: one segment, named by its first seq
+//! boards/<name>/<seq>.jsonl   one segment of a Board's log, named by its first seq
+//! boards/<name>/<seq>.keys    the (source, key, seq) of each keyed event in it
 //! tmp/                        temp files; anything here at open is a crashed write
 //! ```
 //!
 //! Reads take no lock: every record is replaced atomically, so a read sees a
 //! whole old or whole new file. A board log is the one exception: it is
-//! appended to, and a reader skips a last line that is not complete. Every write takes the store lock, re-reads,
-//! checks, then writes; that is what makes create exclusive and update a
+//! appended to, and a reader skips a last line that is not complete. Every
+//! write takes the store lock, re-reads, checks, then writes; that is what makes create exclusive and update a
 //! compare-and-swap across processes.
 
 pub mod durable;
@@ -1463,9 +1464,8 @@ impl Store for FileStore {
         source: &fleet_api::event::Source,
         events: Vec<fleet_api::event::Publish>,
         by: FieldManager,
-        lease: Option<&LeaseToken>,
     ) -> Result<Vec<fleet_api::event::Appended>, StoreError> {
-        self.append_board_events(board, source, events, by, lease)
+        self.append_board_events(board, source, events, by)
     }
 
     fn read_events(

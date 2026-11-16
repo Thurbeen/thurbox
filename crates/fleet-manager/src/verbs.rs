@@ -594,7 +594,7 @@ pub fn publish_event(
 ) -> Result<Appended, StoreError> {
     let source = Source::Cli(CliSource::new(user).map_err(StoreError::Invalid)?);
     store
-        .append_events(board, &source, vec![publish], FieldManager::Cli, None)?
+        .append_events(board, &source, vec![publish], FieldManager::Cli)?
         .pop()
         .ok_or_else(|| StoreError::Unknown(format!("{board}: the append answered no event")))
 }

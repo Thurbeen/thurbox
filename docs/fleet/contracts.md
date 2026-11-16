@@ -812,8 +812,10 @@ refused.
   `inbox`, refusing a key no entry holds. None changes another field;
   `store_contract` races appenders against the remover and tears the
   record.
-- A Conversation's `status.received` and a Listener's `beats`, `refused`
-  and `beatRevision` have no owner either. `receive_event` (the account's
+- A Conversation's `status.received`, a Listener's `beats`, `refused`
+  and `beatRevision`, and a Board's `status.head` and `status.oldest` have no
+  owner either; only the store's typed `append_events` writes the Board's
+  two, as the next bullet says. `receive_event` (the account's
   listener, no lease) spools one delivery, a duplicate id changing nothing
   and the hundred-and-first refused; `record_received`
   (ConversationController, under the lease) writes the controller's status
@@ -838,28 +840,37 @@ refused.
   only with its `uid` and its CronTask's uid label, and only once it is
   Concluded unless the CronTask's policy is `Replace`.
 - A Board's log is `boards/<name>/<seq>.jsonl` segments, one event per line,
-  each segment named by its first `seq`. `append_events` (`cli`, through the
-  manager's `publish_event` verb, no lease; a controller under the lease) is
-  the only writer. Under the lock it checks each event (`event::validate_publish`:
-  the type grammar, the `fleet.` prefix only for a controller, 256
-  characters for `subject`, `key` and `correlation`, the Board's
-  `maxDataBytes`) and refuses the batch whole when one fails. A publish whose
-  `(source, key)` an event in the log holds appends nothing and answers that
-  event. The others get the next `seq`s, from 1 with no gap, and the store's
-  time. Each line is appended and fsynced; the next append cuts a torn last
-  line, and a reader skips it. The log, not the status, decides the next
-  `seq`, so an append that crashed before its status write keeps its `seq`.
-  In the same write, retention drops whole segments from the oldest while
-  the log holds more than `retention.maxCount` events or the segment's
-  newest event is older than `retention.maxAgeSeconds`, never the newest
-  segment, and `status.head` and `status.oldest` move. No other writer, and no
-  status write, changes a Board's status. `read_events(board, after,
-  limit)` takes no lock: it answers `Expired { oldest }` when `after + 1` is
-  below the first `seq` the log holds, and otherwise the events above
-  `after`, oldest first; a segment that retention drops during the read
-  makes it read again. Creating or deleting a Board removes any log left
-  under its name. `store_contract` tears a line, drops a status write and
-  ages segments out.
+  each segment named by its first `seq`, and a `<seq>.keys` file beside each
+  with the `(source, key, seq)` of its keyed events. `append_events` is the
+  only writer, and in this release only `cli` calls it, through the manager's
+  `publish_event` verb, with no lease. Under the lock it checks each event
+  (`event::validate_publish`: the type grammar, the refused `fleet.` prefix,
+  256 characters for `subject`, `key` and `correlation`, the Board's
+  `maxDataBytes`) and refuses the batch whole when one fails. It then drops,
+  from the oldest, each segment whose events are all older than
+  `retention.maxAgeSeconds`: a segment goes when the next segment's first
+  event is that old, and the newest segment when its last event is. A publish
+  whose `(source, key)` a kept segment's keys file (or the newest segment
+  itself) holds appends nothing and answers that event, so a key whose event
+  aged out can be used again. The others get the next `seq`s, from
+  `status.head + 1` with no gap, and the store's time. Each line is appended
+  and fsynced, then its key line; each append cuts a torn last line off the
+  newest segment, rewrites its keys file from it when they differ, and
+  rebuilds a missing or torn keys file of an older segment from that
+  segment. A reader skips a torn line. The log, not the status, decides the
+  next `seq`, so an append that crashed before its status write keeps its
+  `seq`. After the append, retention drops whole segments from the oldest
+  while the log holds more than `retention.maxCount` events, never the
+  newest. Then `status.head` and `status.oldest` move, and the dropped files
+  go. Stray files in the directory are ignored. No other writer, and no
+  status write, changes a Board's status. Retention runs only on a publish.
+  `read_events(board, after, limit)` takes no lock: it answers
+  `Expired { oldest }` when `after + 1` is below the first `seq` the log
+  holds, and otherwise the events above `after`, oldest first; a segment
+  that retention drops during the read makes it read again. Creating or
+  deleting a Board removes any log left under its name. `store_contract`
+  tears a line and a keys file, drops a status write, ages segments out and
+  leaves stray files.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the

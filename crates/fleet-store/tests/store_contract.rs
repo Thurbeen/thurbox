@@ -3378,13 +3378,7 @@ fn note(key: Option<&str>) -> fleet_api::event::Publish {
 
 fn publish(store: &FileStore, board: &str, key: Option<&str>) -> fleet_api::event::Appended {
     store
-        .append_events(
-            board,
-            &cli("alice"),
-            vec![note(key)],
-            FieldManager::Cli,
-            None,
-        )
+        .append_events(board, &cli("alice"), vec![note(key)], FieldManager::Cli)
         .unwrap()
         .pop()
         .unwrap()
@@ -3409,7 +3403,7 @@ fn a_board_log_is_appended_only_by_its_typed_mutation() {
         FieldManager::Worker,
         FieldManager::TaskController,
     ] {
-        let refused = store.append_events("b", &cli("alice"), vec![note(None)], by, None);
+        let refused = store.append_events("b", &cli("alice"), vec![note(None)], by);
         assert!(
             matches!(refused, Err(StoreError::Forbidden(_))),
             "{refused:?}"
@@ -3433,7 +3427,6 @@ fn a_board_log_is_appended_only_by_its_typed_mutation() {
             &cli("alice"),
             vec![note(Some("k")), note(Some("k")), note(None)],
             FieldManager::Cli,
-            None,
         )
         .unwrap();
     let seqs: Vec<(u64, bool)> = batch.iter().map(|a| (a.event.seq, a.duplicate)).collect();
@@ -3493,13 +3486,107 @@ fn retention_by_age_drops_old_segments_and_a_key_from_them() {
     publish(&store, "b", Some("k"));
     clock.advance(1_000);
     publish(&store, "b", None);
-    clock.advance(59_500);
-    assert_eq!(publish(&store, "b", None).event.seq, 3);
+    clock.advance(37_000);
+    publish(&store, "b", None);
+    clock.advance(23_500);
+    assert_eq!(publish(&store, "b", None).event.seq, 4);
     assert_eq!(
         store.read_events("b", 0, 100).unwrap(),
         fleet_api::event::Page::Expired { oldest: 2 }
     );
-    assert_eq!(page_seqs(&store, "b", 1), vec![2, 3]);
+    assert_eq!(page_seqs(&store, "b", 1), vec![2, 3, 4]);
     let reused = publish(&store, "b", Some("k"));
-    assert_eq!((reused.event.seq, reused.duplicate), (4, false));
+    assert_eq!((reused.event.seq, reused.duplicate), (5, false));
+}
+
+#[test]
+fn retention_by_age_runs_before_dedupe_and_drops_the_newest_segment_too() {
+    let dir = Dir::new("board-age-newest");
+    let clock = Arc::new(TestClock(AtomicU64::new(1_000)));
+    let store = FileStore::open_with_clock(&dir.0, clock.clone()).unwrap();
+    store
+        .create(
+            board("b", json!({"retention": {"maxAgeSeconds": 60}})),
+            FieldManager::Apply,
+        )
+        .unwrap();
+    publish(&store, "b", Some("k"));
+    publish(&store, "b", None);
+    clock.advance(60_001);
+    let again = publish(&store, "b", Some("k"));
+    assert_eq!((again.event.seq, again.duplicate), (3, false));
+    assert_eq!(
+        store.read_events("b", 1, 100).unwrap(),
+        fleet_api::event::Page::Expired { oldest: 3 }
+    );
+    let b = known(store.get("Board", "b")).unwrap();
+    assert_eq!(b.status, json!({"head": 3, "oldest": 3}));
+}
+
+#[test]
+fn a_duplicate_only_publish_still_applies_retention() {
+    let dir = Dir::new("board-age-duplicate");
+    let clock = Arc::new(TestClock(AtomicU64::new(1_000)));
+    let store = FileStore::open_with_clock(&dir.0, clock.clone()).unwrap();
+    store
+        .create(
+            board(
+                "b",
+                json!({"retention": {"maxAgeSeconds": 60, "maxCount": 10}}),
+            ),
+            FieldManager::Apply,
+        )
+        .unwrap();
+    publish(&store, "b", None);
+    clock.advance(1_000);
+    publish(&store, "b", None);
+    clock.advance(38_000);
+    publish(&store, "b", Some("k"));
+    clock.advance(22_500);
+    let again = publish(&store, "b", Some("k"));
+    assert_eq!((again.event.seq, again.duplicate), (3, true));
+    let b = known(store.get("Board", "b")).unwrap();
+    assert_eq!(b.status, json!({"head": 3, "oldest": 2}));
+}
+
+#[test]
+fn a_lost_or_torn_key_sidecar_is_rebuilt_from_its_segment() {
+    let dir = Dir::new("board-sidecar");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(
+            board("b", json!({"retention": {"maxCount": 10}})),
+            FieldManager::Apply,
+        )
+        .unwrap();
+    publish(&store, "b", Some("sealed"));
+    publish(&store, "b", Some("newest"));
+    let log = dir.0.join("boards/b");
+    fs::remove_file(log.join("00000000000000000001.keys")).unwrap();
+    fs::write(log.join("00000000000000000002.keys"), b"{\"sou").unwrap();
+    for (key, seq) in [("sealed", 1), ("newest", 2)] {
+        let again = publish(&store, "b", Some(key));
+        assert_eq!((again.event.seq, again.duplicate), (seq, true), "{key}");
+    }
+}
+
+#[test]
+fn a_stray_file_in_a_board_log_is_ignored() {
+    let dir = Dir::new("board-stray");
+    let store = FileStore::open(&dir.0).unwrap();
+    store
+        .create(board("b", json!({})), FieldManager::Apply)
+        .unwrap();
+    publish(&store, "b", None);
+    let log = dir.0.join("boards/b");
+    for stray in [
+        ".DS_Store",
+        ".00000000000000000001.jsonl.swp",
+        "1.jsonl",
+        "notes",
+    ] {
+        fs::write(log.join(stray), b"junk").unwrap();
+    }
+    assert_eq!(publish(&store, "b", None).event.seq, 2);
+    assert_eq!(page_seqs(&store, "b", 0), vec![1, 2]);
 }

@@ -72,9 +72,11 @@ impl BoardSpec {
     }
 }
 
-/// How long the log keeps an event: an event goes once it is older than
-/// `maxAgeSeconds` or once more than `maxCount` newer events are kept,
-/// a whole segment at a time.
+/// How long the log keeps an event. Retention runs only when someone
+/// publishes, and drops whole segments: a segment goes once all its events
+/// are older than `maxAgeSeconds`, or while the log holds more than
+/// `maxCount` events. Until the next publish, a read can still show older
+/// events.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Retention {

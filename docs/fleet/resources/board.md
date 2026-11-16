@@ -48,9 +48,13 @@ change applies from the next append.
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `retention.maxAgeSeconds` | integer, at least 1 | no | The log drops an event that is older than this. The default is 604800 (7 days). |
-| `retention.maxCount` | integer, 1 to 1000000 | no | The log keeps at most this many events. The default is 10000. |
+| `retention.maxAgeSeconds` | integer, at least 1 | no | When someone publishes, the log drops each whole segment whose events are all older than this. The default is 604800 (7 days). |
+| `retention.maxCount` | integer, 1 to 1000000 | no | When someone publishes, the log drops whole segments from the oldest until it holds at most this many events. The default is 10000. |
 | `maxDataBytes` | integer, 1 to 1048576 | no | The most bytes of an event's `data`, as JSON. The default is 16384. |
+
+Retention runs only when someone publishes to the Board, and it drops whole
+segments. Until the next publish, a read can still show events that are
+older than `maxAgeSeconds`.
 
 The `shared` Board that `fleet init` makes has the default values.
 
@@ -89,23 +93,24 @@ nothing.
 ## Lifecycle
 
 ```text
-publish ──▶ check ──▶ key held? ──yes──▶ answer the first event; append nothing
-                          │
-                          no
-                          ▼
-                 next seq, append ──▶ drop old segments ──▶ status.head, status.oldest
+publish ──▶ check ──▶ drop aged segments ──▶ key held? ──yes──▶ answer the first event
+                                                │
+                                                no
+                                                ▼
+                    next seq, append ──▶ drop past maxCount ──▶ status.head, oldest
 ```
 
 - The log is a series of segments. Each segment holds a tenth of
   `maxCount` events, at least 1 and at most 1000.
-- After each append, the store drops the oldest segment while the log
-  holds more than `maxCount` events. It also drops the oldest segment when
-  the newest event in it is older than `maxAgeSeconds`. The segment with
-  the new event always stays. Retention runs only when an event is
-  appended.
-- A publish with a `key` that the same `source` used before, on an event
-  that the log still holds, appends nothing. The publisher gets the first
-  event back. A retry is then safe.
+- Each publish first drops, from the oldest, each segment whose events are
+  all older than `maxAgeSeconds`. This can drop every segment. The `seq`
+  does not go back: the next event gets `status.head + 1`.
+- Then the store looks for keys. A publish with a `key` that the same
+  `source` used before, on an event that the log still holds, appends
+  nothing. The publisher gets the first event back. A retry is then safe.
+  A key whose event the log dropped can be used again.
+- After the append, the store drops the oldest segment while the log holds
+  more than `maxCount` events. The segment with the newest event stays.
 - A reader keeps its own cursor: the last `seq` it read. When the log no
   longer holds the event after the cursor, the read answers `Expired` with
   `oldest`. `fleet event list` then exits 5. The reader can continue from

@@ -173,12 +173,6 @@ pub fn may_append_events(by: &FieldManager, source: &crate::event::Source) -> bo
     )
 }
 
-/// Who may publish an event type under `event::RESERVED_PREFIX`: a
-/// controller, and nobody at the command line.
-pub fn may_publish_reserved(by: &FieldManager) -> bool {
-    by.is_controller()
-}
-
 /// Who may record a delivery and remove its entry
 /// (`Store::record_delivery`): the Task's controller only.
 pub fn may_record_delivery(by: FieldManager) -> bool {

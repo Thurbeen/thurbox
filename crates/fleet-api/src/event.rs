@@ -174,11 +174,11 @@ fn validate_field(name: &str, value: Option<&str>) -> Result<(), String> {
 }
 
 /// Check a publish against the envelope's rules and the board's
-/// `maxDataBytes`. `reserved` admits the [`RESERVED_PREFIX`]: only a
-/// controller passes it.
-pub fn validate_publish(p: &Publish, max_data_bytes: u64, reserved: bool) -> Result<(), String> {
+/// `maxDataBytes`. The [`RESERVED_PREFIX`] is refused: no publisher in this
+/// release is a controller.
+pub fn validate_publish(p: &Publish, max_data_bytes: u64) -> Result<(), String> {
     validate_type(&p.event_type)?;
-    if !reserved && p.event_type.starts_with(RESERVED_PREFIX) {
+    if p.event_type.starts_with(RESERVED_PREFIX) {
         return Err(format!(
             "type {:?}: the {RESERVED_PREFIX} prefix is reserved for Fleet's controllers",
             p.event_type
@@ -281,31 +281,29 @@ mod tests {
     }
 
     #[test]
-    fn the_reserved_prefix_is_a_controllers_only() {
-        let p = publish("fleet.task.phase");
-        assert!(validate_publish(&p, 16, false).is_err());
-        assert!(validate_publish(&p, 16, true).is_ok());
-        assert!(validate_publish(&publish("fleetish.x"), 16, false).is_ok());
+    fn the_reserved_prefix_is_refused() {
+        assert!(validate_publish(&publish("fleet.task.phase"), 16).is_err());
+        assert!(validate_publish(&publish("fleetish.x"), 16).is_ok());
     }
 
     #[test]
     fn data_is_bounded_by_its_serialized_size() {
         let mut p = publish("a");
         p.data = json!("xx");
-        assert!(validate_publish(&p, 4, false).is_ok());
-        assert!(validate_publish(&p, 3, false).is_err());
+        assert!(validate_publish(&p, 4).is_ok());
+        assert!(validate_publish(&p, 3).is_err());
     }
 
     #[test]
     fn subject_key_and_correlation_are_bounded_in_characters() {
         let mut p = publish("a");
         p.subject = Some("é".repeat(256));
-        assert!(validate_publish(&p, 16, false).is_ok());
+        assert!(validate_publish(&p, 16).is_ok());
         p.subject = Some("é".repeat(257));
-        assert!(validate_publish(&p, 16, false).is_err());
+        assert!(validate_publish(&p, 16).is_err());
         p.subject = None;
         p.key = Some(String::new());
-        assert!(validate_publish(&p, 16, false).is_err());
+        assert!(validate_publish(&p, 16).is_err());
     }
 
     #[test]
