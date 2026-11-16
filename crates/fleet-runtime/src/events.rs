@@ -101,6 +101,15 @@ fn with_invalid_utf8_as_nul(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
+/// The key of the session whose outbox is `file`, read back from the name
+/// Fleet gave it: [`outbox_file`](fleet_api::event::outbox_file) of the
+/// session's `<key>.jsonl` signal file. `None` for any other name.
+pub fn outbox_session_key(file: &Path) -> Option<String> {
+    let name = file.file_name()?.to_str()?;
+    let key = name.strip_suffix(".jsonl.events")?;
+    (!key.is_empty()).then(|| key.to_string())
+}
+
 /// What `fleet signal-read --from` prints of a read: the offset it starts
 /// at on a line of its own, then the bytes.
 pub fn encode_place_read(read: &OutboxRead) -> Vec<u8> {
@@ -134,6 +143,27 @@ mod tests {
                 data: serde_json::json!(1),
             },
         )
+    }
+
+    #[test]
+    fn an_outbox_names_the_session_key_fleet_gave_it_on_each_host() {
+        use fleet_api::event::outbox_file;
+        use fleet_api::signal::Signals;
+        let dir = std::env::temp_dir().join(format!("fleet-outbox-key-{}", std::process::id()));
+        let signals = crate::signals::FileSignals::open(&dir).expect("signals");
+        let key = "build.v1.0c1e-uid";
+        for host in [fleet_api::task::LOCAL_HOST, "box/main"] {
+            let outbox = outbox_file(&signals.file(host, key).expect("a signal file"));
+            assert_eq!(
+                outbox_session_key(Path::new(&outbox)).as_deref(),
+                Some(key),
+                "{host}"
+            );
+        }
+        for other in ["k.jsonl", "k.events", ".jsonl.events", "dir/"] {
+            assert_eq!(outbox_session_key(Path::new(other)), None, "{other}");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

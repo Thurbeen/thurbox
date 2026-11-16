@@ -85,10 +85,10 @@ impl Run {
     }
 
     /// The process died, rather than exiting with one of fleet's own codes
-    /// (0-6). A lease error (6) under load is not the crash a test arranged.
+    /// (0-7). A lease error (6) under load is not the crash a test arranged.
     pub fn crashed(&self) -> &Run {
         assert!(
-            !matches!(self.code, Some(0..=6)),
+            !matches!(self.code, Some(0..=7)),
             "expected a crash, got exit {:?}\nstdout:\n{}\nstderr:\n{}",
             self.code,
             self.stdout,

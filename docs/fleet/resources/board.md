@@ -168,6 +168,66 @@ These rules apply:
 - A session that has `FLEET_SIGNAL_FILE` but no `FLEET_EVENT_FILE` refuses
   to publish. It never publishes as `cli/<user>`.
 
+### Waiting for the seq
+
+A session that needs the event's `seq` publishes with `--wait`:
+
+```sh
+fleet event publish --type git.push --data '{"branch": "main"}' --wait --timeout-ms 30000
+```
+
+1. `fleet event publish` finds the session's key in the name of
+   `FLEET_EVENT_FILE`. It refuses a name that Fleet did not make, and then
+   appends nothing.
+2. It appends the line, as without `--wait`.
+3. It reads the store, with no lock, every 200 ms. It finds the Task whose
+   session has that key. The line does not name the Task.
+4. When `status.outbox.offset` of the Task is past the line, it looks for
+   the event. The event's source is that Task. Its key is the line's key,
+   or `outbox-<generation>-<offset>`.
+5. It prints the event with its `seq`, as a publish outside a session does,
+   and exits 0.
+
+These rules apply:
+
+- When `status.outbox.lastSkipped` names the line's offset, Fleet skipped
+  the line. The command prints the reason and exits 1.
+- When the time ends first, the command prints the queued line with its
+  offset, and exits 7. The line stays in the outbox, and Fleet can still
+  read it in.
+- The command opens the store through `--config`, `FLEET_CONFIG` or the
+  per-user config, as `fleet event list` does. A place without Fleet's
+  config cannot wait.
+- Outside a session, a publish is done when it prints. There, `--wait`
+  changes nothing.
+
+## Reading
+
+A reader keeps a cursor: the `seq` of the last event it read. It reads the
+events after it, and the cursor then moves to the last `seq` it got.
+
+| Command | Does |
+| --- | --- |
+| `fleet event list --after SEQ` | Prints the matching events after `SEQ` that the log holds now, and exits. |
+| `fleet event wait --after SEQ --timeout-ms MS` | Prints the matching events after `SEQ` as `list` does. When there are none, it reads again every `--poll-ms` until one comes. When none comes before the time ends, it prints nothing and exits 7. |
+| `fleet event watch --after SEQ` | Prints each matching event after `SEQ`, oldest first, then each new one as it comes. It stops when its standard output closes. |
+
+These rules apply:
+
+- All three take the same filters. See [Commands](#commands).
+- `wait` and `watch` read the Board every `--poll-ms`, 500 by default. They
+  take no lock.
+- `watch` prints no event twice and passes none. When the log gets new
+  events during a read, the next read gets them.
+- `watch --json` prints one event per line, as compact JSON (NDJSON).
+  Without `--json`, it prints one line per event, in the columns of `list`.
+- `watch` learns that its reader went away when it prints the next event.
+  Then it exits 0.
+- Each event that `wait` and `watch` print has its `seq`. That is the next
+  cursor.
+- When the cursor is older than the log, all three exit 5 and name
+  `oldest`. With `--json`, they also print `{"expired": {"oldest": N}}`.
+
 ## Lifecycle
 
 ```text
@@ -195,8 +255,8 @@ publish ──▶ check ──▶ drop aged segments ──▶ key held? ──y
   in the next list.
 - A reader keeps its own cursor: the last `seq` it read. When the log no
   longer holds the event after the cursor, the read answers `Expired` with
-  `oldest`. `fleet event list` then exits 5. The reader can continue from
-  `oldest - 1`, and it knows that it missed events.
+  `oldest`. `fleet event list`, `wait` and `watch` then exit 5. The reader
+  can continue from `oldest - 1`, and it knows that it missed events.
 - A Board has no finalizer. A delete removes the Board and its log at
   once. A new Board with the same name starts at `seq` 1.
 
@@ -216,15 +276,17 @@ fleet get board ci
 fleet list boards
 fleet event publish --board ci --type ci.job.done --key run-42 --data '{"ok": true}'
 fleet event list --board ci --after 10 --type 'ci.*' --limit 50
+fleet event wait --board ci --after 10 --type 'ci.*' --timeout-ms 60000 --json
+fleet event watch --board ci --after 10 --json
 fleet delete board ci
 ```
 
-`fleet event list` takes these filters. A value that ends in `*` matches a
-prefix.
+`fleet event list`, `wait` and `watch` take these filters. A value that ends
+in `*` matches a prefix. `watch` takes no `--limit`.
 
 | Flag | Keeps |
 | --- | --- |
-| `--after SEQ` | Events with a `seq` above `SEQ`. The default is 0. |
+| `--after SEQ` | Events with a `seq` above `SEQ`. The default is 0 for `list`. `wait` and `watch` need it. |
 | `--type T` | Events of type `T`. |
 | `--subject S` | Events about `S`. |
 | `--source S` | Events from `S`, such as `cli/alex` or `task/build`. |

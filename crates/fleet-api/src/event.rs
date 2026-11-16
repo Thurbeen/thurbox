@@ -386,6 +386,14 @@ impl OutboxCursor {
         self.skipped += 1;
         self.last_skipped = Some(format!("offset {offset}: {why}"));
     }
+
+    /// Why the line at `offset` was skipped, when it is the last line
+    /// skipped.
+    pub fn skipped_at(&self, offset: u64) -> Option<&str> {
+        self.last_skipped
+            .as_deref()
+            .filter(|why| why.strip_prefix(&format!("offset {offset}: ")).is_some())
+    }
 }
 
 /// One whole line of an outbox: where it starts and ends, and the board and
@@ -466,9 +474,15 @@ fn parse_line(bytes: &[u8], generation: u64, offset: u64) -> Result<(String, Pub
         serde_json::from_slice(bytes).map_err(|e| format!("not an event: {e}"))?;
     let (board, mut publish) = line.checked()?;
     if publish.key.is_none() {
-        publish.key = Some(format!("outbox-{generation}-{offset}"));
+        publish.key = Some(outbox_key(generation, offset));
     }
     Ok((board, publish))
+}
+
+/// The key Fleet gives the line at `offset` of an outbox at `generation`
+/// when the line names none.
+pub fn outbox_key(generation: u64, offset: u64) -> String {
+    format!("outbox-{generation}-{offset}")
 }
 
 /// A filter value: exact, or a prefix when it ends in `*`.
@@ -688,6 +702,11 @@ mod tests {
             cursor.last_skipped.as_deref(),
             Some("offset 0: not an event")
         );
+        assert_eq!(cursor.skipped_at(0), Some("offset 0: not an event"));
+        assert_eq!(cursor.skipped_at(1), None);
+        cursor.skip(10, 20, "offset 1: no");
+        assert_eq!(cursor.skipped_at(1), None);
+        assert_eq!(cursor.skipped_at(10), Some("offset 10: offset 1: no"));
     }
 
     #[test]

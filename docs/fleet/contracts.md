@@ -1280,7 +1280,7 @@ account's Gateway intents.
 `fleet
 init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|event|gateway|signal|runtime|integration|doctor|version`.
 Exit codes:
-0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
+0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease, 7 timed out.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
 `conversation` and `listener` as well as `task`, `taskconfig` and
 `envprovider`; `status changerequest NAME --json` prints the ref and the
@@ -1315,10 +1315,26 @@ after it is the same. Writes are serialized, so by then every write below the
 highest `revision` reported is in it, and a resume skips none.
 
 `fleet event publish [--board B] --type T [--subject S] [--key K]
-[--correlation C] --data JSON [--json]` appends one event to a Board,
-`shared` by default, through the manager's `publish_event` verb, as
-`cli/<user>`, and prints it with its `seq`. A refused event exits 1 and a
-missing Board exits 3. `fleet event list [--board B] [--after SEQ] [--type P]
+[--correlation C] --data JSON [--wait [--timeout-ms MS]] [--json]` appends
+one event to a Board, `shared` by default, through the manager's
+`publish_event` verb, as `cli/<user>`, and prints it with its `seq`. A
+refused event exits 1 and a missing Board exits 3. `--wait` changes nothing
+there. Inside a session, `--wait` first reads the session key from the
+outbox's name (`fleet_runtime::events::outbox_session_key`, the inverse of
+`<key>.jsonl` and `event::outbox_file`) and refuses, appending nothing, a
+name Fleet did not make. After the append it opens the store as the
+read-only commands do (`--config`, then `FLEET_CONFIG`, then the per-user
+config) and polls the
+manager's `wait_ingested` every 200 ms, with no lock, for `--timeout-ms`
+(60000 by default): the Task whose `session_key(name, uid)` is that key,
+then its `status.outbox`. Once `offset` is past the line, a `lastSkipped`
+that names the line's offset (`OutboxCursor::skipped_at`) exits 1 with the
+reason. Otherwise it looks for the event on the line's Board whose source
+is that Task, by name and uid, and whose key is the line's own or
+`event::outbox_key(generation, offset)`, and prints it as a publish outside
+a session does. The line's own fields never name the Task. A timeout prints
+the queued line, as a publish without `--wait` does, and exits 7.
+`fleet event list [--board B] [--after SEQ] [--type P]
 [--subject P] [--source S] [--correlation C] [--limit N] [--json]` prints the
 first `N` (100 by default, at most 10000) events above `SEQ` that match,
 oldest first, up to the last `seq` in the log when the list starts: an event
@@ -1326,6 +1342,26 @@ published during the list waits for the next one; `--json` prints them as
 an array. A `--type` or `--subject` value that ends in `*` matches a prefix.
 A cursor older than the log exits 5 and names `oldest`; with `--json` it
 also prints `{"expired": {"oldest": N}}`. The [Board page](resources/board.md#events) owns the event fields.
+
+`fleet event wait --after SEQ --timeout-ms MS [--poll-ms MS] [--limit N]`
+and `fleet event watch --after SEQ [--poll-ms MS]` take the Board and
+filters of `list` and read through the manager's `EventCursor`, with no
+lock. The cursor's `after` moves past each event a read returns, kept or
+not, and stops at the last event answered when `--limit` cuts the answer,
+so the next read repeats no event and passes none over. A torn last line
+is not read until it is whole, and the log gives `seq`s with no gap, so an
+event the log gains under a read is in the next one. `wait` (the manager's
+`wait_events`) reads every `--poll-ms` (500 by default, 50 to 10000) until
+a read holds a match, prints the matches as `list` does and exits 0; with
+no match by `--timeout-ms` it prints nothing and exits 7. `watch` prints
+each match, oldest first, and reads again every `--poll-ms` when a read
+holds none. With `--json` each event is one compact JSON line (NDJSON),
+flushed; without it each is one line of `list`'s table. It runs until a
+write to stdout fails, so a closed reader ends it at the next event it
+prints, with exit 0. An unreadable Board is a warning on standard error,
+and the next read tries again, as in `fleet watch`. For both, an expired
+cursor exits 5 and names `oldest`, with `{"expired": {"oldest": N}}` on
+stdout under `--json`.
 
 `fleet apply --create-only` creates each object, of every kind it takes, or
 refuses one whose name is taken with exit 5 and leaves it as it is; the

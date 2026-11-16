@@ -121,8 +121,9 @@ required outputs must match the Task's declared schema. A result is a claim,
 not proof of an artifact landing. `fleet send TASK TEXT` queues a message
 for a running or concluded Task's session; the next reconcile delivers it
 once, when the session is ready. `fleet event publish` adds an event to a
-[Board](resources/board.md) that every Task can read, and `fleet event list`
-reads a Board's events after a cursor.
+[Board](resources/board.md) that every Task can read. `fleet event list`
+reads a Board's events after a cursor, `fleet event wait` waits for the
+next match, and `fleet event watch` follows the Board.
 
 Tasks can reference a passive `TaskConfig` for harness, host, model and
 environment defaults. `EnvProvider` resources supply stored string maps and

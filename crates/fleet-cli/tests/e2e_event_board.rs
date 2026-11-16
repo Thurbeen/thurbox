@@ -1279,3 +1279,290 @@ fn a_refused_line_in_a_batch_is_skipped_and_the_rest_land() {
         "{cursor}"
     );
 }
+
+const TIMED_OUT: i32 = 7;
+
+fn wait_json(env: &Env, args: &[&str]) -> support::Run {
+    let mut all = vec!["event", "wait", "--poll-ms", "50", "--json"];
+    all.extend_from_slice(args);
+    env.fleet(&all)
+}
+
+fn tiny_board(env: &Env) {
+    env.apply(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Board",
+        "metadata": {"name": "tiny"},
+        "spec": {"retention": {"maxCount": 2}}
+    }))
+    .ok();
+    for n in 1..=5 {
+        publish(
+            env,
+            &[
+                "--board",
+                "tiny",
+                "--type",
+                "tick",
+                "--data",
+                &n.to_string(),
+            ],
+        );
+    }
+}
+
+fn still_running(child: &mut std::process::Child) -> bool {
+    child.try_wait().expect("try_wait").is_none()
+}
+
+fn exits_within(child: &mut std::process::Child, bound: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + bound;
+    while std::time::Instant::now() < deadline {
+        if !still_running(child) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    false
+}
+
+#[test]
+fn wait_answers_at_once_with_the_matches_already_on_the_board() {
+    let env = board_env("board-wait-now");
+    publish(&env, &["--type", "a", "--data", "1"]);
+    publish(&env, &["--type", "b", "--data", "2"]);
+    publish(&env, &["--type", "b", "--data", "3"]);
+
+    let run = wait_json(
+        &env,
+        &["--after", "0", "--type", "b", "--timeout-ms", "60000"],
+    );
+    run.ok();
+    assert_eq!(seqs(run.json().as_array().unwrap()), vec![2, 3]);
+    let run = wait_json(
+        &env,
+        &["--after", "0", "--limit", "1", "--timeout-ms", "60000"],
+    );
+    run.ok();
+    assert_eq!(seqs(run.json().as_array().unwrap()), vec![1]);
+    env.fleet(&["event", "wait", "--after", "2", "--timeout-ms", "60000"])
+        .ok()
+        .stdout_has("SEQ")
+        .stdout_has("cli/tester");
+}
+
+#[test]
+fn wait_with_no_match_before_its_timeout_prints_nothing_and_exits_timed_out() {
+    let env = board_env("board-wait-timeout");
+    publish(&env, &["--type", "a", "--data", "1"]);
+    let run = wait_json(
+        &env,
+        &["--after", "0", "--type", "b", "--timeout-ms", "200"],
+    );
+    run.code(TIMED_OUT);
+    assert_eq!(run.stdout, "");
+    wait_json(&env, &["--after", "1", "--timeout-ms", "200"]).code(TIMED_OUT);
+}
+
+#[test]
+fn wait_started_before_a_publish_answers_with_that_event() {
+    let env = board_env("board-wait-later");
+    publish(&env, &["--type", "a", "--data", "1"]);
+    let mut child = env.spawn(&[
+        "event",
+        "wait",
+        "--after",
+        "1",
+        "--type",
+        "later",
+        "--poll-ms",
+        "50",
+        "--timeout-ms",
+        "60000",
+        "--json",
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(still_running(&mut child), "the wait blocks with no match");
+    publish(&env, &["--type", "other", "--data", "2"]);
+    let event = publish(&env, &["--type", "later", "--data", "3"]);
+    let run = wait(child);
+    run.ok();
+    assert_eq!(run.json(), json!([event]));
+}
+
+#[test]
+fn watch_streams_each_new_match_once_in_order_and_ends_when_its_reader_goes() {
+    use std::io::BufRead;
+    let env = board_env("board-watch");
+    publish(&env, &["--type", "before", "--data", "0"]);
+    let mut child = env.spawn(&[
+        "event",
+        "watch",
+        "--after",
+        "1",
+        "--type",
+        "kept.*",
+        "--poll-ms",
+        "50",
+        "--json",
+    ]);
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        for _ in 0..4 {
+            match lines.next() {
+                Some(Ok(line)) => tx.send(line).unwrap(),
+                _ => return,
+            }
+        }
+    });
+    let next = || -> Value {
+        let line = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a line from the watch");
+        serde_json::from_str(&line).expect("an NDJSON line")
+    };
+
+    publish(&env, &["--type", "kept.a", "--data", "1"]);
+    publish(&env, &["--type", "dropped", "--data", "2"]);
+    publish(&env, &["--type", "kept.b", "--data", "3"]);
+    assert_eq!(next()["seq"], 2);
+    assert_eq!(next()["seq"], 4);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    for n in 5..=6 {
+        publish(&env, &["--type", "kept.c", "--data", &n.to_string()]);
+    }
+    let later = [next(), next()];
+    assert_eq!(seqs(&later), vec![5, 6], "{later:#?}");
+    assert_eq!(later[0]["type"], "kept.c");
+    reader.join().unwrap();
+
+    assert!(still_running(&mut child), "the watch runs on");
+    publish(&env, &["--type", "kept.d", "--data", "7"]);
+    assert!(
+        exits_within(&mut child, std::time::Duration::from_secs(30)),
+        "the watch ends once its stdout is closed"
+    );
+
+    let mut killed = env.spawn(&["event", "watch", "--after", "0", "--json"]);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    killed.kill().unwrap();
+    assert!(exits_within(
+        &mut killed,
+        std::time::Duration::from_secs(30)
+    ));
+}
+
+#[test]
+fn wait_and_watch_on_an_expired_cursor_name_the_oldest_and_exit_5() {
+    let env = board_env("board-wait-expired");
+    tiny_board(&env);
+    for verb in ["wait", "watch"] {
+        let mut args = vec!["event", verb, "--board", "tiny", "--after", "1"];
+        if verb == "wait" {
+            args.extend(["--timeout-ms", "60000"]);
+        }
+        env.fleet(&args).code(5).stderr_has("oldest 4");
+        args.push("--json");
+        let run = env.fleet(&args);
+        run.code(5);
+        assert_eq!(run.json(), json!({"expired": {"oldest": 4}}), "{verb}");
+    }
+    let run = wait_json(
+        &env,
+        &["--board", "tiny", "--after", "3", "--timeout-ms", "60000"],
+    );
+    run.ok();
+    assert_eq!(seqs(run.json().as_array().unwrap()), vec![4, 5]);
+}
+
+#[test]
+fn publish_wait_outside_a_session_prints_the_seq_as_publish_does() {
+    let env = board_env("board-publish-wait-cli");
+    let event = publish(&env, &["--type", "a", "--data", "1", "--wait"]);
+    assert_eq!(event["seq"], 1);
+    assert_eq!(event["source"], "cli/tester");
+}
+
+fn reconcile_until_done(env: &Env, mut child: std::process::Child) -> support::Run {
+    for _ in 0..100 {
+        if !still_running(&mut child) {
+            break;
+        }
+        env.reconcile().ok();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    wait(child)
+}
+
+fn publish_inside_spawned(env: &Env, vars: &[(&str, &str)], args: &[&str]) -> std::process::Child {
+    let mut cmd = env.command(&[&["event", "publish"], args].concat());
+    for (k, v) in vars {
+        cmd.env(k, v);
+    }
+    cmd.spawn().expect("fleet event publish")
+}
+
+#[test]
+fn publish_wait_inside_a_session_prints_the_event_once_fleet_ingests_it() {
+    let env = session_env("event-session-wait");
+    let vars = session_vars(&env);
+    let uid = env.get("a")["metadata"]["uid"].clone();
+    publish_inside(&env, &borrowed(&vars), &["--type", "first", "--data", "0"]).ok();
+
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &["--type", "git.push", "--data", "1", "--wait", "--json"],
+    );
+    let run = reconcile_until_done(&env, child);
+    run.ok();
+    let event = run.json();
+    assert_eq!(event["seq"], 2, "{event}");
+    assert_eq!(event["type"], "git.push");
+    assert_eq!(event["source"]["task"], "a");
+    assert_eq!(event["source"]["uid"], uid);
+    assert_eq!(list(&env, &["--after", "1"]), vec![event]);
+
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &["--type", "keyed", "--key", "k1", "--data", "2", "--wait"],
+    );
+    reconcile_until_done(&env, child)
+        .ok()
+        .stdout_has("shared/3 keyed from task/a");
+}
+
+#[test]
+fn publish_wait_inside_a_session_reports_a_skipped_line_and_a_timeout() {
+    let env = session_env("event-session-wait-refused");
+    let vars = session_vars(&env);
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &["--board", "nowhere", "--type", "a", "--data", "1", "--wait"],
+    );
+    reconcile_until_done(&env, child)
+        .code(1)
+        .stderr_has("offset 0")
+        .stderr_has("nowhere");
+
+    let outbox_len = std::fs::metadata(&vars[1].1).unwrap().len();
+    let run = publish_inside(
+        &env,
+        &borrowed(&vars),
+        &[
+            "--type",
+            "b",
+            "--data",
+            "2",
+            "--wait",
+            "--timeout-ms",
+            "300",
+        ],
+    );
+    run.code(TIMED_OUT)
+        .stdout_has(&format!("outbox offset {outbox_len}"));
+}
