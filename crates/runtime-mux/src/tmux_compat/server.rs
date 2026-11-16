@@ -3825,10 +3825,6 @@ impl<M: TmuxCompatible> PaneIo for Server<M> {
         self.known_socket()?;
         let target = self.target(pane)?;
         self.refuse_exited(pane, &target)?;
-        // Bracketed-paste-wrapped either way (see `TmuxCompatible::paste_args`), so the
-        // text arrives literally: no shell is involved, and the wrap is also
-        // what keeps a leading `-` from reading as a flag and a newline from
-        // submitting the line before it.
         for paste in M::paste_args(&target, text) {
             let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
             self.one_shot(&paste[0], &argv)?;
