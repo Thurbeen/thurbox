@@ -1127,3 +1127,69 @@ fn a_cursor_write_that_conflicts_is_retried_so_retention_never_duplicates_an_eve
     let board = env.fleet(&["get", "board", "tiny"]).ok().json();
     assert_eq!(board["status"]["head"], 2, "each event once: {board}");
 }
+
+const BULK_LINES: usize = 50;
+
+fn more_than_one_read() -> String {
+    let line = format!(
+        "{{\"board\":\"shared\",\"type\":\"bulk\",\"data\":\"{}\"}}\n",
+        "x".repeat(15_000)
+    );
+    let text = line.repeat(BULK_LINES);
+    assert!(text.len() as u64 > fleet_api::event::MAX_OUTBOX_READ);
+    text
+}
+
+fn bulk_events(env: &Env) -> usize {
+    list(env, &["--type", "bulk", "--limit", "10000"]).len()
+}
+
+fn one_pass(env: &Env) {
+    env.fleet(&["reconcile", "--max-passes", "1", "--json"])
+        .ok();
+}
+
+#[test]
+fn a_released_task_waits_for_an_outbox_longer_than_one_read() {
+    let env = session_env("event-session-draining");
+    let outbox = session_var(&env, "FLEET_EVENT_FILE");
+    env.host().set_at_rest(&env.session_key("a"), true).unwrap();
+    env.fleet(&["delete", "task", "a"]).ok();
+    one_pass(&env);
+    append_raw(&outbox, &more_than_one_read());
+
+    one_pass(&env);
+    let st = env.get("a")["status"].clone();
+    let released = st["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "Released")
+        .cloned()
+        .expect("a Released condition");
+    assert_eq!(released["reason"], "OutboxDraining", "{st:#}");
+    assert_eq!(released["status"], "False", "{st:#}");
+    assert!(bulk_events(&env) < BULK_LINES);
+
+    env.reconcile().ok();
+    env.get_absent("a");
+    assert_eq!(bulk_events(&env), BULK_LINES);
+}
+
+#[test]
+fn a_gone_session_is_closed_only_once_a_read_drains_its_outbox() {
+    let env = session_env("event-session-gone-bulk");
+    let outbox = session_var(&env, "FLEET_EVENT_FILE");
+    env.host().vanish(&env.session_key("a")).unwrap();
+    one_pass(&env);
+    assert_eq!(env.get("a")["status"]["sessionState"], "Gone");
+    append_raw(&outbox, &more_than_one_read());
+
+    one_pass(&env);
+    assert!(bulk_events(&env) < BULK_LINES);
+    assert_eq!(env.get("a")["status"]["outbox"]["closed"], Value::Null);
+
+    env.reconcile().ok();
+    assert_eq!(bulk_events(&env), BULK_LINES);
+    assert_eq!(env.get("a")["status"]["outbox"]["closed"], true);
+}
