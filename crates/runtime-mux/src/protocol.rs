@@ -803,7 +803,7 @@ impl Marks {
 }
 
 /// What this program keeps of a key outside the server. `paused` marks a
-/// paused key ([`pause`]). `started` holds the pane of each key a `start`
+/// paused key (the `pause` verb). `started` holds the pane of each key a `start`
 /// made until a `stop`, where a reboot leaves it: a key with no window reads
 /// as exited, never as stopped, so Fleet revives its session.
 pub struct Kept {
