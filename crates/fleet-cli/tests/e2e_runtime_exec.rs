@@ -1802,6 +1802,100 @@ fn a_git_url_task_on_runtime_mux_runs_in_a_worktree_and_its_release_keeps_the_wo
     );
 }
 
+const CLAUDE_GONE_QUIET: &str = r#"#!/bin/sh
+fleet signal idle
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
+  fleet signal working
+done
+"#;
+
+fn backdate_deletion(env: &Env, name: &str, by: Duration) {
+    let path = env.object_path("Task", name);
+    let mut task: Value = serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+    let deleted = task["metadata"]["deletionTimestamp"]
+        .as_u64()
+        .expect("a deleting Task");
+    task["metadata"]["deletionTimestamp"] = json!(deleted - by.as_millis() as u64);
+    fs::write(&path, task.to_string()).expect("record");
+}
+
+/// An agent whose hooks last said `working` and then went quiet holds its
+/// release only for a bounded time: the Task is then deleted, its session
+/// included, and the work it left uncommitted is kept.
+#[test]
+fn a_deleted_task_whose_agent_last_said_working_is_released_after_the_grace() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("quiet");
+    let mut env = mux_env("runtime-mux-quiet", &program, &sockets);
+    env.set_var("RUNTIME_MUX_CONFIG", &mux_config(&env).to_string_lossy());
+    let src = env.root.join("src");
+    fs::create_dir_all(&src).expect("source");
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, CLAUDE_GONE_QUIET).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("git+file://{}#main", src.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "briefed, its agent then working", |env| {
+        let st = &env.get("t1")["status"];
+        st["phase"] == "Briefed" && st["agentState"] == "working"
+    });
+    let dir = PathBuf::from(
+        env.get("t1")["status"]["workspace"]["dirs"][0]
+            .as_str()
+            .expect("a workspace")
+            .to_string(),
+    );
+    fs::write(dir.join("notes.txt"), "kept\n").expect("work");
+
+    env.fleet(&["delete", "task", "t1"]).ok();
+    reconcile_until(&env, "held while the agent may be working", |env| {
+        env.get("t1")["status"]["conditions"]
+            .as_array()
+            .is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| c["type"] == "Released" && c["reason"] == "SessionBusy")
+            })
+    });
+    env.reconcile();
+    assert_eq!(
+        env.fleet(&["get", "task", "t1"]).code,
+        Some(0),
+        "a session that just reported working is not released at once"
+    );
+
+    backdate_deletion(&env, "t1", Duration::from_secs(24 * 3600));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1")["status"]);
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert!(!dir.exists(), "the release removed the worktree");
+    let refs = preserved_refs(&src);
+    assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
+    assert_eq!(
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
+        "kept\n"
+    );
+}
+
 fn uid() -> String {
     let out = Command::new("id").arg("-u").output().expect("id -u");
     String::from_utf8_lossy(&out.stdout).trim().to_string()

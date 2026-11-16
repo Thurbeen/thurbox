@@ -37,7 +37,8 @@ that decision through the store and runtime ports.
    the runtime. The next inbox entry resumes it. See
    [pausing an idle session](#pausing-an-idle-session).
 7. Deletion enters Releasing. The finalizer holds the record until the
-   recorded session is released, once proven at rest or gone.
+   recorded session is released, once proven at rest or gone. The wait for
+   rest has a bound: see [releasing a session](#releasing-a-session).
 
 `fleet reconcile` is a bounded command. It repeats passes while changes are
 made, then exits at a fixed point or `--max-passes`. It does not sleep until a
@@ -155,14 +156,39 @@ concludes nothing.
 | Concluded | Empty inbox; session recheck due; lookup answered | Concluded | Record `sessionCheckedAt`; the next recheck is due 5 minutes later. |
 | Concluded | Readable lookup lacks the recorded session | Concluded | `WorkerGone` and `NeedsAttention`; never a respawn. |
 | Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |
-| Any phase | Task marked deleting | Releasing | Resolve spawn ambiguity if needed; release only once at rest or proven absent. A deleting Task delivers nothing. |
-| Releasing | Busy session or unreadable rest/lookup evidence | Releasing | Keep finalizer; wait for safe evidence. |
+| Any phase | Task marked deleting | Releasing | Resolve spawn ambiguity if needed; release once at rest, proven absent, or past `RELEASE_GRACE_MS`. A deleting Task delivers nothing. |
+| Releasing | Busy session or Unknown rest, within `RELEASE_GRACE_MS` of `deletionTimestamp` | Releasing | Keep finalizer; wait for safe evidence. |
+| Releasing | Busy session or Unknown rest, `RELEASE_GRACE_MS` or more after `deletionTimestamp` | Releasing | Plan `Release`, as for a session at rest. |
+| Releasing | Unreadable session lookup | Releasing | Keep finalizer; wait for a readable lookup. |
 | Releasing | Failed, missing or Unknown release receipt | Releasing | Wait and retry; after 3 attempts also raise NeedsAttention. |
 | Releasing | Known Released receipt, or nothing was spawned and nothing remains to release | Record removed | Remove finalizer; removal is not another phase. |
 
 A Spawned phase without a SessionRef is an invalid internal combination; the
 controller returns it to Pending instead of sending to nobody. Normal store
 and controller paths record identity before entering Spawned.
+
+### Releasing a session
+
+A deleted Task waits for its session to be at rest, so that Fleet does not
+stop an agent in the middle of a turn. The agent's own hooks say whether it
+is at rest. A hook can fail to report the end of a turn, for example when a
+person interrupts the agent. Then the last report says `working` for ever.
+
+The wait has a bound, `RELEASE_GRACE_MS` (5 minutes), from the Task's
+`metadata.deletionTimestamp`:
+
+1. Within the bound, a busy session keeps `Released=False/SessionBusy`. An
+   Unknown rest keeps `Released=Unknown/AtRestUnknown`.
+2. Past the bound, TaskController plans `Release` for a busy session or an
+   Unknown rest, as for a session at rest.
+3. The release and its workspace clean run as always. `workspace-git`
+   commits the work that exists only in the worktree to
+   `refs/fleet/preserved/<key>/<name>` before it removes the worktree. See
+   [Workspace](../resources/workspace.md).
+
+The bound does not apply to a session lookup that Fleet cannot read. Unknown
+is not absence. A release then waits for a readable lookup. A failed release
+is retried as the [retries table](#retries-and-recovery) says.
 
 ### Retries and recovery
 
@@ -868,7 +894,8 @@ agent's prompt hook proves the delivery. `lost` is a key whose process
 exited. A key the runtime no longer holds is Unknown, since a `stop` also
 leaves none. `revive` and `resume` start the harness profile's resume argv
 under the same key. A running agent is at rest once its hooks last
-reported idle. An exited, paused or absent one is at rest. `release` is
+reported idle. A running agent whose hooks last reported working or blocked
+is busy. An exited, paused or absent one is at rest. `release` is
 `stop` with `release: true`. `pause` is the runtime's `pause` verb, and
 `paused` is an `inspect` that answers `paused`, when the runtime's
 `manifest` declares the verb. On any other runtime, `paused` is Unknown and

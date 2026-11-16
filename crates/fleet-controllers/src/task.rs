@@ -45,6 +45,11 @@ pub const RETRY_DELAY_MS: Millis = 30_000;
 /// `status.sessionCheckedAt`.
 pub const SESSION_RECHECK_MS: Millis = 300_000;
 
+/// How long a deleted Task waits, from its `deletionTimestamp`, for its
+/// session to be proven at rest. Past it the session is released even if
+/// the agent's last report said it was busy or nothing tells.
+pub const RELEASE_GRACE_MS: Millis = 300_000;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskController;
 
@@ -1604,13 +1609,8 @@ impl Pass<'_, '_> {
         self.intend(key, Action::Pause { session });
     }
 
-    /// The finalizer: the session is deleted only once it is proven at rest
-    /// or gone. A failed release is tried again after a wait; past
-    /// [`MAX_ATTEMPTS`] it also raises NeedsAttention, but the finalizer is
-    /// never given up on, so the record cannot be stranded.
     fn release(&mut self) {
         self.st.phase = Phase::Releasing;
-        // Nothing was ever spawned: there is no session to release.
         if self.st.session.is_none() && self.st.spawn_attempts == 0 {
             self.cond(RELEASED, ConditionStatus::True, "NothingToRelease", "");
             self.let_go();
@@ -1671,9 +1671,6 @@ impl Pass<'_, '_> {
                     } else {
                         self.cond(RELEASED, ConditionStatus::False, "ReleaseRetry", why);
                     }
-                    // Wait once per failed attempt, from that attempt: its
-                    // receipt, or its intent when it was interrupted before
-                    // the receipt. A wait that has run out lets it retry.
                     match self.st.not_before {
                         Some(t) if t > self.now() => return,
                         Some(_) => self.st.not_before = None,
@@ -1691,9 +1688,11 @@ impl Pass<'_, '_> {
             }
         }
         let gone = matches!(self.input.observations.find, Some(Observation::Known(None)));
+        let grace_over = self.release_grace_over();
         if !gone {
             match self.input.observations.at_rest.clone() {
                 Some(Observation::Known(true)) => {}
+                Some(Observation::Known(false) | Observation::Unknown { .. }) if grace_over => {}
                 Some(Observation::Known(false)) => {
                     self.cond(
                         RELEASED,
@@ -1720,6 +1719,14 @@ impl Pass<'_, '_> {
             format!("attempt {attempt}"),
         );
         self.intend(key, Action::Release { session });
+    }
+
+    fn release_grace_over(&self) -> bool {
+        self.input
+            .task
+            .metadata
+            .deletion_timestamp
+            .is_some_and(|deleted| deleted.saturating_add(RELEASE_GRACE_MS) <= self.now())
     }
 
     /// Whether the runtime makes this Task's workspace: every non-empty
