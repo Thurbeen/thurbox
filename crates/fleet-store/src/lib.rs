@@ -17,8 +17,8 @@
 //! Reads take no lock: every record is replaced atomically, so a read sees a
 //! whole old or whole new file. A board log is the one exception: it is
 //! appended to, and a reader skips a last line that is not complete. Every
-//! write takes the store lock, re-reads, checks, then writes; that is what makes create exclusive and update a
-//! compare-and-swap across processes.
+//! write takes the store lock, re-reads, checks, then writes; that is what
+//! makes create exclusive and update a compare-and-swap across processes.
 
 pub mod durable;
 mod event_log;
