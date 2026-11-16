@@ -504,8 +504,10 @@ pub fn launch_on_windows(
 /// A PowerShell script that runs `program` with `args` on a Windows host, in
 /// `dir` when given, with `path_prepend` put first on its `Path`, after
 /// `prelude`: statements of the caller's own, such as making the directory
-/// a copy goes to. `after` runs once the program exited, with
-/// `$LASTEXITCODE` its exit code. A `~` leading an entry of `path_prepend` is the user's
+/// a copy goes to. `after` runs once the launch ends, however it ends:
+/// with `$LASTEXITCODE` the program's exit code, or unset when no program
+/// started (it was not found, or did not start), after which the script
+/// fails with the error on screen. A `~` leading an entry of `path_prepend` is the user's
 /// profile directory.
 ///
 /// The program is found as PowerShell finds a command (`Get-Command`), so
@@ -542,6 +544,7 @@ pub fn windows_program_script<S: AsRef<str>>(
          {path}{prelude}\
          {WINDOWS_QUOTERS}\
          $v=@({argv})\n\
+         try{{$global:LASTEXITCODE=$null\n\
          $p=(Get-Command {program} -CommandType Application,ExternalScript -EA Stop|select -First 1).Source\n\
          $e=[IO.Path]::GetExtension($p)\n\
          if($e-in'.cmd','.bat'){{$f=$env:ComSpec;$a='/d /v:off /s /c \"\"'+$p+'\" '+(($v|%{{&$k $_}})-join' ')+'\"'}}\
@@ -553,7 +556,8 @@ pub fn windows_program_script<S: AsRef<str>>(
          $x=[Diagnostics.Process]::Start($s)\n\
          $x.WaitForExit()\n\
          $global:LASTEXITCODE=$x.ExitCode\n\
-         {after}\
+         }}finally{{\n\
+         {after}}}\n\
          exit $x.ExitCode",
         path = windows_path_prepend(path_prepend),
         program = powershell_quote(program),
@@ -1377,6 +1381,48 @@ mod tests {
                 "$k {arg:?} -> {k}"
             );
         }
+    }
+
+    /// The script's `after` step runs however the launch ends, run here in a
+    /// real PowerShell: with the program's exit code when it ran, and with
+    /// no status when no program was found, after which the script still
+    /// fails. Skipped, and said so, without PowerShell.
+    #[test]
+    fn the_after_step_runs_even_when_no_program_starts() {
+        use base64::Engine as _;
+        let Some(ps) = a_powershell() else {
+            eprintln!("skipping: no PowerShell here (pwsh is not on PATH)");
+            return;
+        };
+        let after = "[Console]::Out.Write('after-ran:' + (Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore) + ';')\n";
+        let run = |program: &str| {
+            let script = windows_program_script::<&str>(program, &[], None, &[], "", after);
+            let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            Command::new(ps)
+                .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+                .arg(base64::engine::general_purpose::STANDARD.encode(utf16))
+                .output()
+                .expect("PowerShell runs")
+        };
+        let missing = run("no-such-program-runtime-mux");
+        let stdout = String::from_utf8_lossy(&missing.stdout);
+        assert!(
+            stdout.contains("after-ran:;"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&missing.stderr)
+        );
+        assert!(
+            !missing.status.success(),
+            "a missing program fails the script"
+        );
+        let found = if cfg!(windows) { "whoami" } else { "true" };
+        let ran = run(found);
+        let stdout = String::from_utf8_lossy(&ran.stdout);
+        assert!(
+            stdout.contains("after-ran:0;"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
     }
 
     /// The arguments ride the script once, so an `exec` with a 1,500-char

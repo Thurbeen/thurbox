@@ -478,6 +478,10 @@ fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
 /// window is still open while this runs, which is what leaves the screen there
 /// to capture.
 ///
+/// It runs however the launch ends ([`crate::shell::windows_program_script`]
+/// runs it in a `finally`), so a program that is not found still reports,
+/// with no status.
+///
 /// Piped rather than passed as an argument: `LASTEXITCODE` is unset when the
 /// program never ran, and an empty argument is dropped by Windows PowerShell
 /// 5.1, so an empty pipe is the one spelling that says "no status" the same
@@ -2509,8 +2513,6 @@ mod tests {
     /// argument: the script carries the arguments as they are.
     #[test]
     fn psmux_window_script_escapes_and_sanitizes() {
-        // A literal ' doubles (PowerShell escaping); a newline in an argument
-        // is neutralized to a space. Backslash paths pass through untouched.
         let args = vec!["it's".to_string(), "say hi\nnow".to_string()];
         let script =
             psmux_window_powershell("tbs-x", "C:\\Tools\\claude.exe", &args, &HashMap::new());
