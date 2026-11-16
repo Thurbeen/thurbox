@@ -43,6 +43,7 @@ impl Runtime {
         // The guard pins the interface's socket name, as a runtime started
         // from a thurbox pane inherits it; the runtime must not use it.
         self.server.scope(&mut command);
+        command.env("XDG_DATA_HOME", self.server.tmpdir().join("data"));
         command.envs(self.env.iter().map(|(k, v)| (k, v)));
         let mut child = command
             .arg(verb)
@@ -435,6 +436,33 @@ fn an_exited_process_reports_its_code() {
         rt.inspect("exits")["known"]["running"]["id"],
         again.as_str()
     );
+}
+
+#[test]
+fn a_started_key_reads_exited_once_its_server_is_gone_until_a_stop() {
+    let Some(rt) = Runtime::new() else { return };
+    let (id, _) = started(&rt.start("rebooted", &["sleep", "300"]));
+    Command::new("tmux")
+        .env("TMUX_TMPDIR", rt.server.tmpdir())
+        .env_remove("TMUX")
+        .args(["-L", SOCKET, "kill-server"])
+        .output()
+        .expect("run tmux");
+    assert_eq!(
+        rt.inspect("rebooted")["known"],
+        json!({"exited": {"id": id, "code": null}})
+    );
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["rebooted"]), "{list}");
+
+    let (_, adopted) = started(&rt.start("rebooted", &["sleep", "300"]));
+    assert!(!adopted, "the lost process is started again");
+    assert!(rt.inspect("rebooted")["known"]["running"].is_object());
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "rebooted"}))["known"],
+        "stopped"
+    );
+    assert_eq!(rt.inspect("rebooted")["known"], "none");
 }
 
 #[test]

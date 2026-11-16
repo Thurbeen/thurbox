@@ -107,7 +107,20 @@ server of its own, socket `runtime-mux` (`RUNTIME_MUX_SOCKET` names
 another), never on thurbox's interface socket: an inherited
 `THURBOX_SOCKET` is ignored. A process is a window named after its key, and
 a pane kept after its program exits is how `inspect` reports the code; a
-`start` replaces it. Starts and stops on one server run one at a time, so
+`start` replaces it. A host reboot takes the server and its windows, so
+`runtime-mux` also keeps a start record for each key it starts:
+
+- A `start` writes the record, a file that holds the key's pane id, under
+  `${XDG_DATA_HOME:-~/.local/share}/runtime-mux/started/`, which a reboot
+  keeps. The record's name holds the server and a digest of the private
+  directory that holds the server's socket.
+- A `stop` removes the record.
+- `inspect` answers `{"exited": {"id", "code": null}}` for a key with a
+  record and no window. Fleet then revives the session on its
+  conversation.
+- `list` names a key with a record.
+
+Starts and stops on one server run one at a time, so
 two starts of one key make one window: they hold a kernel lock on a file in
 the private directory tmux keeps the socket in (`<TMUX_TMPDIR or
 /tmp>/tmux-<uid>`, made `0700` when missing and refused when another user
@@ -375,7 +388,8 @@ request.place ──▶ local ─────────▶ this machine's mult
 - A `start`'s `dir` is absolute by the place's rules, not by this
   machine's: `/…` on a POSIX place, a drive or UNC path on a Windows one.
 - `start`, `inspect`, `stop`, `pause`, `list`, `input`, `capture` and `exec`
-  run on the place. A pause mark of a remote key stays on this machine.
+  run on the place. A pause mark and a start record of a remote key stay on
+  this machine.
 - `workspace` and a releasing `stop` run `workspace-git` on the place, from
   the place's `PATH`, over the same launcher. A place without it takes
   `file://` URLs only: directories already there, which a release keeps,

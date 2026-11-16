@@ -110,7 +110,7 @@ fn serve(verb: &str) -> serde_json::Value {
             Err(answer) => return answer,
         }
     }
-    let pauses = pauses(&server);
+    let kept = kept(&server);
     // Each remote place's login `PATH` is cached beside the locks, so a call
     // does not read it again over ssh.
     keep_cache(&socket);
@@ -122,7 +122,7 @@ fn serve(verb: &str) -> serde_json::Value {
     let backends = |place: Option<&HostDef>| backend_for(&settings, place, &built);
     let answer = protocol::serve_with(
         &backends,
-        &pauses,
+        &kept,
         verb,
         &request,
         &view_argv(&settings),
@@ -317,14 +317,28 @@ fn view_pane(
     runtime_mux::view::serve(backend, &pane, std::io::stdin(), &mut std::io::stdout())
 }
 
-/// The marks of the keys paused on `server` (a socket, and the remote place
-/// it is on), beside its lock: they go with the directory this machine's
-/// server keeps its socket in.
-fn pauses(server: &str) -> protocol::Pauses {
-    let (dir, prefix) = private_dir();
-    protocol::Pauses::new(
-        dir.map_err(|e| format!("no directory for the pause marks: {e}")),
-        format!("{prefix}runtime-mux-{server}.paused-"),
+fn kept(server: &str) -> protocol::Kept {
+    let (sockets, prefix) = private_dir();
+    let started = match &sockets {
+        Ok(sockets) => runtime_mux::workspace::data_dir()
+            .map(|data| data.join("started").join(sockets_digest(sockets)))
+            .ok_or_else(|| "no HOME to keep the started keys in".to_string()),
+        Err(e) => Err(format!("no directory for the tmux sockets: {e}")),
+    };
+    protocol::Kept {
+        paused: protocol::Marks::new(
+            sockets.map_err(|e| format!("no directory for the pause marks: {e}")),
+            format!("{prefix}runtime-mux-{server}.paused-"),
+            "pause mark",
+        ),
+        started: protocol::Marks::new(started, format!("{server}."), "start record"),
+    }
+}
+
+fn sockets_digest(sockets: &std::path::Path) -> String {
+    format!(
+        "{:08x}",
+        runtime_mux::instance::fnv1a32(sockets.to_string_lossy().as_bytes())
     )
 }
 
