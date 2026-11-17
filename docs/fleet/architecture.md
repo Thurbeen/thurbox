@@ -110,7 +110,9 @@ limit. `fleet up` instead keeps that same manager lease across periodic sweeps,
 renewing before each sweep, Task, probe and effect. Retry eligibility remains
 persisted as `status.notBefore`; due Tasks progress without agent activity.
 Shutdown releases the lease and retains sessions; crash recovery waits for
-lease expiry and observes deterministic session/effect keys.
+lease expiry and observes deterministic session/effect keys. A full disk
+pauses `fleet up`: it keeps `manager.lock`, runs nothing until a write
+succeeds, then renews its own lease with an unchanged token.
 
 The CLI's `init` writes a local config without Git or network, separate from
 resource writes. `up` runs the ordinary Task controller for every due Task

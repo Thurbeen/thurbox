@@ -107,7 +107,7 @@ impl Manager<'_> {
             let mut after = cursor.after;
             let scan = match self.scan(&sub.board, &sub.filter, &mut after, lease, ttl) {
                 Ok(scan) => scan,
-                Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                Err(e @ (StoreError::LeaseLost(_) | StoreError::Full(_))) => return Err(e),
                 Err(e) => {
                     unknown(report, &e);
                     next.cursors.push(cursor);

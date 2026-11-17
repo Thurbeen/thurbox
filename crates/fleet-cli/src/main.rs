@@ -655,6 +655,10 @@ impl From<StoreError> for Failure {
                 exit::ERROR,
                 Some("see docs/fleet/contracts.md for what this build serves"),
             ),
+            StoreError::Full(_) => (
+                exit::ERROR,
+                Some("nothing was written; free space on that disk and run the command again"),
+            ),
             _ => (exit::ERROR, None),
         };
         Failure {
@@ -1658,7 +1662,10 @@ fn cmd_up(
         started_at: fleet_api::Clock::now(&SystemClock),
         state: ManagerState::Starting,
     };
-    file_store.record_manager(&lock, &record)?;
+    match file_store.record_manager(&lock, &record) {
+        Err(e @ StoreError::Full(_)) => eprintln!("could not record the manager's state: {e}"),
+        recorded => recorded?,
+    }
     let outcome = serve_up(
         file_store,
         (config, data_dir),
@@ -1809,7 +1816,19 @@ fn serve_up(
             lease_ttl: ttl,
         },
         |report| {
+            if let Some(paused) = &report.paused {
+                if record.state != ManagerState::Paused {
+                    record.state = ManagerState::Paused;
+                    report_manager(file_store, lock, record);
+                    supervisor::tell(supervisor::Phase::Paused(&paused.why));
+                    eprintln!("paused: {}; retrying until there is room", paused.why);
+                }
+                return wait_unless_stopped(&stopped, paused.retry_after, || false);
+            }
             if record.state != ManagerState::Serving {
+                if record.state == ManagerState::Paused {
+                    eprintln!("resumed: the store has room again");
+                }
                 record.state = ManagerState::Serving;
                 report_manager(file_store, lock, record);
                 supervisor::tell(supervisor::Phase::Ready);
@@ -1844,18 +1863,26 @@ fn serve_up(
                 }
                 last = diagnostics;
             }
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(poll_ms);
-            while !stopped.load(std::sync::atomic::Ordering::Relaxed)
-                && std::time::Instant::now() < deadline
-                && !manager.reported(report)
-            {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            !stopped.load(std::sync::atomic::Ordering::Relaxed)
+            wait_unless_stopped(&stopped, poll_ms, || manager.reported(report))
         },
     )?;
     println!("Fleet stopped; Tasks and sessions retained");
     Ok(())
+}
+
+fn wait_unless_stopped(
+    stopped: &std::sync::atomic::AtomicBool,
+    ms: u64,
+    woken: impl Fn() -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while !stopped.load(std::sync::atomic::Ordering::Relaxed)
+        && std::time::Instant::now() < deadline
+        && !woken()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    !stopped.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Who `fleet send` speaks as: the login name the environment gives, else
@@ -2912,6 +2939,17 @@ fn cmd_doctor(
         checks.push(doctor::fake_runtime(&rt.kind, rt.dir.is_some()));
     } else {
         checks.push(doctor::no_runtime());
+    }
+    match fleet_store::free_space(data_dir) {
+        Ok(Some(free)) => checks.push(doctor::free_space(
+            &data_dir.display().to_string(),
+            Ok(free),
+        )),
+        Ok(None) => {}
+        Err(e) => checks.push(doctor::free_space(
+            &data_dir.display().to_string(),
+            Err(e.to_string()),
+        )),
     }
     checks.push(doctor::telemetry(otel_env::describe(
         &config.telemetry.clone().unwrap_or_default(),

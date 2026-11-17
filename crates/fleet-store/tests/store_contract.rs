@@ -445,6 +445,31 @@ fn a_controller_writes_only_under_the_current_lease() {
 }
 
 #[test]
+fn a_holder_reclaims_its_own_expired_lease_but_never_one_taken_since() {
+    let dir = Dir::new("reclaim");
+    let clock = Arc::new(TestClock::default());
+    let store = FileStore::open_with_clock(&dir.0, clock.clone()).unwrap();
+    let a = store.acquire_lease("a", 1_000).unwrap();
+    clock.advance(5_000);
+    assert!(matches!(
+        store.renew_lease(&a, 1_000),
+        Err(StoreError::LeaseLost(_))
+    ));
+    let reclaimed = store.reclaim_lease(&a, 1_000).unwrap();
+    assert_eq!(reclaimed.token, a.token, "the token is unchanged");
+    assert_eq!(reclaimed.expires_at, clock.now() + 1_000);
+    store.renew_lease(&reclaimed, 1_000).unwrap();
+
+    clock.advance(5_000);
+    let b = store.acquire_lease("b", 1_000).unwrap();
+    assert!(matches!(
+        store.reclaim_lease(&a, 1_000),
+        Err(StoreError::LeaseLost(_))
+    ));
+    store.renew_lease(&b, 1_000).unwrap();
+}
+
+#[test]
 fn finalizers_hold_deletion_and_only_the_controller_removes_them() {
     let dir = Dir::new("finalizers");
     let store = FileStore::open(&dir.0).unwrap();

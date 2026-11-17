@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use fleet_api::{Millis, StoreError};
 use serde::{Deserialize, Serialize};
 
-use crate::{FileStore, durable, io_unknown};
+use crate::{FileStore, durable, io_failure};
 
 pub const LOCK: &str = "manager.lock";
 pub const RECORD: &str = "manager.json";
@@ -28,6 +28,7 @@ pub struct ManagerLock {
 pub enum ManagerState {
     Starting,
     Serving,
+    Paused,
     Stopped,
 }
 
@@ -51,7 +52,7 @@ impl FileStore {
         match file.try_lock() {
             Ok(()) => Ok(Some(ManagerLock { _file: file })),
             Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(e)) => Err(io_unknown(&path, e)),
+            Err(TryLockError::Error(e)) => Err(io_failure(&path, e)),
         }
     }
 
@@ -63,7 +64,7 @@ impl FileStore {
         }
         waiting();
         let (path, file) = self.open_manager_lock()?;
-        file.lock().map_err(|e| io_unknown(&path, e))?;
+        file.lock().map_err(|e| io_failure(&path, e))?;
         Ok(ManagerLock { _file: file })
     }
 
@@ -75,11 +76,13 @@ impl FileStore {
             .create(true)
             .truncate(false)
             .open(&path)
-            .map_err(|e| io_unknown(&path, e))?;
+            .map_err(|e| io_failure(&path, e))?;
         Ok((path, file))
     }
 
     /// Replace `manager.json`. Only the holder of `manager.lock` writes it.
+    /// On a full disk the record is overwritten in place instead, so a
+    /// paused manager still says so.
     pub fn record_manager(
         &self,
         _held: &ManagerLock,
@@ -89,7 +92,12 @@ impl FileStore {
         let path = self.root.join(RECORD);
         let bytes =
             serde_json::to_vec_pretty(record).map_err(|e| StoreError::Invalid(e.to_string()))?;
-        durable::replace(&self.tmp_dir(), &path, &bytes).map_err(|e| io_unknown(&path, e))
+        match durable::replace(&self.tmp_dir(), &path, &bytes).map_err(|e| io_failure(&path, e)) {
+            Err(full @ StoreError::Full(_)) => {
+                durable::overwrite_in_place(&path, &bytes).map_err(|_| full)
+            }
+            written => written,
+        }
     }
 
     /// The manager record of the store at `root`, read without opening the
@@ -101,7 +109,7 @@ impl FileStore {
                 StoreError::Unknown(format!("{}: corrupt manager record: {e}", path.display()))
             }),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(io_unknown(&path, e)),
+            Err(e) => Err(io_failure(&path, e)),
         }
     }
 }

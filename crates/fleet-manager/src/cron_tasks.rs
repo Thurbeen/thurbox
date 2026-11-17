@@ -194,6 +194,7 @@ impl Manager<'_> {
             }
             Err(StoreError::LeaseLost(why)) => Observation::unknown(format!("lease lost: {why}")),
             Err(StoreError::Unknown(why)) => Observation::unknown(why),
+            Err(e @ StoreError::Full(_)) => Observation::unknown(e.to_string()),
             Err(e) => Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
         }
     }
@@ -223,6 +224,7 @@ impl Manager<'_> {
             }),
             Err(StoreError::LeaseLost(why)) => Observation::unknown(format!("lease lost: {why}")),
             Err(StoreError::Unknown(why)) => Observation::unknown(why),
+            Err(e @ StoreError::Full(_)) => Observation::unknown(e.to_string()),
             Err(e) => Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
         }
     }

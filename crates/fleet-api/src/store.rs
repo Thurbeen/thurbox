@@ -123,6 +123,10 @@ pub enum StoreError {
     /// as absence.
     #[error("could not tell: {0}")]
     Unknown(String),
+    /// The disk holding the store has no room left (`ENOSPC`, `EDQUOT`):
+    /// nothing was written. Retrying succeeds once space returns.
+    #[error("disk full at {0}")]
+    Full(String),
 }
 
 /// What the store does to a delete request.
@@ -442,6 +446,12 @@ pub trait Store {
     }
     fn acquire_lease(&self, holder: &str, ttl: Millis) -> Result<LeaseToken, StoreError>;
     fn renew_lease(&self, lease: &LeaseToken, ttl: Millis) -> Result<LeaseToken, StoreError>;
+    /// Renew `lease` even when it has expired, as long as nobody took it
+    /// since: the holder and the token are unchanged. Only a manager that
+    /// holds `manager.lock` calls it, after a pause.
+    fn reclaim_lease(&self, lease: &LeaseToken, ttl: Millis) -> Result<LeaseToken, StoreError> {
+        self.renew_lease(lease, ttl)
+    }
     fn release_lease(&self, lease: &LeaseToken) -> Result<(), StoreError>;
 }
 

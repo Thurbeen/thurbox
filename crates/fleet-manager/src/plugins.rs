@@ -321,7 +321,7 @@ impl Manager<'_> {
         })();
         let admitted = match prepare {
             Ok(a) => a,
-            Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+            Err(e @ (StoreError::LeaseLost(_) | StoreError::Full(_))) => return Err(e),
             Err(e) => {
                 let mut status = input_obj.status.clone();
                 status["host"] = json!({"observedAt":now,"generation":obj.metadata.generation,"error":e.to_string()});
@@ -442,7 +442,7 @@ impl Manager<'_> {
             let answer=match resolved { Ok(env)=>self.plugin_call((port,reg),"perform",json!({"effect":effect,"intentKey":format!("plugin/{}/{}/{}/{}/{}",reg.manifest.name,obj.kind,obj.metadata.name,obj.metadata.uid,effect.key)}),&env,lease,ttl), Err(e)=>Err(e) };
             let outcome = match answer {
                 Ok(answer) if valid_outcome(&answer["outcome"]) => answer["outcome"].clone(),
-                Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                Err(e @ (StoreError::LeaseLost(_) | StoreError::Full(_))) => return Err(e),
                 _ => json!({"unknown":{"why":"LostAnswer"}}),
             };
             let receipt = json!({"at":self.clock.now(),"outcome":outcome});
@@ -528,7 +528,7 @@ fn valid_outcome(value: &Value) -> bool {
 fn verb_result(result: Result<Value, StoreError>) -> Result<Value, StoreError> {
     match result {
         Ok(v) => Ok(json!({"ok":v})),
-        Err(e @ StoreError::LeaseLost(_)) => Err(e),
+        Err(e @ (StoreError::LeaseLost(_) | StoreError::Full(_))) => Err(e),
         Err(e) => Ok(json!({"error":e.to_string()})),
     }
 }

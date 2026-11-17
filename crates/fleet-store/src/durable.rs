@@ -62,6 +62,22 @@ pub fn replace(tmp_dir: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
     sync_parent(path)
 }
 
+/// Overwrite `path` in place with `bytes` padded with spaces to its old
+/// length, so a disk with no room left still takes it: the file keeps its
+/// blocks. Not atomic, so only for a JSON record a reader may read again.
+/// `bytes` longer than the file are refused with `StorageFull`.
+pub fn overwrite_in_place(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut f = OpenOptions::new().write(true).open(path)?;
+    let old = usize::try_from(f.metadata()?.len()).unwrap_or(usize::MAX);
+    if bytes.len() > old {
+        return Err(io::ErrorKind::StorageFull.into());
+    }
+    let mut padded = bytes.to_vec();
+    padded.resize(old, b' ');
+    f.write_all(&padded)?;
+    f.sync_all()
+}
+
 /// Remove `path` durably. Absent is fine: removal is idempotent.
 pub fn remove(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
@@ -133,5 +149,25 @@ impl LockGuard {
 impl Drop for LockGuard {
     fn drop(&mut self) {
         let _ = self.file.unlock();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_overwrite_in_place_pads_to_the_old_length_and_never_grows_the_file() {
+        let dir = std::env::temp_dir().join(format!("fleet-overwrite-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("manager.json");
+        fs::write(&path, br#"{"state":"serving"}"#).unwrap();
+        overwrite_in_place(&path, br#"{"state":"paused"}"#).unwrap();
+        let written = fs::read(&path).unwrap();
+        assert_eq!(written, br#"{"state":"paused"} "#);
+        let longer = overwrite_in_place(&path, br#"{"state":"starting!!"}"#).unwrap_err();
+        assert_eq!(longer.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(fs::read(&path).unwrap(), written);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

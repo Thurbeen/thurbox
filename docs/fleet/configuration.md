@@ -48,7 +48,23 @@ when `NOTIFY_SOCKET` is set:
 - `STATUS=waiting for …` while another manager holds the lock.
 - `READY=1` after it takes the lease and finishes its first pass. A unit
   with `Type=notify` counts as started only then.
+- `STATUS=paused: disk full at <path>` while the disk of the data
+  directory has no room.
 - `STOPPING=1` when it stops.
+
+A full disk pauses `fleet up`. It does not stop it:
+
+1. A store write fails with no room left (`ENOSPC` or `EDQUOT`). The sweep
+   stops at that write, so no effect runs without its intent.
+2. The manager keeps `manager.lock`, records `state: paused` and prints
+   the path that was full.
+3. It tries again after 5 s, then doubles the wait up to 60 s.
+4. When a write succeeds again, it renews its own lease, with an unchanged
+   token, even when the lease expired during the pause. It records
+   `state: serving` and resumes.
+
+`fleet doctor` warns when less than 256 MiB is free on the disk of the
+data directory.
 
 `fleet up` exits with code 78 on a refusal that no retry can fix: a config
 that does not parse, or a store whose format this build does not read. A
@@ -56,7 +72,8 @@ unit stops restarting it with `RestartPreventExitStatus=78`.
 
 The manager writes its status to `<data dir>/manager.json`: `pid`, `boot`,
 `version`, `exe`, `config`, `startedAt` and `state` (`starting`,
-`serving` or `stopped`). The record is status, never authority: a manager
+`serving`, `paused` or `stopped`). On a full disk the manager overwrites
+the record in place, so `paused` reaches it. The record is status, never authority: a manager
 that crashed leaves its last state behind.
 
 ### The service unit: `fleet service`

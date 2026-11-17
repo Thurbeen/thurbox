@@ -125,6 +125,21 @@ pub struct RunReport {
     /// and the length of its signal file then.
     #[serde(skip)]
     pub waiting: Vec<(SessionRef, u64)>,
+    /// Set when the sweep stopped because the store's disk is full: the
+    /// manager runs nothing until it can write again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<Paused>,
+}
+
+const PAUSE_FIRST_RETRY: Millis = 5_000;
+const PAUSE_LAST_RETRY: Millis = 60_000;
+
+/// Why the manager paused, and how long to wait before it tries again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Paused {
+    pub why: String,
+    pub retry_after: Millis,
 }
 
 struct WaitingOnAgent {
@@ -277,24 +292,39 @@ impl Manager<'_> {
     /// Keep the single manager lease for the entire foreground service.
     /// Every sweep visits all due Tasks, independently of agent activity.
     /// `wait` supplies the clock wait and shutdown policy at the CLI edge.
+    ///
+    /// A full disk pauses the service instead of ending it: the sweep stops
+    /// at the write that failed, so no effect runs without its intent, and
+    /// the report carries [`Paused`] with the wait before the next try. The
+    /// caller holds `manager.lock`, so after a pause the manager reclaims
+    /// its own lease even when it expired meanwhile.
     pub fn serve(
         &self,
         opts: RunOptions,
         mut wait: impl FnMut(&RunReport) -> bool,
     ) -> Result<(), StoreError> {
-        let mut lease = self.store.acquire_lease(&self.holder, opts.lease_ttl)?;
+        let mut pauses = 0;
+        let mut lease = loop {
+            match self.store.acquire_lease(&self.holder, opts.lease_ttl) {
+                Err(StoreError::Full(at)) => {
+                    let report = self.paused(0, &mut pauses, at);
+                    if !wait(&report) {
+                        return Ok(());
+                    }
+                }
+                acquired => break acquired?,
+            }
+        };
         let outcome = (|| {
             loop {
-                lease = self.store.renew_lease(&lease, opts.lease_ttl)?;
-                let mut report = RunReport {
-                    holder: self.holder.clone(),
-                    lease_token: lease.token,
-                    ..RunReport::default()
+                let report = match self.sweep(&mut lease, opts, pauses > 0) {
+                    Ok(report) => {
+                        pauses = 0;
+                        report
+                    }
+                    Err(StoreError::Full(at)) => self.paused(lease.token, &mut pauses, at),
+                    Err(e) => return Err(e),
                 };
-                self.passes(&mut lease, opts, &mut report)?;
-                // The last bounded operation may have consumed most of
-                // its lease. Give the subsequent poll wait a fresh lease.
-                lease = self.store.renew_lease(&lease, opts.lease_ttl)?;
                 if !wait(&report) {
                     return Ok(());
                 }
@@ -304,6 +334,43 @@ impl Manager<'_> {
             self.store.release_lease(&lease)?;
         }
         outcome
+    }
+
+    fn sweep(
+        &self,
+        lease: &mut LeaseToken,
+        opts: RunOptions,
+        resuming: bool,
+    ) -> Result<RunReport, StoreError> {
+        *lease = if resuming {
+            self.store.reclaim_lease(lease, opts.lease_ttl)?
+        } else {
+            self.store.renew_lease(lease, opts.lease_ttl)?
+        };
+        let mut report = RunReport {
+            holder: self.holder.clone(),
+            lease_token: lease.token,
+            ..RunReport::default()
+        };
+        self.passes(lease, opts, &mut report)?;
+        *lease = self.store.renew_lease(lease, opts.lease_ttl)?;
+        Ok(report)
+    }
+
+    fn paused(&self, lease_token: u64, pauses: &mut u32, at: String) -> RunReport {
+        let retry_after = PAUSE_FIRST_RETRY
+            .saturating_mul(1 << (*pauses).min(4))
+            .min(PAUSE_LAST_RETRY);
+        *pauses += 1;
+        RunReport {
+            holder: self.holder.clone(),
+            lease_token,
+            paused: Some(Paused {
+                why: StoreError::Full(at).to_string(),
+                retry_after,
+            }),
+            ..RunReport::default()
+        }
     }
 
     /// Take the lease, run passes until idle or `max_passes`, give the lease
@@ -432,7 +499,7 @@ impl Manager<'_> {
                 };
                 let ingested = match read {
                     Ok(ingested) => ingested,
-                    Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                    Err(e @ (StoreError::LeaseLost(_) | StoreError::Full(_))) => return Err(e),
                     Err(e) => {
                         report.errors.push(format!("{} outbox: {e}", obj.key()));
                         outbox::Ingested {
@@ -446,7 +513,7 @@ impl Manager<'_> {
                 let obj = ingested.written.as_ref().unwrap_or(obj);
                 let notified = match self.notify_subscriptions(obj, lease, opts.lease_ttl, report) {
                     Ok(written) => written,
-                    Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                    Err(e @ (StoreError::LeaseLost(_) | StoreError::Full(_))) => return Err(e),
                     Err(e) => {
                         report
                             .errors
@@ -1050,6 +1117,7 @@ impl Manager<'_> {
             }
             Err(StoreError::LeaseLost(why)) => Observation::unknown(format!("lease lost: {why}")),
             Err(StoreError::Unknown(why)) => Observation::unknown(why),
+            Err(e @ StoreError::Full(_)) => Observation::unknown(e.to_string()),
             Err(e) => Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
         }
     }
@@ -1101,6 +1169,7 @@ impl Manager<'_> {
             }),
             Err(StoreError::LeaseLost(why)) => Observation::unknown(format!("lease lost: {why}")),
             Err(StoreError::Unknown(why)) => Observation::unknown(why),
+            Err(e @ StoreError::Full(_)) => Observation::unknown(e.to_string()),
             Err(e) => Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
         }
     }
@@ -2054,7 +2123,7 @@ impl Manager<'_> {
                 report.conflicts += u32::from(step.conflict);
                 Ok(step.wrote > 0 || step.effects > 0 || step.conflict)
             }
-            Err(e @ StoreError::LeaseLost(_)) => Err(e),
+            Err(e @ (StoreError::LeaseLost(_) | StoreError::Full(_))) => Err(e),
             Err(e) => {
                 report.errors.push(format!("{key}: {e}"));
                 Ok(false)

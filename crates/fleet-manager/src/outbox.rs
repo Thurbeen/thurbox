@@ -58,10 +58,11 @@ fn refused(e: &StoreError) -> bool {
     )
 }
 
-/// The lease lost ends the sweep; any other error stops this ingest.
+/// The lease lost or a full disk ends the sweep; any other error stops this
+/// ingest.
 fn stopped_by(e: StoreError) -> Result<Option<StoreError>, StoreError> {
     match e {
-        StoreError::LeaseLost(_) => Err(e),
+        StoreError::LeaseLost(_) | StoreError::Full(_) => Err(e),
         e => Ok(Some(e)),
     }
 }
