@@ -1144,6 +1144,7 @@ fn lease_holder(link: &FleetLink) -> Result<Option<u32>, String> {
         Some(true) => manager["holder"]
             .as_str()
             .and_then(|holder| holder.strip_prefix("fleet-up-"))
+            .and_then(|process| process.split('@').next())
             .and_then(|pid| pid.parse().ok())
             .map(Some)
             .ok_or_else(|| format!("the manager lease names no fleet up: {manager}")),

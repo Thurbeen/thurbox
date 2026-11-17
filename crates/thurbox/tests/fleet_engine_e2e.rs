@@ -2436,6 +2436,8 @@ mod an_update {
             version["manager"]["holder"]
                 .as_str()?
                 .strip_prefix("fleet-up-")?
+                .split('@')
+                .next()?
                 .parse()
                 .ok()
         }
