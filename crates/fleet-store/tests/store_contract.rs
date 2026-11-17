@@ -639,6 +639,27 @@ fn a_new_lease_token_is_above_every_earlier_one_even_when_the_lease_record_is_lo
 }
 
 #[test]
+fn a_lease_token_ahead_of_the_counter_still_never_goes_back() {
+    let dir = Dir::new("token-ahead");
+    let store = FileStore::open(&dir.0).unwrap();
+    fs::write(
+        dir.0.join("lease.json"),
+        json!({"holder": "old", "token": 100, "expiresAt": 0}).to_string(),
+    )
+    .unwrap();
+    let upgraded = store.acquire_lease("a", 10_000).unwrap();
+    assert!(upgraded.token > 100, "{}", upgraded.token);
+    fs::remove_file(dir.0.join("lease.json")).unwrap();
+    let next = store.acquire_lease("b", 10_000).unwrap();
+    assert!(
+        next.token > upgraded.token,
+        "{} after {}",
+        next.token,
+        upgraded.token
+    );
+}
+
+#[test]
 fn one_process_at_a_time_holds_the_manager_lock() {
     let dir = Dir::new("manager-lock");
     let store = FileStore::open(&dir.0).unwrap();

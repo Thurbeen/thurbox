@@ -246,6 +246,10 @@ impl FileStore {
     }
 
     fn next_rv(&self) -> Result<u64, StoreError> {
+        self.next_rv_above(0)
+    }
+
+    fn next_rv_above(&self, floor: u64) -> Result<u64, StoreError> {
         let path = self.root.join("seq");
         let current = match fs::read_to_string(&path) {
             Ok(s) => s
@@ -256,6 +260,7 @@ impl FileStore {
             Err(e) => return Err(io_unknown(&path, e)),
         };
         let next = current
+            .max(floor)
             .checked_add(1)
             .ok_or_else(|| StoreError::Invalid("resourceVersion exhausted".into()))?;
         durable::replace(&self.tmp_dir(), &path, next.to_string().as_bytes())
@@ -1581,8 +1586,7 @@ impl Store for FileStore {
                 expires_at: l.expires_at,
             });
         }
-        let rv = self.next_rv()?;
-        let token = current.map_or(rv, |l| rv.max(l.token + 1));
+        let token = self.next_rv_above(current.map_or(0, |l| l.token))?;
         let lease = LeaseToken {
             holder: holder.to_string(),
             token,
