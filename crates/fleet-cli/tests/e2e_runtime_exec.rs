@@ -5348,3 +5348,96 @@ fn a_sessions_environment_is_in_no_argv_here_or_on_an_ssh_place() {
         .expect("ps");
     assert!(!String::from_utf8_lossy(&ps.stdout).contains("s3cr3t"));
 }
+
+struct Up(std::process::Child);
+
+impl Drop for Up {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// `env` read every 100 ms until `done` holds of Task `name`, or a panic
+/// naming what it waited for.
+fn watch_until(env: &Env, name: &str, what: &str, within: Duration, done: impl Fn(&Value) -> bool) {
+    let deadline = Instant::now() + within;
+    loop {
+        let task = env.get(name);
+        if done(&task) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{what}: {:#}", task["status"]);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// [`CLAUDE`], except that it takes a second to start, as Claude Code does.
+const BOOTING_CLAUDE: &str = r#"#!/bin/sh
+sleep 1
+fleet signal idle
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
+  fleet signal idle
+done
+"#;
+
+/// A Task dispatched while others run is briefed and attachable about as
+/// soon as one started alone: `fleet up` does not hold each of its steps
+/// back for a sweep of every Task that already runs.
+#[test]
+fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_within_seconds() {
+    const RUNNING: usize = 16;
+    const BOUND: Duration = Duration::from_secs(5);
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("latency");
+    let mut env = mux_env("runtime-mux-latency", &program, &sockets);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, BOOTING_CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let task = |name: &str| {
+        let work = env.root.join("work").join(name);
+        fs::create_dir_all(&work).expect("workspace");
+        let mut task = support::task(name, true);
+        task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+        task
+    };
+    let running: Vec<Value> = (0..RUNNING).map(|i| task(&format!("bg{i}"))).collect();
+    env.apply(json!(running)).ok();
+    let _up = Up(env.spawn(&["up"]));
+    for i in 0..RUNNING {
+        watch_until(
+            &env,
+            &format!("bg{i}"),
+            "running Tasks briefed",
+            Duration::from_secs(120),
+            |t| t["status"]["phase"] == "Briefed",
+        );
+    }
+
+    let dispatched = Instant::now();
+    env.apply(json!([task("t1")])).ok();
+    watch_until(&env, "t1", "briefed", Duration::from_secs(120), |t| {
+        t["status"]["phase"] == "Briefed"
+    });
+    env.fleet(&["attach", "t1", "--json"]).ok();
+    let took = dispatched.elapsed();
+    assert!(
+        took < BOUND,
+        "dispatch to a briefed, attachable session took {took:?} beside {RUNNING} running Tasks: {:#}",
+        env.get("t1")["status"]["conditions"]
+    );
+}

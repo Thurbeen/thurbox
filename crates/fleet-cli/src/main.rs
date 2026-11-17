@@ -1651,6 +1651,7 @@ fn cmd_up(
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(poll_ms);
             while !stopped.load(std::sync::atomic::Ordering::Relaxed)
                 && std::time::Instant::now() < deadline
+                && !manager.reported(report)
             {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }

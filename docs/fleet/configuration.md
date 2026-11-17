@@ -57,8 +57,10 @@ reports a Task that is blocked at startup or that needs attention, so no
 separate status query is needed to see why.
 
 Polling defaults to one bounded sweep per second; `up --poll-ms` accepts 100
-through 10000 ms. Each unfinished Briefed Task costs two bounded session
-lookups per sweep: one by key, and one that asks whether its window is gone.
+through 10000 ms. Each unfinished Briefed Task costs one bounded `inspect`
+of its session per sweep. The lookup by key, the check for a gone window and
+the check for a pause share that answer for 500 ms, until a verb changes the
+session's process.
 Unchanged Task status is not rewritten. A manual `fleet reconcile` remains
 available for bounded diagnostics while `up` is stopped.
 
