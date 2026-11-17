@@ -11,7 +11,6 @@ use fleet_exec::{Outcome, Spec};
 
 pub const DEFAULT_NAME: &str = "fleet";
 const STORE_KEY: &str = "X-Fleet-Store=";
-const START_BOUND: Duration = Duration::from_secs(120);
 const QUICK_BOUND: Duration = Duration::from_secs(30);
 
 pub struct Unit {
@@ -108,6 +107,7 @@ pub fn store_unit(data_dir: &Path) -> Result<Option<Unit>, String> {
 }
 
 pub fn target(name: Option<&str>, data_dir: &Path) -> Result<Unit, Refusal> {
+    supported()?;
     let unit = match name {
         Some(name) => {
             let name = unit_name(name)?;
@@ -214,7 +214,7 @@ pub fn install(install: &Install) -> Result<Unit, Refusal> {
         .map_err(|e| Refusal::Io(format!("{}: {e}", path.display())))?;
     systemctl(&["daemon-reload"], QUICK_BOUND)?;
     if install.now {
-        systemctl(&["enable", "--now", &name], START_BOUND)?;
+        systemctl(&["enable", "--now", "--no-block", &name], QUICK_BOUND)?;
     } else {
         systemctl(&["enable", &name], QUICK_BOUND)?;
     }
@@ -237,12 +237,13 @@ pub enum Verb {
 
 pub fn drive(unit: &Unit, verb: Verb, stop_bound: Duration) -> Result<(), Refusal> {
     supported()?;
-    let (word, bound) = match verb {
-        Verb::Start => ("start", START_BOUND),
-        Verb::Stop => ("stop", stop_bound),
-        Verb::Restart => ("restart", START_BOUND + stop_bound),
-    };
-    systemctl(&[word, &unit.name], bound).map(drop)
+    let name = unit.name.as_str();
+    match verb {
+        Verb::Start => systemctl(&["start", "--no-block", name], QUICK_BOUND),
+        Verb::Stop => systemctl(&["stop", name], stop_bound),
+        Verb::Restart => systemctl(&["restart", "--no-block", name], QUICK_BOUND),
+    }
+    .map(drop)
 }
 
 /// `systemctl --user status`: its text, and its exit code (0 active, 3

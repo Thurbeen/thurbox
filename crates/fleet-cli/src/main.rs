@@ -1971,7 +1971,7 @@ fn cmd_service(
             })
             .map(|unit| {
                 let verb = if *now {
-                    "enabled and started"
+                    "enabled and starting"
                 } else {
                     "enabled"
                 };

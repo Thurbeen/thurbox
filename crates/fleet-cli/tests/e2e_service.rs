@@ -95,7 +95,10 @@ fn install_writes_the_one_unit_and_version_names_it() {
     }
     assert_eq!(
         s.calls(),
-        ["--user daemon-reload", "--user enable --now fleet.service"]
+        [
+            "--user daemon-reload",
+            "--user enable --now --no-block fleet.service"
+        ]
     );
     assert_eq!(
         s.supervisor(),
@@ -188,8 +191,8 @@ fn the_verbs_drive_the_store_s_unit_and_uninstall_removes_it() {
     assert_eq!(
         s.calls(),
         [
-            "--user start engine.service",
-            "--user restart engine.service",
+            "--user start --no-block engine.service",
+            "--user restart --no-block engine.service",
             "--user stop engine.service",
             "--user status engine.service --no-pager",
             "--user disable --now engine.service",

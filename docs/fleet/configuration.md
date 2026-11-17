@@ -72,6 +72,10 @@ under that system's own service manager.
 | `fleet service status` | Prints `systemctl --user status` of the store's unit, and exits with its code: 0 when the unit is active, 3 when it is not. |
 | `fleet service uninstall` | Stops and disables the store's unit, removes its file and runs `daemon-reload`. Its drop-ins stay. |
 
+`install --now`, `start` and `restart` queue the job and return. They do not
+wait for `READY=1`: a new `fleet up` waits while another manager holds the
+store's lock. `fleet service status` shows when the unit is active.
+
 `--config` names the config, as for every command. The unit sets
 `FLEET_CONFIG` to that config's absolute path. `--data-dir` is refused:
 `fleet up` reads the data directory from the config. Each verb other than
