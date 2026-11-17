@@ -436,7 +436,7 @@ longer read, and a save from the settings panel removes it.
 | --- | --- |
 | `multiplexer` | Fleet's runtime runs every session's terminal. |
 | `[remote]` | thurbox lists no sessions through other hosts. |
-| An older `[telemetry]` table: one with `enabled`, `export_diagnostic_logs`, `per_session`, `configure_agents`, or `headers` that name no `file` | The table has new keys ([`[telemetry]`](#telemetry--the-interfaces-opentelemetry-export)). thurbox reads nothing of the older table, so it never turns export on. |
+| An older `[telemetry]` table: one with `enabled`, `export_diagnostic_logs`, `export_session_events`, `export_thurbox_metrics`, `per_session`, `configure_agents`, or `headers` that name no `file` | The table has new keys ([`[telemetry]`](#telemetry--the-interfaces-opentelemetry-export)). thurbox reads nothing of the older table, so it never turns export on. |
 | `[fleet]` | The Fleets are listed as `[fleets.<name>]`. |
 | `audit_retention_days`, `deleted_retention_days` | thurbox keeps no session database to prune. |
 | `features.soft_delete` | Fleet deletes a session at once. |
@@ -815,7 +815,8 @@ resource = { "deployment.environment.name" = "local" }
   interface runs, and the sessions, export as Fleet's own config file says.
   thurbox does not read Fleet's config file for telemetry.
 - An older table is not read. That is a table with `enabled`,
-  `export_diagnostic_logs`, `per_session` or `configure_agents`, or with
+  `export_diagnostic_logs`, `export_session_events`,
+  `export_thurbox_metrics`, `per_session` or `configure_agents`, or with
   `headers` that name no `file`. thurbox reports it as no longer read, and
   a save from the settings panel removes it. Write the table again with the
   keys above.

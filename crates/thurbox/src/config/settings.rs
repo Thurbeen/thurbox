@@ -206,6 +206,8 @@ pub fn is_retired_notice(warning: &str) -> bool {
 const OLDER_TELEMETRY_KEYS: &[&str] = &[
     "enabled",
     "export_diagnostic_logs",
+    "export_session_events",
+    "export_thurbox_metrics",
     "per_session",
     "configure_agents",
 ];
@@ -673,6 +675,8 @@ mod tests {
             "enabled = false\nendpoint = \"http://localhost:4318\"\nprotocol = \"http/protobuf\"\nexport_diagnostic_logs = false\n",
             "enabled = true\nendpoint = \"http://c:4318\"\n",
             "endpoint = \"http://c:4318\"\nheaders = { authorization = \"Bearer x\" }\n",
+            "endpoint = \"http://c:4318\"\nexport_session_events = true\n",
+            "endpoint = \"http://c:4318\"\nexport_thurbox_metrics = true\n",
         ] {
             let old = format!("scrollback_lines = 7\n[telemetry]\n{table}");
             std::fs::write(&path, &old).unwrap();
