@@ -6948,6 +6948,263 @@ fn the_real_fleet_takes_the_argv_start_runs() {
     assert!(stderr.contains("ghost"), "{stderr}");
 }
 
+fn fleet_pausing_one_task(
+    profile: &Profile,
+    paused: &serde_json::Value,
+    resumed: &serde_json::Value,
+    resume_secs: u32,
+    attach_error: &str,
+) -> PathBuf {
+    let woken = profile.root.path().join("woken");
+    let name = paused["object"]["metadata"]["name"]
+        .as_str()
+        .expect("a name");
+    let synced = serde_json::json!({"type": "synced", "revision": 1, "names": [name]});
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; sleep {resume_secs}; echo '{resumed}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ touch '{woken}'; exit 0; }}; echo '{attach_error}' >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            woken = woken.display(),
+        ),
+    );
+    woken
+}
+
+fn fake_task(name: &str, state: &str, conditions: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"type": "changed", "revision": 1, "object": {
+        "metadata": {"name": name, "uid": format!("u-{name}")},
+        "spec": {"harness": "claude-code", "host": "local", "workspace": [], "dispatch": true},
+        "status": {"phase": "Briefed", "sessionState": state, "agentState": "idle",
+            "session": {"key": format!("k-{name}")}, "conditions": conditions},
+    }})
+}
+
+fn paused_idle(name: &str) -> serde_json::Value {
+    fake_task(
+        name,
+        "Paused",
+        serde_json::json!([{"type": "Paused", "status": "True", "reason": "Idle"}]),
+    )
+}
+
+fn resumed(name: &str) -> serde_json::Value {
+    fake_task(
+        name,
+        "Running",
+        serde_json::json!([{"type": "Paused", "status": "False", "reason": "Resumed"}]),
+    )
+}
+
+fn row_of<'a>(frame: &'a str, name: &str) -> &'a str {
+    frame
+        .lines()
+        .find(|line| line.starts_with('│') && line.contains(name))
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_paused_sessions_pane_says_how_to_start_it_and_its_row_keeps_the_idle_icon() {
+    let profile = Profile::new();
+    fleet_pausing_one_task(
+        &profile,
+        &paused_idle("napping"),
+        &resumed("napping"),
+        0,
+        "unused",
+    );
+    let mut tui = Tui::spawn(&profile, 40, 80);
+    tui.wait_until("the paused pane to say how to start it", |frame| {
+        frame.contains("napping is paused")
+            && frame.contains("Press s in the session list,")
+            && frame.contains("or choose Start in its menu, to resume it.")
+    });
+    tui.resize(40, 160);
+    tui.wait_until("the row to say why", |frame| {
+        row_of(frame, "napping").contains("paused · idle")
+    });
+    let frame = tui.frame();
+    let row = row_of(&frame, "napping");
+    assert!(row.contains("paused · idle"), "{frame}");
+    assert!(
+        row.contains('○'),
+        "the paused row lost the idle icon: {row:?}"
+    );
+    assert!(
+        !row.contains('■'),
+        "the paused row draws a stopped glyph: {row:?}"
+    );
+    assert!(!frame.contains("no live terminal"), "{frame}");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_session_that_cannot_resume_says_what_to_do_instead() {
+    let profile = Profile::new();
+    let stuck = fake_task(
+        "stuck",
+        "Lost",
+        serde_json::json!([{"type": "NeedsAttention", "status": "True", "reason": "CannotResume"}]),
+    );
+    fleet_pausing_one_task(
+        &profile,
+        &stuck,
+        &stuck,
+        0,
+        "error: Task/stuck cannot resume",
+    );
+    let mut tui = Tui::spawn(&profile, 40, 80);
+    tui.wait_until("the pane to say what to do", |frame| {
+        frame.contains("stuck cannot resume")
+            && frame.contains("Delete it with ctrl+d,")
+            && frame.contains("then create a new session with ctrl+n.")
+    });
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn starting_a_paused_session_spins_in_its_pane_until_the_attach_fails_and_says_why() {
+    let profile = Profile::new();
+    fleet_pausing_one_task(
+        &profile,
+        &paused_idle("napping"),
+        &resumed("napping"),
+        2,
+        "error: the runtime offers no live view",
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("napping is paused");
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"s");
+    tui.wait_until("the pane to spin while Fleet starts it", |frame| {
+        frame.contains("Starting napping")
+            && theme_spinner().iter().any(|glyph| frame.contains(glyph))
+    });
+    tui.send(b"s");
+    tui.wait_until(
+        "a second start to be refused while one is pending",
+        |frame| frame.contains("napping is already starting") && frame.contains("Starting napping"),
+    );
+    tui.wait_until("the pane to say why it did not attach", |frame| {
+        frame.contains("no live terminal") && frame.contains("the runtime offers no live view")
+    });
+    assert!(!tui.frame().contains("Starting napping"), "{}", tui.frame());
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn starting_a_paused_session_shows_why_fleet_refused() {
+    let profile = Profile::new();
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ sleep 1; echo 'error: the lease is held elsewhere' >&2; exit 4; }}; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            paused = paused_idle("napping"),
+            synced = serde_json::json!({"type": "synced", "revision": 1, "names": ["napping"]}),
+        ),
+    );
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("napping is paused");
+    focus_the_list(&mut tui);
+    tui.send(b"G");
+    tui.wait_until_quiet();
+    tui.send(b"s");
+    tui.wait_for("Starting napping");
+    tui.wait_until("the pane to say the start failed", |frame| {
+        frame.contains("Start failed") && frame.contains("the lease is held elsewhere")
+    });
+    assert!(!tui.frame().contains("Starting napping"), "{}", tui.frame());
+    assert!(tui.quit().success());
+}
+
+fn select_in_the_list(profile: &Profile, tui: &mut Tui, session: &str) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args([
+            "--json",
+            "ui",
+            "action",
+            "session.focus",
+            "--session",
+            session,
+        ])
+        .output()
+        .expect("ui cli");
+    assert!(
+        output.status.success(),
+        "session.focus refused {session}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    tui.wait_until_quiet();
+    focus_the_list(tui);
+}
+
+fn theme_spinner() -> [&'static str; 10] {
+    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+}
+
+const PAUSING_AGENT: &str = r#"case " $* " in
+  *" --resume "*) echo resumed-marker; "$REAL_FLEET" signal working ;;
+  *) echo fresh-marker; "$REAL_FLEET" signal idle ;;
+esac
+while IFS= read -r line; do
+  text=$line
+  while IFS= read -r -t 0.5 more; do text=$text$'\n'$more; done
+  text=$(printf '%s' "$text" | tr -d '\033' | sed 's/\[20[01]~//g')
+  json=$(printf '%s' "$text" | awk 'BEGIN { ORS = "" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); if (NR > 1) print "\\n"; print }')
+  "$REAL_FLEET" signal prompt "{\"prompt\":\"$json\",\"session_id\":\"conv-1\"}"
+  "$REAL_FLEET" signal idle
+done
+"#;
+
+#[test]
+fn starting_a_paused_session_spins_in_its_pane_until_its_agent_is_attached() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    if profile.real_fleet().is_none() {
+        return;
+    }
+    let real_fleet = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).with_file_name("fleet");
+    write_script(
+        &profile.bin.join("claude"),
+        &format!(
+            "#!/bin/bash\nREAL_FLEET='{}'\n{PAUSING_AGENT}",
+            real_fleet.display(),
+        ),
+    );
+    let work = profile.path("work");
+    std::fs::create_dir_all(&work).expect("work");
+    profile.fleet(
+        &["apply", "-f", "-"],
+        &serde_json::json!([
+            {"apiVersion": "fleet/v1alpha1", "kind": "TaskConfig",
+             "metadata": {"name": "pausing"}, "spec": {"pauseAfterMs": 1}},
+            {"apiVersion": "fleet/v1alpha1", "kind": "Task", "metadata": {"name": "napping"},
+             "spec": {"harness": "claude-code", "host": "local", "dispatch": true,
+                      "brief": "Do the work.", "configRef": {"name": "pausing"},
+                      "workspace": [format!("file://{}", work.display())]}},
+        ])
+        .to_string(),
+    );
+    profile.reconcile();
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_within(Duration::from_secs(60), "Fleet to pause napping", |frame| {
+        frame.contains("napping is paused")
+    });
+    select_in_the_list(&profile, &mut tui, "napping");
+    tui.send(b"s");
+    tui.wait_for("Starting napping");
+    tui.wait_for("resumed-marker");
+    assert!(!tui.frame().contains("Starting napping"), "{}", tui.frame());
+    assert!(tui.quit().success());
+}
+
 /// The companion shell is the user's `$SHELL`, and a zsh started in the
 /// profile's empty HOME opens its first-run wizard instead of a prompt.
 fn plain_shell(cmd: &mut Command) {

@@ -315,7 +315,7 @@ pub static SESSION: Class = Class {
             .opt()
             .doc("Why Fleet has not finished that deletion: its `Released` condition."),
         leaf("state_why", "string").opt().doc(
-            "Why a Fleet session is stopped, lost or gone, or stalled: `paused · idle`, `stopped · outside Fleet`, `lost · window gone`, `gone · session ended`, `stalled · <reason>`.",
+            "Why a Fleet session is stopped, lost or gone, or stalled: `paused · idle`, `stopped · outside Fleet`, `lost · window gone`, `lost · revive failed`, `lost · cannot resume`, `gone · session ended`, `stalled · <reason>`.",
         ),
         leaf("backend", "string"),
         leaf("repo", "string").opt(),
@@ -340,6 +340,12 @@ pub static SESSION: Class = Class {
         leaf("attach_error", "string")
             .opt()
             .doc("Why this session's terminal is not live."),
+        leaf("starting", "boolean").doc(
+            "Whether a start this interface sent is still waiting for the session's terminal to attach.",
+        ),
+        leaf("start_error", "string")
+            .opt()
+            .doc("Why the last start this interface sent did not bring the session's terminal back."),
     ],
 };
 

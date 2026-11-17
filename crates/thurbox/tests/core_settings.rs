@@ -308,6 +308,7 @@ fn publish_with(host: &thurbox::kernel::host::LuaHost, settings: &Settings) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

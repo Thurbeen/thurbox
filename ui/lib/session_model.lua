@@ -769,4 +769,23 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos, fold
   return items
 end
 
+--- How a session that does not run comes back: `start` when Fleet can resume
+--- it (paused, stopped, or lost with its window gone), `recreate` when Fleet
+--- cannot resume its conversation, nil when it runs.
+---@param session thurbox.Session
+---@return "start"|"recreate"|nil
+function session_model.revival(session)
+  if session.status == "stopped" then
+    return "start"
+  end
+  local why = session.state_why or ""
+  if why == "lost · cannot resume" or why:find("^gone") then
+    return "recreate"
+  end
+  if why:find("^lost") then
+    return "start"
+  end
+  return nil
+end
+
 return session_model

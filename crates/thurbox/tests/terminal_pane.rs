@@ -87,6 +87,7 @@ fn publish(host: &LuaHost) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &sample(),
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

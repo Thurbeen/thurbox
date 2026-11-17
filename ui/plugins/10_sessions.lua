@@ -1771,8 +1771,13 @@ pane = {
       store.rename = { session = id, name = items[at].session.name or "" }
     elseif action == "sessions.start" and id then
       local session = items[at].session
-      if session.status == "stopped" then
+      local revival = session_model.revival(session)
+      if session.starting then
+        command("message", { text = (session.name or "this session") .. " is already starting" })
+      elseif revival == "start" then
         command("start", { session = id })
+      elseif revival == "recreate" then
+        command("message", { text = (session.name or "this session") .. " cannot resume" })
       else
         command("message", { text = (session.name or "this session") .. " is not stopped" })
       end

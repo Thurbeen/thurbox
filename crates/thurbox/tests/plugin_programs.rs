@@ -353,6 +353,7 @@ fn a_plugin_can_read_the_platform_it_is_running_on() {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

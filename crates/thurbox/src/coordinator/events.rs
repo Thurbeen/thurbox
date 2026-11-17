@@ -280,6 +280,9 @@ impl App {
     }
 
     pub(crate) fn note_command_failed(&mut self, tracked: &TrackedCommand, error: &str) {
+        if tracked.kind == "start" {
+            self.terminals.start_failed(&tracked.session, error);
+        }
         self.enqueue_event(
             Event::new("command.failed")
                 .with("kind", Some(tracked.kind))

@@ -667,6 +667,9 @@ pub struct Published<'a> {
     pub snapshot: &'a Snapshot,
     /// Why a session's terminal is not live, keyed by session.
     pub attach_errors: &'a std::collections::HashMap<String, String>,
+    /// The starts the user asked for that no live pane has settled yet,
+    /// keyed by session.
+    pub starts: &'a std::collections::HashMap<String, super::terminal::Start>,
     /// The sessions whose pane is producing output right now.
     ///
     /// The evidence a `running` session's indicator animates on: process

@@ -129,6 +129,7 @@ fn publish_rows(host: &LuaHost, sessions: Vec<SessionRow>) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &snapshot,
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

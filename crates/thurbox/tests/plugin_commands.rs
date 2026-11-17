@@ -50,6 +50,7 @@ fn publish_snapshot(host: &LuaHost, snapshot: &thurbox::kernel::snapshot::Snapsh
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

@@ -45,6 +45,7 @@ repo_picker.with_worktrees function
 scroll.window_variable function
 session_model.build function
 session_model.pending function
+session_model.revival function
 settings.enabled function
 settings.feature function
 settings.get function

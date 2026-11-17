@@ -38,6 +38,7 @@ return {{
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &Snapshot::default(),
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

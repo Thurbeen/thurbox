@@ -170,6 +170,7 @@ fn publish_hovered(host: &LuaHost, world: &World, hovered: Option<&Identity>) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot: &world.snapshot,
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &world.inflight,
         themes: &themes,
         registry: &registry,

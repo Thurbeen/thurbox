@@ -109,6 +109,7 @@ fn publish_inner(
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors,
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

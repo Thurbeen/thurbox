@@ -121,7 +121,6 @@ local STATUS_GLYPHS = {
   -- The launch died before the agent said anything (a failed `setup`, or an
   -- agent that exited first): the same mark as an error, because it is one.
   failed = "✗",
-  stopped = "■",
 }
 local STATUS_ROLES = {
   working = "status_working",
@@ -135,7 +134,6 @@ local STATUS_ROLES = {
   uncovered = "status_unknown",
   unreported = "status_unknown",
   failed = "status_error",
-  stopped = "status_unknown",
 }
 
 --- Glyph and colour for a session status.
@@ -143,8 +141,8 @@ local STATUS_ROLES = {
 --- Colour comes from the theme's own status roles, so a theme that recolours
 --- "blocked" recolours it here without this file changing.
 ---
---- The `idle` fallback is for a word this table has no row for. It is
---- deliberately NOT how `stopped` or the three
+--- The `idle` fallback is for a word this table has no row for: `stopped`,
+--- whose row says why beside it. It is deliberately NOT how the three
 --- silences are drawn: `running`, `uncovered` and `unreported` each have a row
 --- above, because falling through to `idle` is what made a working
 --- driver-launched agent draw the green "the agent says it is at rest" dot.

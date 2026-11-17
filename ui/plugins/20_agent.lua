@@ -30,7 +30,9 @@ local chrome = require("lib.chrome")
 local panels = require("lib.panels")
 local hover = require("lib.hover")
 local plugin_settings = require("lib.settings")
+local session_model = require("lib.session_model")
 local theme = require("lib.theme")
+local ui = require("lib.ui")
 local widgets = require("lib.widgets")
 
 --- What this plugin is called. Declared once because the pane has to name
@@ -856,6 +858,93 @@ local function centered(lines)
   return { type = "box", axis = "vertical", fill = 1, children = children }
 end
 
+-- --- a session that does not run ------------------------------------------
+
+local function muted(text)
+  return { text = text, style = { fg = theme.muted } }
+end
+
+local function key(chord)
+  return { text = chord, style = { fg = theme.hint, bold = true } }
+end
+
+local function starting_lines(name, elapsed)
+  return {
+    {
+      { text = theme.spinner_frame(elapsed) .. " ", style = { fg = theme.warn } },
+      { text = "Starting " .. name .. "…", style = { fg = theme.warn, bold = true } },
+    },
+    { muted("Fleet is resuming its agent;") },
+    { muted("its terminal attaches as soon as it runs.") },
+  }
+end
+
+local function headline(name, session, revival)
+  if revival == "recreate" then
+    return name .. " cannot resume"
+  end
+  local why = session.state_why or ""
+  if why:find("^lost") then
+    return name .. " is lost"
+  end
+  if why:find("^paused") then
+    return name .. " is paused"
+  end
+  return name .. " is stopped"
+end
+
+local function how_to_start()
+  local chord = ui.chord("sessions.start")
+  if not chord then
+    return { { muted("Choose Start in the session list's menu") }, { muted("to resume it.") } }
+  end
+  return {
+    { muted("Press "), key(chord), muted(" in the session list,") },
+    { muted("or choose Start in its menu, to resume it.") },
+  }
+end
+
+local function how_to_recreate()
+  local delete, create = ui.chord("sessions.delete"), ui.chord("new_session.open")
+  if not (delete and create) then
+    return { { muted("Delete it, then create a new session.") } }
+  end
+  return {
+    { muted("Delete it with "), key(delete), muted(",") },
+    { muted("then create a new session with "), key(create), muted(".") },
+  }
+end
+
+local function not_running_lines(session, revival, elapsed)
+  local name = session.name or "this session"
+  if session.starting then
+    return starting_lines(name, elapsed)
+  end
+  local lines = {
+    { { text = headline(name, session, revival), style = { fg = theme.secondary, bold = true } } },
+    { muted(session.state_why or "") },
+    {},
+  }
+  local how
+  if revival == "recreate" then
+    lines[#lines + 1] = { muted("Fleet cannot resume its conversation.") }
+    how = how_to_recreate()
+  else
+    how = how_to_start()
+  end
+  for _, line in ipairs(how) do
+    lines[#lines + 1] = line
+  end
+  if session.start_error then
+    lines[#lines + 1] = {}
+    lines[#lines + 1] = {
+      { text = "Start failed: ", style = { fg = theme.bad, bold = true } },
+      { text = session.start_error, style = { fg = theme.bad } },
+    }
+  end
+  return lines
+end
+
 -- --- selecting a tab -------------------------------------------------------
 
 --- Show a tab, bringing the pane forward with it.
@@ -969,6 +1058,13 @@ return {
     local base = terminal_title(session, { shell = tab == SHELL_TAB, scroll = scroll })
     local title =
       fit_right_title(chrome.label(base:match("^%s*(.-)%s*$"), level), width, reserved_left)
+
+    local revival = session_model.revival(session)
+    if session.starting or revival then
+      local body = centered(not_running_lines(session, revival, ctx.elapsed))
+      body.frame = border_frame(title, level, border, strip)
+      return body
+    end
 
     -- A dead pane explains itself. "not attached" with no reason is the least
     -- useful thing a terminal can say. v1 has no such state, so this is a
