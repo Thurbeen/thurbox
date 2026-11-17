@@ -920,6 +920,67 @@ fn version_reports_the_manager_lease_without_taking_it() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_live_manager_holds_its_lock_and_a_new_lease_token_never_goes_back() {
+    let env = fake_bootstrap("manager-lock");
+    let lease = env.data.join("lease.json");
+    let token = || -> u64 {
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&lease).unwrap()).unwrap();
+        record["token"].as_u64().unwrap()
+    };
+    let manager = || env.fleet(&["version", "--json"]).ok().json()["manager"].clone();
+
+    let mut first = Running(env.spawn(&["up", "--poll-ms", "10000"]));
+    until(|| manager()["state"] == "serving");
+    let first_token = token();
+
+    fs::rename(&lease, env.root.join("lease.json.aside")).unwrap();
+    support::wait_within(
+        env.spawn(&["up", "--poll-ms", "100"]),
+        Duration::from_secs(20),
+    )
+    .code(6)
+    .stderr_has("manager.lock");
+    assert!(
+        !lease.exists(),
+        "a second fleet up took no lease while the first held its lock"
+    );
+
+    let serving = manager();
+    assert_eq!(serving["version"], env!("CARGO_PKG_VERSION"), "{serving:#}");
+    assert!(
+        serving["exe"].as_str().is_some_and(|e| !e.is_empty()),
+        "{serving:#}"
+    );
+    assert_eq!(
+        serving["config"],
+        env.config.to_string_lossy().as_ref(),
+        "{serving:#}"
+    );
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.data.join("manager.json")).unwrap()).unwrap();
+    assert_eq!(record["pid"], first.0.id(), "{record:#}");
+    assert!(record["startedAt"].as_u64().is_some(), "{record:#}");
+
+    assert!(
+        Command::new("/bin/kill")
+            .args(["-TERM", &first.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    until(|| first.0.try_wait().unwrap().is_some());
+    assert_eq!(manager()["state"], "stopped");
+
+    let _second = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    until(|| manager()["held"] == true);
+    assert!(
+        token() > first_token,
+        "a new lease's token is above every earlier one"
+    );
+}
+
 #[test]
 fn init_writes_a_default_task_config_that_pauses_an_idle_session_after_thirty_minutes() {
     let mut env = Env::new("init-default-config");

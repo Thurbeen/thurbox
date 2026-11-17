@@ -31,17 +31,31 @@ creates no Task of its own: Tasks come from `fleet apply`, from an interface
 such as thurbox, or from a gateway route. Keep `up` running in a terminal or
 your own service supervisor. Ctrl-C (also SIGTERM on Unix) finishes the
 bounded sweep, releases the manager lease and retains sessions. Run
-`fleet up` again to reconnect; a simultaneous manager exits with code 6.
+`fleet up` again to reconnect.
+
+`fleet up` holds an exclusive OS lock on `<data dir>/manager.lock` for its
+whole life. The OS releases the lock when the manager exits, however it
+exits. A second `fleet up` on the same store exits with code 6 while the
+lock is held, whatever `lease.json` says. The lease keeps its fencing role:
+every controller write checks its token. Each new lease takes its token
+from the store's `resourceVersion` counter, so a token never goes back,
+even when `lease.json` is lost.
+
+The manager writes its status to `<data dir>/manager.json`: `pid`, `boot`,
+`version`, `exe`, `config`, `startedAt` and `state` (`starting`,
+`serving` or `stopped`). The record is status, never authority: a manager
+that crashed leaves its last state behind.
+
 The lease holder is `fleet-up-<pid>@<boot id>`. On Linux, after a reboot,
 a manager takes over at once a lease whose holder names another boot:
 neither that manager nor any process it started still runs. After a crash
 on the same boot, wait for the recorded lease to expire before restarting:
 a process the dead manager started can still be running.
-`fleet version --json` reports the manager lease under `manager`, and only
-reads it:
+`fleet version --json` reports the manager lease and the manager record
+under `manager`, and only reads them:
 
 ```json
-{"manager": {"held": true, "holder": "fleet-up-4242@6780a1c8-c1de-4350-9421-b5ff90278de2", "expiresAt": 1763120000000, "why": null}}
+{"manager": {"held": true, "holder": "fleet-up-4242@6780a1c8-c1de-4350-9421-b5ff90278de2", "expiresAt": 1763120000000, "why": null, "state": "serving", "version": "3.4.0", "exe": "/usr/bin/fleet", "config": "/home/me/.config/fleet/config.toml"}}
 ```
 
 - `held` is `true` while the recorded lease is unexpired and its holder
@@ -51,7 +65,11 @@ reads it:
   last lease, if any.
 - `held` is `null` when the lease cannot be read. `why` says why. An
   unreadable lease never reads as `false`.
-- The report takes no lease and renews none, and it creates no store.
+- `state`, `version`, `exe` and `config` come from `manager.json`. They
+  are `null` when no manager ran. When the record cannot be read, they are
+  `null` and `why` says why.
+- The report takes no lease and renews none, takes no lock, and it creates
+  no store.
 Unknown session observations never trigger a blind replacement. Each sweep
 reports a Task that is blocked at startup or that needs attention, so no
 separate status query is needed to see why.

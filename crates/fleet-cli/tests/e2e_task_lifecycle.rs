@@ -630,7 +630,10 @@ fn a_lease_held_by_another_boot_is_taken_over_at_once() {
             "{dead}"
         );
         let report = env.reconcile().ok().json();
-        assert_eq!(report["leaseToken"], 8, "{dead}: {report:#}");
+        assert!(
+            report["leaseToken"].as_u64().is_some_and(|t| t > 7),
+            "{dead}: {report:#}"
+        );
     }
     assert_eq!(env.status("t1")["phase"], "Briefed");
 }

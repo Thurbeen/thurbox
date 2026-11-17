@@ -8,6 +8,8 @@
 //! lock                        the store lock (an OS file lock)
 //! seq                         the last resourceVersion handed out
 //! lease.json                  the manager lease, if one is held
+//! manager.lock                held by a serving manager for its life (an OS file lock)
+//! manager.json                the serving manager's status record
 //! objects/<Kind>/<name>.json  one object, spec and status together (Q6)
 //! boards/<name>/<seq>.jsonl   one segment of a Board's log, named by its first seq
 //! boards/<name>/<seq>.keys    the (source, key, seq) of each keyed event in it
@@ -23,6 +25,7 @@
 pub mod durable;
 mod event_log;
 pub mod holder;
+pub mod manager;
 mod plugin;
 
 use std::collections::BTreeMap;
@@ -145,9 +148,16 @@ impl FileStore {
     fn init(&self) -> Result<(), StoreError> {
         match fs::read_dir(&self.root) {
             Ok(entries) => {
-                // Only a store's own entries may be present: a second process
-                // can be initialising the same empty directory right now.
-                let own = ["store.json", "lock", "seq", "lease.json", "objects", "tmp"];
+                let own = [
+                    "store.json",
+                    "lock",
+                    "seq",
+                    "lease.json",
+                    manager::LOCK,
+                    manager::RECORD,
+                    "objects",
+                    "tmp",
+                ];
                 let foreign = entries
                     .filter_map(Result::ok)
                     .any(|e| !own.iter().any(|o| e.file_name() == *o));
@@ -236,6 +246,10 @@ impl FileStore {
     }
 
     fn next_rv(&self) -> Result<u64, StoreError> {
+        self.next_rv_above(0)
+    }
+
+    fn next_rv_above(&self, floor: u64) -> Result<u64, StoreError> {
         let path = self.root.join("seq");
         let current = match fs::read_to_string(&path) {
             Ok(s) => s
@@ -246,6 +260,7 @@ impl FileStore {
             Err(e) => return Err(io_unknown(&path, e)),
         };
         let next = current
+            .max(floor)
             .checked_add(1)
             .ok_or_else(|| StoreError::Invalid("resourceVersion exhausted".into()))?;
         durable::replace(&self.tmp_dir(), &path, next.to_string().as_bytes())
@@ -1571,7 +1586,7 @@ impl Store for FileStore {
                 expires_at: l.expires_at,
             });
         }
-        let token = current.map_or(1, |l| l.token + 1);
+        let token = self.next_rv_above(current.map_or(0, |l| l.token))?;
         let lease = LeaseToken {
             holder: holder.to_string(),
             token,

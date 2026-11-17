@@ -629,6 +629,57 @@ fn a_finalizer_never_comes_off_a_live_object() {
 }
 
 #[test]
+fn a_new_lease_token_is_above_every_earlier_one_even_when_the_lease_record_is_lost() {
+    let dir = Dir::new("lost-lease");
+    let store = FileStore::open(&dir.0).unwrap();
+    let old = store.acquire_lease("a", 10_000).unwrap();
+    fs::remove_file(dir.0.join("lease.json")).unwrap();
+    let new = store.acquire_lease("b", 10_000).unwrap();
+    assert!(new.token > old.token, "{} after {}", new.token, old.token);
+}
+
+#[test]
+fn a_lease_token_ahead_of_the_counter_still_never_goes_back() {
+    let dir = Dir::new("token-ahead");
+    let store = FileStore::open(&dir.0).unwrap();
+    fs::write(
+        dir.0.join("lease.json"),
+        json!({"holder": "old", "token": 100, "expiresAt": 0}).to_string(),
+    )
+    .unwrap();
+    let upgraded = store.acquire_lease("a", 10_000).unwrap();
+    assert!(upgraded.token > 100, "{}", upgraded.token);
+    fs::remove_file(dir.0.join("lease.json")).unwrap();
+    let next = store.acquire_lease("b", 10_000).unwrap();
+    assert!(
+        next.token > upgraded.token,
+        "{} after {}",
+        next.token,
+        upgraded.token
+    );
+}
+
+#[test]
+fn one_process_at_a_time_holds_the_manager_lock() {
+    let dir = Dir::new("manager-lock");
+    let store = FileStore::open(&dir.0).unwrap();
+    let held = store.lock_manager().unwrap().expect("a free lock is taken");
+    assert!(
+        store.lock_manager().unwrap().is_none(),
+        "a held lock is refused"
+    );
+    drop(held);
+    assert!(
+        store.lock_manager().unwrap().is_some(),
+        "a released lock is free"
+    );
+    assert!(
+        FileStore::open(&dir.0).is_ok(),
+        "the manager's files belong to the store"
+    );
+}
+
+#[test]
 fn a_stale_token_is_refused_even_under_the_same_holder_name() {
     let dir = Dir::new("same-holder");
     let clock = Arc::new(TestClock::default());
@@ -3779,8 +3830,8 @@ fn a_board_log_is_private_to_its_owner() {
 fn only_a_view_asks_for_a_wake_and_no_status_write_changes_it() {
     let dir = Dir::new("wake");
     let store = FileStore::open(&dir.0).unwrap();
-    let t = store.create(task("t"), FieldManager::Apply).unwrap();
     let lease = store.acquire_lease("m", 10_000).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
     let rv = t.metadata.resource_version;
 
     let err = store

@@ -27,6 +27,7 @@ use fleet_manager::{
     list_events, publish_event, receive, record_result, send, wake,
 };
 use fleet_runtime::{ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals};
+use fleet_store::manager::{ManagerLock, ManagerRecord, ManagerState};
 use fleet_store::{FileStore, SystemClock};
 use otel_env::KeyValue;
 use serde_json::{Value, json};
@@ -1010,7 +1011,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         } => {
             let path = config_path.ok_or_else(|| fail("no configuration; run fleet init first"))?;
             cmd_up(
-                store,
+                &file_store,
                 (&config, &data_dir),
                 &path,
                 poll_ms,
@@ -1541,7 +1542,7 @@ fn gateway_side<'a>(
 }
 
 fn cmd_up(
-    store: &dyn Store,
+    file_store: &FileStore,
     (config, data_dir): (&Config, &Path),
     config_path: &Path,
     poll_ms: u64,
@@ -1551,6 +1552,65 @@ fn cmd_up(
         &[fleet_api::plugin::Registration],
     ),
 ) -> Result<(), Failure> {
+    let lock = file_store
+        .lock_manager()?
+        .ok_or_else(|| manager_running(data_dir))?;
+    let mut record = ManagerRecord {
+        pid: std::process::id(),
+        boot: fleet_store::holder::boot_id(),
+        version: VERSION.into(),
+        exe: std::env::current_exe().unwrap_or_default(),
+        config: bootstrap::absolute(config_path).map_err(fail)?,
+        started_at: fleet_api::Clock::now(&SystemClock),
+        state: ManagerState::Starting,
+    };
+    file_store.record_manager(&lock, &record)?;
+    let outcome = serve_up(
+        file_store,
+        (config, data_dir),
+        config_path,
+        poll_ms,
+        lease_ttl_ms,
+        plugins,
+        (&lock, &mut record),
+    );
+    record.state = ManagerState::Stopped;
+    report_manager(file_store, &lock, &record);
+    outcome
+}
+
+fn manager_running(data_dir: &Path) -> Failure {
+    let lock = data_dir.join(fleet_store::manager::LOCK);
+    let pid = FileStore::peek_manager(data_dir)
+        .ok()
+        .flatten()
+        .map_or(String::new(), |r| format!(" (pid {})", r.pid));
+    Failure {
+        code: exit::LEASE,
+        message: format!("another manager{pid} holds {}", lock.display()),
+        hint: Some("one manager runs at a time; stop it or wait for it to exit".into()),
+    }
+}
+
+fn report_manager(store: &FileStore, lock: &ManagerLock, record: &ManagerRecord) {
+    if let Err(e) = store.record_manager(lock, record) {
+        eprintln!("could not record the manager's state: {e}");
+    }
+}
+
+fn serve_up(
+    file_store: &FileStore,
+    (config, data_dir): (&Config, &Path),
+    config_path: &Path,
+    poll_ms: u64,
+    lease_ttl_ms: Option<u64>,
+    plugins: (
+        &dyn fleet_api::plugin::Plugins,
+        &[fleet_api::plugin::Registration],
+    ),
+    (lock, record): (&ManagerLock, &mut ManagerRecord),
+) -> Result<(), Failure> {
+    let store: &dyn Store = file_store;
     let signals = open_signals(data_dir)?;
     let runtime = open_runtime(config, &signals)?;
     let forge = open_forge(config)?;
@@ -1618,6 +1678,10 @@ fn cmd_up(
             lease_ttl: ttl,
         },
         |report| {
+            if record.state != ManagerState::Serving {
+                record.state = ManagerState::Serving;
+                report_manager(file_store, lock, record);
+            }
             let mut diagnostics: Vec<_> = report
                 .errors
                 .iter()
@@ -1745,11 +1809,15 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
 /// The manager lease, for `version`: `held` while it is unexpired and its
 /// holder is not proven dead, `false` when none is recorded, it expired or
 /// its holder is dead, `null` with `why` when it cannot be
+/// read. `state`, `version`, `exe` and `config` come from the last
+/// manager's record, `null` when none ran; `why` says when it cannot be
 /// read. Only read: the lease is never taken or renewed, and no store is
 /// created.
 fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf>) -> Value {
-    let unknown =
-        |why: String| json!({"held": null, "holder": null, "expiresAt": null, "why": why});
+    let unknown = |why: String| {
+        json!({"held": null, "holder": null, "expiresAt": null, "why": why,
+            "state": null, "version": null, "exe": null, "config": null})
+    };
     let data_dir = match data_dir {
         Some(dir) => Some(dir),
         None => {
@@ -1773,7 +1841,7 @@ fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf
             "no data directory: pass --data-dir or set data.dir in the config file".into(),
         );
     };
-    match FileStore::peek_lease(&data_dir) {
+    let mut manager = match FileStore::peek_lease(&data_dir) {
         Ok(None) => json!({"held": false, "holder": null, "expiresAt": null, "why": null}),
         Ok(Some(l)) => json!({
             "held": fleet_api::Clock::now(&SystemClock) < l.expires_at
@@ -1782,8 +1850,18 @@ fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf
             "expiresAt": l.expires_at,
             "why": null,
         }),
-        Err(e) => unknown(e.to_string()),
+        Err(e) => return unknown(e.to_string()),
+    };
+    let record = FileStore::peek_manager(&data_dir);
+    let known = record.as_ref().ok().cloned().flatten();
+    manager["state"] = json!(known.as_ref().map(|r| r.state));
+    manager["version"] = json!(known.as_ref().map(|r| &r.version));
+    manager["exe"] = json!(known.as_ref().map(|r| &r.exe));
+    manager["config"] = json!(known.as_ref().map(|r| &r.config));
+    if let Err(e) = record {
+        manager["why"] = json!(e.to_string());
     }
+    manager
 }
 
 /// The integrations installed on this machine that are outdated, by agent:
