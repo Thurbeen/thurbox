@@ -183,9 +183,8 @@ mod tests {
     fn a_process_gone_on_this_boot_is_dead_once_its_records_are_gone() {
         let root = std::env::temp_dir().join(format!("fleet-holder-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let mut child = std::process::Command::new("true").spawn().unwrap();
-        let pid = child.id();
-        child.wait().unwrap();
+        let never_assigned_pid = fs::read_to_string("/proc/sys/kernel/pid_max").unwrap();
+        let pid = never_assigned_pid.trim();
         let holder = format!("fleet-up-{pid}@{}", boot_id().unwrap());
         assert!(!is_takeable(&holder, &root), "no record directory");
         assert!(!is_dead(&holder, &root), "no record directory");
