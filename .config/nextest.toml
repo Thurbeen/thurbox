@@ -53,3 +53,10 @@ priority = 100
 filter = 'binary_id(thurbox::tui_e2e)'
 test-group = 'e2e-pty'
 priority = 100
+
+# A dispatched Task's start, timed beside twelve running ones: starting
+# those twelve under a loaded runner can outlast the default 120 s kill, which
+# would end the test before it names the Task that is late.
+[[profile.default.overrides]]
+filter = 'binary_id(fleet-cli::e2e_runtime_exec) & test(a_task_dispatched_beside_running_tasks)'
+slow-timeout = { period = "60s", terminate-after = 4 }

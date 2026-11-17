@@ -207,6 +207,17 @@ impl Signals for FileSignals {
         }
     }
 
+    fn written(&self, session: &SessionRef) -> Option<u64> {
+        if session.host != LOCAL_HOST {
+            return None;
+        }
+        match fs::metadata(self.path(&session.key)?) {
+            Ok(meta) => Some(meta.len()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Some(0),
+            Err(_) => None,
+        }
+    }
+
     fn read(&self, session: &SessionRef) -> Observation<Reported> {
         if session.host != LOCAL_HOST {
             return Observation::unknown(format!(

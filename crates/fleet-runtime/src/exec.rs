@@ -64,6 +64,10 @@ const MAX_CALLS_PER_OPERATION: u32 = 3;
 /// every second does not run a capture per session every second.
 pub const SCREEN_REUSE: Duration = Duration::from_secs(2);
 
+/// How long one `inspect` answer serves the probes of one reconcile, which
+/// ask it of one key one after the other.
+pub const INSPECT_REUSE: Duration = Duration::from_millis(500);
+
 /// What Fleet runs through a runtime's `exec` to read a session's signal
 /// file on another host: the `fleet` on that host, which `fleet signal`
 /// needs there anyway. One program on every platform, so a native-Windows
@@ -539,7 +543,10 @@ pub struct ExecRuntime {
     /// The last screen of each session, by session id, with when it was
     /// captured.
     screens: Arc<Mutex<BTreeMap<String, (Instant, CapturedScreen)>>>,
+    inspected: Arc<Mutex<Option<LastInspect>>>,
 }
+
+type LastInspect = ((String, String), Instant, Observation<Inspected>);
 
 type CapturedScreen = Observation<Option<fleet_api::screen::Screen>>;
 
@@ -586,6 +593,7 @@ impl ExecRuntime {
             hosts,
             signals: None,
             screens: Arc::default(),
+            inspected: Arc::default(),
         }
     }
 
@@ -612,7 +620,28 @@ impl ExecRuntime {
             Ok(rt) => rt,
             Err(why) => return Observation::unknown(why),
         };
-        rt.send("inspect", json!({ "key": rt.key(fleet_key) }))
+        let asked = (host.to_string(), fleet_key.to_string());
+        let last = || {
+            self.inspected
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if let Some((key, at, found)) = last().as_ref()
+            && *key == asked
+            && at.elapsed() < INSPECT_REUSE
+        {
+            return found.clone();
+        }
+        let found: Observation<Inspected> = rt.send("inspect", json!({ "key": rt.key(fleet_key) }));
+        *last() = Some((asked, Instant::now(), found.clone()));
+        found
+    }
+
+    fn forget_inspected(&self) {
+        *self
+            .inspected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     fn exec_on(&self, host: &str, argv: &[&str]) -> Observation<Executed> {
@@ -662,6 +691,7 @@ impl ExecRuntime {
         if let Some(dir) = dir {
             request["dir"] = json!(dir);
         }
+        self.forget_inspected();
         rt.send("start", request)
     }
 
@@ -1089,6 +1119,7 @@ impl Runtime for ExecRuntime {
             Err(why) => return Observation::unknown(why),
         };
         let request = json!({ "key": rt.key(&workspace.key), "release": true });
+        self.forget_inspected();
         rt.send::<Stopped>("stop", request)
             .map(|Stopped::Stopped| EffectOutcome::Deleted)
     }
@@ -1253,6 +1284,7 @@ impl Runtime for ExecRuntime {
             Err(why) => return Observation::unknown(why),
         };
         let request = json!({ "key": rt.key(&session.key), "release": true });
+        self.forget_inspected();
         rt.send::<Stopped>("stop", request)
             .map(|Stopped::Stopped| EffectOutcome::Released)
     }
@@ -1351,6 +1383,7 @@ impl Runtime for ExecRuntime {
                 Ok(rt) => rt,
                 Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
             };
+            self.forget_inspected();
             rt.send::<PauseAnswer>("pause", json!({ "key": rt.key(&session.key) }))
                 .map(|answer| match answer {
                     PauseAnswer::Paused => EffectOutcome::Paused,
@@ -2155,6 +2188,77 @@ mod tests {
             None,
             "the next request asks the manifest again"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_probes_of_one_session_share_one_inspect_until_a_verb_changes_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fleet-exec-inspect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("runtime.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho \"$1\" >> '{0}/calls'\nexec cat '{0}/'\"$1\"\n",
+                dir.display()
+            ),
+        )
+        .expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::write(
+            dir.join("manifest"),
+            r#"{"known":{"protocol":2,"verbs":["manifest","start","inspect","stop","pause"]}}"#,
+        )
+        .expect("answer");
+        std::fs::write(dir.join("inspect"), r#"{"known":"paused"}"#).expect("answer");
+        std::fs::write(dir.join("stop"), r#"{"known":"stopped"}"#).expect("answer");
+        std::fs::write(dir.join("pause"), r#"{"known":"paused"}"#).expect("answer");
+        std::fs::write(dir.join("start"), r#"{"known":"started"}"#).expect("answer");
+        let runtime = ExecRuntime::new(BTreeMap::from([(
+            "local".to_string(),
+            ExecProgram::new("test", script.to_string_lossy()),
+        )]));
+        let inspects = || {
+            std::fs::read_to_string(dir.join("calls"))
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| *l == "inspect")
+                .count()
+        };
+        let session = runtime.session("local", "k");
+        assert_eq!(
+            runtime.find("local", "k"),
+            Observation::Known(Some(session.clone()))
+        );
+        assert_eq!(runtime.lost(&session), Observation::Known(false));
+        assert_eq!(runtime.paused(&session), Observation::Known(true));
+        assert_eq!(inspects(), 1, "one inspect served the three probes");
+        runtime.find("local", "other");
+        assert_eq!(inspects(), 2, "another key is asked");
+        runtime.find("local", "other");
+        runtime.release(&runtime.session("local", "other"));
+        runtime.find("local", "other");
+        assert_eq!(inspects(), 3, "a stop changed the process");
+        runtime.pause(&runtime.session("local", "other"));
+        runtime.find("local", "other");
+        assert_eq!(inspects(), 4, "a pause changed the process");
+        runtime.start(
+            &SpawnSpec {
+                host: "local".into(),
+                key: "other".into(),
+                harness: "claude-code".into(),
+                workspace: Workspace::default(),
+                ready: None,
+                model: None,
+                env: BTreeMap::new(),
+                environment_frozen: false,
+                telemetry_args: Vec::new(),
+            },
+            &["agent".to_string()],
+        );
+        runtime.find("local", "other");
+        assert_eq!(inspects(), 5, "a start changed the process");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

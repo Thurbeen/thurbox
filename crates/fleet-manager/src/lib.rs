@@ -60,7 +60,7 @@ mod subscriptions;
 mod telemetry;
 pub mod verbs;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
 use fleet_api::conversation::{
@@ -76,6 +76,7 @@ use fleet_api::plan::{
     Action, CREATE_ACTION, Create, Effect, EffectOutcome, Observations, Plan, Probe, Receipt,
 };
 use fleet_api::runtime::Runtime;
+use fleet_api::session::SessionRef;
 use fleet_api::talk::{GatewayStatus, PARENT_LABEL, PARENT_UID_LABEL};
 use fleet_api::task;
 use fleet_api::{Clock, LeaseToken, Millis, Object, Observation, Store, StoreError};
@@ -120,6 +121,17 @@ pub struct RunReport {
     pub errors: Vec<String>,
     /// Observations that were Unknown during the run, with why.
     pub unknowns: Vec<String>,
+    /// Each Task the run left starting, waiting on its agent: its session
+    /// and the length of its signal file then.
+    #[serde(skip)]
+    pub waiting: Vec<(SessionRef, u64)>,
+}
+
+struct WaitingOnAgent {
+    name: String,
+    session: SessionRef,
+    mark: u64,
+    outbox_drained: Observation<bool>,
 }
 
 pub struct Manager<'a> {
@@ -225,6 +237,40 @@ fn host_of(obj: &Object) -> String {
         .as_str()
         .unwrap_or_default()
         .to_string()
+}
+
+const STARTUP_STEPS_IN_A_ROW: usize = 16;
+
+const RELIST_AFTER_MS: Millis = 250;
+
+struct NewStarts {
+    seen: BTreeSet<(String, u64)>,
+    started_here: BTreeSet<String>,
+    listed_at: Millis,
+}
+
+fn generation_of(obj: &Object) -> (String, u64) {
+    (obj.metadata.uid.clone(), obj.metadata.generation)
+}
+
+fn starting(obj: &Object) -> bool {
+    let Ok(spec) = serde_json::from_value::<task::TaskSpec>(obj.spec.clone()) else {
+        return false;
+    };
+    let phase = match obj.status.get("phase") {
+        None => task::Phase::Pending,
+        Some(phase) => match serde_json::from_value::<task::Phase>(phase.clone()) {
+            Ok(phase) => phase,
+            Err(_) => return false,
+        },
+    };
+    !obj.is_deleting()
+        && spec.dispatch
+        && match phase {
+            task::Phase::Pending | task::Phase::Spawning => true,
+            task::Phase::Spawned => !spec.is_interactive(),
+            _ => false,
+        }
 }
 
 impl Manager<'_> {
@@ -355,7 +401,27 @@ impl Manager<'_> {
                 }
             }
             let now = self.clock.now();
-            for obj in &tasks {
+            let mut order: Vec<&Object> = tasks.iter().collect();
+            order.sort_by_key(|t| !starting(t));
+            let mut waiting: Vec<WaitingOnAgent> = Vec::new();
+            let mut new_starts = NewStarts {
+                seen: tasks.iter().map(generation_of).collect(),
+                started_here: BTreeSet::new(),
+                listed_at: self.clock.now(),
+            };
+            for obj in order {
+                busy |=
+                    self.reconcile_reported_starts(&mut waiting, lease, opts.lease_ttl, report)?;
+                busy |= self.reconcile_new_starts(
+                    &mut new_starts,
+                    &mut waiting,
+                    lease,
+                    opts.lease_ttl,
+                    report,
+                )?;
+                if new_starts.started_here.contains(&obj.metadata.uid) {
+                    continue;
+                }
                 let concluded =
                     obj.status.get("phase").and_then(Value::as_str) == Some("Concluded");
                 let read_outbox = !concluded || obj.is_deleting() || self.due(obj);
@@ -414,21 +480,15 @@ impl Manager<'_> {
                 // conflict on every sweep.
                 let mut moved = false;
                 if task_due {
-                    let step = telemetry::reconcile(
-                        "TaskController",
+                    let (stepped, rest) = self.reconcile_while_starting(
                         obj,
-                        || self.clock.now(),
-                        || {
-                            self.reconcile_task(
-                                obj,
-                                outbox_drained.clone(),
-                                lease,
-                                opts.lease_ttl,
-                                report,
-                            )
-                        },
-                    );
-                    busy |= self.tally(step, &obj.key(), report)?;
+                        &outbox_drained,
+                        lease,
+                        opts.lease_ttl,
+                        report,
+                    )?;
+                    busy |= stepped;
+                    waiting.extend(rest);
                     moved = true;
                 }
                 let fresh = |moved: bool, report: &mut RunReport| -> Option<Object> {
@@ -479,6 +539,8 @@ impl Manager<'_> {
                     busy |= self.tally(step, &obj.key(), report)?;
                 }
             }
+            busy |= self.reconcile_reported_starts(&mut waiting, lease, opts.lease_ttl, report)?;
+            report.waiting = waiting.into_iter().map(|w| (w.session, w.mark)).collect();
             busy |= self.sweep_change_requests(lease, opts.lease_ttl, report)?;
             busy |= self.sweep_cron_tasks(lease, opts.lease_ttl, report)?;
             let mut cache = GatewayCache::default();
@@ -1847,6 +1909,136 @@ impl Manager<'_> {
             && inbox_empty
             && !obj.is_deleting()
             && !fleet_controllers::task::due_at_rest(obj, self.clock.now()))
+    }
+
+    fn reconcile_while_starting(
+        &self,
+        obj: &Object,
+        outbox_drained: &Observation<bool>,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+    ) -> Result<(bool, Option<WaitingOnAgent>), StoreError> {
+        let mut current = obj.clone();
+        let mut busy = false;
+        for _ in 0..STARTUP_STEPS_IN_A_ROW {
+            let before = self.waiting_on_agent(&current, outbox_drained.clone());
+            let step = telemetry::reconcile(
+                "TaskController",
+                &current,
+                || self.clock.now(),
+                || self.reconcile_task(&current, outbox_drained.clone(), lease, ttl, report),
+            );
+            let stepped = self.tally(step, &obj.key(), report)?;
+            busy |= stepped;
+            if !starting(&current) {
+                return Ok((busy, None));
+            }
+            if !stepped {
+                return Ok((busy, before));
+            }
+            match self.store.get(task::KIND, &obj.metadata.name) {
+                Observation::Known(Some(next)) if starting(&next) && self.due(&next) => {
+                    current = next;
+                }
+                _ => return Ok((busy, None)),
+            }
+            *lease = self.store.renew_lease(lease, ttl)?;
+        }
+        Ok((busy, None))
+    }
+
+    fn waiting_on_agent(
+        &self,
+        obj: &Object,
+        outbox_drained: Observation<bool>,
+    ) -> Option<WaitingOnAgent> {
+        let session: SessionRef =
+            serde_json::from_value(obj.status.get("session")?.clone()).ok()?;
+        let mark = self.signals?.written(&session)?;
+        Some(WaitingOnAgent {
+            name: obj.metadata.name.clone(),
+            session,
+            mark,
+            outbox_drained,
+        })
+    }
+
+    fn reconcile_new_starts(
+        &self,
+        new_starts: &mut NewStarts,
+        waiting: &mut Vec<WaitingOnAgent>,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+    ) -> Result<bool, StoreError> {
+        let now = self.clock.now();
+        if now < new_starts.listed_at.saturating_add(RELIST_AFTER_MS) {
+            return Ok(false);
+        }
+        new_starts.listed_at = now;
+        let Observation::Known(tasks) = self.store.list(task::KIND) else {
+            return Ok(false);
+        };
+        let mut busy = false;
+        for obj in tasks {
+            if !new_starts.seen.insert(generation_of(&obj)) || !starting(&obj) || !self.due(&obj) {
+                continue;
+            }
+            new_starts.started_here.insert(obj.metadata.uid.clone());
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let unread = Observation::unknown("the outbox is read on the next pass");
+            let (stepped, rest) =
+                self.reconcile_while_starting(&obj, &unread, lease, ttl, report)?;
+            busy |= stepped;
+            waiting.extend(rest);
+        }
+        Ok(busy)
+    }
+
+    fn reconcile_reported_starts(
+        &self,
+        waiting: &mut Vec<WaitingOnAgent>,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+    ) -> Result<bool, StoreError> {
+        let mut busy = false;
+        let mut still = Vec::new();
+        for w in std::mem::take(waiting) {
+            if !self.reported_since(&w.session, w.mark) {
+                still.push(w);
+                continue;
+            }
+            let Observation::Known(Some(obj)) = self.store.get(task::KIND, &w.name) else {
+                continue;
+            };
+            if !starting(&obj) || !self.due(&obj) {
+                continue;
+            }
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let (stepped, rest) =
+                self.reconcile_while_starting(&obj, &w.outbox_drained, lease, ttl, report)?;
+            busy |= stepped;
+            still.extend(rest);
+        }
+        *waiting = still;
+        Ok(busy)
+    }
+
+    fn reported_since(&self, session: &SessionRef, mark: u64) -> bool {
+        self.signals
+            .and_then(|s| s.written(session))
+            .is_some_and(|now| now != mark)
+    }
+
+    /// Whether the agent of a Task the last run left starting has reported
+    /// since: `fleet up` ends its wait for the next sweep then.
+    pub fn reported(&self, report: &RunReport) -> bool {
+        report
+            .waiting
+            .iter()
+            .any(|(session, mark)| self.reported_since(session, *mark))
     }
 
     fn tally(

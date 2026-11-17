@@ -1344,3 +1344,216 @@ fn a_task_reports_its_session_and_what_the_runtime_proves_of_it() {
     assert_eq!(st["sessionState"], "Gone", "{st:#}");
     assert_condition(&st, "WorkerGone", "True", "SessionGone");
 }
+
+mod relist {
+    use std::cell::Cell;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use fleet_api::{
+        Clock, DeleteOutcome, FieldManager, LeaseToken, Object, Observation, Store, StoreError,
+    };
+    use fleet_manager::{Manager, RunOptions};
+    use fleet_runtime::{FakeHost, FakeRuntime};
+    use fleet_store::FileStore;
+    use serde_json::Value;
+
+    use super::support::{Env, task};
+
+    const TASKS: usize = 10;
+
+    #[derive(Debug)]
+    struct TestClock(AtomicU64);
+
+    impl Clock for TestClock {
+        fn now(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    /// The file store, counting each listing of the Tasks and moving the
+    /// clock on by `step` ms at each lease renewal: one per Task a pass
+    /// reconciles.
+    struct Counting<'a> {
+        inner: &'a FileStore,
+        clock: &'a TestClock,
+        step: u64,
+        task_lists: Cell<u64>,
+    }
+
+    impl Store for Counting<'_> {
+        fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>> {
+            self.inner.get(kind, name)
+        }
+        fn list(&self, kind: &str) -> Observation<Vec<Object>> {
+            if kind == "Task" {
+                self.task_lists.set(self.task_lists.get() + 1);
+            }
+            self.inner.list(kind)
+        }
+        fn create(&self, obj: Object, by: FieldManager) -> Result<Object, StoreError> {
+            self.inner.create(obj, by)
+        }
+        fn update_spec(
+            &self,
+            kind: &str,
+            name: &str,
+            spec: Value,
+            labels: Option<std::collections::BTreeMap<String, String>>,
+            expected: u64,
+            by: FieldManager,
+        ) -> Result<Object, StoreError> {
+            self.inner
+                .update_spec(kind, name, spec, labels, expected, by)
+        }
+        fn update_status(
+            &self,
+            kind: &str,
+            name: &str,
+            status: Value,
+            expected: u64,
+            by: FieldManager,
+            lease: Option<&LeaseToken>,
+        ) -> Result<Object, StoreError> {
+            self.inner
+                .update_status(kind, name, status, expected, by, lease)
+        }
+        fn delete(
+            &self,
+            kind: &str,
+            name: &str,
+            by: FieldManager,
+        ) -> Result<DeleteOutcome, StoreError> {
+            self.inner.delete(kind, name, by)
+        }
+        fn append_inbox(
+            &self,
+            name: &str,
+            entry: fleet_api::inbox::InboxEntry,
+            expected: u64,
+            by: FieldManager,
+            lease: Option<&LeaseToken>,
+        ) -> Result<Object, StoreError> {
+            self.inner.append_inbox(name, entry, expected, by, lease)
+        }
+        fn record_delivery(
+            &self,
+            name: &str,
+            status: Value,
+            receipt: fleet_api::inbox::DeliveryReceipt,
+            expected: u64,
+            by: FieldManager,
+            lease: &LeaseToken,
+        ) -> Result<Object, StoreError> {
+            self.inner
+                .record_delivery(name, status, receipt, expected, by, lease)
+        }
+        fn record_relay(
+            &self,
+            name: &str,
+            forge: Value,
+            appends: Vec<fleet_api::inbox::InboxEntry>,
+            expected: u64,
+            by: FieldManager,
+            lease: &LeaseToken,
+        ) -> Result<Object, StoreError> {
+            self.inner
+                .record_relay(name, forge, appends, expected, by, lease)
+        }
+        fn delete_fenced(
+            &self,
+            kind: &str,
+            name: &str,
+            uid: &str,
+            expected: u64,
+            by: FieldManager,
+            lease: &LeaseToken,
+        ) -> Result<DeleteOutcome, StoreError> {
+            self.inner
+                .delete_fenced(kind, name, uid, expected, by, lease)
+        }
+        fn remove_finalizer(
+            &self,
+            kind: &str,
+            name: &str,
+            finalizer: &str,
+            expected: u64,
+            by: FieldManager,
+            lease: &LeaseToken,
+        ) -> Result<DeleteOutcome, StoreError> {
+            self.inner
+                .remove_finalizer(kind, name, finalizer, expected, by, lease)
+        }
+        fn acquire_lease(&self, holder: &str, ttl: u64) -> Result<LeaseToken, StoreError> {
+            self.inner.acquire_lease(holder, ttl)
+        }
+        fn renew_lease(&self, lease: &LeaseToken, ttl: u64) -> Result<LeaseToken, StoreError> {
+            self.clock.0.fetch_add(self.step, Ordering::SeqCst);
+            self.inner.renew_lease(lease, ttl)
+        }
+        fn release_lease(&self, lease: &LeaseToken) -> Result<(), StoreError> {
+            self.inner.release_lease(lease)
+        }
+    }
+
+    /// Task listings and passes of one run over [`TASKS`] waiting Tasks,
+    /// the clock moving `step` ms per Task reconciled.
+    fn run(name: &str, step: u64) -> (u64, u64, u64) {
+        let env = Env::new(name);
+        let clock = Arc::new(TestClock(AtomicU64::new(1_794_798_000_000)));
+        let store = FileStore::open_with_clock(&env.data, clock.clone()).expect("store");
+        for i in 0..TASKS {
+            let obj: Object = serde_json::from_value(task(&format!("w{i}"), false)).expect("task");
+            store.create(obj, FieldManager::Apply).expect("create");
+        }
+        let runtime = FakeRuntime::new(FakeHost::open(&env.fake).expect("fake host"));
+        let counting = Counting {
+            inner: &store,
+            clock: clock.as_ref(),
+            step,
+            task_lists: Cell::new(0),
+        };
+        let started = clock.now();
+        let manager = Manager {
+            plugins: None,
+            store: &counting,
+            runtime: &runtime,
+            clock: clock.as_ref(),
+            holder: "relist-test".into(),
+            forge: None,
+            signals: None,
+            agent_telemetry: None,
+            change_request_defaults: Default::default(),
+            forge_defaults: Default::default(),
+            gateway: None,
+        };
+        let report = manager
+            .run(RunOptions {
+                max_passes: 20,
+                lease_ttl: 600_000,
+            })
+            .expect("a run");
+        assert!(report.errors.is_empty(), "{:#?}", report.errors);
+        (
+            counting.task_lists.get(),
+            u64::from(report.passes),
+            clock.now() - started,
+        )
+    }
+
+    /// A sweep lists the Tasks again to find new starts, but at most every
+    /// 250 ms: a store of many Tasks is not read once per Task.
+    #[test]
+    fn a_sweep_lists_the_tasks_again_at_most_every_250_ms() {
+        let (lists, passes, _) = run("relist-frozen", 0);
+        assert_eq!(lists, passes, "no time passed, so no pass listed again");
+
+        let (lists, passes, elapsed) = run("relist-moving", 100);
+        let again = lists - passes;
+        assert!(again >= 1, "a sweep longer than 250 ms lists again");
+        assert!(
+            again <= elapsed / 250 + passes,
+            "{again} listings again in {elapsed} ms over {passes} passes"
+        );
+    }
+}

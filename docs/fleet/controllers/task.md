@@ -47,6 +47,18 @@ retry deadline or run a background watch; the caller invokes it again.
 periodically invokes bounded sweeps for all due Tasks, independently of agent
 activity, and creates no Task of its own. See
 [bootstrap and recovery](../configuration.md).
+
+A starting Task does not wait for a sweep per step. A starting Task is a
+dispatched Task that is not briefed yet. A Task with no brief stops starting
+once its session runs. Each pass reconciles the starting Tasks first. Between
+two Tasks of a pass, at most every 250 ms, the manager lists the Tasks again
+and reconciles each starting Task that is new or has a new generation. The manager reconciles a
+starting Task again after each step that moves it, up to 16 steps in a row.
+A starting Task that waits for its agent keeps the length of its signal file.
+The manager reconciles it again when that length changes: between two other
+Tasks of the pass, or during the wait for the next sweep. The start of a Task
+thus follows its agent, not the number of Tasks that run.
+
 `NeedsAttention` is a condition, not a phase: delivery reads and releases can
 recover while attention is raised. See the [state machine](#task-state-machine)
 for the distinction between bounded sends and continuing recovery attempts.

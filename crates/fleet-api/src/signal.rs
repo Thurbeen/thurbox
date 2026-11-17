@@ -270,6 +270,12 @@ pub trait Signals {
     /// The session's file, folded. A file never written is `Known` and
     /// empty; a file that cannot be read is Unknown.
     fn read(&self, session: &SessionRef) -> Observation<Reported>;
+    /// How many bytes the session's file holds: each report the agent
+    /// makes moves it. `None` when this port cannot tell without a read
+    /// through the runtime.
+    fn written(&self, _session: &SessionRef) -> Option<u64> {
+        None
+    }
     /// The session's outbox ([`crate::event::outbox_file`] of its signal
     /// file) from the byte offset `from`, at most
     /// [`crate::event::MAX_OUTBOX_READ`] bytes. Known(None): never written.
