@@ -49,21 +49,28 @@ piece.
 
 ## 1. Launch it
 
+Fleet manages every session, and its manager, `fleet up`, runs as a user
+service. Set Fleet up and start that service once
+([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)):
+
 ```bash
+fleet init
+systemctl --user start fleet.service
 thurbox
 ```
 
-![An empty thurbox: the session list on the left, an empty agent pane on the right, and the notice that Fleet was set up](../../media/tutorial/01-first-launch.png)
+![An empty thurbox: the session list on the left and an empty agent pane on the right](../../media/tutorial/01-first-launch.png)
 
 Two panes between two bars: the **session list** on the left, the **agent
 terminal** on the right, and the keys you need on the footer. There are no
 sessions yet, so the list says so.
 
-There was nothing to configure. On a machine with no Fleet config, the first
-`thurbox` runs `fleet init`, and the notice at the bottom says where it wrote
-the config. Fleet manages every session; thurbox starts its manager,
-`fleet up`, when none runs. [Configuration](config.md#a-working-setup) has the
-three files involved, should you want to change them.
+thurbox never starts, restarts or sets up Fleet. While no manager runs, the
+status line says `Fleet not running · systemctl --user start fleet.service`
+(`Fleet not running · fleet up` where no unit is installed), or
+`no Fleet config · fleet init` before `fleet init` ran.
+[Configuration](config.md#a-working-setup) has the three files involved,
+should you want to change them.
 
 ## 2. Pick a place
 

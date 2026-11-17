@@ -309,9 +309,9 @@ transport = { wsl = "Ubuntu" }</code></pre>
             </li>
             <li>
               <strong>The manager.</strong>
-              For a Fleet on this machine, Thurbox starts <code>fleet up</code> when no manager
-              runs. It never starts one on another machine or in WSL: keep a
-              <code>fleet up</code> running there yourself.
+              Thurbox never starts, restarts or sets up <code>fleet up</code>, on this machine
+              or another: keep it running as a user service. While a Fleet on this machine has
+              no manager, the status line names the command that starts it.
             </li>
             <li>
               <strong>Compatibility.</strong>

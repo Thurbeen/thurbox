@@ -18,6 +18,7 @@ use thurbox::kernel::host::{PluginError, RenderContext, Rendered};
 use thurbox::kernel::layout::{resolve, SlotMode};
 use thurbox::kernel::node::{Axis, Identity};
 use thurbox::kernel::perf::Counters;
+use thurbox::kernel::snapshot::FleetState;
 use thurbox::kernel::{bands, paint};
 
 use super::{
@@ -930,11 +931,13 @@ impl App {
                 Some(subject) => format!("{} {subject}…", item.kind),
                 None => format!("{}…", item.kind),
             });
+        let fleet_down_notice = self.fleet_down_notice();
         let message = self
             .status
             .as_ref()
             .filter(|(_, _, at)| at.elapsed() < STATUS_TTL)
-            .map(|(text, level, _)| (text.as_str(), *level));
+            .map(|(text, level, _)| (text.as_str(), *level))
+            .or(fleet_down_notice.as_deref().map(|why| (why, Level::Error)));
 
         let state = BandState {
             version: env!("THURBOX_VERSION"),
@@ -1015,7 +1018,21 @@ impl App {
             .status
             .as_ref()
             .is_some_and(|(_, _, at)| at.elapsed() < STATUS_TTL);
-        u16::from(live_message || self.commands.has_inflight())
+        u16::from(
+            live_message || self.commands.has_inflight() || self.fleet_down_notice().is_some(),
+        )
+    }
+
+    /// What the message band says while no transient message is up: the
+    /// command that starts the manager of a Fleet on this machine that has
+    /// none ([`thurbox::fleet_link::FleetLink::not_running`]).
+    pub(crate) fn fleet_down_notice(&self) -> Option<String> {
+        self.snapshots
+            .current()
+            .fleets
+            .iter()
+            .find(|fleet| fleet.state == FleetState::Down && !fleet.remote)
+            .and_then(|fleet| fleet.why.clone())
     }
 
     /// Whether this tree's session surface has printed since it was last

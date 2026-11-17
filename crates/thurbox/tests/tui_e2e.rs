@@ -105,6 +105,17 @@ struct Profile {
     /// does — return, assert, panic on a pty that stopped answering — dropping
     /// it kills the server and takes its socket directory with it.
     server: TmuxServer,
+    real_fleet: std::cell::Cell<bool>,
+    manager: std::cell::RefCell<Option<std::process::Child>>,
+}
+
+impl Drop for Profile {
+    fn drop(&mut self) {
+        if let Some(mut manager) = self.manager.get_mut().take() {
+            let _ = manager.kill();
+            let _ = manager.wait();
+        }
+    }
 }
 
 impl Profile {
@@ -128,19 +139,33 @@ impl Profile {
         )
         .expect("seed fleet config");
         let bin = root.path().join("bin");
-        // Fleet is the engine every interface starts (`fleet watch`, `fleet
-        // up`), found on `PATH` as `fleet`. This one has no Tasks and no
-        // manager to start, so a profile never reaches a real store; the
-        // watch ends with the interface that started it.
         write_script(
             &bin.join("fleet"),
-            "#!/bin/sh\ncase \"$1\" in\n  watch) while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) exit 6 ;;\n  *) echo \"error: no Fleet in this profile\" >&2; exit 1 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  watch) while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  *) echo \"error: no Fleet in this profile\" >&2; exit 1 ;;\nesac\n",
         );
         Self {
             root,
             bin,
             server: TmuxServer::private(&private_socket()),
+            real_fleet: std::cell::Cell::new(false),
+            manager: std::cell::RefCell::new(None),
         }
+    }
+
+    fn start_manager(&self) {
+        use std::os::unix::process::CommandExt;
+        if !self.real_fleet.get() || self.manager.borrow().is_some() {
+            return;
+        }
+        let manager = Command::new(self.bin.join("fleet"))
+            .arg("up")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("fleet up");
+        *self.manager.borrow_mut() = Some(manager);
     }
 
     /// Put a real Fleet in front of this profile: its own store and config,
@@ -185,6 +210,7 @@ impl Profile {
             ),
         );
         write_script(&self.bin.join("claude"), "#!/bin/sh\nexec sh\n");
+        self.real_fleet.set(true);
         Some(())
     }
 
@@ -213,8 +239,9 @@ impl Profile {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
-    /// One bounded `fleet reconcile`. While a TUI runs, its `fleet up` holds
-    /// the lease and reconciles on its own, so a held lease is no failure.
+    /// One bounded `fleet reconcile`. Once a TUI started, the profile's `fleet
+    /// up` holds the lease and reconciles on its own, so a held lease is no
+    /// failure.
     fn reconcile(&self) {
         let output = Command::new(self.bin.join("fleet"))
             .arg("reconcile")
@@ -459,6 +486,7 @@ impl Tui {
         mode: TerminalMode,
     ) -> Self {
         let (master, slave) = openpty(rows, cols);
+        profile.start_manager();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox"));
         profile.apply(&mut cmd);
         adjust(&mut cmd);
@@ -7390,43 +7418,91 @@ fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
     assert!(tui.quit().success());
 }
 
+/// A `fleet` that records each verb it is called with in `calls`, answers
+/// `version` with no manager holding the lease, and holds a `watch` open.
+fn fleet_with_no_manager(profile: &Profile, calls: &Path) {
+    write_script(
+        &profile.bin.join("fleet"),
+        &format!(
+            "#!/bin/sh\necho \"$1\" >> '{calls}'\ncase \"$1\" in\n  version) echo '{{\"version\":\"9.9.9\",\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude-code\"],\"manager\":{{\"held\":false}}}}' ;;\n  watch) while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) sleep 30 ;;\n  *) echo \"error: no Fleet in this profile\" >&2; exit 1 ;;\nesac\n",
+            calls = calls.display(),
+        ),
+    );
+}
+
 #[test]
-fn the_first_run_sets_up_a_local_fleet_and_says_so() {
-    // A machine with no Fleet config: the first `thurbox` runs `fleet init`
-    // before it starts the manager, so the manager has the multiplexer
-    // runtime and its `local` place, and the interface says what to do next.
+fn a_local_thurbox_with_no_manager_starts_none_and_says_how_to_start_one() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
     let profile = Profile::new();
-    if profile.real_fleet().is_none() {
-        return;
-    }
-    let config = profile.path("home/.config/fleet/config.toml");
-    std::fs::remove_file(&config).expect("no Fleet config yet");
-    // The real Fleet with the profile's home and no `--config`: it finds, and
-    // `init` writes, the per-user config.
-    let dir = Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-        .parent()
-        .expect("bin dir");
+    let calls = profile.path("fleet-calls");
+    fleet_with_no_manager(&profile, &calls);
     write_script(
-        &profile.bin.join("fleet"),
-        &format!(
-            "#!/bin/sh\nexec env -i HOME='{r}/home' XDG_CONFIG_HOME='{r}/home/.config' XDG_DATA_HOME='{r}/home/.local/share' TMPDIR='{r}/fleet-tmp' PATH='{b}:{d}:/usr/bin:/bin' TERM=xterm-256color TMUX_TMPDIR='{t}' '{f}' \"$@\"\n",
-            r = profile.root.path().display(),
-            b = profile.bin.display(),
-            d = dir.display(),
-            t = profile.server.tmpdir().display(),
-            f = dir.join("fleet").display(),
-        ),
+        &profile.path("home/.config/systemd/user/fleet.service"),
+        "[Service]\nExecStart=fleet up\n",
     );
 
     let mut tui = Tui::spawn(&profile, 40, 160);
-    tui.wait_for("Fleet set up");
-    let written = std::fs::read_to_string(&config).expect("fleet init wrote the config");
-    assert!(written.contains("[runtimes.mux]"), "{written}");
-    tui.quit();
+    tui.wait_for(if cfg!(target_os = "linux") {
+        "Fleet not running · systemctl --user start fleet.service"
+    } else {
+        "Fleet not running · fleet up"
+    });
+    assert!(tui.quit().success());
+    let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(
+        calls.lines().any(|verb| verb == "watch"),
+        "thurbox follows the Fleet: {calls}"
+    );
+    assert!(
+        !calls.lines().any(|verb| verb == "up"),
+        "thurbox started a manager: {calls}"
+    );
+}
+
+#[test]
+fn a_local_thurbox_with_no_manager_unit_names_fleet_up() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let calls = profile.path("fleet-calls");
+    fleet_with_no_manager(&profile, &calls);
+
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("Fleet not running · fleet up");
+    assert!(tui.quit().success());
+    let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(
+        !calls.lines().any(|verb| verb == "up"),
+        "thurbox started a manager: {calls}"
+    );
+}
+
+#[test]
+fn a_local_thurbox_with_no_fleet_config_writes_none_and_names_fleet_init() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let config = profile.path("home/.config/fleet/config.toml");
+    std::fs::remove_file(&config).expect("no Fleet config yet");
+    let calls = profile.path("fleet-calls");
+    fleet_with_no_manager(&profile, &calls);
+
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("no Fleet config · fleet init");
+    assert!(tui.quit().success());
+    assert!(!config.exists(), "thurbox wrote a Fleet config");
+    let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+    assert!(
+        !calls.lines().any(|verb| verb == "init" || verb == "up"),
+        "thurbox set up or started Fleet: {calls}"
+    );
 }
 
 #[test]

@@ -336,8 +336,9 @@ To run the dev TUI against **this checkout's** `ui/` instead of a copy, ask for 
   repo's `target/` path is often too long). Sessions survive across runs.
   The profile's Fleet and runtime-mux configs are generated on every run, so
   a profile an older checkout made never keeps a section the current `fleet`
-  refuses; a TUI launch stops the `fleet up` an earlier run left alive, and
-  starts this build's.
+  refuses; a TUI or shell launch stops the `fleet up` an earlier run left
+  alive, and starts this build's (`tbx_sandbox_fleet_up`): thurbox never
+  starts one.
 - **Fresh** (`--fresh`) is a `mktemp` dir wiped on exit — same isolation
   `record-tutorial.sh` uses.
 

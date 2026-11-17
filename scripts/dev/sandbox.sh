@@ -37,13 +37,14 @@
 # interface loads), and the cd is kept as belt-and-braces.
 #
 # Sessions are Fleet Tasks (ADR-41). The sandbox has a Fleet of its own
-# (`<sandbox>/fleet/config.toml`, exported as FLEET_CONFIG), and the TUI starts
-# its `fleet up`. That config and runtime-mux's are generated on every run, so
-# edit `tbx_sandbox_fleet`, not the files. A TUI launch first stops the `fleet
-# up` an earlier run left alive, so the manager is always this build's.
+# (`<sandbox>/fleet/config.toml`, exported as FLEET_CONFIG), and a TUI or shell
+# launch starts its `fleet up` (`tbx_sandbox_fleet_up`): thurbox never starts
+# one. That config and runtime-mux's are generated on every run, so edit
+# `tbx_sandbox_fleet`, not the files. The launch first stops the `fleet up` an
+# earlier run left alive, so the manager is always this build's.
 #
 # State (persistent mode): target/dev-sandbox/<profile>/ (gitignored). Sessions
-# survive across runs — the tmux servers and the `fleet up` the TUI started are
+# survive across runs — the tmux servers and the sandbox's `fleet up` are
 # left alive on exit. `--clean` stops them and removes it.
 #
 # Requires: cargo, tmux >= 3.2. Build happens before any HOME override so cargo
@@ -120,6 +121,7 @@ fi
 run_in_sandbox() {
     case "$action" in
         shell)
+            tbx_sandbox_fleet_up
             log "entering sandbox shell — \`$tui_binary\`/\`thurbox-cli\`/\`fleet\` target this sandbox; exit to leave"
             "${SHELL:-bash}" -i
             ;;
@@ -127,9 +129,7 @@ run_in_sandbox() {
         # Run from the sandbox root, not the repo: see the note in the header.
         # Otherwise the sandbox isolates the sessions but not the interface.
         tui)
-            # A `fleet up` left alive by an earlier run is an older build's:
-            # stop it, and the TUI starts this build's.
-            _tbx_stop_fleet "$TBX_SANDBOX_ROOT"
+            tbx_sandbox_fleet_up
             ( cd "$TBX_SANDBOX_ROOT" && "$TBX_REPO_ROOT/target/debug/$tui_binary" ) ;;
     esac
 }

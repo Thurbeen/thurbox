@@ -1,15 +1,15 @@
 //! Fleet as the snapshot's source (ADR-41): the Tasks, read through `fleet
-//! watch --json`, each published as a session row; and the `fleet up` that
-//! keeps them reconciling.
+//! watch --json`, each published as a session row. thurbox never starts,
+//! restarts or sets up a Fleet's manager: it says which command does.
 //!
-//! Both run on threads of their own, so the store's poll only drains a
+//! The reads run on threads of their own, so the store's poll only drains a
 //! channel. thurbox reads nothing of Fleet's store directly and links no
 //! Fleet crate: the command line and its NDJSON are the contract
 //! (`docs/fleet/contracts.md`, the command line).
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Seek};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -28,9 +28,6 @@ use crate::session::SessionState;
 /// from the last revision it read.
 const RETRY: Duration = Duration::from_secs(2);
 
-/// How often a manager that is not ours, or that would not start, is asked
-/// about again: each ask is a `fleet up`, which exits at once while another
-/// holds the lease.
 const MANAGER_CHECK: Duration = Duration::from_secs(10);
 
 /// How often a [`FleetWatch`]'s workers ask Fleet again: after 2 s while
@@ -66,9 +63,6 @@ impl Default for Cadence {
 /// once it is at rest, and can pass the mark that way.
 pub const DELETION_STUCK_AFTER: Duration = Duration::from_secs(180);
 
-/// `fleet up`'s exit code when another manager holds the lease.
-const LEASE_HELD: i32 = 6;
-
 /// The backend every Task's row names: no multiplexer of thurbox's, but
 /// Fleet, whose runtime keeps the terminal.
 pub const BACKEND: &str = "fleet";
@@ -86,8 +80,6 @@ enum Update {
     /// Why the watch ended: until it reads again, the Fleet cannot be asked,
     /// so its rows are unreachable rather than gone.
     Lost(String),
-    /// Why no manager runs, or `None` once one does.
-    Manager(Option<String>),
     /// The harnesses Fleet has profiles for: the agents a session can run.
     Harnesses(Vec<String>),
     /// The places Fleet defines: where a session can run.
@@ -110,7 +102,6 @@ pub struct FleetWatch {
     /// Whether the watch ended and has not read since: its rows are drawn
     /// unreachable.
     lost: bool,
-    manager_error: Option<String>,
     /// The Tasks as `fleet watch` last read them, before the interface's own
     /// order is laid over them.
     tasks: Vec<SessionRow>,
@@ -173,29 +164,12 @@ fn publish_state(
 impl FleetWatch {
     /// Follow the Tasks of the Fleet `link` reaches.
     pub fn spawn(link: FleetLink) -> Self {
-        Self::start(link, false, Cadence::default())
+        Self::spawn_every(link, Cadence::default())
     }
 
     /// [`Self::spawn`], asking Fleet again at `cadence`.
     #[doc(hidden)]
     pub fn spawn_every(link: FleetLink, cadence: Cadence) -> Self {
-        Self::start(link, false, cadence)
-    }
-
-    /// [`Self::spawn`], and keep a `fleet up` running: one is started
-    /// whenever no manager holds the lease. A manager thurbox started
-    /// outlives it, in a process group of its own: Tasks keep reconciling
-    /// with no interface open.
-    ///
-    /// Only for a Fleet on this machine: a Fleet on another machine keeps its
-    /// own manager (a user systemd unit there, docs/where-sessions-run.md),
-    /// and thurbox never starts one through a launcher, where it would end
-    /// with the connection.
-    pub fn with_manager(link: FleetLink) -> Self {
-        Self::start(link, true, Cadence::default())
-    }
-
-    fn start(link: FleetLink, manager: bool, cadence: Cadence) -> Self {
         let (tx, updates) = channel();
         // The first poll publishes the Fleet, connecting, before it answers.
         let _ = tx.send(Update::State(FleetState::Connecting, None));
@@ -215,13 +189,9 @@ impl FleetWatch {
         let child = Arc::new(Mutex::new(None));
         let held = Arc::clone(&child);
         let name = link.name().to_string();
-        // Nothing else is asked of a Fleet before its `version` says it
-        // speaks the API thurbox writes: its home, the manager, the places
-        // and the watch start once it has.
         let admitted_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let admitted: Box<dyn FnOnce() + Send> = {
             let (link, tx, reading) = (link.clone(), tx.clone(), reading_home.clone());
-            let manager = manager && link.is_local();
             let flag = admitted_flag.clone();
             Box::new(move || {
                 flag.store(true, std::sync::atomic::Ordering::Release);
@@ -231,10 +201,6 @@ impl FleetWatch {
                         read_home(&link, &tx);
                         reading.store(false, std::sync::atomic::Ordering::Release);
                     });
-                }
-                if manager {
-                    let (link, tx) = (link.clone(), tx.clone());
-                    std::thread::spawn(move || keep_manager(&link, &tx, cadence.manager_check));
                 }
                 {
                     let (link, tx) = (link.clone(), tx.clone());
@@ -260,7 +226,6 @@ impl FleetWatch {
             read: SourceRead::default(),
             watch_error: None,
             lost: false,
-            manager_error: None,
             tasks: Vec::new(),
             rows_seen: false,
             next_stuck_ms: None,
@@ -354,7 +319,6 @@ impl SnapshotSource for FleetWatch {
                     self.lost = true;
                     self.watch_error = Some(why);
                 }
-                Update::Manager(error) => self.manager_error = error,
                 Update::Harnesses(harnesses) => {
                     self.fleet.agents = Some(
                         harnesses
@@ -431,12 +395,7 @@ impl SnapshotSource for FleetWatch {
                 row
             })
             .collect();
-        let errors: Vec<&str> = [&self.watch_error, &self.manager_error]
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
-            .collect();
-        self.read.error = (!errors.is_empty()).then(|| errors.join("; "));
+        self.read.error.clone_from(&self.watch_error);
         let mut fleet = self.fleet.clone();
         // A watch that ended says more than the last `version`: the Fleet
         // cannot be asked now.
@@ -706,8 +665,8 @@ fn harnesses_of(answer: &Value) -> Vec<String> {
 /// One `fleet version --json`: the Fleet's state and why, and its answer
 /// when it gave one. A Fleet whose answer lacks the API thurbox writes is
 /// [`FleetState::Incompatible`] ([`crate::fleet_link::incompatible`]). A Fleet answers whether its manager holds the lease
-/// in `manager` (M4: thurbox never starts a remote one, so it says when
-/// none runs).
+/// in `manager`. thurbox never starts one: a Fleet on this machine with
+/// none says which command does ([`FleetLink::not_running`]).
 fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
     // Within the Fleet's probe deadline: one that does not answer in time
     // is unreachable, never left hanging.
@@ -740,9 +699,14 @@ fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
         return ((FleetState::Incompatible, Some(why)), Some(answer));
     }
     let manager = &answer["manager"];
+    if manager["held"] != Value::Bool(true) {
+        if let Some(why) = link.no_config() {
+            return ((FleetState::Down, Some(why)), Some(answer));
+        }
+    }
     let state = match manager["held"].as_bool() {
         Some(true) => (FleetState::Up, None),
-        Some(false) => (FleetState::Down, None),
+        Some(false) => (FleetState::Down, link.not_running()),
         None => (
             FleetState::Unknown,
             Some(
@@ -909,367 +873,49 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
     Ok(())
 }
 
-/// Keep a `fleet up` running while the source does: start one, and when it
-/// exits, say why and start another `every` ([`MANAGER_CHECK`]) later. One that
-/// exits for a held lease is no error: another manager runs. Nor is one that
-/// was stopped (exit 0), as [`restart_manager`] stops it after an update.
-fn keep_manager(link: &FleetLink, tx: &Sender<Update>, every: Duration) {
-    loop {
-        let dir = crate::paths::data_directory();
-        let error = match dir
-            .ok_or_else(|| "fleet up: no data directory for its log".to_string())
-            .and_then(|dir| manage(link, &dir, tx))
-        {
-            Ok(Some(LEASE_HELD | 0)) => None,
-            Ok(code) => Some(format!(
-                "fleet up exited{}",
-                code.map(|c| format!(" with {c}")).unwrap_or_default()
-            )),
-            Err(why) => Some(why),
-        };
-        if tx.send(Update::Manager(error)).is_err() {
-            return;
-        }
-        std::thread::sleep(every);
-    }
+/// What a finished update says of the managers it leaves on the old release:
+/// one line per Fleet on this machine whose manager holds the lease, naming
+/// the command that restarts it, or saying that its `program` is a `fleet`
+/// the update did not replace. Empty when none runs.
+pub fn stale_managers(links: &[FleetLink]) -> String {
+    let installed = crate::update::self_update::installed_fleet().ok();
+    links
+        .iter()
+        .filter(|link| link.is_local())
+        .filter(|link| {
+            link.version()
+                .is_ok_and(|answer| answer["manager"]["held"] == Value::Bool(true))
+        })
+        .map(|link| match &installed {
+            Some(installed) if !runs(link, installed) => format!(
+                "Fleet {}'s manager runs {}, which this update did not replace.",
+                link.name(),
+                link.program()
+            ),
+            _ => format!(
+                "Fleet {}'s manager still runs the old release · {}.",
+                link.name(),
+                link.restart_manager()
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-/// One `fleet up`, waited for. Its standard error goes to a file in `dir`,
-/// thurbox's own data directory, rather than a pipe: a pipe would end the
-/// manager with the interface, the first time it wrote after thurbox exited.
-/// The file is read back and removed when the manager exits; one whose
-/// manager outlived the interface stays readable, and a later start removes
-/// it once that manager is gone ([`clear_old_logs`]).
-fn manage(link: &FleetLink, dir: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
-    let started = start_manager(link, dir)?;
-    if tx.send(Update::Manager(None)).is_err() {
-        return Ok(Some(LEASE_HELD));
-    }
-    started.wait()
-}
-
-/// A `fleet up` started in a process group of its own, its standard error
-/// in a log named for it.
-struct StartedManager {
-    child: Child,
-    reader: std::fs::File,
-    log: PathBuf,
-}
-
-impl StartedManager {
-    /// Its exit code, or the error it wrote; its log is read back and removed.
-    fn wait(mut self) -> Result<Option<i32>, String> {
-        let status = self.child.wait().map_err(|e| format!("fleet up: {e}"))?;
-        let mut stderr = String::new();
-        let _ = self.reader.rewind();
-        let _ = self.reader.read_to_string(&mut stderr);
-        let _ = std::fs::remove_file(&self.log);
-        if status.code() == Some(LEASE_HELD) {
-            return Ok(status.code());
-        }
-        match stderr.lines().find_map(|line| line.strip_prefix("error: ")) {
-            Some(why) => Err(format!("fleet up: {why}")),
-            None => Ok(status.code()),
-        }
-    }
-}
-
-fn start_manager(link: &FleetLink, dir: &Path) -> Result<StartedManager, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("fleet up: log: {e}"))?;
-    clear_old_logs(dir);
-    let dir = dir.to_path_buf();
-    let (log, reader, path) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
-    let mut command = link.command(&["up"]);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(log);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let child = match command.spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            let _ = std::fs::remove_file(&path);
-            return Err(format!("could not start fleet up: {e}"));
-        }
-    };
-    // Named for the manager from here on, so a later start can tell a log
-    // whose manager still runs from one nobody writes.
-    let named = dir.join(format!("fleet-up-{}.log", child.id()));
-    let log = match std::fs::rename(&path, &named) {
-        Ok(()) => named,
-        Err(_) => path,
-    };
-    Ok(StartedManager { child, reader, log })
-}
-
-/// How long a new `fleet up` may take to take the lease.
-const START_BOUND: Duration = Duration::from_secs(60);
-
-/// How often the lease is read while a restart waits on it.
-const LEASE_POLL: Duration = Duration::from_millis(100);
-
-/// How long a released lease is left for another starter to take before
-/// thurbox starts a manager itself: a service supervisor that restarts
-/// `fleet up`, or an interface that keeps one running.
-const TAKEOVER_GRACE: Duration = Duration::from_secs(2);
-
-/// What [`restart_manager`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Restart {
-    /// No `fleet up` held the lease, and none was started.
-    NotRunning,
-    /// A `fleet up` runs, but the `program` it would restart on is not the
-    /// `fleet` the update installed: it is left running.
-    NotReplaced { program: String },
-    /// The `fleet up` that held the lease stopped, and `started` holds it.
-    Restarted { stopped: u32, started: u32 },
-}
-
-/// Restart the `fleet up` that holds the lease of the Fleet on this machine
-/// `link` reaches, so it runs `installed`, the `fleet` an update just
-/// replaced. A Fleet whose `program` resolves to another file is left alone:
-/// restarting it would run the same binary again.
-///
-/// The old manager is stopped as Ctrl-C stops it (SIGTERM): it finishes its
-/// sweep, releases the lease and leaves every session running. That sweep is
-/// bounded by Fleet's own call timeouts, which run to minutes, so the wait
-/// follows the lease rather than a clock of thurbox's. The new one starts as
-/// the interface starts one, with the same `fleet` command line and
-/// environment, but naming `installed` itself rather than the name `PATH`
-/// would resolve again, unless another starter takes the lease first. A Fleet with
-/// no manager running is left without one.
-pub fn restart_manager(link: &FleetLink, installed: &Path) -> Result<Restart, String> {
-    let Some(stopped) = lease_holder(link)? else {
-        return Ok(Restart::NotRunning);
-    };
-    if !starts(link, installed) {
-        return Ok(Restart::NotReplaced {
-            program: link.program().to_string(),
-        });
-    }
-    let link = &link.with_program(installed.to_string_lossy());
-    terminate(stopped)?;
-    let holder = loop {
-        let holder = lease_holder(link)?;
-        if holder != Some(stopped) {
-            break holder;
-        }
-        std::thread::sleep(LEASE_POLL);
-    };
-    let taken = match holder {
-        Some(started) => Some(started),
-        None => poll_lease(link, TAKEOVER_GRACE, Option::is_some)?.flatten(),
-    };
-    if let Some(started) = taken {
-        return Ok(Restart::Restarted { stopped, started });
-    }
-    let dir = crate::paths::data_directory()
-        .ok_or_else(|| "fleet up: no data directory for its log".to_string())?;
-    let (tx, exited) = channel();
-    let manager = start_manager(link, &dir)?;
-    std::thread::spawn(move || {
-        let _ = tx.send(manager.wait());
-    });
-    let deadline = std::time::Instant::now() + START_BOUND;
-    loop {
-        if let Some(started) = lease_holder(link)? {
-            return Ok(Restart::Restarted { stopped, started });
-        }
-        match exited.try_recv() {
-            Ok(Ok(Some(LEASE_HELD))) => {}
-            Ok(Ok(code)) => {
-                return Err(format!(
-                    "fleet up exited{}",
-                    code.map(|c| format!(" with {c}")).unwrap_or_default()
-                ))
-            }
-            Ok(Err(why)) => return Err(why),
-            Err(_) => {}
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err("the new fleet up did not take the lease".to_string());
-        }
-        std::thread::sleep(LEASE_POLL);
-    }
-}
-
-/// Whether the `fleet up` `link` starts runs the file `installed`: its
-/// `program` as a path, or as a name found on `PATH`.
-fn starts(link: &FleetLink, installed: &Path) -> bool {
+/// Whether `link`'s `program`, as a path or a name on `PATH`, is the file
+/// `installed`.
+fn runs(link: &FleetLink, installed: &std::path::Path) -> bool {
     let program = link.program();
-    let resolved = if Path::new(program).components().count() > 1 {
+    let resolved = if std::path::Path::new(program).components().count() > 1 {
         Some(PathBuf::from(program))
     } else {
         crate::paths::resolve_on_path(program).or_else(|| {
             crate::paths::resolve_on_path(&format!("{program}{}", std::env::consts::EXE_SUFFIX))
         })
     };
-    let canonical = |path: &Path| std::fs::canonicalize(path).ok();
+    let canonical = |path: &std::path::Path| std::fs::canonicalize(path).ok();
     resolved
         .is_some_and(|path| canonical(&path).is_some() && canonical(&path) == canonical(installed))
-}
-
-/// The lease holder each `fleet version --json` names, until `done` holds
-/// for one, or `None` once `bound` has passed.
-fn poll_lease(
-    link: &FleetLink,
-    bound: Duration,
-    done: impl Fn(&Option<u32>) -> bool,
-) -> Result<Option<Option<u32>>, String> {
-    let deadline = std::time::Instant::now() + bound;
-    loop {
-        let holder = lease_holder(link)?;
-        if done(&holder) {
-            return Ok(Some(holder));
-        }
-        if std::time::Instant::now() >= deadline {
-            return Ok(None);
-        }
-        std::thread::sleep(LEASE_POLL);
-    }
-}
-
-/// The pid of the `fleet up` holding the manager lease, from `fleet version
-/// --json`'s `manager`: `None` when none holds it. A lease that cannot be
-/// read is an error, never "not running".
-fn lease_holder(link: &FleetLink) -> Result<Option<u32>, String> {
-    let version = link.version()?;
-    let manager = &version["manager"];
-    match manager["held"].as_bool() {
-        Some(false) => Ok(None),
-        Some(true) => manager["holder"]
-            .as_str()
-            .and_then(|holder| holder.strip_prefix("fleet-up-"))
-            .and_then(|process| process.split('@').next())
-            .and_then(|pid| pid.parse().ok())
-            .map(Some)
-            .ok_or_else(|| format!("the manager lease names no fleet up: {manager}")),
-        None => Err(format!(
-            "the manager lease cannot be read: {}",
-            manager["why"]
-                .as_str()
-                .unwrap_or("fleet version reports none")
-        )),
-    }
-}
-
-/// Ask the `fleet up` `pid` to stop, as Ctrl-C does. A pid that is not a
-/// running `fleet` is never signalled.
-fn terminate(pid: u32) -> Result<(), String> {
-    let id = sysinfo::Pid::from_u32(pid);
-    let mut system = sysinfo::System::new();
-    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[id]), true);
-    let process = system
-        .process(id)
-        .filter(|process| process.name().to_string_lossy().starts_with("fleet"))
-        .ok_or_else(|| format!("fleet up {pid} holds the lease but does not run here"))?;
-    match process.kill_with(sysinfo::Signal::Term) {
-        Some(true) => Ok(()),
-        Some(false) => Err(format!("fleet up {pid} could not be stopped")),
-        None => Err(format!(
-            "fleet up {pid} cannot be stopped gracefully on this platform"
-        )),
-    }
-}
-
-/// Restart the manager of each Fleet on this machine among `links` on the
-/// `fleet` an update just installed beside thurbox ([`restart_manager`]),
-/// and say what came of it: what a finished update reports. Empty when no
-/// manager ran.
-pub fn restart_managers(links: &[FleetLink]) -> String {
-    match crate::update::self_update::installed_fleet() {
-        Ok(installed) => restart_managers_on(links, &installed),
-        Err(why) => format!("Restart any running `fleet up` to apply: {why}."),
-    }
-}
-
-fn restart_managers_on(links: &[FleetLink], installed: &Path) -> String {
-    links
-        .iter()
-        .filter(|link| link.is_local())
-        .filter_map(|link| match restart_manager(link, installed) {
-            Ok(Restart::NotRunning) => None,
-            Ok(Restart::NotReplaced { program }) => Some(format!(
-                "Fleet {}'s `fleet up` keeps running {program}, which this update did not replace.",
-                link.name()
-            )),
-            Ok(Restart::Restarted { .. }) => Some(format!(
-                "Fleet {}'s `fleet up` restarted on the new release.",
-                link.name()
-            )),
-            Err(why) => Some(format!(
-                "Restart Fleet {}'s `fleet up` to apply: {why}.",
-                link.name()
-            )),
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Remove the `fleet up` logs in `dir` whose process is gone: a manager
-/// that outlived its interface, and has exited since. A log is named for the
-/// manager it holds (`fleet-up-<pid>.log`), or, before the manager started,
-/// for the interface (`fleet-up-<pid>-<n>.log`).
-fn clear_old_logs(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut system = sysinfo::System::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix("fleet-up-"))
-            .and_then(|rest| rest.strip_suffix(".log"))
-            .and_then(|rest| rest.split('-').next())
-            .and_then(|pid| pid.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let pid = sysinfo::Pid::from_u32(pid);
-        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-        if system.process(pid).is_none() {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-}
-
-/// The `n`th name this process gives a `fleet up` log: unique to it, so two
-/// interfaces sharing a data directory never touch each other's.
-fn log_name(n: u64) -> String {
-    format!("fleet-up-{}-{n}.log", std::process::id())
-}
-
-/// `fleet up`'s standard error: a file in `dir`, a handle to read it back
-/// (the same file description: rewind before reading), and its path.
-///
-/// Created exclusively under a name of this process's own: a name already
-/// taken, by a link or anything else, is never opened, and the next one is
-/// tried instead.
-fn open_log(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::File, PathBuf)> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    loop {
-        let path = dir.join(log_name(
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
-        match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(log) => {
-                let reader = log.try_clone()?;
-                return Ok((log, reader, path));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
-    }
 }
 
 /// One Task as a session row.
@@ -1450,7 +1096,7 @@ fn state_why(session_state: Option<&str>, status: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use std::process::Command;
+    use std::path::Path;
 
     use super::*;
 
@@ -1777,6 +1423,39 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_local_fleet_whose_named_config_is_missing_names_fleet_init_on_it() {
+        use crate::session::settings::FleetDef;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let program = dir.path().join("fleet");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\necho '{\"apiVersions\":[\"fleet/v1alpha1\"],\"manager\":{\"held\":null,\"why\":\"no config\"}}'\n",
+        )
+        .expect("program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let config = dir.path().join("missing.toml");
+        let link = FleetLink::of(
+            "laptop",
+            &FleetDef {
+                transport: Default::default(),
+                program: program.to_string_lossy().into_owned(),
+                config: Some(config.to_string_lossy().into_owned()),
+            },
+        );
+        let ((state, why), _) = probe(&link);
+        assert_eq!(state, FleetState::Down);
+        assert_eq!(
+            why,
+            Some(format!(
+                "no Fleet config · fleet --config {} init",
+                config.display()
+            ))
+        );
+    }
+
     /// A Fleet's state is its manager's lease, from `fleet version --json`:
     /// up while it is held, down when it is not, and unreachable when ssh
     /// itself fails (exit 255).
@@ -1809,15 +1488,6 @@ mod tests {
         }
     }
 
-    /// Every call the source makes of Fleet goes through its link: the
-    /// watch, the manager, and the `version` and `runtime places` reads, each
-    /// logged by a stand-in `ssh` in front of a Fleet only that `ssh` can
-    /// reach.
-    ///
-    /// The manager is run by itself and waited for rather than through
-    /// [`FleetWatch::with_manager`]: that worker starts `fleet up` again
-    /// every [`MANAGER_CHECK`], and one outliving the test would do so after
-    /// the stand-in `ssh` left `PATH`.
     #[cfg(unix)]
     #[test]
     fn every_call_of_the_source_goes_through_its_link() {
@@ -1826,13 +1496,9 @@ mod tests {
              version) echo '{\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude\"]}' ;;\n\
              runtime) echo '{\"places\":[{\"place\":\"mux/local\",\"runtime\":\"mux\",\"alias\":\"local\",\"ready\":true},{\"place\":\"mux/devbox\",\"runtime\":\"mux\",\"ready\":false,\"why\":\"no tmux\"}]}' ;;\n\
              watch) echo '{\"type\":\"synced\",\"revision\":1,\"names\":[]}'; exec sleep 30 ;;\n\
-             up) exit 6 ;;\n\
              esac",
         );
         crate::paths::with_path(remote.path(), || {
-            let (tx, _rx) = channel();
-            let data = tempfile::tempdir().expect("data");
-            assert_eq!(manage(&remote.link, data.path(), &tx), Ok(Some(LEASE_HELD)));
             let mut source = FleetWatch::spawn(remote.link.clone());
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let mut read = SourceRead::default();
@@ -1867,7 +1533,7 @@ mod tests {
             );
             drop(source);
         });
-        for call in ["up", "version --json", "runtime places --json"] {
+        for call in ["version --json", "runtime places --json"] {
             assert!(remote.called(call), "{call}: {:?}", remote.calls());
         }
     }
@@ -1893,40 +1559,6 @@ mod tests {
         let error = read.error.unwrap_or_default();
         assert!(error.contains("could not start fleet version"), "{error}");
         assert_eq!(read.fleets[0].state, FleetState::Unreachable, "{error}");
-    }
-
-    /// thurbox never starts `fleet up` on a Fleet on another machine (M4):
-    /// asked to keep a manager, the source follows that Fleet and starts
-    /// none.
-    #[cfg(unix)]
-    #[test]
-    fn a_remote_fleet_gets_no_manager() {
-        let remote = crate::fleet_link::testing::Remote::new(
-            "case \"$1\" in\n\
-             version) echo '{\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[]}' ;;\n\
-             runtime) echo '{\"hosts\":null}' ;;\n\
-             watch) echo '{\"type\":\"synced\",\"revision\":1,\"names\":[]}'; exec sleep 30 ;;\n\
-             up) exit 6 ;;\n\
-             esac",
-        );
-        crate::paths::with_path(remote.path(), || {
-            let mut source = FleetWatch::with_manager(remote.link.clone());
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let mut harnesses = None;
-            while harnesses.is_none() || !remote.called("watch --json --since 0") {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "calls: {:?}",
-                    remote.calls()
-                );
-                if let Some(next) = source.poll() {
-                    harnesses = harnesses.or(next.harnesses);
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            drop(source);
-        });
-        assert!(!remote.called("up"), "{:?}", remote.calls());
     }
 
     /// A session over several repositories spans every directory the runtime
@@ -2045,27 +1677,6 @@ mod tests {
         assert_eq!(harnesses, ["claude-code", "codex"]);
     }
 
-    /// Whatever stands where a log would go, a link included, is never
-    /// opened: what it pointed at keeps its contents.
-    #[cfg(unix)]
-    #[test]
-    fn a_planted_link_at_the_log_path_is_not_followed() {
-        let dir = tempfile::tempdir().expect("dir");
-        let victim = dir.path().join("victim");
-        std::fs::write(&victim, "keep").expect("victim");
-        for name in (0..64).map(log_name) {
-            std::os::unix::fs::symlink(&victim, dir.path().join(name)).expect("link");
-        }
-
-        let (mut log, mut reader, _) = open_log(dir.path()).expect("a free name");
-        std::io::Write::write_all(&mut log, b"error: written\n").expect("write");
-        let mut read = String::new();
-        reader.rewind().expect("rewind");
-        reader.read_to_string(&mut read).expect("read");
-        assert_eq!(read, "error: written\n");
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
-    }
-
     /// The line a stand-in `fleet` script starts with to be admitted: its
     /// `fleet version --json` speaks the API thurbox writes.
     #[cfg(unix)]
@@ -2177,142 +1788,5 @@ mod tests {
             shown.0 >= Duration::from_millis(1_000),
             "listed early: {seen:?}"
         );
-    }
-
-    #[cfg(unix)]
-    fn logs(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(dir)
-            .expect("dir")
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|name| name.starts_with("fleet-up-"))
-            .collect();
-        names.sort();
-        names
-    }
-
-    /// A manager that outlives the interface keeps writing to a log that is
-    /// still there to read, named for its pid.
-    #[cfg(unix)]
-    #[test]
-    fn a_running_managers_log_stays_readable() {
-        let bin = tempfile::tempdir().expect("bin");
-        let data = tempfile::tempdir().expect("data");
-        let program = fake_fleet(bin.path(), "echo 'warning: still here' >&2; exec sleep 30");
-        let (tx, _rx) = channel();
-        let dir = data.path().to_path_buf();
-        std::thread::spawn(move || {
-            let _ = manage(&FleetLink::local(program.to_string_lossy()), &dir, &tx);
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let (name, text) = loop {
-            let found = logs(data.path()).into_iter().find_map(|name| {
-                let text = std::fs::read_to_string(data.path().join(&name)).ok()?;
-                text.contains("still here").then_some((name, text))
-            });
-            if let Some(found) = found {
-                break found;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "no readable log: {:?}",
-                logs(data.path())
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        let pid: u32 = name
-            .trim_start_matches("fleet-up-")
-            .trim_end_matches(".log")
-            .parse()
-            .unwrap_or_else(|_| panic!("named for the manager's pid: {name}"));
-        let _ = Command::new("kill").arg(pid.to_string()).status();
-        assert!(text.contains("warning: still here"));
-    }
-
-    /// A manager that exits is read back, and its log goes.
-    #[cfg(unix)]
-    #[test]
-    fn an_exited_managers_log_is_read_then_removed() {
-        let bin = tempfile::tempdir().expect("bin");
-        let data = tempfile::tempdir().expect("data");
-        let program = fake_fleet(bin.path(), "echo 'error: no starter' >&2; exit 1");
-        let (tx, _rx) = channel();
-        let why = manage(
-            &FleetLink::local(program.to_string_lossy()),
-            data.path(),
-            &tx,
-        )
-        .expect_err("it failed");
-        assert_eq!(why, "fleet up: no starter");
-        assert_eq!(logs(data.path()), Vec::<String>::new());
-    }
-
-    /// A manager that was stopped (exit 0), as an update's restart stops
-    /// it, is no error: the interface says nothing while it is replaced.
-    #[cfg(unix)]
-    #[test]
-    fn a_stopped_manager_is_no_error() {
-        let bin = tempfile::tempdir().expect("bin");
-        let data = tempfile::tempdir().expect("data");
-        let _paths = crate::paths::TestPathGuard::new(data.path());
-        let program = fake_fleet(bin.path(), "exit 0");
-        let (tx, rx) = channel();
-        let link = FleetLink::local(program.to_string_lossy());
-        std::thread::spawn(move || keep_manager(&link, &tx, Duration::from_millis(50)));
-        let reports: Vec<Option<String>> = (0..4)
-            .map(|_| match rx.recv_timeout(Duration::from_secs(10)) {
-                Ok(Update::Manager(report)) => report,
-                Ok(_) => Some("not a manager report".into()),
-                Err(e) => Some(format!("no report: {e}")),
-            })
-            .collect();
-        assert_eq!(reports, [None, None, None, None]);
-    }
-
-    /// Only a running `fleet` is ever signalled: a pid the lease names that
-    /// is another program is refused and keeps running.
-    #[cfg(unix)]
-    #[test]
-    fn terminate_refuses_a_process_that_is_not_fleet() {
-        let mut other = Command::new("sleep").arg("30").spawn().expect("sleep");
-        let why = terminate(other.id()).expect_err("not a fleet");
-        assert!(why.contains("does not run here"), "{why}");
-        assert_eq!(other.try_wait().expect("wait"), None, "it was signalled");
-        let _ = other.kill();
-        let _ = other.wait();
-    }
-
-    /// A log whose process is gone is cleared at the next start; one whose
-    /// process runs is kept.
-    #[cfg(unix)]
-    #[test]
-    fn logs_of_gone_processes_are_cleared() {
-        let data = tempfile::tempdir().expect("data");
-        let mut gone = Command::new("true").spawn().expect("true");
-        let gone_pid = gone.id();
-        gone.wait().expect("wait");
-        let alive = std::process::id();
-        for pid in [gone_pid, alive] {
-            std::fs::write(data.path().join(format!("fleet-up-{pid}.log")), "x").expect("log");
-        }
-        clear_old_logs(data.path());
-        assert_eq!(logs(data.path()), vec![format!("fleet-up-{alive}.log")]);
-    }
-
-    /// Two interfaces sharing a data directory each get a log of their own.
-    #[test]
-    fn each_manager_start_has_a_log_of_its_own() {
-        let dir = tempfile::tempdir().expect("dir");
-        let (mut first, mut first_read, first_path) = open_log(dir.path()).expect("first");
-        let (mut second, mut second_read, second_path) = open_log(dir.path()).expect("second");
-        assert_ne!(first_path, second_path);
-        std::io::Write::write_all(&mut first, b"first").expect("write");
-        std::io::Write::write_all(&mut second, b"second").expect("write");
-        for (reader, want) in [(&mut first_read, "first"), (&mut second_read, "second")] {
-            let mut read = String::new();
-            reader.rewind().expect("rewind");
-            reader.read_to_string(&mut read).expect("read");
-            assert_eq!(read, want);
-        }
-        assert!(first_path.is_file() && second_path.is_file());
     }
 }

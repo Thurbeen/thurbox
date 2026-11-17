@@ -132,12 +132,54 @@ impl FleetLink {
         Some((base.join("fleet/config.toml"), "the per-user file"))
     }
 
-    /// First run: a Fleet on this machine with no config file gets one from
-    /// `fleet init`, so the `fleet up` thurbox then starts has the
-    /// multiplexer runtime and its `local` place rather than no runtime at
-    /// all. `None` when there is nothing to set up: a remote Fleet, or a
-    /// config already there. Otherwise the config written, or why not.
-    pub fn set_up(&self) -> Option<Result<std::path::PathBuf, String>> {
+    /// What a Fleet on this machine whose manager holds no lease tells the
+    /// user to run: [`Self::no_config`] before `fleet init` wrote its config,
+    /// otherwise [`Self::start_manager`]. `None` for a Fleet on another
+    /// machine.
+    pub fn not_running(&self) -> Option<String> {
+        if !self.is_local() {
+            return None;
+        }
+        Some(
+            self.no_config()
+                .unwrap_or_else(|| format!("Fleet not running · {}", self.start_manager())),
+        )
+    }
+
+    /// The command that starts this Fleet's manager: its user unit where one
+    /// is installed ([`manager_unit_installed`]), otherwise its own `fleet
+    /// up`, with the program and config `settings.toml` names.
+    pub fn start_manager(&self) -> String {
+        self.manager_command(manager_unit_installed())
+    }
+
+    /// The command that restarts it on the release an update installed.
+    pub fn restart_manager(&self) -> String {
+        if manager_unit_installed() {
+            "systemctl --user restart fleet.service".to_string()
+        } else {
+            format!(
+                "stop its `{}` and run it again",
+                self.manager_command(false)
+            )
+        }
+    }
+
+    fn manager_command(&self, unit_installed: bool) -> String {
+        if unit_installed {
+            return "systemctl --user start fleet.service".to_string();
+        }
+        let mut words = vec![self.program()];
+        if let Some(config) = self.config() {
+            words.extend(["--config", config]);
+        }
+        words.push("up");
+        command_line(&words)
+    }
+
+    /// [`NO_CONFIG`] for a Fleet on this machine whose config file does not
+    /// exist, naming the file when `settings.toml` names it. `None` otherwise.
+    pub fn no_config(&self) -> Option<String> {
         if !self.is_local() {
             return None;
         }
@@ -145,16 +187,13 @@ impl FleetLink {
         if path.exists() {
             return None;
         }
-        Some(
-            self.bounded_output(&["init"], self.probe_timeout())
-                .and_then(|out| {
-                    if out.status.success() {
-                        Ok(path)
-                    } else {
-                        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-                    }
-                }),
-        )
+        Some(match self.config() {
+            Some(named) => format!(
+                "no Fleet config · {}",
+                command_line(&["fleet", "--config", named, "init"])
+            ),
+            None => NO_CONFIG.to_string(),
+        })
     }
 
     /// How the Fleet is reached, as the creation flow shows it: `local
@@ -483,6 +522,60 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The API version thurbox writes its Tasks in: a Fleet that does not speak
 /// it is refused (M6).
+/// The user systemd unit that runs a Fleet's `fleet up`
+/// (docs/where-sessions-run.md).
+const MANAGER_UNIT: &str = "fleet.service";
+
+/// Whether the user systemd unit that runs `fleet up` is installed where
+/// docs/where-sessions-run.md puts it: only Linux has one.
+pub fn manager_unit_installed() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+            })
+            .is_some_and(|config| config.join("systemd/user").join(MANAGER_UNIT).is_file())
+}
+
+/// `words` as a command the user's shell runs as typed: PowerShell on
+/// Windows, a POSIX shell elsewhere.
+pub fn command_line(words: &[&str]) -> String {
+    command_line_for(cfg!(windows), words)
+}
+
+fn command_line_for(powershell: bool, words: &[&str]) -> String {
+    let quoted: Vec<String> = words
+        .iter()
+        .map(|word| match (needs_quotes(word), powershell) {
+            (false, _) => word.to_string(),
+            (true, true) => format!("'{}'", word.replace('\'', "''")),
+            (true, false) => format!("'{}'", word.replace('\'', "'\\''")),
+        })
+        .collect();
+    let line = quoted.join(" ");
+    if powershell
+        && quoted
+            .first()
+            .is_some_and(|program| program.starts_with('\''))
+    {
+        format!("& {line}")
+    } else {
+        line
+    }
+}
+
+fn needs_quotes(word: &str) -> bool {
+    word.is_empty()
+        || !word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c))
+}
+
+/// What thurbox says of a Fleet on this machine with no config yet.
+pub const NO_CONFIG: &str = "no Fleet config · fleet init";
+
 pub const TASK_API: &str = "fleet/v1alpha1";
 
 /// Why thurbox cannot speak to the Fleet whose `fleet version --json`
@@ -736,6 +829,67 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_named_config_is_quoted_in_the_command() {
+        let dir = tempfile::tempdir().expect("dir");
+        let config = dir.path().join("My Fleet").join("config.toml");
+        let link = FleetLink::of(
+            "laptop",
+            &FleetDef {
+                transport: Default::default(),
+                program: "fleet".into(),
+                config: Some(config.to_string_lossy().into_owned()),
+            },
+        );
+        assert_eq!(
+            link.no_config(),
+            Some(format!(
+                "no Fleet config · fleet --config '{}' init",
+                config.display()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_command_line_is_quoted_for_the_shell_that_runs_it() {
+        let words = ["C:\\My Tools\\fleet.exe", "--config", "it's.toml", "up"];
+        assert_eq!(
+            command_line_for(false, &words),
+            "'C:\\My Tools\\fleet.exe' --config 'it'\\''s.toml' up"
+        );
+        assert_eq!(
+            command_line_for(true, &words),
+            "& 'C:\\My Tools\\fleet.exe' --config 'it''s.toml' up"
+        );
+        assert_eq!(command_line_for(true, &["fleet", "up"]), "fleet up");
+    }
+
+    #[test]
+    fn the_manager_command_is_the_unit_or_this_fleets_own_fleet_up() {
+        let link = FleetLink::of(
+            "laptop",
+            &FleetDef {
+                transport: Default::default(),
+                program: "/opt/My Fleet/fleet".into(),
+                config: Some("/srv/fleet b/config.toml".into()),
+            },
+        );
+        let quoted = "'/opt/My Fleet/fleet' --config '/srv/fleet b/config.toml' up";
+        assert_eq!(
+            link.manager_command(false),
+            if cfg!(windows) {
+                format!("& {quoted}")
+            } else {
+                quoted.to_string()
+            }
+        );
+        assert_eq!(FleetLink::local("fleet").manager_command(false), "fleet up");
+        assert_eq!(
+            link.manager_command(true),
+            "systemctl --user start fleet.service"
+        );
+    }
 
     fn argv(command: &Command) -> Vec<String> {
         std::iter::once(command.get_program())

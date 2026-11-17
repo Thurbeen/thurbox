@@ -50,23 +50,30 @@ extraCss: ['tutorial.css']
   1. Launch it
   <a href="#launch" class="heading-anchor">#</a>
 </h2>
-<pre><code class="language-bash">thurbox</code></pre>
+<p>
+  Fleet manages every session, and its manager, <code>fleet up</code>, runs as a user service. Set
+  Fleet up and start that service once:
+</p>
+<pre><code class="language-bash">fleet init
+systemctl --user start fleet.service
+thurbox</code></pre>
 <figure class="shot">
   <img
     loading="lazy"
     src="../assets/tutorial/01-first-launch.png"
-    alt="An empty Thurbox: the session list on the left, an empty agent pane on the right, and the notice that Fleet was set up"
+    alt="An empty Thurbox: the session list on the left and an empty agent pane on the right"
   />
-  <figcaption>First launch &mdash; no sessions yet, and the notice that Fleet was set up.</figcaption>
+  <figcaption>First launch &mdash; no sessions yet.</figcaption>
 </figure>
 <p>
   Two panes between two bars: the <strong>session list</strong> on the left, the
   <strong>agent terminal</strong> on the right, and the keys you need on the footer.
 </p>
 <p>
-  There was nothing to configure. On a machine with no Fleet config, the first <code>thurbox</code>
-  runs <code>fleet init</code>, and the notice at the bottom says where it wrote the config. Fleet
-  manages every session; Thurbox starts its manager, <code>fleet up</code>, when none runs.
+  Thurbox never starts, restarts or sets up Fleet. While no manager runs, the status line says
+  <code>Fleet not running · systemctl --user start fleet.service</code> (<code>fleet up</code>
+  where no unit is installed), or <code>no Fleet config · fleet init</code> before
+  <code>fleet init</code> ran.
 </p>
 
 <h2 id="place">

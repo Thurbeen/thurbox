@@ -51,10 +51,12 @@ breadcrumb: 'Orchestration'
   A <a href="installation.html#from-source">source build</a> also builds them.
 </p>
 <pre data-wrap><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | sh
-thurbox        # the first run writes Fleet's config with fleet init</code></pre>
+fleet init     # writes Fleet's config
+systemctl --user start fleet.service
+thurbox</code></pre>
 <p>
-  Thurbox starts <code>fleet up</code> for a Fleet on this machine when no manager runs. A Fleet on
-  another machine needs a user systemd unit there that runs <code>fleet up</code>; see
+  Thurbox never starts <code>fleet up</code>. Each Fleet needs a user systemd unit that runs
+  <code>fleet up</code>; see
   <a href="fleet-install.html#service">Keep fleet up running</a>. To run Fleet alone, see
   <a href="fleet-install.html#fleet-alone">Fleet alone</a>.
 </p>

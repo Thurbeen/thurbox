@@ -17,8 +17,10 @@ development checkout never touches your real setup.
 ## A working setup
 
 Three files decide where sessions run and which agents they run. On a new
-machine you write none of them: the first `thurbox` runs `fleet init`, which
-writes the first one, and the other two are optional.
+machine you write none of them: `fleet init` writes the first one, and the
+other two are optional. thurbox never runs `fleet init`: a Fleet on this
+machine with no config shows `no Fleet config · fleet init` on the status
+line.
 
 **Fleet's config** (`~/.config/fleet/config.toml`, `%APPDATA%\fleet\config.toml`
 on Windows) names the runtimes and their places. This is the part of what
@@ -515,32 +517,15 @@ the current version). The replaced binary takes effect on the **next launch**
 (the running process keeps its open file), so the TUI shows an "Updated to
 vX.Y.Z — restart thurbox to apply" status line.
 
-A running `fleet up` keeps the program it started from, and it outlives the
-interface. After an install, thurbox restarts it on the new `fleet`, for each
-Fleet on this machine (`restart_manager` in `src/kernel/snapshot/fleet.rs`):
-
-1. `fleet version --json` names the process that holds the manager lease. When
-   no process holds it, thurbox starts no manager.
-2. The Fleet's `program` must resolve to the `fleet` the update installed
-   beside thurbox. When it resolves to another file, thurbox leaves the
-   manager running and the status line names that program.
-3. thurbox sends the process SIGTERM, as Ctrl-C stops it. It finishes its
-   sweep, releases the lease and keeps every session, Task and inbox.
-4. thurbox waits for the lease to be released, with no time limit of its own:
-   Fleet's call timeouts bound the sweep, and a workspace call can take
-   minutes. Then thurbox waits 2 s more. A service
-   supervisor or another interface that starts `fleet up` in that time keeps
-   the lease.
-5. Otherwise thurbox starts `fleet up` with the same command line and
-   environment it starts one with at launch, naming the installed `fleet` by
-   its path, so a `PATH` entry ahead of the install directory cannot pick
-   another copy. The lease admits one manager, so
-   two engines never run.
-
-The status line names each Fleet whose manager restarted, or says why to
-restart it by hand. A Fleet on another machine keeps its own manager. Windows
-has no graceful stop for another process, so there the status line asks for a
-restart by hand. `thurbox-cli update` performs the
+A running `fleet up` keeps the program it started from. thurbox never
+restarts it. After an install, the status line names each Fleet on this
+machine whose manager holds the lease, and the command that restarts it on
+the new release: `systemctl --user restart fleet.service` where the user
+unit `fleet.service` is installed, otherwise to stop its `fleet up` and run
+it again (`stale_managers` in `src/kernel/snapshot/fleet.rs`). A Fleet whose
+`program` resolves to another file than the `fleet` the update installed is
+named as not replaced instead: a restart would run the same binary. A Fleet
+on another machine keeps its own manager. `thurbox-cli update` performs the
 same update on demand (with `--force` to bypass the up-to-date and dev-build
 guards — never the major line); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a
@@ -635,7 +620,9 @@ a place.
   (`local Fleet`, `ssh <destination>`, `wsl <distro>`) and its state: `up`
   while its manager holds the lease, `Fleet not running` when none does
   (the manager `fleet version --json` reports), `unreachable`, or
-  `incompatible`. An unreachable or incompatible Fleet is not taken. The places, their readiness (`fleet
+  `incompatible`. A Fleet on this machine with no manager also names the
+  command that starts one, as the status line does. An unreachable or
+  incompatible Fleet is not taken. The places, their readiness (`fleet
   runtime places --json`) and the agents that follow are the chosen Fleet's,
   read again each time the place step opens on it.
   A place on another machine is every place of a Fleet on another machine,
@@ -669,8 +656,8 @@ a place.
 - The first thing asked of each listed Fleet is `fleet version --json`. A
   Fleet whose `apiVersions` lack `fleet/v1alpha1`, the version thurbox
   writes its Tasks in, is refused: it shows as `incompatible`, the session
-  list's error says `<fleet>: incompatible: …`, its watch, manager and
-  places are never asked for, and a command or creation for it fails
+  list's error says `<fleet>: incompatible: …`, its watch and places are
+  never asked for, and a command or creation for it fails
   without sending anything but that `version`. `doctor` applies the same
   rule. The `version` probe waits 5 seconds, or 15 for a Fleet on another
   machine, and is then stopped. A Fleet that does not answer, in time or at
@@ -683,9 +670,16 @@ a place.
   there takes the path as given: it must be absolute, `~` is not expanded,
   and this machine's disk is not read to tell a repository from a
   directory, so with no choice made the directory is taken as it is.
-- thurbox never starts `fleet up` on a Fleet on another machine: a user
-  systemd unit there runs it
+- thurbox never starts, restarts or sets up a Fleet's manager, on this
+  machine or another: a user systemd unit runs `fleet up`
   ([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
+  While a Fleet on this machine has no manager, the status line says which
+  command starts one: `Fleet not running · systemctl --user start
+  fleet.service` on Linux where that user unit is installed (in
+  `$XDG_CONFIG_HOME/systemd/user`), otherwise `Fleet not running · fleet up`,
+  with the `program` and `--config` its `[fleets]` entry names. Before
+  its config exists it says `no Fleet config · fleet init`
+  (`fleet --config <path> init` when `settings.toml` names the file).
 - v3 reads no `[fleet] program`: it is reported as replaced by `[fleets]`.
 
 | The interface | Fleet's command |
@@ -695,10 +689,10 @@ a place.
 | sends to a session | `fleet send` |
 | deletes a session | `fleet delete task`; Fleet has no undo window |
 | shows a session's terminal | `fleet attach --json`: the stream it names, as a stream pane |
-| keeps a manager | `fleet up`, started whenever none holds the lease, for a Fleet on this machine only |
 
 - Fleet reads its own config (`FLEET_CONFIG`, then its per-user file), unless
-  `config` names one. Run `fleet init` before the first `fleet up`.
+  `config` names one. Run `fleet init` before the first `fleet up`, and run
+  `fleet up` under a user systemd unit.
 - `thurbox-cli doctor` checks each listed Fleet: the program and its version,
   the harnesses it has profiles for, and the places it defines. A Fleet whose
   `fleet version --json` lacks `fleet/v1alpha1` in `apiVersions` is refused:
@@ -706,10 +700,13 @@ a place.
   also checks the config it reads (and which rule named it) and
   `runtime-mux` on `PATH`. A Fleet reached over ssh whose `ssh` exits 255 is
   `unreachable`, and is asked only once; the probes of a Fleet on another
-  machine wait 15 seconds, not 5. For a Fleet on another machine,
-  `fleet-manager` reads the `manager` of its `fleet version --json`: the
-  manager runs, it does not run (`doctor` then points at the systemd unit),
-  or the answer is unknown. thurbox never starts that manager. The Fleet the interface
+  machine wait 15 seconds, not 5. `fleet-manager` reads the `manager` of
+  the Fleet's `fleet version --json`: the manager runs, it does not run, or
+  the answer is unknown. When it does not run, the fix is the command the
+  status line names on this machine, and the systemd unit on another. A
+  Fleet on this machine with no config has no `fleet-manager` row: its
+  `fleet-config` row's fix is `fleet init`.
+  thurbox never starts a manager. The Fleet the interface
   uses fails the report when it does not answer; another listed Fleet only
   warns. Each check of a Fleet names it (`fleet` in `--json`), and `fleets`
   lists each Fleet with `transport`, `in_force` and `unreachable`. The
@@ -719,8 +716,6 @@ a place.
   Fleet under `[fleets]`.
   `thurbox-cli config show` and `thurbox-cli version --json` report the Fleet
   in use under `fleet`, with Fleet's data directory.
-- A `fleet up` the interface started runs in a process group of its own and
-  outlives the interface: Tasks keep reconciling with no interface open.
 - A session row's status is the Task's `agentState` (`working`, `attention`
   as `blocked`, `idle`) over its `sessionState`: `Paused` as `stopped`,
   `Lost` and `Gone` as `failed` whatever the agent said, then `Running`,
@@ -774,14 +769,8 @@ a place.
   are not read on this machine, even where the same path exists here. The
   diff says where the workspace is. A Task on `local` reads like any local
   session.
-- `fleet up`'s standard error goes to a file of its own in thurbox's data
-  directory (`$XDG_DATA_HOME/thurbox`, or `THURBOX_DATA_DIR`), created
-  exclusively and named for the manager: `fleet-up-<pid>.log`. It is read
-  back and removed when the manager exits. A manager that outlives the
-  interface keeps writing to it there, and the next start removes the logs
-  whose process is gone.
-- A watch or a manager that fails is the snapshot's error, beside the last
-  rows read. Both are started again: the watch resumes with `--since`. A
+- A watch that fails is the snapshot's error, beside the last rows read. It
+  is started again, and resumes with `--since`. A
   store the running watch cannot read is the error too, until a read works
   again.
 - Typing or pasting into a Fleet session's pane waits for a stream that has

@@ -179,8 +179,8 @@ GIF="$SBX/doom.gif"
 # The kills are scoped by the exported TMUX_TMPDIR above, which is why killing
 # these sockets by name here cannot reach your real thurbox server. The second
 # is also what reaps Doom, whose program pane is a window on that socket; the
-# third holds the agents, and `fleet up` (thurbox starts it) is stopped first so
-# it does not start them again.
+# third holds the agents, and the sandbox's `fleet up` is stopped first so it
+# does not start them again.
 cleanup() {
     _tbx_stop_fleet "$SBX"
     tmux -L thurbox-doom-rec kill-server 2>/dev/null
@@ -269,6 +269,7 @@ if [ ${#agents[@]} -eq 0 ]; then
     echo "warning: no agent CLI found — recording with an empty session list" >&2
 else
     tbx_sandbox_fleet
+    tbx_sandbox_fleet_up
     # Fleet runs a harness it has a profile for (claude, codex) with its hooks,
     # and any other name as the program of that name.
     for i in "${!agents[@]}"; do

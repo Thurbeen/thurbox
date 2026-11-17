@@ -151,7 +151,7 @@ The header badge only offers the line. 3.x carries the same rule with
    - `thurbox.db` is not read or written: 3.x has no database, and Fleet holds
      its sessions. 2.x sessions do not carry over.
    - A Fleet 2.x `config.toml` is not a Fleet 3 config. Every `fleet` command,
-     and the `fleet up` thurbox starts, refuses it by name and says what to do.
+     `fleet up` included, refuses it by name and says what to do.
      Fleet 3 cannot read the objects Fleet 2.x wrote to its store either, and
      `fleet init` points Fleet 3 at the same store directory, so both move
      aside together.

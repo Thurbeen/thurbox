@@ -36,8 +36,9 @@ fn log_next_major(next: Option<&str>) {
 enum Done {
     /// A refreshed check: the latest release, when it is newer than this build.
     Checked(Option<String>),
-    /// The silent update finished and replaced the binaries, and what came
-    /// of restarting each Fleet's `fleet up` on them.
+    /// The silent update finished and replaced the binaries, and how to
+    /// restart each Fleet manager still on the old release
+    /// ([`crate::kernel::snapshot::fleet::stale_managers`]).
     Installed { to: String, fleet: String },
 }
 
@@ -56,8 +57,8 @@ impl Updates {
     /// network happens on a thread. With both switches off this does nothing at
     /// all — not a fetch, not a thread, not a file.
     ///
-    /// `fleets` are the Fleets whose `fleet up` an install restarts on the
-    /// new `fleet`: those on this machine among them.
+    /// `fleets` are the Fleets an install names a manager restart for:
+    /// those on this machine among them.
     pub fn start(features: &FeatureFlags, fleets: Vec<crate::fleet_link::FleetLink>) -> Self {
         let mut updates = Self::default();
         if !features.version_check && !features.auto_update {
@@ -96,7 +97,7 @@ impl Updates {
                         // The check's cache is refreshed with it, so the badge
                         // agrees with what is now installed on the next launch.
                         let _ = crate::update::version_check::refresh_cache();
-                        let fleet = crate::kernel::snapshot::fleet::restart_managers(&fleets);
+                        let fleet = crate::kernel::snapshot::fleet::stale_managers(&fleets);
                         let _ = tx.send(Done::Installed { to, fleet });
                     }
                     Ok(crate::update::self_update::UpdateOutcome::UpToDate {
@@ -258,12 +259,11 @@ mod tests {
         assert_eq!(updates.available(), Some("9.9.9"));
     }
 
-    /// The notice says what came of restarting `fleet up` on the new release.
     #[test]
-    fn an_install_reports_the_fleet_manager_restart() {
+    fn an_install_says_how_to_restart_the_fleet_manager() {
         let mut updates = Updates::default();
         let tx = updates.sender();
-        let fleet = "Restart Fleet local's `fleet up` to apply: it is stuck.".to_string();
+        let fleet = "Fleet local's manager still runs the old release · systemctl --user restart fleet.service.".to_string();
         tx.send(Done::Installed {
             to: "9.9.9".into(),
             fleet: fleet.clone(),

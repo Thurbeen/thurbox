@@ -432,6 +432,8 @@ pub(super) struct FleetFacts {
     pub(super) version: Result<serde_json::Value, String>,
     /// The config file Fleet reads, and what named it.
     pub(super) config: Option<(std::path::PathBuf, &'static str)>,
+    /// The command that starts its manager ([`crate::fleet_link::FleetLink::start_manager`]).
+    start_manager: String,
     /// `fleet runtime hosts --json`: the places a session can run in, or why
     /// they could not be read.
     pub(super) hosts: Result<serde_json::Value, String>,
@@ -486,6 +488,7 @@ impl FleetFacts {
             version,
             config,
             hosts,
+            start_manager: link.start_manager(),
         }
     }
 
@@ -596,6 +599,9 @@ impl FleetFacts {
         }
         if self.local {
             findings.extend(self.local_findings());
+            if self.config.as_ref().is_some_and(|(path, _)| path.is_file()) {
+                findings.extend(self.manager_finding(broken));
+            }
         } else {
             if let Some((path, from)) = &self.config {
                 findings.push(Finding::new(
@@ -612,10 +618,10 @@ impl FleetFacts {
         findings
     }
 
-    /// Whether the manager of a Fleet on another machine runs, from the
-    /// `manager` of its `fleet version --json`. thurbox never starts that
-    /// manager (M4): a user systemd unit there runs `fleet up`. A Fleet that
-    /// did not answer has no such row: its `fleet` row says why.
+    /// Whether the Fleet's manager runs, from the `manager` of its `fleet
+    /// version --json`. thurbox never starts a manager: a user systemd unit
+    /// runs `fleet up`, and the row names the command that starts it. A
+    /// Fleet that did not answer has no such row: its `fleet` row says why.
     fn manager_finding(&self, broken: Level) -> Option<Finding> {
         let manager = &self.version.as_ref().ok()?["manager"];
         Some(match manager["held"].as_bool() {
@@ -627,6 +633,10 @@ impl FleetFacts {
                     manager["holder"].as_str().unwrap_or("?")
                 ),
             ),
+            Some(false) if self.local => {
+                Finding::new("fleet-manager", broken, "Fleet not running".into())
+                    .fix(self.start_manager.clone())
+            }
             Some(false) => Finding::new("fleet-manager", broken, "manager not running".into()).fix(
                 "systemctl --user enable --now fleet.service on that machine (the unit is in \
                  docs/where-sessions-run.md)",
@@ -641,7 +651,11 @@ impl FleetFacts {
                         .unwrap_or("this Fleet does not report its manager")
                 ),
             )
-            .fix("update Fleet on that machine"),
+            .fix(if self.local {
+                "update Fleet"
+            } else {
+                "update Fleet on that machine"
+            }),
         })
     }
 
@@ -659,10 +673,15 @@ impl FleetFacts {
                 Level::Warn,
                 format!("{} ({from}) does not exist", path.display()),
             )
-            .fix(format!(
-                "{} init (thurbox runs it on its first start)",
-                self.program
-            )),
+            .fix(match *from {
+                "settings.toml" => crate::fleet_link::command_line(&[
+                    &self.program,
+                    "--config",
+                    &path.to_string_lossy(),
+                    "init",
+                ]),
+                _ => crate::fleet_link::command_line(&[&self.program, "init"]),
+            }),
             None => Finding::new("fleet-config", Level::Warn, "no Fleet config path".into())
                 .fix("set FLEET_CONFIG to the config file, then `fleet init`"),
         };
@@ -824,6 +843,7 @@ mod tests {
             version: version.map_err(str::to_string),
             config: config.map(|p| (std::path::PathBuf::from(p), "the per-user file")),
             hosts: hosts.map_err(str::to_string),
+            start_manager: "fleet up".into(),
         }
     }
 
@@ -898,6 +918,48 @@ mod tests {
         assert!(report.contains("fix:"), "{report}");
         let json = document(&findings, Level::Fail);
         assert!(json["checks"][0]["fix"].is_string(), "{json}");
+    }
+
+    #[test]
+    fn doctor_names_the_command_that_starts_a_local_fleets_manager() {
+        let config = tempfile::NamedTempFile::new().expect("config");
+        let down = json!({"version": "9.9.9", "apiVersions": ["fleet/v1alpha1"], "manager": {"held": false}});
+        let findings = facts(
+            true,
+            None,
+            Ok(down),
+            config.path().to_str(),
+            Ok(json!({"hosts": []})),
+        )
+        .findings(true);
+        let manager = findings
+            .iter()
+            .find(|f| f.key == "fleet-manager")
+            .expect("a fleet-manager row");
+        assert_eq!(manager.level, Level::Fail, "{}", manager.detail);
+        assert_eq!(manager.detail, "Fleet not running");
+        assert_eq!(manager.fix.as_deref(), Some("fleet up"));
+    }
+
+    #[test]
+    fn doctor_names_fleet_init_for_a_local_fleet_with_no_config() {
+        let findings = facts(
+            true,
+            None,
+            Ok(json!({"version": "9.9.9", "apiVersions": ["fleet/v1alpha1"], "manager": {"held": false}})),
+            Some("/nowhere/config.toml"),
+            Ok(json!({"hosts": []})),
+        )
+        .findings(true);
+        let config = findings
+            .iter()
+            .find(|f| f.key == "fleet-config")
+            .expect("a fleet-config row");
+        assert_eq!(config.fix.as_deref(), Some("fleet init"));
+        assert!(
+            findings.iter().all(|f| f.key != "fleet-manager"),
+            "no manager to start before the config exists"
+        );
     }
 
     /// `doctor`'s probes reach Fleet through its link.

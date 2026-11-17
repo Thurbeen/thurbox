@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 #
-# The sandbox teardown stops the `fleet up` thurbox started, found by the pid in
-# its log's name. A log can outlive its manager, and the pid can then belong to
-# anything: the teardown must signal only a process that is a `fleet up`.
+# The sandbox starts its own `fleet up` and records its pid. A pid file can
+# outlive its manager, and the pid can then belong to anything: the teardown
+# must signal only a process that is this sandbox's `fleet up`.
 
 bats_require_minimum_version 1.5.0
 
@@ -13,37 +13,36 @@ setup() {
   . "${BATS_TEST_DIRNAME}/sandbox-env.sh"
   ROOT="${BATS_TEST_TMPDIR}/root"
   export TBX_SANDBOX_ROOT="$ROOT"
-  mkdir -p "$ROOT/data"
+  mkdir -p "$ROOT/fleet"
 }
 
 teardown() {
   [ -n "${OTHER:-}" ] && kill "$OTHER" 2>/dev/null || true
 }
 
-@test "a stale log whose pid now names another process leaves that process alone" {
+@test "a stale pid file naming another process leaves that process alone" {
   sleep 30 &
   OTHER=$!
-  : > "$ROOT/data/fleet-up-$OTHER.log"
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
   _tbx_stop_fleet "$ROOT"
   kill -0 "$OTHER"
 }
 
-@test "a log naming a running fleet up stops it" {
+@test "a pid file naming a running fleet up stops it" {
   bin="${BATS_TEST_TMPDIR}/bin"
   mkdir -p "$bin"
-  # The manager's own argv, as thurbox starts it: `<fleet> up`.
   printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
   chmod +x "$bin/fleet"
   FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
   OTHER=$!
   sleep 0.2
-  : > "$ROOT/data/fleet-up-$OTHER.log"
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
   _tbx_stop_fleet "$ROOT"
   sleep 0.2
   run ! kill -0 "$OTHER"
 }
 
-@test "another sandbox's fleet up whose pid a stale log names is left alone" {
+@test "another sandbox's fleet up whose pid a stale pid file names is left alone" {
   [ -r /proc/self/environ ] || skip "no /proc to read a process's environment"
   bin="${BATS_TEST_TMPDIR}/bin"
   mkdir -p "$bin"
@@ -52,7 +51,7 @@ teardown() {
   FLEET_CONFIG="${BATS_TEST_TMPDIR}/other/fleet/config.toml" "$bin/fleet" up &
   OTHER=$!
   sleep 0.2
-  : > "$ROOT/data/fleet-up-$OTHER.log"
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
   _tbx_stop_fleet "$ROOT"
   kill -0 "$OTHER"
 }
@@ -63,11 +62,10 @@ teardown() {
   mkdir -p "$bin" "$ROOT/home/.config"
   printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
   chmod +x "$bin/fleet"
-  # No FLEET_CONFIG: the first launch's `fleet init` wrote the per-user file.
   env -u FLEET_CONFIG XDG_CONFIG_HOME="$ROOT/home/.config" "$bin/fleet" up &
   OTHER=$!
   sleep 0.2
-  : > "$ROOT/data/fleet-up-$OTHER.log"
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
   _tbx_stop_fleet "$ROOT"
   sleep 0.2
   run ! kill -0 "$OTHER"
@@ -82,9 +80,65 @@ teardown() {
   env -u FLEET_CONFIG XDG_CONFIG_HOME="${BATS_TEST_TMPDIR}/elsewhere/.config" "$bin/fleet" up &
   OTHER=$!
   sleep 0.2
-  : > "$ROOT/data/fleet-up-$OTHER.log"
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
   _tbx_stop_fleet "$ROOT"
   kill -0 "$OTHER"
+}
+
+@test "the sandbox starts its own fleet up, and its teardown stops it" {
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  PATH="$bin:$PATH" FLEET_CONFIG="$ROOT/fleet/config.toml" tbx_sandbox_fleet_up
+  OTHER=$(cat "$ROOT/fleet/up.pid")
+  sleep 0.2
+  kill -0 "$OTHER"
+  _tbx_stop_fleet "$ROOT"
+  sleep 0.2
+  run ! kill -0 "$OTHER"
+  [ ! -e "$ROOT/fleet/up.pid" ]
+}
+
+@test "a manager slow to stop is gone before a new one starts" {
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\ntrap "sleep 1; exit 0" TERM\nwhile :; do sleep 0.1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
+  _tbx_stop_fleet "$ROOT"
+  run ! kill -0 "$OTHER"
+}
+
+@test "a manager that will not stop fails the stop instead of hanging" {
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 0.1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
+  TBX_FLEET_STOP_TIMEOUT=1 run _tbx_stop_fleet "$ROOT"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$ROOT/fleet/up.pid")" = "$OTHER" ]
+  kill -9 "$OTHER"
+}
+
+@test "a manager an older sandbox named only in its log is stopped" {
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin" "$ROOT/thurbox-data"
+  printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  : > "$ROOT/thurbox-data/fleet-up-$OTHER.log"
+  _tbx_stop_fleet "$ROOT"
+  run ! kill -0 "$OTHER"
 }
 
 @test "a profile made before 3.0 gets a Fleet config the new fleet reads" {

@@ -119,7 +119,6 @@ export TBX_REPO_ROOT="$ROOT"
 
 cleanup() {
     tmux -L "$REC_SOCKET" kill-server 2>/dev/null
-    # `fleet up` (thurbox starts it) first, so it does not start the agents again.
     _tbx_stop_fleet "$SBX"
     tmux -L "$THURBOX_SOCKET" kill-server 2>/dev/null
     tmux -L runtime-mux kill-server 2>/dev/null
@@ -145,6 +144,7 @@ touch "$SBX/.thurbox-hero"
 # helper writes its config under $SBX and exports FLEET_CONFIG.
 export TBX_SANDBOX_ROOT="$SBX"
 tbx_sandbox_fleet
+tbx_sandbox_fleet_up
 
 # Both flags reach the network: one puts an upgrade notice in the top band, the
 # other replaces binaries on startup.

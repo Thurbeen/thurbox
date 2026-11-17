@@ -207,7 +207,7 @@ fi
 
 tbx_sandbox_init_full fresh
 # The helper puts target/debug first; this measures a chosen profile, so the
-# chosen one wins -- for `fleet` and `runtime-mux` too, which the TUI's `fleet
+# chosen one wins -- for `fleet` and `runtime-mux` too, which the sandbox's `fleet
 # up` and every session run on.
 PATH="$BIN_DIR:$PATH"
 export PATH
@@ -285,11 +285,12 @@ git -C "$REPO" -c user.email=perf@example.com -c user.name=perf commit -q \
 # so a run at whatever the invoking window happens to be is not comparable with
 # the last one.
 #
-# The TUI starts before any session exists, and starts the sandbox's `fleet up`.
-# Sessions are created underneath it, as Fleet Tasks: that manager spawns them
+# The sandbox's `fleet up` and the TUI start before any session exists.
+# Sessions are created underneath them, as Fleet Tasks: that manager spawns them
 # and the TUI's `fleet watch` adopts them, which is also closer to what a real
 # profile does.
 
+tbx_sandbox_fleet_up
 LOG_DIR="$XDG_DATA_HOME/thurbox-dev"
 say "starting thurbox at ${COLS}x${ROWS}…"
 LAUNCH="'$BIN_DIR/thurbox'"
