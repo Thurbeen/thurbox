@@ -275,9 +275,11 @@ steps:
    or that was made again, is read from its first event.
 2. When the last notice of the subscription is still in the inbox, it
    stops. The next notice then covers all the events since. It also stops
-   when the Board's `status.head` is not above the cursor.
+   when the Board's `status.head` is not above the cursor. A Board with no
+   event yet has no `status.head`, and counts as head 0.
 3. It reads the events after the cursor, up to the head and at most 10000.
-   The cursor moves past each event it reads.
+   The cursor moves past each event it reads. Fleet renews its lease
+   before each page of 1000 events.
 4. When events match, or the cursor was older than the log, it queues one
    notice. The notice and the cursors go in one write, under the lease.
 
@@ -287,7 +289,7 @@ the Board, the `count` of matching events, the `first` and `last` matching
 gives the `fleet event list` command that reads the events:
 
 ```text
-2 new events on Board ci match your subscription, seq 41 to 44. Read them with: fleet event list --board ci --after 40 --type 'ci.*'
+2 new events on Board ci match your subscription, seq 41 to 44. Read them with: fleet event list --board ci --after 40 --type='ci.*'
 ```
 
 These rules apply:

@@ -529,7 +529,9 @@ impl Filter {
     }
 
     /// The `fleet event list` options that keep what this filter keeps,
-    /// each value quoted for a POSIX shell, each with a leading space.
+    /// each as `--flag=value` with the value quoted for a POSIX shell, so a
+    /// value that starts with a dash stays a value, each with a leading
+    /// space.
     pub fn cli_args(&self) -> String {
         let options = [
             ("--type", self.event_type.as_ref().map(Pattern::as_str)),
@@ -539,7 +541,7 @@ impl Filter {
         ];
         options
             .into_iter()
-            .filter_map(|(flag, value)| value.map(|v| format!(" {flag} {}", shell_quote(v))))
+            .filter_map(|(flag, value)| value.map(|v| format!(" {flag}={}", shell_quote(v))))
             .collect()
     }
 

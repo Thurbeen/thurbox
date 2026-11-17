@@ -95,7 +95,7 @@ impl Manager<'_> {
                     continue;
                 }
             };
-            let nothing_new = recorded_head.is_some_and(|head| head <= cursor.after);
+            let nothing_new = recorded_head.unwrap_or(0) <= cursor.after;
             if cursor.board_uid.is_none()
                 || nothing_new
                 || room == 0
@@ -105,8 +105,9 @@ impl Manager<'_> {
                 continue;
             }
             let mut after = cursor.after;
-            let scan = match self.scan(&sub.board, &sub.filter, &mut after) {
+            let scan = match self.scan(&sub.board, &sub.filter, &mut after, lease, ttl) {
                 Ok(scan) => scan,
+                Err(e @ StoreError::LeaseLost(_)) => return Err(e),
                 Err(e) => {
                     unknown(report, &e);
                     next.cursors.push(cursor);
@@ -155,11 +156,19 @@ impl Manager<'_> {
     }
 
     /// Read `board` after `after`, up to its head or [`MAX_SCAN`] events,
-    /// moving `after` past each event read. An error leaves the caller's
-    /// cursor to discard.
-    fn scan(&self, board: &str, filter: &Filter, after: &mut u64) -> Result<Scan, StoreError> {
+    /// moving `after` past each event read and renewing the lease before
+    /// each page. An error leaves the caller's cursor to discard.
+    fn scan(
+        &self,
+        board: &str,
+        filter: &Filter,
+        after: &mut u64,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+    ) -> Result<Scan, StoreError> {
         let mut scan = Scan::default();
         for _ in 0..MAX_PAGES {
+            *lease = self.store.renew_lease(lease, ttl)?;
             match self.store.read_events(board, *after, READ_PAGE)? {
                 Page::Expired { oldest } => scan.expired(after, oldest),
                 Page::Events(events) => {

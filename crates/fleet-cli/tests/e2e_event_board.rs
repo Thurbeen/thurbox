@@ -844,6 +844,8 @@ struct ObservedStore {
     worker_writes_once: bool,
     fired: std::cell::Cell<bool>,
     appends: std::cell::Cell<u32>,
+    reads_since_renewal: std::cell::Cell<u32>,
+    most_reads_between_renewals: std::cell::Cell<u32>,
 }
 
 impl ObservedStore {
@@ -854,6 +856,8 @@ impl ObservedStore {
             worker_writes_once,
             fired: std::cell::Cell::new(false),
             appends: std::cell::Cell::new(0),
+            reads_since_renewal: std::cell::Cell::new(0),
+            most_reads_between_renewals: std::cell::Cell::new(0),
         }
     }
 
@@ -1118,6 +1122,10 @@ impl Store for ObservedStore {
         after: u64,
         limit: usize,
     ) -> Result<fleet_api::event::Page, StoreError> {
+        let reads = self.reads_since_renewal.get() + 1;
+        self.reads_since_renewal.set(reads);
+        self.most_reads_between_renewals
+            .set(self.most_reads_between_renewals.get().max(reads));
         self.inner.read_events(board, after, limit)
     }
     fn event_head(&self, board: &str) -> Result<u64, StoreError> {
@@ -1150,6 +1158,7 @@ impl Store for ObservedStore {
         lease: &LeaseToken,
         ttl: fleet_api::Millis,
     ) -> Result<LeaseToken, StoreError> {
+        self.reads_since_renewal.set(0);
         self.inner.renew_lease(lease, ttl)
     }
     fn release_lease(&self, lease: &LeaseToken) -> Result<(), StoreError> {
@@ -2179,4 +2188,38 @@ fn ingested_reads_a_skip_in_a_later_generation_as_not_the_lines() {
         }
         other => panic!("the appended line read as {other:?}"),
     }
+}
+
+#[test]
+fn a_subscription_behind_a_long_backlog_renews_the_lease_before_each_page() {
+    let env = session_env("event-subscription-backlog-lease");
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    let source = fleet_api::event::Source::Cli(fleet_api::event::CliSource::new("tester").unwrap());
+    for _ in 0..3 {
+        let batch = (0..1000)
+            .map(|_| fleet_api::event::Publish {
+                event_type: "bulk".into(),
+                subject: None,
+                key: None,
+                correlation: None,
+                data: json!(1),
+            })
+            .collect();
+        store
+            .append_events("shared", &source, batch, FieldManager::Cli, None)
+            .unwrap();
+    }
+    env.fleet(&["event", "subscribe", "a", "--after", "0"]).ok();
+
+    let observed = ObservedStore::over(&env, false);
+    observed.run_passes(&env, 1);
+    assert!(
+        observed.most_reads_between_renewals.get() <= 1,
+        "{} Board reads under one lease renewal",
+        observed.most_reads_between_renewals.get()
+    );
+    assert_eq!(
+        env.get("a")["status"]["subscriptions"]["cursors"][0]["after"],
+        3000
+    );
 }

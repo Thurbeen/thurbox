@@ -423,7 +423,7 @@ mod tests {
         let entry = notice_entry("k".into(), notice, &filter, 1);
         assert!(
             entry.text.ends_with(
-                r"fleet event list --board shared --after 9 --type 'git.*' --subject 'it'\''s' --source task/a --limit 150"
+                r"fleet event list --board shared --after 9 --type='git.*' --subject='it'\''s' --source=task/a --limit 150"
             ),
             "{}",
             entry.text

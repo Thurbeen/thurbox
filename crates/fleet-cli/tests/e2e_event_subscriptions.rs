@@ -92,7 +92,7 @@ fn a_subscribed_task_hears_of_new_matching_events_in_one_digest_notice() {
     assert!(text.contains("Board shared"), "{text}");
     assert!(text.contains("seq 1 to 3"), "{text}");
     assert!(
-        text.contains("fleet event list --board shared --after 0 --type 'git.*'"),
+        text.contains("fleet event list --board shared --after 0 --type='git.*'"),
         "{text}"
     );
     let st = status(&env);
@@ -381,4 +381,88 @@ fn a_task_applied_with_subscriptions_is_notified_and_a_concluded_one_is_not() {
     let mut bad = task("b", false);
     bad["spec"]["subscriptions"] = json!([{"board": "shared", "filter": {"kind": "x"}}]);
     env.apply(bad).code(1);
+}
+
+#[test]
+fn a_subscription_to_an_empty_board_reads_no_log() {
+    let env = subscribed_env("sub-empty-board");
+    env.fleet(&["event", "subscribe", "a"]).ok();
+    env.reconcile().ok();
+    let dir = env.data.join("boards").join("shared");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("00000000000000000001.jsonl"), b"not an event\n").unwrap();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["unknowns"], json!([]), "{report:#}");
+}
+
+fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut started = false;
+    for c in line.chars() {
+        match c {
+            '\'' => {
+                quoted = !quoted;
+                started = true;
+            }
+            ' ' if !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}
+
+#[test]
+fn the_command_in_a_notice_reads_a_subject_that_starts_with_a_dash() {
+    let env = subscribed_env("sub-dash-subject");
+    env.fleet(&["event", "subscribe", "a", "--subject=-release"])
+        .ok();
+    env.reconcile().ok();
+    publish(
+        &env,
+        &["--type", "tag", "--subject=-release", "--data", "{}"],
+    );
+    env.reconcile().ok();
+    let notices = delivered_notices(&env);
+    let text = notices.last().expect("a delivered notice");
+    let line = text
+        .lines()
+        .find_map(|l| l.find("fleet event list").map(|at| &l[at..]))
+        .expect("the list command")
+        .trim_end_matches(['.', '`']);
+    let words = shell_words(line);
+    let args: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    env.fleet(&args).ok().stdout_has("tag");
+}
+
+#[test]
+fn a_full_inbox_holds_the_subscription_and_the_pass_still_succeeds() {
+    let env = subscribed_env("sub-full-inbox");
+    env.fleet(&["event", "subscribe", "a"]).ok();
+    env.reconcile().ok();
+    set_ready(&env, false);
+    let mut sent = 0;
+    while env.fleet(&["send", "a", &format!("message {sent}")]).code == Some(0) {
+        sent += 1;
+        assert!(sent <= 100, "send never refused a full inbox");
+    }
+
+    publish_type(&env, "one");
+    let report = env.reconcile().ok().json();
+    let st = status(&env);
+    assert!(notices(&st).is_empty(), "{st:#}");
+    assert_eq!(cursor(&st, 0)["after"], 0, "{st:#}");
+    assert_eq!(report["errors"], json!([]), "{report:#}");
 }

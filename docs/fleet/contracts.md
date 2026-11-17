@@ -965,16 +965,19 @@ refused.
   Board made, deleted or made again since. A subscription whose last notice
   is still in `status.inbox` and not given up on is not read, and nor is
   one when the inbox holds more than 20 entries still to deliver, or one
-  whose Board's `status.head` is not above the cursor (a log a crash left
-  ahead of its status is read at the next append, which corrects it). Otherwise
-  `read_events` reads from the cursor up to the head, at most 10000 events;
+  whose Board's `status.head` is not above the cursor (a Board with no
+  `status.head` yet counts as head 0; a log a crash left ahead of its status
+  is read at the next append, which corrects it). Otherwise `read_events`
+  reads from the cursor up to the head, at most 10000 events, and the
+  lease is renewed before each page; a lost lease ends the sweep;
   `Expired { oldest }` moves the cursor to `oldest - 1` and marks the
   notice; a read error keeps the cursor as it was. A read with a match, or
   an expiry, owes one `event-notice` (`subscription::notice_entry`): from
   `board/<board>`, under `task/<name>/<uid>/notice/<n>` with `n` from
   `status.subscriptions.notices`, with `notice` (`board`, `count`, `first`,
   `last`, `expiredBefore`) and a text that gives the `fleet event list`
-  command. The cursors and the notices land in one `record_relay` as
+  command, each filter as `--flag=value`, so a value that starts with a
+  dash stays a value. The cursors and the notices land in one `record_relay` as
   TaskController under the lease, so a stop between them cannot happen; a
   conflict leaves both for the next pass. A cursor of a subscription no
   longer in the spec is dropped. `e2e_event_subscriptions` drives it through
