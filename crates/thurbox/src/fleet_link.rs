@@ -875,9 +875,14 @@ mod tests {
                 config: Some("/srv/fleet b/config.toml".into()),
             },
         );
+        let quoted = "'/opt/My Fleet/fleet' --config '/srv/fleet b/config.toml' up";
         assert_eq!(
             link.manager_command(false),
-            "'/opt/My Fleet/fleet' --config '/srv/fleet b/config.toml' up"
+            if cfg!(windows) {
+                format!("& {quoted}")
+            } else {
+                quoted.to_string()
+            }
         );
         assert_eq!(FleetLink::local("fleet").manager_command(false), "fleet up");
         assert_eq!(
