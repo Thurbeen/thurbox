@@ -5418,7 +5418,7 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soo
     let briefed_and_attachable = |name: &str| {
         let dispatched = Instant::now();
         env.apply(json!([task(name)])).ok();
-        watch_until(&env, name, "briefed", Duration::from_secs(120), |t| {
+        watch_until(&env, name, "briefed", Duration::from_secs(20), |t| {
             t["status"]["phase"] == "Briefed"
         });
         env.fleet(&["attach", name, "--json"]).ok();
@@ -5427,12 +5427,13 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soo
     let alone = briefed_and_attachable("alone");
     let running: Vec<Value> = (0..RUNNING).map(|i| task(&format!("bg{i}"))).collect();
     env.apply(json!(running)).ok();
+    let all_briefed = Instant::now() + Duration::from_secs(60);
     for i in 0..RUNNING {
         watch_until(
             &env,
             &format!("bg{i}"),
             "running Tasks briefed",
-            Duration::from_secs(120),
+            all_briefed.saturating_duration_since(Instant::now()),
             |t| t["status"]["phase"] == "Briefed",
         );
     }

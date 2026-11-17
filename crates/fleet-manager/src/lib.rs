@@ -241,6 +241,14 @@ fn host_of(obj: &Object) -> String {
 
 const STARTUP_STEPS_IN_A_ROW: usize = 16;
 
+const RELIST_AFTER_MS: Millis = 250;
+
+struct NewStarts {
+    seen: BTreeSet<(String, u64)>,
+    started_here: BTreeSet<String>,
+    listed_at: Millis,
+}
+
 fn generation_of(obj: &Object) -> (String, u64) {
     (obj.metadata.uid.clone(), obj.metadata.generation)
 }
@@ -396,20 +404,22 @@ impl Manager<'_> {
             let mut order: Vec<&Object> = tasks.iter().collect();
             order.sort_by_key(|t| !starting(t));
             let mut waiting: Vec<WaitingOnAgent> = Vec::new();
-            let mut seen: BTreeSet<(String, u64)> = tasks.iter().map(generation_of).collect();
-            let mut started_here: BTreeSet<String> = BTreeSet::new();
+            let mut new_starts = NewStarts {
+                seen: tasks.iter().map(generation_of).collect(),
+                started_here: BTreeSet::new(),
+                listed_at: self.clock.now(),
+            };
             for obj in order {
                 busy |=
                     self.reconcile_reported_starts(&mut waiting, lease, opts.lease_ttl, report)?;
                 busy |= self.reconcile_new_starts(
-                    &mut seen,
-                    &mut started_here,
+                    &mut new_starts,
                     &mut waiting,
                     lease,
                     opts.lease_ttl,
                     report,
                 )?;
-                if started_here.contains(&obj.metadata.uid) {
+                if new_starts.started_here.contains(&obj.metadata.uid) {
                     continue;
                 }
                 let concluded =
@@ -1956,22 +1966,26 @@ impl Manager<'_> {
 
     fn reconcile_new_starts(
         &self,
-        seen: &mut BTreeSet<(String, u64)>,
-        started_here: &mut BTreeSet<String>,
+        new_starts: &mut NewStarts,
         waiting: &mut Vec<WaitingOnAgent>,
         lease: &mut LeaseToken,
         ttl: Millis,
         report: &mut RunReport,
     ) -> Result<bool, StoreError> {
+        let now = self.clock.now();
+        if now < new_starts.listed_at.saturating_add(RELIST_AFTER_MS) {
+            return Ok(false);
+        }
+        new_starts.listed_at = now;
         let Observation::Known(tasks) = self.store.list(task::KIND) else {
             return Ok(false);
         };
         let mut busy = false;
         for obj in tasks {
-            if !seen.insert(generation_of(&obj)) || !starting(&obj) || !self.due(&obj) {
+            if !new_starts.seen.insert(generation_of(&obj)) || !starting(&obj) || !self.due(&obj) {
                 continue;
             }
-            started_here.insert(obj.metadata.uid.clone());
+            new_starts.started_here.insert(obj.metadata.uid.clone());
             *lease = self.store.renew_lease(lease, ttl)?;
             let unread = Observation::unknown("the outbox is read on the next pass");
             let (stepped, rest) =
