@@ -405,7 +405,7 @@ fn spec_forge_relay_notes_false_stops_notes_and_not_checks() {
     t["spec"]["brief"] = json!("another brief");
     env.apply(t)
         .code(1)
-        .stderr_has("immutable except spec.dispatch and spec.forge");
+        .stderr_has("immutable except spec.dispatch, spec.forge and spec.subscriptions");
 }
 
 #[test]

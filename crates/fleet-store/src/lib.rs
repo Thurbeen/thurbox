@@ -513,6 +513,7 @@ fn inbox_refusal(obj: &Object, why: String) -> StoreError {
 enum RelayField {
     Forge(Option<ForgeStatus>),
     Gateway(Option<Box<GatewayStatus>>),
+    Subscriptions(fleet_api::subscription::SubscriptionsStatus),
 }
 
 /// A Task is created with its brief alone: only the amend mutation adds an
@@ -1093,7 +1094,7 @@ impl Store for FileStore {
     ) -> Result<Object, StoreError> {
         let Some(field) = kinds::relay_field(&by) else {
             return Err(StoreError::Forbidden(format!(
-                "{} does not record relays; only the Forge and Gateway controllers do",
+                "{} does not record relays; only the Forge, Gateway and Task controllers do",
                 by.name()
             )));
         };
@@ -1104,6 +1105,11 @@ impl Store for FileStore {
                 serde_json::from_value(status)
                     .map_err(|e| StoreError::Invalid(format!("Task status.forge: {e}")))?,
             )),
+            "subscriptions" if status.is_null() => RelayField::Subscriptions(Default::default()),
+            "subscriptions" => RelayField::Subscriptions(
+                serde_json::from_value(status)
+                    .map_err(|e| StoreError::Invalid(format!("Task status.subscriptions: {e}")))?,
+            ),
             _ if status.is_null() => RelayField::Gateway(None),
             _ => RelayField::Gateway(Some(Box::new(
                 serde_json::from_value(status)
@@ -1130,6 +1136,7 @@ impl Store for FileStore {
             RelayField::Gateway(gateway) => {
                 st.gateway = gateway.map(|g| *g).filter(|g| !g.is_empty())
             }
+            RelayField::Subscriptions(subscriptions) => st.subscriptions = subscriptions,
         }
         for entry in appends {
             push_entry(&obj, &mut st, entry)?;

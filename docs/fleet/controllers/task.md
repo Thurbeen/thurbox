@@ -409,6 +409,13 @@ its signal file. On each pass, the manager ingests it into the Boards as
 TaskController, under the lease, and records the offset in
 `status.outbox` ([publishing from a session](../resources/board.md#publishing-from-a-session)).
 
+On each pass, the manager also reads the Boards that the Task subscribes
+to, as TaskController. When a subscription has new matching events, it
+queues one notice in the inbox and moves the cursor in
+`status.subscriptions`, in one write under the lease. The controller then
+delivers the notice as any inbox entry
+([subscriptions](../resources/board.md#subscriptions)).
+
 The controller records the last reported conversation in
 `status.conversation`. A revive or a resume names it, so the runtime starts
 the harness profile's resume argv.

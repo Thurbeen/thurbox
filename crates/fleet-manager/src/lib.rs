@@ -56,6 +56,7 @@ mod cron_tasks;
 mod execution;
 mod outbox;
 pub mod plugins;
+mod subscriptions;
 mod telemetry;
 pub mod verbs;
 
@@ -377,6 +378,18 @@ impl Manager<'_> {
                 busy |= ingested.written.is_some();
                 let outbox_drained = ingested.drained;
                 let obj = ingested.written.as_ref().unwrap_or(obj);
+                let notified = match self.notify_subscriptions(obj, lease, opts.lease_ttl, report) {
+                    Ok(written) => written,
+                    Err(e @ StoreError::LeaseLost(_)) => return Err(e),
+                    Err(e) => {
+                        report
+                            .errors
+                            .push(format!("{} subscriptions: {e}", obj.key()));
+                        None
+                    }
+                };
+                busy |= notified.is_some();
+                let obj = notified.as_ref().unwrap_or(obj);
                 let task_due = self.due(obj);
                 let forge_due = ForgeController::due(obj, now);
                 let gateway_due = {

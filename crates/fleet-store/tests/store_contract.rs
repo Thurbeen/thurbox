@@ -900,6 +900,7 @@ fn entry(key: &str) -> InboxEntry {
         about: None,
         answers: Vec::new(),
         amends: None,
+        notice: None,
         queued_at: 1,
     }
 }
@@ -1388,6 +1389,84 @@ fn a_torn_inbox_write_leaves_the_last_complete_record() {
     );
 }
 
+#[test]
+fn task_controller_relays_its_subscription_cursors_and_notices_in_one_write() {
+    use fleet_api::subscription::{SubscriptionCursor, SubscriptionsStatus};
+    let dir = Dir::new("relay-notice");
+    let store = FileStore::open(&dir.0).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let cursors = |after: u64, notices: u64| {
+        serde_json::to_value(SubscriptionsStatus {
+            notices,
+            cursors: vec![SubscriptionCursor {
+                board: "shared".into(),
+                filter: Default::default(),
+                board_uid: Some("b1".into()),
+                after,
+                notice: Some(format!("notice/{notices}")),
+            }],
+        })
+        .unwrap()
+    };
+    let notice = |key: &str| InboxEntry {
+        from: "board/shared".into(),
+        ..entry(key)
+    };
+    let mut mislabelled = notice("notice/1");
+    mislabelled.from = "cli/shared".into();
+    assert!(matches!(
+        store.record_relay(
+            "t",
+            cursors(3, 1),
+            vec![mislabelled],
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+    let err = store
+        .record_relay(
+            "t",
+            json!({"changes": {}}),
+            vec![],
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Invalid(_)), "{err}");
+    let t = store
+        .record_relay(
+            "t",
+            cursors(3, 1),
+            vec![notice("notice/1")],
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap();
+    let st = inbox_status(&t);
+    assert_eq!(st.subscriptions.cursors[0].after, 3);
+    assert_eq!(st.inbox.len(), 1);
+
+    let err = store
+        .record_relay(
+            "t",
+            cursors(5, 2),
+            vec![notice("notice/1")],
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
+    let st = inbox_status(&store.get("Task", "t").known().unwrap().clone().unwrap());
+    assert_eq!(st.subscriptions.cursors[0].after, 3, "the cursor stays");
+    assert_eq!(st.inbox.len(), 1);
+}
+
 // --- The relay: status.forge and the inbox entries land together. ---------
 
 #[test]
@@ -1417,7 +1496,6 @@ fn a_relay_lands_the_cursor_and_its_entries_together_or_not_at_all() {
         FieldManager::Apply,
         FieldManager::Worker,
         FieldManager::Cli,
-        FieldManager::TaskController,
         FieldManager::ChangeRequestController,
     ] {
         let err = store
@@ -2637,7 +2715,6 @@ fn the_gateway_relay_lands_its_status_its_entries_and_their_answers_together_or_
     for by in [
         FieldManager::Apply,
         FieldManager::Cli,
-        FieldManager::TaskController,
         FieldManager::ConversationController,
     ] {
         let err = store
@@ -3003,6 +3080,7 @@ fn amendment(generation: u64) -> fleet_api::task::Amendment {
 fn amends(t: &Object, generation: u64) -> InboxEntry {
     InboxEntry {
         amends: Some(generation),
+        notice: None,
         ..entry(&fleet_api::inbox::amend_key(
             "t",
             &t.metadata.uid,

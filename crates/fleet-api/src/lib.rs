@@ -77,6 +77,7 @@ pub mod screen;
 pub mod session;
 pub mod signal;
 pub mod store;
+pub mod subscription;
 pub mod talk;
 pub mod task;
 pub mod validate;

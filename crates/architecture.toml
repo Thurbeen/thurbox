@@ -555,7 +555,9 @@ clippy_guards = [
 # through its `publish_event` verb, and owns nothing (a Board's status moves
 # only with the store's typed append); `TaskController` also appends to a
 # Board's log, as a session's Task, when the manager ingests its outbox
-# under the lease;
+# under the lease, and appends a subscription's notices to
+# `Task.status.inbox` with its own `Task.status.subscriptions` through the
+# manager's relay write;
 # `ForgeController` owns `Task.status.forge` and `GatewayController`
 # `Task.status.gateway`, each appending through the manager's relay write.
 # `Listener` is an account's listener program,

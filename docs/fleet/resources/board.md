@@ -249,6 +249,64 @@ These rules apply:
   `oldest` and the cursor they were at. With `--json`, they also print
   `{"expired": {"oldest": N}}`.
 
+## Subscriptions
+
+A Task can subscribe to a Board. Then its session hears of new events in
+its inbox, as one notice per subscription. A notice never holds the events.
+The session reads them with `fleet event list`.
+
+```sh
+fleet event subscribe build --board ci --type 'ci.*'
+fleet event unsubscribe build --board ci --type 'ci.*'
+```
+
+A subscription is an item of the Task's `spec.subscriptions`: a `board`, a
+`filter` and an optional `after`. The `filter` takes the keys `type`,
+`subject`, `source` and `correlation`, with the meanings of the `list`
+flags. `fleet apply` can also set the list. See
+[Task](task.md#subscriptions).
+
+TaskController keeps one cursor per subscription in the Task's
+`status.subscriptions`. On each pass, for each subscription, it does these
+steps:
+
+1. It finds the cursor. A new subscription starts at its `after`. Without
+   `after`, it starts at the Board's head. A Board that is not there yet,
+   or that was made again, is read from its first event.
+2. When the last notice of the subscription is still in the inbox, it
+   stops. The next notice then covers all the events since. It also stops
+   when the Board's `status.head` is not above the cursor.
+3. It reads the events after the cursor, up to the head and at most 10000.
+   The cursor moves past each event it reads.
+4. When events match, or the cursor was older than the log, it queues one
+   notice. The notice and the cursors go in one write, under the lease.
+
+A notice is an inbox entry from `board/<board>`. Its `notice` field holds
+the Board, the `count` of matching events, the `first` and `last` matching
+`seq`, and `expiredBefore` when the cursor was older than the log. Its text
+gives the `fleet event list` command that reads the events:
+
+```text
+2 new events on Board ci match your subscription, seq 41 to 44. Read them with: fleet event list --board ci --after 40 --type 'ci.*'
+```
+
+These rules apply:
+
+- Delivery is at least once. The session can read an event in a notice and
+  again in the next one. The `seq` tells it which events it has.
+- A subscription has at most one notice still to deliver. The notices of
+  all subscriptions also count against the inbox bound. When the inbox is
+  full, the subscriptions wait.
+- When the cursor is older than the log, the notice says which events
+  expired. The cursor then goes on from `oldest - 1`. Fleet never passes
+  over events without a notice.
+- When the Board cannot be read (`Unknown`), the cursor and the notice stay
+  as they are. The pass reports why.
+- A Concluded or Releasing Task, and a Task that is being deleted, gets no
+  notice. Its cursors wait.
+- `count` is what the pass found. A later `list` also prints the events
+  published after the notice.
+
 ## Lifecycle
 
 ```text
@@ -287,7 +345,8 @@ publish ──▶ check ──▶ drop aged segments ──▶ key held? ──y
   TaskController appends the events as the Task. People and scripts
   outside a session publish as `cli/<user>`.
 - The [Task inbox](task.md) is different: it delivers each entry to one
-  session.
+  session. A Board reaches the inbox only through a subscription, as one
+  notice.
 
 ## Commands
 
@@ -299,6 +358,8 @@ fleet event publish --board ci --type ci.job.done --key run-42 --data '{"ok": tr
 fleet event list --board ci --after 10 --type 'ci.*' --limit 50
 fleet event wait --board ci --after 10 --type 'ci.*' --timeout-ms 60000 --json
 fleet event watch --board ci --after 10 --json
+fleet event subscribe build --board ci --type 'ci.*' --after 10
+fleet event unsubscribe build --board ci --type 'ci.*'
 fleet delete board ci
 ```
 

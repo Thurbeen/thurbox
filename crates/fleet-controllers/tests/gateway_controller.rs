@@ -777,6 +777,7 @@ fn a_full_inbox_holds_the_relay_without_moving_the_cursor_or_the_read() {
             about: None,
             answers: Vec::new(),
             amends: None,
+            notice: None,
             queued_at: 1,
         });
     }
@@ -814,6 +815,7 @@ fn entries_given_up_on_never_hold_the_relay() {
             about: None,
             answers: Vec::new(),
             amends: None,
+            notice: None,
             queued_at: 1,
         });
     }
@@ -1148,6 +1150,7 @@ fn a_full_inbox_holds_a_childs_items_without_reading_past_them() {
             about: None,
             answers: Vec::new(),
             amends: None,
+            notice: None,
             queued_at: 1,
         });
     }
@@ -1189,6 +1192,7 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
                 about: None,
                 answers: Vec::new(),
                 amends: None,
+                notice: None,
                 queued_at: 1,
             })
             .collect()

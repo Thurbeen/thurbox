@@ -128,6 +128,7 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     }
     validate_env(&s.env)?;
     validate_pause_after(s.pause_after_ms)?;
+    crate::subscription::validate(&s.subscriptions).map_err(StoreError::Invalid)?;
     // A Task with no harness of its own takes one from its TaskConfig, the
     // one `configRef` names or `default`: the store cannot see either here,
     // so `fleet apply` checks `default` and the launch checks the rest.
@@ -239,8 +240,8 @@ fn validate_cron_task_spec(spec: &Value) -> Result<(), StoreError> {
         .map_err(|e| StoreError::Invalid(format!("spec.template.spec: {e}")))
 }
 
-/// A Task's spec is fixed once created, like a Pod's: only `dispatch` and
-/// `forge` may change, and `amendments` only through the store's amend
+/// A Task's spec is fixed once created, like a Pod's: only `dispatch`,
+/// `forge` and `subscriptions` may change, and `amendments` only through the store's amend
 /// mutation. A different brief is a different Task. A
 /// ChangeRequest, a Conversation and a Listener are fixed whole.
 pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), StoreError> {
@@ -285,9 +286,10 @@ pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), 
     }
     a.dispatch = b.dispatch;
     a.forge = b.forge.clone();
+    a.subscriptions = b.subscriptions.clone();
     if a != b {
         return Err(StoreError::Invalid(
-            "Task spec is immutable except spec.dispatch and spec.forge; fleet amend adds to the brief, and a different brief is a new Task"
+            "Task spec is immutable except spec.dispatch, spec.forge and spec.subscriptions; fleet amend adds to the brief, and a different brief is a new Task"
                 .into(),
         ));
     }

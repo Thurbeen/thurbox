@@ -488,12 +488,17 @@ pub fn outbox_key(generation: u64, offset: u64) -> String {
 }
 
 /// A filter value: exact, or a prefix when it ends in `*`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Pattern(String);
 
 impl Pattern {
     pub fn new(p: &str) -> Pattern {
         Pattern(p.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 
     pub fn matches(&self, value: &str) -> bool {
@@ -505,15 +510,39 @@ impl Pattern {
 }
 
 /// What `fleet event list` keeps; an empty filter keeps every event.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Filter {
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub event_type: Option<Pattern>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<Pattern>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation: Option<String>,
 }
 
 impl Filter {
+    pub fn is_empty(&self) -> bool {
+        *self == Filter::default()
+    }
+
+    /// The `fleet event list` options that keep what this filter keeps,
+    /// each value quoted for a POSIX shell, each with a leading space.
+    pub fn cli_args(&self) -> String {
+        let options = [
+            ("--type", self.event_type.as_ref().map(Pattern::as_str)),
+            ("--subject", self.subject.as_ref().map(Pattern::as_str)),
+            ("--source", self.source.as_deref()),
+            ("--correlation", self.correlation.as_deref()),
+        ];
+        options
+            .into_iter()
+            .filter_map(|(flag, value)| value.map(|v| format!(" {flag} {}", shell_quote(v))))
+            .collect()
+    }
+
     pub fn matches(&self, e: &Event) -> bool {
         self.event_type
             .as_ref()
@@ -527,6 +556,18 @@ impl Filter {
                 .correlation
                 .as_ref()
                 .is_none_or(|c| e.correlation.as_ref() == Some(c))
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+".contains(c));
+    if plain {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
     }
 }
 

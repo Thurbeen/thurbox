@@ -1099,6 +1099,7 @@ impl Pass<'_, '_> {
             }),
             answers: Vec::new(),
             amends: None,
+            notice: None,
             queued_at: self.input.now,
         });
     }
