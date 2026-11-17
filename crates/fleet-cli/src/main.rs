@@ -3028,10 +3028,7 @@ enum Stopped {
     Lost,
 }
 
-/// Ask Fleet to revive a lost session for a view, and wait until the
-/// controller says its window is back: `SessionLost` turned False after
-/// the request.
-fn wait_for_revive(
+fn wait_for_revived_view(
     store: &dyn Store,
     task: &str,
     ask: impl Fn() -> Observation<Option<fleet_api::runtime::Attach>>,
@@ -3039,15 +3036,19 @@ fn wait_for_revive(
     wake(store, &SystemClock, task)?;
     let wait = std::time::Duration::from_millis(fleet_api::task::VIEW_WAIT_MS);
     let deadline = std::time::Instant::now() + wait;
+    let mut last = Observation::Known(None);
     while std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(500));
         if let Some(why) = cannot_resume(&get(store, fleet_api::task::KIND, task)?) {
             return Err(cannot_resume_failure(task, &why));
         }
-        let answer = ask();
-        if matches!(answer, Observation::Known(Some(_))) {
-            return Ok(answer);
+        last = ask();
+        if matches!(last, Observation::Known(Some(_))) {
+            return Ok(last);
         }
+    }
+    if matches!(last, Observation::Unknown { .. }) {
+        return Ok(last);
     }
     Err(Failure {
         code: exit::NOT_FOUND,
@@ -3138,7 +3139,7 @@ fn cmd_open(
         && matches!(runtime.lost(&session), Observation::Known(true))
     {
         refuse_unresumable(&obj, task, Stopped::Lost)?;
-        answer = wait_for_revive(store, task, || ask(&session))?;
+        answer = wait_for_revived_view(store, task, || ask(&session))?;
     }
     let argv = match answer {
         Observation::Known(Some(Attach::Stream { argv })) => argv,
