@@ -667,6 +667,11 @@ fn a_tied_tasks_thread_hears_once_per_round_when_every_review_thread_is_answered
             n.resolved = Some(resolved);
         }
     };
+    let r6 = notes.iter_mut().find(|n| n.id == "r6").unwrap();
+    r6.body = "And the error path, with a test, and a log?".into();
+    r6.edited_at = Some(37);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "an edited note waits");
     resolve(&mut notes, true);
     step(&notes);
     resolve(&mut notes, false);

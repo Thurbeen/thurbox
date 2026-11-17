@@ -434,16 +434,23 @@ fn answered_through(cr: &ChangeRequestStatus, me: &str, mark: &str) -> Option<Mi
     if cr.threads.as_ref()?.unresolved != unresolved.len() as u64 {
         return None;
     }
+    let last = |n: &StoredNote| n.edited_at.unwrap_or(n.at);
+    let answered = |n: &StoredNote| {
+        answered_in_thread(cr, n, me, mark)
+            && inline
+                .iter()
+                .any(|r| r.thread == n.thread && own(r) && r.at > last(n))
+    };
     let waiting = inline
         .iter()
-        .any(|n| n.resolved == Some(false) && !own(n) && !answered_in_thread(cr, n, me, mark));
+        .any(|n| n.resolved == Some(false) && !own(n) && !answered(n));
     if waiting {
         return None;
     }
     let through = inline
         .iter()
-        .filter(|n| !n.bot && !own(n) && answered_in_thread(cr, n, me, mark))
-        .map(|n| n.edited_at.unwrap_or(n.at))
+        .filter(|n| !n.bot && !own(n) && answered(n))
+        .map(|n| last(n))
         .max();
     Some(through.unwrap_or(0))
 }
