@@ -211,9 +211,13 @@ fn doctor_reports_the_effective_telemetry_and_where_each_value_comes_from() {
 fn an_unreadable_headers_file_turns_all_export_off_even_with_an_otel_endpoint() {
     let collector = Collector::start();
     let mut env = Env::new("otel-file-unreadable-headers");
+    let missing = env.root.join("missing-otel-headers");
     with_telemetry(
         &env,
-        "traces = false\nheaders = { file = '/nonexistent/otel-headers' }\n",
+        &format!(
+            "traces = false\nheaders = {{ file = '{}' }}\n",
+            missing.display()
+        ),
     );
     env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
 
