@@ -45,8 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/insta
 **Windows (PowerShell):**
 
 ```powershell
-$env:THURBOX_VERSION = 'v2.89.0'
-irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1))) -Version v2.89.0
 ```
 
 This installs `thurbox` and `thurbox-cli`. thurbox v2 needs no Fleet, so you
@@ -94,6 +93,8 @@ The rest of this README describes v3.
   <source media="(prefers-color-scheme: dark)" srcset="website/assets/overview-dark.svg">
   <img src="website/assets/overview-light.svg" alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place">
 </picture>
+
+<a id="install"></a>
 
 ## Install v3 (not yet recommended)
 
