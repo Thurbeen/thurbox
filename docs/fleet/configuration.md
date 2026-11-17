@@ -444,8 +444,8 @@ keyPrefix = "f0123456789abcdef01234567"
 This is the runtime part of what `fleet init` writes: an absolute store
 path, a `keyPrefix` derived from the config's path, and `runtime-mux` and
 nothing else. `init` also writes the three shipped `[forge.readyPolicies]`,
-and the TaskConfig `default` and the [Board](resources/board.md) `shared`
-into the store
+and the TaskConfig `default` and the [Boards](resources/board.md) `shared`
+and `fleet` into the store
 ([the default TaskConfig](resources/task-config.md#the-default-taskconfig)).
 A runtime with no `places` table has one place, `local`, so this config has
 one place, `mux/local`, also named `local`: this machine.
@@ -682,7 +682,8 @@ Apply uses JSON resources. File/command provider output uses a third format:
 resource manifests. Config schema `1`, resource API `fleet/v1alpha1` and store
 format `1` are separate version contracts; `fleet version --json` reports
 them. A repeated `fleet init` keeps the user-owned native config, the
-TaskConfig `default` and the Board `shared` when the store holds them.
+TaskConfig `default` and the Boards `shared` and `fleet` when the store holds
+them.
 
 ### The `[forge]` section
 

@@ -890,9 +890,12 @@ refused.
   with the `(source, key, seq)` of its keyed events. `append_events` is the
   only writer. `cli` calls it as `cli/<user>`, through the manager's
   `publish_event` verb, with no lease. TaskController calls it as a Task
-  (`Source::Task`), under the lease, as the next bullet says. Under the
-  lock it checks each event
-  (`event::validate_publish`: the type grammar, the refused `fleet.` prefix,
+  (`Source::Task`), under the lease, as the next bullet says, and as itself
+  (`Source::Controller`, `controller/task-controller`), under the lease,
+  for its `fleet.task.*` events on Board `fleet`
+  (`kinds::may_append_events`). Under the lock it checks each event
+  (`event::validate_publish_from`: the type grammar, the `fleet.` prefix,
+  refused for every source but a controller,
   256 characters for `subject`, `key` and `correlation`, the Board's
   `maxDataBytes`) and refuses the batch whole when one fails. It then drops,
   from the oldest, each segment whose events are all older than
@@ -1016,6 +1019,31 @@ refused.
   TaskController under the lease, so a stop between them cannot happen; a
   conflict leaves both for the next pass. A cursor of a subscription no
   longer in the spec is dropped. `e2e_event_subscriptions` drives it through
+  the real binary.
+- TaskController's own events go to Board `fleet` (`board::FLEET`) as
+  `Source::Controller` `controller/task-controller`, with the Task's name as
+  `subject`, under `task/<name>/<uid>/<series>/<n>` (`task_event::key`).
+  `TaskController::reconcile` queues a `fleet.task.phase` event
+  (`FleetEvents::queue_phase`) in `status.fleetEvents.pending` in the write
+  that changes the phase, under the next `phases` number: the intent lands
+  with its cause. `pending` keeps the newest 64. `FleetEvents::owed` adds one
+  `fleet.task.declared` per item of `status.declared` past
+  `fleetEvents.declared`, and one `fleet.task.result` when `status.result`'s
+  generation is not `fleetEvents.result`, and gives the record that follows
+  them. An empty record owes nothing and starts at what status holds: a Task
+  queues its first phase change before any brief, and a declaration or a
+  result needs a brief, so only a Task from before Board `fleet` has one
+  with a declaration or a result. The manager's `publish_fleet_events` appends the owed events in one
+  `append_events` under the lease, then writes that record as TaskController,
+  re-reading the Task on a conflict and giving up when its `fleetEvents`
+  moved. It runs at the start of each Task's turn in a pass, and in
+  `perform_plan` right after the status write, before the effects and the
+  finalizer's removal; an error there other than a lost lease is reported
+  and the plan goes on. A batch the Board refuses (`Invalid`, `NotFound`,
+  `Forbidden`) is appended one event at a time, and each refused event is
+  counted in `fleetEvents.skipped` and `lastSkipped`. Any other error keeps
+  the record and reports `Unknown`, so the next pass appends the same events
+  again, and their keys append nothing. `e2e_fleet_events` drives it through
   the real binary.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
@@ -1596,7 +1624,8 @@ plugin port.
 exists is kept, never replaced. It also writes the TaskConfig `default`, with
 `pauseAfterMs` 1800000, into the config's store when the store holds none
 ([the default TaskConfig](resources/task-config.md#the-default-taskconfig)),
-and the Board `shared`, with the default spec, when the store holds none. The
+and the Boards `shared` and `fleet`, each with the default spec, when the
+store holds none. The
 [initialization guide](configuration.md#configuration-and-customization)
 specifies precedence and paths.
 

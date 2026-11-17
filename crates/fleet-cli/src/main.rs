@@ -58,6 +58,9 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Create the local config, offline; an existing config is kept.
+    ///
+    /// Also ensures the TaskConfig default and the Boards shared and fleet
+    /// in the store.
     Init,
     /// Keep every due Task reconciling until Ctrl-C.
     Up {
@@ -479,7 +482,7 @@ enum EventCommand {
         #[arg(long, default_value = fleet_api::board::SHARED)]
         board: String,
         /// The event type: dot-separated segments of a-z, 0-9, '_' and '-';
-        /// the fleet. prefix is Fleet's own.
+        /// the fleet. prefix is Fleet's controllers' own, and refused here.
         #[arg(long = "type", value_name = "TYPE")]
         event_type: String,
         /// What the event is about, such as a repository or a path.
@@ -584,7 +587,8 @@ enum EventCommand {
 
 #[derive(Debug, clap::Args)]
 struct EventFilter {
-    /// The Board to read.
+    /// The Board to read; Board fleet holds TaskController's fleet.task.*
+    /// events.
     #[arg(long, default_value = fleet_api::board::SHARED)]
     board: String,
     /// Only this event type; a trailing * matches a prefix.
@@ -593,7 +597,8 @@ struct EventFilter {
     /// Only this subject; a trailing * matches a prefix.
     #[arg(long)]
     subject: Option<String>,
-    /// Only events from this source, such as cli/USER or task/NAME.
+    /// Only events from this source, such as cli/USER, task/NAME or
+    /// controller/task-controller.
     #[arg(long)]
     source: Option<String>,
     /// Only events with this correlation id.
@@ -885,7 +890,8 @@ fn run(cli: Cli) -> Result<(), Failure> {
             .ok_or_else(|| fail("no data directory: set data.dir in the config file"))?;
         let store = FileStore::open(&data_dir)?;
         default_task_config(&store)?;
-        shared_board(&store)?;
+        ensure_board(&store, fleet_api::board::SHARED)?;
+        ensure_board(&store, fleet_api::board::FLEET)?;
         // The profiles `fleet doctor` checks: the bundled ones, then the
         // user's beside this config.
         let harnesses = harness_dir(Some(&path));
@@ -2476,12 +2482,12 @@ fn agent_collector() -> Option<fleet_api::harness::Collector> {
     })
 }
 
-fn shared_board(store: &dyn Store) -> Result<(), Failure> {
-    use fleet_api::board::{BoardSpec, KIND, SHARED};
+fn ensure_board(store: &dyn Store, name: &str) -> Result<(), Failure> {
+    use fleet_api::board::{BoardSpec, KIND};
     let obj: Object = serde_json::from_value(json!({
         "apiVersion": fleet_api::API_VERSION,
         "kind": KIND,
-        "metadata": {"name": SHARED},
+        "metadata": {"name": name},
         "spec": BoardSpec::default(),
     }))
     .map_err(|e| fail(e.to_string()))?;

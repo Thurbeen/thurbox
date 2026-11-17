@@ -91,6 +91,7 @@ repositories.
 | `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. |
 | `outbox` | TaskController | `{offset, generation, skipped, lastSkipped, closed, discarding}`: how far the session's event outbox is ingested into the Boards. See [Board](board.md#publishing-from-a-session). |
 | `subscriptions` | TaskController | `{notices, cursors}`: the count of notices queued, and per subscription its Board, filter, `boardUid`, cursor (`after`) and the key of its last notice. See [Subscriptions](#subscriptions). |
+| `fleetEvents` | TaskController | `{pending, phases, declared, result, skipped, lastSkipped}`: the `fleet.task.*` events on Board `fleet`. `pending` holds the phase events not appended yet. `phases` counts the phase changes. `declared` counts the declarations with an event. `result` is the generation of the last result with an event. See [Board](board.md#board-fleet). |
 | `result` | the worker, `fleet result` | The worker's claim: outcome, generation, summary, artifacts, outputs. See [Worker result](#worker-result). |
 | `declared` | the worker, `fleet declare` | Facts the worker declared, each a JSON object with a string `kind`. |
 | `forge` | ForgeController | One entry per declared change, and its conditions. See [Following declared changes](#following-declared-changes). |

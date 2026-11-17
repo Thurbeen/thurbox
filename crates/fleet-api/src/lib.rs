@@ -80,6 +80,7 @@ pub mod store;
 pub mod subscription;
 pub mod talk;
 pub mod task;
+pub mod task_event;
 pub mod validate;
 pub mod workspace;
 

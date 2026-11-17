@@ -29,6 +29,9 @@ pub enum Source {
     /// A session's Task, whose outbox TaskController ingested the event
     /// from.
     Task(TaskSource),
+    /// `controller/<name>`: a Fleet controller, the only publisher of the
+    /// [`RESERVED_PREFIX`].
+    Controller(ControllerSource),
 }
 
 impl Source {
@@ -38,6 +41,7 @@ impl Source {
         match self {
             Source::Cli(c) => c.0.clone(),
             Source::Task(t) => format!("{TASK_SOURCE_PREFIX}{}", t.task),
+            Source::Controller(c) => c.0.clone(),
         }
     }
 
@@ -47,6 +51,7 @@ impl Source {
         match (self, other) {
             (Source::Cli(a), Source::Cli(b)) => a == b,
             (Source::Task(a), Source::Task(b)) => a.task == b.task && a.uid == b.uid,
+            (Source::Controller(a), Source::Controller(b)) => a == b,
             _ => false,
         }
     }
@@ -134,6 +139,38 @@ impl TryFrom<String> for CliSource {
 
 impl From<CliSource> for String {
     fn from(c: CliSource) -> String {
+        c.0
+    }
+}
+
+pub const CONTROLLER_SOURCE_PREFIX: &str = "controller/";
+
+/// `controller/<field manager>`, such as `controller/task-controller`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ControllerSource(String);
+
+impl ControllerSource {
+    pub fn of(by: &crate::store::FieldManager) -> ControllerSource {
+        ControllerSource(format!("{CONTROLLER_SOURCE_PREFIX}{}", by.name()))
+    }
+}
+
+impl TryFrom<String> for ControllerSource {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<ControllerSource, String> {
+        match s.strip_prefix(CONTROLLER_SOURCE_PREFIX) {
+            Some(name) if !name.is_empty() && !name.contains(['/', '\0']) => {
+                Ok(ControllerSource(s))
+            }
+            _ => Err(format!("source {s:?}: use controller/<name>")),
+        }
+    }
+}
+
+impl From<ControllerSource> for String {
+    fn from(c: ControllerSource) -> String {
         c.0
     }
 }
@@ -241,16 +278,33 @@ fn validate_field(name: &str, value: Option<&str>) -> Result<(), String> {
 }
 
 /// Check a publish against the envelope's rules and the board's
-/// `maxDataBytes`. The [`RESERVED_PREFIX`] is refused: no publisher in this
-/// release is a controller.
+/// `maxDataBytes`. The [`RESERVED_PREFIX`] is refused: this check is for a
+/// publisher that is not a controller.
 pub fn validate_publish(p: &Publish, max_data_bytes: u64) -> Result<(), String> {
-    validate_type(&p.event_type)?;
     if p.event_type.starts_with(RESERVED_PREFIX) {
         return Err(format!(
             "type {:?}: the {RESERVED_PREFIX} prefix is reserved for Fleet's controllers",
             p.event_type
         ));
     }
+    validate_envelope(p, max_data_bytes)
+}
+
+/// [`validate_publish`] for a publish from `source`: a
+/// [`Source::Controller`] may also use the [`RESERVED_PREFIX`].
+pub fn validate_publish_from(
+    source: &Source,
+    p: &Publish,
+    max_data_bytes: u64,
+) -> Result<(), String> {
+    match source {
+        Source::Controller(_) => validate_envelope(p, max_data_bytes),
+        Source::Cli(_) | Source::Task(_) => validate_publish(p, max_data_bytes),
+    }
+}
+
+fn validate_envelope(p: &Publish, max_data_bytes: u64) -> Result<(), String> {
+    validate_type(&p.event_type)?;
     validate_field("subject", p.subject.as_deref())?;
     validate_field("key", p.key.as_deref())?;
     validate_field("correlation", p.correlation.as_deref())?;
@@ -649,6 +703,28 @@ mod tests {
         assert!(serde_json::from_value::<Source>(json!("forge/x")).is_err());
         assert!(CliSource::new("a/b").is_err());
         assert!(CliSource::new(" ").is_err());
+    }
+
+    #[test]
+    fn a_controller_source_is_a_string_on_the_wire_and_alone_takes_the_reserved_prefix() {
+        let ctl = Source::Controller(ControllerSource::of(&crate::FieldManager::TaskController));
+        assert_eq!(
+            serde_json::to_value(&ctl).unwrap(),
+            json!("controller/task-controller")
+        );
+        let back: Source = serde_json::from_value(json!("controller/task-controller")).unwrap();
+        assert_eq!(back, ctl);
+        assert_eq!(ctl.name(), "controller/task-controller");
+        assert!(serde_json::from_value::<Source>(json!("controller/")).is_err());
+        assert!(serde_json::from_value::<Source>(json!("controller/a/b")).is_err());
+
+        let reserved = publish("fleet.task.phase");
+        assert!(validate_publish_from(&ctl, &reserved, 16).is_ok());
+        let cli = Source::Cli(CliSource::new("alice").unwrap());
+        assert!(validate_publish_from(&cli, &reserved, 16).is_err());
+        let mut big = publish("fleet.task.phase");
+        big.data = json!("x".repeat(16));
+        assert!(validate_publish_from(&ctl, &big, 16).is_err());
     }
 
     #[test]

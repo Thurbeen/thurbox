@@ -121,7 +121,7 @@ impl FileStore {
         }
         let spec: BoardSpec = fleet_api::validate::typed(board::KIND, &obj.spec)?;
         for p in &events {
-            event::validate_publish(p, spec.max_data_bytes)
+            event::validate_publish_from(source, p, spec.max_data_bytes)
                 .map_err(|why| StoreError::Invalid(format!("{}: {why}", obj.key())))?;
         }
         let status = board_status(&obj)?;

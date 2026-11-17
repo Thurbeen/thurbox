@@ -432,6 +432,14 @@ queues one notice in the inbox and moves the cursor in
 delivers the notice as any inbox entry
 ([subscriptions](../resources/board.md#subscriptions)).
 
+A reconcile that changes the phase also queues a `fleet.task.phase` event in
+`status.fleetEvents.pending`, in the same write. After that write, and at
+the start of each Task's turn in a pass, the manager appends the events the
+Task is owed to Board `fleet`, as the controller, under the lease. Then it
+writes `status.fleetEvents`. The events are the pending phase events, one
+per new declaration, and one per new result
+([Board `fleet`](../resources/board.md#board-fleet)).
+
 The controller records the last reported conversation in
 `status.conversation`. A revive or a resume names it, so the runtime starts
 the harness profile's resume argv.
