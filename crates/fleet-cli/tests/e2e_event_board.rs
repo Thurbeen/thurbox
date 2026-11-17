@@ -2139,3 +2139,44 @@ fn before_append_reads_a_board_made_again_between_its_head_and_uid_as_the_new_bo
     assert_eq!(before.board_uid.as_deref(), now["metadata"]["uid"].as_str());
     assert_eq!(before.head, 0, "the head of the board made again");
 }
+
+#[test]
+fn ingested_reads_a_skip_in_a_later_generation_as_not_the_lines() {
+    let env = session_env("event-ingested-later-skip");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    let store = fleet_store::FileStore::open(&env.data).unwrap();
+    let task = env.get("a");
+    let key = fleet_api::session::session_key("a", task["metadata"]["uid"].as_str().unwrap());
+    let before = fleet_manager::verbs::before_append(&store, &key, "shared").unwrap();
+    let padding = "x".repeat(200);
+    publish_inside(
+        &env,
+        &borrowed(&vars),
+        &["--type", "kept", "--data", &format!("\"{padding}\"")],
+    )
+    .ok();
+    let end = std::fs::metadata(&outbox).unwrap().len();
+    let line = before.queued(0, end, "shared", None);
+    env.reconcile().ok();
+
+    std::fs::remove_file(&outbox).unwrap();
+    append_raw(&outbox, "{\"board\":\"nowhere\",\"type\":\"bad\"}\n");
+    env.reconcile().ok();
+    let cursor = env.get("a")["status"]["outbox"].clone();
+    assert_eq!(cursor["generation"], 1, "{cursor}");
+    assert!(
+        cursor["lastSkipped"]
+            .as_str()
+            .is_some_and(|why| why.starts_with("offset 0:")),
+        "{cursor}"
+    );
+
+    match fleet_manager::verbs::ingested(&store, &line).unwrap() {
+        fleet_manager::verbs::Ingest::Appended { event, duplicate } => {
+            assert_eq!(event.event_type, "kept");
+            assert!(!duplicate);
+        }
+        other => panic!("the appended line read as {other:?}"),
+    }
+}

@@ -195,8 +195,8 @@ fleet event publish --type git.push --data '{"branch": "main"}' --wait --timeout
 
 These rules apply:
 
-- When `status.outbox.lastSkipped` names the line's offset, Fleet skipped
-  the line. The command prints that reason and exits 1, even when the
+- When `status.outbox.lastSkipped` names the line's offset in the line's
+  generation, Fleet skipped the line. The command prints that reason and exits 1, even when the
   Task used the line's key before.
 - TaskController appends an event before it moves `status.outbox` past
   its line. When the Board has no event for the line after that, the line
