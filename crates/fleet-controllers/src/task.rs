@@ -105,7 +105,7 @@ const RELEASE: &str = "release";
 const REVIVE: &str = "revive";
 const PAUSE: &str = "pause";
 const RESUME: &str = "resume";
-/// The note owed to a revived or resumed session, before its inbox.
+/// The note owed to a revived session, before its inbox.
 const CATCH_UP: &str = "catchup";
 /// The NeedsAttention reason once revives keep leaving the session lost.
 const REVIVE_FAILED: &str = "ReviveFailed";
@@ -1403,7 +1403,7 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Send the catch-up note owed to a revived or resumed session, under
+    /// Send the catch-up note owed to a revived session, under
     /// its own key, as an inbox entry is sent. Returns true while it is
     /// owed: nothing else is delivered before it.
     fn catch_up(&mut self, session: SessionRef) -> bool {
@@ -1426,7 +1426,7 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// What a revived or resumed worker is told. A worker still on its
+    /// What a revived worker is told. A worker still on its
     /// brief is given the brief again, under the generation it was briefed
     /// for.
     fn catch_up_text(&self) -> String {
@@ -1435,9 +1435,8 @@ impl Pass<'_, '_> {
             .brief
             .as_ref()
             .map_or(self.generation, |b| b.generation);
-        let head = "Fleet: your session was restarted, after its host went down or after \
-                    Fleet paused it while it was idle, and your conversation was resumed. \
-                    Background shells, Monitors and loops you started did not survive; start \
+        let head = "Fleet: your session was lost and restarted, and your conversation \
+                    was resumed. Background shells, Monitors and loops you started did not survive; start \
                     again any you still need. Work you did not commit, push or declare may \
                     be lost. Re-read your worktree, the changes you declared and your inbox";
         if self.st.phase == Phase::Concluded {
@@ -1619,7 +1618,8 @@ impl Pass<'_, '_> {
     }
 
     /// The session runs again, after Fleet's resume under `key` or after
-    /// someone else started it. The worker is owed a catch-up note.
+    /// someone else started it. Its agent resumes its conversation, and
+    /// nothing is typed into it but its inbox.
     fn resumed(&mut self, key: Option<&str>) {
         if let Some(key) = key {
             self.st.intents.remove(key);
@@ -1634,7 +1634,6 @@ impl Pass<'_, '_> {
             "the session's agent runs again",
         );
         self.settle_attention(RESUME_FAILED);
-        self.owe_catch_up();
     }
 
     /// Pause the session once its agent was seen Idle, without a break,

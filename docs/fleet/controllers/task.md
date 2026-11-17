@@ -143,7 +143,7 @@ concludes nothing.
 | Briefed or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. |
 | Briefed, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
 | Briefed or Concluded | Paused; an inbox entry to deliver, or `wakeRequestedAt` at or after the `Paused=True` transition; `dispatch: true` | unchanged | Persist a resume intent and plan `Resume` under `resume/<n>`. Send nothing. |
-| Briefed or Concluded | Known Resumed receipt, a missing/Unknown receipt with the session observed running, or a paused session observed running | unchanged | Set `Paused=False/Resumed`. When the brief has a receipt, owe a catch-up note under `catchup/<n>`. |
+| Briefed or Concluded | Known Resumed receipt, a missing/Unknown receipt with the session observed running, or a paused session observed running | unchanged | Set `Paused=False/Resumed`. Send nothing of Fleet's own: the agent continues its conversation, and only the inbox is delivered. |
 | Briefed or Concluded | Failed resume receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Wait 30 seconds from the last resume, then resume again. After three resumes have left the session stopped, each further resume also raises `NeedsAttention/ResumeFailed`. |
 | Active phase | Accepted worker result for `status.brief.generation` is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
 | Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
@@ -316,14 +316,16 @@ profile's resume argv on that conversation, under the same key.
 
 A pause ends background work in the agent. A resumed agent does not start
 its background shells, Monitors or loops again. For this reason, Fleet
-pauses only on a Known Idle answer from the runtime.
+pauses only on a Known Idle answer from the runtime. Fleet types nothing of
+its own into a resumed agent: the agent continues its conversation, and only
+the inbox is delivered.
 
 ```text
 Briefed/Concluded ──Idle for pauseAfterMs──> Pause ──> Paused=True/Idle
         ^                                                   │
         │                         inbox entry, or fleet attach --wake
         │                                                   v
-  catch-up note, then the inbox <── Paused=False/Resumed <── Resume
+  the inbox, if any (no note) <── Paused=False/Resumed <── Resume
 ```
 
 The controller plans a pause when all of these hold:
@@ -352,22 +354,21 @@ These rules apply to a paused session:
 - `fleet attach --wake` and `fleet shell --wake` plan one resume too. They
   set `status.wakeRequestedAt` on a paused Task, then wait for `Paused` to
   leave True before they ask the runtime for the stream. A request older
-  than the pause resumes nothing. A wake queues no text: the resumed worker
-  gets only the catch-up note. Without `--wake`, both exit 3 and say the
+  than the pause resumes nothing. A wake queues no text and types nothing:
+  the agent continues its conversation. Without `--wake`, both exit 3 and say the
   Task is paused, so a view that attaches every Task in the background
   wakes nothing.
-- A resumed worker is owed the catch-up note that a revived worker gets,
-  before its inbox.
+- A resumed worker is owed no catch-up note. Only a revived worker gets
+  one.
 - A session stopped outside Fleet sets `Paused=True/External`. The next
   inbox entry, or a wake, resumes it.
 - A paused session found running again sets `Paused=False/Resumed`.
 - A pause never raises WorkerGone or SessionLost, and never revives.
 - Stalled, held and deleting Tasks are never resumed.
 - Deleting a paused Task releases it: a stopped session is at rest.
-- A Concluded Task owed a catch-up note is not paused again until the note
-  is delivered. The manager reconciles it until then, and the note is sent
-  once the session is ready, with or without an inbox entry. A revived
-  Concluded Task behaves the same way.
+- A revived Concluded Task owed a catch-up note is not paused again until
+  the note is delivered. The manager reconciles it until then, and the note
+  is sent once the session is ready, with or without an inbox entry.
 
 `pauseAfterMs` absent means that Fleet never pauses the session. `fleet init`
 writes the TaskConfig `default` with `pauseAfterMs` 1800000, 30 minutes,

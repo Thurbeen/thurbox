@@ -515,7 +515,7 @@ pub struct TaskStatus {
     /// Catch-up notes queued over the Task's life; the next one's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub catch_ups: u32,
-    /// The key of the catch-up note owed to a revived or resumed session,
+    /// The key of the catch-up note owed to a revived session,
     /// until its delivery is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catch_up: Option<String>,

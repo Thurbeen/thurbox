@@ -1737,17 +1737,17 @@ fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
             .insert("task/t/u7/resume/1".into(), effect_intent("resume"));
     });
 
-    // Running: resumed; the catch-up note goes before the entry.
+    // Running: resumed; the entry goes, and nothing of Fleet's own.
     let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(false)));
     assert_eq!(cond(&st, "Paused").status, ConditionStatus::False);
     assert_eq!(cond(&st, "Paused").reason, "Resumed");
-    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/catchup/1"));
+    assert_eq!(st.catch_up, None);
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
-    assert_eq!(plan.effects[0].key, "task/t/u7/catchup/1");
+    assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
     let Action::Brief { text, .. } = &plan.effects[0].action else {
         panic!("{plan:#?}")
     };
-    assert!(text.contains("paused") && text.ends_with("do it"), "{text}");
+    assert_eq!(text, "message task/t/u7/send/1");
 
     // Still stopped: a new resume, after a wait from the last one.
     let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(true)));
