@@ -1164,7 +1164,15 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
                 .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
             let lease_ttl_ms = lease_for(bound, lease_ttl_ms)?;
-            let holder = holder.unwrap_or_else(|| format!("fleet-{}", std::process::id()));
+            if let Some(named) = holder
+                .as_deref()
+                .filter(|h| fleet_store::holder::is_reserved(h))
+            {
+                return Err(fail(format!(
+                    "--holder {named}: names of the shape fleet-<pid>@<boot id> are Fleet's own"
+                )));
+            }
+            let holder = holder.unwrap_or_else(|| fleet_store::holder::local(false));
             let manager = Manager {
                 store,
                 runtime: runtime.as_ref(),
@@ -1594,7 +1602,7 @@ fn cmd_up(
         store,
         runtime: runtime.as_ref(),
         clock: &SystemClock,
-        holder: format!("fleet-up-{}", std::process::id()),
+        holder: fleet_store::holder::local(true),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
         signals: Some(&signals),
         agent_telemetry: agent_collector(),
@@ -1737,8 +1745,9 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
     Ok(())
 }
 
-/// The manager lease, for `version`: `held` while it is unexpired, `false`
-/// when none is recorded or it expired, `null` with `why` when it cannot be
+/// The manager lease, for `version`: `held` while it is unexpired and its
+/// holder is not proven dead, `false` when none is recorded, it expired or
+/// its holder is dead, `null` with `why` when it cannot be
 /// read. Only read: the lease is never taken or renewed, and no store is
 /// created.
 fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf>) -> Value {
@@ -1770,7 +1779,8 @@ fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf
     match FileStore::peek_lease(&data_dir) {
         Ok(None) => json!({"held": false, "holder": null, "expiresAt": null, "why": null}),
         Ok(Some(l)) => json!({
-            "held": fleet_api::Clock::now(&SystemClock) < l.expires_at,
+            "held": fleet_api::Clock::now(&SystemClock) < l.expires_at
+                && !fleet_store::holder::is_dead(&l.holder),
             "holder": l.holder,
             "expiresAt": l.expires_at,
             "why": null,

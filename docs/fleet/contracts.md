@@ -797,7 +797,9 @@ refused.
   `Task.status.inbox`, `status.answered` and `status.wakeRequestedAt`,
   which have none and which no status write may change. A controller writes only under the current
   manager lease: an expired or superseded token is refused, and the token
-  only grows.
+  only grows. A new manager takes over an unexpired lease only when its
+  holder names another boot, so no process it started still runs.
+  `fleet reconcile --holder` refuses a name of that shape.
 - `status.inbox` is reached through three typed mutations, each named by
   its caller and compare-and-swap under the lock: `append_inbox` (`cli`,
   through the manager's `send` verb, no lease; or `forge-controller` or

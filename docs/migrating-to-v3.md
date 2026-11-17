@@ -154,7 +154,7 @@ with `WorkspaceReady` Unknown and the reason `Materializing`.
 
 Before you enable a service:
 
-1. Read who holds the lease. `holder` is `fleet-up-<pid>`:
+1. Read who holds the lease. `holder` is `fleet-up-<pid>@<boot id>`:
 
    ```sh
    fleet version --json | jq .manager
