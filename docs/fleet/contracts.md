@@ -1549,7 +1549,7 @@ the forges ChangeRequests are read from:
 
 ```text
 [runtimes.mux]
-program = "runtime-mux"   # a path or a name on PATH
+program = "runtime-mux"   # a path, or a name beside fleet, else on PATH
 callTimeoutMs = 15000     # the bound on every call; shorter than the lease
 keyPrefix = "fleet"       # give a second fleet on the same runtime its own
                           # no places table: one place, spec.host = "local"
