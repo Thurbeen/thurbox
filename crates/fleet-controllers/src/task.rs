@@ -41,8 +41,9 @@ pub const MAX_ATTEMPTS: u32 = 3;
 pub const RETRY_DELAY_MS: Millis = 30_000;
 
 /// How often a Concluded Task at rest has its session looked up again, so
-/// a session deleted out of band is reported. Recorded as
-/// `status.sessionCheckedAt`.
+/// a session deleted out of band or lost is reported. Recorded as
+/// `status.sessionCheckedAt`. A view's wake request newer than the last
+/// lookup makes one due at once.
 pub const SESSION_RECHECK_MS: Millis = 300_000;
 
 const OUTBOX_UNREAD: &str = "OutboxUnread";
@@ -215,22 +216,25 @@ impl TaskController {
             }
             // A Concluded Task is due for delivery, and at rest once per
             // recheck interval; its session is looked up, so a vanished
-            // worker is reported, never respawned. Only a delivery revives a
-            // lost session: a concluded worker at rest stays at rest. A
-            // session that may be paused has its activity watched.
+            // worker is reported, never respawned, and a lost one reads
+            // lost. Only a delivery or a view revives a lost session: a
+            // concluded worker at rest stays at rest. A session that may be
+            // paused has its activity watched.
             Phase::Concluded
                 if next_entry(&st).is_some()
                     || st.catch_up.is_some()
                     || session_recheck_due(&st, input.now)
+                    || reviving(&st)
                     || watched(input.task, &spec, &st) =>
             {
                 let mut probes = Vec::new();
-                if next_entry(&st).is_some() || session_recheck_due(&st, input.now) {
+                let recheck = session_recheck_due(&st, input.now);
+                if next_entry(&st).is_some() || recheck {
                     probes.push(find);
                 }
                 if let Some(s) = &st.session {
                     let delivering = next_entry(&st).is_some() || st.catch_up.is_some();
-                    if delivering || watched(input.task, &spec, &st) {
+                    if delivering || recheck || reviving(&st) || watched(input.task, &spec, &st) {
                         probes.push(Probe::Lost { session: s.clone() });
                         probes.push(Probe::Paused { session: s.clone() });
                     }
@@ -327,6 +331,14 @@ impl Pass<'_, '_> {
         };
         if let Some(state) = SessionState::observe(session, &self.input.observations) {
             self.st.session_state = Some(state);
+        }
+        if matches!(
+            self.st.session_state,
+            Some(SessionState::Lost | SessionState::Gone)
+        ) {
+            self.st.agent_state = None;
+            self.st.activity = None;
+            return;
         }
         let profile = fleet_api::harness::profile(&self.spec.harness);
         // A harness with no hooks and no screen rules, such as a shell, has
@@ -678,7 +690,7 @@ impl Pass<'_, '_> {
             self.st.phase = Phase::Pending;
             return;
         };
-        if self.worker_gone() || self.lost(&session) {
+        if self.worker_gone() || self.lost(&session, true) {
             return;
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
@@ -912,7 +924,7 @@ impl Pass<'_, '_> {
             return;
         };
         if self.worker_gone()
-            || self.lost(&session)
+            || self.lost(&session, true)
             || self.pause_state(&session)
             || self.catch_up(session.clone())
         {
@@ -931,15 +943,20 @@ impl Pass<'_, '_> {
             self.st.idle_since = None;
         }
         if next_entry(&self.st).is_none() && self.st.catch_up.is_none() {
-            // At rest: a recheck. Only an answered lookup counts as one.
+            let revive = view_asked(&self.st, self.now()) || reviving(&self.st);
             if self.input.observations.find.is_some() {
                 self.st.session_checked_at = Some(self.now());
                 if self.worker_gone() {
                     return;
                 }
             }
-            // A worker at rest is never revived, but it may be paused. A
-            // pass that does not watch it breaks its idle time.
+            if let Some(session) = self.st.session.clone()
+                && self.lost(&session, revive)
+            {
+                return;
+            }
+            // A worker at rest is revived only for a view, and it may be
+            // paused. A pass that does not watch it breaks its idle time.
             match self.st.session.clone() {
                 Some(session) if watched(self.input.task, self.spec, &self.st) => {
                     if !self.pause_state(&session) {
@@ -953,7 +970,7 @@ impl Pass<'_, '_> {
         let Some(session) = self.st.session.clone() else {
             return;
         };
-        if self.worker_gone() || self.lost(&session) || self.pause_state(&session) {
+        if self.worker_gone() || self.lost(&session, true) || self.pause_state(&session) {
             return;
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
@@ -1309,9 +1326,10 @@ impl Pass<'_, '_> {
     /// same identity. Nothing is sent to it meanwhile. Revives wait
     /// [`RETRY_DELAY_MS`] between attempts and raise NeedsAttention after
     /// [`MAX_ATTEMPTS`], but go on: a revive of a running session does
-    /// nothing. A held Task (`dispatch: false`) is not revived. Returns true
-    /// while the session is lost.
-    fn lost(&mut self, session: &SessionRef) -> bool {
+    /// nothing. A held Task (`dispatch: false`) is not revived, nor one
+    /// `revive` says to leave at rest. Returns true while the session is
+    /// lost.
+    fn lost(&mut self, session: &SessionRef, revive: bool) -> bool {
         match self.input.observations.lost {
             Some(Observation::Known(true)) => {}
             Some(Observation::Known(false)) => {
@@ -1327,7 +1345,7 @@ impl Pass<'_, '_> {
             "WindowGone",
             "the runtime holds the session, but its agent's window is gone",
         );
-        if !self.spec.dispatch {
+        if !self.spec.dispatch || !revive {
             return true;
         }
         if self.st.revive_attempts > 0 {
@@ -2147,14 +2165,6 @@ fn watched(obj: &Object, spec: &TaskSpec, st: &TaskStatus) -> bool {
             || (spec.dispatch && wake_requested(st)))
 }
 
-/// Whether a Task's session activity is watched: it may be paused, a
-/// pause or resume waits for its outcome, or a view asked for it while
-/// paused. The manager reconciles such a
-/// Concluded Task on every sweep. An undecodable Task is not watched.
-pub fn watches_activity(obj: &Object) -> bool {
-    decode(obj).is_ok_and(|(spec, st)| watched(obj, &spec, &st))
-}
-
 /// The activity probe: what the agent's own hooks reported through `fleet
 /// signal`. Asked of every live session, not only one that may be paused:
 /// `sessionState` is how a person, and thurbox's status dot, tells an agent
@@ -2301,10 +2311,38 @@ fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
 /// What delivering the next entry needs observed: readiness, and the
 /// journal when the entry was sent without a Known receipt.
 /// Whether a Concluded Task at rest is due to have its session looked up
-/// again: never looked up yet, or [`SESSION_RECHECK_MS`] since the last time.
+/// again: never looked up yet, [`SESSION_RECHECK_MS`] since the last time,
+/// or a view asked for it since.
 pub fn session_recheck_due(st: &TaskStatus, now: Millis) -> bool {
-    st.session_checked_at
-        .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= now)
+    view_asked(st, now)
+        || st
+            .session_checked_at
+            .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= now)
+}
+
+/// Whether a view (`fleet attach`) asked for the session since it was last
+/// looked up, and still waits for it.
+fn view_asked(st: &TaskStatus, now: Millis) -> bool {
+    st.wake_requested_at.is_some_and(|asked| {
+        asked.saturating_add(task::VIEW_WAIT_MS) >= now
+            && st.session_checked_at.is_none_or(|checked| asked >= checked)
+    })
+}
+
+/// Whether a revive is under way: it ends when the window is back.
+fn reviving(st: &TaskStatus) -> bool {
+    st.revive_attempts > 0
+}
+
+/// Whether the manager owes a Concluded Task with nothing to deliver a
+/// pass: its session is due a lookup, a revive is under way, or its
+/// activity is watched (it may be paused, a pause or resume waits for its
+/// outcome, or a view asked for it while paused). An undecodable Task is
+/// owed one, to report it.
+pub fn due_at_rest(obj: &Object, now: Millis) -> bool {
+    decode(obj).map_or(true, |(spec, st)| {
+        session_recheck_due(&st, now) || reviving(&st) || watched(obj, &spec, &st)
+    })
 }
 
 /// What the next delivery needs observed: the catch-up note's, while one

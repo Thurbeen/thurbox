@@ -83,7 +83,7 @@ use fleet_controllers::{
     ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, ConversationController,
     ConversationInput, ConversationObservations, ForgeController, ForgeInput, ForgeObservations,
     GatewayController, GatewayInput, GatewayObservations, ListenerController, ListenerInput,
-    ListenerObservations, SESSION_RECHECK_MS, TaskController, TaskInput,
+    ListenerObservations, TaskController, TaskInput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1843,16 +1843,10 @@ impl Manager<'_> {
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty)
             && obj.status.get("catchUp").is_none_or(Value::is_null);
-        let recheck_due = obj
-            .status
-            .get("sessionCheckedAt")
-            .and_then(Value::as_u64)
-            .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= self.clock.now());
         !(concluded
             && inbox_empty
             && !obj.is_deleting()
-            && !recheck_due
-            && !fleet_controllers::task::watches_activity(obj))
+            && !fleet_controllers::task::due_at_rest(obj, self.clock.now()))
     }
 
     fn tally(

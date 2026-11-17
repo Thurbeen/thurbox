@@ -285,9 +285,13 @@ Guarantees, each with its test:
   raise `NeedsAttention/ReviveFailed`, and revives continue. Back, a briefed
   worker is owed one catch-up note under `catchup/<n>`, sent before its inbox
   as an entry is sent. In Briefed the note repeats the brief and its
-  generation. Only Spawned, Briefed and Concluded-with-delivery Tasks are
-  looked at, so a concluded worker at rest stays at rest. Unknown revives
-  nothing, and a revive never makes a second session.
+  generation. A Concluded Task at rest has its session looked at on each
+  recheck, and reads `SessionLost` when it is lost, but it is revived only
+  for a delivery or for a view: `fleet attach` asks for it through
+  `status.wakeRequestedAt`, and a request younger than `VIEW_WAIT_MS` (60
+  seconds) makes the recheck due at once and revives the session on its
+  conversation. A concluded worker nobody looks at stays at rest. Unknown
+  revives nothing, and a revive never makes a second session.
 - **Pause.** With `spec.pauseAfterMs`, or the TaskConfig's `pauseAfterMs`
   frozen in `status.execution`, a dispatched Briefed or Concluded Task
   whose agent the runtime reports Known Idle on every pass for
@@ -346,7 +350,8 @@ Guarantees, each with its test:
   (after the brief), Briefed and Concluded, which stays terminal and is due
   while its inbox is nonempty.
   At rest, a Concluded Task is due once every `SESSION_RECHECK_MS` (5
-  minutes), recorded as `status.sessionCheckedAt`, to look its session up.
+  minutes), recorded as `status.sessionCheckedAt`, to look its session up
+  and ask whether it is lost; a view's wake request makes it due at once.
   A readable list without the session there is `WorkerGone`, never a
   respawn. Stalled delivers nothing; deletion keeps precedence and refuses
   new sends.
@@ -907,8 +912,8 @@ refused.
   another host), unless its session is `Gone`,
   `status.outbox.closed` is set and the Task is not being deleted. A
   `Concluded` Task that is not being deleted is read only when the manager's
-  `due` test holds for it (its `SESSION_RECHECK_MS` recheck, or a watched
-  activity). A read
+  `due` test holds for it (its `SESSION_RECHECK_MS` recheck, a view's wake
+  request, a revive under way, or a watched activity). A read
   of a `Gone` session that finds every whole line in sets `closed`; a read
   of a session that is not `Gone` clears it. It reads from
   `status.outbox.offset`, at most `event::MAX_OUTBOX_READ` bytes: through
@@ -1184,8 +1189,9 @@ is `idle`, and `Running` while it reports `working`, `blocked` or `prompt`.
 `status.agentState` is the agent's report itself, finer: `working` for
 `working` and `prompt`, `attention` for `blocked`, `idle` for `idle`, and
 `unknown` while the agent has reported nothing since it last started. An
-unreadable file keeps the last `agentState`. TaskController is its only
-writer.
+unreadable file keeps the last `agentState`. A session that reads `Lost`
+or `Gone` has no `agentState`: what its agent last said is cleared, since
+no agent runs. TaskController is its only writer.
 `status.activity.source` says which source set `agentState`
 ([agent state](#agent-state)).
 `e2e_signal` covers state, an interactive session and pause,
@@ -1480,8 +1486,13 @@ TaskController resumes the session for, and waits up to 60 seconds for
 `Paused` to leave True. A Task still paused after that wait exits 3 and says
 it is paused. With `--wake`, a paused Task that is held or Stalled exits 3 at
 once, because Fleet never resumes it. A view that attaches every Task in the
-background, as thurbox does, never passes `--wake`, so it wakes nothing. A
-Task with no session yet, a
+background, as thurbox does, never passes `--wake`, so it resumes nothing it
+paused. A lost session is revived without `--wake`, Concluded Tasks
+included: when the runtime offers no view and reports the session lost,
+Fleet sets `status.wakeRequestedAt` and waits up to `VIEW_WAIT_MS` (60
+seconds) for `SessionLost` to turn False, then asks again. A lost Task that
+is held or Stalled exits 3 at once, and one still lost after the wait exits
+3. A Task with no session yet, a
 runtime that does not declare `attach` and a key the runtime holds no
 process under exit 3; an Unknown answer exits 4.
 Without `--json` the argv is printed one argument per line.

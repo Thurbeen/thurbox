@@ -982,6 +982,108 @@ fn a_task_on_runtime_mux_is_revived_on_its_conversation_after_a_reboot() {
     );
 }
 
+/// [`CLAUDE`], except that it says it works on each prompt and never
+/// finishes, as an agent the reboot cut off mid-turn.
+const WORKING_CLAUDE: &str = r#"#!/bin/sh
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+fleet signal idle
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
+  fleet signal working
+done
+"#;
+
+#[test]
+fn a_shipped_task_lost_in_a_reboot_reads_lost_and_an_attach_revives_it_on_its_conversation() {
+    use support::view::View;
+    use term_stream::{Down, Size, Up};
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("shipped");
+    let mut env = mux_env("runtime-mux-shipped", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", WORKING_CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "working on its conversation", |env| {
+        let status = &env.get("t1")["status"];
+        status["conversation"] == "conv-1" && status["agentState"] == "working"
+    });
+    env.fleet(&[
+        "result",
+        "t1",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--summary",
+        "done",
+        "--output",
+        "prUrl=\"https://example.test/pr/1\"",
+    ])
+    .ok();
+    reconcile_until(&env, "concluded", |env| {
+        env.get("t1")["status"]["phase"] == "Concluded"
+    });
+    let key = env.get("t1")["status"]["session"]["id"]
+        .as_str()
+        .expect("a session id")
+        .to_string();
+
+    sockets.tmux(&["kill-server"]);
+    for entry in fs::read_dir(&sockets.0).expect("socket dir") {
+        fs::remove_dir_all(entry.expect("entry").path()).expect("tmux's private directory");
+    }
+    env.expire_session_check("t1");
+    reconcile_until(&env, "read as lost", |env| {
+        env.get("t1")["status"]["sessionState"] == "Lost"
+    });
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["agentState"], Value::Null, "{status:#}");
+    support::assert_condition(&status, "SessionLost", "True", "WindowGone");
+    env.reconcile().ok();
+    assert_eq!(
+        starts(&work).len(),
+        1,
+        "a concluded worker at rest stays at rest"
+    );
+
+    let attach = std::cell::RefCell::new(env.spawn(&["attach", "t1", "--json"]));
+    reconcile_until(&env, "revived for the view", |_| {
+        attach.borrow_mut().try_wait().expect("attach").is_some()
+    });
+    let run = support::wait(attach.into_inner());
+    let answer = run.ok().json();
+    let argv: Vec<String> = serde_json::from_value(answer["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some(key.as_str()),
+        "{argv:?}"
+    );
+    let all = starts(&work);
+    assert_eq!(all.len(), 2, "{all:?}");
+    assert_eq!(
+        &all[1][all[1].len() - 2..],
+        ["--resume", "conv-1"],
+        "{all:?}"
+    );
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["phase"], "Concluded", "{status:#}");
+    support::assert_condition(&status, "SessionLost", "False", "Revived");
+
+    let mut view = View::argv(&argv);
+    assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
+    view.send(&Up::Detach);
+    assert!(view.close().success());
+}
+
 /// [`CLAUDE`], except that it logs each line typed to it, and a resumed one
 /// reports nothing at its start, as an agent still starting.
 const SLOW_CLAUDE: &str = r#"#!/bin/sh

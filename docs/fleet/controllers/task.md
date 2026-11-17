@@ -289,9 +289,12 @@ fleet up starts ──> sweep ──> Lost? ─yes─> Revive (same id, same wor
 ```
 
 - Spawned, Briefed and unconcluded Tasks are revived on the first sweep.
-- A Concluded Task is revived only when its inbox has an entry for it.
-  Change requests the worker declared are still followed. Their feedback
-  arrives as inbox entries.
+- A Concluded Task reads `SessionLost=True` and `sessionState: Lost` on
+  its next session recheck, with no `agentState`. It is revived when its
+  inbox has an entry for it, or when a view attaches it: `fleet attach`
+  asks for the revive and waits for the window. Change requests the
+  worker declared are still followed. Their feedback arrives as inbox
+  entries.
 - A held Task (`dispatch: false`) is never revived.
 - A revive never creates a second session. The brief key is never sent
   again. The catch-up note has its own key and journal entry.

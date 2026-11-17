@@ -1094,7 +1094,7 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
         "nothing queued, session just looked up: at rest"
     );
     // At rest, the session is looked up again once per recheck interval,
-    // and what its agent last reported is read with it.
+    // with whether its window is lost, and what its agent last reported.
     for checked in [None, Some(NOW - SESSION_RECHECK_MS)] {
         assert_eq!(
             probes(&concluded_checked(&[], checked)),
@@ -1103,6 +1103,8 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
                     host: "local".into(),
                     key: "t.u7".into()
                 },
+                Probe::Lost { session: session() },
+                Probe::Paused { session: session() },
                 Probe::Activity { session: session() },
                 // Claude Code has screen rules, and its hooks have not spoken.
                 Probe::Screen { session: session() }
