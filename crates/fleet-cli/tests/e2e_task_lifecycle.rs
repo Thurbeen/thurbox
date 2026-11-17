@@ -636,6 +636,23 @@ fn a_lease_held_by_another_boot_is_taken_over_at_once() {
 }
 
 #[test]
+fn an_attach_whose_runtime_cannot_tell_past_the_revive_wait_is_unknown() {
+    let env = setup("attach-unknown", true);
+    env.reconcile().ok();
+    env.host().reboot().unwrap();
+    env.fault(Fault::new("attach", "normal"));
+    env.fault(Fault::new("attach", "unknown").times(1_000));
+    let attach = env.spawn(&["attach", "t1", "--json"]);
+    support::wait_within(attach, Duration::from_secs(90))
+        .code(4)
+        .stderr_has("injected: attach could not tell");
+    assert!(
+        env.get("t1")["status"]["wakeRequestedAt"].is_u64(),
+        "a revive was asked for"
+    );
+}
+
+#[test]
 fn a_corrupt_record_is_unknown_never_absent() {
     let env = setup("corrupt", true);
     fs::write(

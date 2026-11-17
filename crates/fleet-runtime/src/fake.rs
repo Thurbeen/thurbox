@@ -17,7 +17,7 @@ use std::time::Duration;
 use fleet_api::Observation;
 use fleet_api::harness::profile;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
+use fleet_api::runtime::{Attach, Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::task::SessionRef;
 use fleet_api::workspace::WorkspaceRef;
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ pub struct Fault {
     /// `materialize`, `findWorkspace`, `cleanWorkspace` (the workspace
     /// port), `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
     /// `workspaceTrust`, `brief`, `briefDelivered`, `atRest`, `release`,
-    /// `lost`, `revive`, `paused`, `pause`, `resume`.
+    /// `lost`, `revive`, `paused`, `pause`, `resume`, `attach`.
     pub call: String,
     /// `unknown`, `fail` or `abort`.
     pub outcome: String,
@@ -725,6 +725,10 @@ impl Runtime for FakeRuntime {
             s.log.push(format!("release {key}"));
             EffectOutcome::Released
         })
+    }
+
+    fn attach(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
+        self.probe("attach", |_| Observation::Known(None))
     }
 
     fn lost(&self, session: &SessionRef) -> Observation<bool> {
