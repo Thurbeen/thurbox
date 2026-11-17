@@ -459,6 +459,9 @@ impl App {
             .as_deref()
             .and_then(|name| self.commands.created_id(name, fleet.as_deref()));
         let force = matches!(command, Command::Delete { force: true, .. });
+        if let Command::Start { session } = &command {
+            self.terminals.start_requested(session);
+        }
         let id = self.commands.dispatch(command);
         self.tracked_commands.insert(
             id,

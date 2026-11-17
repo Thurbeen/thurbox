@@ -43,6 +43,7 @@ impl LuaHost {
             selection,
             snapshot,
             attach_errors,
+            starts,
             inflight,
             themes,
             registry,
@@ -69,7 +70,7 @@ impl LuaHost {
         let sessions = self.group(
             "sessions",
             [epoch.snapshot, epoch.meta, epoch.failed, 0],
-            || build_sessions(&self.lua, snapshot, attach_errors, meta),
+            || build_sessions(&self.lua, snapshot, attach_errors, starts, meta),
         )?;
         // A file read is rooted at a session's directory, so the roots follow
         // the snapshot rather than being asked for separately — and only when
@@ -624,6 +625,7 @@ fn build_sessions(
     lua: &Lua,
     snapshot: &Snapshot,
     attach_errors: &HashMap<String, String>,
+    starts: &HashMap<String, crate::kernel::terminal::Start>,
     meta: &HashMap<String, crate::kernel::terminal::AgentMeta>,
 ) -> Result<Value, String> {
     let sessions = lua.create_table().map_err(|e| e.to_string())?;
@@ -773,6 +775,17 @@ fn build_sessions(
         }
         // Why this session's terminal is not live, when it is not.
         set(&entry, "attach_error", opt_lua_string(lua, attach_error)?)?;
+        let start = starts.get(&row.id);
+        set(
+            &entry,
+            "starting",
+            start.is_some_and(|start| *start == crate::kernel::terminal::Start::Pending),
+        )?;
+        let start_error = match start {
+            Some(crate::kernel::terminal::Start::Failed(error)) => Some(error.as_str()),
+            _ => None,
+        };
+        set(&entry, "start_error", opt_lua_string(lua, start_error)?)?;
         sessions
             .raw_set(index + 1, entry)
             .map_err(|e| e.to_string())?;

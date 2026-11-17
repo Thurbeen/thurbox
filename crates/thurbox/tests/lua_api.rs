@@ -370,6 +370,7 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &attach_errors,
+        starts: &Default::default(),
         inflight: &inflight,
         themes: &themes,
         registry: &registry,

@@ -29,7 +29,21 @@ pub(super) struct Attach {
     pub(super) attaching: HashMap<String, String>,
     pub(super) attached: (Sender<Attached>, Receiver<Attached>),
     pub(super) retry_after: std::time::Duration,
+    pub(super) starts: HashMap<String, (Start, std::time::Instant)>,
 }
+
+/// Where a start the user asked for stands, until the session's pane is live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// Fleet is resuming the agent, or its pane is being attached.
+    Pending,
+    /// Fleet refused the start, or did not resume the agent in time.
+    Failed(String),
+}
+
+/// How long a start may take before it reads as failed: past the 60 s
+/// `fleet attach` waits for a lost session's revive.
+pub(super) const START_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 
 impl Attach {
     pub(super) fn new() -> Self {
@@ -39,6 +53,7 @@ impl Attach {
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
             retry_after: ATTACH_RETRY_INTERVAL,
+            starts: HashMap::new(),
         }
     }
 }
@@ -390,6 +405,80 @@ impl Terminals {
             .iter()
             .map(|(session, failure)| (session.clone(), failure.message.clone()))
             .collect()
+    }
+
+    /// Note that the user asked Fleet to start `session`: its pane reads as
+    /// starting until it attaches, its attach fails, or the start fails. A
+    /// recorded attach failure is dropped, so the attach is made at once
+    /// rather than after the retry interval.
+    pub fn start_requested(&mut self, session: &str) {
+        self.attach.failed.remove(session);
+        self.attach.starts.insert(
+            session.to_string(),
+            (Start::Pending, std::time::Instant::now()),
+        );
+        self.mark_failures_changed();
+    }
+
+    /// Note that Fleet refused to start `session`, and why.
+    pub fn start_failed(&mut self, session: &str, error: &str) {
+        if let Some(start) = self.attach.starts.get_mut(session) {
+            start.0 = Start::Failed(error.to_string());
+            self.mark_failures_changed();
+        }
+    }
+
+    /// Whether any start is still pending, which keeps the animation clock
+    /// running.
+    pub fn starting(&self) -> bool {
+        self.attach
+            .starts
+            .values()
+            .any(|(start, _)| *start == Start::Pending)
+    }
+
+    /// Every start not yet settled by a live pane, keyed by session id.
+    pub fn starts(&self) -> HashMap<String, Start> {
+        self.attach
+            .starts
+            .iter()
+            .map(|(session, (start, _))| (session.clone(), start.clone()))
+            .collect()
+    }
+
+    /// End each pending start its session settled: a live pane, an attach
+    /// that failed after the start, the row gone, or no pane after
+    /// [`START_WAIT`]. A failed start stays until its row is live or gone.
+    pub(super) fn settle_starts(&mut self, snapshot: &Snapshot) {
+        let live = &self.live;
+        let failed = &self.attach.failed;
+        let before = self.attach.starts.len();
+        let mut timed_out = false;
+        self.attach.starts.retain(|session, (start, at)| {
+            if live.contains_key(session) || snapshot.session(session).is_none() {
+                return false;
+            }
+            if *start != Start::Pending {
+                return true;
+            }
+            if failed
+                .get(session)
+                .is_some_and(|failure| failure.pane.is_some() && failure.at >= *at)
+            {
+                return false;
+            }
+            if at.elapsed() >= START_WAIT {
+                *start = Start::Failed(format!(
+                    "Fleet did not resume it within {} s",
+                    START_WAIT.as_secs()
+                ));
+                timed_out = true;
+            }
+            true
+        });
+        if timed_out || self.attach.starts.len() != before {
+            self.mark_failures_changed();
+        }
     }
 
     pub(super) fn mark_failures_changed(&mut self) {

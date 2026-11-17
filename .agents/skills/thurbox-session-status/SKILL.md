@@ -61,8 +61,19 @@ window gone`, `lost · cannot resume`, `lost · revive failed` or `gone ·
 session ended`. The sessions
 pane prints it after the name. `s` on the list (or Start in its menu) sends
 the `start` command, which runs `fleet attach --wake --json <task>`: Fleet's
-controller resumes the paused agent. Fleet has no stop verb, so thurbox has
-none.
+controller resumes the paused agent. `session_model.revival` (in
+`ui/lib/session_model.lua`) says which rows `s` starts: a stopped row and a
+lost one whose window is gone; `lost · cannot resume` and `gone` rows cannot
+come back. Fleet has no stop verb, so thurbox has none.
+
+The agent pane (`ui/plugins/20_agent.lua`) draws such a row as its state, its
+reason and the way back, with the chords read from the registry. A start the
+interface sent is tracked in `Terminals` (`start_requested`, `start_failed`,
+`settle_starts` in `src/kernel/terminal/attach.rs`) and published per row as
+`starting` and `start_error`. It is pending until the pane attaches, an attach
+made after it fails, or `START_WAIT` (90 s) passes; a refused `start` command
+fails it with Fleet's error. While one is pending, the animation clock runs and
+the pane draws `theme.spinner_frame` and `Starting <name>…`.
 
 ## The vocabulary
 
@@ -86,11 +97,12 @@ as "the agent says it is at rest". The Fleet mapping above produces
 | `uncovered` | `status_unknown` | `◌` |
 | `unreported` | `status_unknown` | `◌` |
 | `failed` | `status_error` | `✗` |
-| `stopped` | `status_unknown` | `■` |
+| `stopped` | `status_idle` (fallback) | `○` (fallback) |
 
 The glyphs and roles live in `ui/lib/theme.lua` (`STATUS_GLYPHS`,
 `STATUS_ROLES`, `theme.status`). A word without a row there falls back to
-`idle`'s; no published word relies on that fallback. The colours are theme fields,
+`idle`'s; only `stopped` relies on that fallback, and its row's reason says
+that it is stopped. The colours are theme fields,
 so each preset and a custom theme set them.
 
 ## Animation

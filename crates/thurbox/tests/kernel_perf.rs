@@ -345,6 +345,7 @@ fn publish(host: &LuaHost) {
         epoch: Epoch::default(),
         snapshot: &Snapshot::default(),
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight: &[],
         themes: &themes,
         registry: &registry,

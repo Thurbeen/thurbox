@@ -1214,7 +1214,9 @@ command("theme",   { text = "tokyo-night" })
 Sessions are Fleet Tasks, so a session verb is one call of Fleet's command line:
 `create` applies a Task, `send` queues a message in its inbox, `rename` labels
 it, `start` resumes a stopped one (`fleet attach --wake`) and `delete` deletes
-it. A `create` names the repository and may name
+it. Until a started session's terminal attaches, its row reads `starting =
+true`; a start Fleet refused, or one that did not attach in 90 s, leaves its
+reason in `start_error`. A `create` names the repository and may name
 further ones (`extras`), whether each gets a worktree (`worktree`), its
 `branch` and the `base` a new branch starts from; the runtime makes each
 worktree. A refusal is

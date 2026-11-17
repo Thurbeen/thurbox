@@ -179,6 +179,7 @@ fn publish_at_printing(
         epoch,
         snapshot,
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight,
         themes,
         registry: &registry,

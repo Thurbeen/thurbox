@@ -45,6 +45,7 @@ impl App {
         // `String`s per live session per publish.
         self.terminals.sync_meta();
         let attach_errors = self.terminals.failures();
+        let starts = self.terminals.starts();
         let inflight = self.commands.inflight();
         let focus = self
             .host
@@ -97,6 +98,7 @@ impl App {
             },
             snapshot: self.snapshots.current(),
             attach_errors: &attach_errors,
+            starts: &starts,
             printing: self.terminals.printing(),
             inflight: &inflight,
             themes: &self.themes,

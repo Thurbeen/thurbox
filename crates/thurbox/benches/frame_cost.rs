@@ -172,6 +172,7 @@ impl World {
             epoch,
             snapshot,
             attach_errors: &HashMap::new(),
+            starts: &Default::default(),
             inflight: &[],
             themes: &self.themes,
             registry: &self.registry,

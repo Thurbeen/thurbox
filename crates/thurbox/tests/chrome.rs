@@ -93,6 +93,7 @@ fn publish_with(
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
         snapshot,
         attach_errors: &Default::default(),
+        starts: &Default::default(),
         inflight,
         themes,
         registry: &registry,

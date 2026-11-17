@@ -111,7 +111,7 @@ snapshot maps those onto a `SessionState`
 | Task status | State | Colour | Glyph |
 |-------------|-------|--------|-------|
 | `sessionState: Lost`, `Gone` | `failed` | `status_error` (red) | `✗` |
-| `sessionState: Paused`, or the `Paused` condition `True` | `stopped` | `status_unknown` (muted grey) | `■` |
+| `sessionState: Paused`, or the `Paused` condition `True` | `stopped` | green | `○` |
 | `agentState: working` | `working` | yellow | braille spinner |
 | `agentState: attention` | `blocked` | red | `◆` |
 | `agentState: idle` | `idle` | green | `○` |
@@ -137,12 +137,27 @@ conditions (`kernel::snapshot::fleet::state_why`, published as `state_why`):
 `s` on the session list, or Start in its menu, starts a stopped session again
 through Fleet's own contract: thurbox runs `fleet attach --wake --json
 <task>`, which asks the Task's controller to resume the agent on its
-conversation and waits for it to run. The interface does not attach a
-stopped row's pane; the pane says that the session is paused. The first
-frame that reads the row running again attaches the pane, whatever resumed
-it: Start, a message, or `fleet attach --wake` from a shell. A Fleet older than
-`fleet attach --wake` refuses it, and the message band says so. Fleet has no
-verb that stops a session on request, so thurbox offers no stop.
+conversation and waits for it to run. `s` also revives a lost session whose
+window is gone. The interface does not attach a stopped row's pane. The
+first frame that reads the row running again attaches the pane, whatever
+resumed it: Start, a message, or `fleet attach --wake` from a shell. Fleet has
+no verb that stops a session on request, so thurbox offers no stop.
+
+The agent pane of a session that does not run says what state it is in and
+how to bring it back:
+
+| Row | Agent pane |
+|-----|------------|
+| paused, stopped, or lost with its window gone | `<name> is paused` (or `is stopped`, `is lost`), the row's reason, and `Press s in the session list, or choose Start in its menu, to resume it.` |
+| `lost · cannot resume`, `gone · session ended` | `<name> cannot resume`, the reason, and `Delete it with ctrl+d and create a new session with ctrl+n.` |
+| a Start in progress | a spinner and `Starting <name>…` until the pane attaches |
+
+The keys in a hint are read from the key registry, so a rebinding changes
+them. The spinner stops when the pane attaches, when the attach fails (the
+pane then says `no live terminal` and why), or when Fleet refuses the start:
+the pane then says `Start failed:` and Fleet's error. A start that has not
+attached after 90 s fails the same way. A Fleet older than `fleet attach
+--wake` refuses the start, and the pane and the message band say so.
 
 `unreported` is drawn apart from `idle` on purpose: `idle` says *the agent
 reported that it is at rest*, and `unreported` says nothing has reported at
@@ -164,7 +179,7 @@ no report) and no source text: only an agent can be unknown.
 A `screen` state is a screen rule's reading of an agent whose hooks do not
 say its state now ([screen rules](../fleet/controllers/task.md#screen-rules)).
  `stopped` is a paused Task, at rest by definition, so it draws the idle
-dot.
+dot; its reason after the name says that it is stopped.
 
 `SessionState` also names `background`, `done`, `unreachable` and
 `uncovered`. A row the snapshot builds from a Task carries none of them.
