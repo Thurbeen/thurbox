@@ -96,9 +96,13 @@ impl TelemetryConfig {
                         .into(),
                 );
             }
-            if key.trim().is_empty() || key.contains([',', '=']) || value.contains(',') {
+            if key.trim().is_empty()
+                || key.trim() != key
+                || key.contains([',', '='])
+                || value.contains(',')
+            {
                 return Err(format!(
-                    "telemetry.resource {key:?}: a key is not empty and holds no `,` or `=`, a value holds no `,`"
+                    "telemetry.resource {key:?}: a key is not empty, has no surrounding space and holds no `,` or `=`, a value holds no `,`"
                 ));
             }
         }
@@ -156,6 +160,7 @@ impl TelemetryConfig {
         Ok(FileVars {
             vars,
             resource: self.resource.clone(),
+            disabled: false,
         })
     }
 }
@@ -164,6 +169,16 @@ impl TelemetryConfig {
 pub(crate) struct FileVars {
     vars: BTreeMap<String, String>,
     resource: BTreeMap<String, String>,
+    disabled: bool,
+}
+
+impl FileVars {
+    pub(crate) fn disabled() -> FileVars {
+        FileVars {
+            disabled: true,
+            ..FileVars::default()
+        }
+    }
 }
 
 /// Where a value in force comes from.
@@ -195,6 +210,9 @@ impl<E: Fn(&str) -> Option<String>> Merged<'_, E> {
     }
 
     pub fn lookup(&self, name: &str) -> Option<(String, Source)> {
+        if self.file.disabled {
+            return (name == "OTEL_SDK_DISABLED").then(|| ("true".to_string(), Source::File));
+        }
         if let Some(v) = self.env_set(name) {
             return Some((v, Source::Env(name.to_string())));
         }
@@ -221,6 +239,9 @@ impl<E: Fn(&str) -> Option<String>> Merged<'_, E> {
     }
 
     pub fn child_env(&self) -> Vec<(String, String)> {
+        if self.file.disabled {
+            return vec![("OTEL_SDK_DISABLED".to_string(), "true".to_string())];
+        }
         self.file
             .vars
             .keys()
@@ -298,6 +319,11 @@ mod tests {
             ("resource = { \"service.name\" = \"x\" }", "service.name"),
             ("resource = { \"a,b\" = \"x\" }", "telemetry.resource"),
             ("resource = { \"a\" = \"x,y\" }", "telemetry.resource"),
+            (
+                "resource = { \" service.name\" = \"x\" }",
+                "telemetry.resource",
+            ),
+            ("resource = { \"a \" = \"x\" }", "telemetry.resource"),
         ] {
             let why = table(text).validate().unwrap_err();
             assert!(why.contains(key), "{text}: {why}");
@@ -320,6 +346,7 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .into(),
             resource: [("k".to_string(), "file".to_string())].into(),
+            disabled: false,
         };
         let only_file = merged(&[], &file);
         assert_eq!(
@@ -348,6 +375,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .into(),
             resource: BTreeMap::new(),
+            disabled: false,
         };
         for endpoint in ENDPOINTS {
             let env = [(endpoint, "http://other:4318")];

@@ -97,15 +97,18 @@ Rules:
   the file, for example `systemd-creds` or `sops`.
 - `resource` cannot set `service.name`. Each program keeps its own name.
   Use `service.namespace` to group the programs of one deployment.
-- A key or value in `resource` holds no `,`. A key holds no `=`.
+- A key or value in `resource` holds no `,`. A key holds no `=` and has
+  no space at its start or end.
 - Fleet refuses a config whose table breaks a rule or has an unknown key.
   The command fails and names the key.
 - thurbox reports an unknown key at startup, and
   `thurbox-cli config validate` fails on it. A table that breaks a rule
   turns the interface's export off, and the interface writes the reason to
   its log file.
-- An unreadable headers file turns the program's export off. The program
-  writes one `warning: telemetry is off:` line.
+- An unreadable headers file turns the program's export off, also when an
+  `OTEL_*` variable names an endpoint. The programs and sessions that it
+  starts export nothing either. The program writes one
+  `warning: telemetry is off:` line.
 - A program reads the table at start. A change applies at the next start
   of the program. `fleet up` gives a session the values in force at each
   start of the session.

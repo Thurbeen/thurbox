@@ -206,3 +206,27 @@ fn doctor_reports_the_effective_telemetry_and_where_each_value_comes_from() {
         .stdout_has("headers (config file)");
     assert!(!run.stdout.contains("file-header"), "{}", run.stdout);
 }
+
+#[test]
+fn an_unreadable_headers_file_turns_all_export_off_even_with_an_otel_endpoint() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-file-unreadable-headers");
+    with_telemetry(
+        &env,
+        "traces = false\nheaders = { file = '/nonexistent/otel-headers' }\n",
+    );
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+
+    env.apply(task("t1", true))
+        .ok()
+        .stderr_has("warning: telemetry is off: telemetry.headers.file");
+    env.reconcile().ok();
+
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(collector.paths().is_empty(), "{:?}", collector.paths());
+    let vars = session_env(&env, "t1");
+    assert!(
+        !vars.contains_key("CLAUDE_CODE_ENABLE_TELEMETRY"),
+        "no agent telemetry while Fleet's is off: {vars:#?}"
+    );
+}

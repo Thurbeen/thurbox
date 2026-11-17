@@ -58,12 +58,20 @@ static FILE: OnceLock<FileVars> = OnceLock::new();
 
 /// Take the program's `[telemetry]` table for the rest of the process,
 /// before [`init`]: read its headers file and stand it for the variables
-/// it names. Only the first call takes effect. On an error nothing is
-/// taken, and the caller reports it.
+/// it names. Only the first call takes effect. On an error the process and
+/// the programs it starts export nothing, whatever the environment says, so
+/// a setting the table turns off never comes back; the caller reports it.
 pub fn adopt(config: &TelemetryConfig) -> Result<(), String> {
-    let vars = config.vars()?;
-    let _ = FILE.set(vars);
-    Ok(())
+    match config.vars() {
+        Ok(vars) => {
+            let _ = FILE.set(vars);
+            Ok(())
+        }
+        Err(why) => {
+            let _ = FILE.set(FileVars::disabled());
+            Err(why)
+        }
+    }
 }
 
 fn merged() -> Merged<'static, impl Fn(&str) -> Option<String>> {
@@ -333,11 +341,16 @@ fn configured<B: WithExportConfig + WithHttpConfig>(
 /// doctor: never a header's value. An error is why nothing is exported.
 /// `logs` as for [`init`].
 pub fn describe(config: &TelemetryConfig, logs: bool) -> Result<String, String> {
+    describe_in(config, logs, |name| std::env::var(name).ok())
+}
+
+fn describe_in(
+    config: &TelemetryConfig,
+    logs: bool,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
     let file = config.vars()?;
-    let merged = Merged {
-        env: |name: &str| std::env::var(name).ok(),
-        file: &file,
-    };
+    let merged = Merged { env, file: &file };
     let wanted = signals(|name| merged.var(name), logs)?;
     let from = |name: &str| {
         merged
@@ -359,9 +372,20 @@ pub fn describe(config: &TelemetryConfig, logs: bool) -> Result<String, String> 
         names.push(("logs", wanted.logs));
     }
     for (signal, on) in names {
-        let exporter = format!("OTEL_{}_EXPORTER", signal.to_ascii_uppercase());
-        let state = if on { "on" } else { "off" };
-        parts.push(format!("{signal} {state} ({})", from(&exporter)));
+        let upper = signal.to_ascii_uppercase();
+        let exporter = format!("OTEL_{upper}_EXPORTER");
+        let refused = (signal == "logs")
+            .then_some(wanted.logs_off.as_deref())
+            .flatten();
+        let own = merged.lookup(&format!("OTEL_EXPORTER_OTLP_{upper}_ENDPOINT"));
+        parts.push(match (on, refused, own) {
+            (false, Some(why), _) => format!("{signal} off: {why}"),
+            (true, _, Some((url, source))) => format!("{signal} on to {url} ({source})"),
+            (on, _, _) => {
+                let state = if on { "on" } else { "off" };
+                format!("{signal} {state} ({})", from(&exporter))
+            }
+        });
     }
     if let Some((_, source)) = merged.lookup("OTEL_EXPORTER_OTLP_HEADERS") {
         parts.push(format!("headers ({source})"));
@@ -755,6 +779,36 @@ mod tests {
         ] {
             assert!(parse(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn describe_names_each_signals_own_endpoint_and_why_logs_are_refused() {
+        let config: TelemetryConfig = toml::from_str("logs = true").unwrap();
+        let env = [
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "http://t:4318/v1/traces",
+            ),
+            ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://l:4318/v1/logs"),
+            ("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "grpc"),
+        ];
+        let described = describe_in(&config, true, |name| {
+            env.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        })
+        .unwrap();
+        assert!(
+            described.contains(
+                "traces on to http://t:4318/v1/traces (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)"
+            ),
+            "{described}"
+        );
+        assert!(described.contains("metrics off"), "{described}");
+        assert!(
+            described.contains("logs off: OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=grpc"),
+            "{described}"
+        );
     }
 
     #[test]
