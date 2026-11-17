@@ -521,8 +521,10 @@ A running `fleet up` keeps the program it started from. thurbox never
 restarts it. After an install, the status line names each Fleet on this
 machine whose manager holds the lease, and the command that restarts it on
 the new release: `systemctl --user restart fleet.service`
-(`stale_managers` in `src/kernel/snapshot/fleet.rs`). A Fleet on another
-machine keeps its own manager. `thurbox-cli update` performs the
+(`stale_managers` in `src/kernel/snapshot/fleet.rs`). A Fleet whose
+`program` resolves to another file than the `fleet` the update installed is
+named as not replaced instead: a restart would run the same binary. A Fleet
+on another machine keeps its own manager. `thurbox-cli update` performs the
 same update on demand (with `--force` to bypass the up-to-date and dev-build
 guards — never the major line); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a
@@ -673,7 +675,8 @@ a place.
   While a Fleet on this machine has no manager, the status line says which
   command starts one: `Fleet not running · systemctl --user start
   fleet.service`, or `no Fleet config · fleet init` before its config
-  exists.
+  exists (`fleet --config <path> init` when `settings.toml` names the
+  file).
 - v3 reads no `[fleet] program`: it is reported as replaced by `[fleets]`.
 
 | The interface | Fleet's command |

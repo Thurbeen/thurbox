@@ -235,16 +235,29 @@ tbx_sandbox_fleet_up() {
 }
 
 _tbx_stop_fleet() {
-    pid_file="$1/fleet/up.pid"
-    [ -f "$pid_file" ] || return 0
-    pid=$(cat "$pid_file")
-    rm -f "$pid_file"
-    case "$pid" in
+    if [ -f "$1/fleet/up.pid" ]; then
+        _tbx_stop_manager "$(cat "$1/fleet/up.pid")" "$1"
+        rm -f "$1/fleet/up.pid"
+    fi
+    find "$1" -name 'fleet-up-*.log' 2>/dev/null | while read -r log; do
+        pid="${log##*/fleet-up-}"
+        _tbx_stop_manager "${pid%.log}" "$1"
+    done
+}
+
+_tbx_stop_manager() { # <pid> <root>
+    case "$1" in
         *[!0-9]*|"") return 0 ;;
     esac
-    case "$(ps -p "$pid" -o args= 2>/dev/null)" in
-        *fleet" up") _tbx_fleet_is_ours "$pid" "$1" && kill "$pid" 2>/dev/null || true ;;
+    case "$(ps -p "$1" -o args= 2>/dev/null)" in
+        *fleet" up") ;;
+        *) return 0 ;;
     esac
+    _tbx_fleet_is_ours "$1" "$2" || return 0
+    kill "$1" 2>/dev/null || return 0
+    while kill -0 "$1" 2>/dev/null; do
+        sleep 0.1
+    done
 }
 
 # _tbx_kill_servers — kill the tmux servers of the private TMUX_TMPDIR in

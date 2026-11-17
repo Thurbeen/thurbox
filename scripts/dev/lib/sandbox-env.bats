@@ -100,6 +100,32 @@ teardown() {
   [ ! -e "$ROOT/fleet/up.pid" ]
 }
 
+@test "a manager slow to stop is gone before a new one starts" {
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\ntrap "sleep 1; exit 0" TERM\nwhile :; do sleep 0.1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
+  _tbx_stop_fleet "$ROOT"
+  run ! kill -0 "$OTHER"
+}
+
+@test "a manager an older sandbox named only in its log is stopped" {
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin" "$ROOT/thurbox-data"
+  printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  : > "$ROOT/thurbox-data/fleet-up-$OTHER.log"
+  _tbx_stop_fleet "$ROOT"
+  run ! kill -0 "$OTHER"
+}
+
 @test "a profile made before 3.0 gets a Fleet config the new fleet reads" {
   mkdir -p "$ROOT/fleet"
   printf 'version = 1\n\n[starter]\nworkspace = "starter"\n' > "$ROOT/fleet/config.toml"

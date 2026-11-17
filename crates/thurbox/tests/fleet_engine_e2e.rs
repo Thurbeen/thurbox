@@ -2585,7 +2585,11 @@ mod an_update {
         }
 
         fn start_manager(&mut self) -> u32 {
-            let mut command = Process::new(self.fleet());
+            self.start_manager_from(&self.fleet())
+        }
+
+        fn start_manager_from(&mut self, program: &Path) -> u32 {
+            let mut command = Process::new(program);
             self.env(&mut command);
             let child = command
                 .arg("up")
@@ -2693,5 +2697,32 @@ mod an_update {
             String::from_utf8_lossy(&updated.stdout)
         );
         assert!(install.task("alpha")["metadata"]["uid"].is_string());
+    }
+
+    #[test]
+    fn says_a_fleet_whose_program_it_did_not_replace_keeps_the_old_release() {
+        let Some(bin) = fleet_bin() else { return };
+        let mut install = Install::new(&bin);
+        let elsewhere = install.path("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+        let other = elsewhere.join("fleet");
+        std::fs::copy(&bin, &other).expect("another fleet");
+        std::fs::write(
+            install.path("thurbox-config/settings.toml"),
+            format!("[fleets.laptop]\nprogram = '{}'\n", other.display()),
+        )
+        .expect("settings");
+        let old = install.start_manager_from(&other);
+
+        let updated = install.update();
+        let stdout = String::from_utf8_lossy(&updated.stdout);
+        assert!(
+            updated.status.success(),
+            "update: {stdout}\n{}",
+            String::from_utf8_lossy(&updated.stderr)
+        );
+        assert_eq!(install.holder(), Some(old), "{stdout}");
+        assert!(stdout.contains("did not replace"), "{stdout}");
+        assert!(!stdout.contains("restart fleet.service"), "{stdout}");
     }
 }

@@ -133,17 +133,31 @@ impl FleetLink {
     }
 
     /// What a Fleet on this machine whose manager holds no lease tells the
-    /// user to run: [`NO_CONFIG`] before `fleet init` wrote its config,
+    /// user to run: [`Self::no_config`] before `fleet init` wrote its config,
     /// otherwise [`START_MANAGER`]. `None` for a Fleet on another machine.
     pub fn not_running(&self) -> Option<String> {
         if !self.is_local() {
             return None;
         }
-        let configured = self.local_config().is_none_or(|(path, _)| path.exists());
-        Some(if configured {
-            format!("Fleet not running · {START_MANAGER}")
-        } else {
-            NO_CONFIG.to_string()
+        Some(
+            self.no_config()
+                .unwrap_or_else(|| format!("Fleet not running · {START_MANAGER}")),
+        )
+    }
+
+    /// [`NO_CONFIG`] for a Fleet on this machine whose config file does not
+    /// exist, naming the file when `settings.toml` names it. `None` otherwise.
+    pub fn no_config(&self) -> Option<String> {
+        if !self.is_local() {
+            return None;
+        }
+        let (path, _) = self.local_config()?;
+        if path.exists() {
+            return None;
+        }
+        Some(match self.config() {
+            Some(named) => format!("no Fleet config · fleet --config {named} init"),
+            None => NO_CONFIG.to_string(),
         })
     }
 

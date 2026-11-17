@@ -699,6 +699,11 @@ fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
         return ((FleetState::Incompatible, Some(why)), Some(answer));
     }
     let manager = &answer["manager"];
+    if manager["held"] != Value::Bool(true) {
+        if let Some(why) = link.no_config() {
+            return ((FleetState::Down, Some(why)), Some(answer));
+        }
+    }
     let state = match manager["held"].as_bool() {
         Some(true) => (FleetState::Up, None),
         Some(false) => (FleetState::Down, link.not_running()),
@@ -870,8 +875,10 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
 
 /// What a finished update says of the managers it leaves on the old release:
 /// one line per Fleet on this machine whose manager holds the lease, naming
-/// the command that restarts it. Empty when none runs.
+/// the command that restarts it, or saying that its `program` is a `fleet`
+/// the update did not replace. Empty when none runs.
 pub fn stale_managers(links: &[FleetLink]) -> String {
+    let installed = crate::update::self_update::installed_fleet().ok();
     links
         .iter()
         .filter(|link| link.is_local())
@@ -879,15 +886,36 @@ pub fn stale_managers(links: &[FleetLink]) -> String {
             link.version()
                 .is_ok_and(|answer| answer["manager"]["held"] == Value::Bool(true))
         })
-        .map(|link| {
-            format!(
+        .map(|link| match &installed {
+            Some(installed) if !runs(link, installed) => format!(
+                "Fleet {}'s manager runs {}, which this update did not replace.",
+                link.name(),
+                link.program()
+            ),
+            _ => format!(
                 "Fleet {}'s manager still runs the old release · {}.",
                 link.name(),
                 crate::fleet_link::RESTART_MANAGER
-            )
+            ),
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Whether `link`'s `program`, as a path or a name on `PATH`, is the file
+/// `installed`.
+fn runs(link: &FleetLink, installed: &std::path::Path) -> bool {
+    let program = link.program();
+    let resolved = if std::path::Path::new(program).components().count() > 1 {
+        Some(PathBuf::from(program))
+    } else {
+        crate::paths::resolve_on_path(program).or_else(|| {
+            crate::paths::resolve_on_path(&format!("{program}{}", std::env::consts::EXE_SUFFIX))
+        })
+    };
+    let canonical = |path: &std::path::Path| std::fs::canonicalize(path).ok();
+    resolved
+        .is_some_and(|path| canonical(&path).is_some() && canonical(&path) == canonical(installed))
 }
 
 /// One Task as a session row.
@@ -1393,6 +1421,39 @@ mod tests {
             std::thread::sleep(Duration::from_millis(500));
             assert_eq!(asked(), 0, "{:?}", remote.calls());
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_local_fleet_whose_named_config_is_missing_names_fleet_init_on_it() {
+        use crate::session::settings::FleetDef;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir");
+        let program = dir.path().join("fleet");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\necho '{\"apiVersions\":[\"fleet/v1alpha1\"],\"manager\":{\"held\":null,\"why\":\"no config\"}}'\n",
+        )
+        .expect("program");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let config = dir.path().join("missing.toml");
+        let link = FleetLink::of(
+            "laptop",
+            &FleetDef {
+                transport: Default::default(),
+                program: program.to_string_lossy().into_owned(),
+                config: Some(config.to_string_lossy().into_owned()),
+            },
+        );
+        let ((state, why), _) = probe(&link);
+        assert_eq!(state, FleetState::Down);
+        assert_eq!(
+            why,
+            Some(format!(
+                "no Fleet config · fleet --config {} init",
+                config.display()
+            ))
+        );
     }
 
     /// A Fleet's state is its manager's lease, from `fleet version --json`:

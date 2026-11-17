@@ -650,7 +650,10 @@ impl FleetFacts {
                 Level::Warn,
                 format!("{} ({from}) does not exist", path.display()),
             )
-            .fix(format!("{} init", self.program)),
+            .fix(match *from {
+                "settings.toml" => format!("{} --config {} init", self.program, path.display()),
+                _ => format!("{} init", self.program),
+            }),
             None => Finding::new("fleet-config", Level::Warn, "no Fleet config path".into())
                 .fix("set FLEET_CONFIG to the config file, then `fleet init`"),
         };

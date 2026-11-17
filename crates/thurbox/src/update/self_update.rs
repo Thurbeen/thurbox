@@ -696,6 +696,11 @@ fn install_dir() -> Result<PathBuf, String> {
         .to_path_buf())
 }
 
+/// The `fleet` an update installs, beside the running executable.
+pub fn installed_fleet() -> Result<PathBuf, String> {
+    Ok(install_dir()?.join(format!("fleet{}", std::env::consts::EXE_SUFFIX)))
+}
+
 /// Where releases are listed and downloaded from: GitHub in production, a
 /// directory of fixture files under `file://` in the updater's own tests, which
 /// is how they drive the whole list-download-verify-install path offline.
