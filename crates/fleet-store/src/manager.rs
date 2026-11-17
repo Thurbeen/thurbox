@@ -47,6 +47,27 @@ impl FileStore {
     /// Take `manager.lock` without waiting. `Ok(None)`: another process
     /// holds it.
     pub fn lock_manager(&self) -> Result<Option<ManagerLock>, StoreError> {
+        let (path, file) = self.open_manager_lock()?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(ManagerLock { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(e)) => Err(io_unknown(&path, e)),
+        }
+    }
+
+    /// Take `manager.lock`, waiting for as long as another process holds
+    /// it. `waiting` runs once, when the wait starts.
+    pub fn wait_for_manager_lock(&self, waiting: impl FnOnce()) -> Result<ManagerLock, StoreError> {
+        if let Some(lock) = self.lock_manager()? {
+            return Ok(lock);
+        }
+        waiting();
+        let (path, file) = self.open_manager_lock()?;
+        file.lock().map_err(|e| io_unknown(&path, e))?;
+        Ok(ManagerLock { _file: file })
+    }
+
+    fn open_manager_lock(&self) -> Result<(PathBuf, File), StoreError> {
         let path = self.root.join(LOCK);
         let file = OpenOptions::new()
             .read(true)
@@ -55,11 +76,7 @@ impl FileStore {
             .truncate(false)
             .open(&path)
             .map_err(|e| io_unknown(&path, e))?;
-        match file.try_lock() {
-            Ok(()) => Ok(Some(ManagerLock { _file: file })),
-            Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(e)) => Err(io_unknown(&path, e)),
-        }
+        Ok((path, file))
     }
 
     /// Replace `manager.json`. Only the holder of `manager.lock` writes it.

@@ -131,8 +131,13 @@ fn up_continues_reconciling_other_tasks_and_reconnects_without_duplicate_session
     env.apply(support::task("while-first-busy", true)).ok();
     until(|| env.status("while-first-busy")["phase"] == "Briefed");
     assert_eq!(env.calls("spawn"), 2);
-    // A competing startup is refused while the resident owns the lease.
-    env.fleet(&["up", "--poll-ms", "100"]).code(6);
+    let mut competing = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    thread::sleep(Duration::from_secs(1));
+    assert!(
+        competing.0.try_wait().unwrap().is_none(),
+        "a competing startup waits while the resident serves"
+    );
+    drop(competing);
     drop(first);
     let lease: serde_json::Value =
         serde_json::from_slice(&fs::read(env.data.join("lease.json")).unwrap()).unwrap();
@@ -936,12 +941,12 @@ fn a_live_manager_holds_its_lock_and_a_new_lease_token_never_goes_back() {
     let first_token = token();
 
     fs::rename(&lease, env.root.join("lease.json.aside")).unwrap();
-    support::wait_within(
-        env.spawn(&["up", "--poll-ms", "100"]),
-        Duration::from_secs(20),
-    )
-    .code(6)
-    .stderr_has("manager.lock");
+    let mut second = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    thread::sleep(Duration::from_secs(2));
+    assert!(
+        second.0.try_wait().unwrap().is_none(),
+        "a second fleet up waits for manager.lock instead of exiting"
+    );
     assert!(
         !lease.exists(),
         "a second fleet up took no lease while the first held its lock"
@@ -971,14 +976,100 @@ fn a_live_manager_holds_its_lock_and_a_new_lease_token_never_goes_back() {
             .success()
     );
     until(|| first.0.try_wait().unwrap().is_some());
-    assert_eq!(manager()["state"], "stopped");
-
-    let _second = Running(env.spawn(&["up", "--poll-ms", "100"]));
-    until(|| manager()["held"] == true);
+    until(|| manager()["held"] == true && manager()["state"] == "serving");
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.data.join("manager.json")).unwrap()).unwrap();
+    assert_eq!(record["pid"], second.0.id(), "{record:#}");
+    assert!(
+        second.0.try_wait().unwrap().is_none(),
+        "the waiting fleet up took over and serves"
+    );
     assert!(
         token() > first_token,
         "a new lease's token is above every earlier one"
     );
+    let _ = second.0.kill();
+    let _ = second.0.wait();
+    let mut waited = String::new();
+    std::io::Read::read_to_string(&mut second.0.stderr.take().unwrap(), &mut waited).unwrap();
+    assert_eq!(
+        waited.matches("waiting for").count(),
+        1,
+        "the holder is printed once: {waited}"
+    );
+    assert!(
+        waited.contains(&format!("pid {}", first.0.id())),
+        "{waited}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn fleet_up_tells_its_supervisor_it_is_ready_after_its_first_pass() {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+    let mut env = fake_bootstrap("sd-notify");
+    let name = format!("fleet-e2e-notify-{}", std::process::id());
+    let socket =
+        UnixDatagram::bind_addr(&SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(40)))
+        .unwrap();
+    env.set_var("NOTIFY_SOCKET", &format!("@{name}"));
+    let mut up = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    let mut messages = Vec::new();
+    let mut buf = [0u8; 4096];
+    while !messages.iter().any(|m: &String| m.contains("READY=1")) {
+        let n = socket
+            .recv(&mut buf)
+            .expect("a notification before the deadline");
+        messages.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+    }
+    let ready = messages.iter().find(|m| m.contains("READY=1")).unwrap();
+    assert!(ready.contains("STATUS="), "{messages:?}");
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.data.join("manager.json")).unwrap()).unwrap();
+    assert_eq!(
+        record["state"], "serving",
+        "ready only once serving: {messages:?}"
+    );
+    assert!(
+        env.data.join("lease.json").exists(),
+        "ready only once the lease is taken"
+    );
+
+    assert!(
+        Command::new("/bin/kill")
+            .args(["-TERM", &up.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    until(|| up.0.try_wait().unwrap().is_some());
+    let mut after = Vec::new();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    while let Ok(n) = socket.recv(&mut buf) {
+        after.push(String::from_utf8_lossy(&buf[..n]).into_owned());
+    }
+    assert!(after.iter().any(|m| m.contains("STOPPING=1")), "{after:?}");
+}
+
+#[test]
+fn fleet_up_exits_78_on_a_refusal_no_retry_can_fix() {
+    let env = fake_bootstrap("exit-78");
+    let good = fs::read_to_string(&env.config).unwrap();
+    fs::write(&env.config, "version = 1\n[data\n").unwrap();
+    env.fleet(&["up"]).code(78);
+
+    fs::write(&env.config, &good).unwrap();
+    env.fleet(&["list", "task"]).ok();
+    let marker = env.data.join("store.json");
+    let mut store: serde_json::Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+    store["version"] = serde_json::json!(store["version"].as_u64().unwrap() + 1);
+    fs::write(&marker, store.to_string()).unwrap();
+    env.fleet(&["up"]).code(78).stderr_has("this build reads");
 }
 
 #[test]

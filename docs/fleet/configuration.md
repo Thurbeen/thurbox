@@ -35,11 +35,24 @@ bounded sweep, releases the manager lease and retains sessions. Run
 
 `fleet up` holds an exclusive OS lock on `<data dir>/manager.lock` for its
 whole life. The OS releases the lock when the manager exits, however it
-exits. A second `fleet up` on the same store exits with code 6 while the
-lock is held, whatever `lease.json` says. The lease keeps its fencing role:
+exits. A second `fleet up` on the same store waits while the lock is held,
+whatever `lease.json` says. It prints the holder once, and it takes over
+when the holder exits. The lease keeps its fencing role:
 every controller write checks its token. Each new lease takes its token
 from the store's `resourceVersion` counter, so a token never goes back,
 even when `lease.json` is lost.
+
+`fleet up` tells a supervisor its state through systemd's notify protocol
+when `NOTIFY_SOCKET` is set:
+
+- `STATUS=waiting for …` while another manager holds the lock.
+- `READY=1` after it takes the lease and finishes its first pass. A unit
+  with `Type=notify` counts as started only then.
+- `STOPPING=1` when it stops.
+
+`fleet up` exits with code 78 on a refusal that no retry can fix: a config
+that does not parse, or a store whose format this build does not read. A
+unit stops restarting it with `RestartPreventExitStatus=78`.
 
 The manager writes its status to `<data dir>/manager.json`: `pid`, `boot`,
 `version`, `exe`, `config`, `startedAt` and `state` (`starting`,
