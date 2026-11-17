@@ -889,7 +889,7 @@ fn thurbox_starts_no_fleet_up_and_says_which_command_does() {
                     == Some(
                         format!(
                             "Fleet not running · {}",
-                            thurbox::fleet_link::start_manager()
+                            link(&fleet.program).start_manager()
                         )
                         .as_str(),
                     )

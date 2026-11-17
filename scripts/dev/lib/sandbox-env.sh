@@ -237,8 +237,11 @@ tbx_sandbox_fleet_up() {
 _tbx_stop_fleet() {
     stopped=0
     if [ -f "$1/fleet/up.pid" ]; then
-        _tbx_stop_manager "$(cat "$1/fleet/up.pid")" "$1" || stopped=1
-        rm -f "$1/fleet/up.pid"
+        if _tbx_stop_manager "$(cat "$1/fleet/up.pid")" "$1"; then
+            rm -f "$1/fleet/up.pid"
+        else
+            stopped=1
+        fi
     fi
     while read -r log; do
         pid="${log##*/fleet-up-}"

@@ -676,8 +676,8 @@ a place.
   While a Fleet on this machine has no manager, the status line says which
   command starts one: `Fleet not running · systemctl --user start
   fleet.service` on Linux where that user unit is installed (in
-  `$XDG_CONFIG_HOME/systemd/user`, `/etc/systemd/user` or
-  `/usr/lib/systemd/user`), otherwise `Fleet not running · fleet up`. Before
+  `$XDG_CONFIG_HOME/systemd/user`), otherwise `Fleet not running · fleet up`,
+  with the `program` and `--config` its `[fleets]` entry names. Before
   its config exists it says `no Fleet config · fleet init`
   (`fleet --config <path> init` when `settings.toml` names the file).
 - v3 reads no `[fleet] program`: it is reported as replaced by `[fleets]`.

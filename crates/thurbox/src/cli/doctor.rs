@@ -412,6 +412,8 @@ pub(super) struct FleetFacts {
     pub(super) version: Result<serde_json::Value, String>,
     /// The config file Fleet reads, and what named it.
     pub(super) config: Option<(std::path::PathBuf, &'static str)>,
+    /// The command that starts its manager ([`crate::fleet_link::FleetLink::start_manager`]).
+    start_manager: String,
     /// `fleet runtime hosts --json`: the places a session can run in, or why
     /// they could not be read.
     pub(super) hosts: Result<serde_json::Value, String>,
@@ -466,6 +468,7 @@ impl FleetFacts {
             version,
             config,
             hosts,
+            start_manager: link.start_manager(),
         }
     }
 
@@ -612,7 +615,7 @@ impl FleetFacts {
             ),
             Some(false) if self.local => {
                 Finding::new("fleet-manager", broken, "Fleet not running".into())
-                    .fix(crate::fleet_link::start_manager())
+                    .fix(self.start_manager.clone())
             }
             Some(false) => Finding::new("fleet-manager", broken, "manager not running".into()).fix(
                 "systemctl --user enable --now fleet.service on that machine (the unit is in \
@@ -819,6 +822,7 @@ mod tests {
             version: version.map_err(str::to_string),
             config: config.map(|p| (std::path::PathBuf::from(p), "the per-user file")),
             hosts: hosts.map_err(str::to_string),
+            start_manager: "fleet up".into(),
         }
     }
 
@@ -913,10 +917,7 @@ mod tests {
             .expect("a fleet-manager row");
         assert_eq!(manager.level, Level::Fail, "{}", manager.detail);
         assert_eq!(manager.detail, "Fleet not running");
-        assert_eq!(
-            manager.fix.as_deref(),
-            Some(crate::fleet_link::start_manager())
-        );
+        assert_eq!(manager.fix.as_deref(), Some("fleet up"));
     }
 
     #[test]

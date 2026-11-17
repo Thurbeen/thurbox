@@ -7379,7 +7379,11 @@ fn a_local_thurbox_with_no_manager_starts_none_and_says_how_to_start_one() {
     );
 
     let mut tui = Tui::spawn(&profile, 40, 160);
-    tui.wait_for("Fleet not running · systemctl --user start fleet.service");
+    tui.wait_for(if cfg!(target_os = "linux") {
+        "Fleet not running · systemctl --user start fleet.service"
+    } else {
+        "Fleet not running · fleet up"
+    });
     assert!(tui.quit().success());
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(

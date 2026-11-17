@@ -895,7 +895,7 @@ pub fn stale_managers(links: &[FleetLink]) -> String {
             _ => format!(
                 "Fleet {}'s manager still runs the old release · {}.",
                 link.name(),
-                crate::fleet_link::restart_manager()
+                link.restart_manager()
             ),
         })
         .collect::<Vec<_>>()

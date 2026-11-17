@@ -124,6 +124,7 @@ teardown() {
   echo "$OTHER" > "$ROOT/fleet/up.pid"
   TBX_FLEET_STOP_TIMEOUT=1 run _tbx_stop_fleet "$ROOT"
   [ "$status" -ne 0 ]
+  [ "$(cat "$ROOT/fleet/up.pid")" = "$OTHER" ]
   kill -9 "$OTHER"
 }
 

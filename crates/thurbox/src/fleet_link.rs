@@ -134,15 +134,46 @@ impl FleetLink {
 
     /// What a Fleet on this machine whose manager holds no lease tells the
     /// user to run: [`Self::no_config`] before `fleet init` wrote its config,
-    /// otherwise [`start_manager`]. `None` for a Fleet on another machine.
+    /// otherwise [`Self::start_manager`]. `None` for a Fleet on another
+    /// machine.
     pub fn not_running(&self) -> Option<String> {
         if !self.is_local() {
             return None;
         }
         Some(
             self.no_config()
-                .unwrap_or_else(|| format!("Fleet not running · {}", start_manager())),
+                .unwrap_or_else(|| format!("Fleet not running · {}", self.start_manager())),
         )
+    }
+
+    /// The command that starts this Fleet's manager: its user unit where one
+    /// is installed ([`manager_unit_installed`]), otherwise its own `fleet
+    /// up`, with the program and config `settings.toml` names.
+    pub fn start_manager(&self) -> String {
+        self.manager_command(manager_unit_installed())
+    }
+
+    /// The command that restarts it on the release an update installed.
+    pub fn restart_manager(&self) -> String {
+        if manager_unit_installed() {
+            "systemctl --user restart fleet.service".to_string()
+        } else {
+            format!(
+                "stop its `{}` and run it again",
+                self.manager_command(false)
+            )
+        }
+    }
+
+    fn manager_command(&self, unit_installed: bool) -> String {
+        if unit_installed {
+            return "systemctl --user start fleet.service".to_string();
+        }
+        let config = self
+            .config()
+            .map(|config| format!(" --config {}", shell_word(config)))
+            .unwrap_or_default();
+        format!("{}{config} up", shell_word(self.program()))
     }
 
     /// [`NO_CONFIG`] for a Fleet on this machine whose config file does not
@@ -494,42 +525,17 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// (docs/where-sessions-run.md).
 const MANAGER_UNIT: &str = "fleet.service";
 
-/// The command that starts the manager of a Fleet on this machine: its user
-/// unit where one is installed, otherwise `fleet up` itself.
-pub fn start_manager() -> &'static str {
-    manager_command_in(&user_unit_dirs())
-}
-
-/// The command that restarts that manager on the release an update
-/// installed.
-pub fn restart_manager() -> &'static str {
-    match start_manager() {
-        "fleet up" => "stop its `fleet up` and run it again",
-        _ => "systemctl --user restart fleet.service",
-    }
-}
-
-fn manager_command_in(dirs: &[std::path::PathBuf]) -> &'static str {
-    let installed =
-        cfg!(target_os = "linux") && dirs.iter().any(|dir| dir.join(MANAGER_UNIT).is_file());
-    if installed {
-        "systemctl --user start fleet.service"
-    } else {
-        "fleet up"
-    }
-}
-
-/// Where systemd looks for a user unit.
-fn user_unit_dirs() -> Vec<std::path::PathBuf> {
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|d| !d.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")));
-    config
-        .map(|c| c.join("systemd/user"))
-        .into_iter()
-        .chain(["/etc/systemd/user", "/usr/lib/systemd/user"].map(std::path::PathBuf::from))
-        .collect()
+/// Whether the user systemd unit that runs `fleet up` is installed where
+/// docs/where-sessions-run.md puts it: only Linux has one.
+pub fn manager_unit_installed() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+            })
+            .is_some_and(|config| config.join("systemd/user").join(MANAGER_UNIT).is_file())
 }
 
 /// `word` as one POSIX shell word: as it is when it needs no quoting.
@@ -824,17 +830,23 @@ mod tests {
     }
 
     #[test]
-    fn the_manager_command_is_the_unit_only_where_one_is_installed() {
-        let dir = tempfile::tempdir().expect("dir");
-        assert_eq!(manager_command_in(&[dir.path().to_path_buf()]), "fleet up");
-        std::fs::write(dir.path().join("fleet.service"), "").expect("unit");
+    fn the_manager_command_is_the_unit_or_this_fleets_own_fleet_up() {
+        let link = FleetLink::of(
+            "laptop",
+            &FleetDef {
+                transport: Default::default(),
+                program: "/opt/My Fleet/fleet".into(),
+                config: Some("/srv/fleet b/config.toml".into()),
+            },
+        );
         assert_eq!(
-            manager_command_in(&[dir.path().to_path_buf()]),
-            if cfg!(target_os = "linux") {
-                "systemctl --user start fleet.service"
-            } else {
-                "fleet up"
-            }
+            link.manager_command(false),
+            "'/opt/My Fleet/fleet' --config '/srv/fleet b/config.toml' up"
+        );
+        assert_eq!(FleetLink::local("fleet").manager_command(false), "fleet up");
+        assert_eq!(
+            link.manager_command(true),
+            "systemctl --user start fleet.service"
         );
     }
 

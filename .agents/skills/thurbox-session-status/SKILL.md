@@ -82,9 +82,9 @@ A Fleet's row (`thurbox.fleets[i].state`) comes from its `fleet version
 (`probe` in `src/kernel/snapshot/fleet.rs`). thurbox never starts, restarts
 or sets up a manager. For a Fleet on this machine that is `down`,
 `FleetLink::not_running` writes the command to run into `why`:
-`Fleet not running · <command>`, where `fleet_link::start_manager` picks
+`Fleet not running · <command>`, where `FleetLink::start_manager` picks
 `systemctl --user start fleet.service` when that user unit is installed and
-`fleet up` otherwise, or `no Fleet config · fleet init` before its config
+the Fleet's own `fleet up` (its program and `--config`) otherwise, or `no Fleet config · fleet init` before its config
 exists. The message band shows that
 `why` at error level while no transient message is up
 (`fleet_down_notice` in `src/coordinator/draw.rs`), and `thurbox-cli doctor`
