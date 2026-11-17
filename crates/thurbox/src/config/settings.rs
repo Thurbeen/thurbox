@@ -66,7 +66,7 @@ config_version = 1
 # `thurbox-cli update` does the same
 # binary update on demand. Set either to `false` to opt out. An update never
 # restarts a running Fleet manager: it names the command that does
-# (`systemctl --user restart fleet.service`).
+# (`systemctl --user restart fleet.service` where that unit is installed).
 #
 # Neither crosses a MAJOR version: a 3.x install only ever takes 3.x releases,
 # and is told when a newer major exists. Moving to one is a reinstall; no flag

@@ -66,8 +66,9 @@ terminal** on the right, and the keys you need on the footer. There are no
 sessions yet, so the list says so.
 
 thurbox never starts, restarts or sets up Fleet. While no manager runs, the
-status line says `Fleet not running · systemctl --user start fleet.service`,
-or `no Fleet config · fleet init` before `fleet init` ran.
+status line says `Fleet not running · systemctl --user start fleet.service`
+(`Fleet not running · fleet up` where no unit is installed), or
+`no Fleet config · fleet init` before `fleet init` ran.
 [Configuration](config.md#a-working-setup) has the three files involved,
 should you want to change them.
 

@@ -228,21 +228,25 @@ _tbx_fleet_is_ours() { # <pid> <root>
 }
 
 tbx_sandbox_fleet_up() {
-    _tbx_stop_fleet "$TBX_SANDBOX_ROOT"
+    _tbx_stop_fleet "$TBX_SANDBOX_ROOT" || return 1
     mkdir -p "$TBX_SANDBOX_ROOT/fleet"
     nohup fleet up >"$TBX_SANDBOX_ROOT/fleet/up.log" 2>&1 </dev/null &
     echo "$!" >"$TBX_SANDBOX_ROOT/fleet/up.pid"
 }
 
 _tbx_stop_fleet() {
+    stopped=0
     if [ -f "$1/fleet/up.pid" ]; then
-        _tbx_stop_manager "$(cat "$1/fleet/up.pid")" "$1"
+        _tbx_stop_manager "$(cat "$1/fleet/up.pid")" "$1" || stopped=1
         rm -f "$1/fleet/up.pid"
     fi
-    find "$1" -name 'fleet-up-*.log' 2>/dev/null | while read -r log; do
+    while read -r log; do
         pid="${log##*/fleet-up-}"
-        _tbx_stop_manager "${pid%.log}" "$1"
-    done
+        _tbx_stop_manager "${pid%.log}" "$1" || stopped=1
+    done <<EOF
+$(find "$1" -name 'fleet-up-*.log' 2>/dev/null)
+EOF
+    return "$stopped"
 }
 
 _tbx_stop_manager() { # <pid> <root>
@@ -255,9 +259,21 @@ _tbx_stop_manager() { # <pid> <root>
     esac
     _tbx_fleet_is_ours "$1" "$2" || return 0
     kill "$1" 2>/dev/null || return 0
-    while kill -0 "$1" 2>/dev/null; do
+    _tbx_wait_gone "$1" "${TBX_FLEET_STOP_TIMEOUT:-120}" && return 0
+    echo "sandbox: fleet up $1 did not stop within ${TBX_FLEET_STOP_TIMEOUT:-120} s" >&2
+    return 1
+}
+
+_tbx_wait_gone() { # <pid> <seconds>
+    ticks=$(($2 * 10))
+    while [ "$ticks" -gt 0 ]; do
+        case "$(ps -p "$1" -o stat= 2>/dev/null)" in
+            ""|Z*) return 0 ;;
+        esac
         sleep 0.1
+        ticks=$((ticks - 1))
     done
+    return 1
 }
 
 # _tbx_kill_servers — kill the tmux servers of the private TMUX_TMPDIR in

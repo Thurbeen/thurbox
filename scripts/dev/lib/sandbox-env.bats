@@ -113,6 +113,20 @@ teardown() {
   run ! kill -0 "$OTHER"
 }
 
+@test "a manager that will not stop fails the stop instead of hanging" {
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 0.1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  echo "$OTHER" > "$ROOT/fleet/up.pid"
+  TBX_FLEET_STOP_TIMEOUT=1 run _tbx_stop_fleet "$ROOT"
+  [ "$status" -ne 0 ]
+  kill -9 "$OTHER"
+}
+
 @test "a manager an older sandbox named only in its log is stopped" {
   bin="${BATS_TEST_TMPDIR}/bin"
   mkdir -p "$bin" "$ROOT/thurbox-data"

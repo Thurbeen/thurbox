@@ -94,7 +94,8 @@ Status: implemented.
    it: `systemctl --user start fleet.service`.
 4. Start thurbox. thurbox never starts, restarts or sets up a manager. While
    none runs, its status line says `Fleet not running · systemctl --user
-   start fleet.service`, or `no Fleet config · fleet init` before step 2.
+   start fleet.service` (`Fleet not running · fleet up` with no unit
+   installed), or `no Fleet config · fleet init` before step 2.
 
 Each session runs on `local`: the laptop.
 

@@ -612,7 +612,7 @@ impl FleetFacts {
             ),
             Some(false) if self.local => {
                 Finding::new("fleet-manager", broken, "Fleet not running".into())
-                    .fix(crate::fleet_link::START_MANAGER)
+                    .fix(crate::fleet_link::start_manager())
             }
             Some(false) => Finding::new("fleet-manager", broken, "manager not running".into()).fix(
                 "systemctl --user enable --now fleet.service on that machine (the unit is in \
@@ -651,7 +651,11 @@ impl FleetFacts {
                 format!("{} ({from}) does not exist", path.display()),
             )
             .fix(match *from {
-                "settings.toml" => format!("{} --config {} init", self.program, path.display()),
+                "settings.toml" => format!(
+                    "{} --config {} init",
+                    self.program,
+                    crate::fleet_link::shell_word(&path.to_string_lossy())
+                ),
                 _ => format!("{} init", self.program),
             }),
             None => Finding::new("fleet-config", Level::Warn, "no Fleet config path".into())
@@ -911,7 +915,7 @@ mod tests {
         assert_eq!(manager.detail, "Fleet not running");
         assert_eq!(
             manager.fix.as_deref(),
-            Some("systemctl --user start fleet.service")
+            Some(crate::fleet_link::start_manager())
         );
     }
 

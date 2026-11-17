@@ -886,7 +886,13 @@ fn thurbox_starts_no_fleet_up_and_says_which_command_does() {
         store.current().fleets.first().is_some_and(|f| {
             f.state == thurbox::kernel::snapshot::FleetState::Down
                 && f.why.as_deref()
-                    == Some("Fleet not running · systemctl --user start fleet.service")
+                    == Some(
+                        format!(
+                            "Fleet not running · {}",
+                            thurbox::fleet_link::start_manager()
+                        )
+                        .as_str(),
+                    )
         })
     });
     std::thread::sleep(Duration::from_secs(2));
@@ -2660,6 +2666,9 @@ mod an_update {
     fn leaves_the_running_fleet_up_and_names_the_command_that_restarts_it() {
         let Some(bin) = fleet_bin() else { return };
         let mut install = Install::new(&bin);
+        let unit = install.path("home/.config/systemd/user");
+        std::fs::create_dir_all(&unit).expect("unit dir");
+        std::fs::write(unit.join("fleet.service"), "").expect("unit");
         let old = install.start_manager();
 
         let updated = install.update();

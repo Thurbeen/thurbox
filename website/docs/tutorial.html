@@ -71,8 +71,9 @@ thurbox</code></pre>
 </p>
 <p>
   Thurbox never starts, restarts or sets up Fleet. While no manager runs, the status line says
-  <code>Fleet not running · systemctl --user start fleet.service</code>, or
-  <code>no Fleet config · fleet init</code> before <code>fleet init</code> ran.
+  <code>Fleet not running · systemctl --user start fleet.service</code> (<code>fleet up</code>
+  where no unit is installed), or <code>no Fleet config · fleet init</code> before
+  <code>fleet init</code> ran.
 </p>
 
 <h2 id="place">

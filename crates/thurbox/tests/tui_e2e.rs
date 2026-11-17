@@ -7373,6 +7373,10 @@ fn a_local_thurbox_with_no_manager_starts_none_and_says_how_to_start_one() {
     let profile = Profile::new();
     let calls = profile.path("fleet-calls");
     fleet_with_no_manager(&profile, &calls);
+    write_script(
+        &profile.path("home/.config/systemd/user/fleet.service"),
+        "[Service]\nExecStart=fleet up\n",
+    );
 
     let mut tui = Tui::spawn(&profile, 40, 160);
     tui.wait_for("Fleet not running · systemctl --user start fleet.service");
@@ -7382,6 +7386,26 @@ fn a_local_thurbox_with_no_manager_starts_none_and_says_how_to_start_one() {
         calls.lines().any(|verb| verb == "watch"),
         "thurbox follows the Fleet: {calls}"
     );
+    assert!(
+        !calls.lines().any(|verb| verb == "up"),
+        "thurbox started a manager: {calls}"
+    );
+}
+
+#[test]
+fn a_local_thurbox_with_no_manager_unit_names_fleet_up() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let calls = profile.path("fleet-calls");
+    fleet_with_no_manager(&profile, &calls);
+
+    let mut tui = Tui::spawn(&profile, 40, 160);
+    tui.wait_for("Fleet not running · fleet up");
+    assert!(tui.quit().success());
+    let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
         !calls.lines().any(|verb| verb == "up"),
         "thurbox started a manager: {calls}"
