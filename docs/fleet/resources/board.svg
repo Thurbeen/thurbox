@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 318" role="img" aria-labelledby="title desc">
 <title id="title">How a Board works</title>
-<desc id="desc">In: fleet event publish from outside a session, as cli/user. The store: under its lock, checks each event, keeps the first event of a repeated key, gives the next seq and drops old segments. Out: the log, which fleet event list reads after a cursor, and status.head and status.oldest.</desc>
+<desc id="desc">In: fleet event publish from outside a session, as cli/user. The store: under its lock, checks each event, keeps the first event of a repeated key, gives the next seq and drops old segments. Out: the log, which fleet event list, wait and watch read after a cursor, and status.head and status.oldest.</desc>
 <style>
   svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
   .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
@@ -20,7 +20,7 @@
 <text x="32" y="207" font-size="12.5" class="muted">type, subject, key, data; as cli/&lt;user&gt;</text>
 <rect class="box process" x="620" y="92" width="260" height="58" rx="8"/>
 <text x="632" y="115" font-size="13.5" font-weight="650">The log</text>
-<text x="632" y="135" font-size="12.5" class="muted">fleet event list --after SEQ</text>
+<text x="632" y="135" font-size="12.5" class="muted">list, wait, watch --after SEQ</text>
 <rect class="box process" x="620" y="236" width="260" height="58" rx="8"/>
 <text x="632" y="259" font-size="13.5" font-weight="650">status.head, status.oldest</text>
 <text x="632" y="279" font-size="12.5" class="muted">the seqs the log holds</text>

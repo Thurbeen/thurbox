@@ -1,6 +1,7 @@
 //! The verbs people and workers use: spec writes (`apply`, `delete`), a
 //! person's message (`send`), events on a board (`publish_event`,
-//! `list_events`) and the worker's answers (`result`, `declare`).
+//! `list_events`, `wait_events`, `wait_ingested`) and the worker's answers
+//! (`result`, `declare`).
 //! The CLI calls these and nothing below them, so every rule lives here
 //! once.
 
@@ -10,7 +11,7 @@ use fleet_api::change_request::{self, ChangeRequestSpec};
 use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, Spooled,
 };
-use fleet_api::event::{Appended, CliSource, Filter, Page, Publish, Source};
+use fleet_api::event::{Appended, CliSource, Event as BoardEvent, Filter, Page, Publish, Source};
 use fleet_api::follow::{DECLARED_CHANGE_REQUEST, ForgeSpec, validate_declaration};
 use fleet_api::forge::{ChangeRef, Forge};
 use fleet_api::gateway::{
@@ -615,11 +616,7 @@ pub fn list_events(
     filter: &Filter,
     limit: usize,
 ) -> Result<Page, StoreError> {
-    if !(1..=MAX_EVENT_LIST).contains(&limit) {
-        return Err(StoreError::Invalid(format!(
-            "limit {limit}: use 1 to {MAX_EVENT_LIST}"
-        )));
-    }
+    check_event_limit(limit)?;
     let end = store.event_head(board)?;
     let mut cursor = after;
     let mut kept = Vec::new();
@@ -675,6 +672,370 @@ pub fn wake(store: &dyn Store, clock: &dyn Clock, name: &str) -> Result<Object, 
         "{}/{name}: kept conflicting with other writers",
         task::KIND
     )))
+}
+
+fn check_event_limit(limit: usize) -> Result<(), StoreError> {
+    if (1..=MAX_EVENT_LIST).contains(&limit) {
+        Ok(())
+    } else {
+        Err(StoreError::Invalid(format!(
+            "limit {limit}: use 1 to {MAX_EVENT_LIST}"
+        )))
+    }
+}
+
+/// A reader that follows a Board (`fleet event wait` and `watch`): `after`
+/// is the `seq` of the last event it read, whether `filter` kept it or not.
+#[derive(Debug, Clone)]
+pub struct EventCursor {
+    pub board: String,
+    pub after: u64,
+    pub filter: Filter,
+}
+
+/// The most pages of the log one [`EventCursor::next`] reads, so a reader
+/// behind a Board that grows faster than it reads still returns between
+/// pages to check its deadline and hand on what it kept.
+pub const MAX_EVENT_PAGES: usize = 4;
+
+impl EventCursor {
+    /// The events after `after` that `filter` keeps, at most `limit`, oldest
+    /// first, read through the store without a lock. `after` moves past each
+    /// event read, kept or not, and stops at the last event answered when
+    /// `limit` cuts the answer, so the next call neither repeats an event nor
+    /// passes one over. It reads at most [`MAX_EVENT_PAGES`] pages: an empty
+    /// answer means the reader has caught up with the log only when `after`
+    /// did not move. A read that expires or fails after some events were kept
+    /// answers those events, and the next call meets it again. `Expired`
+    /// and an error leave `after` where the last read left it.
+    pub fn next(&mut self, store: &dyn Store, limit: usize) -> Result<Page, StoreError> {
+        check_event_limit(limit)?;
+        let mut kept = Vec::new();
+        for _ in 0..MAX_EVENT_PAGES {
+            let read = store.read_events(&self.board, self.after, EVENT_READ_PAGE);
+            let events = match read {
+                Ok(Page::Events(events)) => events,
+                _ if !kept.is_empty() => return Ok(Page::Events(kept)),
+                expired_or_failed => return expired_or_failed,
+            };
+            let caught_up = events.len() < EVENT_READ_PAGE;
+            for e in events {
+                self.after = e.seq;
+                if self.filter.matches(&e) {
+                    kept.push(e);
+                    if kept.len() == limit {
+                        return Ok(Page::Events(kept));
+                    }
+                }
+            }
+            if caught_up {
+                break;
+            }
+        }
+        Ok(Page::Events(kept))
+    }
+}
+
+/// Whether a read that failed with `e` may work on the next poll: another
+/// writer held the store, or the store could not tell. `fleet event wait`
+/// and `watch` read again; any other error ends them.
+pub fn is_transient(e: &StoreError) -> bool {
+    matches!(e, StoreError::Busy(_) | StoreError::Unknown(_))
+}
+
+/// How a waiting verb polls: every `every_ms` through `pause`, telling
+/// `warn` of each [transient](is_transient) read it reads again after.
+pub struct Poll<'a> {
+    pub every_ms: u64,
+    pub pause: &'a mut dyn FnMut(u64),
+    pub warn: &'a mut dyn FnMut(&StoreError),
+}
+
+impl std::fmt::Debug for Poll<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Poll")
+            .field("every_ms", &self.every_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Poll<'_> {
+    fn until(&mut self, clock: &dyn Clock, deadline: fleet_api::Millis) -> bool {
+        let now = clock.now();
+        if now >= deadline {
+            return false;
+        }
+        (self.pause)(self.every_ms.min(deadline - now));
+        true
+    }
+}
+
+/// `fleet event wait`: the first answer of `cursor` that holds an event, or
+/// `Expired`, reading again until the clock reaches `deadline`: at once
+/// while the cursor still moves, every poll once it has caught up. A
+/// [transient](is_transient) read is warned of and read again. `None` when
+/// no event came by then.
+pub fn wait_events(
+    store: &dyn Store,
+    clock: &dyn Clock,
+    cursor: &mut EventCursor,
+    limit: usize,
+    deadline: fleet_api::Millis,
+    poll: &mut Poll<'_>,
+) -> Result<Option<Page>, StoreError> {
+    loop {
+        let from = cursor.after;
+        match cursor.next(store, limit) {
+            Ok(Page::Events(events)) if events.is_empty() => {}
+            Ok(page) => return Ok(Some(page)),
+            Err(e) if is_transient(&e) => (poll.warn)(&e),
+            Err(e) => return Err(e),
+        }
+        let behind = cursor.after != from;
+        if behind && clock.now() >= deadline {
+            return Ok(None);
+        }
+        if !behind && !poll.until(clock, deadline) {
+            return Ok(None);
+        }
+    }
+}
+
+/// What `fleet event publish --wait` reads before it appends its line to
+/// the outbox: the Task whose session key `session_key` is, its
+/// `status.outbox`, and the head of the line's Board (0 for a Board that is
+/// not there, whose line Fleet will skip).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeforeAppend {
+    pub task: String,
+    pub uid: String,
+    pub outbox: fleet_api::event::OutboxCursor,
+    pub head: u64,
+    pub board_uid: Option<String>,
+}
+
+/// Read [`BeforeAppend`] through the store, without a lock. The line's
+/// content is not trusted to name the Task: the session key is.
+pub fn before_append(
+    store: &dyn Store,
+    session_key: &str,
+    board: &str,
+) -> Result<BeforeAppend, StoreError> {
+    let tasks = match store.list(task::KIND) {
+        Observation::Known(tasks) => tasks,
+        Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+    };
+    let owner = tasks
+        .iter()
+        .find(|t| fleet_api::session::session_key(&t.metadata.name, &t.metadata.uid) == session_key)
+        .ok_or_else(|| StoreError::NotFound(format!("no Task runs the session {session_key}")))?;
+    let (head, board_uid) = board_head(store, board)?;
+    Ok(BeforeAppend {
+        task: owner.metadata.name.clone(),
+        uid: owner.metadata.uid.clone(),
+        outbox: outbox_of(owner)?,
+        head,
+        board_uid,
+    })
+}
+
+const BOARD_HEAD_TRIES: u32 = 3;
+
+fn board_head(store: &dyn Store, board: &str) -> Result<(u64, Option<String>), StoreError> {
+    for _ in 0..BOARD_HEAD_TRIES {
+        let uid = board_uid(store, board)?;
+        let head = match store.event_head(board) {
+            Err(StoreError::NotFound(_)) => 0,
+            head => head?,
+        };
+        if board_uid(store, board)? == uid {
+            return Ok((head, uid));
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "Board/{board} was made again during each of {BOARD_HEAD_TRIES} reads of its head"
+    )))
+}
+
+fn board_uid(store: &dyn Store, board: &str) -> Result<Option<String>, StoreError> {
+    match store.get(fleet_api::board::KIND, board) {
+        Observation::Known(found) => Ok(found.map(|b| b.metadata.uid)),
+        Observation::Unknown { why } => Err(StoreError::Unknown(why)),
+    }
+}
+
+fn outbox_of(task: &Object) -> Result<fleet_api::event::OutboxCursor, StoreError> {
+    let status: TaskStatus = if task.status.is_null() {
+        TaskStatus::default()
+    } else {
+        typed(task::KIND, &task.status)?
+    };
+    Ok(status.outbox.unwrap_or_default())
+}
+
+impl BeforeAppend {
+    /// The line appended from `offset` to `end` of the outbox. A line that
+    /// starts below the outbox cursor is in a file made again: Fleet reads
+    /// it under the next generation, and derives its key from that one.
+    pub fn queued(&self, offset: u64, end: u64, board: &str, key: Option<String>) -> QueuedLine {
+        let generation = if offset < self.outbox.offset {
+            self.outbox.generation + 1
+        } else {
+            self.outbox.generation
+        };
+        QueuedLine {
+            task: self.task.clone(),
+            uid: self.uid.clone(),
+            board: board.to_string(),
+            key: key.unwrap_or_else(|| fleet_api::event::outbox_key(generation, offset)),
+            offset,
+            end,
+            generation,
+            head: self.head,
+            board_uid: self.board_uid.clone(),
+        }
+    }
+}
+
+/// A line `fleet event publish --wait` appended to its session's outbox:
+/// the Task that reads it, the board and key its event has, where it lies
+/// in which generation of the outbox, and the board's head and uid before
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedLine {
+    pub task: String,
+    pub uid: String,
+    pub board: String,
+    pub key: String,
+    pub offset: u64,
+    pub end: u64,
+    pub generation: u64,
+    pub head: u64,
+    pub board_uid: Option<String>,
+}
+
+/// Where Fleet is with a [`QueuedLine`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ingest {
+    /// Not read in yet.
+    Pending,
+    /// Read in: the event the board holds for it, and whether that event
+    /// was there before the line (a key the Task already used).
+    Appended {
+        event: Box<BoardEvent>,
+        duplicate: bool,
+    },
+    /// Read and skipped, for this reason.
+    Skipped(String),
+}
+
+/// Where Fleet is with `line`, read through the store without a lock.
+/// Pending until the Task's `status.outbox`, as a (generation, offset)
+/// pair, reaches the line's end. TaskController appends a line's event
+/// before it moves the cursor past it, so from then on the event is on the
+/// board, unless `lastSkipped` names the line: a line the store refused is
+/// skipped even when its key matches an older event. Otherwise the event is
+/// above the head read before the append, or at or below it for a key the
+/// Task already used. A Board made again since then holds no event
+/// from before the line, so any event found there is new. A line whose event
+/// is in neither place was skipped, or is no longer on the board.
+pub fn ingested(store: &dyn Store, line: &QueuedLine) -> Result<Ingest, StoreError> {
+    let owner = match store.get(task::KIND, &line.task) {
+        Observation::Known(Some(t)) if t.metadata.uid == line.uid => t,
+        Observation::Known(_) => {
+            return Err(StoreError::NotFound(format!(
+                "{}/{} is gone; nothing reads its outbox",
+                task::KIND,
+                line.task
+            )));
+        }
+        Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+    };
+    let outbox = outbox_of(&owner)?;
+    if (outbox.generation, outbox.offset) < (line.generation, line.end) {
+        return Ok(Ingest::Pending);
+    }
+    if let Some(why) = outbox.skipped_at(line.offset) {
+        return Ok(Ingest::Skipped(why.to_string()));
+    }
+    let same_board = board_uid(store, &line.board)? == line.board_uid;
+    let fresh_after = if same_board { line.head } else { 0 };
+    if let Some(event) = find_published(store, line, fresh_after, u64::MAX)? {
+        return Ok(Ingest::Appended {
+            event: Box::new(event),
+            duplicate: false,
+        });
+    }
+    if same_board && let Some(event) = find_published(store, line, 0, line.head)? {
+        return Ok(Ingest::Appended {
+            event: Box::new(event),
+            duplicate: true,
+        });
+    }
+    Ok(Ingest::Skipped(format!(
+        "offset {}: Board/{} holds no event for the line: Fleet skipped it, retention dropped its event, or the outbox was made again",
+        line.offset, line.board
+    )))
+}
+
+/// `fleet event publish --wait` inside a session: [`ingested`] every poll
+/// until it is no longer `Pending`, or until the clock reaches `deadline`,
+/// which answers `Pending`. A [transient](is_transient) read is warned of
+/// and read again.
+pub fn wait_ingested(
+    store: &dyn Store,
+    clock: &dyn Clock,
+    line: &QueuedLine,
+    deadline: fleet_api::Millis,
+    poll: &mut Poll<'_>,
+) -> Result<Ingest, StoreError> {
+    loop {
+        match ingested(store, line) {
+            Ok(Ingest::Pending) => {}
+            Ok(ingest) => return Ok(ingest),
+            Err(e) if is_transient(&e) => (poll.warn)(&e),
+            Err(e) => return Err(e),
+        }
+        if !poll.until(clock, deadline) {
+            return Ok(Ingest::Pending);
+        }
+    }
+}
+
+fn find_published(
+    store: &dyn Store,
+    line: &QueuedLine,
+    after: u64,
+    through: u64,
+) -> Result<Option<BoardEvent>, StoreError> {
+    let by_task = |e: &BoardEvent| matches!(&e.source, Source::Task(t) if t.task == line.task && t.uid == line.uid);
+    let mut cursor = EventCursor {
+        board: line.board.clone(),
+        after,
+        filter: Filter::default(),
+    };
+    while cursor.after < through {
+        let events = match cursor.next(store, EVENT_READ_PAGE) {
+            Ok(Page::Events(events)) => events,
+            Ok(Page::Expired { oldest }) => {
+                cursor.after = oldest - 1;
+                continue;
+            }
+            Err(StoreError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if events.is_empty() {
+            return Ok(None);
+        }
+        if let Some(e) = events
+            .into_iter()
+            .take_while(|e| e.seq <= through)
+            .find(|e| e.key.as_deref() == Some(line.key.as_str()) && by_task(e))
+        {
+            return Ok(Some(e));
+        }
+    }
+    Ok(None)
 }
 
 /// What `fleet amend` asks for.

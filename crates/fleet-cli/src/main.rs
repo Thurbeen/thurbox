@@ -225,7 +225,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Events on a Board: publish one, or list what the board holds.
+    /// Events on a Board: publish one, or list, wait for or watch what it holds.
     Event {
         #[command(subcommand)]
         command: EventCommand,
@@ -433,30 +433,26 @@ enum EventCommand {
         /// The event's data, as JSON.
         #[arg(long, value_name = "JSON", allow_hyphen_values = true)]
         data: String,
+        /// Inside a session, wait until Fleet has read the line into the
+        /// Board, then print the event with its seq; exit 1 when Fleet
+        /// skipped the line, and 7 with the outbox offset on a timeout.
+        /// Outside a session the publish is already done when it prints.
+        #[arg(long)]
+        wait: bool,
+        /// How long --wait waits.
+        #[arg(long, value_name = "MS", default_value_t = 60_000, requires = "wait")]
+        timeout_ms: u64,
         /// Print the event as JSON.
         #[arg(long)]
         json: bool,
     },
     /// List a Board's events after a cursor, oldest first.
     List {
-        /// The Board to read.
-        #[arg(long, default_value = fleet_api::board::SHARED)]
-        board: String,
         /// Only events with a seq above this cursor; 0 lists from the start.
         #[arg(long, value_name = "SEQ", default_value_t = 0)]
         after: u64,
-        /// Only this event type; a trailing * matches a prefix.
-        #[arg(long = "type", value_name = "TYPE")]
-        event_type: Option<String>,
-        /// Only this subject; a trailing * matches a prefix.
-        #[arg(long)]
-        subject: Option<String>,
-        /// Only events from this source, such as cli/USER.
-        #[arg(long)]
-        source: Option<String>,
-        /// Only events with this correlation id.
-        #[arg(long)]
-        correlation: Option<String>,
+        #[command(flatten)]
+        filter: EventFilter,
         /// The most events to print.
         #[arg(long, value_name = "N", default_value_t = 100)]
         limit: usize,
@@ -464,6 +460,78 @@ enum EventCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Wait until a Board holds an event after a cursor that matches, then
+    /// print the matches as list does; exit 7, printing nothing, when none
+    /// comes before the timeout.
+    Wait {
+        /// Only events with a seq above this cursor: the last seq read.
+        #[arg(long, value_name = "SEQ")]
+        after: u64,
+        #[command(flatten)]
+        filter: EventFilter,
+        /// How long to wait for a match.
+        #[arg(long, value_name = "MS")]
+        timeout_ms: u64,
+        /// Interval between reads of the Board (50..=10000 ms).
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
+        poll_ms: u64,
+        /// The most events to print.
+        #[arg(long, value_name = "N", default_value_t = 100)]
+        limit: usize,
+        /// Print the events as a JSON array.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print each event after a cursor that matches, oldest first, then
+    /// each new one as it is published, until stdout closes.
+    Watch {
+        /// Only events with a seq above this cursor: the last seq read.
+        #[arg(long, value_name = "SEQ")]
+        after: u64,
+        #[command(flatten)]
+        filter: EventFilter,
+        /// Interval between reads of the Board (50..=10000 ms).
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
+        poll_ms: u64,
+        /// Print one event per line as JSON (NDJSON).
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+struct EventFilter {
+    /// The Board to read.
+    #[arg(long, default_value = fleet_api::board::SHARED)]
+    board: String,
+    /// Only this event type; a trailing * matches a prefix.
+    #[arg(long = "type", value_name = "TYPE")]
+    event_type: Option<String>,
+    /// Only this subject; a trailing * matches a prefix.
+    #[arg(long)]
+    subject: Option<String>,
+    /// Only events from this source, such as cli/USER or task/NAME.
+    #[arg(long)]
+    source: Option<String>,
+    /// Only events with this correlation id.
+    #[arg(long)]
+    correlation: Option<String>,
+}
+
+impl EventFilter {
+    fn cursor(self, after: u64) -> fleet_manager::verbs::EventCursor {
+        use fleet_api::event::{Filter, Pattern};
+        fleet_manager::verbs::EventCursor {
+            board: self.board,
+            after,
+            filter: Filter {
+                event_type: self.event_type.as_deref().map(Pattern::new),
+                subject: self.subject.as_deref().map(Pattern::new),
+                source: self.source,
+                correlation: self.correlation,
+            },
+        }
+    }
 }
 
 /// Exit codes, stable for scripts.
@@ -473,6 +541,7 @@ mod exit {
     pub const UNKNOWN: u8 = 4;
     pub const CONFLICT: u8 = 5;
     pub const LEASE: u8 = 6;
+    pub const TIMEOUT: u8 = 7;
 }
 
 struct Failure {
@@ -634,6 +703,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             None => cmd_signal_read(*length, file, *since),
         };
     }
+    let mut queued = None;
     if let Command::Event {
         command:
             EventCommand::Publish {
@@ -643,13 +713,28 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 key,
                 correlation,
                 data,
+                wait,
+                timeout_ms,
                 json,
             },
     } = &cli.command
         && let Some(outbox) = session_outbox()?
     {
         let publish = publish_of(event_type, subject, key, correlation, data)?;
-        return cmd_session_publish(&outbox, board, publish, *json);
+        let line = fleet_api::event::OutboxLine::new(board, publish);
+        if !*wait {
+            let (offset, _) = session_append(&outbox, &line)?;
+            print_queued(&line.board, &line.event_type, offset, *json);
+            return Ok(());
+        }
+        line.encode().map_err(fail)?;
+        queued = Some(Queued {
+            session_key: outbox_session_key(&outbox)?,
+            outbox,
+            line,
+            timeout_ms: *timeout_ms,
+            json: *json,
+        });
     }
     if let Command::TermBridge { argv } = &cli.command {
         return fleet_runtime::bridge::serve(argv, std::io::stdin(), std::io::stdout())
@@ -1097,7 +1182,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
-        Command::Event { command } => cmd_event(store, command),
+        Command::Event { command } => cmd_event(store, command, queued),
         Command::Attach { task, json, wake } => {
             let signals = open_signals(&data_dir)?;
             let runtime = open_runtime(&config, &signals)?;
@@ -1998,25 +2083,111 @@ fn session_outbox() -> Result<Option<PathBuf>, Failure> {
     }
 }
 
-/// `fleet event publish` inside a session: check the event as far as no
-/// store is needed, append it to the session's outbox, and print the
-/// line's offset. Fleet ingests it later, as the session's Task.
-fn cmd_session_publish(
+fn outbox_session_key(outbox: &Path) -> Result<String, Failure> {
+    fleet_runtime::events::outbox_session_key(outbox).ok_or_else(|| Failure {
+        code: exit::ERROR,
+        message: format!(
+            "{}: {} names no outbox Fleet made, so --wait cannot tell which Task reads it",
+            outbox.display(),
+            fleet_api::event::EVENT_FILE_ENV
+        ),
+        hint: Some("publish without --wait".into()),
+    })
+}
+
+fn session_append(
     outbox: &Path,
-    board: &str,
-    publish: fleet_api::event::Publish,
+    line: &fleet_api::event::OutboxLine,
+) -> Result<(u64, u64), Failure> {
+    let length = line.encode().map_err(fail)?.len() as u64;
+    let offset = fleet_runtime::events::append(outbox, line)
+        .map_err(|e| fail(format!("{}: {e}", outbox.display())))?;
+    Ok((offset, offset + length))
+}
+
+fn print_queued(board: &str, event_type: &str, offset: u64, json: bool) {
+    if json {
+        print_json(&json!({"board": board, "type": event_type, "offset": offset}));
+    } else {
+        println!("{board} {event_type} queued at outbox offset {offset}");
+    }
+}
+
+struct Queued {
+    session_key: String,
+    outbox: PathBuf,
+    line: fleet_api::event::OutboxLine,
+    timeout_ms: u64,
+    json: bool,
+}
+
+const PUBLISH_WAIT_POLL_MS: u64 = 200;
+
+fn sleep_ms(ms: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
+fn warn_and_retry(e: &StoreError) {
+    eprintln!("warning: could not read the store; reading again: {e}");
+}
+
+fn with_poll<T>(every_ms: u64, f: impl FnOnce(&mut fleet_manager::verbs::Poll<'_>) -> T) -> T {
+    let mut pause = sleep_ms;
+    let mut warn = warn_and_retry;
+    f(&mut fleet_manager::verbs::Poll {
+        every_ms,
+        pause: &mut pause,
+        warn: &mut warn,
+    })
+}
+
+fn cmd_publish_wait(store: &dyn Store, queued: Queued) -> Result<(), Failure> {
+    use fleet_manager::verbs::{Ingest, before_append, wait_ingested};
+    let before = before_append(store, &queued.session_key, &queued.line.board)?;
+    let (offset, end) = session_append(&queued.outbox, &queued.line)?;
+    let line = before.queued(offset, end, &queued.line.board, queued.line.key.clone());
+    let deadline = fleet_api::Clock::now(&SystemClock) + queued.timeout_ms;
+    let ingest = with_poll(PUBLISH_WAIT_POLL_MS, |poll| {
+        wait_ingested(store, &SystemClock, &line, deadline, poll)
+    })?;
+    match ingest {
+        Ingest::Appended { event, duplicate } => print_published(&event, duplicate, queued.json),
+        Ingest::Skipped(why) => Err(fail(format!(
+            "the line at outbox offset {offset} was skipped or is not on the Board: {why}"
+        ))),
+        Ingest::Pending => {
+            print_queued(&line.board, &queued.line.event_type, offset, queued.json);
+            Err(Failure {
+                code: exit::TIMEOUT,
+                message: format!(
+                    "Fleet has not read the line at outbox offset {offset} in within {} ms",
+                    queued.timeout_ms
+                ),
+                hint: Some("Fleet may still read it in, or the outbox may have been made again; check that fleet up runs".into()),
+            })
+        }
+    }
+}
+
+fn print_published(
+    e: &fleet_api::event::Event,
+    duplicate: bool,
     json: bool,
 ) -> Result<(), Failure> {
-    let line = fleet_api::event::OutboxLine::new(board, publish);
-    line.encode().map_err(fail)?;
-    let offset = fleet_runtime::events::append(outbox, &line)
-        .map_err(|e| fail(format!("{}: {e}", outbox.display())))?;
     if json {
-        print_json(&json!({"board": board, "type": line.event_type, "offset": offset}));
+        print_json(&serde_json::to_value(e).map_err(|e| fail(e.to_string()))?);
     } else {
         println!(
-            "{board} {} queued at outbox offset {offset}",
-            line.event_type
+            "{}/{} {} from {}{}",
+            e.board,
+            e.seq,
+            e.event_type,
+            e.source.name(),
+            if duplicate {
+                " (already published under this key)"
+            } else {
+                ""
+            }
         );
     }
     Ok(())
@@ -2036,9 +2207,15 @@ fn cmd_outbox_read(file: &Path, from: u64) -> Result<(), Failure> {
         .map_err(|e| fail(format!("stdout: {e}")))
 }
 
-fn cmd_event(store: &dyn Store, command: EventCommand) -> Result<(), Failure> {
-    use fleet_api::event::{Filter, Page, Pattern};
+fn cmd_event(
+    store: &dyn Store,
+    command: EventCommand,
+    queued: Option<Queued>,
+) -> Result<(), Failure> {
     match command {
+        EventCommand::Publish { .. } if queued.is_some() => {
+            cmd_publish_wait(store, queued.expect("queued"))
+        }
         EventCommand::Publish {
             board,
             event_type,
@@ -2047,81 +2224,155 @@ fn cmd_event(store: &dyn Store, command: EventCommand) -> Result<(), Failure> {
             correlation,
             data,
             json,
+            ..
         } => {
             let publish = publish_of(&event_type, &subject, &key, &correlation, &data)?;
             let appended = publish_event(store, &board, &current_user(), publish)?;
-            let e = &appended.event;
-            if json {
-                print_json(&serde_json::to_value(e).map_err(|e| fail(e.to_string()))?);
-            } else {
-                println!(
-                    "{}/{} {} from {}{}",
-                    e.board,
-                    e.seq,
-                    e.event_type,
-                    e.source.name(),
-                    if appended.duplicate {
-                        " (already published under this key)"
-                    } else {
-                        ""
-                    }
-                );
-            }
-            Ok(())
+            print_published(&appended.event, appended.duplicate, json)
         }
         EventCommand::List {
-            board,
             after,
-            event_type,
-            subject,
-            source,
-            correlation,
+            filter,
             limit,
             json,
         } => {
-            let filter = Filter {
-                event_type: event_type.as_deref().map(Pattern::new),
-                subject: subject.as_deref().map(Pattern::new),
-                source,
-                correlation,
+            let cursor = filter.cursor(after);
+            let page = list_events(store, &cursor.board, after, &cursor.filter, limit)?;
+            print_page(&cursor.board, after, page, json)
+        }
+        EventCommand::Wait {
+            after,
+            filter,
+            timeout_ms,
+            poll_ms,
+            limit,
+            json,
+        } => {
+            let mut cursor = filter.cursor(after);
+            let deadline = fleet_api::Clock::now(&SystemClock) + timeout_ms;
+            let page = with_poll(poll_ms, |poll| {
+                fleet_manager::verbs::wait_events(
+                    store,
+                    &SystemClock,
+                    &mut cursor,
+                    limit,
+                    deadline,
+                    poll,
+                )
+            })?;
+            match page {
+                Some(page) => print_page(&cursor.board, cursor.after, page, json),
+                None => Err(Failure {
+                    code: exit::TIMEOUT,
+                    message: format!(
+                        "Board/{}: no event after {after} matched within {timeout_ms} ms",
+                        cursor.board
+                    ),
+                    hint: None,
+                }),
+            }
+        }
+        EventCommand::Watch {
+            after,
+            filter,
+            poll_ms,
+            json,
+        } => cmd_event_watch(store, filter.cursor(after), poll_ms, json),
+    }
+}
+
+fn expired_failure(board: &str, after: u64, oldest: u64) -> Failure {
+    Failure {
+        code: exit::CONFLICT,
+        message: format!(
+            "Board/{board}: the events after {after} are gone; the oldest {oldest} is the first it holds"
+        ),
+        hint: Some(format!(
+            "read again with --after {} and accept the gap",
+            oldest - 1
+        )),
+    }
+}
+
+fn print_page(
+    board: &str,
+    after: u64,
+    page: fleet_api::event::Page,
+    json: bool,
+) -> Result<(), Failure> {
+    use fleet_api::event::Page;
+    match page {
+        Page::Expired { oldest } => {
+            if json {
+                print_json(&json!({"expired": {"oldest": oldest}}));
+            }
+            Err(expired_failure(board, after, oldest))
+        }
+        Page::Events(events) if json => {
+            print_json(&serde_json::to_value(&events).map_err(|e| fail(e.to_string()))?);
+            Ok(())
+        }
+        Page::Events(events) => {
+            println!(
+                "{:<8} {:<14} {:<32} {:<24} SUBJECT",
+                "SEQ", "TIME", "TYPE", "SOURCE"
+            );
+            for e in &events {
+                println!("{}", event_row(e));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn event_row(e: &fleet_api::event::Event) -> String {
+    format!(
+        "{:<8} {:<14} {:<32} {:<24} {}",
+        e.seq,
+        e.time,
+        e.event_type,
+        e.source.name(),
+        e.subject.as_deref().unwrap_or("-")
+    )
+}
+
+fn cmd_event_watch(
+    store: &dyn Store,
+    mut cursor: fleet_manager::verbs::EventCursor,
+    poll_ms: u64,
+    json: bool,
+) -> Result<(), Failure> {
+    use fleet_api::event::Page;
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    loop {
+        let from = cursor.after;
+        let events = match cursor.next(store, fleet_manager::verbs::MAX_EVENT_LIST) {
+            Ok(Page::Events(events)) => events,
+            Ok(Page::Expired { oldest }) => {
+                if json {
+                    let _ = writeln!(out, "{}", json!({"expired": {"oldest": oldest}}));
+                }
+                return Err(expired_failure(&cursor.board, cursor.after, oldest));
+            }
+            Err(e) if fleet_manager::verbs::is_transient(&e) => {
+                warn_and_retry(&e);
+                Vec::new()
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if events.is_empty() && cursor.after == from {
+            sleep_ms(poll_ms);
+            continue;
+        }
+        for e in &events {
+            let line = if json {
+                serde_json::to_string(e).map_err(|e| fail(e.to_string()))?
+            } else {
+                event_row(e)
             };
-            match list_events(store, &board, after, &filter, limit)? {
-                Page::Expired { oldest } => {
-                    if json {
-                        print_json(&json!({"expired": {"oldest": oldest}}));
-                    }
-                    Err(Failure {
-                        code: exit::CONFLICT,
-                        message: format!(
-                            "Board/{board}: the events after {after} are gone; the oldest {oldest} is the first it holds"
-                        ),
-                        hint: Some(format!(
-                            "list again with --after {} and accept the gap",
-                            oldest - 1
-                        )),
-                    })
-                }
-                Page::Events(events) if json => {
-                    print_json(&serde_json::to_value(&events).map_err(|e| fail(e.to_string()))?);
-                    Ok(())
-                }
-                Page::Events(events) => {
-                    println!(
-                        "{:<8} {:<14} {:<32} {:<24} SUBJECT",
-                        "SEQ", "TIME", "TYPE", "SOURCE"
-                    );
-                    for e in &events {
-                        println!(
-                            "{:<8} {:<14} {:<32} {:<24} {}",
-                            e.seq,
-                            e.time,
-                            e.event_type,
-                            e.source.name(),
-                            e.subject.as_deref().unwrap_or("-")
-                        );
-                    }
-                    Ok(())
-                }
+            if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                return Ok(());
             }
         }
     }

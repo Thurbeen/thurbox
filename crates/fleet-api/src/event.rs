@@ -362,7 +362,8 @@ pub struct OutboxCursor {
     /// Lines that did not parse or were refused, over the Task's life.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped: u64,
-    /// Why the last skipped line was skipped, and where it was.
+    /// Why the last skipped line was skipped, and where it was, in the
+    /// current generation: a file made again clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_skipped: Option<String>,
     /// The session is gone and a read since found every whole line in:
@@ -385,6 +386,14 @@ impl OutboxCursor {
         self.offset = end;
         self.skipped += 1;
         self.last_skipped = Some(format!("offset {offset}: {why}"));
+    }
+
+    /// Why the line at `offset` was skipped, when it is the last line
+    /// skipped.
+    pub fn skipped_at(&self, offset: u64) -> Option<&str> {
+        self.last_skipped
+            .as_deref()
+            .filter(|why| why.strip_prefix(&format!("offset {offset}: ")).is_some())
     }
 }
 
@@ -411,6 +420,7 @@ pub fn ingest(cursor: &OutboxCursor, read: &OutboxRead) -> (OutboxCursor, Vec<Ou
         from.generation += 1;
         from.offset = read.start;
         from.discarding = false;
+        from.last_skipped = None;
     }
     let base = from.offset;
     let mut entries = Vec::new();
@@ -466,9 +476,15 @@ fn parse_line(bytes: &[u8], generation: u64, offset: u64) -> Result<(String, Pub
         serde_json::from_slice(bytes).map_err(|e| format!("not an event: {e}"))?;
     let (board, mut publish) = line.checked()?;
     if publish.key.is_none() {
-        publish.key = Some(format!("outbox-{generation}-{offset}"));
+        publish.key = Some(outbox_key(generation, offset));
     }
     Ok((board, publish))
+}
+
+/// The key Fleet gives the line at `offset` of an outbox at `generation`
+/// when the line names none.
+pub fn outbox_key(generation: u64, offset: u64) -> String {
+    format!("outbox-{generation}-{offset}")
 }
 
 /// A filter value: exact, or a prefix when it ends in `*`.
@@ -648,6 +664,15 @@ mod tests {
     }
 
     #[test]
+    fn a_file_made_again_forgets_the_last_skip_of_the_old_file() {
+        let mut cursor = OutboxCursor::default();
+        cursor.skip(0, 100, "Board/nowhere not found");
+        let (from, _) = ingest(&cursor, &read(0, &line("shared", "a", None)));
+        assert_eq!(from.skipped_at(0), None);
+        assert_eq!(from.skipped, 1);
+    }
+
+    #[test]
     fn a_file_made_again_starts_a_new_generation_of_keys() {
         let cursor = OutboxCursor {
             offset: 100,
@@ -688,6 +713,11 @@ mod tests {
             cursor.last_skipped.as_deref(),
             Some("offset 0: not an event")
         );
+        assert_eq!(cursor.skipped_at(0), Some("offset 0: not an event"));
+        assert_eq!(cursor.skipped_at(1), None);
+        cursor.skip(10, 20, "offset 1: no");
+        assert_eq!(cursor.skipped_at(1), None);
+        assert_eq!(cursor.skipped_at(10), Some("offset 10: offset 1: no"));
     }
 
     #[test]
