@@ -1277,7 +1277,11 @@ fn attaching_to_a_paused_session_on_runtime_mux_resumes_it_and_streams_it() {
             || support::condition(&env.get("t1")["status"], "Paused")["status"] == "True"
     });
     let typed = typed();
-    assert_eq!(typed.lines().count(), 1, "only the brief was typed: {typed}");
+    assert_eq!(
+        typed.lines().count(),
+        1,
+        "only the brief was typed: {typed}"
+    );
 }
 
 /// An agent that exists for Fleet only as a harness profile in the user's
