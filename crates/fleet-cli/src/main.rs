@@ -1594,6 +1594,12 @@ fn cmd_up(
 fn record_children(data_dir: &Path, holder: &str) -> Result<(), Failure> {
     stop_what_gone_holders_left(data_dir);
     if let Some(dir) = fleet_store::holder::children_dir(data_dir, holder) {
+        if let Err(e) = fleet_exec::children::stop_recorded(&dir) {
+            eprintln!(
+                "could not stop what an earlier process with this PID left in {}: {e}",
+                dir.display()
+            );
+        }
         fleet_exec::children::record_in(&dir)
             .map_err(|e| fail(format!("{}: {e}", dir.display())))?;
     }
