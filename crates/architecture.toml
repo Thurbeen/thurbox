@@ -524,7 +524,6 @@ allowed = ["paths"]
 production_only = true
 why = "write it through paths::write_atomically"
 exceptions = [
-  { file = "kernel/snapshot/fleet.rs", sites = 1, why = "fleet up's standard error, created exclusively, unlinked once spawned and read once it exits" },
   { file = "clipboard.rs", sites = 1, why = "opens /dev/tty to send an OSC 52 sequence, not a file" },
   { file = "ui_control.rs", sites = 2, why = "appends to the control audit log, on Unix and on Windows" },
 ]
