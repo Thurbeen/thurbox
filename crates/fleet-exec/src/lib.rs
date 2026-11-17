@@ -15,6 +15,10 @@
 //! - **Bounded output.** stdout and stderr are capped; a chatty child cannot
 //!   exhaust memory or block on a full pipe.
 //!
+//! - **Recorded.** Once [`children::record_in`] names a directory, each run
+//!   records its process group there until it returns, so the process
+//!   that takes over a dead holder's lease can stop what it left running.
+//!
 //! A child that exits normally keeps anything it detached (a multiplexer
 //! server it started in a new session): only a timeout or an unwind kills.
 //!
@@ -32,6 +36,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use process_wrap::std::{ChildWrapper, CommandWrap};
+
+pub mod children;
 
 /// The most of each stream a run keeps.
 pub const OUTPUT_CAP: usize = 16 * 1024 * 1024;
@@ -236,6 +242,12 @@ pub(crate) fn command(spec: &Spec) -> Command {
     cmd
 }
 
+fn feed_without_blocking_the_caller(mut pipe: impl Write + Send + 'static, bytes: Vec<u8>) {
+    thread::spawn(move || {
+        let _ = pipe.write_all(&bytes);
+    });
+}
+
 pub fn run(spec: &Spec) -> Outcome {
     let mut cmd = command(spec);
     cmd.stdin(if spec.stdin.is_some() {
@@ -250,6 +262,10 @@ pub fn run(spec: &Spec) -> Outcome {
     wrap.wrap(process_wrap::std::ProcessGroup::leader());
     #[cfg(windows)]
     wrap.wrap(process_wrap::std::JobObject);
+    let record = match children::Record::intend() {
+        Ok(record) => record,
+        Err(e) => return Outcome::NotStarted(format!("could not record the run: {e}")),
+    };
     let child = match wrap.spawn() {
         Ok(c) => c,
         Err(e) => return Outcome::NotStarted(e.to_string()),
@@ -258,12 +274,15 @@ pub fn run(spec: &Spec) -> Outcome {
         child,
         exited: false,
     };
+    if let Some(record) = &record
+        && let Err(e) = record.started(guard.child.id())
+    {
+        guard.kill();
+        return Outcome::NotStarted(format!("could not record the run: {e}"));
+    }
     let deadline = Instant::now() + spec.timeout;
-    if let (Some(bytes), Some(mut pipe)) = (spec.stdin.clone(), guard.child.stdin().take()) {
-        // On its own thread: a child that never reads cannot block us.
-        thread::spawn(move || {
-            let _ = pipe.write_all(&bytes);
-        });
+    if let (Some(bytes), Some(pipe)) = (spec.stdin.clone(), guard.child.stdin().take()) {
+        feed_without_blocking_the_caller(pipe, bytes);
     }
     let overflow = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let limit = spec.output_limit.unwrap_or(OUTPUT_CAP).min(OUTPUT_CAP);

@@ -795,7 +795,7 @@ first, and the controller deletes one whose account left the config.
 ## Store
 
 A data directory holds `store.json` (format and version), `lock`, `seq`,
-`lease.json`, `manager.lock`, `manager.json`, `objects/<Kind>/<name>.json`,
+`lease.json`, `manager.lock`, `manager.json`, `children/<pid>@<boot id>/`, `objects/<Kind>/<name>.json`,
 `boards/<name>/` and `tmp/`. The default is the
 platform data directory (`$XDG_DATA_HOME/fleet`, `~/.local/share/fleet`,
 `%LOCALAPPDATA%\fleet`); a non-empty directory that is not a store is
@@ -816,7 +816,9 @@ refused.
   even when `lease.json` is lost. A serving manager holds the OS lock on
   `manager.lock` for its life, and a second `fleet up` is refused while it
   is held. A new manager takes over an unexpired lease only when its
-  holder names another boot, so no process it started still runs.
+  holder names another boot, or when its holder is gone on this boot and
+  every process group it recorded under `children/<pid>@<boot id>/` is
+  stopped. So no process the dead holder started still runs.
   `fleet reconcile --holder` refuses a name of that shape.
 - `status.inbox` is reached through three typed mutations, each named by
   its caller and compare-and-swap under the lock: `append_inbox` (`cli`,

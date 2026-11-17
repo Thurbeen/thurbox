@@ -638,6 +638,93 @@ fn a_lease_held_by_another_boot_is_taken_over_at_once() {
     assert_eq!(env.status("t1")["phase"], "Briefed");
 }
 
+#[cfg(target_os = "linux")]
+fn slow_start_runtime(env: &Env) {
+    use std::os::unix::fs::PermissionsExt;
+    let root = env.root.display();
+    let script = env.root.join("slow-start.sh");
+    fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+cat >/dev/null
+case "$1" in
+manifest) echo '{{"known":{{"protocol":1,"verbs":["manifest","start","inspect","stop"]}}}}' ;;
+start)
+  echo $$ >> '{root}/starts'
+  sleep 4
+  echo $$ >> '{root}/finished'
+  echo '{{"known":{{"started":{{"id":"p1","adopted":false}}}}}}' ;;
+inspect)
+  if [ -s '{root}/finished' ]; then echo '{{"known":{{"running":{{"id":"p1"}}}}}}'
+  else echo '{{"known":"none"}}'; fi ;;
+stop) echo '{{"known":"stopped"}}' ;;
+*) echo '{{"known":"none"}}' ;;
+esac
+"#
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.slow]\nprogram = '{}'\ncallTimeoutMs = 30000\n",
+            script.display()
+        ),
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn lines(path: &std::path::Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_manager_killed_on_this_boot_is_taken_over_at_once_and_its_calls_stopped() {
+    let env = Env::new("killed-manager");
+    slow_start_runtime(&env);
+    env.apply(task("t1", true)).ok();
+    let mut up = env.spawn(&["up", "--poll-ms", "100", "--lease-ttl-ms", "3600000"]);
+    let starts = env.root.join("starts");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while lines(&starts).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the manager never called start"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    up.kill().unwrap();
+    up.wait().unwrap();
+    let orphan = lines(&starts)[0].clone();
+
+    let killed = std::time::Instant::now();
+
+    let report = env.reconcile().ok().json();
+    assert!(
+        report["leaseToken"].as_u64().is_some(),
+        "the lease of a manager dead on this boot is taken at once: {report:#}"
+    );
+    thread::sleep(Duration::from_secs(5).saturating_sub(killed.elapsed()));
+    assert!(
+        !lines(&env.root.join("finished")).contains(&orphan),
+        "the dead manager's start call {orphan} was stopped before the takeover"
+    );
+    assert!(
+        fs::read_dir(env.data.join("children"))
+            .unwrap()
+            .all(|dir| fs::read_dir(dir.unwrap().path()).unwrap().next().is_none()),
+        "no run is left recorded"
+    );
+}
+
 #[test]
 fn an_attach_whose_runtime_cannot_tell_past_the_revive_wait_is_unknown() {
     let env = setup("attach-unknown", true);

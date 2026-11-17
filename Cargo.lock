@@ -1004,6 +1004,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "fleet-api",
+ "fleet-exec",
  "fleet-forge",
  "fleet-gateway",
  "fleet-manager",
