@@ -49,8 +49,9 @@ $env:THURBOX_VERSION = 'v2.89.0'
 irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
 ```
 
-This installs `thurbox` and `thurbox-cli`. thurbox v2 needs no Fleet, and
-`thurbox-cli update` keeps it on 2.x. The
+This installs `thurbox` and `thurbox-cli`. thurbox v2 needs no Fleet, so you
+can ignore the installer's warning that the release has no Fleet.
+`thurbox-cli update` keeps v2 on 2.x. The
 [v2.89.0 README](https://github.com/Thurbeen/thurbox/tree/v2.89.0#installation)
 covers the rest of v2.
 
