@@ -21,6 +21,10 @@ pub const RELEASE_FINALIZER: &str = "fleet.dev/release";
 /// The runtime host a Task runs on when it names none: this machine.
 pub const LOCAL_HOST: &str = "local";
 
+/// How long `fleet attach` waits for Fleet to revive a lost session: a
+/// wake request older than this has no view waiting on it.
+pub const VIEW_WAIT_MS: Millis = 60_000;
+
 /// The host a Task runs on: its own `spec.host`, else its TaskConfig's
 /// (`config_host`), else [`LOCAL_HOST`]. The manager resolves a launch by
 /// this rule, and `fleet apply` checks a Task's host by it.

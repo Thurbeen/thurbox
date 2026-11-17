@@ -1655,6 +1655,48 @@ fn shell_opens_a_shell_in_the_keys_directory_and_a_stop_closes_it() {
     assert_eq!(shell()["known"], "none");
 }
 
+/// The clients attached to the runtime's own server.
+fn clients(rt: &Runtime) -> Vec<String> {
+    String::from_utf8_lossy(&runtime_tmux(rt, &["list-clients", "-F", "#{client_pid}"]).stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn clients_gone(rt: &Runtime) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let left = clients(rt);
+        if left.is_empty() || Instant::now() >= deadline {
+            return left;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn view_argv(rt: &Runtime, key: &str) -> Vec<String> {
+    let answer = rt.call(
+        "attach",
+        json!({"protocol": 2, "place": local(), "key": key}),
+    );
+    serde_json::from_value(answer["known"]["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer}"))
+}
+
+#[test]
+fn a_view_killed_by_its_viewer_takes_its_tmux_client_down_with_it() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("viewed", &["sleep", "300"]));
+    let view = Stream::open(&view_argv(&rt, "viewed"));
+    assert_eq!(clients(&rt).len(), 1, "the view's own client");
+    drop(view);
+    assert_eq!(
+        clients_gone(&rt),
+        Vec::<String>::new(),
+        "a client outlived its view"
+    );
+}
+
 /// `tmux <args>` on the runtime's own server.
 fn runtime_tmux(rt: &Runtime, args: &[&str]) -> std::process::Output {
     Command::new("tmux")

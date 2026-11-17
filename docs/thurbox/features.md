@@ -131,7 +131,7 @@ conditions (`kernel::snapshot::fleet::state_why`, published as `state_why`):
 | `Stalled=True`, any state | `stalled · <reason>`, such as `stalled · SpawnAttemptsExhausted` |
 | `Paused`, `Paused=True/Idle` | `paused · idle`: Fleet paused it after `pauseAfterMs` at rest |
 | `Paused`, `Paused=True/External` | `stopped · outside Fleet` |
-| `Lost` | `lost · window gone`; `lost · revive failed` after `NeedsAttention/ReviveFailed` |
+| `Lost` | `lost · window gone`; `lost · cannot resume` after `NeedsAttention/CannotResume`; `lost · revive failed` after `NeedsAttention/ReviveFailed` |
 | `Gone` | `gone · session ended` |
 
 `s` on the session list, or Start in its menu, starts a stopped session again

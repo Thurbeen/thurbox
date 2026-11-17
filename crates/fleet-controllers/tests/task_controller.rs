@@ -1094,7 +1094,7 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
         "nothing queued, session just looked up: at rest"
     );
     // At rest, the session is looked up again once per recheck interval,
-    // and what its agent last reported is read with it.
+    // with whether its window is lost, and what its agent last reported.
     for checked in [None, Some(NOW - SESSION_RECHECK_MS)] {
         assert_eq!(
             probes(&concluded_checked(&[], checked)),
@@ -1103,6 +1103,7 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
                     host: "local".into(),
                     key: "t.u7".into()
                 },
+                Probe::Lost { session: session() },
                 Probe::Activity { session: session() },
                 // Claude Code has screen rules, and its hooks have not spoken.
                 Probe::Screen { session: session() }
@@ -1522,10 +1523,10 @@ fn a_held_task_is_not_revived_and_unknown_is_not_lost() {
 }
 
 #[test]
-fn revives_wait_between_attempts_and_ask_for_attention_but_go_on() {
+fn revives_wait_between_attempts_and_stop_once_the_session_cannot_resume() {
     let mut obj = briefed_with(&[], |_| {});
     let mut now = NOW;
-    for attempt in 1..=MAX_ATTEMPTS + 1 {
+    for attempt in 1..=MAX_ATTEMPTS {
         let (plan, st) = run_at(&obj, lost_obs(true), now);
         assert_eq!(plan.effects.len(), 1, "attempt {attempt}: {plan:#?}");
         assert_eq!(plan.effects[0].key, format!("task/t/u7/revive/{attempt}"));
@@ -1546,10 +1547,74 @@ fn revives_wait_between_attempts_and_ask_for_attention_but_go_on() {
         obj = with_status(&obj, &st);
         now += RETRY_DELAY_MS;
     }
+    let (plan, st) = run_at(&obj, lost_obs(true), now);
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "SessionLost").reason, "CannotResume");
+    assert_eq!(cond(&st, "NeedsAttention").reason, "CannotResume");
+    let obj = with_status(&obj, &st);
+    let (plan, _) = run_at(&obj, lost_obs(true), now + RETRY_DELAY_MS);
+    assert!(plan.effects.is_empty(), "revived no more: {plan:#?}");
+    let (_, st) = run_at(&obj, lost_obs(false), now);
+    assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
+    assert_eq!(cond(&st, "SessionLost").status, ConditionStatus::False);
+}
+
+#[test]
+fn a_revive_that_never_started_the_agent_is_retried_not_counted() {
+    let mut obj = briefed_with(&[], |_| {});
+    let mut now = NOW;
+    for attempt in 1..=MAX_ATTEMPTS + 1 {
+        let (plan, mut st) = run_at(&obj, lost_obs(true), now);
+        assert_eq!(plan.effects.len(), 1, "attempt {attempt}: {plan:#?}");
+        st.receipts.insert(
+            plan.effects[0].key.clone(),
+            Receipt {
+                action: "revive".into(),
+                at: now,
+                outcome: Observation::unknown("the signal file could not be written"),
+            },
+        );
+        obj = with_status(&obj, &st);
+        now += RETRY_DELAY_MS;
+    }
     let (_, st) = run_at(&obj, lost_obs(true), now);
+    assert_eq!(cond(&st, "SessionLost").reason, "WindowGone", "{st:#?}");
     assert_eq!(cond(&st, "NeedsAttention").reason, "ReviveFailed");
     let (_, st) = run_at(&with_status(&obj, &st), lost_obs(false), now);
     assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
+}
+
+#[test]
+fn a_view_request_waits_out_a_lost_check_that_could_not_tell() {
+    let obj = briefed_with(&[], |st| {
+        st.phase = Phase::Concluded;
+        st.result =
+            Some(serde_json::from_value(json!({"outcome": "shipped", "generation": 1})).unwrap());
+        st.session_checked_at = Some(NOW - 10);
+        st.wake_requested_at = Some(NOW - 5);
+    });
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            lost: Some(Observation::unknown("cannot tell")),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(
+        st.session_checked_at,
+        Some(NOW - 10),
+        "the request stays pending"
+    );
+    let (plan, st) = run(&with_status(&obj, &st), lost_obs(true));
+    assert!(
+        plan.effects
+            .iter()
+            .any(|e| matches!(e.action, Action::Revive { .. })),
+        "{plan:#?}"
+    );
+    assert_eq!(st.session_checked_at, Some(NOW));
 }
 
 #[test]

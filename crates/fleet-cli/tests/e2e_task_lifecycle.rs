@@ -636,6 +636,23 @@ fn a_lease_held_by_another_boot_is_taken_over_at_once() {
 }
 
 #[test]
+fn an_attach_whose_runtime_cannot_tell_past_the_revive_wait_is_unknown() {
+    let env = setup("attach-unknown", true);
+    env.reconcile().ok();
+    env.host().reboot().unwrap();
+    env.fault(Fault::new("attach", "normal"));
+    env.fault(Fault::new("attach", "unknown").times(1_000));
+    let attach = env.spawn(&["attach", "t1", "--json"]);
+    support::wait_within(attach, Duration::from_secs(90))
+        .code(4)
+        .stderr_has("injected: attach could not tell");
+    assert!(
+        env.get("t1")["status"]["wakeRequestedAt"].is_u64(),
+        "a revive was asked for"
+    );
+}
+
+#[test]
 fn a_corrupt_record_is_unknown_never_absent() {
     let env = setup("corrupt", true);
     fs::write(
@@ -1269,16 +1286,15 @@ fn a_reboot_revives_only_work_in_flight_or_feedback() {
         .ok();
     env.reconcile().ok();
     assert_eq!((env.calls("revive"), env.calls("spawn")), (1, 1));
-    // The note that it was restarted goes first; the feedback follows it.
+    // A plain resume: the feedback is the only text the revive brings.
     let texts = env
         .host()
         .session(&env.session_key("done"))
         .unwrap()
         .unwrap()
         .texts;
-    assert_eq!(texts.len(), 3, "{texts:#?}");
-    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
-    assert_eq!(texts[2], "Review: rename the flag.");
+    assert_eq!(texts.len(), 2, "{texts:#?}");
+    assert_eq!(texts[1], "Review: rename the flag.");
     assert_eq!(env.status("done")["phase"], "Concluded");
 }
 
