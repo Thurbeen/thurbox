@@ -13,7 +13,7 @@
 #   fleet-gateway        adapter                   -> api, exec
 #   fleet-plugin         adapter                   -> api, exec
 #   fleet-manager        orchestration             -> api, controllers
-#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, plugin, gateway, otel-env
+#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, plugin, gateway, exec, otel-env
 #   arch-rules, fleet-dev  tooling
 #
 # The other components share the workspace and none of the graph above:
@@ -81,7 +81,7 @@ deps = ["fleet-api", "fleet-controllers"]
 
 [crates.fleet-cli]
 role = "edge"
-deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway", "otel-env"]
+deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-exec", "otel-env"]
 # The end-to-end tests speak the terminal stream to what `fleet attach` names.
 dev_deps = ["term-stream"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.

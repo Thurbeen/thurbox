@@ -1185,6 +1185,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 )));
             }
             let holder = holder.unwrap_or_else(|| fleet_store::holder::local(false));
+            record_children(&data_dir, &holder)?;
             let manager = Manager {
                 store,
                 runtime: runtime.as_ref(),
@@ -1590,6 +1591,44 @@ fn cmd_up(
     outcome
 }
 
+fn record_children(data_dir: &Path, holder: &str) -> Result<(), Failure> {
+    stop_what_gone_holders_left(data_dir);
+    if let Some(dir) = fleet_store::holder::children_dir(data_dir, holder) {
+        if let Err(e) = fleet_exec::children::stop_recorded(&dir) {
+            eprintln!(
+                "could not stop what an earlier process with this PID left in {}: {e}",
+                dir.display()
+            );
+        }
+        fleet_exec::children::record_in(&dir)
+            .map_err(|e| fail(format!("{}: {e}", dir.display())))?;
+    }
+    Ok(())
+}
+
+fn stop_what_gone_holders_left(data_dir: &Path) {
+    let lease = FileStore::peek_lease(data_dir)
+        .ok()
+        .flatten()
+        .map(|l| l.holder);
+    for left in fleet_store::holder::left_behind(data_dir, lease.as_deref()) {
+        if left.this_boot
+            && let Err(e) = fleet_exec::children::stop_recorded(&left.dir)
+        {
+            eprintln!(
+                "could not stop what {} left running: {e}; its lease waits for expiry",
+                left.dir.display()
+            );
+            continue;
+        }
+        if !left.holds_lease
+            && let Err(e) = fleet_store::holder::forget(&left.dir)
+        {
+            eprintln!("could not remove {}: {e}", left.dir.display());
+        }
+    }
+}
+
 fn manager_running(data_dir: &Path) -> Failure {
     let lock = data_dir.join(fleet_store::manager::LOCK);
     let pid = FileStore::peek_manager(data_dir)
@@ -1665,11 +1704,13 @@ fn serve_up(
     let signal = stopped.clone();
     ctrlc::set_handler(move || signal.store(true, std::sync::atomic::Ordering::Relaxed))
         .map_err(|e| fail(format!("shutdown handler: {e}")))?;
+    let holder = fleet_store::holder::local(true);
+    record_children(data_dir, &holder)?;
     let manager = Manager {
         store,
         runtime: runtime.as_ref(),
         clock: &SystemClock,
-        holder: fleet_store::holder::local(true),
+        holder,
         forge: forge.as_ref().map(|f| f as &dyn Forge),
         signals: Some(&signals),
         agent_telemetry: agent_collector(),
@@ -1856,7 +1897,7 @@ fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf
         Ok(None) => json!({"held": false, "holder": null, "expiresAt": null, "why": null}),
         Ok(Some(l)) => json!({
             "held": fleet_api::Clock::now(&SystemClock) < l.expires_at
-                && !fleet_store::holder::is_dead(&l.holder),
+                && !fleet_store::holder::is_takeable(&l.holder, &data_dir),
             "holder": l.holder,
             "expiresAt": l.expires_at,
             "why": null,

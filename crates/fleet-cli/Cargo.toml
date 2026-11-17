@@ -29,6 +29,7 @@ fleet-runtime.workspace = true
 fleet-store.workspace = true
 fleet-forge.workspace = true
 fleet-gateway.workspace = true
+fleet-exec.workspace = true
 otel-env.workspace = true
 clap.workspace = true
 serde.workspace = true

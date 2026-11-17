@@ -10,6 +10,7 @@
 //! lease.json                  the manager lease, if one is held
 //! manager.lock                held by a serving manager for its life (an OS file lock)
 //! manager.json                the serving manager's status record
+//! children/<pid>@<boot>/<n>   a run of a lease holder: its process group (fleet-exec)
 //! objects/<Kind>/<name>.json  one object, spec and status together (Q6)
 //! boards/<name>/<seq>.jsonl   one segment of a Board's log, named by its first seq
 //! boards/<name>/<seq>.keys    the (source, key, seq) of each keyed event in it
@@ -1579,7 +1580,7 @@ impl Store for FileStore {
         let current = self.read_lease()?;
         if let Some(l) = &current
             && now < l.expires_at
-            && !holder::is_dead(&l.holder)
+            && !holder::is_dead(&l.holder, &self.root)
         {
             return Err(StoreError::LeaseHeld {
                 holder: l.holder.clone(),
