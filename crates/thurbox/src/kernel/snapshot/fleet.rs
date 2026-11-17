@@ -1438,6 +1438,7 @@ fn state_why(session_state: Option<&str>, status: &Value) -> Option<String> {
             _ => "stopped".to_string(),
         }),
         "Lost" => Some(match reason("NeedsAttention") {
+            Some("CannotResume") => "lost · cannot resume".to_string(),
             Some("ReviveFailed") => "lost · revive failed".to_string(),
             _ => "lost · window gone".to_string(),
         }),
@@ -1476,6 +1477,10 @@ mod tests {
         assert_eq!(
             why("Lost", "NeedsAttention", "ReviveFailed").as_deref(),
             Some("lost · revive failed")
+        );
+        assert_eq!(
+            why("Lost", "NeedsAttention", "CannotResume").as_deref(),
+            Some("lost · cannot resume")
         );
         assert_eq!(why("Running", "Paused", "Idle"), None);
         assert_eq!(

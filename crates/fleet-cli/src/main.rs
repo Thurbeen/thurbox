@@ -3001,6 +3001,18 @@ fn refuse_unresumable(obj: &Object, task: &str, stopped: Stopped) -> Result<(), 
     })
 }
 
+/// Why the Task's session cannot resume, when TaskController said so:
+/// `SessionLost` True with the reason `CannotResume`.
+fn cannot_resume(obj: &Object) -> Option<String> {
+    obj.status["conditions"]
+        .as_array()?
+        .iter()
+        .find(|c| {
+            c["type"] == "SessionLost" && c["status"] == "True" && c["reason"] == "CannotResume"
+        })
+        .map(|c| c["message"].as_str().unwrap_or_default().to_string())
+}
+
 enum Stopped {
     Paused,
     Lost,
@@ -3109,6 +3121,15 @@ fn cmd_open(
         }
         refuse_unresumable(&obj, task, Stopped::Paused)?;
         wait_for_resume(store, task)?;
+    }
+    if let Some(why) = cannot_resume(&obj) {
+        return Err(Failure {
+            code: exit::NOT_FOUND,
+            message: format!("Task/{task} cannot resume its session: {why}"),
+            hint: Some(format!(
+                "nothing would run in its window; see why with `fleet get task {task}`"
+            )),
+        });
     }
     let ask = |session: &fleet_api::task::SessionRef| match opens {
         Opens::View => runtime.attach(session),

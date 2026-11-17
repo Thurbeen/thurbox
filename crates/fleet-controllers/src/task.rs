@@ -108,7 +108,7 @@ const PAUSE: &str = "pause";
 const RESUME: &str = "resume";
 const CATCH_UP: &str = "catchup";
 /// The NeedsAttention reason once revives keep leaving the session lost.
-const REVIVE_FAILED: &str = "ReviveFailed";
+const CANNOT_RESUME: &str = "CannotResume";
 /// The NeedsAttention reason once resumes keep leaving the session stopped.
 const RESUME_FAILED: &str = "ResumeFailed";
 
@@ -234,8 +234,11 @@ impl TaskController {
                 }
                 if let Some(s) = &st.session {
                     let delivering = next_entry(&st).is_some() || st.catch_up.is_some();
-                    if delivering || recheck || reviving(&st) || watched(input.task, &spec, &st) {
+                    let watching = delivering || watched(input.task, &spec, &st);
+                    if watching || recheck || reviving(&st) {
                         probes.push(Probe::Lost { session: s.clone() });
+                    }
+                    if watching {
                         probes.push(Probe::Paused { session: s.clone() });
                     }
                     if delivering {
@@ -1324,11 +1327,12 @@ impl Pass<'_, '_> {
     /// A session the runtime still holds but whose agent's window is gone,
     /// as after a host reboot, is revived in its own workspace under the
     /// same identity. Nothing is sent to it meanwhile. Revives wait
-    /// [`RETRY_DELAY_MS`] between attempts and raise NeedsAttention after
-    /// [`MAX_ATTEMPTS`], but go on: a revive of a running session does
-    /// nothing. A held Task (`dispatch: false`) is not revived, nor one
-    /// `revive` says to leave at rest. Returns true while the session is
-    /// lost.
+    /// [`RETRY_DELAY_MS`] between attempts. After [`MAX_ATTEMPTS`] revives
+    /// that left the window gone, the session cannot resume, as when its
+    /// agent never saved the conversation it resumes: it is revived no more
+    /// until its window is seen again. A held Task (`dispatch: false`) is
+    /// not revived, nor one `revive` says to leave at rest. Returns true
+    /// while the session is lost.
     fn lost(&mut self, session: &SessionRef, revive: bool) -> bool {
         match self.input.observations.lost {
             Some(Observation::Known(true)) => {}
@@ -1338,6 +1342,9 @@ impl Pass<'_, '_> {
             }
             // Unknown proves nothing either way.
             _ => return false,
+        }
+        if cannot_resume(&self.st) {
+            return true;
         }
         self.cond(
             SESSION_LOST,
@@ -1367,13 +1374,18 @@ impl Pass<'_, '_> {
                 }
             }
             if self.st.revive_attempts >= MAX_ATTEMPTS {
-                self.needs_attention(
-                    REVIVE_FAILED,
-                    format!(
-                        "{} revives left the session without a window",
-                        self.st.revive_attempts
-                    ),
+                let why = format!(
+                    "{} revives left the session without a window: its agent cannot resume it",
+                    self.st.revive_attempts
                 );
+                self.cond(
+                    SESSION_LOST,
+                    ConditionStatus::True,
+                    CANNOT_RESUME,
+                    why.clone(),
+                );
+                self.needs_attention(CANNOT_RESUME, why);
+                return true;
             }
         }
         self.st.revivals += 1;
@@ -1392,7 +1404,8 @@ impl Pass<'_, '_> {
     }
 
     /// The session's window is there. After it was lost, a briefed worker
-    /// is owed a catch-up note, sent before anything else.
+    /// that has not concluded is owed a catch-up note, sent before anything
+    /// else. A concluded one is resumed plainly, with nothing typed.
     fn found_again(&mut self) {
         self.st.revive_attempts = 0;
         let was_lost = condition(&self.st.conditions, SESSION_LOST)
@@ -1407,8 +1420,10 @@ impl Pass<'_, '_> {
             "Revived",
             "the session's window is back",
         );
-        self.settle_attention(REVIVE_FAILED);
-        self.owe_catch_up();
+        self.settle_attention(CANNOT_RESUME);
+        if self.st.phase != Phase::Concluded {
+            self.owe_catch_up();
+        }
     }
 
     /// A briefed worker whose agent was started again is owed a catch-up
@@ -2329,9 +2344,15 @@ fn view_asked(st: &TaskStatus, now: Millis) -> bool {
     })
 }
 
-/// Whether a revive is under way: it ends when the window is back.
+/// Whether a revive is under way: it ends when the window is back, or
+/// when the session cannot resume.
 fn reviving(st: &TaskStatus) -> bool {
-    st.revive_attempts > 0
+    st.revive_attempts > 0 && !cannot_resume(st)
+}
+
+fn cannot_resume(st: &TaskStatus) -> bool {
+    condition(&st.conditions, SESSION_LOST)
+        .is_some_and(|c| c.status == ConditionStatus::True && c.reason == CANNOT_RESUME)
 }
 
 /// Whether the manager owes a Concluded Task with nothing to deliver a

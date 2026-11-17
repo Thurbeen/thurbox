@@ -989,6 +989,7 @@ const WORKING_CLAUDE: &str = r#"#!/bin/sh
 fleet signal idle
 while IFS= read -r line; do
   line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$line" >> "$PWD/typed.log"
   fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
   fleet signal working
 done
@@ -1075,6 +1076,16 @@ fn a_shipped_task_lost_in_a_reboot_reads_lost_and_an_attach_revives_it_on_its_co
     let status = env.get("t1")["status"].clone();
     assert_eq!(status["phase"], "Concluded", "{status:#}");
     support::assert_condition(&status, "SessionLost", "False", "Revived");
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile().ok();
+    }
+    let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    assert_eq!(
+        typed.lines().count(),
+        1,
+        "only the brief, nothing at the revive: {typed:?}"
+    );
 
     let mut view = View::argv(&argv);
     assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
@@ -1082,6 +1093,70 @@ fn a_shipped_task_lost_in_a_reboot_reads_lost_and_an_attach_revives_it_on_its_co
     view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
     view.send(&Up::Detach);
     assert!(view.close().success());
+}
+
+/// [`CLAUDE`], except that it never saved its conversation: a resume of it
+/// fails at once, as Claude Code's does.
+const UNSAVED_CLAUDE: &str = r#"#!/bin/sh
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+case " $* " in *" --resume "*)
+  echo "No conversation found with session ID: conv-1"
+  exit 1 ;;
+esac
+fleet signal idle
+while IFS= read -r line; do
+  fleet signal prompt "{\"prompt\":\"x\",\"session_id\":\"conv-1\"}"
+  fleet signal idle
+done
+"#;
+
+#[test]
+fn a_session_that_cannot_resume_is_marked_so_and_neither_revived_nor_viewed_again() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("unsaved");
+    let mut env = mux_env("runtime-mux-unsaved", &program, &sockets);
+    stand_in(&mut env, "claude", "claude", UNSAVED_CLAUDE);
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "the conversation its hooks report", |env| {
+        env.get("t1")["status"]["conversation"] == "conv-1"
+    });
+
+    sockets.tmux(&["kill-server"]);
+    for entry in fs::read_dir(&sockets.0).expect("socket dir") {
+        fs::remove_dir_all(entry.expect("entry").path()).expect("tmux's private directory");
+    }
+    reconcile_until(&env, "marked as one that cannot resume", |env| {
+        env.expire_wait("t1");
+        env.get("t1")["status"]["conditions"]
+            .as_array()
+            .is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| c["type"] == "SessionLost" && c["reason"] == "CannotResume")
+            })
+    });
+    let revives = starts(&work).len();
+    for _ in 0..5 {
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    assert_eq!(
+        starts(&work).len(),
+        revives,
+        "no revive after it cannot resume"
+    );
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["sessionState"], "Lost", "{status:#}");
+    support::assert_condition(&status, "NeedsAttention", "True", "CannotResume");
+
+    env.fleet(&["attach", "t1", "--json"])
+        .code(3)
+        .stderr_has("cannot resume");
 }
 
 /// [`CLAUDE`], except that it logs each line typed to it, and a resumed one

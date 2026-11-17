@@ -57,7 +57,8 @@ Fleet releases its session. `FleetWatch::poll` lists it again once
 A row that does not run carries `state_why`, which `state_why` in
 `src/kernel/snapshot/fleet.rs` reads off the Task's conditions: `stalled ·
 <reason>` (any state), `paused · idle`, `stopped · outside Fleet`, `lost ·
-window gone`, `lost · revive failed` or `gone · session ended`. The sessions
+window gone`, `lost · cannot resume`, `lost · revive failed` or `gone ·
+session ended`. The sessions
 pane prints it after the name. `s` on the list (or Start in its menu) sends
 the `start` command, which runs `fleet attach --wake --json <task>`: Fleet's
 controller resumes the paused agent. Fleet has no stop verb, so thurbox has
