@@ -375,3 +375,20 @@ fn a_manager_that_starts_on_a_full_disk_waits_for_room() {
     });
     assert_eq!(seen.into_inner(), [(true, 0), (false, 1), (false, 1)]);
 }
+
+#[test]
+fn a_manager_stopped_while_paused_stops_cleanly() {
+    let w = World::new("disk-full-stop");
+    let filling = w.filling(Disk::Free);
+    let mut sweeps = 0;
+    w.serve(&filling, |report| {
+        sweeps += 1;
+        if sweeps == 1 {
+            filling.disk.set(Disk::Full);
+            return true;
+        }
+        assert!(report.paused.is_some(), "{report:#?}");
+        false
+    });
+    assert_eq!(sweeps, 2);
+}

@@ -63,6 +63,9 @@ A full disk pauses `fleet up`. It does not stop it:
    token, even when the lease expired during the pause. It records
    `state: serving` and resumes.
 
+A stop during a pause cannot release the lease. The next manager takes
+it over, because its holder is gone.
+
 `fleet doctor` warns when less than 256 MiB is free on the disk of the
 data directory.
 

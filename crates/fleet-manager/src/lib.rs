@@ -331,7 +331,10 @@ impl Manager<'_> {
             }
         })();
         if !matches!(outcome, Err(StoreError::LeaseLost(_))) {
-            self.store.release_lease(&lease)?;
+            match self.store.release_lease(&lease) {
+                Err(StoreError::Full(_)) => {}
+                released => released?,
+            }
         }
         outcome
     }
