@@ -30,8 +30,9 @@ The Gateway ties chat threads to Tasks:
 4. What the Task declares for the person is posted in the thread.
 
 A thread carries only what is useful to the person in it: the Task's
-Comments and Questions, and one notice when a change it follows is first
-ready for review. A Task's Drafts, its result and the news of its changes
+Comments and Questions, one notice when a change it follows is first
+ready for review, and one notice each time the worker then answers the
+review threads on that change. A Task's Drafts, its result and the news of its changes
 are factory logs. They go to one log channel, for every Task, when the
 config names one.
 
@@ -96,15 +97,23 @@ to check the model.
    worker holds no platform credential and names no destination.
 8. When a `ChangeRequest` the Task follows first leaves `draft`
    (`everReady` turns true), Fleet posts one notice in the thread with the
-   change's URL. This is the only change news a thread gets.
-9. The Task's `Draft` declarations, its result and all of its change news
-   go to the log channel, never to the thread.
-10. The thread lives as long as people write in it. A Concluded Task still
+   change's URL.
+9. After the ready notice, people can write review threads on the change.
+   When the worker's marked reply answers a person's review note, and no
+   review thread waits on the worker any more, Fleet posts one answered
+   notice in the thread with the change's URL. A new note from a person
+   starts a new round, and the next answer posts a new notice. A thread
+   that a person resolves, or a bot's thread, posts no notice of its own.
+   These two notices are the only change news a thread gets. See
+   [answered review threads](forge.md#answered-review-threads).
+10. The Task's `Draft` declarations, its result and all of its change news
+    go to the log channel, never to the thread.
+11. The thread lives as long as people write in it. A Concluded Task still
     receives the thread, so a later message reaches the same Task.
-11. If someone deletes the Task, the thread becomes Orphaned. The next
+12. If someone deletes the Task, the thread becomes Orphaned. The next
     admitted message, with or without a mention, starts a new Task with the
     thread's history, in the same directory.
-12. A thread with no message for its retention period retires, if its Task
+13. A thread with no message for its retention period retires, if its Task
     is Concluded or it has no live Task. See
     [Flow: a thread's end of life](#flow-a-threads-end-of-life).
 
@@ -268,8 +277,8 @@ Rules:
    shows the Question as "Needs input". Whichever answer arrives first wins.
    Fleet does not repost, nudge or remind.
 
-A `Comment` or a ready notice never opens a thread. Fleet posts them only
-for a Task that is already tied. A `Draft`, a result or other change news
+A `Comment`, a ready notice or an answered notice never opens a thread.
+Fleet posts them only for a Task that is already tied. A `Draft`, a result or other change news
 never goes to a thread.
 
 ## Flow: the log channel
@@ -295,7 +304,7 @@ Rules:
   verb ignores every event there.
 - Without `gateway.logs`, Fleet posts Drafts, results and change news
   nowhere. It marks them read, so a log channel named later does not
-  replay them. The thread's ready notice does not depend on
+  replay them. The thread's ready and answered notices do not depend on
   `gateway.logs`.
 
 ## Flow: a child speaks through its parent
@@ -468,7 +477,7 @@ crate edges, field managers and negative fixtures.
 | Posting declarations, results and change news; opening a thread for a Question; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` | `gateway_controller`, `e2e_gateway_post` |
 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests; recorded Socket Mode payloads; `e2e_gateway` against the stub `curl` |
 | The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
-| The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
+| The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change and one answered notice per round of answered review threads | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
 | One directory per thread, and one end of life: a route's `{base}` is a base directory; each thread's Tasks get `<base>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
 | Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
@@ -599,11 +608,17 @@ GatewayController posts in a tied thread, in this order:
 1. every `Question` and `Comment` the Task added since the last pass, in
    declaration order;
 2. one ready notice per followed change, with its URL, the first time the
-   change is in a state other than `draft` (`everReady` is true).
+   change is in a state other than `draft` (`everReady` is true);
+3. after its ready notice, one answered notice per followed change, with
+   its URL, each time the entry's `answeredAt` moves past the value the
+   last notice announced. The ready notice records the value it found, so
+   threads answered before it start no round. A change with a ready notice
+   and no value recorded (a Task from before `announced`) records the
+   current value without a notice.
 
 It posts nothing else in a thread. A `Draft`, a result and all other change
-news go to the [log channel](#logging). The ready notice is posted whether
-or not `gateway.logs` is set.
+news go to the [log channel](#logging). The ready and answered notices are
+posted whether or not `gateway.logs` is set.
 
 - Each post is a keyed effect: intent, then the platform call, then the
   receipt.
@@ -662,7 +677,7 @@ account's capabilities say `reactions`.
 | queued | The create answered `Created` on an earlier pass, whose capabilities were Unknown | none, and Fleet removes the queued reaction. The join marks the message working. |
 | queued | The wait is withdrawn: the trigger left the mirror | none, and Fleet removes the queued reaction |
 | none | A relay or the join delivers the message, and it is `Admitted` | working |
-| working | A Question, a Comment or a ready notice lands in the thread for the Task | replied |
+| working | A Question, a Comment, a ready notice or an answered notice lands in the thread for the Task | replied |
 | queued | The message leaves the mirror, removed or rotated out | none, and Fleet removes the queued reaction |
 | working or replied | The message leaves the mirror, removed or rotated out | none, and Fleet changes no reaction |
 | queued, working or replied | `gateway.reactions` turns `false` | none, and Fleet changes no reaction |
@@ -1167,8 +1182,9 @@ owns `status.gateway` and:
 
 - joins a newly tied Task with the whole retained thread,
 - relays new messages into the inbox, under a cursor,
-- posts each `Question` and `Comment` in the thread, and one ready notice
-  per followed change,
+- posts each `Question` and `Comment` in the thread, one ready notice
+  per followed change, and one answered notice per round of answered
+  review threads on it,
 - logs every Task's Drafts, result and change news in the log channel,
 - opens a thread for a Question from an untied Task,
 - records answers to Questions,
@@ -1192,6 +1208,7 @@ owns `status.gateway` and:
 | `posted` | Every Question and Comment id posted, and every Draft id logged, for the life of the Task. |
 | `logged` | How many items of `status.declared` the log lane read for Drafts. |
 | `ready` | The `uid` of each followed ChangeRequest whose ready notice was posted in the thread. |
+| `announced` | Per followed ChangeRequest `uid`, the forge entry's `answeredAt` that the last ready or answered notice found. |
 | `questions` | Per Question id, where and when it was posted. |
 | `gaps` | How many relays found messages dropped from the mirror. |
 | `reactions` | `marks`: per message id in the thread, `working` or `replied`, for the messages the mirror still holds. `replies`: the keys of the thread posts already counted against the working marks. |
@@ -1270,7 +1287,7 @@ A Task talks by declaring items in `status.declared` with
 | `Question` | `id`, `text` | Posted once. | Opens a thread, then is tied to it. | Sent to the parent's inbox. |
 | `Comment` | `id`, `text` | Posted once. | Skipped. | Sent to the parent's inbox. |
 | `Draft` | `id`, `title`, `text` or `url` | Logged once, as awaiting review. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
-| `ChangeRequest` | `url`, `name` | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, and no other news. | Logged the same way. | Sent to the parent's inbox, and logged. |
+| `ChangeRequest` | `url`, `name` | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, then one answered notice with the URL each time the forge entry's `answeredAt` moves, and no other news. | Logged the same way. | Sent to the parent's inbox, and logged. |
 | `status.result` | The worker's result | Logged once per generation. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
 
 "Logged" means a top-level post in the `gateway.logs` channel. Without
@@ -1359,6 +1376,7 @@ under the same key, so with the same nonce, inside the window. The
 | Comment | `task/<name>/<uid>/gateway/comment/<id>` |
 | Draft, in the log channel | `task/<name>/<uid>/gateway/draft/<id>` |
 | Ready notice, in the thread | `task/<name>/<uid>/gateway/ready/<cr uid>` |
+| Answered notice, in the thread | `task/<name>/<uid>/gateway/answered/<cr uid>/<answeredAt>` |
 | Change news, in the log channel | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
 | Result, in the log channel | `task/<name>/<uid>/gateway/result/<generation>` |
 | Working reaction, added | `task/<name>/<uid>/gateway/react/<message id>/working/on` |

@@ -229,6 +229,56 @@ A resolved thread is answered; a thread this Task already replied in is
 answered. An unmarked note from Fleet's login is a person's until it says
 otherwise.
 
+### Answered review threads
+
+Per entry, after its relay and its mark-ready step, ForgeController moves
+`entry.answeredAt`. The [Gateway](gateway.md) reads it to tell a
+tied thread that the worker answered the review threads.
+
+A note of the thread is this Task's own when its author is the login
+`Whoami` returned and its body contains this Task's worker mark. A review
+thread waits on the worker when all of these hold:
+
+- the thread is an inline thread, and it is unresolved;
+- the thread has a note that is not this Task's own;
+- that note has no later note in the thread that is this Task's own, by
+  `answered_in_thread`.
+
+```text
+if threads.unresolved differs from the unresolved threads in the retained notes:
+    leave entry.answeredAt               // an unseen thread is never answered
+else if a review thread waits on the worker:
+    leave entry.answeredAt
+else:
+    entry.answeredAt = max(entry.answeredAt,
+                           newest editedAt, else at, of a person's inline note
+                           that answered_in_thread holds for and that has a
+                           marked reply last edited, else created, after it)
+```
+
+Rules:
+
+- A person's note is a note that is not a bot's and is not this Task's
+  own.
+- A thread that a person resolves without a marked reply waits on no one.
+  Its notes do not move `entry.answeredAt`.
+- A bot's thread can wait. Its notes do not move `entry.answeredAt`.
+- A reply without the worker mark is a person's note. It does not answer a
+  thread, and it makes the thread wait.
+- `entry.answeredAt` never decreases. A new person's note makes its thread
+  wait, and the next answer moves `entry.answeredAt` past the old value.
+- `entry.answeredAt` uses the time a note was last edited, else created,
+  not its `seq`. Reopening a thread moves the `seq` of its notes and leaves
+  its times alone, and reopening is not an answer. Editing a note makes its
+  thread wait until a marked reply newer than the edit exists in the
+  thread, by each note's last edit time, else its creation time; that
+  answer moves `entry.answeredAt`.
+- Only inline threads count. A top-level comment or a review body has no
+  thread to answer in.
+- A forge that counts unresolved discussions outside inline threads in
+  `threads.unresolved` (GitLab) never moves `entry.answeredAt` while one is
+  open.
+
 ### Mark ready
 
 Per entry, after its relay, plan `MarkReady` when all of the following
@@ -378,6 +428,7 @@ Each entry of `changes`:
 | `gaps` | How many times a relay found `droppedBefore` above the cursor. |
 | `markReady` | `{state, head, attempts, intents, receipts}`; `state` is `none`, `pending`, `done` or `failed`; `head` the head of the last intent; `attempts` the intents written against the change; `intents` and `receipts` by effect key, the mark-ready effect's own, apart from TaskController's. |
 | `notBefore` | Earliest next pass for this entry after a failed mark-ready, in Unix milliseconds. Separate from the Task's own `notBefore` and from other entries'. |
+| `answeredAt` | The last edit time (`editedAt`, else `at`) of the newest person's inline note that this Task's worker answered, as of the last pass in which no review thread waited on the worker. Absent until such a pass. It never decreases. See [answered review threads](#answered-review-threads). |
 
 A Task that opened a change in each of two repositories:
 

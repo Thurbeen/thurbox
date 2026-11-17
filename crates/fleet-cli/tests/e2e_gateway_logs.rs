@@ -12,7 +12,8 @@ mod support;
 use std::fs;
 
 use fleet_api::forge::{
-    ChangeSnapshot, ChangeState, Checks, HeadSeen, Mergeable, ReviewDecision, Threads,
+    ChangeSnapshot, ChangeState, Checks, HeadSeen, Mergeable, Note, NoteKind, ReviewDecision,
+    Threads,
 };
 use fleet_api::gateway::{Author, AuthorKind, ConversationRef, Message};
 use fleet_gateway::fake::{GatewayFault, PostRecord};
@@ -496,4 +497,214 @@ fn gateway_logs_is_refused_without_its_account_or_on_a_channel_the_adapter_canno
         assert_ne!(run.code, Some(0), "{logs}");
         assert!(run.stderr.contains(want), "{logs}: {}", run.stderr);
     }
+}
+
+fn inline(id: &str, at: u64, author: &str, thread: &str, body: &str) -> Note {
+    Note {
+        id: id.into(),
+        kind: NoteKind::Inline,
+        author: author.into(),
+        bot: false,
+        thread: Some(thread.into()),
+        resolved: Some(false),
+        path: Some("src/lib.rs".into()),
+        line: Some(12),
+        at,
+        edited_at: None,
+        url: format!("{URL}#discussion-{id}"),
+        body: body.into(),
+    }
+}
+
+fn reviewed(state: ChangeState, notes: Vec<Note>) -> ChangeSnapshot {
+    let mut threads: Vec<&String> = notes
+        .iter()
+        .filter(|n| n.resolved == Some(false))
+        .filter_map(|n| n.thread.as_ref())
+        .collect();
+    threads.sort();
+    threads.dedup();
+    ChangeSnapshot {
+        threads: Threads {
+            unresolved: threads.len() as u64,
+        },
+        notes,
+        ..change(state)
+    }
+}
+
+#[test]
+fn a_tied_tasks_thread_hears_once_per_round_when_every_review_thread_is_answered() {
+    let env = env("answered-notice", false);
+    let task = tied(&env);
+    let uid = uid_of(&env, &task);
+    let mark = format!("<!-- fleet:worker {uid} -->");
+    let forge = env.fake_forge();
+    forge
+        .update(|s| s.login = Some("fleet-bot".into()))
+        .unwrap();
+    let mut notes = vec![
+        inline("r1", 10, "sam", "t1", "Rename this."),
+        inline("r2", 11, "fleet-bot", "t1", &format!("Renamed.\n{mark}")),
+    ];
+    forge
+        .set_change(PROJECT, "7", reviewed(ChangeState::Draft, notes.clone()))
+        .unwrap();
+    env.fleet(&["declare", &task, "--change-request", URL]).ok();
+    reconcile_clean(&env);
+    let cr = derived_name("fake", FORGE_HOST, PROJECT, "7");
+    let step = |notes: &[Note]| {
+        forge
+            .set_change(PROJECT, "7", reviewed(ChangeState::Open, notes.to_vec()))
+            .unwrap();
+        env.expire_wait_of("ChangeRequest", &cr);
+        reconcile_clean(&env);
+        reconcile_clean(&env);
+    };
+    step(&notes);
+    let cr_uid = env.change_request(&cr)["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let base = format!("task/{task}/{uid}/gateway");
+    let ready = format!("{base}/ready/{cr_uid}");
+    let thread_keys = || {
+        keys(&in_thread(&env))
+            .into_iter()
+            .filter(|k| k.starts_with(&base))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(thread_keys(), vec![ready.clone()], "only the ready notice");
+    notes.push(inline("r3", 20, "sam", "t2", "Why a loop here?"));
+    step(&notes);
+    assert_eq!(thread_keys(), vec![ready.clone()], "a thread waits");
+    notes.push(inline("r4", 21, "fleet-bot", "t2", "Looking."));
+    step(&notes);
+    assert_eq!(thread_keys(), vec![ready.clone()], "an unmarked reply");
+    notes.push(inline(
+        "r5",
+        22,
+        "fleet-bot",
+        "t2",
+        &format!("A map now.\n{mark}"),
+    ));
+    step(&notes);
+    let got = thread_keys();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(
+        got[1].starts_with(&format!("{base}/answered/{cr_uid}/")),
+        "{got:?}"
+    );
+    let notice = in_thread(&env)
+        .into_iter()
+        .find(|p| p.key == got[1])
+        .unwrap()
+        .text;
+    assert!(notice.contains(URL), "the notice carries the URL: {notice}");
+    step(&notes);
+    assert_eq!(thread_keys(), got);
+    notes.push(inline("r6", 30, "sam", "t2", "And the error path?"));
+    step(&notes);
+    assert_eq!(thread_keys(), got, "the new round waits");
+    notes.push(inline(
+        "r7",
+        31,
+        "fleet-bot",
+        "t2",
+        &format!("Covered.\n{mark}"),
+    ));
+    step(&notes);
+    let again = thread_keys();
+    assert_eq!(again.len(), 3, "{again:?}");
+    assert!(again[2].starts_with(&format!("{base}/answered/{cr_uid}/")));
+    assert_ne!(again[1], again[2], "each round has its own key");
+    let answered_at = || env.status(&task)["forge"]["changes"][&cr]["answeredAt"].clone();
+    let through = answered_at();
+    let mut lint = inline("b1", 32, "lint-bot", "t3", "Unused import.");
+    lint.bot = true;
+    notes.push(lint);
+    notes.push(inline(
+        "b2",
+        33,
+        "fleet-bot",
+        "t3",
+        &format!("Removed.\n{mark}"),
+    ));
+    step(&notes);
+    assert_eq!(thread_keys(), again, "a bot thread starts no round");
+    assert_eq!(answered_at(), through);
+    let older: Vec<Note> = notes
+        .iter()
+        .filter(|n| !["r6", "r7"].contains(&n.id.as_str()))
+        .cloned()
+        .collect();
+    step(&older);
+    assert_eq!(answered_at(), through, "a dropped note keeps the round");
+    step(&notes);
+    assert_eq!(thread_keys(), again);
+    let r6 = notes.iter_mut().find(|n| n.id == "r6").unwrap();
+    r6.body = "And the error path, with a test?".into();
+    r6.edited_at = Some(35);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "an edited note waits");
+    notes.push(inline(
+        "r10",
+        36,
+        "fleet-bot",
+        "t2",
+        &format!("Tested.\n{mark}"),
+    ));
+    step(&notes);
+    let edited = thread_keys();
+    assert_eq!(edited.len(), 4, "an answered edit is a round: {edited:?}");
+    assert!(edited[3].starts_with(&format!("{base}/answered/{cr_uid}/")));
+    let again = edited;
+    let resolve = |notes: &mut Vec<Note>, resolved: bool| {
+        for n in notes
+            .iter_mut()
+            .filter(|n| n.thread.as_deref() == Some("t2"))
+        {
+            n.resolved = Some(resolved);
+        }
+    };
+    let r6 = notes.iter_mut().find(|n| n.id == "r6").unwrap();
+    r6.body = "And the error path, with a test, and a log?".into();
+    r6.edited_at = Some(37);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "an edited note waits");
+    resolve(&mut notes, true);
+    step(&notes);
+    resolve(&mut notes, false);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "a reopened thread is no answer");
+    let r10 = notes.iter_mut().find(|n| n.id == "r10").unwrap();
+    r10.body = format!("Tested, and logged.\n{mark}");
+    r10.edited_at = Some(38);
+    step(&notes);
+    let updated = thread_keys();
+    assert_eq!(updated.len(), 5, "an updated reply answers: {updated:?}");
+    let again = updated;
+    env.forget_announced(&task);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "an upgrade posts no stale notice");
+    assert_eq!(
+        env.status(&task)["gateway"]["announced"][&cr_uid],
+        answered_at(),
+        "an upgrade takes the current round as told"
+    );
+    notes.push(inline("r8", 40, "sam", "t2", "One more thing."));
+    notes.push(inline(
+        "r9",
+        41,
+        "fleet-bot",
+        "t2",
+        &format!("Done.\n{mark}"),
+    ));
+    let mut unseen = reviewed(ChangeState::Open, notes.clone());
+    unseen.threads.unresolved += 1;
+    forge.set_change(PROJECT, "7", unseen).unwrap();
+    env.expire_wait_of("ChangeRequest", &cr);
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(thread_keys(), again, "an unseen thread waits");
 }

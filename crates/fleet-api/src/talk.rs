@@ -146,6 +146,12 @@ pub struct GatewayStatus {
     /// thread: once per change, the first time it is ready for review.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ready: Vec<String>,
+    /// Per ChangeRequest `uid`, the followed entry's `answeredAt` that the
+    /// last ready or answered notice found: the answered notice is posted
+    /// once each time `answeredAt` moves past it. A ready change with no
+    /// entry records its `answeredAt` without a notice.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub announced: BTreeMap<String, Millis>,
     /// Per child Task name, what was read of it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub children: BTreeMap<String, ChildEntry>,
