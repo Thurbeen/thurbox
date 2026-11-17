@@ -6911,7 +6911,7 @@ fn start_wakes_a_paused_task(phase: &str, paused_session_state: &str) {
     tui.send(b"s");
     tui.wait_until("the row to run again", |frame| {
         assert!(!frame.contains("is not stopped"), "start refused:\n{frame}");
-        std::path::Path::new(&woken).exists() && !frame.contains("paused · idle")
+        woken.exists() && !frame.contains("paused · idle")
     });
     assert!(
         before_start

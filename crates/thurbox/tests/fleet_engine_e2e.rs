@@ -1094,7 +1094,8 @@ fn an_interactive_rows_status_shows_working_attention_and_idle() {
 /// A Task Fleet paused for idling after it concluded keeps the
 /// `sessionState` its agent last reported, and only its `Paused` condition
 /// says it is stopped. Its row is stopped all the same, says why, and
-/// `start` resumes it.
+/// `start` resumes it. The fake runtime offers no live view, so the attach
+/// `start` makes after the wake may fail on that alone.
 #[test]
 fn a_concluded_task_fleet_paused_is_a_stopped_row_that_start_resumes() {
     use thurbox::session::SessionState;
