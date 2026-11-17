@@ -375,3 +375,50 @@ impl CommandBus {
             .unwrap_or(false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bus() -> CommandBus {
+        CommandBus::fleet(crate::fleet_link::FleetLink::local("thurbox-test-no-fleet"))
+    }
+
+    fn delete(bus: &CommandBus, session: &str) -> u64 {
+        bus.dispatch(Command::Delete {
+            session: session.into(),
+            force: false,
+        })
+    }
+
+    #[test]
+    fn a_refused_delete_never_hides_its_row_even_once_its_failure_is_swept() {
+        let mut bus = bus();
+        let refused = delete(&bus, "refused");
+        bus.finish_for_test(refused, Some("refused by fleet".into()));
+        assert!(bus.poll());
+        assert!(bus.take_deleted().is_empty());
+
+        let linger = std::time::Duration::from_millis(FAILURE_LINGER_MS);
+        for (_, at) in &mut bus.failed_at {
+            *at = std::time::Instant::now()
+                .checked_sub(linger)
+                .expect("a clock past the linger");
+        }
+        assert!(bus.poll());
+        assert!(
+            !bus.inflight().iter().any(|item| item.id == refused),
+            "the failure lingered past its time"
+        );
+        assert!(bus.take_deleted().is_empty());
+    }
+
+    #[test]
+    fn a_delete_that_succeeded_hides_its_row_for_good() {
+        let mut bus = bus();
+        let deleted = delete(&bus, "deleted");
+        bus.finish_for_test(deleted, None);
+        assert!(bus.poll());
+        assert_eq!(bus.take_deleted(), ["deleted"]);
+    }
+}
