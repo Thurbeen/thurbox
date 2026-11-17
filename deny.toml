@@ -10,6 +10,10 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant: unmaintained, via notify-rust -> zbus 5" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: unmaintained, via notify-rust -> zbus 5" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: unmaintained, via notify-rust -> zbus 5" },
+    # Added 2026-11-17. No safe upgrade exists:
+    # https://github.com/chronotope/chrono/issues/1768. Drop once fleet-api and
+    # croner move off chrono.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, no safe upgrade; via fleet-api and croner" },
 ]
 
 [licenses]
