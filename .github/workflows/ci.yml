@@ -557,7 +557,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Lint markdown files
-        uses: rvben/rumdl@1e0f1d13c87418c31e0d59dacddd98f27a02efcc # v0.3.2
+        uses: rvben/rumdl@dac508e6b2f52c1d869811d138ffc1ff2b9f6e71 # v0.3.3
         with:
           report-type: annotations
       # The pin above is what `just lint` holds a local rumdl to, read by
