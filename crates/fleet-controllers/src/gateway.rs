@@ -30,6 +30,7 @@ use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus,
     StoredMessage, TieState as ThreadTie,
 };
+use fleet_api::follow::ChangeEntry;
 use fleet_api::gateway::{
     Admission, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
     HistoryObservation, HistoryQuery, LogThread, Marker, Message, PostFound, Verified, admit,
@@ -236,14 +237,12 @@ impl GatewayController {
             }
         }
         if let Some(forge) = &st.forge {
-            // News of a followed change: its state moved past what was
-            // logged.
             let moved = forge.changes.iter().any(|(name, entry)| {
                 change_requests.get(name).is_some_and(|cr| {
                     cr.metadata.uid == entry.uid
-                        && change_state(cr).is_some_and(|(_, seq)| {
+                        && (change_state(cr).is_some_and(|(_, seq)| {
                             seq > gw.changes.get(name).copied().unwrap_or(0)
-                        })
+                        }) || (gw.is_tied() && unannounced(&gw, entry)))
                 })
             });
             if moved {
@@ -1046,8 +1045,6 @@ fn reply_landed(gw: &GatewayStatus) -> bool {
         && landed_posts(gw).any(|k| !gw.reactions.replies.contains(k))
 }
 
-/// The keys of the thread posts that landed: a Question, a Comment or a
-/// ready notice. A log post is no reply.
 fn landed_posts(gw: &GatewayStatus) -> impl Iterator<Item = &String> {
     gw.posts
         .iter()
@@ -1102,6 +1099,11 @@ fn unlogged_draft(st: &TaskStatus, gw: &GatewayStatus) -> bool {
         .iter()
         .skip(gw.logged as usize)
         .any(|item| item.get("kind").and_then(Value::as_str) == Some(DECLARED_DRAFT))
+}
+
+fn unannounced(gw: &GatewayStatus, entry: &ChangeEntry) -> bool {
+    gw.ready.contains(&entry.uid)
+        && entry.answered_at > gw.announced.get(&entry.uid).copied().unwrap_or(0)
 }
 
 /// Whether a followed change is ready for review: `everReady`.
@@ -1596,11 +1598,6 @@ impl Pass<'_, '_> {
         self.gw.questions.insert(id.to_string(), q);
     }
 
-    /// The next post in the thread: the first Question or Comment past what
-    /// was read, then the ready notice of each followed change the first
-    /// time it is ready for review. What it reads past is marked read in
-    /// the same pass. A Draft, a result and other change news are the log
-    /// lane's, never a thread's.
     fn next_post(&mut self) -> Option<(String, String)> {
         let (name, uid) = self.task_meta();
         let (name, uid) = (name.to_string(), uid.to_string());
@@ -1638,15 +1635,32 @@ impl Pass<'_, '_> {
             else {
                 continue;
             };
-            if cr.metadata.uid != entry.uid || !ever_ready(cr) || self.gw.ready.contains(&entry.uid)
-            {
+            if cr.metadata.uid != entry.uid || !ever_ready(cr) {
                 continue;
             }
-            self.gw.ready.push(entry.uid.clone());
-            return Some((
-                post_key(&name, &uid, &format!("ready/{}", entry.uid)),
-                render_ready(cr),
-            ));
+            if !self.gw.ready.contains(&entry.uid) {
+                self.gw.ready.push(entry.uid.clone());
+                self.gw
+                    .announced
+                    .insert(entry.uid.clone(), entry.answered_at);
+                return Some((
+                    post_key(&name, &uid, &format!("ready/{}", entry.uid)),
+                    render_ready(cr),
+                ));
+            }
+            if unannounced(&self.gw, entry) {
+                self.gw
+                    .announced
+                    .insert(entry.uid.clone(), entry.answered_at);
+                return Some((
+                    post_key(
+                        &name,
+                        &uid,
+                        &format!("answered/{}/{}", entry.uid, entry.answered_at),
+                    ),
+                    render_answered(cr),
+                ));
+            }
         }
         None
     }
@@ -1667,22 +1681,27 @@ impl Pass<'_, '_> {
                             == Some(slug.to_string())
                 })
                 .map(render_item),
-            "ready" => self
-                .input
-                .observations
-                .changes
-                .values()
-                .find_map(|o| match o {
-                    Observation::Known(Some(cr)) if cr.metadata.uid == rest => {
-                        Some(render_ready(cr))
-                    }
-                    _ => None,
-                }),
+            "ready" => self.change_by_uid(rest).map(render_ready),
+            "answered" => {
+                let (cr_uid, _) = rest.split_once('/')?;
+                self.change_by_uid(cr_uid).map(render_answered)
+            }
             // A thread post of a Draft, a result or change news, planned
             // before the log channel took them: retried as the log says it.
             "draft" | "result" | "change" => self.log_text(key),
             _ => None,
         }
+    }
+
+    fn change_by_uid(&self, uid: &str) -> Option<&Object> {
+        self.input
+            .observations
+            .changes
+            .values()
+            .find_map(|o| match o {
+                Observation::Known(Some(cr)) if cr.metadata.uid == uid => Some(cr),
+                _ => None,
+            })
     }
 
     // -- Untied: a Question opens a thread ------------------------------
@@ -2364,10 +2383,17 @@ fn render_draft(task: &str, item: &Value) -> String {
 
 /// The thread's one notice that a change is ready for review, with its URL.
 fn render_ready(cr: &Object) -> String {
-    let url = fleet_api::validate::typed::<ChangeRequestSpec>(change_request::KIND, &cr.spec)
+    format!("Ready for review: {}", change_url(cr))
+}
+
+fn change_url(cr: &Object) -> String {
+    fleet_api::validate::typed::<ChangeRequestSpec>(change_request::KIND, &cr.spec)
         .map(|s| s.url)
-        .unwrap_or_default();
-    format!("Ready for review: {url}")
+        .unwrap_or_default()
+}
+
+fn render_answered(cr: &Object) -> String {
+    format!("Every review thread is answered: {}", change_url(cr))
 }
 
 /// A result as its log post says it, naming the Task.

@@ -419,6 +419,35 @@ fn answered_in_thread(cr: &ChangeRequestStatus, note: &StoredNote, me: &str, mar
     })
 }
 
+fn answered_through(cr: &ChangeRequestStatus, me: &str, mark: &str) -> Option<Millis> {
+    let own = |n: &StoredNote| n.author == me && n.body.contains(mark);
+    let inline: Vec<&StoredNote> = cr
+        .notes
+        .iter()
+        .filter(|n| n.kind == NoteKind::Inline && n.thread.is_some())
+        .collect();
+    let unresolved: BTreeSet<&String> = inline
+        .iter()
+        .filter(|n| n.resolved == Some(false))
+        .filter_map(|n| n.thread.as_ref())
+        .collect();
+    if cr.threads.as_ref()?.unresolved != unresolved.len() as u64 {
+        return None;
+    }
+    let waiting = inline
+        .iter()
+        .any(|n| n.resolved == Some(false) && !own(n) && !answered_in_thread(cr, n, me, mark));
+    if waiting {
+        return None;
+    }
+    let through = inline
+        .iter()
+        .filter(|n| !n.bot && !own(n) && answered_in_thread(cr, n, me, mark))
+        .map(|n| n.at)
+        .max();
+    Some(through.unwrap_or(0))
+}
+
 /// The names this controller looks at: every declared change, and every
 /// entry it already holds, each once, in a stable order.
 fn followed(declared: &[serde_json::Value], forge: &ForgeStatus) -> Vec<String> {
@@ -588,6 +617,7 @@ impl Pass<'_, '_> {
             None => {
                 let entry = ChangeEntry::joined(&uid, cr.revision);
                 self.join(&ctx, &entry, None);
+                let entry = self.answered(&ctx, entry);
                 self.forge
                     .changes
                     .insert(name.to_string(), self.settled(&ctx, entry));
@@ -599,6 +629,7 @@ impl Pass<'_, '_> {
                 self.attention.clear(RELAY_GAP, name);
                 self.attention.clear(MARK_READY_FAILED, name);
                 self.join(&ctx, &entry, Some(&existing.uid));
+                let entry = self.answered(&ctx, entry);
                 self.forge
                     .changes
                     .insert(name.to_string(), self.settled(&ctx, entry));
@@ -607,6 +638,7 @@ impl Pass<'_, '_> {
             Some(existing) => {
                 let entry = self.relay(&ctx, existing);
                 let entry = self.mark_ready(&ctx, obj, entry);
+                let entry = self.answered(&ctx, entry);
                 self.forge
                     .changes
                     .insert(name.to_string(), self.settled(&ctx, entry));
@@ -822,6 +854,14 @@ impl Pass<'_, '_> {
             }),
             NoteKind::Comment => false,
         }
+    }
+
+    fn answered(&self, ctx: &Ctx<'_>, mut entry: ChangeEntry) -> ChangeEntry {
+        let (_, uid) = self.task_meta();
+        if let Some(at) = answered_through(ctx.cr, ctx.me, &worker_mark(uid)) {
+            entry.answered_at = entry.answered_at.max(at);
+        }
+        entry
     }
 
     /// A Following entry whose ChangeRequest settled is read no more.

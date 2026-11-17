@@ -404,6 +404,12 @@ ChangeRequest. Guarantees, each with its test in `forge_controller`,
 - **One write.** The cursor and the entries land through `record_relay`, or
   not at all: a duplicate key or a stale version refuses the whole write.
   A mark-ready intent rides in the same write.
+- **Answered once per round.** A following entry's `answeredAt` moves up
+  only on a pass in which no unresolved inline thread waits on this Task's
+  worker, and in which every unresolved thread `threads.unresolved` counts
+  is in the retained notes. It takes the creation time of the newest
+  person's note the worker answered, so reopening a thread moves nothing.
+  It never decreases. Tested in `e2e_gateway_logs`.
 - **Mark ready once.** A following entry whose change is a draft that was
   never seen ready (`everReady` false), whose mirror is fresh (`Reachable`
   True, `observedAt` within `2 × pollMs`) and whose selected policy holds,
@@ -751,7 +757,9 @@ Guarantees, each with its test in `gateway_controller`,
   gone and reactions turned off forget the marks. Tested in
   `gateway_controller`'s `reactions` module and `e2e_gateway_reactions`.
 - **Quiet costs nothing.** A tied Task is due only when its Conversation's
-  revision moved past `seen`, its `uid` changed or it left the listing;
+  revision moved past `seen`, its `uid` changed or it left the listing,
+  or when a followed change the sweep holds moved its state or its entry's
+  `answeredAt` past what the thread was told;
   a parent only when a child's `resourceVersion` moved; a Task with the
   labels and no verified tie, every pass. A pass that finds nothing new
   writes nothing.

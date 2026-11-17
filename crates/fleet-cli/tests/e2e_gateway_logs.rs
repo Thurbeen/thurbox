@@ -12,7 +12,8 @@ mod support;
 use std::fs;
 
 use fleet_api::forge::{
-    ChangeSnapshot, ChangeState, Checks, HeadSeen, Mergeable, ReviewDecision, Threads,
+    ChangeSnapshot, ChangeState, Checks, HeadSeen, Mergeable, Note, NoteKind, ReviewDecision,
+    Threads,
 };
 use fleet_api::gateway::{Author, AuthorKind, ConversationRef, Message};
 use fleet_gateway::fake::{GatewayFault, PostRecord};
@@ -496,4 +497,153 @@ fn gateway_logs_is_refused_without_its_account_or_on_a_channel_the_adapter_canno
         assert_ne!(run.code, Some(0), "{logs}");
         assert!(run.stderr.contains(want), "{logs}: {}", run.stderr);
     }
+}
+
+fn inline(id: &str, at: u64, author: &str, thread: &str, body: &str) -> Note {
+    Note {
+        id: id.into(),
+        kind: NoteKind::Inline,
+        author: author.into(),
+        bot: false,
+        thread: Some(thread.into()),
+        resolved: Some(false),
+        path: Some("src/lib.rs".into()),
+        line: Some(12),
+        at,
+        edited_at: None,
+        url: format!("{URL}#discussion-{id}"),
+        body: body.into(),
+    }
+}
+
+fn reviewed(state: ChangeState, notes: Vec<Note>) -> ChangeSnapshot {
+    let mut threads: Vec<&String> = notes
+        .iter()
+        .filter(|n| n.resolved == Some(false))
+        .filter_map(|n| n.thread.as_ref())
+        .collect();
+    threads.sort();
+    threads.dedup();
+    ChangeSnapshot {
+        threads: Threads {
+            unresolved: threads.len() as u64,
+        },
+        notes,
+        ..change(state)
+    }
+}
+
+#[test]
+fn a_tied_tasks_thread_hears_once_per_round_when_every_review_thread_is_answered() {
+    let env = env("answered-notice", false);
+    let task = tied(&env);
+    let uid = uid_of(&env, &task);
+    let mark = format!("<!-- fleet:worker {uid} -->");
+    let forge = env.fake_forge();
+    forge
+        .update(|s| s.login = Some("fleet-bot".into()))
+        .unwrap();
+    let mut notes = vec![
+        inline("r1", 10, "sam", "t1", "Rename this."),
+        inline("r2", 11, "fleet-bot", "t1", &format!("Renamed.\n{mark}")),
+    ];
+    forge
+        .set_change(PROJECT, "7", reviewed(ChangeState::Draft, notes.clone()))
+        .unwrap();
+    env.fleet(&["declare", &task, "--change-request", URL]).ok();
+    reconcile_clean(&env);
+    let cr = derived_name("fake", FORGE_HOST, PROJECT, "7");
+    let step = |notes: &[Note]| {
+        forge
+            .set_change(PROJECT, "7", reviewed(ChangeState::Open, notes.to_vec()))
+            .unwrap();
+        env.expire_wait_of("ChangeRequest", &cr);
+        reconcile_clean(&env);
+        reconcile_clean(&env);
+    };
+    step(&notes);
+    let cr_uid = env.change_request(&cr)["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let base = format!("task/{task}/{uid}/gateway");
+    let ready = format!("{base}/ready/{cr_uid}");
+    let thread_keys = || {
+        keys(&in_thread(&env))
+            .into_iter()
+            .filter(|k| k.starts_with(&base))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(thread_keys(), vec![ready.clone()], "only the ready notice");
+    notes.push(inline("r3", 20, "sam", "t2", "Why a loop here?"));
+    step(&notes);
+    assert_eq!(thread_keys(), vec![ready.clone()], "a thread waits");
+    notes.push(inline("r4", 21, "fleet-bot", "t2", "Looking."));
+    step(&notes);
+    assert_eq!(thread_keys(), vec![ready.clone()], "an unmarked reply");
+    notes.push(inline(
+        "r5",
+        22,
+        "fleet-bot",
+        "t2",
+        &format!("A map now.\n{mark}"),
+    ));
+    step(&notes);
+    let got = thread_keys();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(
+        got[1].starts_with(&format!("{base}/answered/{cr_uid}/")),
+        "{got:?}"
+    );
+    let notice = in_thread(&env)
+        .into_iter()
+        .find(|p| p.key == got[1])
+        .unwrap()
+        .text;
+    assert!(notice.contains(URL), "the notice carries the URL: {notice}");
+    step(&notes);
+    assert_eq!(thread_keys(), got);
+    notes.push(inline("r6", 30, "sam", "t2", "And the error path?"));
+    step(&notes);
+    assert_eq!(thread_keys(), got, "the new round waits");
+    notes.push(inline(
+        "r7",
+        31,
+        "fleet-bot",
+        "t2",
+        &format!("Covered.\n{mark}"),
+    ));
+    step(&notes);
+    let again = thread_keys();
+    assert_eq!(again.len(), 3, "{again:?}");
+    assert!(again[2].starts_with(&format!("{base}/answered/{cr_uid}/")));
+    assert_ne!(again[1], again[2], "each round has its own key");
+    let resolve = |notes: &mut Vec<Note>, resolved: bool| {
+        for n in notes
+            .iter_mut()
+            .filter(|n| n.thread.as_deref() == Some("t2"))
+        {
+            n.resolved = Some(resolved);
+        }
+    };
+    resolve(&mut notes, true);
+    step(&notes);
+    resolve(&mut notes, false);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "a reopened thread is no answer");
+    notes.push(inline("r8", 40, "sam", "t2", "One more thing."));
+    notes.push(inline(
+        "r9",
+        41,
+        "fleet-bot",
+        "t2",
+        &format!("Done.\n{mark}"),
+    ));
+    let mut unseen = reviewed(ChangeState::Open, notes.clone());
+    unseen.threads.unresolved += 1;
+    forge.set_change(PROJECT, "7", unseen).unwrap();
+    env.expire_wait_of("ChangeRequest", &cr);
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(thread_keys(), again, "an unseen thread waits");
 }
