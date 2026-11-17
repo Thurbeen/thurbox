@@ -26,6 +26,48 @@ file you can change.
 - **An interface you own**: every pane, the session list included, is a Lua file
   in a directory you can edit.
 
+## Use v2 for now
+
+> [!IMPORTANT]
+> We recommend that you use thurbox v2, not v3, for now. v2 is more stable
+> than v3. v3 is available, but it is not yet fully stable and we do not yet
+> recommend it.
+
+Install [v2.89.0](https://github.com/Thurbeen/thurbox/releases/tag/v2.89.0),
+the latest v2 release. The installer pins it with the version.
+
+**Linux / macOS:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.sh | VERSION=v2.89.0 sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$env:THURBOX_VERSION = 'v2.89.0'
+irm https://raw.githubusercontent.com/Thurbeen/thurbox/main/scripts/install.ps1 | iex
+```
+
+This installs `thurbox` and `thurbox-cli`. thurbox v2 needs no Fleet, and
+`thurbox-cli update` keeps it on 2.x. The
+[v2.89.0 README](https://github.com/Thurbeen/thurbox/tree/v2.89.0#installation)
+covers the rest of v2.
+
+**Fleet v2:** if you also use Fleet, take
+[v2.24.0](https://github.com/Thurbeen/fleet/releases/tag/v2.24.0), the latest
+Fleet v2 release, for Linux and macOS. Install it after thurbox v2, so that
+Fleet v2 is the `fleet` on your `PATH`:
+
+```bash
+curl -fsSL https://github.com/Thurbeen/fleet/releases/download/v2.24.0/install-release.sh | sh
+```
+
+The [Fleet v2.24.0 README](https://github.com/Thurbeen/fleet/tree/v2.24.0#setup)
+covers its setup.
+
+The rest of this README describes v3.
+
 ## What's new in v3
 
 - **Fleet is the engine.** Every session is a Fleet Task. thurbox keeps no
@@ -51,7 +93,9 @@ file you can change.
   <img src="website/assets/overview-light.svg" alt="thurbox lists the sessions of every Fleet; each Fleet's runtime runs a session at a place">
 </picture>
 
-## Install
+## Install v3 (not yet recommended)
+
+v3 is not yet fully stable. For now, use [v2](#use-v2-for-now).
 
 **Linux / macOS:**
 
