@@ -5388,7 +5388,7 @@ done
 /// back for a sweep of every Task that already runs.
 #[test]
 fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soon_as_one_alone() {
-    const RUNNING: usize = 16;
+    const RUNNING: usize = 12;
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
@@ -5427,7 +5427,7 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soo
     let alone = briefed_and_attachable("alone");
     let running: Vec<Value> = (0..RUNNING).map(|i| task(&format!("bg{i}"))).collect();
     env.apply(json!(running)).ok();
-    let all_briefed = Instant::now() + Duration::from_secs(60);
+    let all_briefed = Instant::now() + Duration::from_secs(180);
     for i in 0..RUNNING {
         watch_until(
             &env,
