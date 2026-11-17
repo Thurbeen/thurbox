@@ -30,6 +30,7 @@ pub(super) struct Attach {
     pub(super) attached: (Sender<Attached>, Receiver<Attached>),
     pub(super) retry_after: std::time::Duration,
     pub(super) starts: HashMap<String, (Start, std::time::Instant)>,
+    pub(super) start_wait: std::time::Duration,
 }
 
 /// Where a start the user asked for stands, until the session's pane is live.
@@ -52,6 +53,7 @@ impl Attach {
             attached: std::sync::mpsc::channel(),
             retry_after: ATTACH_RETRY_INTERVAL,
             starts: HashMap::new(),
+            start_wait: START_WAIT,
         }
     }
 }
@@ -71,6 +73,7 @@ pub(super) struct Failure {
     /// Set one retry interval earlier for a failure that is to be retried at
     /// once (see `drop_lost_panes`).
     pub(super) at: std::time::Instant,
+    pub(super) tried_at: std::time::Instant,
 }
 
 /// An attach that finished on a worker, on its way back to the loop.
@@ -85,6 +88,7 @@ pub(super) struct Attached {
     /// has, no second attach on that backend may start.
     pub(super) readied: bool,
     pub(super) session_handle: Result<crate::backend::Session, String>,
+    pub(super) started: std::time::Instant,
 }
 
 /// How long the *same* failed attempt is left alone before it is made again.
@@ -203,9 +207,14 @@ impl Terminals {
             }
             return;
         }
+        let start_pending_since = match self.attach.starts.get(&row.id) {
+            Some((Start::Pending, at)) => Some(*at),
+            _ => None,
+        };
         if self.attach.failed.get(&row.id).is_some_and(|failure| {
             failure.pane.as_deref() == Some(key.as_str())
                 && failure.at.elapsed() < self.attach.retry_after
+                && start_pending_since.is_none_or(|at| failure.tried_at >= at)
         }) {
             return;
         }
@@ -217,6 +226,7 @@ impl Terminals {
         self.attach
             .attaching
             .insert(session.clone(), super::fleet::BACKEND.to_string());
+        let started = std::time::Instant::now();
         std::thread::spawn(move || {
             // The pane's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
@@ -227,6 +237,7 @@ impl Terminals {
                 backend: super::fleet::BACKEND.to_string(),
                 readied: false,
                 session_handle: result,
+                started,
             });
         });
     }
@@ -272,6 +283,7 @@ impl Terminals {
             .filter(|_| super::stream_pane::views(&row.backend));
         let notices = self.input_notices.0.clone();
         let scrollback = self.scrollback;
+        let started = std::time::Instant::now();
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());
             let mut readied = already_ready;
@@ -322,6 +334,7 @@ impl Terminals {
                 backend: backend_name,
                 readied,
                 session_handle: result,
+                started,
             });
         });
     }
@@ -354,13 +367,23 @@ impl Terminals {
                         self.mark_failures_changed();
                     }
                 }
-                Err(e) => self.fail(&done.session, Some(done.pane), e),
+                Err(e) => self.fail_attempt(&done.session, Some(done.pane), e, done.started),
             }
         }
     }
 
     /// Record why a session has no pane, and what was tried.
     pub(super) fn fail(&mut self, session: &str, pane: Option<String>, message: String) {
+        self.fail_attempt(session, pane, message, std::time::Instant::now());
+    }
+
+    pub(super) fn fail_attempt(
+        &mut self,
+        session: &str,
+        pane: Option<String>,
+        message: String,
+        tried_at: std::time::Instant,
+    ) {
         // Lua reads only the error map; retry bookkeeping is private.
         if self
             .attach
@@ -377,6 +400,7 @@ impl Terminals {
                 pane,
                 message,
                 at: std::time::Instant::now(),
+                tried_at,
             },
         );
     }
@@ -447,6 +471,7 @@ impl Terminals {
     pub(super) fn settle_starts(&mut self, snapshot: &Snapshot) {
         let live = &self.live;
         let failed = &self.attach.failed;
+        let wait = self.attach.start_wait;
         let before = self.attach.starts.len();
         let mut timed_out = false;
         self.attach.starts.retain(|session, (start, at)| {
@@ -458,14 +483,14 @@ impl Terminals {
             }
             if failed
                 .get(session)
-                .is_some_and(|failure| failure.pane.is_some() && failure.at >= *at)
+                .is_some_and(|failure| failure.pane.is_some() && failure.tried_at >= *at)
             {
                 return false;
             }
-            if at.elapsed() >= START_WAIT {
+            if at.elapsed() >= wait {
                 *start = Start::Failed(format!(
                     "Fleet did not resume it within {} s",
-                    START_WAIT.as_secs()
+                    wait.as_secs()
                 ));
                 timed_out = true;
             }

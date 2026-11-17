@@ -1341,6 +1341,7 @@ mod tests {
                     backend: "ssh:offline:tmux".into(),
                     readied: false,
                     session_handle: Err(message.into()),
+                    started: std::time::Instant::now(),
                 })
                 .unwrap();
             terminals.sync(&snapshot, 24, 80);
@@ -1911,6 +1912,75 @@ mod tests {
 
         terminals.sync(&snapshot(Vec::new()), 24, 80);
         assert!(terminals.starts().is_empty());
+    }
+
+    #[test]
+    fn a_start_with_no_pane_after_the_wait_fails_and_stops_the_clock() {
+        let mut terminals = Terminals::with_registry(
+            std::sync::Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        terminals.attach_fleet_through(crate::fleet_link::FleetLink::local("/nonexistent/fleet"));
+        let id = format!("{}:t1", crate::session::settings::IMPLIED_FLEET);
+        let mut fleet_row = row(&id, super::fleet::BACKEND, None);
+        fleet_row.key = Some("k1".to_string());
+        fleet_row.stopped = true;
+        fleet_row.status = crate::session::SessionState::Stopped;
+        terminals.attach.start_wait = std::time::Duration::ZERO;
+
+        terminals.start_requested(&id);
+        let version = terminals.failed_version();
+        terminals.sync(&snapshot(vec![fleet_row]), 24, 80);
+
+        assert!(!terminals.starting());
+        assert_eq!(
+            terminals.starts().get(&id),
+            Some(&Start::Failed(
+                "Fleet did not resume it within 0 s".to_string()
+            ))
+        );
+        assert_ne!(terminals.failed_version(), version);
+    }
+
+    #[test]
+    fn an_attach_begun_before_a_start_does_not_end_it_by_failing() {
+        let mut terminals = Terminals::with_registry(
+            std::sync::Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        terminals.attach_fleet_through(crate::fleet_link::FleetLink::local("/nonexistent/fleet"));
+        let id = format!("{}:t1", crate::session::settings::IMPLIED_FLEET);
+        let mut fleet_row = row(&id, super::fleet::BACKEND, None);
+        fleet_row.key = Some("k1".to_string());
+        fleet_row.status = crate::session::SessionState::Failed;
+        terminals.fail(&id, Some("k1".to_string()), "held off".to_string());
+        let begun = std::time::Instant::now();
+
+        terminals.start_requested(&id);
+        terminals
+            .attach
+            .attaching
+            .insert(id.clone(), super::fleet::BACKEND.to_string());
+        terminals
+            .attach
+            .attached
+            .0
+            .send(attach::Attached {
+                session: id.clone(),
+                pane: "k1".into(),
+                backend: super::fleet::BACKEND.into(),
+                readied: false,
+                session_handle: Err("the window is gone".into()),
+                started: begun,
+            })
+            .unwrap();
+        terminals.sync(&snapshot(vec![fleet_row]), 24, 80);
+
+        assert_eq!(terminals.starts().get(&id), Some(&Start::Pending));
+        assert!(
+            terminals.attach.attaching.contains_key(&id),
+            "a failure from before the start held off the attach it waits for"
+        );
     }
 
     #[test]

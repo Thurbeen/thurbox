@@ -1772,7 +1772,9 @@ pane = {
     elseif action == "sessions.start" and id then
       local session = items[at].session
       local revival = session_model.revival(session)
-      if revival == "start" then
+      if session.starting then
+        command("message", { text = (session.name or "this session") .. " is already starting" })
+      elseif revival == "start" then
         command("start", { session = id })
       elseif revival == "recreate" then
         command("message", { text = (session.name or "this session") .. " cannot resume" })

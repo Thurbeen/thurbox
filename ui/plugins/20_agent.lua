@@ -874,7 +874,8 @@ local function starting_lines(name, elapsed)
       { text = theme.spinner_frame(elapsed) .. " ", style = { fg = theme.warn } },
       { text = "Starting " .. name .. "…", style = { fg = theme.warn, bold = true } },
     },
-    { muted("Fleet is resuming its agent; its terminal attaches as soon as it runs") },
+    { muted("Fleet is resuming its agent;") },
+    { muted("its terminal attaches as soon as it runs.") },
   }
 end
 
@@ -895,26 +896,22 @@ end
 local function how_to_start()
   local chord = ui.chord("sessions.start")
   if not chord then
-    return { muted("Choose Start in the session list's menu to resume it.") }
+    return { { muted("Choose Start in the session list's menu") }, { muted("to resume it.") } }
   end
   return {
-    muted("Press "),
-    key(chord),
-    muted(" in the session list, or choose Start in its menu, to resume it."),
+    { muted("Press "), key(chord), muted(" in the session list,") },
+    { muted("or choose Start in its menu, to resume it.") },
   }
 end
 
 local function how_to_recreate()
   local delete, create = ui.chord("sessions.delete"), ui.chord("new_session.open")
   if not (delete and create) then
-    return { muted("Delete it and create a new session.") }
+    return { { muted("Delete it, then create a new session.") } }
   end
   return {
-    muted("Delete it with "),
-    key(delete),
-    muted(" and create a new session with "),
-    key(create),
-    muted("."),
+    { muted("Delete it with "), key(delete), muted(",") },
+    { muted("then create a new session with "), key(create), muted(".") },
   }
 end
 
@@ -928,11 +925,15 @@ local function not_running_lines(session, revival, elapsed)
     { muted(session.state_why or "") },
     {},
   }
+  local how
   if revival == "recreate" then
     lines[#lines + 1] = { muted("Fleet cannot resume its conversation.") }
-    lines[#lines + 1] = how_to_recreate()
+    how = how_to_recreate()
   else
-    lines[#lines + 1] = how_to_start()
+    how = how_to_start()
+  end
+  for _, line in ipairs(how) do
+    lines[#lines + 1] = line
   end
   if session.start_error then
     lines[#lines + 1] = {}

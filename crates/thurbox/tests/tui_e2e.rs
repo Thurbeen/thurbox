@@ -6952,7 +6952,7 @@ fn fleet_pausing_one_task(
     profile: &Profile,
     paused: &serde_json::Value,
     resumed: &serde_json::Value,
-    wake_secs: u32,
+    resume_secs: u32,
     attach_error: &str,
 ) -> PathBuf {
     let woken = profile.root.path().join("woken");
@@ -6963,7 +6963,7 @@ fn fleet_pausing_one_task(
     write_script(
         &profile.bin.join("fleet"),
         &format!(
-            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{resumed}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ sleep {wake_secs}; touch '{woken}'; exit 0; }}; echo '{attach_error}' >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; sleep {resume_secs}; echo '{resumed}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ touch '{woken}'; exit 0; }}; echo '{attach_error}' >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
             woken = woken.display(),
         ),
     );
@@ -7012,11 +7012,15 @@ fn a_paused_sessions_pane_says_how_to_start_it_and_its_row_keeps_the_idle_icon()
         0,
         "unused",
     );
-    let mut tui = Tui::spawn(&profile, 40, 160);
+    let mut tui = Tui::spawn(&profile, 40, 80);
     tui.wait_until("the paused pane to say how to start it", |frame| {
         frame.contains("napping is paused")
-            && frame
-                .contains("Press s in the session list, or choose Start in its menu, to resume it")
+            && frame.contains("Press s in the session list,")
+            && frame.contains("or choose Start in its menu, to resume it.")
+    });
+    tui.resize(40, 160);
+    tui.wait_until("the row to say why", |frame| {
+        row_of(frame, "napping").contains("paused · idle")
     });
     let frame = tui.frame();
     let row = row_of(&frame, "napping");
@@ -7048,10 +7052,11 @@ fn a_session_that_cannot_resume_says_what_to_do_instead() {
         0,
         "error: Task/stuck cannot resume",
     );
-    let mut tui = Tui::spawn(&profile, 40, 160);
+    let mut tui = Tui::spawn(&profile, 40, 80);
     tui.wait_until("the pane to say what to do", |frame| {
         frame.contains("stuck cannot resume")
-            && frame.contains("Delete it with ctrl+d and create a new session with ctrl+n")
+            && frame.contains("Delete it with ctrl+d,")
+            && frame.contains("then create a new session with ctrl+n.")
     });
     assert!(tui.quit().success());
 }
@@ -7076,6 +7081,11 @@ fn starting_a_paused_session_spins_in_its_pane_until_the_attach_fails_and_says_w
         frame.contains("Starting napping")
             && theme_spinner().iter().any(|glyph| frame.contains(glyph))
     });
+    tui.send(b"s");
+    tui.wait_until(
+        "a second start to be refused while one is pending",
+        |frame| frame.contains("napping is already starting") && frame.contains("Starting napping"),
+    );
     tui.wait_until("the pane to say why it did not attach", |frame| {
         frame.contains("no live terminal") && frame.contains("the runtime offers no live view")
     });
@@ -7106,6 +7116,30 @@ fn starting_a_paused_session_shows_why_fleet_refused() {
     });
     assert!(!tui.frame().contains("Starting napping"), "{}", tui.frame());
     assert!(tui.quit().success());
+}
+
+fn select_in_the_list(profile: &Profile, tui: &mut Tui, session: &str) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut command);
+    let output = command
+        .args([
+            "--json",
+            "ui",
+            "action",
+            "session.focus",
+            "--session",
+            session,
+        ])
+        .output()
+        .expect("ui cli");
+    assert!(
+        output.status.success(),
+        "session.focus refused {session}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    tui.wait_until_quiet();
+    focus_the_list(tui);
 }
 
 fn theme_spinner() -> [&'static str; 10] {
@@ -7163,9 +7197,7 @@ fn starting_a_paused_session_spins_in_its_pane_until_its_agent_is_attached() {
     tui.wait_within(Duration::from_secs(60), "Fleet to pause napping", |frame| {
         frame.contains("napping is paused")
     });
-    focus_the_list(&mut tui);
-    tui.send(b"G");
-    tui.wait_until_quiet();
+    select_in_the_list(&profile, &mut tui, "napping");
     tui.send(b"s");
     tui.wait_for("Starting napping");
     tui.wait_for("resumed-marker");

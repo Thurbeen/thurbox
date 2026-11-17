@@ -149,12 +149,14 @@ how to bring it back:
 | Row | Agent pane |
 |-----|------------|
 | paused, stopped, or lost with its window gone | `<name> is paused` (or `is stopped`, `is lost`), the row's reason, and `Press s in the session list, or choose Start in its menu, to resume it.` |
-| `lost · cannot resume`, `gone · session ended` | `<name> cannot resume`, the reason, and `Delete it with ctrl+d and create a new session with ctrl+n.` |
+| `lost · cannot resume`, `gone · session ended` | `<name> cannot resume`, the reason, and `Delete it with ctrl+d, then create a new session with ctrl+n.` |
 | a Start in progress | a spinner and `Starting <name>…` until the pane attaches |
 
 The keys in a hint are read from the key registry, so a rebinding changes
-them. The spinner stops when the pane attaches, when the attach fails (the
-pane then says `no live terminal` and why), or when Fleet refuses the start:
+them. Each hint is split into lines that fit an 80-column terminal. `s` on a
+session that is already starting says so and sends nothing. The spinner
+stops when the pane attaches, when the attach fails (the pane then says
+`no live terminal` and why), or when Fleet refuses the start:
 the pane then says `Start failed:` and Fleet's error. A start that has not
 attached after 90 s fails the same way. A Fleet older than `fleet attach
 --wake` refuses the start, and the pane and the message band say so.
