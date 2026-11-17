@@ -109,6 +109,7 @@ const RESUME: &str = "resume";
 const CATCH_UP: &str = "catchup";
 /// The NeedsAttention reason once revives keep leaving the session lost.
 const CANNOT_RESUME: &str = "CannotResume";
+const REVIVE_FAILED: &str = "ReviveFailed";
 /// The NeedsAttention reason once resumes keep leaving the session stopped.
 const RESUME_FAILED: &str = "ResumeFailed";
 
@@ -946,8 +947,10 @@ impl Pass<'_, '_> {
             self.st.idle_since = None;
         }
         if next_entry(&self.st).is_none() && self.st.catch_up.is_none() {
-            let revive = view_asked(&self.st, self.now()) || reviving(&self.st);
-            if self.input.observations.find.is_some() {
+            let asked = view_asked(&self.st, self.now());
+            let revive = asked || reviving(&self.st);
+            let lost_known = matches!(self.input.observations.lost, Some(Observation::Known(_)));
+            if self.input.observations.find.is_some() && (lost_known || !asked) {
                 self.st.session_checked_at = Some(self.now());
                 if self.worker_gone() {
                     return;
@@ -1374,18 +1377,26 @@ impl Pass<'_, '_> {
                 }
             }
             if self.st.revive_attempts >= MAX_ATTEMPTS {
-                let why = format!(
-                    "{} revives left the session without a window: its agent cannot resume it",
-                    self.st.revive_attempts
+                if self.started_revives_left_lost() {
+                    let why = format!(
+                        "{MAX_ATTEMPTS} revives started its agent and left the session without a window: its agent cannot resume it"
+                    );
+                    self.cond(
+                        SESSION_LOST,
+                        ConditionStatus::True,
+                        CANNOT_RESUME,
+                        why.clone(),
+                    );
+                    self.needs_attention(CANNOT_RESUME, why);
+                    return true;
+                }
+                self.needs_attention(
+                    REVIVE_FAILED,
+                    format!(
+                        "{} revives left the session without a window",
+                        self.st.revive_attempts
+                    ),
                 );
-                self.cond(
-                    SESSION_LOST,
-                    ConditionStatus::True,
-                    CANNOT_RESUME,
-                    why.clone(),
-                );
-                self.needs_attention(CANNOT_RESUME, why);
-                return true;
             }
         }
         self.st.revivals += 1;
@@ -1401,6 +1412,21 @@ impl Pass<'_, '_> {
             },
         );
         true
+    }
+
+    /// Whether each of the last [`MAX_ATTEMPTS`] revives started the agent,
+    /// on a Known `Revived` receipt, and still left the window gone. A revive
+    /// that failed before it started anything is retried, never counted.
+    fn started_revives_left_lost(&self) -> bool {
+        (0..MAX_ATTEMPTS).all(|back| {
+            let Some(n) = self.st.revivals.checked_sub(back) else {
+                return false;
+            };
+            self.st
+                .receipts
+                .get(&self.key(REVIVE, Some(n)))
+                .is_some_and(|r| matches!(r.outcome, Observation::Known(EffectOutcome::Revived)))
+        })
     }
 
     /// The session's window is there. After it was lost, a briefed worker
@@ -1421,6 +1447,7 @@ impl Pass<'_, '_> {
             "the session's window is back",
         );
         self.settle_attention(CANNOT_RESUME);
+        self.settle_attention(REVIVE_FAILED);
         if self.st.phase != Phase::Concluded {
             self.owe_catch_up();
         }

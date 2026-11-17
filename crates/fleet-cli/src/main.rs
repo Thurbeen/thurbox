@@ -3013,6 +3013,16 @@ fn cannot_resume(obj: &Object) -> Option<String> {
         .map(|c| c["message"].as_str().unwrap_or_default().to_string())
 }
 
+fn cannot_resume_failure(task: &str, why: &str) -> Failure {
+    Failure {
+        code: exit::NOT_FOUND,
+        message: format!("Task/{task} cannot resume its session: {why}"),
+        hint: Some(format!(
+            "nothing would run in its window; see why with `fleet get task {task}`"
+        )),
+    }
+}
+
 enum Stopped {
     Paused,
     Lost,
@@ -3021,35 +3031,29 @@ enum Stopped {
 /// Ask Fleet to revive a lost session for a view, and wait until the
 /// controller says its window is back: `SessionLost` turned False after
 /// the request.
-fn wait_for_revive(store: &dyn Store, task: &str) -> Result<(), Failure> {
-    let asked = wake(store, &SystemClock, task)?
-        .status
-        .get("wakeRequestedAt")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(fleet_api::task::VIEW_WAIT_MS);
+fn wait_for_revive(
+    store: &dyn Store,
+    task: &str,
+    ask: impl Fn() -> Observation<Option<fleet_api::runtime::Attach>>,
+) -> Result<Observation<Option<fleet_api::runtime::Attach>>, Failure> {
+    wake(store, &SystemClock, task)?;
+    let wait = std::time::Duration::from_millis(fleet_api::task::VIEW_WAIT_MS);
+    let deadline = std::time::Instant::now() + wait;
     while std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        let obj = get(store, fleet_api::task::KIND, task)?;
-        let revived = obj.status["conditions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|c| {
-                c["type"] == "SessionLost"
-                    && c["status"] == "False"
-                    && c["lastTransitionTime"].as_u64().is_some_and(|t| t >= asked)
-            });
-        if revived {
-            return Ok(());
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if let Some(why) = cannot_resume(&get(store, fleet_api::task::KIND, task)?) {
+            return Err(cannot_resume_failure(task, &why));
+        }
+        let answer = ask();
+        if matches!(answer, Observation::Known(Some(_))) {
+            return Ok(answer);
         }
     }
     Err(Failure {
         code: exit::NOT_FOUND,
         message: format!(
             "Task/{task} lost its session, and Fleet did not revive it within {}s",
-            RESUME_WAIT.as_secs()
+            wait.as_secs()
         ),
         hint: Some(format!(
             "the Fleet engine revives it on its next pass; check that it runs, then \
@@ -3123,13 +3127,7 @@ fn cmd_open(
         wait_for_resume(store, task)?;
     }
     if let Some(why) = cannot_resume(&obj) {
-        return Err(Failure {
-            code: exit::NOT_FOUND,
-            message: format!("Task/{task} cannot resume its session: {why}"),
-            hint: Some(format!(
-                "nothing would run in its window; see why with `fleet get task {task}`"
-            )),
-        });
+        return Err(cannot_resume_failure(task, &why));
     }
     let ask = |session: &fleet_api::task::SessionRef| match opens {
         Opens::View => runtime.attach(session),
@@ -3140,8 +3138,7 @@ fn cmd_open(
         && matches!(runtime.lost(&session), Observation::Known(true))
     {
         refuse_unresumable(&obj, task, Stopped::Lost)?;
-        wait_for_revive(store, task)?;
-        answer = ask(&session);
+        answer = wait_for_revive(store, task, || ask(&session))?;
     }
     let argv = match answer {
         Observation::Known(Some(Attach::Stream { argv })) => argv,
