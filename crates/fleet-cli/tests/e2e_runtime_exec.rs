@@ -5387,9 +5387,8 @@ done
 /// soon as one started alone: `fleet up` does not hold each of its steps
 /// back for a sweep of every Task that already runs.
 #[test]
-fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_within_seconds() {
+fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soon_as_one_alone() {
     const RUNNING: usize = 16;
-    const BOUND: Duration = Duration::from_secs(5);
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
@@ -5415,9 +5414,19 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_within_secon
         task["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
         task
     };
+    let _up = Up(env.spawn(&["up"]));
+    let briefed_and_attachable = |name: &str| {
+        let dispatched = Instant::now();
+        env.apply(json!([task(name)])).ok();
+        watch_until(&env, name, "briefed", Duration::from_secs(120), |t| {
+            t["status"]["phase"] == "Briefed"
+        });
+        env.fleet(&["attach", name, "--json"]).ok();
+        dispatched.elapsed()
+    };
+    let alone = briefed_and_attachable("alone");
     let running: Vec<Value> = (0..RUNNING).map(|i| task(&format!("bg{i}"))).collect();
     env.apply(json!(running)).ok();
-    let _up = Up(env.spawn(&["up"]));
     for i in 0..RUNNING {
         watch_until(
             &env,
@@ -5428,16 +5437,10 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_within_secon
         );
     }
 
-    let dispatched = Instant::now();
-    env.apply(json!([task("t1")])).ok();
-    watch_until(&env, "t1", "briefed", Duration::from_secs(120), |t| {
-        t["status"]["phase"] == "Briefed"
-    });
-    env.fleet(&["attach", "t1", "--json"]).ok();
-    let took = dispatched.elapsed();
+    let beside = briefed_and_attachable("t1");
     assert!(
-        took < BOUND,
-        "dispatch to a briefed, attachable session took {took:?} beside {RUNNING} running Tasks: {:#}",
+        beside < alone * 2 + Duration::from_secs(1),
+        "dispatch to a briefed, attachable session took {beside:?} beside {RUNNING} running Tasks, {alone:?} alone: {:#}",
         env.get("t1")["status"]["conditions"]
     );
 }
