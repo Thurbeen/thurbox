@@ -16,8 +16,8 @@ use opentelemetry_proto::tonic::metrics::v1::metric;
 use prost::Message;
 
 type Attrs = BTreeMap<String, String>;
-/// Each request's path and body, in arrival order.
-type Received = Mutex<Vec<(String, Vec<u8>)>>;
+/// Each request's path, headers (names lowercased) and body, in arrival order.
+type Received = Mutex<Vec<(String, Attrs, Vec<u8>)>>;
 
 pub struct Collector {
     pub endpoint: String,
@@ -66,19 +66,25 @@ impl Collector {
     /// Every request path received so far, in order.
     pub fn paths(&self) -> Vec<String> {
         let received = self.received.lock().unwrap();
-        received.iter().map(|(p, _)| p.clone()).collect()
+        received.iter().map(|(p, _, _)| p.clone()).collect()
+    }
+
+    /// Each request's headers, names lowercased, in arrival order.
+    pub fn headers(&self) -> Vec<Attrs> {
+        let received = self.received.lock().unwrap();
+        received.iter().map(|(_, h, _)| h.clone()).collect()
     }
 
     /// Every request body received so far, concatenated.
     pub fn raw(&self) -> Vec<u8> {
         let received = self.received.lock().unwrap();
-        received.iter().flat_map(|(_, b)| b.clone()).collect()
+        received.iter().flat_map(|(_, _, b)| b.clone()).collect()
     }
 
     pub fn spans(&self) -> Vec<Span> {
         let received = self.received.lock().unwrap();
         let mut out = Vec::new();
-        for (path, body) in received.iter() {
+        for (path, _, body) in received.iter() {
             if path != "/v1/traces" {
                 continue;
             }
@@ -107,7 +113,7 @@ impl Collector {
     pub fn points(&self) -> Vec<Point> {
         let received = self.received.lock().unwrap();
         let mut out = Vec::new();
-        for (path, body) in received.iter() {
+        for (path, _, body) in received.iter() {
             if path != "/v1/metrics" {
                 continue;
             }
@@ -187,6 +193,7 @@ fn serve(stream: TcpStream, sink: &Received) {
             .unwrap_or_default()
             .to_string();
         let mut length = 0;
+        let mut headers = Attrs::new();
         loop {
             let mut header = String::new();
             if reader.read_line(&mut header).unwrap_or(0) == 0 {
@@ -196,17 +203,18 @@ fn serve(stream: TcpStream, sink: &Received) {
             if header.is_empty() {
                 break;
             }
-            if let Some((k, v)) = header.split_once(':')
-                && k.eq_ignore_ascii_case("content-length")
-            {
-                length = v.trim().parse().unwrap_or(0);
+            if let Some((k, v)) = header.split_once(':') {
+                if k.eq_ignore_ascii_case("content-length") {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+                headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
             }
         }
         let mut body = vec![0; length];
         if reader.read_exact(&mut body).is_err() {
             return;
         }
-        sink.lock().unwrap().push((path, body));
+        sink.lock().unwrap().push((path, headers, body));
         let ok =
             b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\n\r\n";
         if writer.write_all(ok).is_err() {

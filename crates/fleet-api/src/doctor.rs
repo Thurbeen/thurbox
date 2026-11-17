@@ -162,6 +162,30 @@ pub fn runtime(host: &str, runtime: &str, answer: Result<(), String>) -> Check {
     }
 }
 
+/// Fleet's own export: what it sends where, and where each value in force
+/// comes from, as the CLI describes it, or why it is off.
+pub fn telemetry(described: Result<String, String>) -> Check {
+    match described {
+        Ok(detail) => Check {
+            area: "telemetry",
+            name: "export".to_string(),
+            level: Level::Ok,
+            detail,
+            hint: None,
+        },
+        Err(why) => Check {
+            area: "telemetry",
+            name: "export".to_string(),
+            level: Level::Warn,
+            detail: format!("off: {why}"),
+            hint: Some(
+                "fix [telemetry] in the config file or the OTEL_* variables; docs/observability.md"
+                    .into(),
+            ),
+        },
+    }
+}
+
 /// The `[runtime]` table: the fake, which Fleet opens only with its `dir`.
 /// Any other kind is refused when a command opens the runtime.
 pub fn fake_runtime(kind: &str, has_dir: bool) -> Check {

@@ -1,5 +1,6 @@
-//! The interface's own telemetry (ADR-38), configured by the standard OTEL_*
-//! variables through `otel-env`, as every program of the repository is
+//! The interface's own telemetry (ADR-38), configured by the `[telemetry]`
+//! table of `settings.toml` and the standard OTEL_* variables, which win over
+//! it, through `otel-env`, as every program of the repository is
 //! (docs/observability.md): its WARN-and-above `tracing` events as OTLP
 //! logs, and a span around each Fleet command it runs, carried to `fleet` as
 //! `TRACEPARENT`.
@@ -21,7 +22,7 @@ use tracing_subscriber::Layer;
 /// moved into the subscriber, which is global and never dropped.
 static TELEMETRY: OnceLock<std::sync::Mutex<Option<Telemetry>>> = OnceLock::new();
 
-/// Install the providers the OTEL_* variables ask for, as `service.name`
+/// Install the providers `config` and the OTEL_* variables ask for, as `service.name`
 /// `thurbox` at `version`, and answer the log bridge layer when the logs
 /// signal is exported. `instance` is the multiplexer socket this instance
 /// runs on, which tells a sandbox's telemetry apart from the real
@@ -37,12 +38,14 @@ static TELEMETRY: OnceLock<std::sync::Mutex<Option<Telemetry>>> = OnceLock::new(
 /// logs alone are not (an unsupported logs exporter or protocol), for the
 /// caller to log once the subscriber is up.
 pub fn init<S>(
+    config: &otel_env::TelemetryConfig,
     version: &str,
     instance: &str,
 ) -> Result<(Option<impl Layer<S>>, Option<String>), String>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
+    otel_env::adopt(config)?;
     let telemetry = otel_env::init(
         "thurbox",
         version,

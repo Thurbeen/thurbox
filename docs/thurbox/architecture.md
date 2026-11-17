@@ -1128,7 +1128,9 @@ orphaned tmux server); killing it is the only remedy.
 **Choice**: the interface installs its telemetry through `otel-env`, the
 crate every program of the repository shares (`telemetry`). The standard
 `OTEL_*` variables turn it on, as they do for `fleet`, `runtime-mux` and
-`workspace-git`; `settings.toml` has no telemetry table. When
+`workspace-git`. The `[telemetry]` table of `settings.toml` does too: it
+has the keys of Fleet's own `[telemetry]` table, one type in `otel-env`,
+and each key stands for one variable, which wins over it. When
 `OTEL_LOGS_EXPORTER=otlp` turns the logs signal on (an endpoint alone does
 not, as log records carry text), the interface adds an `opentelemetry-appender-tracing` layer
 to its `tracing` subscriber, beside the file appender. The layer has a
@@ -1139,9 +1141,16 @@ each Fleet command the interface runs is a `fleet VERB` span, and the
 installs telemetry.
 
 **Why**: one configuration story for the whole system
-([Observability](../observability.md)). A `[telemetry]` table duplicated
-`OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and ignored the rest of the
-standard, so the interface and Fleet were turned on in two different ways.
+([Observability](../observability.md)). The 2.x `[telemetry]` table
+duplicated `OTEL_EXPORTER_OTLP_{ENDPOINT,PROTOCOL,HEADERS}` and ignored the
+rest of the standard, so the interface and Fleet were turned on in two
+different ways. The variables alone were not enough either: a variable
+reaches only the processes started below the shell or unit that sets it,
+so a thurbox started from a launcher exported nothing. The 3.x table is the
+standard's variables written in a file, under the same rule for the
+interface and for Fleet, and a variable still wins. It is the interface's
+own table: Fleet's export is Fleet's config file's, and thurbox does not
+read that file.
 The interface is the one long-running process, so a batch processor has time
 to export, from a thread of its own, without holding up the loop. A
 short-lived `thurbox-cli` command would pay a network round-trip per call,
@@ -1158,8 +1167,8 @@ protocol turns export off and logs why to the file. The batches are flushed
 on a clean exit, within two seconds; an exit by signal or panic loses what
 the processors still held, which the file log has. Records carry what the
 log lines carry — paths, session names, machine names — which is why the
-logs signal needs its own explicit opt-in. The variables are read
-at start: a change applies on the next start. `TRACEPARENT` does not cross a
+logs signal needs its own explicit opt-in. The table and the variables are
+read at start: a change applies on the next start. `TRACEPARENT` does not cross a
 launcher, so a Fleet on another machine starts its own traces.
 
 ## ADR-39: Errors keep their classification across operation boundaries

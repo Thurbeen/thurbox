@@ -21,9 +21,8 @@ pub const SEED_SETTINGS_TOML: &str = r#"# Thurbox settings  —  ~/.config/thurb
 # Unknown keys are reported on startup (and fail `thurbox-cli config
 # validate`) but don't break the load. A key thurbox 2.x read and 3.0 no
 # longer does (`multiplexer`, `[remote]`, `[features] soft_delete` and
-# `[telemetry]`) is reported on startup as no longer read, and passes
-# `config validate`. Telemetry is the standard OTEL_* environment variables
-# (docs/observability.md).
+# `[telemetry] per_session`) is reported on startup as no longer read, and
+# passes `config validate`.
 
 config_version = 1
 
@@ -124,6 +123,19 @@ config_version = 1
 # [fleets.box]
 # transport = { ssh = "me@box" }
 # program = "/home/me/.cargo/bin/fleet"   # ssh does not read your login PATH
+
+# The interface's own OpenTelemetry export (docs/observability.md). Off until
+# an endpoint is set. An OTEL_* variable set where thurbox starts wins over
+# each value here. Fleet, and the sessions it starts, export as Fleet's own
+# config file's [telemetry] table says. Restart-only.
+# [telemetry]
+# endpoint = "http://localhost:4318"   # OTLP over HTTP; the base URL
+# protocol = "http/protobuf"           # the only protocol
+# headers = { file = "/run/user/1000/otel-headers" }   # a file holding key=value,...; never the secret here
+# traces = true
+# metrics = true
+# logs = false                         # log lines hold text: opt in
+# resource = { "service.namespace" = "thurbox", "deployment.environment.name" = "local" }
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
 # ──────────────────────────────────────────────────────────────────────────
@@ -185,20 +197,23 @@ pub fn is_retired_notice(warning: &str) -> bool {
 }
 
 /// The unknown keys of `contents` that are not retired ones: what makes the
-/// file invalid for `thurbox-cli config validate`.
+/// file invalid for `thurbox-cli config validate`, with a `[telemetry]`
+/// table that breaks its rules.
 pub fn unknown_keys(contents: &str) -> Result<Vec<String>, String> {
-    super::file::parse_toml_reporting_unknown::<Settings>(contents, "settings.toml")
-        .map(|(_, warnings)| {
-            warnings
-                .into_iter()
-                .filter(|warning| {
-                    reported_key(warning).is_none_or(|key| {
-                        retired_key(key).is_none() && !IGNORED_KEYS.contains(&key)
-                    })
-                })
-                .collect()
+    let (settings, warnings) =
+        super::file::parse_toml_reporting_unknown::<Settings>(contents, "settings.toml")
+            .map_err(|e| e.to_string())?;
+    settings
+        .telemetry
+        .validate()
+        .map_err(|e| format!("settings.toml: {e}"))?;
+    Ok(warnings
+        .into_iter()
+        .filter(|warning| {
+            reported_key(warning)
+                .is_none_or(|key| retired_key(key).is_none() && !IGNORED_KEYS.contains(&key))
         })
-        .map_err(|e| e.to_string())
+        .collect())
 }
 
 /// The key an unknown-field warning names (between its backticks).
@@ -351,6 +366,10 @@ mod tests {
             "program",
             "config",
             "FLEET_CONFIG",
+            "[telemetry]",
+            "endpoint",
+            "headers = { file",
+            "resource",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),
@@ -604,7 +623,13 @@ mod tests {
 
         let (settings, warnings) = load_or_seed_with_warnings();
         assert_eq!(settings.scrollback_lines, 7, "the rest of the file applies");
-        for key in ["multiplexer", "features.soft_delete", "remote", "telemetry"] {
+        for key in [
+            "multiplexer",
+            "features.soft_delete",
+            "remote",
+            "telemetry.per_session",
+            "telemetry.configure_agents",
+        ] {
             assert!(
                 warnings
                     .iter()
@@ -617,6 +642,12 @@ mod tests {
             "a key ignored since 2.0 stays quiet: {warnings:?}"
         );
         assert_eq!(unknown_keys(v2), Ok(vec![]), "and the file validates");
+        let grpc = unknown_keys("[telemetry]\nprotocol = \"grpc\"\n").unwrap_err();
+        assert!(grpc.contains("telemetry.protocol"), "{grpc}");
+        assert_eq!(
+            unknown_keys("[telemetry]\nendpoint = \"http://c:4318\"\nlogs = true\n"),
+            Ok(vec![])
+        );
         assert_eq!(
             unknown_keys("stale = 1\n").unwrap().len(),
             1,

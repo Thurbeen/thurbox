@@ -822,7 +822,10 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
           </h2>
           <p>
             Traces and metrics use the standard <code>OTEL_*</code> variables, the same for Thurbox,
-            Fleet and the runtimes: see <a href="observability.html">Observability</a>.
+            Fleet and the runtimes. A <code>[telemetry]</code> table in Fleet's
+            <code>config.toml</code> and in Thurbox's <code>settings.toml</code> sets the same values
+            in a file; a variable that is set wins over the file: see
+            <a href="observability.html">Observability</a>.
           </p>
           <table>
             <thead>

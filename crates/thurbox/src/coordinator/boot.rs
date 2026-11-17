@@ -146,6 +146,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let startup_settings = config.in_force().clone();
 
     let (bridge, bridge_error) = match thurbox::telemetry::init(
+        &startup_settings.telemetry,
         env!("THURBOX_VERSION"),
         &thurbox::backend::instance::local_socket_name(),
     ) {

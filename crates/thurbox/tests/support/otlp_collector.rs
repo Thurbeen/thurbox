@@ -114,3 +114,29 @@ pub fn logs(requests: &[Request]) -> Vec<LogRecord> {
         .flat_map(|s| s.log_records)
         .collect()
 }
+
+/// The string attributes of each resource in the `/v1/logs` requests among
+/// `requests`.
+pub fn log_resources(requests: &[Request]) -> Vec<std::collections::BTreeMap<String, String>> {
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
+    requests
+        .iter()
+        .filter(|(path, _)| path == "/v1/logs")
+        .flat_map(|(_, body)| {
+            ExportLogsServiceRequest::decode(body.as_slice())
+                .expect("a protobuf logs request")
+                .resource_logs
+        })
+        .map(|r| {
+            r.resource
+                .map(|r| r.attributes)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|kv| match kv.value.and_then(|v| v.value) {
+                    Some(Value::StringValue(s)) => Some((kv.key, s)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect()
+}
