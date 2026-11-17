@@ -1060,9 +1060,6 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }
 
-/// [`CLAUDE`], except that it logs what is typed to it, and reports the
-/// lines typed together as one prompt, as Claude Code's prompt hook does:
-/// the catch-up note after a resume is several lines.
 const TYPING_CLAUDE: &str = r#"#!/bin/bash
 { printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
 fleet signal idle
@@ -1193,6 +1190,12 @@ fn an_idle_session_on_runtime_mux_is_stopped_and_a_message_resumes_its_conversat
     reconcile_until(&env, "the message typed", |_| {
         typed().lines().any(|l| l == "next message")
     });
+    let lines = typed();
+    assert_eq!(
+        lines.lines().collect::<Vec<_>>()[1..],
+        ["next message"],
+        "the brief, then the message and nothing of Fleet's own: {lines}"
+    );
     let all = starts(&work);
     assert_eq!(all.len(), 2, "{all:?}");
     assert_eq!(
@@ -1260,6 +1263,25 @@ fn attaching_to_a_paused_session_on_runtime_mux_resumes_it_and_streams_it() {
     view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
     view.send(&Up::Detach);
     assert!(view.close().success());
+
+    let file = env
+        .data
+        .join("signals")
+        .join(format!("{}.jsonl", env.session_key("t1")));
+    let mut cmd = env.command(&["signal", "idle"]);
+    cmd.env("FLEET_SIGNAL_FILE", &file);
+    support::wait(cmd.spawn().expect("fleet signal")).ok();
+    let typed = || fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    reconcile_until(&env, "paused again, or something typed", |env| {
+        typed().lines().count() > 1
+            || support::condition(&env.get("t1")["status"], "Paused")["status"] == "True"
+    });
+    let typed = typed();
+    assert_eq!(
+        typed.lines().count(),
+        1,
+        "only the brief was typed: {typed}"
+    );
 }
 
 /// An agent that exists for Fleet only as a harness profile in the user's

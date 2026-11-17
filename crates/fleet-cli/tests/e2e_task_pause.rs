@@ -104,7 +104,7 @@ fn pause(env: &Env, name: &str) {
 }
 
 #[test]
-fn an_idle_task_is_paused_and_an_entry_resumes_it_after_a_catch_up_note() {
+fn an_idle_task_is_paused_and_an_entry_resumes_it_with_no_note_of_fleets() {
     let env = setup("pause-resume", vec![task("t1")]);
     pause(&env, "t1");
 
@@ -137,16 +137,14 @@ fn an_idle_task_is_paused_and_an_entry_resumes_it_after_a_catch_up_note() {
     let st = env.status("t1");
     assert_condition(&st, "Paused", "False", "Resumed");
     let texts = sent(&env);
-    assert_eq!(texts.len(), 4, "{texts:#?}");
-    assert_eq!(texts[0], "Do the work for t1.");
-    assert!(texts[1].contains("paused"), "{}", texts[1]);
-    assert!(texts[1].contains("Do the work for t1."), "{}", texts[1]);
-    assert_eq!(texts[2], "next message");
-    assert_eq!(texts[3], "and another");
+    assert_eq!(
+        texts,
+        ["Do the work for t1.", "next message", "and another"],
+        "the entries, and nothing of Fleet's own"
+    );
 
-    // Nothing is sent twice.
     env.reconcile().ok();
-    assert_eq!(sent(&env).len(), 4);
+    assert_eq!(sent(&env).len(), 3, "nothing is sent twice");
     assert_eq!(env.calls("resume"), 1);
 }
 
@@ -217,9 +215,8 @@ fn a_concluded_task_is_paused_too() {
     env.reconcile().ok();
     assert_eq!(env.calls("resume"), 1);
     let texts = sent(&env);
-    assert_eq!(texts.len(), 3, "{texts:#?}");
-    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
-    assert_eq!(texts[2], "Review: rename the flag.");
+    assert_eq!(texts.len(), 2, "{texts:#?}");
+    assert_eq!(texts[1], "Review: rename the flag.");
 }
 
 #[test]
@@ -244,9 +241,7 @@ fn a_session_stopped_outside_fleet_resumes_on_the_next_entry() {
     env.reconcile().ok();
     assert_eq!(env.calls("resume"), 1);
     let texts = sent(&env);
-    assert_eq!(texts.len(), 3, "{texts:#?}");
-    assert!(texts[1].contains("Do the work for t1."), "{}", texts[1]);
-    assert_eq!(texts[2], "are you there?");
+    assert_eq!(texts, ["Do the work for t1.", "are you there?"]);
     assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
 }
 
@@ -301,8 +296,7 @@ fn a_resume_whose_answer_was_lost_is_read_back_and_never_repeated() {
     assert_eq!(env.calls("resume"), 1, "read back, never repeated");
     assert_condition(&env.status("t1"), "Paused", "False", "Resumed");
     let texts = sent(&env);
-    assert_eq!(texts.len(), 3, "{texts:#?}");
-    assert_eq!(texts[2], "next message");
+    assert_eq!(texts, ["Do the work for t1.", "next message"]);
 }
 
 #[test]
@@ -349,10 +343,10 @@ fn a_view_opened_on_a_paused_task_resumes_it_with_no_entry() {
         st["inbox"].as_array().is_none_or(Vec::is_empty),
         "a view queues nothing: {st:#}"
     );
-    env.reconcile().ok();
-    let texts = sent(&env);
-    assert_eq!(texts.len(), 2, "{texts:#?}");
-    assert!(texts[1].contains("paused"), "{}", texts[1]);
+    for _ in 0..3 {
+        env.reconcile().ok();
+    }
+    assert_eq!(sent(&env), ["Do the work for t1."], "a wake types nothing");
 }
 
 #[test]
@@ -404,7 +398,7 @@ fn a_view_on_a_paused_held_task_says_so_at_once() {
 }
 
 #[test]
-fn a_view_opened_on_a_paused_concluded_task_resumes_it() {
+fn a_view_opened_on_a_paused_concluded_task_resumes_it_and_types_nothing() {
     let env = setup("pause-view-concluded", vec![task("t1")]);
     env.reconcile().ok();
     env.fleet(&[
@@ -442,9 +436,7 @@ fn a_view_opened_on_a_paused_concluded_task_resumes_it() {
     for _ in 0..3 {
         env.reconcile().ok();
     }
-    let texts = sent(&env);
-    assert_eq!(texts.len(), 2, "the catch-up note is sent: {texts:#?}");
-    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
+    assert_eq!(sent(&env), ["Do the work for t1."], "a wake types nothing");
     assert!(env.get("t1")["status"]["catchUp"].is_null());
 }
 
