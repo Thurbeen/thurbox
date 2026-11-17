@@ -328,12 +328,12 @@ Each event has these values:
 | --- | --- |
 | `source` | `controller/task-controller` |
 | `subject` | The Task's name |
-| `key` | `task/<name>/<uid>/<series>/<n>`. See the table below. |
+| `key` | `task/<uid>/<series>/<n>`. See the table below. The key names the Task by its uid only, so that it stays within 256 characters for the longest name. |
 
 | Type | When | `data` | Key series and `n` |
 | --- | --- | --- | --- |
 | `fleet.task.phase` | The phase of the Task changes. | `from` and `to`, the phases before and after. `reason`, the reason of a condition that the same write changed: the condition of the new phase, else the first. A change with no changed condition has no `reason`. | `phase`, the number of the change in the Task's life, from 1 |
-| `fleet.task.declared` | The worker declared a fact with `fleet declare`, and TaskController saw it. | `index`, the place of the fact in `status.declared`, from 0. `declaration`, the fact. A fact larger than 4096 bytes as JSON has only its `kind`, and `truncated` is `true`. | `declared`, the `index` |
+| `fleet.task.declared` | The worker declared a fact with `fleet declare`, and TaskController saw it. | `index`, the place of the fact in `status.declared`, from 0. `declaration`, the fact. A fact larger than 4096 bytes as JSON has only its `kind`, cut to 256 characters, and `truncated` is `true`. | `declared`, the `index` |
 | `fleet.task.result` | The worker recorded a result with `fleet result`, and TaskController saw it. | `generation`, `outcome` and `summary`. A summary longer than 1024 characters is cut to 1024, and `summaryTruncated` is `true`. The outputs and the artifacts are not in the event. | `result`, the `generation` |
 
 TaskController does these steps:
@@ -373,9 +373,10 @@ These rules apply:
 - A result replaces the result of an older generation. When two results
   come between two passes, only the newer one gets an event.
 - A Task from before this release has no `status.fleetEvents`. Its past
-  declarations and its result get no event. TaskController writes
-  `status.fleetEvents` from what the status holds, and publishes only what
-  comes after.
+  declarations and its result get no event. On its first pass,
+  TaskController writes `status.fleetEvents` from what the status holds,
+  with `started` set, also when the Task has no declaration and no result.
+  Then it publishes only what comes after.
 
 ## Lifecycle
 

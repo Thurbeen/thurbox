@@ -3687,7 +3687,7 @@ fn only_task_controller_publishes_the_fleet_prefix_and_only_as_itself() {
         .create(board("fleet", json!({})), FieldManager::Apply)
         .unwrap();
     let lease = store.acquire_lease("m", 10_000).unwrap();
-    let mut phase = note(Some("task/a/ua/phase/1"));
+    let mut phase = note(Some("task/ua/phase/1"));
     phase.event_type = "fleet.task.phase".into();
     let as_task_controller =
         Source::Controller(ControllerSource::of(&FieldManager::TaskController));

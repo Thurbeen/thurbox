@@ -6,8 +6,10 @@
 //! changes the phase, so the intent lands with its cause. A declaration and
 //! a result are the worker's writes: an event is owed for each declaration
 //! past `declared`, and for a result whose generation is not `result`. Each
-//! event's key names the Task, its uid and the event's place in its series,
-//! so a publish that is tried again appends nothing new.
+//! event's key names the Task by its uid, and the event's place in its
+//! series, so a publish that is tried again appends nothing new. The key
+//! leaves the name out, which the `subject` carries: a name of up to 253
+//! characters would push the key past the Board's 256.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -27,10 +29,17 @@ pub const MAX_PENDING: usize = 64;
 pub const MAX_SUMMARY_CHARS: usize = 1024;
 /// The most bytes of a declaration, as JSON, an event carries whole.
 pub const MAX_DECLARATION_BYTES: usize = 4096;
+/// The most characters of a declaration's `kind` an event carries when the
+/// declaration is too large to carry whole.
+pub const MAX_KIND_CHARS: usize = 256;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FleetEvents {
+    /// The record follows the Task: set by its first phase change, or by
+    /// the first pass over a Task from before Board `fleet`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub started: bool,
     /// Phase events written with their phase change and not appended yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<Publish>,
@@ -56,9 +65,9 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// `task/<name>/<uid>/<series>/<n>`.
-pub fn key(task: &str, uid: &str, series: &str, n: u64) -> String {
-    format!("task/{task}/{uid}/{series}/{n}")
+/// `task/<uid>/<series>/<n>`.
+pub fn key(uid: &str, series: &str, n: u64) -> String {
+    format!("task/{uid}/{series}/{n}")
 }
 
 fn publish(event_type: &str, task: &str, key: String, data: Value) -> Publish {
@@ -85,17 +94,14 @@ impl FleetEvents {
         to: Phase,
         reason: Option<&str>,
     ) {
+        self.started = true;
         self.phases += 1;
         let mut data = json!({"from": from, "to": to});
         if let Some(reason) = reason {
             data["reason"] = json!(reason);
         }
-        self.pending.push(publish(
-            PHASE,
-            task,
-            key(task, uid, "phase", self.phases),
-            data,
-        ));
+        self.pending
+            .push(publish(PHASE, task, key(uid, "phase", self.phases), data));
         if self.pending.len() > MAX_PENDING {
             self.pending.remove(0);
         }
@@ -108,7 +114,8 @@ impl FleetEvents {
     /// An empty record is a Task from before Board `fleet`: a Task queues
     /// its first phase change before any brief, and a declaration or a
     /// result needs a brief. Its past is owed nothing, and the record
-    /// starts at what status holds.
+    /// starts, `started` set, at what status holds, even when that is no
+    /// declaration and no result.
     pub fn owed(
         &self,
         task: &str,
@@ -118,6 +125,7 @@ impl FleetEvents {
     ) -> (Vec<Publish>, FleetEvents) {
         if self.is_empty() {
             let baseline = FleetEvents {
+                started: true,
                 declared: declared.len() as u64,
                 result: result.map(|r| r.generation),
                 ..FleetEvents::default()
@@ -135,7 +143,7 @@ impl FleetEvents {
             events.push(publish(
                 DECLARED,
                 task,
-                key(task, uid, "declared", n),
+                key(uid, "declared", n),
                 declaration_data(n, item),
             ));
         }
@@ -144,7 +152,7 @@ impl FleetEvents {
             events.push(publish(
                 RESULT,
                 task,
-                key(task, uid, "result", r.generation),
+                key(uid, "result", r.generation),
                 result_data(r),
             ));
             next.result = Some(r.generation);
@@ -169,9 +177,16 @@ fn declaration_data(index: u64, item: &Value) -> Value {
     }
     json!({
         "index": index,
-        "declaration": {"kind": item.get("kind").cloned().unwrap_or(Value::Null)},
+        "declaration": {"kind": cut_kind(item.get("kind"))},
         "truncated": true,
     })
+}
+
+fn cut_kind(kind: Option<&Value>) -> Value {
+    match kind {
+        Some(Value::String(k)) => json!(k.chars().take(MAX_KIND_CHARS).collect::<String>()),
+        _ => Value::Null,
+    }
 }
 
 fn result_data(r: &TaskResult) -> Value {
@@ -207,7 +222,7 @@ mod tests {
         f.queue_phase("a", "u1", Phase::Pending, Phase::Spawning, Some("Starting"));
         f.queue_phase("a", "u1", Phase::Spawning, Phase::Spawned, None);
         let keys: Vec<_> = f.pending.iter().map(|p| p.key.clone().unwrap()).collect();
-        assert_eq!(keys, ["task/a/u1/phase/1", "task/a/u1/phase/2"]);
+        assert_eq!(keys, ["task/u1/phase/1", "task/u1/phase/2"]);
         assert_eq!(
             f.pending[0].data,
             json!({"from": "Pending", "to": "Spawning", "reason": "Starting"})
@@ -226,7 +241,7 @@ mod tests {
             f.queue_phase("a", "u", Phase::Briefed, Phase::Concluded, None);
         }
         assert_eq!(f.pending.len(), MAX_PENDING);
-        assert_eq!(f.pending[0].key.as_deref(), Some("task/a/u/phase/3"));
+        assert_eq!(f.pending[0].key.as_deref(), Some("task/u/phase/3"));
     }
 
     #[test]
@@ -239,10 +254,10 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "task/a/u/phase/1",
-                "task/a/u/declared/0",
-                "task/a/u/declared/1",
-                "task/a/u/result/2"
+                "task/u/phase/1",
+                "task/u/declared/0",
+                "task/u/declared/1",
+                "task/u/result/2"
             ]
         );
         assert_eq!(
@@ -262,9 +277,12 @@ mod tests {
         let (events, next) = FleetEvents::default().owed("a", "u", &declared, Some(&result(3, "")));
         assert!(events.is_empty(), "{events:?}");
         assert_eq!((next.declared, next.result, next.phases), (1, Some(3), 0));
-        let (none, same) = FleetEvents::default().owed("a", "u", &[], None);
+        assert!(next.started);
+        let (none, started) = FleetEvents::default().owed("a", "u", &[], None);
         assert!(none.is_empty());
-        assert!(same.is_empty());
+        assert!(started.started && !started.is_empty(), "{started:?}");
+        let (later, _) = started.owed("a", "u", &declared, None);
+        assert_eq!(later.len(), 1, "{later:?}");
     }
 
     #[test]
@@ -281,5 +299,12 @@ mod tests {
             declaration_data(3, &big),
             json!({"index": 3, "declaration": {"kind": "dump"}, "truncated": true})
         );
+        let huge = json!({"kind": "k".repeat(20_000)});
+        assert_eq!(
+            declaration_data(0, &huge)["declaration"]["kind"],
+            json!("k".repeat(MAX_KIND_CHARS))
+        );
+        let key = key(&"u".repeat(64), "declared", u64::MAX);
+        assert!(key.len() <= crate::event::MAX_FIELD_CHARS, "{key}");
     }
 }

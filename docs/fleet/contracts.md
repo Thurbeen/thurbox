@@ -1022,7 +1022,8 @@ refused.
   the real binary.
 - TaskController's own events go to Board `fleet` (`board::FLEET`) as
   `Source::Controller` `controller/task-controller`, with the Task's name as
-  `subject`, under `task/<name>/<uid>/<series>/<n>` (`task_event::key`).
+  `subject`, under `task/<uid>/<series>/<n>` (`task_event::key`): the name
+  is left out so that a 253-character name keeps the key within 256.
   `TaskController::reconcile` queues a `fleet.task.phase` event
   (`FleetEvents::queue_phase`) in `status.fleetEvents.pending` in the write
   that changes the phase, under the next `phases` number: the intent lands
@@ -1030,7 +1031,8 @@ refused.
   `fleet.task.declared` per item of `status.declared` past
   `fleetEvents.declared`, and one `fleet.task.result` when `status.result`'s
   generation is not `fleetEvents.result`, and gives the record that follows
-  them. An empty record owes nothing and starts at what status holds: a Task
+  them. An empty record owes nothing and starts, `started` set, at what
+  status holds, even with no declaration and no result: a Task
   queues its first phase change before any brief, and a declaration or a
   result needs a brief, so only a Task from before Board `fleet` has one
   with a declaration or a result. The manager's `publish_fleet_events` appends the owed events in one

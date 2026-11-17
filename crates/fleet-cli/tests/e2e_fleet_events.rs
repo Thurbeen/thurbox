@@ -113,7 +113,7 @@ fn each_phase_change_is_one_fleet_task_phase_event_from_the_controller() {
     }
     let keys: Vec<&str> = events.iter().map(|e| e["key"].as_str().unwrap()).collect();
     for (i, key) in keys.iter().enumerate() {
-        assert_eq!(*key, format!("task/a/{uid}/phase/{}", i + 1));
+        assert_eq!(*key, format!("task/{uid}/phase/{}", i + 1));
     }
 
     let again = env.reconcile().ok().json();
@@ -323,6 +323,74 @@ fn a_task_from_before_board_fleet_publishes_none_of_its_past() {
     let declared = of_type(&env, "fleet.task.declared");
     assert_eq!(declared.len(), 1, "{declared:#?}");
     assert_eq!(declared[0]["data"]["index"], 1);
+}
+
+#[test]
+fn an_upgraded_task_with_nothing_declared_publishes_its_first_new_declaration() {
+    let env = fleet_env("fleet-upgrade-empty");
+    briefed(&env, "a");
+    let path = env.object_path("Task", "a");
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    obj["status"].as_object_mut().unwrap().remove("fleetEvents");
+    std::fs::write(&path, obj.to_string()).unwrap();
+    env.reconcile().ok();
+
+    let note = json!({"kind": "note", "text": "after the upgrade"});
+    env.fleet(&["declare", "a", "--json", &note.to_string()])
+        .ok();
+    env.reconcile().ok();
+    let declared = of_type(&env, "fleet.task.declared");
+    assert_eq!(declared.len(), 1, "{declared:#?}");
+    assert_eq!(declared[0]["data"]["declaration"], note);
+}
+
+#[test]
+fn the_longest_task_name_keeps_its_events_within_the_key_limit() {
+    let env = fleet_env("fleet-long-name");
+    let name = "a".repeat(250);
+    env.apply(task(&name, true)).ok();
+    env.reconcile().ok();
+    let obj = env.get(&name);
+    let uid = obj["metadata"]["uid"].as_str().unwrap().to_string();
+    let events = of_type(&env, "fleet.task.phase");
+    assert_eq!(
+        events.last().map(|e| e["data"]["to"].clone()),
+        Some(obj["status"]["phase"].clone()),
+        "{:#}",
+        obj["status"]["fleetEvents"]
+    );
+    for e in &events {
+        assert_eq!(e["subject"], name.as_str());
+        let key = e["key"].as_str().unwrap();
+        assert!(key.len() <= 256, "{key}");
+        assert!(key.contains(&uid), "{key}");
+    }
+}
+
+#[test]
+fn a_declaration_with_a_huge_kind_is_still_published_cut_short() {
+    let env = fleet_env("fleet-huge-kind");
+    briefed(&env, "a");
+    let kind = "k".repeat(20_000);
+    let big = json!({"kind": kind});
+    env.fleet(&["declare", "a", "--json", &big.to_string()])
+        .ok();
+    env.reconcile().ok();
+    let declared = of_type(&env, "fleet.task.declared");
+    assert_eq!(
+        declared.len(),
+        1,
+        "{declared:#?} {:#}",
+        env.get("a")["status"]["fleetEvents"]
+    );
+    let data = &declared[0]["data"];
+    assert_eq!(data["truncated"], true, "{data:#}");
+    let cut = data["declaration"]["kind"].as_str().unwrap();
+    assert!(
+        cut.len() < kind.len() && kind.starts_with(cut),
+        "{}",
+        cut.len()
+    );
 }
 
 #[test]
