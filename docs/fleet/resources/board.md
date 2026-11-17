@@ -147,7 +147,7 @@ These rules apply:
 - TaskController skips a line that does not parse, or that the Board
   refuses, such as a Board that does not exist. It counts it in
   `status.outbox.skipped` and writes why in `status.outbox.lastSkipped`.
-  The next lines continue.
+  The next lines continue. An outbox made again clears `lastSkipped`.
 - When the session is `Gone`, TaskController reads its outbox until one
   read finds no whole line left. Then it sets `status.outbox.closed` and
   reads that outbox no more, unless the Task is being deleted. When the

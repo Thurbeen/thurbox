@@ -931,8 +931,9 @@ refused.
   read's batch), that line is appended again under a new `seq`. A line that
   does not parse, or that the store refuses (`Invalid`, `NotFound`,
   `Forbidden`), is skipped: `status.outbox.skipped` counts it and
-  `lastSkipped` says why. Any other store error stops the pass's ingest at
-  that line. An outbox that cannot be read is Unknown: the offset stays and
+  `lastSkipped` says why. A new generation clears `lastSkipped`, because
+  its offset names a line in a file that is gone. Any other store error
+  stops the pass's ingest at that line. An outbox that cannot be read is Unknown: the offset stays and
   nothing is concluded. The ingest also answers the `outbox_drained`
   observation: Known(true) when every whole line is in (or there is no
   outbox), Known(false) when the read hit its cap or the status write

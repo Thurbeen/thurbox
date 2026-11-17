@@ -362,7 +362,8 @@ pub struct OutboxCursor {
     /// Lines that did not parse or were refused, over the Task's life.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped: u64,
-    /// Why the last skipped line was skipped, and where it was.
+    /// Why the last skipped line was skipped, and where it was, in the
+    /// current generation: a file made again clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_skipped: Option<String>,
     /// The session is gone and a read since found every whole line in:
@@ -419,6 +420,7 @@ pub fn ingest(cursor: &OutboxCursor, read: &OutboxRead) -> (OutboxCursor, Vec<Ou
         from.generation += 1;
         from.offset = read.start;
         from.discarding = false;
+        from.last_skipped = None;
     }
     let base = from.offset;
     let mut entries = Vec::new();
@@ -659,6 +661,15 @@ mod tests {
             entries[0].line.as_ref().unwrap().1.key.as_deref(),
             Some("outbox-0-100")
         );
+    }
+
+    #[test]
+    fn a_file_made_again_forgets_the_last_skip_of_the_old_file() {
+        let mut cursor = OutboxCursor::default();
+        cursor.skip(0, 100, "Board/nowhere not found");
+        let (from, _) = ingest(&cursor, &read(0, &line("shared", "a", None)));
+        assert_eq!(from.skipped_at(0), None);
+        assert_eq!(from.skipped, 1);
     }
 
     #[test]

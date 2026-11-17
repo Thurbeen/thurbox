@@ -1695,6 +1695,39 @@ fn publish_wait_in_a_remade_outbox_prints_the_new_event_not_the_old_files() {
 }
 
 #[test]
+fn publish_wait_in_a_remade_outbox_is_not_failed_by_a_skip_in_the_old_file() {
+    let env = session_env("event-session-wait-remade-skip");
+    let vars = session_vars(&env);
+    let outbox = vars[1].1.clone();
+    let padding = "x".repeat(200);
+    append_raw(
+        &outbox,
+        &format!("{{\"board\":\"nowhere\",\"type\":\"old\",\"data\":\"{padding}\"}}\n"),
+    );
+    env.reconcile().ok();
+    let cursor = env.get("a")["status"]["outbox"].clone();
+    assert!(
+        cursor["lastSkipped"]
+            .as_str()
+            .is_some_and(|why| why.starts_with("offset 0:")),
+        "{cursor}"
+    );
+
+    std::fs::remove_file(&outbox).unwrap();
+    let child = publish_inside_spawned(
+        &env,
+        &borrowed(&vars),
+        &["--type", "new.a", "--data", "1", "--wait", "--json"],
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let run = reconcile_until_done(&env, child);
+    run.ok();
+    let event = run.json();
+    assert_eq!(event["type"], "new.a", "{event}");
+    assert_eq!(event["key"], "outbox-1-0", "{event}");
+}
+
+#[test]
 fn watch_on_a_cursor_that_expires_while_it_runs_names_where_it_had_got_to() {
     use std::io::BufRead;
     let env = board_env("board-watch-expires");
