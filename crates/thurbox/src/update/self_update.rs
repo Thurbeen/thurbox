@@ -684,12 +684,21 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
         return Ok(UpdateOutcome::SkippedDevBuild { current });
     }
 
-    let install_dir = std::env::current_exe()
+    perform_update_from(&ReleaseFeed::github(), &current, &install_dir()?, force)
+}
+
+/// The directory an update installs into: the running executable's.
+fn install_dir() -> Result<PathBuf, String> {
+    Ok(std::env::current_exe()
         .map_err(|e| format!("resolve current executable: {e}"))?
         .parent()
         .ok_or("running executable has no parent directory")?
-        .to_path_buf();
-    perform_update_from(&ReleaseFeed::github(), &current, &install_dir, force)
+        .to_path_buf())
+}
+
+/// The `fleet` an update installs, beside the running executable.
+pub fn installed_fleet() -> Result<PathBuf, String> {
+    Ok(install_dir()?.join(format!("fleet{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// Where releases are listed and downloaded from: GitHub in production, a
