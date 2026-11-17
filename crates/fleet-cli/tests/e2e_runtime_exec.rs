@@ -1948,11 +1948,12 @@ fn a_deleted_task_whose_agent_last_said_working_is_released_after_the_grace() {
 }
 
 /// A release whose `git worktree remove` stopped part way, as one does when
-/// a process still writes the build output, leaves the worktree's
-/// directory without its `.git`. The next attempt removes what is left and
-/// keeps the work the first attempt preserved.
-#[test]
-fn a_release_finishes_a_worktree_an_earlier_attempt_half_removed() {
+/// a process still writes the build output, leaves the worktree's directory
+/// with a `.git` that is gone, or one that names the git directory git
+/// removed anyway. Which one depends on the directory's order, so each test
+/// sets the one it covers. The next attempt removes what is left and keeps
+/// the work the first attempt preserved.
+fn a_release_finishes_a_half_removed_worktree(name: &str, git_file_spared: bool) {
     let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
         return;
     };
@@ -1960,9 +1961,9 @@ fn a_release_finishes_a_worktree_an_earlier_attempt_half_removed() {
         eprintln!("skipping: root removes a read-only directory's files");
         return;
     }
-    let sockets = Sockets::new("half-removed");
+    let sockets = Sockets::new(name);
     let (env, src) =
-        git_url_task_on_runtime_mux("runtime-mux-half-removed", &program, &sockets, CLAUDE);
+        git_url_task_on_runtime_mux(&format!("runtime-mux-{name}"), &program, &sockets, CLAUDE);
     reconcile_until(&env, "briefed in its worktree", |env| {
         env.get("t1")["status"]["phase"] == "Briefed"
     });
@@ -1972,6 +1973,9 @@ fn a_release_finishes_a_worktree_an_earlier_attempt_half_removed() {
             .expect("a workspace")
             .to_string(),
     );
+    let git_file = dir.join(".git");
+    let gitfile = fs::read_to_string(&git_file).expect("a linked worktree's gitfile");
+    let gitdir = PathBuf::from(gitfile.trim_end().strip_prefix("gitdir: ").expect("gitdir"));
     fs::write(dir.join("notes.txt"), "kept\n").expect("work");
     let build = dir.join("target").join("debug");
     fs::create_dir_all(&build).expect("build output");
@@ -1983,8 +1987,11 @@ fn a_release_finishes_a_worktree_an_earlier_attempt_half_removed() {
     reconcile_until(&env, "the first release fails part way", |env| {
         env.get("t1")["status"]["releaseAttempts"].as_u64() > Some(0)
     });
-    if dir.join(".git").exists() {
-        fs::remove_file(dir.join(".git")).expect("git removes in directory order");
+    assert!(!gitdir.exists(), "git removes the git directory anyway");
+    if git_file_spared {
+        fs::write(&git_file, &gitfile).expect("the gitfile the order spared");
+    } else if git_file.exists() {
+        fs::remove_file(&git_file).expect("the gitfile the order removed");
     }
     fs::set_permissions(&build, fs::Permissions::from_mode(0o755)).expect("chmod");
 
@@ -2001,6 +2008,16 @@ fn a_release_finishes_a_worktree_an_earlier_attempt_half_removed() {
         git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
         "kept\n"
     );
+}
+
+#[test]
+fn a_release_finishes_a_worktree_an_earlier_attempt_removed_the_gitfile_of() {
+    a_release_finishes_a_half_removed_worktree("half-removed", false);
+}
+
+#[test]
+fn a_release_finishes_a_worktree_an_earlier_attempt_left_a_dangling_gitfile_in() {
+    a_release_finishes_a_half_removed_worktree("dangling-gitfile", true);
 }
 
 fn uid() -> String {

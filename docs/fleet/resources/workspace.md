@@ -33,9 +33,10 @@ TaskController records it in `status.workspace`.
   in the worktree, untracked files included, to
   `refs/fleet/preserved/<key>/<name>` in the repository. Then it removes the
   worktree. The branch stays. A removal can stop part way, for example when
-  a process still writes build output, and leave the directory without its
-  `.git`. The next attempt then removes the rest of the directory. It runs
-  no git there, because the first attempt preserved the work already.
+  a process still writes build output. git then removes the worktree's git
+  directory anyway, so the `.git` that is left, if any, names nothing. The
+  next attempt removes the rest of the directory. It runs no git there,
+  because the first attempt preserved the work already.
   A later make prunes preserved refs older than
   `preserve.days` (30 by default), and the branches of a bare source that
   the remote already has. It never deletes a branch of your checkout.
