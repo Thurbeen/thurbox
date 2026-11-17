@@ -2020,6 +2020,60 @@ fn a_release_finishes_a_worktree_an_earlier_attempt_left_a_dangling_gitfile_in()
     a_release_finishes_a_half_removed_worktree("dangling-gitfile", true);
 }
 
+/// A gitfile release cannot read says nothing about whether the worktree is
+/// whole: release waits rather than remove work it could not preserve.
+#[test]
+fn a_release_keeps_a_worktree_whose_gitfile_it_cannot_read() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    if uid() == "0" {
+        eprintln!("skipping: root reads an unreadable file");
+        return;
+    }
+    let sockets = Sockets::new("unreadable-gitfile");
+    let (env, src) =
+        git_url_task_on_runtime_mux("runtime-mux-unreadable-gitfile", &program, &sockets, CLAUDE);
+    reconcile_until(&env, "briefed in its worktree", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let dir = PathBuf::from(
+        env.get("t1")["status"]["workspace"]["dirs"][0]
+            .as_str()
+            .expect("a workspace")
+            .to_string(),
+    );
+    fs::write(dir.join("notes.txt"), "kept\n").expect("work");
+    let git_file = dir.join(".git");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&git_file, fs::Permissions::from_mode(0o000)).expect("chmod");
+
+    env.fleet(&["delete", "task", "t1"]).ok();
+    reconcile_until(&env, "a release attempt answered", |env| {
+        env.fleet(&["get", "task", "t1"]).code != Some(0)
+            || env.get("t1")["status"]["releaseAttempts"].as_u64() > Some(0)
+    });
+    assert_eq!(
+        fs::read_to_string(dir.join("notes.txt")).ok().as_deref(),
+        Some("kept\n"),
+        "the work outlives a gitfile release could not read"
+    );
+    fs::set_permissions(&git_file, fs::Permissions::from_mode(0o644)).expect("chmod");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1")["status"]);
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    let refs = preserved_refs(&src);
+    assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
+    assert_eq!(
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
+        "kept\n"
+    );
+}
+
 fn uid() -> String {
     let out = Command::new("id").arg("-u").output().expect("id -u");
     String::from_utf8_lossy(&out.stdout).trim().to_string()

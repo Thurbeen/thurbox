@@ -243,7 +243,7 @@ pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
         let source = Path::new(&tree.source);
         let _lock = lock_repository(cfg, source)?;
         let path = Path::new(&tree.path);
-        if is_worktree(path) {
+        if is_worktree(path)? {
             preserve(path, key, &tree.name)?;
         }
         remove_worktree(source, path)?;
@@ -321,21 +321,30 @@ fn rollback(cfg: &Config, key: &str) -> Result<(), String> {
     remove_dir(&dir)
 }
 
-fn is_worktree(path: &Path) -> bool {
+fn is_worktree(path: &Path) -> Result<bool, String> {
     let dot_git = path.join(".git");
     if dot_git.is_dir() {
-        return true;
+        return Ok(true);
     }
-    fs::read_to_string(&dot_git).is_ok_and(|gitfile| {
-        gitfile
-            .trim_end()
-            .strip_prefix("gitdir: ")
-            .is_some_and(|gitdir| path.join(gitdir).is_dir())
-    })
+    let gitfile = match fs::read_to_string(&dot_git) {
+        Ok(gitfile) => gitfile,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("cannot read {}: {e}", dot_git.display())),
+    };
+    let gitdir = gitfile
+        .trim_end()
+        .strip_prefix("gitdir: ")
+        .map(|gitdir| path.join(gitdir))
+        .ok_or_else(|| format!("{} names no git directory", dot_git.display()))?;
+    match fs::metadata(&gitdir) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("cannot read {}: {e}", gitdir.display())),
+    }
 }
 
 fn remove_worktree(source: &Path, path: &Path) -> Result<(), String> {
-    if is_worktree(path) {
+    if is_worktree(path)? {
         let path = path.display().to_string();
         git(
             source,
