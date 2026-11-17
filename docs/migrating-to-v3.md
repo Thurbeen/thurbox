@@ -146,8 +146,8 @@ In thurbox, `Ctrl+N` writes the Task for you.
 
 ## 4. Run one manager per store
 
-`fleet up` holds the store's manager lease. A second `fleet up` on the same
-store exits with code 6 ([running `fleet up`](fleet/configuration.md#running-fleet-up)).
+`fleet up` holds the store's manager lock and lease. A second `fleet up` on
+the same store exits with code 6 ([running `fleet up`](fleet/configuration.md#running-fleet-up)).
 A service supervisor that restarts on failure then fails again and again.
 While no manager of yours runs, Tasks wait where they stopped, for example
 with `WorkspaceReady` Unknown and the reason `Materializing`.

@@ -42,8 +42,9 @@ fn boot_of(holder: &str) -> Option<&str> {
     named.then_some(boot)
 }
 
+/// This machine's current boot id; `None` where the platform gives none.
 #[cfg(target_os = "linux")]
-fn boot_id() -> Option<String> {
+pub fn boot_id() -> Option<String> {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .ok()
         .map(|id| id.trim().to_string())
@@ -51,7 +52,7 @@ fn boot_id() -> Option<String> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn boot_id() -> Option<String> {
+pub fn boot_id() -> Option<String> {
     None
 }
 
