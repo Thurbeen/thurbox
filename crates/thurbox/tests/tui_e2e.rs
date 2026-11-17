@@ -6948,9 +6948,6 @@ fn the_real_fleet_takes_the_argv_start_runs() {
     assert!(stderr.contains("ghost"), "{stderr}");
 }
 
-/// A fake Fleet whose `watch` lists `paused`, and once `woken` exists lists
-/// `resumed`. `attach --wake` waits `wake_secs` before it touches `woken`;
-/// a plain `attach` fails with `attach_error`.
 fn fleet_pausing_one_task(
     profile: &Profile,
     paused: &serde_json::Value,

@@ -41,8 +41,6 @@ pub enum Start {
     Failed(String),
 }
 
-/// How long a start may take before it reads as failed: past the 60 s
-/// `fleet attach` waits for a lost session's revive.
 pub(super) const START_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 
 impl Attach {
@@ -446,9 +444,6 @@ impl Terminals {
             .collect()
     }
 
-    /// End each pending start its session settled: a live pane, an attach
-    /// that failed after the start, the row gone, or no pane after
-    /// [`START_WAIT`]. A failed start stays until its row is live or gone.
     pub(super) fn settle_starts(&mut self, snapshot: &Snapshot) {
         let live = &self.live;
         let failed = &self.attach.failed;
