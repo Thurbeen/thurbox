@@ -6250,7 +6250,7 @@ fn a_held_failure_counts_no_failures_and_the_pane_comes_back_by_itself() {
          if ctx.elapsed - state.first < 1 then error('flaky failure') end",
     );
 
-    let mut tui = Tui::spawn(&profile, 40, 140);
+    let mut tui = Tui::spawn(&profile, 40, 200);
     tui.wait_for("flaky failure");
     let failed_at = Instant::now();
     tui.send(F12);
@@ -6262,10 +6262,22 @@ fn a_held_failure_counts_no_failures_and_the_pane_comes_back_by_itself() {
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("no failures counter in the HUD:\n{frame}"))
     };
+    let held_until = |until: Duration| {
+        while failed_at.elapsed() < until {
+            let frame = tui.frame();
+            assert!(
+                frame.contains("runtime error") && !frame.contains("flaky pane ok"),
+                "a recovered pane must stay held, not come back on its first clean render \
+                 ({:?} after the failure was seen):\n{frame}",
+                failed_at.elapsed()
+            );
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    };
     tui.wait_for("failures");
-    std::thread::sleep(Duration::from_millis(2500).saturating_sub(failed_at.elapsed()));
+    held_until(Duration::from_millis(2500));
     let before = failures(&tui.frame());
-    std::thread::sleep(Duration::from_millis(1500));
+    held_until(Duration::from_millis(4000));
     let after = failures(&tui.frame());
     assert!(
         failed_at.elapsed() < Duration::from_secs(5),
@@ -6279,12 +6291,6 @@ fn a_held_failure_counts_no_failures_and_the_pane_comes_back_by_itself() {
     tui.wait_gone("failures");
 
     tui.wait_for("flaky pane ok");
-    let held = failed_at.elapsed();
-    assert!(
-        held >= Duration::from_secs(3),
-        "a recovered pane must be held, not shown on its first clean render \
-         ({held:?} after the failure was seen)"
-    );
     assert!(!tui.frame().contains("flaky failure"));
     assert!(tui.quit().success());
 }
