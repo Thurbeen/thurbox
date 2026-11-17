@@ -88,6 +88,14 @@ impl FleetLink {
         &self.program
     }
 
+    /// The same Fleet, run through `program`.
+    pub fn with_program(&self, program: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+            ..self.clone()
+        }
+    }
+
     /// The config file Fleet is given with `--config`, if any.
     pub fn config(&self) -> Option<&str> {
         self.config.as_deref()

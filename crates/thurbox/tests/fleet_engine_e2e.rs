@@ -2644,4 +2644,43 @@ mod an_update {
         assert!(stdout.contains("did not replace"), "{stdout}");
         assert!(!stdout.contains("restarted on the new release"), "{stdout}");
     }
+
+    /// A relative `PATH` entry ahead of the install directory names another
+    /// `fleet`, which `fleet up` started by name would run. The restart
+    /// starts the `fleet` it checked, never another copy `PATH` finds first.
+    #[test]
+    fn restarts_on_the_installed_fleet_whatever_path_lists_first() {
+        let Some(bin) = fleet_bin() else { return };
+        let mut install = Install::new(&bin);
+        std::fs::create_dir_all(install.path("elsewhere")).expect("elsewhere");
+        std::fs::copy(&bin, install.path("elsewhere/fleet")).expect("another fleet");
+        let old = install.start_manager();
+
+        let mut command = Process::new(install.path("install/thurbox-cli"));
+        install.env(&mut command);
+        let updated = command
+            .args(["update", "--force"])
+            .env(
+                "PATH",
+                format!(
+                    "{}:elsewhere:{}:/usr/bin:/bin",
+                    install.path("fakebin").display(),
+                    install.path("install").display()
+                ),
+            )
+            .current_dir(install.root.path())
+            .stdin(Stdio::null())
+            .output()
+            .expect("thurbox-cli update");
+        let stdout = String::from_utf8_lossy(&updated.stdout);
+        assert!(updated.status.success(), "update: {stdout}");
+
+        let new = install.holder().expect("a manager holds the lease");
+        assert_ne!(new, old, "{stdout}");
+        assert_eq!(
+            exe_of(new),
+            install.fleet().display().to_string(),
+            "the restart ran another fleet: {stdout}"
+        );
+    }
 }

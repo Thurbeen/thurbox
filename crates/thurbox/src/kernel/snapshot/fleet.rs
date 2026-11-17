@@ -1039,7 +1039,8 @@ pub enum Restart {
 /// bounded by Fleet's own call timeouts, which run to minutes, so the wait
 /// follows the lease rather than a clock of thurbox's. The new one starts as
 /// the interface starts one, with the same `fleet` command line and
-/// environment, unless another starter takes the lease first. A Fleet with
+/// environment, but naming `installed` itself rather than the name `PATH`
+/// would resolve again, unless another starter takes the lease first. A Fleet with
 /// no manager running is left without one.
 pub fn restart_manager(link: &FleetLink, installed: &Path) -> Result<Restart, String> {
     let Some(stopped) = lease_holder(link)? else {
@@ -1050,6 +1051,7 @@ pub fn restart_manager(link: &FleetLink, installed: &Path) -> Result<Restart, St
             program: link.program().to_string(),
         });
     }
+    let link = &link.with_program(installed.to_string_lossy());
     terminate(stopped)?;
     let holder = loop {
         let holder = lease_holder(link)?;

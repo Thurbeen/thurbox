@@ -532,7 +532,9 @@ Fleet on this machine (`restart_manager` in `src/kernel/snapshot/fleet.rs`):
    supervisor or another interface that starts `fleet up` in that time keeps
    the lease.
 5. Otherwise thurbox starts `fleet up` with the same command line and
-   environment it starts one with at launch. The lease admits one manager, so
+   environment it starts one with at launch, naming the installed `fleet` by
+   its path, so a `PATH` entry ahead of the install directory cannot pick
+   another copy. The lease admits one manager, so
    two engines never run.
 
 The status line names each Fleet whose manager restarted, or says why to
