@@ -1119,11 +1119,13 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
         })
         .filter(|dirs: &Vec<PathBuf>| !dirs.is_empty())
         .unwrap_or_else(|| cwd.iter().cloned().collect());
-    let session_state = status["sessionState"].as_str();
+    let session_state = match status["sessionState"].as_str() {
+        Some(state @ ("Lost" | "Gone")) => Some(state),
+        _ if true_condition(status, "Paused").is_some() => Some("Paused"),
+        state => state,
+    };
     let agent_state = status["agentState"].as_str();
     let repo = repo_name(&cwd, None);
-    // The source of a status the agent state decided: not of a stopped,
-    // lost or gone session's.
     let status_source = match (session_state, &status["activity"]["source"]) {
         (Some("Paused" | "Lost" | "Gone"), _) | (_, Value::Null) => None,
         (_, source) => Some(StatusSource {
@@ -1136,9 +1138,6 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
         id,
         name,
         agent: text(&spec["harness"]).unwrap_or_default(),
-        // A stopped, lost or gone session is that, whatever its agent last
-        // said; otherwise the agent's own report, as v2 showed it, and only
-        // with no report what the runtime proved.
         status: match (session_state, agent_state) {
             (Some("Paused"), _) => SessionState::Stopped,
             (Some("Lost" | "Gone"), _) => SessionState::Failed,
@@ -1194,15 +1193,16 @@ pub fn row_of(link: &FleetLink, task: &Value) -> SessionRow {
     }
 }
 
+fn true_condition<'a>(status: &'a Value, kind: &str) -> Option<&'a Value> {
+    status["conditions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["type"] == kind && c["status"] == "True")
+}
+
 fn state_why(session_state: Option<&str>, status: &Value) -> Option<String> {
-    let condition = |kind: &str| {
-        status["conditions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|c| c["type"] == kind && c["status"] == "True")
-    };
-    let reason = |kind: &str| condition(kind).and_then(|c| c["reason"].as_str());
+    let reason = |kind: &str| true_condition(status, kind).and_then(|c| c["reason"].as_str());
     if let Some(stalled) = reason("Stalled") {
         return Some(format!("stalled · {stalled}"));
     }
@@ -1715,6 +1715,43 @@ mod tests {
         assert_eq!(
             row.member_dirs,
             vec![PathBuf::from("/w/k/a"), PathBuf::from("/w/k/b")]
+        );
+    }
+
+    #[test]
+    fn the_paused_condition_stops_a_row_whose_session_is_not_lost_or_gone() {
+        let task = |session_state: &str| {
+            serde_json::json!({
+                "metadata": {"name": "t"},
+                "spec": {"harness": "codex", "host": "local", "workspace": []},
+                "status": {"phase": "Concluded", "sessionState": session_state,
+                           "agentState": "idle",
+                           "conditions": [{"type": "Paused", "status": "True", "reason": "Idle"}]},
+            })
+        };
+        let row = |state: &str| {
+            let row = row_of(&FleetLink::local("fleet"), &task(state));
+            (row.status, row.stopped, row.state_why)
+        };
+        assert_eq!(
+            row("Idle"),
+            (SessionState::Stopped, true, Some("paused · idle".into()))
+        );
+        assert_eq!(
+            row("Lost"),
+            (
+                SessionState::Failed,
+                false,
+                Some("lost · window gone".into())
+            )
+        );
+        assert_eq!(
+            row("Gone"),
+            (
+                SessionState::Failed,
+                false,
+                Some("gone · session ended".into())
+            )
         );
     }
 

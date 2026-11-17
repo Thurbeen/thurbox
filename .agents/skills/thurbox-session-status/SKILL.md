@@ -16,8 +16,8 @@ snapshot maps the Task's `status.agentState` and `status.sessionState` onto
 
 | Task status | `SessionState` |
 |---|---|
-| `sessionState: Paused` | `stopped` (the row's `stopped` is set too) |
 | `sessionState: Lost` or `Gone` | `failed` |
+| `sessionState: Paused`, or the `Paused` condition `True` | `stopped` (the row's `stopped` is set too) |
 | `agentState: working` | `working` |
 | `agentState: attention` | `blocked` |
 | `agentState: idle` | `idle` |

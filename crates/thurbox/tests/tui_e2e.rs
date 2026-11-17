@@ -6864,6 +6864,15 @@ fn a_stopped_lost_or_gone_session_says_so_and_why() {
 
 #[test]
 fn starting_a_stopped_session_asks_fleet_to_wake_it() {
+    start_wakes_a_paused_task("Briefed", "Paused");
+}
+
+#[test]
+fn starting_a_concluded_task_fleet_paused_wakes_it_though_its_session_state_says_idle() {
+    start_wakes_a_paused_task("Concluded", "Idle");
+}
+
+fn start_wakes_a_paused_task(phase: &str, paused_session_state: &str) {
     let profile = Profile::new();
     let calls = profile.root.path().join("fleet-calls");
     let woken = profile.root.path().join("woken");
@@ -6871,13 +6880,14 @@ fn starting_a_stopped_session_asks_fleet_to_wake_it() {
         serde_json::json!({"type": "changed", "revision": 1, "object": {
             "metadata": {"name": "napping", "uid": "u-napping"},
             "spec": {"harness": "claude-code", "host": "local", "workspace": [], "dispatch": true},
-            "status": {"phase": "Briefed", "sessionState": state, "agentState": "idle",
+            "status": {"phase": phase, "sessionState": state, "agentState": "idle",
                 "conditions": conditions},
         }})
     };
     let paused = task(
-        "Paused",
-        serde_json::json!([{"type": "Paused", "status": "True", "reason": "Idle"}]),
+        paused_session_state,
+        serde_json::json!([{"type": "Paused", "status": "True", "reason": "Idle",
+            "message": "Fleet paused the session while its agent was idle"}]),
     );
     let resumed = task(
         "Running",
@@ -6887,24 +6897,28 @@ fn starting_a_stopped_session_asks_fleet_to_wake_it() {
     write_script(
         &profile.bin.join("fleet"),
         &format!(
-            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{resumed}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ touch '{woken}'; exit 0; }}; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\ncase \"$1\" in\n  watch) echo '{paused}'; echo '{synced}'; until [ -e '{woken}' ]; do kill -0 $PPID 2>/dev/null || exit 0; sleep 0.2; done; echo '{resumed}'; while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  attach) [ \"$2\" = --wake ] && {{ touch '{woken}'; exit 0; }}; echo \"error: Task/napping is paused: its agent is stopped\" >&2; exit 3 ;;\n  up) exit 6 ;;\n  version) echo '{{\"apiVersions\":[\"fleet/v1alpha1\"]}}' ;;\n  *) exit 1 ;;\nesac\n",
             calls = calls.display(),
             woken = woken.display(),
         ),
     );
     let mut tui = Tui::spawn(&profile, 40, 160);
-    tui.wait_until("the paused row", |frame| {
-        frame
-            .lines()
-            .any(|line| line.contains("napping") && line.contains("paused · idle"))
-    });
+    tui.wait_until("the napping row", |frame| frame.contains("napping"));
     focus_the_list(&mut tui);
     tui.send(b"G");
     tui.wait_until_quiet();
+    let before_start = tui.frame();
     tui.send(b"s");
     tui.wait_until("the row to run again", |frame| {
-        frame.contains("napping") && !frame.contains("paused · idle")
+        assert!(!frame.contains("is not stopped"), "start refused:\n{frame}");
+        woken.exists() && !frame.contains("paused · idle")
     });
+    assert!(
+        before_start
+            .lines()
+            .any(|line| line.contains("napping") && line.contains("paused · idle")),
+        "the paused row does not say why:\n{before_start}"
+    );
     tui.wait_for("started napping");
     tui.send(b"s");
     tui.wait_until_quiet();
