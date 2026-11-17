@@ -262,3 +262,19 @@ fn a_signals_own_endpoint_variable_wins_over_the_files_endpoint_for_that_signal(
         file_collector.paths()
     );
 }
+
+#[test]
+fn an_invalid_table_turns_all_export_off_even_where_the_config_is_not_loaded() {
+    let collector = Collector::start();
+    let mut env = Env::new("otel-file-invalid-off");
+    with_telemetry(&env, "traces = false\nendpont = \"http://127.0.0.1:9\"\n");
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+
+    env.fleet(&["version"])
+        .ok()
+        .stderr_has("warning: telemetry is off:")
+        .stderr_has("endpont");
+
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(collector.paths().is_empty(), "{:?}", collector.paths());
+}

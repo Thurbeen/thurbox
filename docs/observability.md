@@ -100,7 +100,10 @@ Rules:
 - A key or value in `resource` holds no `,`. A key holds no `=` and has
   no space at its start or end.
 - Fleet refuses a config whose table breaks a rule or has an unknown key.
-  The command fails and names the key.
+  The command fails and names the key. A command that does not read the
+  whole config, such as `fleet version`, runs, exports nothing, and writes
+  one `warning: telemetry is off:` line that names the key. The
+  `OTEL_*` variables do not turn export on in that case.
 - thurbox reports an unknown key at startup, and
   `thurbox-cli config validate` fails on it. A table that breaks a rule
   turns the interface's export off, and the interface writes the reason to

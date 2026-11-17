@@ -74,6 +74,13 @@ pub fn adopt(config: &TelemetryConfig) -> Result<(), String> {
     }
 }
 
+/// Export nothing for the rest of the process, nor from the programs it
+/// starts, whatever the environment says: for a program whose `[telemetry]`
+/// table cannot be read, so a setting it turns off never comes back.
+pub fn disable() {
+    let _ = FILE.set(FileVars::disabled());
+}
+
 fn merged() -> Merged<'static, impl Fn(&str) -> Option<String>> {
     static NONE: OnceLock<FileVars> = OnceLock::new();
     Merged {

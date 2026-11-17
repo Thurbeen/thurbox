@@ -58,17 +58,28 @@ pub struct Config {
 }
 
 /// The `[telemetry]` table of the config file at `path`, for the export a
-/// command starts before it loads the whole config. `None` when the file or
-/// the table is absent, or when the table breaks a rule, which the load
-/// then reports.
-pub fn telemetry(path: &Path) -> Option<otel_env::TelemetryConfig> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let table: toml::Table = toml::from_str(&text).ok()?;
-    let telemetry = table.get("telemetry")?.clone();
-    check_telemetry_keys(&telemetry).ok()?;
-    let config: otel_env::TelemetryConfig = telemetry.try_into().ok()?;
-    config.validate().ok()?;
-    Some(config)
+/// command starts before it loads the whole config. `None` when there is no
+/// file or no table. An error when the file cannot be read as TOML or the
+/// table breaks a rule: the caller exports nothing, since what the table
+/// turns off is unknown.
+pub fn telemetry(path: &Path) -> Result<Option<otel_env::TelemetryConfig>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read config {}: {e}", path.display())),
+    };
+    let fail = |e: String| format!("config {}: {e}", path.display());
+    let table: toml::Table = toml::from_str(&text).map_err(|e| fail(e.to_string()))?;
+    let Some(telemetry) = table.get("telemetry") else {
+        return Ok(None);
+    };
+    check_telemetry_keys(telemetry).map_err(fail)?;
+    let config: otel_env::TelemetryConfig = telemetry
+        .clone()
+        .try_into()
+        .map_err(|e: toml::de::Error| fail(format!("telemetry: {e}")))?;
+    config.validate().map_err(fail)?;
+    Ok(Some(config))
 }
 
 fn check_telemetry_keys(table: &toml::Value) -> Result<(), String> {
