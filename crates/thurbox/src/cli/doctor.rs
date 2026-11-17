@@ -654,12 +654,13 @@ impl FleetFacts {
                 format!("{} ({from}) does not exist", path.display()),
             )
             .fix(match *from {
-                "settings.toml" => format!(
-                    "{} --config {} init",
-                    self.program,
-                    crate::fleet_link::shell_word(&path.to_string_lossy())
-                ),
-                _ => format!("{} init", self.program),
+                "settings.toml" => crate::fleet_link::command_line(&[
+                    &self.program,
+                    "--config",
+                    &path.to_string_lossy(),
+                    "init",
+                ]),
+                _ => crate::fleet_link::command_line(&[&self.program, "init"]),
             }),
             None => Finding::new("fleet-config", Level::Warn, "no Fleet config path".into())
                 .fix("set FLEET_CONFIG to the config file, then `fleet init`"),

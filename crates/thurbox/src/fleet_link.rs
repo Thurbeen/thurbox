@@ -169,11 +169,12 @@ impl FleetLink {
         if unit_installed {
             return "systemctl --user start fleet.service".to_string();
         }
-        let config = self
-            .config()
-            .map(|config| format!(" --config {}", shell_word(config)))
-            .unwrap_or_default();
-        format!("{}{config} up", shell_word(self.program()))
+        let mut words = vec![self.program()];
+        if let Some(config) = self.config() {
+            words.extend(["--config", config]);
+        }
+        words.push("up");
+        command_line(&words)
     }
 
     /// [`NO_CONFIG`] for a Fleet on this machine whose config file does not
@@ -188,8 +189,8 @@ impl FleetLink {
         }
         Some(match self.config() {
             Some(named) => format!(
-                "no Fleet config · fleet --config {} init",
-                shell_word(named)
+                "no Fleet config · {}",
+                command_line(&["fleet", "--config", named, "init"])
             ),
             None => NO_CONFIG.to_string(),
         })
@@ -538,17 +539,38 @@ pub fn manager_unit_installed() -> bool {
             .is_some_and(|config| config.join("systemd/user").join(MANAGER_UNIT).is_file())
 }
 
-/// `word` as one POSIX shell word: as it is when it needs no quoting.
-pub fn shell_word(word: &str) -> String {
-    let plain = !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c));
-    if plain {
-        word.to_string()
+/// `words` as a command the user's shell runs as typed: PowerShell on
+/// Windows, a POSIX shell elsewhere.
+pub fn command_line(words: &[&str]) -> String {
+    command_line_for(cfg!(windows), words)
+}
+
+fn command_line_for(powershell: bool, words: &[&str]) -> String {
+    let quoted: Vec<String> = words
+        .iter()
+        .map(|word| match (needs_quotes(word), powershell) {
+            (false, _) => word.to_string(),
+            (true, true) => format!("'{}'", word.replace('\'', "''")),
+            (true, false) => format!("'{}'", word.replace('\'', "'\\''")),
+        })
+        .collect();
+    let line = quoted.join(" ");
+    if powershell
+        && quoted
+            .first()
+            .is_some_and(|program| program.starts_with('\''))
+    {
+        format!("& {line}")
     } else {
-        format!("'{}'", word.replace('\'', "'\\''"))
+        line
     }
+}
+
+fn needs_quotes(word: &str) -> bool {
+    word.is_empty()
+        || !word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c))
 }
 
 /// What thurbox says of a Fleet on this machine with no config yet.
@@ -827,6 +849,20 @@ mod tests {
                 config.display()
             ))
         );
+    }
+
+    #[test]
+    fn a_command_line_is_quoted_for_the_shell_that_runs_it() {
+        let words = ["C:\\My Tools\\fleet.exe", "--config", "it's.toml", "up"];
+        assert_eq!(
+            command_line_for(false, &words),
+            "'C:\\My Tools\\fleet.exe' --config 'it'\\''s.toml' up"
+        );
+        assert_eq!(
+            command_line_for(true, &words),
+            "& 'C:\\My Tools\\fleet.exe' --config 'it''s.toml' up"
+        );
+        assert_eq!(command_line_for(true, &["fleet", "up"]), "fleet up");
     }
 
     #[test]
