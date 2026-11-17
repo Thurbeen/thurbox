@@ -105,8 +105,6 @@ impl TelemetryConfig {
         Ok(())
     }
 
-    /// The table as the `OTEL_*` variables it stands for, its headers read
-    /// from their file.
     pub(crate) fn vars(&self) -> Result<FileVars, String> {
         self.validate()?;
         let mut vars = BTreeMap::new();
@@ -162,7 +160,6 @@ impl TelemetryConfig {
     }
 }
 
-/// A config file's `[telemetry]` table as `OTEL_*` variables.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FileVars {
     vars: BTreeMap<String, String>,
@@ -187,7 +184,6 @@ impl fmt::Display for Source {
     }
 }
 
-/// The environment `env` answers over the file's variables.
 pub(crate) struct Merged<'a, E: Fn(&str) -> Option<String>> {
     pub env: E,
     pub file: &'a FileVars,
@@ -198,7 +194,6 @@ impl<E: Fn(&str) -> Option<String>> Merged<'_, E> {
         (self.env)(name).filter(|v| !v.trim().is_empty())
     }
 
-    /// The value in force for `name`, and where it comes from.
     pub fn lookup(&self, name: &str) -> Option<(String, Source)> {
         if let Some(v) = self.env_set(name) {
             return Some((v, Source::Env(name.to_string())));
@@ -213,33 +208,28 @@ impl<E: Fn(&str) -> Option<String>> Merged<'_, E> {
         self.lookup(name).map(|(v, _)| v)
     }
 
-    /// Whether the value in force for `name` is the file's.
-    pub fn from_file(&self, name: &str) -> bool {
+    pub fn file_wins(&self, name: &str) -> bool {
         matches!(self.lookup(name), Some((_, Source::File)))
     }
 
-    /// The file's resource attributes, unless the environment sets its own.
     pub fn file_resource(&self) -> Vec<(String, String)> {
-        if self.from_file(RESOURCE) {
+        if self.file_wins(RESOURCE) {
             self.file.resource.clone().into_iter().collect()
         } else {
             Vec::new()
         }
     }
 
-    /// The file's variables a child process must be given: each one in
-    /// force that its environment, which the child inherits, lacks.
     pub fn child_env(&self) -> Vec<(String, String)> {
         self.file
             .vars
             .keys()
-            .filter(|name| self.from_file(name))
+            .filter(|name| self.file_wins(name))
             .filter_map(|name| self.var(name).map(|v| (name.clone(), v)))
             .collect()
     }
 }
 
-/// `OTEL_EXPORTER_OTLP_HEADERS` as pairs; the exporter decodes each value.
 pub(crate) fn header_pairs(value: &str) -> std::collections::HashMap<String, String> {
     value
         .split(',')

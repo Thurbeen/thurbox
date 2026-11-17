@@ -305,8 +305,6 @@ pub fn init(
     Ok(telemetry)
 }
 
-/// The exporter of `signal` with the adopted table's endpoint and headers,
-/// where they are in force; the exporter reads the variables itself.
 fn configured<B: WithExportConfig + WithHttpConfig>(
     builder: B,
     merged: &Merged<'_, impl Fn(&str) -> Option<String>>,
@@ -317,12 +315,12 @@ fn configured<B: WithExportConfig + WithHttpConfig>(
         "OTEL_EXPORTER_OTLP_{}_ENDPOINT",
         signal.to_ascii_uppercase()
     );
-    if merged.var(&own).is_none() && merged.from_file("OTEL_EXPORTER_OTLP_ENDPOINT") {
+    if merged.var(&own).is_none() && merged.file_wins("OTEL_EXPORTER_OTLP_ENDPOINT") {
         if let Some(base) = merged.var("OTEL_EXPORTER_OTLP_ENDPOINT") {
             builder = builder.with_endpoint(format!("{base}/v1/{signal}"));
         }
     }
-    if merged.from_file("OTEL_EXPORTER_OTLP_HEADERS") {
+    if merged.file_wins("OTEL_EXPORTER_OTLP_HEADERS") {
         if let Some(headers) = merged.var("OTEL_EXPORTER_OTLP_HEADERS") {
             builder = builder.with_headers(file::header_pairs(&headers));
         }

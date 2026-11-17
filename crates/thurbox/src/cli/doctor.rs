@@ -305,8 +305,6 @@ fn automation_timer_finding(state: Option<&str>) -> Option<Finding> {
     })
 }
 
-/// The interface's own export, as `settings.toml`'s `[telemetry]` table and
-/// the OTEL_* variables here give it. Fleet's is `fleet doctor`'s.
 fn telemetry_finding(described: Result<String, String>) -> Finding {
     match described {
         Ok(detail) => Finding::new(

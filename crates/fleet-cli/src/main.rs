@@ -658,10 +658,10 @@ fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let name = matches.subcommand_name().unwrap_or_default().to_string();
-    if let Some(table) = config::discover(cli.config.clone()).and_then(|p| config::telemetry(&p)) {
-        if let Err(why) = otel_env::adopt(&table) {
-            eprintln!("warning: telemetry is off: {why}");
-        }
+    if let Some(table) = config::discover(cli.config.clone()).and_then(|p| config::telemetry(&p))
+        && let Err(why) = otel_env::adopt(&table)
+    {
+        eprintln!("warning: telemetry is off: {why}");
     }
     let telemetry = otel_env::init("fleet", VERSION, &[], false).unwrap_or_else(|why| {
         eprintln!("warning: telemetry is off: {why}");

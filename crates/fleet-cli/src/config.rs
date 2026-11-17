@@ -71,8 +71,6 @@ pub fn telemetry(path: &Path) -> Option<otel_env::TelemetryConfig> {
     Some(config)
 }
 
-/// The `[telemetry]` table holds only the keys Fleet reads: the shared
-/// type leaves unknown keys to each file's loader.
 fn check_telemetry_keys(table: &toml::Value) -> Result<(), String> {
     let Some(table) = table.as_table() else {
         return Ok(());
@@ -85,10 +83,10 @@ fn check_telemetry_keys(table: &toml::Value) -> Result<(), String> {
             ));
         }
     }
-    if let Some(headers) = table.get("headers").and_then(toml::Value::as_table) {
-        for key in headers.keys().filter(|k| k.as_str() != "file") {
-            return Err(format!("telemetry.headers.{key} is not a key; use file"));
-        }
+    if let Some(headers) = table.get("headers").and_then(toml::Value::as_table)
+        && let Some(key) = headers.keys().find(|k| k.as_str() != "file")
+    {
+        return Err(format!("telemetry.headers.{key} is not a key; use file"));
     }
     Ok(())
 }
