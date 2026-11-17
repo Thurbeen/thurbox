@@ -1070,7 +1070,8 @@ network — see *Feature Flags*) cover staying current:
   back every program already swapped if one fails — see `[features]` in
   `docs/thurbox/config.md`. Neither restarts a running `fleet up`: after an
   install, each names the command that restarts it on the new `fleet`
-  (`systemctl --user restart fleet.service` where that unit is installed).
+  (`systemctl --user restart <unit>` for the unit that `fleet version --json`
+  names in `manager.supervisor`).
 
 Both are on by default for 1.0 so a fresh install stays current on its
 own; set them to `false` if you'd rather make no network calls or have

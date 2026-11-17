@@ -179,9 +179,14 @@ which command starts one.
 
 ### The service unit
 
-[Where sessions run](where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)
-shows a systemd user unit for `fleet up`. If a unit ran Fleet 2, update it
-and each of its drop-ins. `systemctl --user cat UNIT` shows them all.
+On Linux, `fleet service install --name UNIT --now` writes the Fleet 3 unit
+over a unit that ran Fleet 2, and keeps its drop-ins
+([the service unit](fleet/configuration.md#the-service-unit-fleet-service)).
+Without `--name`, the unit is `fleet.service`. Then check each drop-in
+against the list below. `systemctl --user cat UNIT` shows them all.
+
+If you keep a unit that you wrote yourself, update it and each of its
+drop-ins:
 
 - `ExecStart`: the Fleet 3 `fleet`, with `up`. `fleet up --help` lists the
   flags it takes.

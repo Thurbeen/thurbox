@@ -15,7 +15,7 @@ can run a session on yet another machine.
   └──────┬──────────────────────┬──────────┘
          │ runs fleet           │ runs fleet over ssh or wsl.exe
          ▼                      ▼
-  Fleet "laptop"          Fleet "box"  (on box; a user systemd unit runs fleet up)
+  Fleet "laptop"          Fleet "box"  (on box; fleet service's user unit runs fleet up)
          │                      │
          ▼                      ├──────────────────┐
   runtime mux             runtime mux          runtime vm
@@ -89,13 +89,16 @@ Status: implemented.
    multiplexer and a coding agent.
 2. Run `fleet init`. It writes the multiplexer runtime and its `local`
    place.
-3. Install the user systemd unit that runs `fleet up`
-   ([setup 2](#2-laptop-thurbox-fleet-on-a-remote-box) shows it), and start
-   it: `systemctl --user start fleet.service`.
+3. Run `fleet service install --now`. It writes the user systemd unit that
+   runs `fleet up`, and starts it
+   ([the service unit](fleet/configuration.md#the-service-unit-fleet-service)).
+   On Linux, the installer does steps 2 and 3 when a systemd user manager
+   runs.
 4. Start thurbox. thurbox never starts, restarts or sets up a manager. While
    none runs, its status line says `Fleet not running · systemctl --user
-   start fleet.service` (`Fleet not running · fleet up` with no unit
-   installed), or `no Fleet config · fleet init` before step 2.
+   start fleet.service`, with the unit that `fleet version --json` names.
+   With no unit, it says `Fleet not running · fleet service install --now`.
+   Before step 2, it says `no Fleet config · fleet init`.
 
 Each session runs on `local`: the laptop.
 
@@ -113,34 +116,19 @@ when the laptop sleeps.
 
 1. On box, install `fleet`, `runtime-mux`, `tmux` and a coding agent.
 2. On box, run `fleet init`.
-3. On box, install a user systemd unit that runs `fleet up`.
+3. On box, run `fleet service install --now` from a login shell. It writes
+   the user systemd unit that runs `fleet up`, and starts it
+   ([the service unit](fleet/configuration.md#the-service-unit-fleet-service)).
    thurbox never starts `fleet up`, on any Fleet. A user service does not
-   read your login `PATH`: set `Environment=PATH` to the directories that hold
-   `fleet`, `runtime-mux`, `workspace-git`, `tmux`, `git` and your coding
-   agents. `fleet up` starts
-   the tmux server that holds the sessions, so the server is in the unit's
-   cgroup: `KillMode=process` keeps it, and the sessions, when the unit
-   stops or restarts.
-
-   ```ini
-   # ~/.config/systemd/user/fleet.service
-   [Unit]
-   Description=Fleet manager
-
-   [Service]
-   Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-   ExecStart=%h/.local/bin/fleet up
-   KillMode=process
-   Restart=on-failure
-   RestartSec=15
-
-   [Install]
-   WantedBy=default.target
-   ```
+   read your login `PATH`, so the unit takes the `PATH` of the shell that
+   installs it. Put more directories in a drop-in:
+   `systemctl --user edit fleet.service`. The unit has
+   `KillMode=process`: `fleet up` starts the tmux server that holds the
+   sessions, and a stop or a restart of the unit keeps that server.
 
    ```sh
-   loginctl enable-linger "$USER"
-   systemctl --user enable --now fleet.service
+   fleet service install --now
+   loginctl enable-linger "$USER"   # start it at boot, without a login
    ```
 
 4. On the laptop, list both Fleets in thurbox's `settings.toml`. When the
@@ -157,7 +145,7 @@ when the laptop sleeps.
 
 5. Run `thurbox-cli doctor`. It reports each Fleet, and says when box cannot
    be reached. It reads box's `fleet version --json` to report whether box's
-   manager runs, and points at the unit when it does not. The session list
+   manager runs, and names the command that starts it when it does not. The session list
    follows every listed Fleet, each command goes to its session's own Fleet,
    and the new-session modal asks which Fleet a new session goes to.
 

@@ -64,8 +64,8 @@
   grep -q "trap cleanup" "${BATS_TEST_DIRNAME}/install.sh"
 }
 
-@test "script is under 275 lines" {
-  [ "$(wc -l < "${BATS_TEST_DIRNAME}/install.sh")" -lt 275 ]
+@test "script is under 290 lines" {
+  [ "$(wc -l < "${BATS_TEST_DIRNAME}/install.sh")" -lt 290 ]
 }
 
 @test "script contains banner function" {
@@ -256,6 +256,7 @@ fake_release() {
   mkdir -p "$tmpdir/src" "$assets/v9.9.9"
   files="$("${BATS_TEST_DIRNAME}/ci/release-archive.sh" --binaries) LICENSE"
   for f in $files; do printf '#!/bin/sh\n' > "$tmpdir/src/$f"; done
+  printf '#!/bin/sh\necho "$*" >> "%s/fleet-calls"\n' "$tmpdir" > "$tmpdir/src/fleet"
   target=$(TEST_TMPDIR=1 sh -c ". '${BATS_TEST_DIRNAME}/install.sh'; get_target \$(detect_platform)")
   # Named members, as release-archive.sh packs them.
   # shellcheck disable=SC2086 # one member per word
@@ -266,7 +267,7 @@ fake_release() {
 # Sets $code and $log (stdout and stderr).
 run_installer() {
   code=0
-  log=$(env NO_COLOR=1 VERSION=v9.9.9 DOWNLOAD_URL="file://$assets" INSTALL_DIR="$dest" "$@" 2>&1) || code=$?
+  log=$(env NO_COLOR=1 THURBOX_NO_SERVICE=1 VERSION=v9.9.9 DOWNLOAD_URL="file://$assets" INSTALL_DIR="$dest" "$@" 2>&1) || code=$?
 }
 
 installed() { find "$dest" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ' | sed 's/ $//'; }
@@ -353,5 +354,36 @@ fake_v2_release() {
   [ "$code" -ne 0 ]
   [[ "$log" == *"--fleet-onyl"* ]]
   [ ! -e "$dest" ]
+  rm -rf "$tmpdir"
+}
+
+fake_systemctl() {
+  mkdir -p "$tmpdir/systemd-bin"
+  printf '#!/bin/sh\nexit 0\n' > "$tmpdir/systemd-bin/systemctl"
+  chmod +x "$tmpdir/systemd-bin/systemctl"
+  path="$tmpdir/systemd-bin:$PATH"
+}
+
+@test "on Linux with a user systemd, an install has Fleet install and start its service" {
+  [ "$(uname -s)" = Linux ] || skip "the service backend is systemd"
+  for flag in "" --fleet-only; do
+    fake_release
+    fake_systemctl
+    # shellcheck disable=SC2086 # the flag is a word or none
+    run_installer THURBOX_NO_SERVICE= PATH="$path" sh "${BATS_TEST_DIRNAME}/install.sh" $flag
+    [ "$code" -eq 0 ]
+    [ "$(cat "$tmpdir/fleet-calls")" = "$(printf 'init\nservice install --now')" ]
+    [[ "$log" == *"fleet service status"* ]]
+    [[ "$log" != *"fleet up"* ]]
+    rm -rf "$tmpdir"
+  done
+}
+
+@test "THURBOX_NO_SERVICE=1 installs no service" {
+  fake_release
+  fake_systemctl
+  run_installer PATH="$path" sh "${BATS_TEST_DIRNAME}/install.sh" --fleet-only
+  fleet_only_installed
+  [ ! -e "$tmpdir/fleet-calls" ]
   rm -rf "$tmpdir"
 }

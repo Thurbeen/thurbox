@@ -51,11 +51,12 @@ piece.
 
 Fleet manages every session, and its manager, `fleet up`, runs as a user
 service. Set Fleet up and start that service once
-([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)):
+([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
+The install script does both on Linux:
 
 ```bash
 fleet init
-systemctl --user start fleet.service
+fleet service install --now
 thurbox
 ```
 
@@ -67,7 +68,8 @@ sessions yet, so the list says so.
 
 thurbox never starts, restarts or sets up Fleet. While no manager runs, the
 status line says `Fleet not running · systemctl --user start fleet.service`
-(`Fleet not running · fleet up` where no unit is installed), or
+(`Fleet not running · fleet service install --now` where no unit is
+installed), or
 `no Fleet config · fleet init` before `fleet init` ran.
 [Configuration](config.md#a-working-setup) has the three files involved,
 should you want to change them.

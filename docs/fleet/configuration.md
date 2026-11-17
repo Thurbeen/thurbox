@@ -59,6 +59,71 @@ The manager writes its status to `<data dir>/manager.json`: `pid`, `boot`,
 `serving` or `stopped`). The record is status, never authority: a manager
 that crashed leaves its last state behind.
 
+### The service unit: `fleet service`
+
+`fleet service` writes and drives the one supervisor of `fleet up`: a
+systemd user unit. It runs on Linux only. On another system, run `fleet up`
+under that system's own service manager.
+
+| Command | What it does |
+| --- | --- |
+| `fleet service install [--name NAME] [--now]` | Writes `~/.config/systemd/user/NAME.service` (`fleet` by default) for the config, runs `daemon-reload` and enables the unit. `--now` also starts it. |
+| `fleet service start`, `stop`, `restart` | Runs `systemctl --user` with that verb on the store's unit. `stop` keeps the sessions. |
+| `fleet service status` | Prints `systemctl --user status` of the store's unit, and exits with its code: 0 when the unit is active, 3 when it is not. |
+| `fleet service uninstall` | Stops and disables the store's unit, removes its file and runs `daemon-reload`. Its drop-ins stay. |
+
+`--config` names the config, as for every command. The unit sets
+`FLEET_CONFIG` to that config's absolute path. `--data-dir` is refused:
+`fleet up` reads the data directory from the config. Each verb other than
+`install` acts on the unit of the config's store. `--name` names another
+unit.
+
+The unit that `install` writes:
+
+```ini
+[Unit]
+Description=Fleet manager (fleet up)
+X-Fleet-Store=<data dir>
+
+[Service]
+Type=notify
+Environment="FLEET_CONFIG=<config>"
+Environment="PATH=<fleet's directory>:<PATH at install>"
+ExecStart="<fleet's directory>/fleet" --config ${FLEET_CONFIG} up
+Restart=on-failure
+RestartSec=2s
+RestartSteps=6
+RestartMaxDelaySec=2min
+RestartPreventExitStatus=78
+TimeoutStartSec=infinity
+TimeoutStopSec=<the manager lease>
+KillMode=process
+
+[Install]
+WantedBy=default.target
+```
+
+- `X-Fleet-Store` names the store. systemd ignores the key. Fleet reads it
+  to find the unit of a store.
+- `install` refuses a second unit for the same store, with exit code 5.
+  Uninstall the first unit, or install it again under its own name.
+- `install` with the name of an existing unit replaces the unit file. The
+  unit's drop-ins (`NAME.service.d/`) stay. Put local changes, such as more
+  directories on `PATH`, in a drop-in: `systemctl --user edit NAME.service`.
+- `TimeoutStopSec` is the lease that `fleet up` takes: twice the longest
+  runtime, forge, gateway or plugin operation, and 30 seconds at least. A
+  stop lets the current sweep finish.
+- `KillMode=process` keeps the multiplexer's server, and every session on
+  it, when the unit stops or restarts.
+
+`fleet version --json` names the unit in `manager.supervisor`:
+`{"kind": "systemd", "unit": "fleet.service"}`, or `null` when no unit runs
+the store. An interface reads the unit there and does not guess it.
+
+The install script (`scripts/install.sh`) runs `fleet init` and
+`fleet service install --now` on Linux when a systemd user manager answers.
+`THURBOX_NO_SERVICE=1` skips that step.
+
 The lease holder is `fleet-up-<pid>@<boot id>`. On Linux, after a reboot,
 a manager takes over at once a lease whose holder names another boot:
 neither that manager nor any process it started still runs.
@@ -81,7 +146,7 @@ such as one from an older Fleet, also waits for expiry.
 under `manager`, and only reads them:
 
 ```json
-{"manager": {"held": true, "holder": "fleet-up-4242@6780a1c8-c1de-4350-9421-b5ff90278de2", "expiresAt": 1763120000000, "why": null, "state": "serving", "version": "3.4.0", "exe": "/usr/bin/fleet", "config": "/home/me/.config/fleet/config.toml"}}
+{"manager": {"held": true, "holder": "fleet-up-4242@6780a1c8-c1de-4350-9421-b5ff90278de2", "expiresAt": 1763120000000, "why": null, "state": "serving", "version": "3.4.0", "exe": "/usr/bin/fleet", "config": "/home/me/.config/fleet/config.toml", "supervisor": {"kind": "systemd", "unit": "fleet.service"}}}
 ```
 
 - `held` is `true` while the recorded lease is unexpired and the next
@@ -98,6 +163,9 @@ under `manager`, and only reads them:
 - `cli.version` is the version of the `fleet` that answers. When it
   differs from `manager.version`, the manager runs another release than the
   one installed. Restart the manager through its supervisor.
+- `supervisor` names the unit that runs `fleet up` for the store
+  ([the service unit](#the-service-unit-fleet-service)). It is `null` when
+  no unit names the store, and on a system other than Linux.
 - The report takes no lease and renews none, takes no lock, and it creates
   no store.
 Unknown session observations never trigger a blind replacement. Each sweep
@@ -116,18 +184,18 @@ After a host reboot, `fleet up` revives the sessions of unfinished Tasks and
 resumes their briefs. See
 [after a host reboot](controllers/task.md#after-a-host-reboot).
 This works only when `fleet up` starts again after the reboot. A service
-supervisor must start it at boot, without a login. For a systemd user unit
-that has `WantedBy=default.target` in its `[Install]` section:
+supervisor must start it at boot, without a login. `fleet service install`
+enables its unit for `default.target`. Let the user manager run without a
+login:
 
 ```sh
 loginctl enable-linger "$USER"
-systemctl --user enable fleet.service
 ```
 
-Set `KillMode=process` in that unit. The first session start runs the
-multiplexer's server from `fleet up`, so the server is in the unit's
-cgroup. systemd's default `KillMode=control-group` stops it, and every
-session on it, when the unit stops or restarts.
+The first session start runs the multiplexer's server from `fleet up`, so
+the server is in the unit's cgroup. systemd's default
+`KillMode=control-group` stops it, and every session on it, when the unit
+stops or restarts. A unit that you write yourself needs `KillMode=process`.
 
 ### Configuration and customization
 

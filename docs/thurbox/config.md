@@ -520,9 +520,9 @@ vX.Y.Z — restart thurbox to apply" status line.
 A running `fleet up` keeps the program it started from. thurbox never
 restarts it. After an install, the status line names each Fleet on this
 machine whose manager holds the lease, and the command that restarts it on
-the new release: `systemctl --user restart fleet.service` where the user
-unit `fleet.service` is installed, otherwise to stop its `fleet up` and run
-it again (`stale_managers` in `src/kernel/snapshot/fleet.rs`). A Fleet whose
+the new release: `systemctl --user restart <unit>` for the unit that its
+`fleet version --json` names in `manager.supervisor`, otherwise to stop its
+`fleet up` and run it again (`stale_managers` in `src/kernel/snapshot/fleet.rs`). A Fleet whose
 `program` resolves to another file than the `fleet` the update installed is
 named as not replaced instead: a restart would run the same binary. A Fleet
 on another machine keeps its own manager. `thurbox-cli update` performs the
@@ -671,13 +671,15 @@ a place.
   and this machine's disk is not read to tell a repository from a
   directory, so with no choice made the directory is taken as it is.
 - thurbox never starts, restarts or sets up a Fleet's manager, on this
-  machine or another: a user systemd unit runs `fleet up`
-  ([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
+  machine or another: the user unit that `fleet service install` writes runs
+  `fleet up` ([the unit](../where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
   While a Fleet on this machine has no manager, the status line says which
-  command starts one: `Fleet not running · systemctl --user start
-  fleet.service` on Linux where that user unit is installed (in
-  `$XDG_CONFIG_HOME/systemd/user`), otherwise `Fleet not running · fleet up`,
-  with the `program` and `--config` its `[fleets]` entry names. Before
+  command starts one. thurbox reads the unit from the `manager.supervisor`
+  of the Fleet's `fleet version --json`, and never guesses it:
+  `Fleet not running · systemctl --user start <unit>` when Fleet names a
+  unit, otherwise `Fleet not running · fleet service install --now` on Linux
+  and `Fleet not running · fleet up` elsewhere, with the `program` and
+  `--config` its `[fleets]` entry names. Before
   its config exists it says `no Fleet config · fleet init`
   (`fleet --config <path> init` when `settings.toml` names the file).
 - v3 reads no `[fleet] program`: it is reported as replaced by `[fleets]`.
@@ -692,7 +694,7 @@ a place.
 
 - Fleet reads its own config (`FLEET_CONFIG`, then its per-user file), unless
   `config` names one. Run `fleet init` before the first `fleet up`, and run
-  `fleet up` under a user systemd unit.
+  `fleet up` under the user unit that `fleet service install --now` writes.
 - `thurbox-cli doctor` checks each listed Fleet: the program and its version,
   the harnesses it has profiles for, and the places it defines. A Fleet whose
   `fleet version --json` lacks `fleet/v1alpha1` in `apiVersions` is refused:
@@ -703,7 +705,9 @@ a place.
   machine wait 15 seconds, not 5. `fleet-manager` reads the `manager` of
   the Fleet's `fleet version --json`: the manager runs, it does not run, or
   the answer is unknown. When it does not run, the fix is the command the
-  status line names on this machine, and the systemd unit on another. When
+  status line names on this machine. On another machine it is
+  `systemctl --user start <unit>` for the unit that Fleet names, otherwise
+  `fleet service install --now`. When
   it runs another release than the installed `fleet` (`manager.version`
   differs from `cli.version`), the row warns "manager runs X, installed Y".
   The fix restarts the manager through its supervisor. A

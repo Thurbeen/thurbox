@@ -889,7 +889,7 @@ fn thurbox_starts_no_fleet_up_and_says_which_command_does() {
                     == Some(
                         format!(
                             "Fleet not running · {}",
-                            link(&fleet.program).start_manager()
+                            link(&fleet.program).start_manager(&json!({"supervisor": null}))
                         )
                         .as_str(),
                     )
@@ -1546,11 +1546,10 @@ fn doctor_reports_each_listed_fleet() {
     assert_eq!(check("fleet", "laptop")["level"], "ok", "{report:#}");
     // A Fleet the interface does not use yet warns, never fails the report.
     assert_eq!(check("fleet", "gpu")["level"], "warn", "{report:#}");
-    // thurbox never starts a remote manager: doctor's fix points at the unit.
     assert!(
         check("fleet-manager", "box")["fix"]
             .as_str()
-            .is_some_and(|d| d.contains("where-sessions-run.md")),
+            .is_some_and(|d| d == "fleet service install --now on that machine"),
         "{report:#}"
     );
     let calls = std::fs::read_to_string(&log).expect("ssh log");
@@ -1843,7 +1842,7 @@ fn doctor_reports_whether_a_remote_fleets_manager_runs() {
     let detail = down["detail"].as_str().unwrap();
     assert!(detail.contains("manager not running"), "{detail}");
     let fix = down["fix"].as_str().unwrap_or_default();
-    assert!(fix.contains("docs/where-sessions-run.md"), "{fix}");
+    assert_eq!(fix, "fleet service install --now on that machine", "{fix}");
     assert!(!detail.contains("cannot tell"), "{detail}");
     assert_eq!(remote.manager(), None, "doctor started no manager");
 
@@ -2666,9 +2665,8 @@ mod an_update {
     fn leaves_the_running_fleet_up_and_names_the_command_that_restarts_it() {
         let Some(bin) = fleet_bin() else { return };
         let mut install = Install::new(&bin);
-        let unit = install.path("home/.config/systemd/user");
-        std::fs::create_dir_all(&unit).expect("unit dir");
-        std::fs::write(unit.join("fleet.service"), "").expect("unit");
+        make_script(&install.path("fakebin/systemctl"), "#!/bin/sh\nexit 0\n");
+        install.fleet_run(&["service", "install", "--name", "engine"], None);
         let old = install.start_manager();
 
         let updated = install.update();
@@ -2680,7 +2678,7 @@ mod an_update {
         );
         assert_eq!(install.holder(), Some(old), "{stdout}");
         assert!(
-            stdout.contains("systemctl --user restart fleet.service"),
+            stdout.contains("systemctl --user restart engine.service"),
             "{stdout}"
         );
     }
@@ -2701,7 +2699,7 @@ mod an_update {
         assert_eq!(install.holder(), None);
         assert!(install.managers_on_installed_fleet().is_empty());
         assert!(
-            !String::from_utf8_lossy(&updated.stdout).contains("restart fleet.service"),
+            !String::from_utf8_lossy(&updated.stdout).contains("systemctl --user restart"),
             "{}",
             String::from_utf8_lossy(&updated.stdout)
         );
@@ -2732,6 +2730,6 @@ mod an_update {
         );
         assert_eq!(install.holder(), Some(old), "{stdout}");
         assert!(stdout.contains("did not replace"), "{stdout}");
-        assert!(!stdout.contains("restart fleet.service"), "{stdout}");
+        assert!(!stdout.contains("systemctl --user restart"), "{stdout}");
     }
 }

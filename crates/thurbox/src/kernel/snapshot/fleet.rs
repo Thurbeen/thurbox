@@ -706,7 +706,7 @@ fn probe(link: &FleetLink) -> ((FleetState, Option<String>), Option<Value>) {
     }
     let state = match manager["held"].as_bool() {
         Some(true) => (FleetState::Up, None),
-        Some(false) => (FleetState::Down, link.not_running()),
+        Some(false) => (FleetState::Down, link.not_running(manager)),
         None => (
             FleetState::Unknown,
             Some(
@@ -882,11 +882,11 @@ pub fn stale_managers(links: &[FleetLink]) -> String {
     links
         .iter()
         .filter(|link| link.is_local())
-        .filter(|link| {
-            link.version()
-                .is_ok_and(|answer| answer["manager"]["held"] == Value::Bool(true))
+        .filter_map(|link| {
+            let manager = link.version().ok()?["manager"].take();
+            (manager["held"] == Value::Bool(true)).then_some((link, manager))
         })
-        .map(|link| match &installed {
+        .map(|(link, manager)| match &installed {
             Some(installed) if !runs(link, installed) => format!(
                 "Fleet {}'s manager runs {}, which this update did not replace.",
                 link.name(),
@@ -895,7 +895,7 @@ pub fn stale_managers(links: &[FleetLink]) -> String {
             _ => format!(
                 "Fleet {}'s manager still runs the old release · {}.",
                 link.name(),
-                link.restart_manager()
+                link.restart_manager(&manager)
             ),
         })
         .collect::<Vec<_>>()
