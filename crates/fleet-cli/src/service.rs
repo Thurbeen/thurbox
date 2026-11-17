@@ -5,9 +5,11 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fleet_exec::{Outcome, Spec};
+use fleet_store::FileStore;
+use fleet_store::manager::ManagerState;
 
 pub const DEFAULT_NAME: &str = "fleet";
 const STORE_KEY: &str = "X-Fleet-Store=";
@@ -36,6 +38,7 @@ pub enum Refusal {
     NotInstalled,
     Systemctl(String),
     StillRunning(String),
+    Stopped(String),
     Io(String),
 }
 
@@ -229,6 +232,113 @@ pub fn uninstall(unit: &Unit, stop_bound: Duration) -> Result<(), Refusal> {
     systemctl(&["daemon-reload"], QUICK_BOUND).map(drop)
 }
 
+/// The `fleet` a unit runs: `<home>/current/bin/fleet` when `exe` is a
+/// release's `<home>/releases/<version>/bin/fleet` and that link exists, so a
+/// restart runs whichever release is current. Otherwise `exe` itself.
+pub fn stable_exe(exe: &Path) -> PathBuf {
+    let release_home = || {
+        let bin = exe.parent()?;
+        let releases = bin.parent()?.parent()?;
+        (bin.file_name()? == "bin" && releases.file_name()? == "releases")
+            .then(|| releases.parent())
+            .flatten()
+    };
+    release_home()
+        .map(|home| home.join("current/bin").join(exe.file_name().unwrap_or_default()))
+        .filter(|current| current.is_file())
+        .unwrap_or_else(|| exe.to_path_buf())
+}
+
+pub enum Restart {
+    Serving,
+    NotRunning,
+}
+
+/// Restart a running unit and wait until a manager started since then
+/// serves `version`. A unit that is not running is left alone.
+pub fn restart_expecting(
+    unit: &Unit,
+    data_dir: &Path,
+    version: &str,
+    bound: Duration,
+) -> Result<Restart, Refusal> {
+    supported()?;
+    let name = unit.name.as_str();
+    if !matches!(
+        unit_state(name)?.active.as_str(),
+        "active" | "activating" | "reloading"
+    ) {
+        return Ok(Restart::NotRunning);
+    }
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let deadline = Instant::now() + bound;
+    systemctl(&["try-restart", "--no-block", name], QUICK_BOUND)?;
+    let mut seen = "no manager record".to_string();
+    loop {
+        if let Ok(Some(record)) = FileStore::peek_manager(data_dir) {
+            if record.started_at >= since
+                && record.state == ManagerState::Serving
+                && record.version == version
+            {
+                return Ok(Restart::Serving);
+            }
+            seen = format!(
+                "the last manager record names {} ({:?})",
+                record.version, record.state
+            );
+        }
+        let state = unit_state(name)?;
+        if state.active == "failed" {
+            return Err(Refusal::Stopped(format!(
+                "{name} stopped before it served {version}: {}, status {}",
+                state.result, state.status
+            )));
+        }
+        if Instant::now() >= deadline {
+            return Err(Refusal::StillRunning(format!(
+                "{name} did not serve {version} within {}s; {seen}",
+                bound.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+struct UnitState {
+    active: String,
+    result: String,
+    status: String,
+}
+
+fn unit_state(name: &str) -> Result<UnitState, Refusal> {
+    let text = systemctl(
+        &[
+            "show",
+            "-p",
+            "ActiveState",
+            "-p",
+            "Result",
+            "-p",
+            "ExecMainStatus",
+            name,
+        ],
+        QUICK_BOUND,
+    )?;
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok(UnitState {
+        active: value("ActiveState"),
+        result: value("Result"),
+        status: value("ExecMainStatus"),
+    })
+}
+
 pub enum Verb {
     Start,
     Stop,
@@ -316,6 +426,24 @@ mod tests {
         assert!(unit.contains("Environment=\"FLEET_CONFIG=/c/%%h.toml\"\n"));
         assert!(unit.contains("Environment=\"PATH=/opt/a \\\"b\\\" 100%%/$x:/usr/bin\"\n"));
         assert!(unit.contains("TimeoutStopSec=31s\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_unit_runs_the_current_release_not_the_one_it_was_installed_from() {
+        let root = std::env::temp_dir().join(format!("fleet-stable-exe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let release = root.join("lib/thurbox/releases/1.2.3/bin");
+        std::fs::create_dir_all(&release).unwrap_or_else(|e| panic!("{e}"));
+        let exe = release.join("fleet");
+        std::fs::write(&exe, "").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(stable_exe(&exe), exe);
+
+        std::os::unix::fs::symlink("releases/1.2.3", root.join("lib/thurbox/current"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(stable_exe(&exe), root.join("lib/thurbox/current/bin/fleet"));
+        assert_eq!(stable_exe(Path::new("/usr/bin/fleet")), Path::new("/usr/bin/fleet"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
