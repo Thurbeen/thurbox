@@ -229,7 +229,10 @@ pub fn make(cfg: &Config, key: &str, urls: &[String]) -> Result<Answer, String> 
 
 /// Release the key's workspace: work that exists nowhere else is preserved,
 /// then its worktrees go. A directory it did not make is left as it is, and
-/// no branch is deleted. A key with no workspace is released already.
+/// no branch is deleted. A key with no workspace is released already. A
+/// worktree an earlier attempt began removing has a `.git` that is gone or
+/// names a git directory that is gone: that attempt preserved its work, so
+/// what is left goes without git.
 pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
     check_key(key)?;
     let dir = cfg.root.join(key);
@@ -238,10 +241,9 @@ pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
     };
     for tree in &record.trees {
         let source = Path::new(&tree.source);
-        // A make or a retention on the same repository waits for this one.
         let _lock = lock_repository(cfg, source)?;
         let path = Path::new(&tree.path);
-        if path.is_dir() {
+        if is_worktree(path)? {
             preserve(path, key, &tree.name)?;
         }
         remove_worktree(source, path)?;
@@ -319,14 +321,38 @@ fn rollback(cfg: &Config, key: &str) -> Result<(), String> {
     remove_dir(&dir)
 }
 
+fn is_worktree(path: &Path) -> Result<bool, String> {
+    let dot_git = path.join(".git");
+    if dot_git.is_dir() {
+        return Ok(true);
+    }
+    let gitfile = match fs::read_to_string(&dot_git) {
+        Ok(gitfile) => gitfile,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("cannot read {}: {e}", dot_git.display())),
+    };
+    let gitdir = gitfile
+        .trim_end()
+        .strip_prefix("gitdir: ")
+        .map(|gitdir| path.join(gitdir))
+        .ok_or_else(|| format!("{} names no git directory", dot_git.display()))?;
+    match fs::metadata(&gitdir) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("cannot read {}: {e}", gitdir.display())),
+    }
+}
+
 fn remove_worktree(source: &Path, path: &Path) -> Result<(), String> {
-    if path.exists() {
+    if is_worktree(path)? {
         let path = path.display().to_string();
         git(
             source,
             &["worktree", "remove", "--force", "--force", &path],
             &[],
         )?;
+    } else {
+        remove_dir(path)?;
     }
     git(source, &["worktree", "prune"], &[]).map(|_| ())
 }
