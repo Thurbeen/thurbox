@@ -1208,7 +1208,7 @@ fn a_queued_startup_notice_waits_for_an_active_error() {
     std::thread::sleep(
         notice_due_by
             .saturating_duration_since(Instant::now())
-            .saturating_sub(Duration::from_millis(2500)),
+            .saturating_sub(Duration::from_millis(3000)),
     );
     tui.send(b"\x07");
     tui.wait_for("active error probe");
@@ -1217,14 +1217,12 @@ fn a_queued_startup_notice_waits_for_an_active_error() {
         error_shown < notice_due_by,
         "the error must be up before the queued notice is due"
     );
-    while error_shown.elapsed() < Duration::from_millis(3500) {
-        assert!(
-            !tui.frame().contains("local UI control unavailable"),
-            "startup notice replaced an active error"
-        );
-        std::thread::sleep(Duration::from_millis(40));
-    }
     tui.wait_for("local UI control unavailable");
+    let error_held = error_shown.elapsed();
+    assert!(
+        error_held >= Duration::from_secs(4),
+        "startup notice replaced an active error {error_held:?} after it was shown"
+    );
     assert!(tui.quit().success());
 }
 
