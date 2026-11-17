@@ -34,7 +34,7 @@ file you can change.
 > recommend it.
 
 Install [v2.89.0](https://github.com/Thurbeen/thurbox/releases/tag/v2.89.0),
-the latest v2 release. The installer pins it with the version.
+the latest v2 release. These commands pin that version.
 
 **Linux / macOS:**
 
@@ -56,8 +56,9 @@ covers the rest of v2.
 
 **Fleet v2:** if you also use Fleet, take
 [v2.24.0](https://github.com/Thurbeen/fleet/releases/tag/v2.24.0), the latest
-Fleet v2 release, for Linux and macOS. Install it after thurbox v2, so that
-Fleet v2 is the `fleet` on your `PATH`:
+Fleet v2 release. It runs on Linux, and experimentally on Apple Silicon macOS;
+it has no Windows build. Install it after thurbox v2, so that Fleet v2 is the
+`fleet` on your `PATH`:
 
 ```bash
 curl -fsSL https://github.com/Thurbeen/fleet/releases/download/v2.24.0/install-release.sh | sh
