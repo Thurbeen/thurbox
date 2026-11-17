@@ -1091,6 +1091,133 @@ fn an_interactive_rows_status_shows_working_attention_and_idle() {
     });
 }
 
+/// A Task Fleet paused for idling after it concluded keeps the
+/// `sessionState` its agent last reported, and only its `Paused` condition
+/// says it is stopped. Its row is stopped all the same, says why, and
+/// `start` resumes it.
+#[test]
+fn a_concluded_task_fleet_paused_is_a_stopped_row_that_start_resumes() {
+    use thurbox::session::SessionState;
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin.clone());
+    let mut t = task("alpha");
+    t["spec"]["dispatch"] = json!(true);
+    t["spec"]["configRef"] = json!({"name": "pausing"});
+    fleet.apply(json!([
+        {"apiVersion": "fleet/v1alpha1", "kind": "TaskConfig",
+         "metadata": {"name": "pausing"}, "spec": {"pauseAfterMs": 600_000}},
+        t,
+    ]));
+    fleet.run(&["reconcile"]).ok();
+    fleet
+        .run(&[
+            "result",
+            "alpha",
+            "--generation",
+            "1",
+            "--outcome",
+            "shipped",
+        ])
+        .ok();
+    fleet.run(&["reconcile"]).ok();
+    let key = fleet.get("alpha").expect("the Task")["status"]["session"]["key"]
+        .as_str()
+        .expect("a session key")
+        .to_string();
+    let ran = Process::new(&bin)
+        .args(["signal", "idle"])
+        .env(
+            "FLEET_SIGNAL_FILE",
+            fleet.data().join("signals").join(format!("{key}.jsonl")),
+        )
+        .stdin(Stdio::null())
+        .status()
+        .expect("fleet signal");
+    assert!(ran.success());
+    fleet.run(&["reconcile"]).ok();
+    let object = fleet.data().join("objects/Task/alpha.json");
+    let mut stored: Value =
+        serde_json::from_slice(&std::fs::read(&object).expect("the Task's file")).unwrap();
+    assert!(stored["status"]["idleSince"].is_u64(), "{stored:#}");
+    stored["status"]["idleSince"] = json!(0);
+    std::fs::write(&object, stored.to_string()).expect("idle long enough");
+    fleet.run(&["reconcile"]).ok();
+    let mut stored: Value =
+        serde_json::from_slice(&std::fs::read(&object).expect("the Task's file")).unwrap();
+    stored["status"]["sessionCheckedAt"] = json!(0);
+    std::fs::write(&object, stored.to_string()).expect("a session recheck due");
+    fleet.run(&["reconcile"]).ok();
+    let paused = fleet.get("alpha").expect("the Task")["status"].clone();
+    assert_eq!(paused["phase"], "Concluded", "{paused:#}");
+    assert_eq!(paused["sessionState"], "Idle", "{paused:#}");
+    assert!(
+        paused["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["type"] == "Paused" && c["status"] == "True" && c["reason"] == "Idle"),
+        "{paused:#}"
+    );
+
+    let mut store = store_over(&fleet);
+    let row = |store: &mut SnapshotStore| {
+        store.refresh_if_due();
+        store.current().session("local:alpha").cloned()
+    };
+    until("the row is read", || row(&mut store).is_some());
+    let napping = row(&mut store).unwrap();
+    assert_eq!(
+        (
+            napping.status,
+            napping.stopped,
+            napping.state_why.as_deref()
+        ),
+        (SessionState::Stopped, true, Some("paused · idle")),
+        "Task status: {paused:#}"
+    );
+
+    let manager = std::thread::spawn({
+        let program = fleet.program.clone();
+        move || {
+            let deadline = Instant::now() + BOUND;
+            while Instant::now() < deadline {
+                let _ = Process::new(&program)
+                    .arg("reconcile")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let task = Process::new(&program)
+                    .args(["get", "task", "alpha"])
+                    .output()
+                    .expect("fleet get");
+                let task: Value = serde_json::from_slice(&task.stdout).unwrap_or_default();
+                if task["status"]["conditions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|c| c["type"] == "Paused" && c["status"] == "False")
+                {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    });
+    let started = run_command(
+        &mut fleet_bus(&fleet.program),
+        Command::Start {
+            session: "alpha".into(),
+        },
+    );
+    if let Err(e) = started {
+        assert!(e.contains("offers no live view"), "start: {e}");
+    }
+    manager.join().unwrap();
+    until("the row is no longer stopped", || {
+        row(&mut store).is_some_and(|row| row.status != SessionState::Stopped && !row.stopped)
+    });
+}
+
 /// The link reaches a Fleet over ssh, though no config selects one yet: the
 /// real binary behind a stand-in `ssh` that logs each remote command line and
 /// runs it, as `tests/tui_e2e.rs`'s does. A Task goes in on stdin, free text

@@ -110,14 +110,18 @@ snapshot maps those onto a `SessionState`
 
 | Task status | State | Colour | Glyph |
 |-------------|-------|--------|-------|
-| `sessionState: Paused` | `stopped` | `status_unknown` (muted grey) | `■` |
 | `sessionState: Lost`, `Gone` | `failed` | `status_error` (red) | `✗` |
+| `sessionState: Paused`, or the `Paused` condition `True` | `stopped` | `status_unknown` (muted grey) | `■` |
 | `agentState: working` | `working` | yellow | braille spinner |
 | `agentState: attention` | `blocked` | red | `◆` |
 | `agentState: idle` | `idle` | green | `○` |
 | `sessionState: Running` | `running` | accent | `◉`, a spinner while its pane prints |
 | `sessionState: Idle` | `idle` | green | `○` |
 | anything else, or none | `unreported` | muted grey | `◌` |
+
+A Concluded Task that Fleet paused keeps the `sessionState` its agent last
+reported, usually `Idle`. Only its `Paused` condition says that the agent is
+stopped. The row reads that condition, so `s` starts the Task.
 
 A row that does not run says why after its name, from the Task's
 conditions (`kernel::snapshot::fleet::state_why`, published as `state_why`):
