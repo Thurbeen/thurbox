@@ -814,7 +814,7 @@ refused.
   manager lease: an expired or superseded token is refused, and the token
   only grows. A new lease takes its token from `seq`, so the token grows
   even when `lease.json` is lost. A serving manager holds the OS lock on
-  `manager.lock` for its life, and a second `fleet up` is refused while it
+  `manager.lock` for its life, and a second `fleet up` waits while it
   is held. A new manager takes over an unexpired lease only when its
   holder names another boot, or when its holder is gone on this boot and
   every process group it recorded under `children/<pid>@<boot id>/` is
@@ -1339,7 +1339,8 @@ account's Gateway intents.
 `fleet
 init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|event|gateway|signal|runtime|integration|doctor|version`.
 Exit codes:
-0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease, 7 timed out.
+0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease, 7 timed out,
+78 `fleet up` refused for a reason no retry can fix (config, store format).
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
 `conversation` and `listener` as well as `task`, `taskconfig` and
 `envprovider`; `status changerequest NAME --json` prints the ref and the

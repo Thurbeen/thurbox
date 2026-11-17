@@ -5,6 +5,7 @@
 
 mod bootstrap;
 mod config;
+mod supervisor;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -570,6 +571,7 @@ mod exit {
     pub const CONFLICT: u8 = 5;
     pub const LEASE: u8 = 6;
     pub const TIMEOUT: u8 = 7;
+    pub const CONFIG: u8 = 78;
 }
 
 struct Failure {
@@ -651,6 +653,17 @@ fn fail(message: impl Into<String>) -> Failure {
         code: exit::ERROR,
         message: message.into(),
         hint: None,
+    }
+}
+
+fn refusal_no_retry_fixes(command: &Command, message: String) -> Failure {
+    match command {
+        Command::Up { .. } => Failure {
+            code: exit::CONFIG,
+            message,
+            hint: Some("fix the config or the binary, then start fleet up again".into()),
+        },
+        _ => fail(message),
     }
 }
 
@@ -828,7 +841,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .map_err(|e| fail(format!("cannot read config {}: {e}", p.display())))?;
-            Config::parse(&text, p).map_err(fail)?
+            let mut config = Config::parse_settings(&text, p)
+                .map_err(|why| refusal_no_retry_fixes(&cli.command, why))?;
+            config.read_briefs(p).map_err(fail)?;
+            config
         }
         None => Config::empty(),
     };
@@ -1008,7 +1024,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         return Ok(());
     }
-    let file_store = FileStore::open(&data_dir)?.with_plugins(&registrations)?;
+    let file_store = FileStore::open(&data_dir)
+        .map_err(|e| match e {
+            StoreError::Unsupported(why) => refusal_no_retry_fixes(&cli.command, why),
+            e => e.into(),
+        })?
+        .with_plugins(&registrations)?;
     // The ledger sits in the store's directory, which the store must hold
     // first: it refuses a directory that holds anything else.
     if let Command::Integration { command } = &cli.command {
@@ -1564,9 +1585,11 @@ fn cmd_up(
         &[fleet_api::plugin::Registration],
     ),
 ) -> Result<(), Failure> {
-    let lock = file_store
-        .lock_manager()?
-        .ok_or_else(|| manager_running(data_dir))?;
+    let lock = file_store.wait_for_manager_lock(|| {
+        let holder = manager_holder(data_dir);
+        eprintln!("waiting for {holder} to exit");
+        supervisor::tell(supervisor::Phase::Waiting(&holder));
+    })?;
     let mut record = ManagerRecord {
         pid: std::process::id(),
         boot: fleet_store::holder::boot_id(),
@@ -1586,6 +1609,7 @@ fn cmd_up(
         plugins,
         (&lock, &mut record),
     );
+    supervisor::tell(supervisor::Phase::Stopping);
     record.state = ManagerState::Stopped;
     report_manager(file_store, &lock, &record);
     outcome
@@ -1629,17 +1653,13 @@ fn stop_what_gone_holders_left(data_dir: &Path) {
     }
 }
 
-fn manager_running(data_dir: &Path) -> Failure {
+fn manager_holder(data_dir: &Path) -> String {
     let lock = data_dir.join(fleet_store::manager::LOCK);
     let pid = FileStore::peek_manager(data_dir)
         .ok()
         .flatten()
         .map_or(String::new(), |r| format!(" (pid {})", r.pid));
-    Failure {
-        code: exit::LEASE,
-        message: format!("another manager{pid} holds {}", lock.display()),
-        hint: Some("one manager runs at a time; stop it or wait for it to exit".into()),
-    }
+    format!("the manager{pid} that holds {}", lock.display())
 }
 
 fn report_manager(store: &FileStore, lock: &ManagerLock, record: &ManagerRecord) {
@@ -1733,6 +1753,7 @@ fn serve_up(
             if record.state != ManagerState::Serving {
                 record.state = ManagerState::Serving;
                 report_manager(file_store, lock, record);
+                supervisor::tell(supervisor::Phase::Ready);
             }
             let mut diagnostics: Vec<_> = report
                 .errors
