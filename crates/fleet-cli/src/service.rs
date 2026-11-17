@@ -33,6 +33,7 @@ pub enum Refusal {
     Unsupported,
     Invalid(String),
     Taken(Unit),
+    Foreign { unit: String, store: String },
     NotInstalled,
     Systemctl(String),
     StillRunning(String),
@@ -56,6 +57,13 @@ fn unit_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(config.join("systemd/user"))
+}
+
+fn unit_store(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix(STORE_KEY))
+        .map(str::to_string)
 }
 
 fn same_store(a: &Path, b: &Path) -> bool {
@@ -88,11 +96,7 @@ pub fn store_unit(data_dir: &Path) -> Result<Option<Unit>, String> {
         if !name.ends_with(".service") || !path.is_file() {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let store = text.lines().find_map(|l| l.strip_prefix(STORE_KEY));
-        if store.is_some_and(|s| same_store(Path::new(s), data_dir)) {
+        if unit_store(&path).is_some_and(|s| same_store(Path::new(&s), data_dir)) {
             found.push(Unit {
                 name: name.to_string(),
                 path,
@@ -201,6 +205,9 @@ pub fn install(install: &Install) -> Result<Unit, Refusal> {
     let text = render(install)?;
     std::fs::create_dir_all(&dir).map_err(|e| Refusal::Io(format!("{}: {e}", dir.display())))?;
     let path = dir.join(&name);
+    if let Some(store) = unit_store(&path).filter(|s| !same_store(Path::new(s), install.data_dir)) {
+        return Err(Refusal::Foreign { unit: name, store });
+    }
     let tmp = dir.join(format!(".{name}.tmp"));
     std::fs::write(&tmp, text)
         .and_then(|()| std::fs::rename(&tmp, &path))

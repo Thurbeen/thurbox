@@ -2047,6 +2047,11 @@ fn service_failure(refusal: service::Refusal) -> Failure {
                 unit.name.trim_end_matches(".service")
             )),
         ),
+        Refusal::Foreign { unit, store } => (
+            exit::CONFLICT,
+            format!("{unit} runs another store ({store})"),
+            Some("install this store's unit under another --name".to_string()),
+        ),
         Refusal::NotInstalled => (
             exit::NOT_FOUND,
             "no unit runs this store".to_string(),

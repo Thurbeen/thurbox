@@ -151,6 +151,22 @@ fn install_refuses_a_second_unit_for_the_same_store() {
 }
 
 #[test]
+fn install_refuses_to_take_over_another_store_s_unit() {
+    let s = Service::new("service-foreign");
+    fs::create_dir_all(s.units()).unwrap();
+    let foreign = "[Unit]\nX-Fleet-Store=/elsewhere/store\n\n[Service]\nExecStart=fleet up\n";
+    fs::write(s.units().join("fleet.service"), foreign).unwrap();
+
+    s.env
+        .fleet(&["service", "install"])
+        .code(5)
+        .stderr_has("/elsewhere/store");
+
+    assert_eq!(s.unit("fleet.service"), foreign);
+    assert!(s.calls().is_empty());
+}
+
+#[test]
 fn the_verbs_drive_the_store_s_unit_and_uninstall_removes_it() {
     let s = Service::new("service-verbs");
     s.env

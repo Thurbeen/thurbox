@@ -52,10 +52,10 @@ extraCss: ['tutorial.css']
 </h2>
 <p>
   Fleet manages every session, and its manager, <code>fleet up</code>, runs as a user service. Set
-  Fleet up and start that service once:
+  Fleet up and start that service once. The install script does both on Linux:
 </p>
 <pre><code class="language-bash">fleet init
-systemctl --user start fleet.service
+fleet service install --now
 thurbox</code></pre>
 <figure class="shot">
   <img
@@ -71,8 +71,8 @@ thurbox</code></pre>
 </p>
 <p>
   Thurbox never starts, restarts or sets up Fleet. While no manager runs, the status line says
-  <code>Fleet not running · systemctl --user start fleet.service</code> (<code>fleet up</code>
-  where no unit is installed), or <code>no Fleet config · fleet init</code> before
+  <code>Fleet not running · systemctl --user start fleet.service</code>
+  (<code>fleet service install --now</code> where no unit is installed), or <code>no Fleet config · fleet init</code> before
   <code>fleet init</code> ran.
 </p>
 

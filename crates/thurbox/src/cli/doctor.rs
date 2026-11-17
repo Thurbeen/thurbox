@@ -663,7 +663,7 @@ impl FleetFacts {
             Some(false) => Finding::new("fleet-manager", broken, "manager not running".into()).fix(
                 match crate::fleet_link::supervisor_unit(manager) {
                     Some(unit) => format!("systemctl --user start {unit} on that machine"),
-                    None => "fleet service install --now on that machine".to_string(),
+                    None => "fleet service install --now on that machine (Linux), or fleet up under its own service manager".to_string(),
                 },
             ),
             None => Finding::new(
