@@ -439,7 +439,7 @@ fn answered_through(cr: &ChangeRequestStatus, me: &str, mark: &str) -> Option<Mi
         answered_in_thread(cr, n, me, mark)
             && inline
                 .iter()
-                .any(|r| r.thread == n.thread && own(r) && r.at > last(n))
+                .any(|r| r.thread == n.thread && own(r) && last(r) > last(n))
     };
     let waiting = inline
         .iter()

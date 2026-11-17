@@ -253,7 +253,7 @@ else:
     entry.answeredAt = max(entry.answeredAt,
                            newest editedAt, else at, of a person's inline note
                            that answered_in_thread holds for and that has a
-                           marked reply newer than that time)
+                           marked reply last edited, else created, after it)
 ```
 
 Rules:
@@ -270,8 +270,9 @@ Rules:
 - `entry.answeredAt` uses the time a note was last edited, else created,
   not its `seq`. Reopening a thread moves the `seq` of its notes and leaves
   its times alone, and reopening is not an answer. Editing a note makes its
-  thread wait until a marked reply newer than the edit, by time, exists in
-  the thread; that answer moves `entry.answeredAt`.
+  thread wait until a marked reply newer than the edit exists in the
+  thread, by each note's last edit time, else its creation time; that
+  answer moves `entry.answeredAt`.
 - Only inline threads count. A top-level comment or a review body has no
   thread to answer in.
 - A forge that counts unresolved discussions outside inline threads in

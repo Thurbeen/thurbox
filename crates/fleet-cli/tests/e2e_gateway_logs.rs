@@ -677,6 +677,13 @@ fn a_tied_tasks_thread_hears_once_per_round_when_every_review_thread_is_answered
     resolve(&mut notes, false);
     step(&notes);
     assert_eq!(thread_keys(), again, "a reopened thread is no answer");
+    let r10 = notes.iter_mut().find(|n| n.id == "r10").unwrap();
+    r10.body = format!("Tested, and logged.\n{mark}");
+    r10.edited_at = Some(38);
+    step(&notes);
+    let updated = thread_keys();
+    assert_eq!(updated.len(), 5, "an updated reply answers: {updated:?}");
+    let again = updated;
     env.forget_announced(&task);
     step(&notes);
     assert_eq!(thread_keys(), again, "an upgrade posts no stale notice");
