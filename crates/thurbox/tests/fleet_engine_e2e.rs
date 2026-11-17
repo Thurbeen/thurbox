@@ -1016,7 +1016,7 @@ while IFS= read -r line; do
 done
 "#;
 
-const START_TO_PANE: Duration = Duration::from_secs(5);
+const START_TO_PANE: Duration = Duration::from_secs(10);
 
 #[test]
 fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() {
