@@ -240,7 +240,6 @@ pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
     };
     for tree in &record.trees {
         let source = Path::new(&tree.source);
-        // A make or a retention on the same repository waits for this one.
         let _lock = lock_repository(cfg, source)?;
         let path = Path::new(&tree.path);
         if is_worktree(path) {
