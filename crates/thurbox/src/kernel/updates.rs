@@ -97,7 +97,7 @@ impl Updates {
                         // The check's cache is refreshed with it, so the badge
                         // agrees with what is now installed on the next launch.
                         let _ = crate::update::version_check::refresh_cache();
-                        let fleet = crate::kernel::snapshot::fleet::stale_managers(&fleets);
+                        let fleet = crate::kernel::snapshot::fleet::stale_managers(&fleets, &to);
                         let _ = tx.send(Done::Installed { to, fleet });
                     }
                     Ok(crate::update::self_update::UpdateOutcome::UpToDate {

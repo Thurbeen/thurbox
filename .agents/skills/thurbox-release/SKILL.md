@@ -245,6 +245,12 @@ re-running the installer (`docs/thurbox/config.md`, auto-update).
   is refused),
   `DOWNLOAD_URL` (default `https://github.com/<REPO>/releases/download`; a
   mirror, or the local copy CI's `install-e2e` serves)
+- Installs the release into `<prefix>/lib/thurbox/releases/<version>/bin/`
+  (`<prefix>` is `INSTALL_DIR`'s parent), points `current` at it and the
+  release it replaces at `previous`, and links each program in `INSTALL_DIR`
+  to `current/bin/`: the layout the updater writes (`docs/thurbox/config.md`,
+  "Releases"). A fleet-only install keeps the programs of the release it
+  replaces that it does not ship.
 - Non-interactive (safe pipe-to-shell), cleanup via `trap`
 - Tested by `scripts/install.bats` (bats-core, ~40 tests, a fake release
   installed end to end among them; CI `install-script` job)

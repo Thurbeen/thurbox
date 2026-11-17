@@ -2022,9 +2022,7 @@ fn cmd_service(
             target(name).and_then(|u| service::drive(&u, service::Verb::Stop, stop_bound))
         }
         ServiceCommand::Restart {
-            name,
-            expect: None,
-            ..
+            name, expect: None, ..
         } => target(name).and_then(|u| service::drive(&u, service::Verb::Restart, stop_bound)),
         ServiceCommand::Restart {
             name,

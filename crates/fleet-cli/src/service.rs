@@ -244,7 +244,10 @@ pub fn stable_exe(exe: &Path) -> PathBuf {
             .flatten()
     };
     release_home()
-        .map(|home| home.join("current/bin").join(exe.file_name().unwrap_or_default()))
+        .map(|home| {
+            home.join("current/bin")
+                .join(exe.file_name().unwrap_or_default())
+        })
         .filter(|current| current.is_file())
         .unwrap_or_else(|| exe.to_path_buf())
 }
@@ -442,7 +445,10 @@ mod tests {
         std::os::unix::fs::symlink("releases/1.2.3", root.join("lib/thurbox/current"))
             .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(stable_exe(&exe), root.join("lib/thurbox/current/bin/fleet"));
-        assert_eq!(stable_exe(Path::new("/usr/bin/fleet")), Path::new("/usr/bin/fleet"));
+        assert_eq!(
+            stable_exe(Path::new("/usr/bin/fleet")),
+            Path::new("/usr/bin/fleet")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
