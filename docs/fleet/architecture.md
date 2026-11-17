@@ -341,9 +341,8 @@ runtime side, the protocol and the terminal stream, is
   (`crates/thurbox/src/kernel/terminal/fleet.rs`), whose backend is the stream itself.
 - `fleet shell <task> --json`: the same for an interactive shell beside the
   Task's session, on its place, from the runtime's `shell`.
-- thurbox starts `fleet up` when no manager holds the lease, and starts it
-  again when it exits. A `fleet up` that exits with
-  6 found the lease held, which is no error.
+- thurbox never starts, restarts or stops `fleet up`. When no manager holds
+  the lease, it tells the user the command that starts one.
 
 Fleet is thurbox's only engine: `[fleets.<name>]` in thurbox's
 `settings.toml` names each Fleet it reaches, on this machine or over ssh or
