@@ -281,8 +281,9 @@ Guarantees, each with its test:
 - **Lost session.** A session the runtime still holds without its agent's
   window, as after a host reboot, sets `SessionLost` and gets nothing sent.
   A dispatched Task plans `Revive` under `revive/<n>`, at once and then
-  after each `RETRY_DELAY_MS`. After three revives that leave the session
-  lost, its agent cannot resume it, as when the conversation it resumes was
+  after each `RETRY_DELAY_MS`. Three revives that leave the session lost
+  raise `NeedsAttention/ReviveFailed`. When each of them started the agent
+  and its window still went away, its agent cannot resume it, as when the conversation it resumes was
   never saved: `SessionLost=True/CannotResume` and
   `NeedsAttention/CannotResume` are set, and nothing is revived until the
   window is seen again. `fleet attach` refuses such a Task with exit 3 and

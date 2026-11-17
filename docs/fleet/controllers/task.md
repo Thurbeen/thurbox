@@ -135,7 +135,7 @@ concludes nothing.
 | Briefed | No result for `status.brief.generation`; recorded session present or lookup unreadable | Briefed | Wait for result; Unknown does not mean WorkerGone. |
 | Briefed | No result for `status.brief.generation`; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
 | Spawned, Briefed, or Concluded with a delivery due | Session lost: the runtime holds the session, but its agent's window is gone | unchanged | Set `SessionLost=True/WindowGone`. Send nothing. With `dispatch: true`, persist a revive intent and plan `Revive` under `revive/<n>`. A held Task is not revived. |
-| Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. After three revives have left the session lost, its agent cannot resume it: set `SessionLost=True/CannotResume` and `NeedsAttention/CannotResume`, and revive no more until the window is seen again. `fleet attach` then exits 3 and opens no view. |
+| Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. After three revives have left the session lost, each further revive raises `NeedsAttention/ReviveFailed`. When each of those three started the agent (a Known `Revived` receipt) and its window still went away, its agent cannot resume it: set `SessionLost=True/CannotResume` and `NeedsAttention/CannotResume`, and revive no more until the window is seen again. `fleet attach` then exits 3 and opens no view. |
 | Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt and the Task has not concluded, owe a catch-up note under `catchup/<n>`; a Concluded Task is resumed plainly. In Spawned, the brief protocol continues. |
 | Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
 | Briefed, or Concluded and watched | A pause setting; a harness with a resume argv and a reported conversation; the agent's hooks report Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
@@ -251,7 +251,7 @@ are last recorded observations; absence of a condition is not a True value.
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
 | SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
 | Paused | The runtime holds the session with its agent stopped. `Idle` when Fleet paused it; `External` when Fleet found it stopped. False with `Resumed` once the agent runs again, and with `PauseFailed` after a pause that did not happen. The phase does not change. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, WorkspaceUnsupported, TrustUnmapped, WorkspaceUntrusted, CannotResume, ResumeFailed or CleanFailed. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, WorkspaceUnsupported, TrustUnmapped, WorkspaceUntrusted, ReviveFailed, CannotResume, ResumeFailed or CleanFailed. |
 
 WorkerGone clears when the exact recorded session is seen again.
 WorkspaceUnsupported clears when a later workspace call does not answer Unsupported.
@@ -261,7 +261,7 @@ delivery clears attention whose reason is DeliveryUnconfirmed while no
 entry is marked failed. An inbox drained back within its bound clears InboxFull.
 A Trusted answer clears WorkspaceUntrusted.
 BriefUndelivered and DeliveryQueued stay until a person acts on the Task.
-CannotResume clears when the session is seen not lost.
+ReviveFailed and CannotResume clear when the session is seen not lost.
 ResumeFailed clears when the session is seen running.
 DeliveryFailed and DeliveryUnconfirmed stay while a failed entry does. A
 successful release removes the Task; a worker result alone is not a general
