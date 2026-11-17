@@ -5443,6 +5443,8 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soo
         beside < alone * 2 + Duration::from_secs(1),
         "dispatch to a briefed, attachable session took {beside:?} beside {RUNNING} running Tasks, {alone:?} alone: {:#}",
         env.get("t1")["status"]["conditions"]
+    );
+}
 
 /// The `[telemetry]` table of Fleet's config, with no `OTEL_*` variable set,
 /// reaches `runtime-mux`: its span arrives at the file's collector, under
