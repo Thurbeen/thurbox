@@ -246,18 +246,22 @@ fn generation_of(obj: &Object) -> (String, u64) {
 }
 
 fn starting(obj: &Object) -> bool {
-    let briefed_later = || {
-        obj.spec
-            .get("brief")
-            .and_then(Value::as_str)
-            .is_some_and(|brief| !brief.is_empty())
+    let Ok(spec) = serde_json::from_value::<task::TaskSpec>(obj.spec.clone()) else {
+        return false;
+    };
+    let phase = match obj.status.get("phase") {
+        None => task::Phase::Pending,
+        Some(phase) => match serde_json::from_value::<task::Phase>(phase.clone()) {
+            Ok(phase) => phase,
+            Err(_) => return false,
+        },
     };
     !obj.is_deleting()
-        && obj.spec.get("dispatch").and_then(Value::as_bool) == Some(true)
-        && match obj.status.get("phase").and_then(Value::as_str) {
-            None | Some("Pending" | "Spawning") => true,
-            Some("Spawned") => briefed_later(),
-            Some(_) => false,
+        && spec.dispatch
+        && match phase {
+            task::Phase::Pending | task::Phase::Spawning => true,
+            task::Phase::Spawned => !spec.is_interactive(),
+            _ => false,
         }
 }
 

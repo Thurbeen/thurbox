@@ -2213,6 +2213,8 @@ mod tests {
         .expect("answer");
         std::fs::write(dir.join("inspect"), r#"{"known":"paused"}"#).expect("answer");
         std::fs::write(dir.join("stop"), r#"{"known":"stopped"}"#).expect("answer");
+        std::fs::write(dir.join("pause"), r#"{"known":"paused"}"#).expect("answer");
+        std::fs::write(dir.join("start"), r#"{"known":"started"}"#).expect("answer");
         let runtime = ExecRuntime::new(BTreeMap::from([(
             "local".to_string(),
             ExecProgram::new("test", script.to_string_lossy()),
@@ -2238,6 +2240,25 @@ mod tests {
         runtime.release(&runtime.session("local", "other"));
         runtime.find("local", "other");
         assert_eq!(inspects(), 3, "a stop changed the process");
+        runtime.pause(&runtime.session("local", "other"));
+        runtime.find("local", "other");
+        assert_eq!(inspects(), 4, "a pause changed the process");
+        runtime.start(
+            &SpawnSpec {
+                host: "local".into(),
+                key: "other".into(),
+                harness: "claude-code".into(),
+                workspace: Workspace::default(),
+                ready: None,
+                model: None,
+                env: BTreeMap::new(),
+                environment_frozen: false,
+                telemetry_args: Vec::new(),
+            },
+            &["agent".to_string()],
+        );
+        runtime.find("local", "other");
+        assert_eq!(inspects(), 5, "a start changed the process");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
