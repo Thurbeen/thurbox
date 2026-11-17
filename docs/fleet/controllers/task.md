@@ -355,8 +355,8 @@ These rules apply to a paused session:
   set `status.wakeRequestedAt` on a paused Task, then wait for `Paused` to
   leave True before they ask the runtime for the stream. A request older
   than the pause resumes nothing. A wake queues no text and types nothing:
-  the agent continues its conversation. Without `--wake`, both exit 3 and say the
-  Task is paused, so a view that attaches every Task in the background
+  the agent continues its conversation. Without `--wake`, both exit 3 and
+  say the Task is paused, so a view that attaches every Task in the background
   wakes nothing.
 - A resumed worker is owed no catch-up note. Only a revived worker gets
   one.

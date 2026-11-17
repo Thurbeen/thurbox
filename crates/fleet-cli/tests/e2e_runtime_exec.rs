@@ -1060,9 +1060,6 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }
 
-/// [`CLAUDE`], except that it logs what is typed to it, and reports the
-/// lines typed together as one prompt, as Claude Code's prompt hook does:
-/// a multi-line text arrives as one prompt.
 const TYPING_CLAUDE: &str = r#"#!/bin/bash
 { printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
 fleet signal idle

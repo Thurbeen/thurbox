@@ -143,9 +143,8 @@ fn an_idle_task_is_paused_and_an_entry_resumes_it_with_no_note_of_fleets() {
         "the entries, and nothing of Fleet's own"
     );
 
-    // Nothing is sent twice.
     env.reconcile().ok();
-    assert_eq!(sent(&env).len(), 3);
+    assert_eq!(sent(&env).len(), 3, "nothing is sent twice");
     assert_eq!(env.calls("resume"), 1);
 }
 

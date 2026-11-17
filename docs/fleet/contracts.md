@@ -309,8 +309,8 @@ Guarantees, each with its test:
   stopped raise `NeedsAttention/ResumeFailed`, and resumes continue. Back
   (`Paused=False/Resumed`), the agent continues its conversation. Fleet
   types no note of its own into it: only the inbox is delivered, and a wake
-  with an empty inbox types nothing. A session found stopped by someone else is `Paused=True/External`
-  and is resumed by the next entry. Stalled, held and deleting Tasks are
+  with an empty inbox types nothing. A session found stopped by someone
+  else is `Paused=True/External` and is resumed by the next entry. Stalled, held and deleting Tasks are
   never resumed. A missing or Unknown pause or resume receipt is settled by
   observing whether the session is stopped, never by a blind repeat. A
   catch-up note an older record keeps under `resume/<n>` is still sent

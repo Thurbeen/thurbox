@@ -1737,7 +1737,6 @@ fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
             .insert("task/t/u7/resume/1".into(), effect_intent("resume"));
     });
 
-    // Running: resumed; the entry goes, and nothing of Fleet's own.
     let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(false)));
     assert_eq!(cond(&st, "Paused").status, ConditionStatus::False);
     assert_eq!(cond(&st, "Paused").reason, "Resumed");

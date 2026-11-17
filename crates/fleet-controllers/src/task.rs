@@ -105,7 +105,6 @@ const RELEASE: &str = "release";
 const REVIVE: &str = "revive";
 const PAUSE: &str = "pause";
 const RESUME: &str = "resume";
-/// The note owed to a revived session, before its inbox.
 const CATCH_UP: &str = "catchup";
 /// The NeedsAttention reason once revives keep leaving the session lost.
 const REVIVE_FAILED: &str = "ReviveFailed";
@@ -1403,9 +1402,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Send the catch-up note owed to a revived session, under
-    /// its own key, as an inbox entry is sent. Returns true while it is
-    /// owed: nothing else is delivered before it.
     fn catch_up(&mut self, session: SessionRef) -> bool {
         let Some(key) = self.st.catch_up.clone() else {
             return false;
@@ -1426,9 +1422,6 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// What a revived worker is told. A worker still on its
-    /// brief is given the brief again, under the generation it was briefed
-    /// for.
     fn catch_up_text(&self) -> String {
         let generation = self
             .st
@@ -1436,8 +1429,8 @@ impl Pass<'_, '_> {
             .as_ref()
             .map_or(self.generation, |b| b.generation);
         let head = "Fleet: your session was lost and restarted, and your conversation \
-                    was resumed. Background shells, Monitors and loops you started did not survive; start \
-                    again any you still need. Work you did not commit, push or declare may \
+                    was resumed. Background shells, Monitors and loops you started did not \
+                    survive; start again any you still need. Work you did not commit, push or declare may \
                     be lost. Re-read your worktree, the changes you declared and your inbox";
         if self.st.phase == Phase::Concluded {
             format!(
@@ -1617,9 +1610,6 @@ impl Pass<'_, '_> {
         self.wait_from(at);
     }
 
-    /// The session runs again, after Fleet's resume under `key` or after
-    /// someone else started it. Its agent resumes its conversation, and
-    /// nothing is typed into it but its inbox.
     fn resumed(&mut self, key: Option<&str>) {
         if let Some(key) = key {
             self.st.intents.remove(key);
