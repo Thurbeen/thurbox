@@ -26,6 +26,7 @@ fn send(message: &str) -> std::io::Result<()> {
         return Ok(());
     };
     let sender = UnixDatagram::unbound()?;
+    sender.set_nonblocking(true)?;
     #[cfg(target_os = "linux")]
     if let Some(name) = socket.as_encoded_bytes().strip_prefix(b"@") {
         use std::os::linux::net::SocketAddrExt;

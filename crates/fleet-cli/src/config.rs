@@ -216,6 +216,12 @@ impl Config {
 
     /// The config `text` read from `path`, validated as [`Config::load`] does.
     pub fn parse(text: &str, path: &Path) -> Result<Config, String> {
+        let mut config = Config::parse_settings(text, path)?;
+        config.read_briefs(path)?;
+        Ok(config)
+    }
+
+    pub fn parse_settings(text: &str, path: &Path) -> Result<Config, String> {
         if let Some((why, store)) = fleet_2_config(text, path) {
             return Err(format!(
                 "config {path} is a Fleet 2.x config ({why}); this Fleet does not read it, nor \
@@ -287,23 +293,6 @@ impl Config {
                     account.dir = Some(base.join(d));
                 }
             }
-            for (name, route) in &gateway.routes {
-                let brief = std::fs::read_to_string(&route.brief).map_err(|e| {
-                    format!(
-                        "config {}: gateway.routes.{name}: brief {}: {e}",
-                        path.display(),
-                        route.brief.display()
-                    )
-                })?;
-                if brief.trim().is_empty() {
-                    return Err(format!(
-                        "config {}: gateway.routes.{name}: brief {} is empty",
-                        path.display(),
-                        route.brief.display()
-                    ));
-                }
-                config.gateway_briefs.insert(name.clone(), brief);
-            }
         }
         if let Some(telemetry) = &config.telemetry {
             let raw: toml::Table =
@@ -338,6 +327,30 @@ impl Config {
             }
         }
         Ok(config)
+    }
+
+    pub fn read_briefs(&mut self, path: &Path) -> Result<(), String> {
+        let Some(gateway) = &self.gateway else {
+            return Ok(());
+        };
+        for (name, route) in &gateway.routes {
+            let brief = std::fs::read_to_string(&route.brief).map_err(|e| {
+                format!(
+                    "config {}: gateway.routes.{name}: brief {}: {e}",
+                    path.display(),
+                    route.brief.display()
+                )
+            })?;
+            if brief.trim().is_empty() {
+                return Err(format!(
+                    "config {}: gateway.routes.{name}: brief {} is empty",
+                    path.display(),
+                    route.brief.display()
+                ));
+            }
+            self.gateway_briefs.insert(name.clone(), brief);
+        }
+        Ok(())
     }
 
     /// `[runtimes]` is well formed: names that make a place id, one default

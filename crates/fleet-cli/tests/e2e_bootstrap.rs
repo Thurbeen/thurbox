@@ -1056,6 +1056,47 @@ fn fleet_up_tells_its_supervisor_it_is_ready_after_its_first_pass() {
     assert!(after.iter().any(|m| m.contains("STOPPING=1")), "{after:?}");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_supervisor_that_stops_reading_never_holds_fleet_up_back() {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+    let mut env = fake_bootstrap("sd-notify-full");
+    let name = format!("fleet-e2e-notify-full-{}", std::process::id());
+    let address = SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+    let _deaf = UnixDatagram::bind_addr(&address).unwrap();
+    let mut fillers = Vec::new();
+    loop {
+        let filler = UnixDatagram::unbound().unwrap();
+        filler.set_nonblocking(true).unwrap();
+        if filler.send_to_addr(b"STATUS=filler", &address).is_err() {
+            break;
+        }
+        while filler.send_to_addr(b"STATUS=filler", &address).is_ok() {}
+        fillers.push(filler);
+    }
+    env.set_var("NOTIFY_SOCKET", &format!("@{name}"));
+    let mut up = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    let manager = || env.fleet(&["version", "--json"]).ok().json()["manager"].clone();
+    until(|| manager()["state"] == "serving");
+    assert!(
+        Command::new("/bin/kill")
+            .args(["-TERM", &up.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    until(|| up.0.try_wait().unwrap().is_some());
+    assert_eq!(manager()["state"], "stopped");
+}
+
+#[test]
+fn fleet_up_exits_1_while_a_route_brief_is_unreadable_so_a_retry_can_pick_it_up() {
+    let env = Env::gateway("brief-unreadable");
+    fs::remove_file(env.root.join("briefs/conversation.md")).unwrap();
+    env.fleet(&["up"]).code(1).stderr_has("brief");
+}
+
 #[test]
 fn fleet_up_exits_78_on_a_refusal_no_retry_can_fix() {
     let env = fake_bootstrap("exit-78");

@@ -841,7 +841,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .map_err(|e| fail(format!("cannot read config {}: {e}", p.display())))?;
-            Config::parse(&text, p).map_err(|why| refusal_no_retry_fixes(&cli.command, why))?
+            let mut config = Config::parse_settings(&text, p)
+                .map_err(|why| refusal_no_retry_fixes(&cli.command, why))?;
+            config.read_briefs(p).map_err(fail)?;
+            config
         }
         None => Config::empty(),
     };
