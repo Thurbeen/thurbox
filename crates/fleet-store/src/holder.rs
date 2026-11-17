@@ -3,8 +3,6 @@
 //! lives on this machine, so a holder so named from another boot is
 //! provably dead, with every process it started.
 
-use std::fs;
-
 /// The holder name for the calling process: `fleet-up-<pid>@<boot id>`
 /// for `fleet up`, `fleet-<pid>@<boot id>` otherwise. Without a boot id
 /// the name has no `@` part and is never judged dead.
@@ -46,7 +44,7 @@ fn boot_of(holder: &str) -> Option<&str> {
 
 #[cfg(target_os = "linux")]
 fn boot_id() -> Option<String> {
-    fs::read_to_string("/proc/sys/kernel/random/boot_id")
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .ok()
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())

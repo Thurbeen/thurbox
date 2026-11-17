@@ -45,7 +45,7 @@ reads it:
 ```
 
 - `held` is `true` while the recorded lease is unexpired and its holder
-  names this boot: a manager runs.
+  does not name another boot: a manager runs.
 - `held` is `false` when no lease is recorded, the lease expired or was
   released, or its holder names another boot. `holder` and `expiresAt` then name the
   last lease, if any.
