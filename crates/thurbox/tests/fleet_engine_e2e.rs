@@ -1082,7 +1082,8 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
     while !frame(&mut terminals)
         .0
         .is_some_and(|row| row.status == SessionState::Stopped)
-        || terminals.failure("local:t1").is_none()
+        || terminals.failure("local:t1")
+            != Some("the session is paused: start it to resume its agent")
     {
         assert!(
             Instant::now() < deadline,

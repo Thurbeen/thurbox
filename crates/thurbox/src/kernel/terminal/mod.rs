@@ -1848,6 +1848,30 @@ mod tests {
     }
 
     #[test]
+    fn a_paused_fleet_row_whose_stream_ended_says_it_is_paused_and_attaches_once_it_runs() {
+        let mut terminals = Terminals::with_registry(
+            std::sync::Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        terminals.attach_fleet_through(crate::fleet_link::FleetLink::local("/nonexistent/fleet"));
+        let id = format!("{}:t1", crate::session::settings::IMPLIED_FLEET);
+        let mut fleet_row = row(&id, super::fleet::BACKEND, None);
+        fleet_row.key = Some("k1".to_string());
+        fleet_row.stopped = true;
+        fleet_row.status = crate::session::SessionState::Stopped;
+        terminals.fail(&id, None, "session has no pane yet".to_string());
+
+        terminals.sync(&snapshot(vec![fleet_row.clone()]), 24, 80);
+        assert_eq!(terminals.failure(&id), Some(attach::PAUSED));
+        assert!(!terminals.attach.attaching.contains_key(&id));
+
+        fleet_row.stopped = false;
+        fleet_row.status = crate::session::SessionState::Working;
+        terminals.sync(&snapshot(vec![fleet_row]), 24, 80);
+        assert!(terminals.attach.attaching.contains_key(&id));
+    }
+
+    #[test]
     fn an_unknown_backend_is_reported_not_panicked() {
         let mut terminals = Terminals::with_registry(
             std::sync::Arc::new(crate::backend::registry::inert()),

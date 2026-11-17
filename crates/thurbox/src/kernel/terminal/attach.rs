@@ -185,12 +185,7 @@ impl Terminals {
             return;
         };
         if row.stopped {
-            if self
-                .attach
-                .failed
-                .get(&row.id)
-                .is_none_or(|failure| failure.pane.is_some())
-            {
+            if self.failure(&row.id) != Some(PAUSED) {
                 self.fail(&row.id, None, PAUSED.to_string());
             }
             return;
