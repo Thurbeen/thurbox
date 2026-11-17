@@ -402,6 +402,14 @@ impl Terminals {
         self.keep_hidden = None;
     }
 
+    /// Make a failed attach again `interval` after it failed, rather than
+    /// the 20 s a host that was down is given: for a test that would
+    /// otherwise wait that out.
+    #[doc(hidden)]
+    pub fn retry_failed_attaches_after(&mut self, interval: std::time::Duration) {
+        self.attach.retry_after = interval;
+    }
+
     /// Terminals over the process's registry. How that set is assembled — and
     /// why nothing is readied when it is — is the composition root's, not the
     /// kernel's. `settings` are the ones the process loaded: what a pane keeps

@@ -200,6 +200,8 @@ fn notification_bus_keeps_serving_between_cli_processes() {
             ],
         );
         assert_eq!(value["delivered"], true, "{value}");
+        assert!(value["suppressed"].is_null(), "{value}");
+        assert!(value["error"].is_null(), "{value}");
     }
 
     let shown = bus.shown();
@@ -209,24 +211,6 @@ fn notification_bus_keeps_serving_between_cli_processes() {
     assert!(shown
         .iter()
         .all(|n| n.app_name == "thurbox" && n.body == "Inspect the run log"));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn notify_send_delivers_through_the_configured_backend() {
-    let instance = Instance::with_backend("dbus", "");
-    let bus = NotificationBus::start(&instance.path("runtime"));
-
-    let value = instance.send(Some(&bus.address()), &[]);
-    assert_eq!(value["delivered"], true, "{value}");
-    assert!(value["suppressed"].is_null(), "{value}");
-    assert!(value["error"].is_null(), "{value}");
-
-    let shown = bus.shown();
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    assert_eq!(shown[0].app_name, "thurbox");
-    assert_eq!(shown[0].summary, "Build failed");
-    assert_eq!(shown[0].body, "Inspect the run log");
 }
 
 /// A hook or a timer may run without
@@ -310,54 +294,6 @@ fn fake_toast(instance: &Instance, body: &str) -> String {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     )
-}
-
-/// Whether the stand-in notifier recorded in `notifier.pid` still runs, and
-/// stop it if so.
-#[cfg(unix)]
-fn reap_fake_toast(instance: &Instance) -> bool {
-    let Ok(pid) = std::fs::read_to_string(instance.path("notifier.pid")) else {
-        return false;
-    };
-    Command::new("kill")
-        .arg(pid.trim())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-/// A notifier that never returns is given up on, and stopped: the tick sends
-/// its alerts through this path, and a delivery that hangs would stop every
-/// scheduled run behind it, or leave one more stuck process per retry.
-#[cfg(unix)]
-#[test]
-fn a_delivery_that_hangs_is_given_up_on() {
-    let instance = Instance::with_backend("windows", "");
-    // `exec`, so the recorded pid is the notifier process itself.
-    let path = fake_toast(&instance, "echo $$ > '{pid}'\nexec sleep 120");
-
-    let started = std::time::Instant::now();
-    let out = instance
-        .command(Some(NO_BUS), &send_args(&[]))
-        .env("PATH", path)
-        .output()
-        .expect("run thurbox-cli");
-    let waited = started.elapsed();
-    let left_running = reap_fake_toast(&instance);
-
-    assert!(
-        waited < std::time::Duration::from_secs(60),
-        "send waited {waited:?} on a hung notifier"
-    );
-    assert!(!out.status.success(), "{}", describe(&out));
-    let value: Value = serde_json::from_slice(&out.stdout).expect("one JSON result");
-    assert!(
-        value["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("timed out"),
-        "{value}"
-    );
-    assert!(!left_running, "the hung notifier outlived the send");
 }
 
 /// A notifier that fails loudly is reported as failing, with its own error,

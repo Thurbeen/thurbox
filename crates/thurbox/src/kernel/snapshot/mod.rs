@@ -838,4 +838,68 @@ mod tests {
             "the clock alone invalidated every snapshot reader"
         );
     }
+
+    struct Fed(std::sync::mpsc::Receiver<SourceRead>);
+
+    impl SnapshotSource for Fed {
+        fn poll(&mut self) -> Option<SourceRead> {
+            self.0.try_recv().ok()
+        }
+    }
+
+    fn fed() -> (std::sync::mpsc::Sender<SourceRead>, SnapshotStore) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let store = SnapshotStore::with_source(Box::new(Fed(rx)), &Settings::default());
+        (tx, store)
+    }
+
+    fn made(name: &str) -> SourceRead {
+        let link = crate::fleet_link::FleetLink::local("fleet");
+        SourceRead {
+            sessions: vec![fleet::row_of(
+                &link,
+                &serde_json::json!({"metadata": {"name": name}}),
+            )],
+            ..SourceRead::default()
+        }
+    }
+
+    /// A refresh asked of a source is fresh once the source answers after it
+    /// (or, since a source speaks only when something moved, once it had time
+    /// to): a creation is reported with the row it made, not before it.
+    #[test]
+    fn a_refresh_ticket_waits_for_the_source_to_answer() {
+        let (tx, mut store) = fed();
+        let ticket = store.request_refresh();
+        assert!(!store.fresh_since(ticket), "nothing was read since");
+        tx.send(made("made")).unwrap();
+        store.refresh_if_due();
+        assert!(store.fresh_since(ticket));
+        assert!(store.current().session("local:made").is_some());
+
+        let quiet = store.request_refresh();
+        assert!(!store.fresh_since(quiet));
+        store.source_asked -= SOURCE_SETTLE;
+        assert!(store.fresh_since(quiet), "a source that has nothing to say");
+    }
+
+    /// A creation is reported with its row: a refresh that awaits a created
+    /// session stays owed until the source publishes it, however late, and
+    /// not past a bound.
+    #[test]
+    fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
+        let (tx, mut store) = fed();
+        let ticket = store.request_refresh_awaiting(vec!["local:made".into()]);
+        store.source_asked -= SOURCE_SETTLE;
+        store.refresh_if_due();
+        assert!(!store.fresh_since(ticket), "fresh before the row arrived");
+        tx.send(made("made")).unwrap();
+        store.refresh_if_due();
+        assert!(store.fresh_since(ticket));
+        assert!(store.current().session("local:made").is_some());
+
+        let late = store.request_refresh_awaiting(vec!["local:never".into()]);
+        store.source_asked -= SOURCE_AWAIT;
+        assert!(store.fresh_since(late), "a row that never comes");
+    }
 }

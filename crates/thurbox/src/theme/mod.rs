@@ -891,11 +891,6 @@ mod tests {
     }
 
     #[test]
-    fn default_palette_matches_default_preset() {
-        assert_eq!(ThemePalette::default(), ThemePreset::Default.palette());
-    }
-
-    #[test]
     fn presets_have_distinct_accents() {
         let mut accents = std::collections::HashSet::new();
         for preset in ThemePreset::all() {

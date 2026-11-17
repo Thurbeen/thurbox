@@ -28,6 +28,7 @@ pub(super) struct Attach {
     /// the result is collected here.
     pub(super) attaching: HashMap<String, String>,
     pub(super) attached: (Sender<Attached>, Receiver<Attached>),
+    pub(super) retry_after: std::time::Duration,
 }
 
 impl Attach {
@@ -37,6 +38,7 @@ impl Attach {
             failed_version: 0,
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
+            retry_after: ATTACH_RETRY_INTERVAL,
         }
     }
 }
@@ -95,7 +97,7 @@ impl Terminals {
             // The same attempt would fail the same way; a different one is worth
             // making.
             if self.attach.failed.get(&row.id).is_some_and(|failure| {
-                failure.pane == candidate && failure.at.elapsed() < ATTACH_RETRY_INTERVAL
+                failure.pane == candidate && failure.at.elapsed() < self.attach.retry_after
             }) {
                 continue;
             }
@@ -164,7 +166,7 @@ impl Terminals {
     /// Attach a Fleet session's pane on a worker, through the stream `fleet
     /// attach` names ([`super::fleet`]). A row whose Task has no session yet
     /// (no key) has nothing to attach to; a failed attempt is made again
-    /// after [`ATTACH_RETRY_INTERVAL`], and a stream that ended is attached
+    /// after `retry_after` ([`ATTACH_RETRY_INTERVAL`]), and a stream that ended is attached
     /// afresh, since `drop_lost_panes` drops a pane whose output ended.
     fn attach_fleet(&mut self, row: &crate::kernel::snapshot::SessionRow, rows: u16, cols: u16) {
         // The Fleet the row's id names; a row of no listed Fleet has no
@@ -179,7 +181,7 @@ impl Terminals {
         };
         if self.attach.failed.get(&row.id).is_some_and(|failure| {
             failure.pane.as_deref() == Some(key.as_str())
-                && failure.at.elapsed() < ATTACH_RETRY_INTERVAL
+                && failure.at.elapsed() < self.attach.retry_after
         }) {
             return;
         }

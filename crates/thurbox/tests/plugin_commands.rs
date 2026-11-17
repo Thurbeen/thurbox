@@ -1965,10 +1965,9 @@ fn a_blocked_file_read_does_not_stop_other_plugins_painting() {
     host.set_trusted(vec!["plugins/91_reader.lua".into()]);
     let snapshot = file_snapshot(home.path());
     publish_snapshot(&host, &snapshot);
-    // A delayed writer bounds the old synchronous call as well as releasing
-    // the worker, so either implementation tears the FIFO down cleanly.
+    let writer_delay_bounding_a_read_that_blocks = Duration::from_secs(1);
     let writer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(3));
+        std::thread::sleep(writer_delay_bounding_a_read_that_blocks);
         std::fs::OpenOptions::new()
             .write(true)
             .open(fifo)
@@ -1982,7 +1981,7 @@ fn a_blocked_file_read_does_not_stop_other_plugins_painting() {
     let elapsed = start.elapsed();
     writer.join().unwrap();
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < writer_delay_bounding_a_read_that_blocks * 4 / 5,
         "file read held the Lua render loop for {elapsed:?}"
     );
     assert_eq!(files_seen(&host), "painted");

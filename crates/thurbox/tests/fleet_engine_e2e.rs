@@ -668,34 +668,6 @@ fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
     row
 }
 
-/// A refresh asked of a source is fresh once the source answers after it
-/// (or, since a source speaks only when something moved, once it had time
-/// to): a creation is reported with the row it made, not before it.
-#[test]
-fn a_refresh_ticket_waits_for_the_source_to_answer() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
-    let ticket = store.request_refresh();
-    assert!(!store.fresh_since(ticket), "nothing was read since");
-    tx.send(SourceRead {
-        harnesses: None,
-        hosts: None,
-        sessions: vec![row("made", "fleet", Path::new("/w"))],
-        error: None,
-        removed: Vec::new(),
-        fleets: Vec::new(),
-    })
-    .unwrap();
-    store.refresh_if_due();
-    assert!(store.fresh_since(ticket));
-    assert!(store.current().session("local:made").is_some());
-
-    let quiet = store.request_refresh();
-    assert!(!store.fresh_since(quiet));
-    std::thread::sleep(Duration::from_secs(2));
-    assert!(store.fresh_since(quiet), "a source that has nothing to say");
-}
-
 /// A session whose delete succeeded stays hidden while the source still
 /// lists it, and a session of the same name made after the source dropped
 /// it, or reported it removed, is shown again.
@@ -807,34 +779,6 @@ fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
         drawn.iter().all(|chunk| !chunk.contains("input dropped")),
         "the notice reached the grid: {drawn:?}"
     );
-}
-
-/// A creation is reported with its row: a refresh that awaits a created
-/// session stays owed until the source publishes it, however late, and
-/// not past a bound.
-#[test]
-fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut store = SnapshotStore::with_source(Box::new(Fed(rx)), &Default::default());
-    let ticket = store.request_refresh_awaiting(vec!["local:made".into()]);
-    // A watch that answers late: past the second a quiet source is given.
-    std::thread::sleep(Duration::from_millis(2_000));
-    store.refresh_if_due();
-    assert!(!store.fresh_since(ticket), "fresh before the row arrived");
-    let mut made = row("made", "fleet", Path::new("/w"));
-    made.name = "Made".into();
-    tx.send(SourceRead {
-        harnesses: None,
-        hosts: None,
-        sessions: vec![made],
-        error: None,
-        removed: Vec::new(),
-        fleets: Vec::new(),
-    })
-    .unwrap();
-    store.refresh_if_due();
-    assert!(store.fresh_since(ticket));
-    assert!(store.current().sessions.iter().any(|r| r.name == "Made"));
 }
 
 /// A repository with an untracked file: a diff or a git stat of it says so.
@@ -1399,9 +1343,16 @@ fn every_listed_fleet_is_followed_in_one_list() {
             config: None,
         },
     );
+    let soon = thurbox::kernel::snapshot::fleet::Cadence {
+        retry: Duration::from_millis(200),
+        ..Default::default()
+    };
     let source = FleetWatches::new(
         "box",
-        vec![FleetWatch::spawn(over_ssh), FleetWatch::spawn(local)],
+        vec![
+            FleetWatch::spawn_every(over_ssh, soon),
+            FleetWatch::spawn(local),
+        ],
     );
     let mut store = SnapshotStore::with_source(Box::new(source), &Default::default());
     let ids = |store: &mut SnapshotStore| {
@@ -1867,6 +1818,7 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
         &Default::default(),
     );
     terminals.attach_fleet_through(over_ssh);
+    terminals.retry_failed_attaches_after(Duration::from_secs(3));
     let screen = |store: &mut SnapshotStore,
                   terminals: &mut thurbox::kernel::terminal::Terminals| {
         store.refresh_if_due();
@@ -1904,10 +1856,9 @@ fn a_remote_fleets_session_pane_works_over_the_link() {
             why.contains("the Fleet box cannot be reached") && why.contains("No route to host")
         })
     });
-    // Not asked again and again while box is down.
     let asked = || attached(&std::fs::read_to_string(&log).unwrap_or_default());
     let refused_at = asked();
-    for _ in 0..40 {
+    for _ in 0..20 {
         screen(&mut store, &mut terminals);
         std::thread::sleep(Duration::from_millis(50));
     }

@@ -952,10 +952,9 @@ mod remote {
         .expect("adopt");
         assert!(!session.is_resident(), "adopted without a grid");
 
-        // The pane goes on printing; what reaches the interface for it must not.
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let mark = log_len(&log);
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(
             output_lines(&log, mark, &pane),
             0,
@@ -1065,10 +1064,11 @@ mod remote {
             session.agent_title().as_deref() == Some("hidden-title")
         })
         .await;
-        // Twenty lines a second, each its own chunk: streamed, that is dozens of
-        // chunks in two seconds; reported instead, it would be two.
         let before = session.output_seq();
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let window = Instant::now() + Duration::from_secs(2);
+        while session.output_seq() - before < 10 && Instant::now() < window {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let chunks = session.output_seq() - before;
         assert!(
             chunks >= 10,

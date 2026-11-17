@@ -722,18 +722,17 @@ mod tests {
 
         let mut store = RunStore::new();
         let mut only = ask("k");
-        only.ttl = MIN_TTL;
+        only.refresh = true;
 
-        // More panicking runs than the pool has slots.
-        for _ in 0..(MAX_CONCURRENT + 2) {
+        let more_than_the_pool_has_slots = MAX_CONCURRENT + 2;
+        for _ in 0..more_than_the_pool_has_slots {
             store.request("p", only.clone(), &runner);
             run_to_completion(&mut store, &runner);
-            std::thread::sleep(MIN_TTL + Duration::from_millis(20));
         }
 
         assert_eq!(
             count.load(std::sync::atomic::Ordering::SeqCst),
-            MAX_CONCURRENT + 2,
+            more_than_the_pool_has_slots,
             "a panicking run must leave the key askable and the pool intact"
         );
     }
