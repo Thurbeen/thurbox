@@ -568,6 +568,63 @@ fn one_manager_at_a_time_and_a_lost_lease_writes_nothing() {
     env.assert_no_temp();
 }
 
+#[cfg(target_os = "linux")]
+fn hold_lease(env: &Env, holder: &str) {
+    let far = 4_102_444_800_000_u64;
+    fs::write(
+        env.data.join("lease.json"),
+        json!({"holder": holder, "token": 7, "expiresAt": far}).to_string(),
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn boot_id() -> String {
+    fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn exited_pid() -> u32 {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_lease_whose_holder_is_dead_is_taken_over_at_once() {
+    let env = setup("dead-holder", true);
+    let me = std::process::id();
+    let boot = boot_id();
+
+    hold_lease(&env, &format!("fleet-up-{me}@{boot}"));
+    env.reconcile().code(6).stderr_has("lease held by");
+    assert_eq!(
+        env.fleet(&["version", "--json"]).ok().json()["manager"]["held"],
+        true
+    );
+
+    for dead in [
+        format!("fleet-up-{}@{boot}", exited_pid()),
+        format!("fleet-up-{me}@00000000-0000-0000-0000-000000000000"),
+        format!("fleet-up-{}", exited_pid()),
+    ] {
+        hold_lease(&env, &dead);
+        assert_eq!(
+            env.fleet(&["version", "--json"]).ok().json()["manager"]["held"],
+            false,
+            "{dead}"
+        );
+        let report = env.reconcile().ok().json();
+        assert_eq!(report["leaseToken"], 8, "{dead}: {report:#}");
+    }
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+}
+
 #[test]
 fn a_corrupt_record_is_unknown_never_absent() {
     let env = setup("corrupt", true);

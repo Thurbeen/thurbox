@@ -209,6 +209,8 @@ impl Fleet {
         lease["holder"]
             .as_str()?
             .strip_prefix("fleet-up-")?
+            .split('@')
+            .next()?
             .parse()
             .ok()
     }

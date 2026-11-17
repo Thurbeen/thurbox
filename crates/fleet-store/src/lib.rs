@@ -22,6 +22,7 @@
 
 pub mod durable;
 mod event_log;
+pub mod holder;
 mod plugin;
 
 use std::collections::BTreeMap;
@@ -1561,10 +1562,9 @@ impl Store for FileStore {
         let _guard = self.lock()?;
         let now = self.now();
         let current = self.read_lease()?;
-        // Held until it expires, even against the same holder name: two
-        // managers started with one --holder must not both hold it.
         if let Some(l) = &current
             && now < l.expires_at
+            && !holder::is_dead(&l.holder)
         {
             return Err(StoreError::LeaseHeld {
                 holder: l.holder.clone(),
