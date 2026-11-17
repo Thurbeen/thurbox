@@ -61,7 +61,8 @@ these steps:
 3. It takes the lease at once.
 
 When a group cannot be stopped, the record stays and the next manager
-waits for the lease to expire. A holder that left no record directory,
+waits for the lease to expire. The check reads `/proc`, so every process
+that uses one data directory must run in the same PID namespace. A holder that left no record directory,
 such as one from an older Fleet, also waits for expiry.
 `fleet version --json` reports the manager lease and the manager record
 under `manager`, and only reads them:
