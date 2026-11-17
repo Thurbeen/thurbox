@@ -95,6 +95,9 @@ under `manager`, and only reads them:
 - `state`, `version`, `exe` and `config` come from `manager.json`. They
   are `null` when no manager ran. When the record cannot be read, they are
   `null` and `why` says why.
+- `cli.version` is the version of the `fleet` that answers. When it
+  differs from `manager.version`, the manager runs another release than the
+  one installed. Restart the manager through its supervisor.
 - The report takes no lease and renews none, takes no lock, and it creates
   no store.
 Unknown session observations never trigger a blind replacement. Each sweep
@@ -416,7 +419,7 @@ and trials. It excludes `[runtimes]`: a file with both is refused. See the [offl
 | --- | --- | --- |
 | `version` | Required, `1` | Native config schema; unsupported versions and unknown fields are refused. |
 | `data.dir` | Optional | Resource store. `--data-dir` overrides it; otherwise Fleet uses its native data directory. |
-| `runtimes.<name>.program` | Required for each runtime | The runtime's executable, a path or a name on PATH. Fleet runs `<program> [args] <verb>` through its bounded spawner. |
+| `runtimes.<name>.program` | Required for each runtime | The runtime's executable, a path or a bare name. Fleet looks for a bare name beside its own executable first, then on PATH, so a manager runs its own release's runtime. Fleet runs `<program> [args] <verb>` through its bounded spawner. |
 | `runtimes.<name>.args` | `[]` | Arguments before the verb. |
 | `runtimes.<name>.callTimeoutMs` | `15000` | Bound for each call but `workspace`, 1 to 300000; the manager lease must outlast the runtime's reported worst case. |
 | `runtimes.<name>.workspaceTimeoutMs` | `600000` | Bound for a `workspace` call, which can clone a repository. Unknown on timeout concludes nothing: the next pass asks again under the same key. |

@@ -703,7 +703,10 @@ a place.
   machine wait 15 seconds, not 5. `fleet-manager` reads the `manager` of
   the Fleet's `fleet version --json`: the manager runs, it does not run, or
   the answer is unknown. When it does not run, the fix is the command the
-  status line names on this machine, and the systemd unit on another. A
+  status line names on this machine, and the systemd unit on another. When
+  it runs another release than the installed `fleet` (`manager.version`
+  differs from `cli.version`), the row warns "manager runs X, installed Y".
+  The fix restarts the manager through its supervisor. A
   Fleet on this machine with no config has no `fleet-manager` row: its
   `fleet-config` row's fix is `fleet init`.
   thurbox never starts a manager. The Fleet the interface

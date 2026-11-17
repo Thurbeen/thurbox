@@ -1861,6 +1861,7 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
         let outdated = outdated_integrations(&profiles, config.as_deref(), data_dir);
         print_json(&json!({
             "version": VERSION,
+            "cli": {"version": VERSION},
             "apiVersions": [API_VERSION],
             "kinds": fleet_api::kinds::BUILT_IN,
             "configVersion": CONFIG_VERSION,
@@ -2121,10 +2122,16 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
     }
 }
 
-/// The program `[runtimes.<name>]` names, as every call to it is made.
+/// The program `[runtimes.<name>]` names, as every call to it is made. A
+/// bare name is the file beside this executable when there is one, so a
+/// manager runs its own release's runtime, else the name for `PATH`.
 fn exec_program(config: &Config, name: &str) -> ExecProgram {
     let p = &config.runtimes[name];
-    let mut rt = ExecProgram::new(name.to_string(), p.program.clone());
+    let program = std::env::current_exe()
+        .ok()
+        .and_then(|exe| fleet_runtime::program::beside(&p.program, &exe))
+        .map_or_else(|| p.program.clone(), |f| f.to_string_lossy().into_owned());
+    let mut rt = ExecProgram::new(name.to_string(), program);
     rt.args = p.args.clone();
     rt.call_timeout =
         std::time::Duration::from_millis(p.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS));

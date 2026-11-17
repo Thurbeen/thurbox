@@ -31,6 +31,18 @@ pub fn find(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     })
 }
 
+/// The file a bare `program` names in the directory of `exe`: how one
+/// release's binaries find each other before `PATH`. `None` when `program`
+/// holds a path or the directory has no such file.
+pub fn beside(program: &str, exe: &Path) -> Option<PathBuf> {
+    let candidate = Path::new(program);
+    if candidate.components().count() != 1 || candidate.is_absolute() {
+        return None;
+    }
+    let dir = std::env::join_paths([exe.parent()?]).ok()?;
+    find(program, Some(&dir))
+}
+
 #[cfg(unix)]
 fn runnable(file: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;

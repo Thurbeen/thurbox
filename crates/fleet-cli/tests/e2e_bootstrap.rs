@@ -1170,3 +1170,42 @@ fn init_writes_a_default_task_config_that_pauses_an_idle_session_after_thirty_mi
     assert_eq!(after("own"), 5);
     assert!(after("other").is_null(), "{:#}", env.status("other"));
 }
+
+/// A manager runs its own release's `runtime-mux`, the one beside its
+/// binary, before any other on `PATH`: after an update, an old manager
+/// never execs a new release's runtime.
+#[cfg(unix)]
+#[test]
+fn a_manager_calls_the_runtime_beside_it_before_one_on_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::without_tools("sibling-runtime");
+    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
+    let stub = |dir: &std::path::Path, log: &std::path::Path| {
+        fs::create_dir_all(dir).unwrap();
+        let program = dir.join("runtime-mux");
+        fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\necho \"$1\" >> '{}'\necho '{{\"known\":{{\"protocol\":1,\"verbs\":[\"manifest\",\"start\",\"inspect\",\"stop\"]}}}}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let beside = env.root.join("beside.log");
+    let on_path = env.root.join("on-path.log");
+    stub(&env.root, &beside);
+    stub(&env.root.join("empty-path"), &on_path);
+    let _manager = Running(
+        installed(&env, &["up", "--poll-ms", "100"])
+            .spawn()
+            .unwrap(),
+    );
+    until(|| beside.exists() || on_path.exists());
+    assert!(
+        beside.exists() && !on_path.exists(),
+        "the manager called the runtime-mux on PATH: {}",
+        fs::read_to_string(&on_path).unwrap_or_default()
+    );
+}

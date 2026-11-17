@@ -434,6 +434,8 @@ pub(super) struct FleetFacts {
     pub(super) config: Option<(std::path::PathBuf, &'static str)>,
     /// The command that starts its manager ([`crate::fleet_link::FleetLink::start_manager`]).
     start_manager: String,
+    /// The command that restarts it ([`crate::fleet_link::FleetLink::restart_manager`]).
+    restart_manager: String,
     /// `fleet runtime hosts --json`: the places a session can run in, or why
     /// they could not be read.
     pub(super) hosts: Result<serde_json::Value, String>,
@@ -489,6 +491,7 @@ impl FleetFacts {
             config,
             hosts,
             start_manager: link.start_manager(),
+            restart_manager: link.restart_manager(),
         }
     }
 
@@ -623,16 +626,31 @@ impl FleetFacts {
     /// runs `fleet up`, and the row names the command that starts it. A
     /// Fleet that did not answer has no such row: its `fleet` row says why.
     fn manager_finding(&self, broken: Level) -> Option<Finding> {
-        let manager = &self.version.as_ref().ok()?["manager"];
+        let version = self.version.as_ref().ok()?;
+        let manager = &version["manager"];
         Some(match manager["held"].as_bool() {
-            Some(true) => Finding::new(
-                "fleet-manager",
-                Level::Ok,
-                format!(
+            Some(true) => {
+                let running = format!(
                     "manager running ({})",
                     manager["holder"].as_str().unwrap_or("?")
-                ),
-            ),
+                );
+                match (
+                    manager["version"].as_str(),
+                    version["cli"]["version"].as_str(),
+                ) {
+                    (Some(runs), Some(installed)) if runs != installed => Finding::new(
+                        "fleet-manager",
+                        Level::Warn,
+                        format!("{running}; manager runs {runs}, installed {installed}"),
+                    )
+                    .fix(if self.local {
+                        self.restart_manager.clone()
+                    } else {
+                        "restart the manager on that machine".to_string()
+                    }),
+                    _ => Finding::new("fleet-manager", Level::Ok, running),
+                }
+            }
             Some(false) if self.local => {
                 Finding::new("fleet-manager", broken, "Fleet not running".into())
                     .fix(self.start_manager.clone())
@@ -844,6 +862,7 @@ mod tests {
             config: config.map(|p| (std::path::PathBuf::from(p), "the per-user file")),
             hosts: hosts.map_err(str::to_string),
             start_manager: "fleet up".into(),
+            restart_manager: "systemctl --user restart fleet.service".into(),
         }
     }
 
@@ -939,6 +958,41 @@ mod tests {
         assert_eq!(manager.level, Level::Fail, "{}", manager.detail);
         assert_eq!(manager.detail, "Fleet not running");
         assert_eq!(manager.fix.as_deref(), Some("fleet up"));
+    }
+
+    #[test]
+    fn doctor_warns_when_the_manager_runs_another_version_than_the_installed_fleet() {
+        let config = tempfile::NamedTempFile::new().expect("config");
+        let answer = |manager: &str| {
+            json!({"version": "2.0.0", "cli": {"version": "2.0.0"}, "apiVersions": ["fleet/v1alpha1"],
+                "manager": {"held": true, "holder": "1@b", "version": manager}})
+        };
+        let row = |manager: &str| {
+            facts(
+                true,
+                None,
+                Ok(answer(manager)),
+                config.path().to_str(),
+                Ok(json!({"hosts": []})),
+            )
+            .findings(true)
+            .into_iter()
+            .find(|f| f.key == "fleet-manager")
+            .expect("a fleet-manager row")
+        };
+        let drifted = row("1.9.0");
+        assert_eq!(drifted.level, Level::Warn, "{}", drifted.detail);
+        assert!(
+            drifted
+                .detail
+                .contains("manager runs 1.9.0, installed 2.0.0"),
+            "{}",
+            drifted.detail
+        );
+        assert!(drifted.fix.is_some_and(|f| !f.trim().is_empty()));
+        let same = row("2.0.0");
+        assert_eq!(same.level, Level::Ok, "{}", same.detail);
+        assert!(!same.detail.contains("installed"), "{}", same.detail);
     }
 
     #[test]

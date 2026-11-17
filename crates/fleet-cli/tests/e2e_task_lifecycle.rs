@@ -933,6 +933,7 @@ fn version_reports_every_schema() {
     assert_eq!(v["configVersion"], 1);
     assert_eq!(v["storeFormat"]["version"], 1);
     assert!(v["version"].as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!(v["cli"]["version"], v["version"]);
     env.fleet(&["--version"]).ok().stdout_has("fleet ");
 }
 
