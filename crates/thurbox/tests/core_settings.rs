@@ -467,7 +467,7 @@ fn with_both_update_switches_off_nothing_is_fetched_or_replaced() {
     assert!(!config.features().auto_update);
 
     let started = std::time::Instant::now();
-    let mut updates = thurbox::kernel::updates::Updates::start(config.features());
+    let mut updates = thurbox::kernel::updates::Updates::start(config.features(), Vec::new());
     assert!(
         started.elapsed() < std::time::Duration::from_millis(200),
         "starting must not wait on anything"

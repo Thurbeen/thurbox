@@ -294,7 +294,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             startup_settings.notifications,
         ),
         themes,
-        updates: thurbox::kernel::updates::Updates::start(config.features()),
+        updates: thurbox::kernel::updates::Updates::start(config.features(), links.clone()),
         slot_selection: std::collections::HashMap::new(),
         visible_slots: std::collections::HashSet::new(),
         pending_focus: None,

@@ -312,7 +312,11 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
             settings.features.version_check,
             &crate::fleet_link::FleetLink::in_force(settings),
         ),
-        Command::Update(args) => update::run(args, settings.features.auto_update),
+        Command::Update(args) => update::run(
+            args,
+            settings.features.auto_update,
+            crate::fleet_link::Fleets::of(settings).all(),
+        ),
         Command::Notify(args) => notify::run(args, settings)?,
         Command::Perf(args) => perf::run(args.plugins)?,
         Command::Plugin { action } => plugins::run(action)?,

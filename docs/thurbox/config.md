@@ -513,9 +513,27 @@ the current binaries untouched; the whole step runs before the TUI takes the
 terminal and is best-effort (any failure is logged and startup continues on
 the current version). The replaced binary takes effect on the **next launch**
 (the running process keeps its open file), so the TUI shows an "Updated to
-vX.Y.Z — restart thurbox and any running `fleet up` to apply" status line: a
-running Fleet manager keeps the program it started from, and it outlives the
-interface. `thurbox-cli update` performs the
+vX.Y.Z — restart thurbox to apply" status line.
+
+A running `fleet up` keeps the program it started from, and it outlives the
+interface. After an install, thurbox restarts it on the new `fleet`, for each
+Fleet on this machine (`restart_manager` in `src/kernel/snapshot/fleet.rs`):
+
+1. `fleet version --json` names the process that holds the manager lease. When
+   no process holds it, thurbox starts no manager.
+2. thurbox sends that process SIGTERM, as Ctrl-C stops it. It finishes its
+   sweep, releases the lease and keeps every session, Task and inbox.
+3. thurbox waits for the lease to be released, then 2 s more. A service
+   supervisor or another interface that starts `fleet up` in that time keeps
+   the lease.
+4. Otherwise thurbox starts `fleet up` with the same command line and
+   environment it starts one with at launch. The lease admits one manager, so
+   two engines never run.
+
+The status line names each Fleet whose manager restarted, or says why to
+restart it by hand. A Fleet on another machine keeps its own manager. Windows
+has no graceful stop for another process, so there the status line asks for a
+restart by hand. `thurbox-cli update` performs the
 same update on demand (with `--force` to bypass the up-to-date and dev-build
 guards — never the major line); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a

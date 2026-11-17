@@ -6,7 +6,9 @@
 //! replaces files on disk). When the flag is off, `update` prints a one-line
 //! hint on how to enable it instead of reaching the network. `--force`
 //! re-downloads and replaces even when up to date or on a development build,
-//! and still never installs another major.
+//! and still never installs another major. After an install, the `fleet up`
+//! of each Fleet on this machine is restarted on the new `fleet`
+//! ([`crate::kernel::snapshot::fleet::restart_manager`]).
 
 use clap::Args;
 use serde_json::json;
@@ -26,7 +28,11 @@ pub struct UpdateArgs {
 /// version, the network, and the install directory.
 ///
 /// `enabled` is `[features] auto_update` as the process loaded it.
-pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
+pub fn run(
+    args: UpdateArgs,
+    enabled: bool,
+    fleets: &[crate::fleet_link::FleetLink],
+) -> CommandOutput {
     let current = crate::update::version_check::current_version();
 
     if !enabled {
@@ -48,18 +54,19 @@ pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
             to,
             next_major,
         }) => {
+            let fleet = crate::kernel::snapshot::fleet::restart_managers(fleets);
             let mut fields = vec![
                 ("from", from.clone()),
                 ("to", to.clone()),
                 ("updated", "true".to_string()),
-                (
-                    "note",
-                    "restart thurbox and any running `fleet up` to apply".to_string(),
-                ),
+                ("note", "restart thurbox to apply".to_string()),
             ];
-            let mut summary = format!(
-                "Updated {from} → {to}. Restart thurbox and any running `fleet up` to apply."
-            );
+            let mut summary = format!("Updated {from} → {to}. Restart thurbox to apply.");
+            if !fleet.is_empty() {
+                fields.push(("fleet", fleet.clone()));
+                summary.push(' ');
+                summary.push_str(&fleet);
+            }
             if let Some(next) = &next_major {
                 let note = next_major_note(next);
                 fields.push(("next major", note.clone()));
@@ -71,6 +78,7 @@ pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
                     "version": from,
                     "latest": to,
                     "next_major": next_major,
+                    "fleet": fleet,
                     "updated": true,
                     "update_enabled": true,
                     "summary": summary,
@@ -146,7 +154,7 @@ mod tests {
         // The flag is on by default for 1.0, so exercise the disabled path
         // directly, with the flag passed in — no network or
         // disk touch.
-        let out = run(UpdateArgs { force: false }, false);
+        let out = run(UpdateArgs { force: false }, false, &[]);
         assert_eq!(out["update_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

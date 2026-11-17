@@ -911,7 +911,8 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
 
 /// Keep a `fleet up` running while the source does: start one, and when it
 /// exits, say why and start another `every` ([`MANAGER_CHECK`]) later. One that
-/// exits for a held lease is no error: another manager runs.
+/// exits for a held lease is no error: another manager runs. Nor is one that
+/// was stopped (exit 0), as [`restart_manager`] stops it after an update.
 fn keep_manager(link: &FleetLink, tx: &Sender<Update>, every: Duration) {
     loop {
         let dir = crate::paths::data_directory();
@@ -919,7 +920,7 @@ fn keep_manager(link: &FleetLink, tx: &Sender<Update>, every: Duration) {
             .ok_or_else(|| "fleet up: no data directory for its log".to_string())
             .and_then(|dir| manage(link, &dir, tx))
         {
-            Ok(Some(LEASE_HELD)) => None,
+            Ok(Some(LEASE_HELD | 0)) => None,
             Ok(code) => Some(format!(
                 "fleet up exited{}",
                 code.map(|c| format!(" with {c}")).unwrap_or_default()
@@ -940,10 +941,44 @@ fn keep_manager(link: &FleetLink, tx: &Sender<Update>, every: Duration) {
 /// manager outlived the interface stays readable, and a later start removes
 /// it once that manager is gone ([`clear_old_logs`]).
 fn manage(link: &FleetLink, dir: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
+    let started = start_manager(link, dir)?;
+    if tx.send(Update::Manager(None)).is_err() {
+        return Ok(Some(LEASE_HELD));
+    }
+    started.wait()
+}
+
+/// A `fleet up` started in a process group of its own, its standard error
+/// in a log named for it.
+struct StartedManager {
+    child: Child,
+    reader: std::fs::File,
+    log: PathBuf,
+}
+
+impl StartedManager {
+    /// Its exit code, or the error it wrote; its log is read back and removed.
+    fn wait(mut self) -> Result<Option<i32>, String> {
+        let status = self.child.wait().map_err(|e| format!("fleet up: {e}"))?;
+        let mut stderr = String::new();
+        let _ = self.reader.rewind();
+        let _ = self.reader.read_to_string(&mut stderr);
+        let _ = std::fs::remove_file(&self.log);
+        if status.code() == Some(LEASE_HELD) {
+            return Ok(status.code());
+        }
+        match stderr.lines().find_map(|line| line.strip_prefix("error: ")) {
+            Some(why) => Err(format!("fleet up: {why}")),
+            None => Ok(status.code()),
+        }
+    }
+}
+
+fn start_manager(link: &FleetLink, dir: &Path) -> Result<StartedManager, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("fleet up: log: {e}"))?;
     clear_old_logs(dir);
     let dir = dir.to_path_buf();
-    let (log, mut reader, path) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
+    let (log, reader, path) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
     let mut command = link.command(&["up"]);
     command
         .stdin(Stdio::null())
@@ -954,7 +989,7 @@ fn manage(link: &FleetLink, dir: &Path, tx: &Sender<Update>) -> Result<Option<i3
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = match command.spawn() {
+    let child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
             let _ = std::fs::remove_file(&path);
@@ -964,25 +999,165 @@ fn manage(link: &FleetLink, dir: &Path, tx: &Sender<Update>) -> Result<Option<i3
     // Named for the manager from here on, so a later start can tell a log
     // whose manager still runs from one nobody writes.
     let named = dir.join(format!("fleet-up-{}.log", child.id()));
-    let path = match std::fs::rename(&path, &named) {
+    let log = match std::fs::rename(&path, &named) {
         Ok(()) => named,
         Err(_) => path,
     };
-    if tx.send(Update::Manager(None)).is_err() {
-        return Ok(Some(LEASE_HELD));
+    Ok(StartedManager { child, reader, log })
+}
+
+/// How long a stopped `fleet up` may take to finish its sweep and release
+/// the lease, and a new one to take it.
+const RESTART_BOUND: Duration = Duration::from_secs(60);
+
+/// How long a released lease is left for another starter to take before
+/// thurbox starts a manager itself: a service supervisor that restarts
+/// `fleet up`, or an interface that keeps one running.
+const TAKEOVER_GRACE: Duration = Duration::from_secs(2);
+
+/// What [`restart_manager`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restart {
+    /// No `fleet up` held the lease, and none was started.
+    NotRunning,
+    /// The `fleet up` that held the lease stopped, and `started` holds it.
+    Restarted { stopped: u32, started: u32 },
+}
+
+/// Restart the `fleet up` that holds the lease of the Fleet on this machine
+/// `link` reaches, so it runs the `fleet` installed now. The old one is
+/// stopped as Ctrl-C stops it (SIGTERM): it finishes its sweep, releases the
+/// lease and leaves every session running. The new one starts as
+/// the interface starts one, with the same `fleet` command line and
+/// environment, unless another starter takes the lease first. A Fleet with
+/// no manager running is left without one.
+pub fn restart_manager(link: &FleetLink) -> Result<Restart, String> {
+    let Some(stopped) = lease_holder(link)? else {
+        return Ok(Restart::NotRunning);
+    };
+    terminate(stopped)?;
+    let released = |holder: &Option<u32>| *holder != Some(stopped);
+    let holder = poll_lease(link, RESTART_BOUND, released)?
+        .ok_or_else(|| format!("fleet up {stopped} did not release the lease"))?;
+    let taken = match holder {
+        Some(started) => Some(started),
+        None => poll_lease(link, TAKEOVER_GRACE, Option::is_some)?.flatten(),
+    };
+    if let Some(started) = taken {
+        return Ok(Restart::Restarted { stopped, started });
     }
-    let status = child.wait().map_err(|e| format!("fleet up: {e}"))?;
-    let mut stderr = String::new();
-    let _ = reader.rewind();
-    let _ = reader.read_to_string(&mut stderr);
-    let _ = std::fs::remove_file(&path);
-    if status.code() == Some(LEASE_HELD) {
-        return Ok(status.code());
+    let dir = crate::paths::data_directory()
+        .ok_or_else(|| "fleet up: no data directory for its log".to_string())?;
+    let (tx, exited) = channel();
+    let manager = start_manager(link, &dir)?;
+    std::thread::spawn(move || {
+        let _ = tx.send(manager.wait());
+    });
+    let deadline = std::time::Instant::now() + RESTART_BOUND;
+    loop {
+        if let Some(started) = lease_holder(link)? {
+            return Ok(Restart::Restarted { stopped, started });
+        }
+        match exited.try_recv() {
+            Ok(Ok(Some(LEASE_HELD))) => {}
+            Ok(Ok(code)) => {
+                return Err(format!(
+                    "fleet up exited{}",
+                    code.map(|c| format!(" with {c}")).unwrap_or_default()
+                ))
+            }
+            Ok(Err(why)) => return Err(why),
+            Err(_) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("the new fleet up did not take the lease".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    match stderr.lines().find_map(|line| line.strip_prefix("error: ")) {
-        Some(why) => Err(format!("fleet up: {why}")),
-        None => Ok(status.code()),
+}
+
+/// The lease holder each `fleet version --json` names, until `done` holds
+/// for one, or `None` once `bound` has passed.
+fn poll_lease(
+    link: &FleetLink,
+    bound: Duration,
+    done: impl Fn(&Option<u32>) -> bool,
+) -> Result<Option<Option<u32>>, String> {
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        let holder = lease_holder(link)?;
+        if done(&holder) {
+            return Ok(Some(holder));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The pid of the `fleet up` holding the manager lease, from `fleet version
+/// --json`'s `manager`: `None` when none holds it. A lease that cannot be
+/// read is an error, never "not running".
+fn lease_holder(link: &FleetLink) -> Result<Option<u32>, String> {
+    let version = link.version()?;
+    let manager = &version["manager"];
+    match manager["held"].as_bool() {
+        Some(false) => Ok(None),
+        Some(true) => manager["holder"]
+            .as_str()
+            .and_then(|holder| holder.strip_prefix("fleet-up-"))
+            .and_then(|pid| pid.parse().ok())
+            .map(Some)
+            .ok_or_else(|| format!("the manager lease names no fleet up: {manager}")),
+        None => Err(format!(
+            "the manager lease cannot be read: {}",
+            manager["why"]
+                .as_str()
+                .unwrap_or("fleet version reports none")
+        )),
+    }
+}
+
+/// Ask the `fleet up` `pid` to stop, as Ctrl-C does. A pid that is not a
+/// running `fleet` is never signalled.
+fn terminate(pid: u32) -> Result<(), String> {
+    let id = sysinfo::Pid::from_u32(pid);
+    let mut system = sysinfo::System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[id]), true);
+    let process = system
+        .process(id)
+        .filter(|process| process.name().to_string_lossy().starts_with("fleet"))
+        .ok_or_else(|| format!("fleet up {pid} holds the lease but does not run here"))?;
+    match process.kill_with(sysinfo::Signal::Term) {
+        Some(true) => Ok(()),
+        Some(false) => Err(format!("fleet up {pid} could not be stopped")),
+        None => Err(format!(
+            "fleet up {pid} cannot be stopped gracefully on this platform"
+        )),
+    }
+}
+
+/// Restart the manager of each Fleet on this machine among `links`
+/// ([`restart_manager`]), and say what came of it: what a finished update
+/// reports. Empty when no manager ran.
+pub fn restart_managers(links: &[FleetLink]) -> String {
+    links
+        .iter()
+        .filter(|link| link.is_local())
+        .filter_map(|link| match restart_manager(link) {
+            Ok(Restart::NotRunning) => None,
+            Ok(Restart::Restarted { .. }) => Some(format!(
+                "Fleet {}'s `fleet up` restarted on the new release.",
+                link.name()
+            )),
+            Err(why) => Some(format!(
+                "Restart Fleet {}'s `fleet up` to apply: {why}.",
+                link.name()
+            )),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Remove the `fleet up` logs in `dir` whose process is gone: a manager

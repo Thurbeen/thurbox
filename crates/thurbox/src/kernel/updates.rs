@@ -36,8 +36,9 @@ fn log_next_major(next: Option<&str>) {
 enum Done {
     /// A refreshed check: the latest release, when it is newer than this build.
     Checked(Option<String>),
-    /// The silent update finished and replaced the binaries.
-    Installed(String),
+    /// The silent update finished and replaced the binaries, and what came
+    /// of restarting each Fleet's `fleet up` on them.
+    Installed { to: String, fleet: String },
 }
 
 /// The update state, and the workers feeding it.
@@ -54,7 +55,10 @@ impl Updates {
     /// The cache read is a file, so it happens here; everything that touches the
     /// network happens on a thread. With both switches off this does nothing at
     /// all — not a fetch, not a thread, not a file.
-    pub fn start(features: &FeatureFlags) -> Self {
+    ///
+    /// `fleets` are the Fleets whose `fleet up` an install restarts on the
+    /// new `fleet`: those on this machine among them.
+    pub fn start(features: &FeatureFlags, fleets: Vec<crate::fleet_link::FleetLink>) -> Self {
         let mut updates = Self::default();
         if !features.version_check && !features.auto_update {
             return updates;
@@ -92,7 +96,8 @@ impl Updates {
                         // The check's cache is refreshed with it, so the badge
                         // agrees with what is now installed on the next launch.
                         let _ = crate::update::version_check::refresh_cache();
-                        let _ = tx.send(Done::Installed(to));
+                        let fleet = crate::kernel::snapshot::fleet::restart_managers(&fleets);
+                        let _ = tx.send(Done::Installed { to, fleet });
                     }
                     Ok(crate::update::self_update::UpdateOutcome::UpToDate {
                         next_major, ..
@@ -122,14 +127,14 @@ impl Updates {
         while let Ok(done) = rx.try_recv() {
             match done {
                 Done::Checked(latest) => self.latest = latest,
-                Done::Installed(to) => {
-                    self.latest = Some(to.clone());
-                    // A running `fleet up` keeps the program it started
-                    // from until it restarts, which a thurbox restart does
-                    // not do: it outlives the interface.
-                    message = Some(format!(
-                        "Updated to v{to} — restart thurbox and any running `fleet up` to apply."
-                    ));
+                Done::Installed { to, fleet } => {
+                    let mut text = format!("Updated to v{to} — restart thurbox to apply.");
+                    if !fleet.is_empty() {
+                        text.push(' ');
+                        text.push_str(&fleet);
+                    }
+                    self.latest = Some(to);
+                    message = Some(text);
                 }
             }
         }
@@ -210,7 +215,7 @@ mod tests {
     fn both_switches_off_does_nothing_at_all() {
         // Not a fetch, not a thread, not a cache read: the point of the switch is
         // that the network is never touched.
-        let updates = Updates::start(&features(false, false));
+        let updates = Updates::start(&features(false, false), Vec::new());
         assert!(updates.available().is_none());
         assert!(
             updates.channel.is_none(),
@@ -239,7 +244,11 @@ mod tests {
     fn an_install_is_reported_because_it_changed_the_machine() {
         let mut updates = Updates::default();
         let tx = updates.sender();
-        tx.send(Done::Installed("9.9.9".into())).expect("send");
+        tx.send(Done::Installed {
+            to: "9.9.9".into(),
+            fleet: String::new(),
+        })
+        .expect("send");
         let message = updates.poll().unwrap_or_default();
         assert!(message.contains("9.9.9"), "{message}");
         assert!(
@@ -249,15 +258,19 @@ mod tests {
         assert_eq!(updates.available(), Some("9.9.9"));
     }
 
-    /// A running `fleet up` keeps the program it started from, so the notice
-    /// says the manager needs a restart too.
+    /// The notice says what came of restarting `fleet up` on the new release.
     #[test]
-    fn an_install_names_the_fleet_manager_that_keeps_the_old_program() {
+    fn an_install_reports_the_fleet_manager_restart() {
         let mut updates = Updates::default();
         let tx = updates.sender();
-        tx.send(Done::Installed("9.9.9".into())).expect("send");
+        let fleet = "Restart Fleet local's `fleet up` to apply: it is stuck.".to_string();
+        tx.send(Done::Installed {
+            to: "9.9.9".into(),
+            fleet: fleet.clone(),
+        })
+        .expect("send");
         let message = updates.poll().unwrap_or_default();
-        assert!(message.contains("fleet up"), "{message}");
+        assert!(message.ends_with(&fleet), "{message}");
     }
 
     #[test]
