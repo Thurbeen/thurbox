@@ -32,10 +32,11 @@ such as thurbox, or from a gateway route. Keep `up` running in a terminal or
 your own service supervisor. Ctrl-C (also SIGTERM on Unix) finishes the
 bounded sweep, releases the manager lease and retains sessions. Run
 `fleet up` again to reconnect; a simultaneous manager exits with code 6.
-The lease holder is `fleet-up-<pid>@<boot id>`. On Linux, a manager takes
-over a lease whose holder is dead at once: the holder names another boot,
-or no process has its PID. Elsewhere, after a crash, wait for the recorded
-lease to expire before restarting.
+The lease holder is `fleet-up-<pid>@<boot id>`. On Linux, after a reboot,
+a manager takes over at once a lease whose holder names another boot:
+neither that manager nor any process it started still runs. After a crash
+on the same boot, wait for the recorded lease to expire before restarting:
+a process the dead manager started can still be running.
 `fleet version --json` reports the manager lease under `manager`, and only
 reads it:
 
@@ -44,9 +45,9 @@ reads it:
 ```
 
 - `held` is `true` while the recorded lease is unexpired and its holder
-  is not dead: a manager runs.
+  names this boot: a manager runs.
 - `held` is `false` when no lease is recorded, the lease expired or was
-  released, or its holder is dead. `holder` and `expiresAt` then name the
+  released, or its holder names another boot. `holder` and `expiresAt` then name the
   last lease, if any.
 - `held` is `null` when the lease cannot be read. `why` says why. An
   unreadable lease never reads as `false`.

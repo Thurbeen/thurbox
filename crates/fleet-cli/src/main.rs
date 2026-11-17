@@ -1164,6 +1164,14 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
                 .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
             let lease_ttl_ms = lease_for(bound, lease_ttl_ms)?;
+            if let Some(named) = holder
+                .as_deref()
+                .filter(|h| fleet_store::holder::is_reserved(h))
+            {
+                return Err(fail(format!(
+                    "--holder {named}: names of the shape fleet-<pid>@<boot id> are Fleet's own"
+                )));
+            }
             let holder = holder.unwrap_or_else(|| fleet_store::holder::local(false));
             let manager = Manager {
                 store,

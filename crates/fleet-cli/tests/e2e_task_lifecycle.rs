@@ -596,7 +596,7 @@ fn exited_pid() -> u32 {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_lease_whose_holder_is_dead_is_taken_over_at_once() {
+fn a_lease_held_by_another_boot_is_taken_over_at_once() {
     let env = setup("dead-holder", true);
     let me = std::process::id();
     let boot = boot_id();
@@ -608,10 +608,20 @@ fn a_lease_whose_holder_is_dead_is_taken_over_at_once() {
         true
     );
 
-    for dead in [
+    for undecided in [
         format!("fleet-up-{}@{boot}", exited_pid()),
-        format!("fleet-up-{me}@00000000-0000-0000-0000-000000000000"),
         format!("fleet-up-{}", exited_pid()),
+    ] {
+        hold_lease(&env, &undecided);
+        env.reconcile().code(6).stderr_has("lease held by");
+    }
+    env.fleet(&["reconcile", "--holder", &format!("fleet-{me}@{boot}")])
+        .code(1)
+        .stderr_has("Fleet's own");
+
+    for dead in [
+        format!("fleet-up-{me}@00000000-0000-0000-0000-000000000000"),
+        format!("fleet-{}@another-boot", exited_pid()),
     ] {
         hold_lease(&env, &dead);
         assert_eq!(

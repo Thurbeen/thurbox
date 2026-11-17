@@ -1,13 +1,13 @@
 //! The lease holders Fleet names after a process of this machine:
-//! `fleet-up-<pid>` and `fleet-<pid>`, with `@<boot id>` where the platform
-//! has one. The file store lives on
-//! this machine, so a holder so named can be proven dead.
+//! `fleet-up-<pid>@<boot id>` and `fleet-<pid>@<boot id>`. The file store
+//! lives on this machine, so a holder so named from another boot is
+//! provably dead, with every process it started.
 
 use std::fs;
-use std::path::Path;
 
 /// The holder name for the calling process: `fleet-up-<pid>@<boot id>`
-/// for `fleet up`, `fleet-<pid>@<boot id>` otherwise.
+/// for `fleet up`, `fleet-<pid>@<boot id>` otherwise. Without a boot id
+/// the name has no `@` part and is never judged dead.
 pub fn local(serving: bool) -> String {
     let prefix = if serving { "fleet-up" } else { "fleet" };
     let pid = std::process::id();
@@ -17,29 +17,31 @@ pub fn local(serving: bool) -> String {
     }
 }
 
+/// Whether `holder` has the shape [`local`] gives, which a holder chosen
+/// by hand must not take.
+pub fn is_reserved(holder: &str) -> bool {
+    boot_of(holder).is_some()
+}
+
 /// `true` only when the holder is proven dead: it names another boot of
-/// this machine, or a process that does not exist. A holder of any other
-/// shape, or a check the platform cannot make, is never dead.
+/// this machine, so neither it nor any process it started still runs. A
+/// holder of any other shape, or a check the platform cannot make, is
+/// never dead. A dead process of this boot is not enough: the processes
+/// it started outlive it, unbounded.
 pub fn is_dead(holder: &str) -> bool {
-    let (process, boot) = match holder.rsplit_once('@') {
-        Some((_, "")) => return false,
-        Some((process, boot)) => (process, Some(boot)),
-        None => (holder, None),
-    };
-    let Some(pid) = ["fleet-up-", "fleet-"]
-        .iter()
-        .find_map(|prefix| process.strip_prefix(prefix))
-        .and_then(|pid| pid.parse::<u32>().ok())
-    else {
-        return false;
-    };
-    let Some(current) = boot_id() else {
-        return false;
-    };
-    match boot {
-        Some(boot) if boot != current => true,
-        _ => !process_exists(pid),
+    match (boot_of(holder), boot_id()) {
+        (Some(boot), Some(current)) => boot != current,
+        _ => false,
     }
+}
+
+fn boot_of(holder: &str) -> Option<&str> {
+    let (process, boot) = holder.rsplit_once('@')?;
+    let pid = ["fleet-up-", "fleet-"]
+        .iter()
+        .find_map(|prefix| process.strip_prefix(prefix))?;
+    let named = !boot.is_empty() && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit());
+    named.then_some(boot)
 }
 
 #[cfg(target_os = "linux")]
@@ -55,13 +57,6 @@ fn boot_id() -> Option<String> {
     None
 }
 
-fn process_exists(pid: u32) -> bool {
-    !matches!(
-        fs::metadata(Path::new("/proc").join(pid.to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,12 +66,13 @@ mod tests {
         for holder in [
             "ops",
             "fleet-up",
-            "fleet-up-x",
+            "fleet-up-x@b",
             "fleet-up-1@",
-            "ci-1",
+            "fleet-up-1",
             "ci-1@b",
         ] {
             assert!(!is_dead(holder), "{holder}");
+            assert!(!is_reserved(holder), "{holder}");
         }
     }
 
@@ -84,6 +80,7 @@ mod tests {
     #[test]
     fn the_calling_process_is_alive_and_another_boot_is_dead() {
         let me = local(true);
+        assert!(is_reserved(&me), "{me}");
         assert!(!is_dead(&me), "{me}");
         let (process, _) = me.rsplit_once('@').unwrap();
         assert!(is_dead(&format!("{process}@another-boot")));
