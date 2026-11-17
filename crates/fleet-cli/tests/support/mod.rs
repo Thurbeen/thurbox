@@ -539,6 +539,16 @@ impl Env {
         }
     }
 
+    pub fn forget_announced(&self, name: &str) {
+        let path = self.object_path("Task", name);
+        let mut obj: Value =
+            serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+        if let Some(gateway) = obj["status"]["gateway"].as_object_mut() {
+            gateway.remove("announced");
+            fs::write(&path, obj.to_string()).expect("record");
+        }
+    }
+
     pub fn expire_receipts(&self, name: &str) {
         let path = self.object_path("Task", name);
         let mut obj: Value =

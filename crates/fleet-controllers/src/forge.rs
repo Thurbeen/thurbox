@@ -443,7 +443,7 @@ fn answered_through(cr: &ChangeRequestStatus, me: &str, mark: &str) -> Option<Mi
     let through = inline
         .iter()
         .filter(|n| !n.bot && !own(n) && answered_in_thread(cr, n, me, mark))
-        .map(|n| n.at)
+        .map(|n| n.edited_at.unwrap_or(n.at))
         .max();
     Some(through.unwrap_or(0))
 }

@@ -612,7 +612,9 @@ GatewayController posts in a tied thread, in this order:
 3. after its ready notice, one answered notice per followed change, with
    its URL, each time the entry's `answeredAt` moves past the value the
    last notice announced. The ready notice records the value it found, so
-   threads answered before it start no round.
+   threads answered before it start no round. A change with a ready notice
+   and no value recorded (a Task from before `announced`) records the
+   current value without a notice.
 
 It posts nothing else in a thread. A `Draft`, a result and all other change
 news go to the [log channel](#logging). The ready and answered notices are

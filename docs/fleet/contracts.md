@@ -407,8 +407,10 @@ ChangeRequest. Guarantees, each with its test in `forge_controller`,
 - **Answered once per round.** A following entry's `answeredAt` moves up
   only on a pass in which no unresolved inline thread waits on this Task's
   worker, and in which every unresolved thread `threads.unresolved` counts
-  is in the retained notes. It takes the creation time of the newest
-  person's note the worker answered, so reopening a thread moves nothing.
+  is in the retained notes. It takes the last edit time, else the creation
+  time, of the newest person's note the worker answered, so reopening a
+  thread moves nothing and an answered edit starts a round. A thread told
+  before `announced` existed is caught up without a notice.
   It never decreases. Tested in `e2e_gateway_logs`.
 - **Mark ready once.** A following entry whose change is a draft that was
   never seen ready (`everReady` false), whose mirror is fresh (`Reachable`

@@ -315,11 +315,11 @@ pub struct ChangeEntry {
     /// milliseconds. Separate from the Task's own and from other entries'.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_before: Option<Millis>,
-    /// The creation time (`at`) of the newest person's inline note that
-    /// this Task's worker answered, as of the last pass in which no inline
-    /// thread on the change waited on the worker. `0` until such a pass. It
-    /// never decreases. Creation time, not `seq`: reopening a thread moves
-    /// the `seq` of its notes, and is not an answer.
+    /// The last edit time (`editedAt`, else `at`) of the newest person's
+    /// inline note that this Task's worker answered, as of the last pass in
+    /// which no inline thread on the change waited on the worker. `0` until
+    /// such a pass. It never decreases. A time, not `seq`: reopening a
+    /// thread moves the `seq` of its notes, and is not an answer.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub answered_at: Millis,
 }

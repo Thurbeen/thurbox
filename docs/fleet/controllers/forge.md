@@ -251,7 +251,8 @@ else if a review thread waits on the worker:
     leave entry.answeredAt
 else:
     entry.answeredAt = max(entry.answeredAt,
-                           newest `at` of a person's inline note that answered_in_thread holds for)
+                           newest editedAt, else at, of a person's inline note
+                           that answered_in_thread holds for)
 ```
 
 Rules:
@@ -265,9 +266,10 @@ Rules:
   thread, and it makes the thread wait.
 - `entry.answeredAt` never decreases. A new person's note makes its thread
   wait, and the next answer moves `entry.answeredAt` past the old value.
-- `entry.answeredAt` uses the creation time of a note, not its `seq`.
-  Reopening a thread moves the `seq` of its notes, and reopening is not an
-  answer.
+- `entry.answeredAt` uses the time a note was last edited, else created,
+  not its `seq`. Reopening a thread moves the `seq` of its notes and leaves
+  its times alone, and reopening is not an answer. Editing a note makes its
+  thread wait, and the answer to the edit moves `entry.answeredAt`.
 - Only inline threads count. A top-level comment or a review body has no
   thread to answer in.
 - A forge that counts unresolved discussions outside inline threads in
@@ -423,7 +425,7 @@ Each entry of `changes`:
 | `gaps` | How many times a relay found `droppedBefore` above the cursor. |
 | `markReady` | `{state, head, attempts, intents, receipts}`; `state` is `none`, `pending`, `done` or `failed`; `head` the head of the last intent; `attempts` the intents written against the change; `intents` and `receipts` by effect key, the mark-ready effect's own, apart from TaskController's. |
 | `notBefore` | Earliest next pass for this entry after a failed mark-ready, in Unix milliseconds. Separate from the Task's own `notBefore` and from other entries'. |
-| `answeredAt` | The creation time (`at`) of the newest person's inline note that this Task's worker answered, as of the last pass in which no review thread waited on the worker. Absent until such a pass. It never decreases. See [answered review threads](#answered-review-threads). |
+| `answeredAt` | The last edit time (`editedAt`, else `at`) of the newest person's inline note that this Task's worker answered, as of the last pass in which no review thread waited on the worker. Absent until such a pass. It never decreases. See [answered review threads](#answered-review-threads). |
 
 A Task that opened a change in each of two repositories:
 

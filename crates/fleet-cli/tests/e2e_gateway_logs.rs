@@ -618,6 +618,47 @@ fn a_tied_tasks_thread_hears_once_per_round_when_every_review_thread_is_answered
     assert_eq!(again.len(), 3, "{again:?}");
     assert!(again[2].starts_with(&format!("{base}/answered/{cr_uid}/")));
     assert_ne!(again[1], again[2], "each round has its own key");
+    let answered_at = || env.status(&task)["forge"]["changes"][&cr]["answeredAt"].clone();
+    let through = answered_at();
+    let mut lint = inline("b1", 32, "lint-bot", "t3", "Unused import.");
+    lint.bot = true;
+    notes.push(lint);
+    notes.push(inline(
+        "b2",
+        33,
+        "fleet-bot",
+        "t3",
+        &format!("Removed.\n{mark}"),
+    ));
+    step(&notes);
+    assert_eq!(thread_keys(), again, "a bot thread starts no round");
+    assert_eq!(answered_at(), through);
+    let older: Vec<Note> = notes
+        .iter()
+        .filter(|n| !["r6", "r7"].contains(&n.id.as_str()))
+        .cloned()
+        .collect();
+    step(&older);
+    assert_eq!(answered_at(), through, "a dropped note keeps the round");
+    step(&notes);
+    assert_eq!(thread_keys(), again);
+    let r6 = notes.iter_mut().find(|n| n.id == "r6").unwrap();
+    r6.body = "And the error path, with a test?".into();
+    r6.edited_at = Some(35);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "an edited note waits");
+    notes.push(inline(
+        "r10",
+        36,
+        "fleet-bot",
+        "t2",
+        &format!("Tested.\n{mark}"),
+    ));
+    step(&notes);
+    let edited = thread_keys();
+    assert_eq!(edited.len(), 4, "an answered edit is a round: {edited:?}");
+    assert!(edited[3].starts_with(&format!("{base}/answered/{cr_uid}/")));
+    let again = edited;
     let resolve = |notes: &mut Vec<Note>, resolved: bool| {
         for n in notes
             .iter_mut()
@@ -631,6 +672,14 @@ fn a_tied_tasks_thread_hears_once_per_round_when_every_review_thread_is_answered
     resolve(&mut notes, false);
     step(&notes);
     assert_eq!(thread_keys(), again, "a reopened thread is no answer");
+    env.forget_announced(&task);
+    step(&notes);
+    assert_eq!(thread_keys(), again, "an upgrade posts no stale notice");
+    assert_eq!(
+        env.status(&task)["gateway"]["announced"][&cr_uid],
+        answered_at(),
+        "an upgrade takes the current round as told"
+    );
     notes.push(inline("r8", 40, "sam", "t2", "One more thing."));
     notes.push(inline(
         "r9",

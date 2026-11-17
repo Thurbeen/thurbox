@@ -1103,7 +1103,10 @@ fn unlogged_draft(st: &TaskStatus, gw: &GatewayStatus) -> bool {
 
 fn unannounced(gw: &GatewayStatus, entry: &ChangeEntry) -> bool {
     gw.ready.contains(&entry.uid)
-        && entry.answered_at > gw.announced.get(&entry.uid).copied().unwrap_or(0)
+        && gw
+            .announced
+            .get(&entry.uid)
+            .is_none_or(|told| entry.answered_at > *told)
 }
 
 /// Whether a followed change is ready for review: `everReady`.
@@ -1649,9 +1652,13 @@ impl Pass<'_, '_> {
                 ));
             }
             if unannounced(&self.gw, entry) {
+                let baseline = !self.gw.announced.contains_key(&entry.uid);
                 self.gw
                     .announced
                     .insert(entry.uid.clone(), entry.answered_at);
+                if baseline {
+                    continue;
+                }
                 return Some((
                     post_key(
                         &name,

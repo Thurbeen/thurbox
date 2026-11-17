@@ -148,7 +148,8 @@ pub struct GatewayStatus {
     pub ready: Vec<String>,
     /// Per ChangeRequest `uid`, the followed entry's `answeredAt` that the
     /// last ready or answered notice found: the answered notice is posted
-    /// once each time `answeredAt` moves past it.
+    /// once each time `answeredAt` moves past it. A ready change with no
+    /// entry records its `answeredAt` without a notice.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub announced: BTreeMap<String, Millis>,
     /// Per child Task name, what was read of it.
