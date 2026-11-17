@@ -242,12 +242,19 @@ fn host_of(obj: &Object) -> String {
 const STARTUP_STEPS_IN_A_ROW: usize = 16;
 
 fn starting(obj: &Object) -> bool {
+    let briefed_later = || {
+        obj.spec
+            .get("brief")
+            .and_then(Value::as_str)
+            .is_some_and(|brief| !brief.is_empty())
+    };
     !obj.is_deleting()
         && obj.spec.get("dispatch").and_then(Value::as_bool) == Some(true)
-        && matches!(
-            obj.status.get("phase").and_then(Value::as_str),
-            None | Some("Pending" | "Spawning" | "Spawned")
-        )
+        && match obj.status.get("phase").and_then(Value::as_str) {
+            None | Some("Pending" | "Spawning") => true,
+            Some("Spawned") => briefed_later(),
+            Some(_) => false,
+        }
 }
 
 impl Manager<'_> {
