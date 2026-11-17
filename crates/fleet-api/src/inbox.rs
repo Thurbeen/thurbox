@@ -61,6 +61,10 @@ pub struct InboxEntry {
     /// records it without a send once the worker has it already.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amends: Option<u64>,
+    /// For an `event-notice`: what TaskController queued it for, a
+    /// subscription's new events (see [`crate::subscription`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<crate::subscription::EventNotice>,
     /// Unix milliseconds.
     pub queued_at: Millis,
 }
@@ -250,6 +254,7 @@ mod tests {
             }),
             answers: Vec::new(),
             amends: None,
+            notice: None,
             queued_at: 1,
         }
     }

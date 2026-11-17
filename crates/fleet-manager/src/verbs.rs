@@ -1,6 +1,7 @@
 //! The verbs people and workers use: spec writes (`apply`, `delete`), a
 //! person's message (`send`), events on a board (`publish_event`,
-//! `list_events`, `wait_events`, `wait_ingested`) and the worker's answers
+//! `list_events`, `wait_events`, `wait_ingested`), a Task's subscriptions to
+//! them (`subscribe`, `unsubscribe`) and the worker's answers
 //! (`result`, `declare`).
 //! The CLI calls these and nothing below them, so every rule lives here
 //! once.
@@ -23,6 +24,7 @@ use fleet_api::listener::{self, Beat, Heartbeat, listener_name};
 use fleet_api::meta::API_VERSION;
 use fleet_api::plan::EffectOutcome;
 use fleet_api::result::{OutputDecl, TaskResult, validate_outputs};
+use fleet_api::subscription::Subscription;
 use fleet_api::task::{self, Amendment, Phase, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
 use fleet_api::{Clock, DeleteOutcome, FieldManager, Object, Observation, Store, StoreError};
@@ -563,6 +565,7 @@ pub fn send(
             about: None,
             answers: answers.iter().map(|a| a.trim().to_string()).collect(),
             amends: None,
+            notice: None,
             queued_at: clock.now(),
         };
         match store.append_inbox(
@@ -598,6 +601,105 @@ pub fn publish_event(
         .append_events(board, &source, vec![publish], FieldManager::Cli, None)?
         .pop()
         .ok_or_else(|| StoreError::Unknown(format!("{board}: the append answered no event")))
+}
+
+/// `fleet event subscribe`: add `subscription` to the Task's
+/// `spec.subscriptions`, compare-and-swap. Refused when the Task already
+/// subscribes to the Board with the same filter. The Board need not exist
+/// yet: TaskController reads it from its first event once it does.
+pub fn subscribe(
+    store: &dyn Store,
+    name: &str,
+    subscription: Subscription,
+) -> Result<Object, StoreError> {
+    edit_subscriptions(store, name, |subs| {
+        if subs
+            .iter()
+            .any(|s| s.board == subscription.board && s.filter == subscription.filter)
+        {
+            return Err(StoreError::Invalid(format!(
+                "{}/{name} already subscribes to Board/{} with this filter",
+                task::KIND,
+                subscription.board
+            )));
+        }
+        subs.push(subscription.clone());
+        Ok(())
+    })
+}
+
+/// `fleet event unsubscribe`: remove the Task's subscription to `board`
+/// with `filter`, compare-and-swap. TaskController drops its cursor on its
+/// next pass; a notice already queued is still delivered.
+pub fn unsubscribe(
+    store: &dyn Store,
+    name: &str,
+    board: &str,
+    filter: &Filter,
+) -> Result<Object, StoreError> {
+    edit_subscriptions(store, name, |subs| {
+        let before = subs.len();
+        subs.retain(|s| !(s.board == board && s.filter == *filter));
+        if subs.len() == before {
+            return Err(StoreError::NotFound(format!(
+                "{}/{name} has no subscription to Board/{board} with this filter",
+                task::KIND
+            )));
+        }
+        Ok(())
+    })
+}
+
+fn edit_subscriptions(
+    store: &dyn Store,
+    name: &str,
+    edit: impl Fn(&mut Vec<Subscription>) -> Result<(), StoreError>,
+) -> Result<Object, StoreError> {
+    for _ in 0..CAS_TRIES {
+        let current = match store.get(task::KIND, name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                return Err(StoreError::NotFound(format!("{}/{name}", task::KIND)));
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        };
+        let mut spec = current.spec.clone();
+        let mut subs: Vec<Subscription> = match spec.get("subscriptions") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(v) => serde_json::from_value(v.clone())
+                .map_err(|e| StoreError::Invalid(format!("{}: {e}", current.key())))?,
+        };
+        edit(&mut subs)?;
+        let Some(fields) = spec.as_object_mut() else {
+            return Err(StoreError::Invalid(format!(
+                "{}: spec is not an object",
+                current.key()
+            )));
+        };
+        if subs.is_empty() {
+            fields.remove("subscriptions");
+        } else {
+            fields.insert(
+                "subscriptions".into(),
+                serde_json::to_value(&subs).map_err(|e| StoreError::Invalid(e.to_string()))?,
+            );
+        }
+        match store.update_spec(
+            task::KIND,
+            name,
+            spec,
+            None,
+            current.metadata.resource_version,
+            FieldManager::Apply,
+        ) {
+            Err(StoreError::Conflict { .. }) => continue,
+            done => return done,
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        task::KIND
+    )))
 }
 
 /// The most events one `fleet event list` returns.
@@ -1175,6 +1277,7 @@ fn amend_once(
             about: None,
             answers: Vec::new(),
             amends: Some(generation),
+            notice: None,
             queued_at: at,
         };
         match store.amend_task(

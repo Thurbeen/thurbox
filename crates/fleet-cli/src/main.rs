@@ -497,6 +497,27 @@ enum EventCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Subscribe a Task to a Board: when events after its cursor match,
+    /// Fleet queues one notice in the Task's inbox with their count and seq
+    /// range, and the session reads them with list. While that notice is
+    /// still to deliver, no other notice is queued for the subscription.
+    Subscribe {
+        /// The Task whose session hears of the events.
+        task: String,
+        #[command(flatten)]
+        filter: EventFilter,
+        /// The seq of the last event the Task knows of already; without it,
+        /// the Board's head when Fleet first reads the subscription.
+        #[arg(long, value_name = "SEQ")]
+        after: Option<u64>,
+    },
+    /// Remove a Task's subscription to a Board with the same filter.
+    Unsubscribe {
+        /// The Task that subscribes.
+        task: String,
+        #[command(flatten)]
+        filter: EventFilter,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -520,17 +541,23 @@ struct EventFilter {
 
 impl EventFilter {
     fn cursor(self, after: u64) -> fleet_manager::verbs::EventCursor {
-        use fleet_api::event::{Filter, Pattern};
+        let (board, filter) = self.split();
         fleet_manager::verbs::EventCursor {
-            board: self.board,
+            board,
             after,
-            filter: Filter {
-                event_type: self.event_type.as_deref().map(Pattern::new),
-                subject: self.subject.as_deref().map(Pattern::new),
-                source: self.source,
-                correlation: self.correlation,
-            },
+            filter,
         }
+    }
+
+    fn split(self) -> (String, fleet_api::event::Filter) {
+        use fleet_api::event::{Filter, Pattern};
+        let filter = Filter {
+            event_type: self.event_type.as_deref().map(Pattern::new),
+            subject: self.subject.as_deref().map(Pattern::new),
+            source: self.source,
+            correlation: self.correlation,
+        };
+        (self.board, filter)
     }
 }
 
@@ -2278,6 +2305,27 @@ fn cmd_event(
             poll_ms,
             json,
         } => cmd_event_watch(store, filter.cursor(after), poll_ms, json),
+        EventCommand::Subscribe {
+            task,
+            filter,
+            after,
+        } => {
+            let (board, filter) = filter.split();
+            let subscription = fleet_api::subscription::Subscription {
+                board: board.clone(),
+                filter,
+                after,
+            };
+            fleet_manager::verbs::subscribe(store, &task, subscription)?;
+            println!("Task/{task} subscribes to Board/{board}");
+            Ok(())
+        }
+        EventCommand::Unsubscribe { task, filter } => {
+            let (board, filter) = filter.split();
+            fleet_manager::verbs::unsubscribe(store, &task, &board, &filter)?;
+            println!("Task/{task} no longer subscribes to Board/{board} with this filter");
+            Ok(())
+        }
     }
 }
 

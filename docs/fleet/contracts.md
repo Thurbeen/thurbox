@@ -153,9 +153,12 @@ spec.workspace      a list of absolute URLs; the runtime makes them
 spec.dispatch       nothing spawns while false
 spec.outputs        optional: the structured outputs a result must carry
 spec.forge          optional: relay and draft overrides for declared changes
+spec.subscriptions  optional: the Boards whose new events reach the inbox,
+                    one notice per subscription
 ```
 
-The spec is immutable once created, except `dispatch` and `forge`; a
+The spec is immutable once created, except `dispatch`, `forge` and
+`subscriptions`; a
 different brief is a different Task. `amendments` only grows, through the
 store's amend mutation (`amend_task` for `fleet amend`, a plugin's `amends[]`
 verb through `plugin_mutate`): `update_spec`, and so `apply` and a plugin
@@ -804,10 +807,12 @@ refused.
   entries are still to deliver, a deleting Task, a source not under the
   caller's prefix (`cli/`, `forge/`, `gateway/`), and an `answers` id that
   names no declared Question, and records the entry's `answers` in
-  `status.answered`, first answer wins; `record_relay` (ForgeController or
-  GatewayController, under the lease) replaces the writer's own field,
-  `status.forge` or `status.gateway`, and appends each listed entry under
-  the same checks, in one write that a single refused entry fails whole;
+  `status.answered`, first answer wins; `record_relay` (ForgeController,
+  GatewayController or TaskController, under the lease) replaces the
+  writer's own field, `status.forge`, `status.gateway` or
+  `status.subscriptions`, and appends each listed entry under the same
+  checks (TaskController's source prefix is `board/`), in one write that a
+  single refused entry fails whole;
   `record_delivery` (TaskController,
   under the lease) writes the controller's status and, in the same write,
   the receipt into the newest-100 `status.deliveries` and the entry out of
@@ -947,6 +952,36 @@ refused.
   The release stopped the session, so the read after it is the last one;
   a torn last line then never completes and is left. `e2e_event_board` drives it through the real
   binary.
+- A Task's subscriptions are `spec.subscriptions`, which a spec update may
+  change like `dispatch`; `subscription::validate` refuses more than 16, an
+  invalid Board name and two with the same Board and filter. The manager's
+  `subscribe` and `unsubscribe` verbs edit the list, compare-and-swap, as
+  `apply`. On each pass, after the outbox step and before the Task's
+  controllers, the manager reads the subscriptions of each Task that is not
+  being deleted, `Concluded` or `Releasing`. Per subscription it reads the
+  Board (`Unknown` keeps the cursor as it was, and the pass reports it) and
+  places the cursor (`SubscriptionCursor::place`): the old one while the
+  Board keeps its uid; `after`, else `event_head`, for a new one; `0` for a
+  Board made, deleted or made again since. A subscription whose last notice
+  is still in `status.inbox` and not given up on is not read, and nor is
+  one when the inbox holds more than 20 entries still to deliver, or one
+  whose Board's `status.head` is not above the cursor (a Board with no
+  `status.head` yet counts as head 0; a log a crash left ahead of its status
+  is read at the next append, which corrects it). Otherwise `read_events`
+  reads from the cursor up to the head, at most 10000 events, and the
+  lease is renewed before each page; a lost lease ends the sweep;
+  `Expired { oldest }` moves the cursor to `oldest - 1` and marks the
+  notice; a read error keeps the cursor as it was. A read with a match, or
+  an expiry, owes one `event-notice` (`subscription::notice_entry`): from
+  `board/<board>`, under `task/<name>/<uid>/notice/<n>` with `n` from
+  `status.subscriptions.notices`, with `notice` (`board`, `count`, `first`,
+  `last`, `expiredBefore`) and a text that gives the `fleet event list`
+  command, each filter as `--flag=value`, so a value that starts with a
+  dash stays a value. The cursors and the notices land in one `record_relay` as
+  TaskController under the lease, so a stop between them cannot happen; a
+  conflict leaves both for the next pass. A cursor of a subscription no
+  longer in the spec is dropped. `e2e_event_subscriptions` drives it through
+  the real binary.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the
@@ -1390,6 +1425,14 @@ reads again, as in `fleet watch`; `wait` still ends at its timeout. An
 expired cursor exits 5 and names `oldest` and the cursor the read was at,
 with `{"expired": {"oldest": N}}` on stdout under `--json`.
 
+`fleet event subscribe TASK [--board B] [--type P] [--subject P]
+[--source S] [--correlation C] [--after SEQ]` adds one item to the Task's
+`spec.subscriptions` through the manager's `subscribe` verb, and refuses
+one with the same Board and filter (exit 1). `fleet event unsubscribe TASK`
+with the same Board and filter flags removes it through `unsubscribe`; no
+such item exits 3, and so does a missing Task. The
+[Board page](resources/board.md#subscriptions) owns the notices.
+
 `fleet apply --create-only` creates each object, of every kind it takes, or
 refuses one whose name is taken with exit 5 and leaves it as it is; the
 store's create is
@@ -1534,6 +1577,9 @@ restarts and injected faults; `e2e_inbox` covers `fleet send` and delivery on
 the fake host; `e2e_event_board` covers `fleet event publish` and `list`,
 the Board `fleet init` makes, the refusals, the dedupe, the filters, an
 expired cursor, and a session's publish through its outbox, as its Task;
+`e2e_event_subscriptions` covers `fleet event subscribe` and
+`unsubscribe`, the digest notice, its hold while undelivered, an expired
+cursor, an unreadable Board and a Board made later on the fake host;
 `e2e_task_amend` covers `fleet amend`, its delivery to the same session,
 its refusals, `--if-generation` and the result rules on the fake host;
 `e2e_forge_controller` covers `fleet declare`, the join and the relay

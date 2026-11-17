@@ -103,6 +103,7 @@ impl FileStore {
                     about: None,
                     answers: a.answers.clone(),
                     amends: None,
+                    notice: None,
                     queued_at: self.now(),
                 };
                 if status.inbox.iter().any(|e| e.key == entry.key)
@@ -163,6 +164,7 @@ impl FileStore {
                     about: None,
                     answers: Vec::new(),
                     amends: Some(generation),
+                    notice: None,
                     queued_at: at,
                 };
                 apply_amendment(&mut obj, amendment, entry)?;

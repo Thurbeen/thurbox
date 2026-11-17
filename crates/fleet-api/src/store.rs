@@ -317,7 +317,8 @@ pub trait Store {
     ) -> Result<Object, StoreError>;
     /// A relaying controller's status write: replace the writer's own Task
     /// status field (`kinds::relay_field`: `status.forge` for
-    /// ForgeController, `status.gateway` for GatewayController) with
+    /// ForgeController, `status.gateway` for GatewayController,
+    /// `status.subscriptions` for TaskController's notices) with
     /// `status` and append `appends` to `status.inbox`, each checked as
     /// `append_inbox` checks one and its `answers` recorded, in the same
     /// compare-and-swap write under the lease. The cursors and the entries

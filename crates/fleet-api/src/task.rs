@@ -32,7 +32,7 @@ pub fn effective_host(spec: &serde_json::Value, config_host: Option<&str>) -> St
 }
 
 /// What a Task asks for. Fixed once created, like a Pod's spec: only
-/// `dispatch` and `forge` may change, `amendments` only grows through
+/// `dispatch`, `forge` and `subscriptions` may change, `amendments` only grows through
 /// `fleet amend`, and a different brief is a different Task.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -80,6 +80,11 @@ pub struct TaskSpec {
     /// this Task's worker declares; mutable like `dispatch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge: Option<ForgeSpec>,
+    /// The Boards whose events the session hears of, as one inbox notice
+    /// per subscription (see [`crate::subscription`]); mutable like
+    /// `dispatch`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<crate::subscription::Subscription>,
 }
 
 fn local_host() -> String {
@@ -565,6 +570,13 @@ pub struct TaskStatus {
     /// into the boards so far. Absent until a session published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outbox: Option<crate::event::OutboxCursor>,
+    /// TaskController's cursor per subscription, and the count of notices
+    /// it queued; written with the notices it queues, in one write.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::subscription::SubscriptionsStatus::is_empty"
+    )]
+    pub subscriptions: crate::subscription::SubscriptionsStatus,
 }
 
 fn is_zero(n: &u32) -> bool {

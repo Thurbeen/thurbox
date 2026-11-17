@@ -141,8 +141,9 @@ pub fn may_request_wake(by: &FieldManager) -> bool {
 
 /// Who may replace its own status field and append the relay's entries in
 /// one write (`Store::record_relay`): the Forge controller, for
-/// `Task.status.forge`, and the Gateway controller, for
-/// `Task.status.gateway`. The field is the writer's: `relay_field`.
+/// `Task.status.forge`, the Gateway controller, for `Task.status.gateway`,
+/// and TaskController, for `Task.status.subscriptions` and its notices.
+/// The field is the writer's: `relay_field`.
 pub fn may_record_relay(by: FieldManager) -> bool {
     relay_field(&by).is_some()
 }
@@ -152,6 +153,7 @@ pub fn relay_field(by: &FieldManager) -> Option<&'static str> {
     match by {
         FieldManager::ForgeController => Some("forge"),
         FieldManager::GatewayController => Some("gateway"),
+        FieldManager::TaskController => Some("subscriptions"),
         _ => None,
     }
 }
@@ -159,12 +161,14 @@ pub fn relay_field(by: &FieldManager) -> Option<&'static str> {
 /// The source prefix an inbox appender must name itself with: `cli/<user>`
 /// for `fleet send`, `forge/<change>` for the Forge controller,
 /// `gateway/<conversation>` or `gateway/child/<child>` for the Gateway
-/// controller. `None` for a writer that never appends.
+/// controller, `board/<board>` for TaskController's notices. `None` for a
+/// writer that never appends.
 pub fn inbox_source_prefix(by: FieldManager) -> Option<&'static str> {
     match by {
         FieldManager::Cli => Some(crate::inbox::CLI_SOURCE_PREFIX),
         FieldManager::ForgeController => Some(crate::inbox::FORGE_SOURCE_PREFIX),
         FieldManager::GatewayController => Some(crate::talk::GATEWAY_SOURCE_PREFIX),
+        FieldManager::TaskController => Some(crate::subscription::BOARD_SOURCE_PREFIX),
         _ => None,
     }
 }

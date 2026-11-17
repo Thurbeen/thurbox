@@ -9,7 +9,8 @@ Use `fleet list task --json`, `fleet get task NAME` and
 `fleet status task NAME --json` to read work. Task fields are documented in
 the [Task resource](../../../docs/fleet/resources/task.md); inspect supported kinds with
 `fleet version --json`. Update desired spec with `fleet apply -f FILE`; only
-`spec.dispatch` and `spec.forge` may change. `fleet amend TASK` adds to the
+`spec.dispatch`, `spec.forge` and `spec.subscriptions` may change; `fleet
+event subscribe TASK` adds a subscription. `fleet amend TASK` adds to the
 brief and reaches the same session; `fleet send TASK TEXT` queues a message
 for it. Send only what the requester authorized, and never type into a busy
 worker's session. Deletion uses `fleet delete task NAME`; the finalizer holds the record

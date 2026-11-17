@@ -699,6 +699,7 @@ impl Pass<'_, '_> {
             }),
             answers,
             amends: None,
+            notice: None,
             queued_at: self.input.now,
         });
         self.gw.cursor = cs.revision;
@@ -888,6 +889,7 @@ impl Pass<'_, '_> {
                         about: None,
                         answers: Vec::new(),
                         amends: None,
+                        notice: None,
                         queued_at: self.input.now,
                     });
                 }
@@ -2486,6 +2488,7 @@ fn child_result(
         about: None,
         answers: Vec::new(),
         amends: None,
+        notice: None,
         queued_at: now,
     }
 }

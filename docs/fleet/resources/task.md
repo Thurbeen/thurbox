@@ -35,7 +35,8 @@ empty brief for an interactive session that waits for its user.
 ## Spec
 
 You write the spec with `fleet apply`. It is fixed once created, except
-`dispatch` and `forge`. `fleet amend` appends to `amendments`; a manifest
+`dispatch`, `forge` and `subscriptions`. A change to one of them makes a
+new generation. `fleet amend` appends to `amendments`; a manifest
 cannot change them.
 
 | Field | Type | Required | Meaning |
@@ -53,6 +54,7 @@ cannot change them.
 | `dispatch` | boolean | no | Nothing spawns while it is `false`, the default. Setting it back to `false` does not stop a session. |
 | `outputs` | object | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 | `forge` | object | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, or `null` for no mark-ready). |
+| `subscriptions` | array | no | The Boards whose new events the session hears of, at most 16: each `{"board": B, "filter": {...}, "after": SEQ}`. See [Subscriptions](#subscriptions). |
 
 `harness`, `host` and `model` may not be empty, contain NUL or start with
 `-`. Any other field is refused. The store assigns `uid`, `generation`,
@@ -88,6 +90,7 @@ repositories.
 | `idleSince`, `notBefore`, `sessionCheckedAt` | TaskController | When the agent became idle, the earliest next reconcile after a failure (30 s later), and the last session lookup of a Concluded Task (repeated every 5 minutes). |
 | `deliveries`, `deliveryAttempts` | TaskController | Receipts of delivered inbox entries, and sends and probes per entry in delivery. `otherPromptSeq` is the latest place in the agent's signal file of a report of another prompt when the entry's send was planned. |
 | `outbox` | TaskController | `{offset, generation, skipped, lastSkipped, closed, discarding}`: how far the session's event outbox is ingested into the Boards. See [Board](board.md#publishing-from-a-session). |
+| `subscriptions` | TaskController | `{notices, cursors}`: the count of notices queued, and per subscription its Board, filter, `boardUid`, cursor (`after`) and the key of its last notice. See [Subscriptions](#subscriptions). |
 | `result` | the worker, `fleet result` | The worker's claim: outcome, generation, summary, artifacts, outputs. See [Worker result](#worker-result). |
 | `declared` | the worker, `fleet declare` | Facts the worker declared, each a JSON object with a string `kind`. |
 | `forge` | ForgeController | One entry per declared change, and its conditions. See [Following declared changes](#following-declared-changes). |
@@ -224,11 +227,12 @@ prints the entry as appended.
 | Field | Meaning |
 | --- | --- |
 | `key` | Deterministic and unique across `inbox` and `deliveries`; also the runtime intent key the delivery is journaled under. |
-| `from` | `cli/<user>` for `fleet send` and `fleet amend`; `forge/<change>` for a relay, the ChangeRequest's name; `plugin/<name>` for a plugin's append or amend. |
+| `from` | `cli/<user>` for `fleet send` and `fleet amend`; `forge/<change>` for a relay, the ChangeRequest's name; `plugin/<name>` for a plugin's append or amend; `board/<board>` for a subscription's notice. |
 | `text` | The message. The runtime can put its own header before it. For an amendment, the amendment's text; TaskController composes the delivered message from the spec. |
 | `about` | For a relay: the mirror's `uid`, `revision` and `head`. Absent for `fleet send`. |
 | `answers` | The declared Question ids this entry answers: `fleet send --answers ID`, or a plugin append's `answers`. Absent when empty. The store refuses an id that names no declared Question. |
 | `amends` | For an amendment: the spec generation it created. Absent otherwise. |
+| `notice` | For an `event-notice`: `board`, `count`, `first`, `last` and `expiredBefore`. See [Subscriptions](#subscriptions). Absent otherwise. |
 | `queuedAt` | Unix milliseconds. |
 
 An entry is given up on when TaskController stops sending it, as the
@@ -236,8 +240,9 @@ delivery rules below describe. An entry is still to deliver when it is not
 given up on.
 
 `status.inbox` has no owner. The store reaches it through typed mutations,
-each named by its caller: append (`fleet send`, and the Forge controller's
-relay write, which also replaces `status.forge`), which refuses a key
+each named by its caller: append (`fleet send`, the Forge controller's
+relay write, which also replaces `status.forge`, and TaskController's notice
+write, which also replaces `status.subscriptions`), which refuses a key
 already in `inbox` or `deliveries`, an `about.revision` not above the
 mirror's highest delivered one, an append while more than 20 entries are
 still to deliver, and a deleting Task; and record-and-remove, TaskController's
@@ -272,6 +277,32 @@ session, stopped by Fleet or by anyone else, is resumed to read its inbox.
 See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). A Stalled or
 deleting Task delivers nothing: a deleting Task refuses `fleet send` and
 releases its session as before.
+
+## Subscriptions
+
+A Task can subscribe to [Boards](board.md). Its session then gets one
+inbox notice per subscription when new events match. The notice gives the
+count, the `seq` range and the `fleet event list` command that reads them.
+The session reads the events itself.
+
+```sh
+fleet event subscribe design-305 --board ci --type 'ci.*'
+fleet event unsubscribe design-305 --board ci --type 'ci.*'
+```
+
+Each item of `spec.subscriptions` has these fields:
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `board` | string | yes | The Board. It need not exist yet. |
+| `filter` | object | no | `type`, `subject`, `source` and `correlation`, as the `fleet event list` flags take them. A value that ends in `*` matches a prefix. Absent: every event. |
+| `after` | integer | no | The `seq` of the last event the Task knows of. Absent: the Board's head when TaskController first reads the subscription. |
+
+Two items with the same `board` and `filter` are refused. `fleet event
+unsubscribe` removes the item with the same `board` and `filter`, and
+TaskController then drops its cursor. A notice already in the inbox is
+still delivered. [Board](board.md#subscriptions) has the rules for the
+cursors and the notices.
 
 ## Following declared changes
 
@@ -340,6 +371,7 @@ them.
 fleet apply -f task.json             # create, or change dispatch
 fleet status task design-305 --json  # phase and conditions
 fleet send design-305 "Also update the docs."  # queue a message for the session
+fleet event subscribe design-305 --type 'ci.*'  # hear of new ci events on Board shared
 fleet amend design-305 --text "Also cover the docs." --reason "asked by the requester"  # add to the brief
 fleet declare design-305 --change-request https://github.com/OWNER/app/pull/88  # follow the change the worker opened
 fleet declare design-305 --json '{"kind": "Note", "text": "docs need a pass"}'   # any fact with a kind
@@ -358,7 +390,7 @@ manager verbs, never through a status write:
 | Verb | On a Task | Carried by |
 | --- | --- | --- |
 | Create | A full Task manifest, exclusive by name; the store labels it `fleet.dev/plugin: <plugin>`, a label `apply` refuses to set | The plan's `creates` |
-| Patch | `dispatch` and `forge`, the two mutable spec fields; a patch never changes `amendments` | The plan's `patches` |
+| Patch | `dispatch` and `forge`; a patch never changes `amendments` or `subscriptions` | The plan's `patches` |
 | Amend | `fleet amend` on the Task's behalf: an amendment from `plugin/<name>`, with that verb's checks. `ifGeneration` is required; on any other generation the verb is refused and recorded in `host.verbs`, so a repeated pass appends nothing | The plan's `amends` |
 | Send | An inbox entry from `plugin/<name>` under `task/<name>/<uid>/plugin/<plugin>/<key>`, with the inbox's own checks | The plan's `appends` |
 | Declare | `fleet declare TASK --change-request URL` on the Task's behalf, with that verb's preconditions | The plan's `declares` |
