@@ -60,7 +60,7 @@ mod subscriptions;
 mod telemetry;
 pub mod verbs;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
 use fleet_api::conversation::{
@@ -241,6 +241,10 @@ fn host_of(obj: &Object) -> String {
 
 const STARTUP_STEPS_IN_A_ROW: usize = 16;
 
+fn generation_of(obj: &Object) -> (String, u64) {
+    (obj.metadata.uid.clone(), obj.metadata.generation)
+}
+
 fn starting(obj: &Object) -> bool {
     let briefed_later = || {
         obj.spec
@@ -388,9 +392,22 @@ impl Manager<'_> {
             let mut order: Vec<&Object> = tasks.iter().collect();
             order.sort_by_key(|t| !starting(t));
             let mut waiting: Vec<WaitingOnAgent> = Vec::new();
+            let mut seen: BTreeSet<(String, u64)> = tasks.iter().map(generation_of).collect();
+            let mut started_here: BTreeSet<String> = BTreeSet::new();
             for obj in order {
                 busy |=
                     self.reconcile_reported_starts(&mut waiting, lease, opts.lease_ttl, report)?;
+                busy |= self.reconcile_new_starts(
+                    &mut seen,
+                    &mut started_here,
+                    &mut waiting,
+                    lease,
+                    opts.lease_ttl,
+                    report,
+                )?;
+                if started_here.contains(&obj.metadata.uid) {
+                    continue;
+                }
                 let concluded =
                     obj.status.get("phase").and_then(Value::as_str) == Some("Concluded");
                 let read_outbox = !concluded || obj.is_deleting() || self.due(obj);
@@ -1931,6 +1948,34 @@ impl Manager<'_> {
             mark,
             outbox_drained,
         })
+    }
+
+    fn reconcile_new_starts(
+        &self,
+        seen: &mut BTreeSet<(String, u64)>,
+        started_here: &mut BTreeSet<String>,
+        waiting: &mut Vec<WaitingOnAgent>,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+    ) -> Result<bool, StoreError> {
+        let Observation::Known(tasks) = self.store.list(task::KIND) else {
+            return Ok(false);
+        };
+        let mut busy = false;
+        for obj in tasks {
+            if !seen.insert(generation_of(&obj)) || !starting(&obj) || !self.due(&obj) {
+                continue;
+            }
+            started_here.insert(obj.metadata.uid.clone());
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let unread = Observation::unknown("the outbox is read on the next pass");
+            let (stepped, rest) =
+                self.reconcile_while_starting(&obj, &unread, lease, ttl, report)?;
+            busy |= stepped;
+            waiting.extend(rest);
+        }
+        Ok(busy)
     }
 
     fn reconcile_reported_starts(
