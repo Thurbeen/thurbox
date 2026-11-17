@@ -20,7 +20,9 @@
 # serve the assets) and jq.
 #
 # The multiplexer is the machine's business, not the installer's: when none is
-# on PATH, doctor's `multiplexer` check is the one failure allowed.
+# on PATH, doctor's `multiplexer` check fails. Where the installer started no
+# service, no manager runs, and doctor's `fleet-manager` check fails with its
+# fix. Those are the two failures allowed.
 
 set -euo pipefail
 
@@ -173,12 +175,18 @@ for key in fleet fleet-config runtime-mux; do
   [ "$level" = "ok" ] || fail "doctor's $key check is $level, not ok"
 done
 failing="$(echo "$report" | jq -r '[.checks[] | select(.level == "fail") | .key] | join(" ")')"
+expected=""
+if [ "$(fleet version --json | jq -r .manager.held)" != true ]; then
+  fix="$(echo "$report" | jq -r '[.checks[] | select(.key == "fleet-manager") | .fix][0]')"
+  [ -n "$fix" ] && [ "$fix" != null ] || fail "doctor's fleet-manager check names no fix"
+  expected="fleet-manager"
+  echo "note: no manager runs here; doctor's fleet-manager check fails with the fix: $fix"
+fi
 mux="$(echo "$report" | jq -r .multiplexer)"
-if command -v "$mux" >/dev/null; then
-  [ -z "$failing" ] && [ "$status" -eq 0 ] \
-    || fail "doctor exited $status with failing checks: $failing"
-else
-  [ "$failing" = "multiplexer" ] || fail "doctor's failing checks: $failing"
+if ! command -v "$mux" >/dev/null; then
+  expected="${expected:+$expected }multiplexer"
   echo "note: $mux is not on PATH; doctor's multiplexer check fails, as it should"
 fi
+[ "$failing" = "$expected" ] || fail "doctor exited $status with failing checks: $failing"
+[ -n "$failing" ] || [ "$status" -eq 0 ] || fail "doctor exited $status with no failing check"
 pass "doctor finds Fleet, its config and runtime-mux"
