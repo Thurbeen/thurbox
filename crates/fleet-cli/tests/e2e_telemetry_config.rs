@@ -230,3 +230,35 @@ fn an_unreadable_headers_file_turns_all_export_off_even_with_an_otel_endpoint() 
         "no agent telemetry while Fleet's is off: {vars:#?}"
     );
 }
+
+#[test]
+fn a_signals_own_endpoint_variable_wins_over_the_files_endpoint_for_that_signal() {
+    let file_collector = Collector::start();
+    let traces_collector = Collector::start();
+    let mut env = Env::new("otel-signal-endpoint-wins");
+    with_telemetry(
+        &env,
+        &format!("endpoint = \"{}\"\n", file_collector.endpoint),
+    );
+    env.set_var(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        &format!("{}/v1/traces", traces_collector.endpoint),
+    );
+
+    env.apply(task("t1", true)).ok();
+    env.reconcile().ok();
+
+    assert!(
+        !named(&traces_collector.spans(), "fleet apply").is_empty(),
+        "{:?}",
+        traces_collector.paths()
+    );
+    wait_for("the file's collector to get metrics", || {
+        file_collector.paths().iter().any(|p| p == "/v1/metrics")
+    });
+    assert!(
+        !file_collector.paths().iter().any(|p| p == "/v1/traces"),
+        "{:?}",
+        file_collector.paths()
+    );
+}

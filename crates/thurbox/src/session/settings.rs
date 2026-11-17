@@ -92,14 +92,6 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
     ("remote", "thurbox lists no sessions through other hosts"),
     ("features.soft_delete", "Fleet deletes a session at once"),
     (
-        "telemetry.per_session",
-        "Fleet gives each agent its telemetry from Fleet's [telemetry] table",
-    ),
-    (
-        "telemetry.configure_agents",
-        "Fleet gives each agent its telemetry from Fleet's [telemetry] table",
-    ),
-    (
         "audit_retention_days",
         "thurbox keeps no session database to prune",
     ),

@@ -180,8 +180,15 @@ pub fn settings_config_path() -> Option<PathBuf> {
 /// defaults; warnings are returned for the TUI status bar and logged by
 /// headless callers.
 pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
+    let loaded =
+        super::file::read_or_seed("settings.toml", SEED_SETTINGS_TOML).and_then(
+            |read| match read {
+                Some(contents) => parse_current(&contents),
+                None => Ok((Settings::default(), Vec::new())),
+            },
+        );
     let (settings, warnings) =
-        super::file::load_or_seed("settings.toml", SEED_SETTINGS_TOML, "using defaults");
+        loaded.unwrap_or_else(|e| (Settings::default(), vec![format!("{e}; using defaults")]));
     let warnings = warnings
         .into_iter()
         .filter(|warning| !reported_key(warning).is_some_and(|key| IGNORED_KEYS.contains(&key)))
@@ -196,12 +203,57 @@ pub fn is_retired_notice(warning: &str) -> bool {
     reported_key(warning).is_none() && warning.contains("` is no longer read: ")
 }
 
+const OLDER_TELEMETRY_KEYS: &[&str] = &[
+    "enabled",
+    "export_diagnostic_logs",
+    "per_session",
+    "configure_agents",
+];
+
+fn drop_older_telemetry(doc: &mut toml_edit::DocumentMut) -> Option<String> {
+    let table = doc.get("telemetry")?.as_table_like()?;
+    let older = OLDER_TELEMETRY_KEYS
+        .iter()
+        .find(|k| table.contains_key(k))
+        .copied()
+        .or_else(|| {
+            table
+                .get("headers")
+                .and_then(|h| h.as_table_like())
+                .filter(|h| !h.contains_key("file"))
+                .map(|_| "headers")
+        })?;
+    doc.remove("telemetry");
+    Some(format!(
+        "settings.toml: `[telemetry]` is no longer read: it is an older table (it has `{older}`); \
+         write it again with the keys docs/observability.md lists (ignored)"
+    ))
+}
+
+fn without_older_telemetry(contents: &str) -> (std::borrow::Cow<'_, str>, Option<String>) {
+    let Ok(mut doc) = contents.parse::<toml_edit::DocumentMut>() else {
+        return (contents.into(), None);
+    };
+    match drop_older_telemetry(&mut doc) {
+        Some(notice) => (doc.to_string().into(), Some(notice)),
+        None => (contents.into(), None),
+    }
+}
+
+fn parse_current(contents: &str) -> Result<(Settings, Vec<String>), String> {
+    let (contents, notice) = without_older_telemetry(contents);
+    let (settings, mut warnings) = super::file::parse::<Settings>(&contents, "settings.toml")?;
+    warnings.extend(notice);
+    Ok((settings, warnings))
+}
+
 /// The unknown keys of `contents` that are not retired ones: what makes the
 /// file invalid for `thurbox-cli config validate`, with a `[telemetry]`
 /// table that breaks its rules.
 pub fn unknown_keys(contents: &str) -> Result<Vec<String>, String> {
+    let (contents, _) = without_older_telemetry(contents);
     let (settings, warnings) =
-        super::file::parse_toml_reporting_unknown::<Settings>(contents, "settings.toml")
+        super::file::parse_toml_reporting_unknown::<Settings>(&contents, "settings.toml")
             .map_err(|e| e.to_string())?;
     settings
         .telemetry
@@ -272,6 +324,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
 
     // An earlier save wrote every key it knew, so a key since retired is in most
     // files; dropping it here is what stops each launch naming it again.
+    drop_older_telemetry(&mut doc);
     for (key, _) in RETIRED_KEYS {
         match key.split_once('.') {
             Some((table, leaf)) => {
@@ -607,6 +660,38 @@ mod tests {
         assert_eq!(names, vec!["settings.toml".to_string()]);
     }
 
+    /// An older `[telemetry]` table, the one with `enabled` and an inline
+    /// headers map, is dropped whole: it neither resets the rest of the file
+    /// nor turns the interface's export on, and a save removes it.
+    #[test]
+    fn an_older_telemetry_table_is_not_read_and_never_turns_export_on() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::config::file::isolate(temp.path());
+        let path = settings_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for table in [
+            "enabled = false\nendpoint = \"http://localhost:4318\"\nprotocol = \"http/protobuf\"\nexport_diagnostic_logs = false\n",
+            "enabled = true\nendpoint = \"http://c:4318\"\n",
+            "endpoint = \"http://c:4318\"\nheaders = { authorization = \"Bearer x\" }\n",
+        ] {
+            let old = format!("scrollback_lines = 7\n[telemetry]\n{table}");
+            std::fs::write(&path, &old).unwrap();
+            let (settings, warnings) = load_or_seed_with_warnings();
+            assert_eq!(settings.scrollback_lines, 7, "{table}: {warnings:?}");
+            assert_eq!(settings.telemetry, otel_env::TelemetryConfig::default(), "{table}");
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains("`[telemetry]` is no longer read") && is_retired_notice(w)),
+                "{table}: {warnings:?}"
+            );
+            assert_eq!(unknown_keys(&old), Ok(vec![]), "{table}");
+            save_settings(&settings).unwrap();
+            let saved = std::fs::read_to_string(&path).unwrap();
+            assert!(!saved.contains("[telemetry]"), "{saved}");
+        }
+    }
+
     /// A v2 `settings.toml` keeps loading: each key 3.0 no longer reads is
     /// named as such on startup, and `config validate` passes the file.
     #[test]
@@ -627,8 +712,7 @@ mod tests {
             "multiplexer",
             "features.soft_delete",
             "remote",
-            "telemetry.per_session",
-            "telemetry.configure_agents",
+            "[telemetry]",
         ] {
             assert!(
                 warnings
