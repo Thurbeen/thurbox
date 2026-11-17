@@ -1088,7 +1088,10 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
             Instant::now() < deadline,
             "never paused with its pane saying why: {:?}; Task status: {:#}",
             terminals.failure("local:t1"),
-            fleet.get("t1").map(|t| t["status"].clone()).unwrap_or_default()
+            fleet
+                .get("t1")
+                .map(|t| t["status"].clone())
+                .unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(50));
     }
