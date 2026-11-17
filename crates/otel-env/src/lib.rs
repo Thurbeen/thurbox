@@ -5,6 +5,12 @@
 //! them, and nothing at all otherwise. docs/observability.md is the
 //! interface this crate implements.
 //!
+//! A program with a config file gives its `[telemetry]` table to [`adopt`]
+//! first: the table stands for the variables it names, and a variable set in
+//! the environment wins over it ([`TelemetryConfig`]). The process
+//! environment itself is never changed; [`child_env`] is what a child
+//! process must be given on top of the environment it inherits.
+//!
 //! Every other crate records through the `opentelemetry` API alone, which
 //! does nothing until this crate installs a provider. A signal is exported
 //! when its endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or the signal's own
@@ -24,7 +30,9 @@
 //! the SDK's own threads into bounded queues that drop when full, a failed
 //! export is dropped, and shutdown waits at most [`SHUTDOWN_BOUND`].
 
-use std::sync::mpsc;
+mod file;
+
+use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,12 +44,59 @@ use opentelemetry::{global, Context, ContextGuard, Key};
 /// The attribute type every caller passes, so a program needs no
 /// `opentelemetry` dependency of its own to name one.
 pub use opentelemetry::KeyValue;
-use opentelemetry_otlp::{MetricExporter, SpanExporter};
+use opentelemetry_otlp::{MetricExporter, SpanExporter, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 
+pub use file::{HeadersSource, Source, TelemetryConfig};
 pub use opentelemetry_sdk::logs::SdkLoggerProvider;
+
+use file::{FileVars, Merged};
+
+static FILE: OnceLock<FileVars> = OnceLock::new();
+
+/// Take the program's `[telemetry]` table for the rest of the process,
+/// before [`init`]: read its headers file and stand it for the variables
+/// it names. Only the first call takes effect. On an error the process and
+/// the programs it starts export nothing, whatever the environment says, so
+/// a setting the table turns off never comes back; the caller reports it.
+pub fn adopt(config: &TelemetryConfig) -> Result<(), String> {
+    match config.vars() {
+        Ok(vars) => {
+            let _ = FILE.set(vars);
+            Ok(())
+        }
+        Err(why) => {
+            let _ = FILE.set(FileVars::disabled());
+            Err(why)
+        }
+    }
+}
+
+/// Export nothing for the rest of the process, nor from the programs it
+/// starts, whatever the environment says: for a program whose `[telemetry]`
+/// table cannot be read, so a setting it turns off never comes back.
+pub fn disable() {
+    let _ = FILE.set(FileVars::disabled());
+}
+
+fn merged() -> Merged<'static, impl Fn(&str) -> Option<String>> {
+    static NONE: OnceLock<FileVars> = OnceLock::new();
+    Merged {
+        env: |name: &str| std::env::var(name).ok(),
+        file: FILE
+            .get()
+            .unwrap_or_else(|| NONE.get_or_init(FileVars::default)),
+    }
+}
+
+/// The adopted table's variables a child process must be given: those in
+/// force that the environment it inherits lacks. A program another one
+/// starts reads no config file of its own.
+pub fn child_env() -> Vec<(String, String)> {
+    merged().child_env()
+}
 
 /// The longest a program waits at exit for its last batches to leave.
 pub const SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
@@ -57,7 +112,7 @@ pub const CALL_SHUTDOWN_BOUND: Duration = Duration::from_millis(100);
 pub const TRACEPARENT: &str = "TRACEPARENT";
 
 /// The one protocol the exporter speaks.
-const PROTOCOL: &str = "http/protobuf";
+pub(crate) const PROTOCOL: &str = "http/protobuf";
 
 /// The installed providers, flushed by [`Telemetry::shutdown`]; all `None`
 /// when nothing is exported.
@@ -155,7 +210,8 @@ pub struct Collector {
 
 /// This process's [`Collector`], from its environment.
 pub fn collector() -> Option<Collector> {
-    collector_from(|name| std::env::var(name).ok())
+    let merged = merged();
+    collector_from(|name| merged.var(name))
 }
 
 fn collector_from(var: impl Fn(&str) -> Option<String>) -> Option<Collector> {
@@ -188,7 +244,8 @@ pub fn init(
     attributes: &[KeyValue],
     logs: bool,
 ) -> Result<Telemetry, String> {
-    let wanted = signals(|name| std::env::var(name).ok(), logs)?;
+    let merged = merged();
+    let wanted = signals(|name| merged.var(name), logs)?;
     if !(wanted.traces || wanted.metrics || wanted.logs) {
         return Ok(Telemetry {
             logs_off: wanted.logs_off,
@@ -199,24 +256,39 @@ pub fn init(
     // installed, never one signal exporting under a warning that says off.
     let spans = wanted
         .traces
-        .then(|| SpanExporter::builder().with_http().build())
+        .then(|| configured(SpanExporter::builder().with_http(), &merged, "traces").build())
         .transpose()
         .map_err(|e| format!("trace exporter: {e}"))?;
     let metrics = wanted
         .metrics
-        .then(|| MetricExporter::builder().with_http().build())
+        .then(|| configured(MetricExporter::builder().with_http(), &merged, "metrics").build())
         .transpose()
         .map_err(|e| format!("metric exporter: {e}"))?;
     let logs = wanted
         .logs
         .then(|| {
-            opentelemetry_otlp::LogExporter::builder()
-                .with_http()
-                .build()
+            configured(
+                opentelemetry_otlp::LogExporter::builder().with_http(),
+                &merged,
+                "logs",
+            )
+            .build()
         })
         .transpose()
         .map_err(|e| format!("log exporter: {e}"))?;
-    let resource = resource(service, version, attributes);
+    let mut all: Vec<KeyValue> = merged
+        .file_resource()
+        .into_iter()
+        .map(|(k, v)| KeyValue::new(k, v))
+        .collect();
+    all.extend(
+        attributes
+            .iter()
+            .filter(|a| !all.iter().any(|f| f.key == a.key))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let resource = resource(service, version, &all);
     let mut telemetry = Telemetry {
         logs_off: wanted.logs_off,
         ..Telemetry::default()
@@ -246,6 +318,93 @@ pub fn init(
         );
     }
     Ok(telemetry)
+}
+
+fn configured<B: WithExportConfig + WithHttpConfig>(
+    builder: B,
+    merged: &Merged<'_, impl Fn(&str) -> Option<String>>,
+    signal: &str,
+) -> B {
+    let mut builder = builder;
+    let own = format!(
+        "OTEL_EXPORTER_OTLP_{}_ENDPOINT",
+        signal.to_ascii_uppercase()
+    );
+    if merged.var(&own).is_none() && merged.file_wins("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        if let Some(base) = merged.var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+            builder = builder.with_endpoint(format!("{base}/v1/{signal}"));
+        }
+    }
+    if merged.file_wins("OTEL_EXPORTER_OTLP_HEADERS") {
+        if let Some(headers) = merged.var("OTEL_EXPORTER_OTLP_HEADERS") {
+            builder = builder.with_headers(file::header_pairs(&headers));
+        }
+    }
+    builder
+}
+
+/// What a program with the `[telemetry]` table `config` exports under this
+/// process's environment, and where each value in force comes from, for a
+/// doctor: never a header's value. An error is why nothing is exported.
+/// `logs` as for [`init`].
+pub fn describe(config: &TelemetryConfig, logs: bool) -> Result<String, String> {
+    describe_in(config, logs, |name| std::env::var(name).ok())
+}
+
+fn describe_in(
+    config: &TelemetryConfig,
+    logs: bool,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
+    let file = config.vars()?;
+    let merged = Merged { env, file: &file };
+    let wanted = signals(|name| merged.var(name), logs)?;
+    let from = |name: &str| {
+        merged
+            .lookup(name)
+            .map_or_else(|| "default".to_string(), |(_, source)| source.to_string())
+    };
+    if merged
+        .var("OTEL_SDK_DISABLED")
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+    {
+        return Ok(format!("off ({})", from("OTEL_SDK_DISABLED")));
+    }
+    let mut parts = vec![match merged.lookup("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        Some((endpoint, source)) => format!("endpoint {endpoint} ({source})"),
+        None => "no endpoint".to_string(),
+    }];
+    let mut names = vec![("traces", wanted.traces), ("metrics", wanted.metrics)];
+    if logs {
+        names.push(("logs", wanted.logs));
+    }
+    for (signal, on) in names {
+        let upper = signal.to_ascii_uppercase();
+        let exporter = format!("OTEL_{upper}_EXPORTER");
+        let refused = (signal == "logs")
+            .then_some(wanted.logs_off.as_deref())
+            .flatten();
+        let own = merged.lookup(&format!("OTEL_EXPORTER_OTLP_{upper}_ENDPOINT"));
+        parts.push(match (on, refused, own) {
+            (false, Some(why), _) => format!("{signal} off: {why}"),
+            (true, _, Some((url, source))) => format!("{signal} on to {url} ({source})"),
+            (on, _, _) => {
+                let state = if on { "on" } else { "off" };
+                format!("{signal} {state} ({})", from(&exporter))
+            }
+        });
+    }
+    if let Some((_, source)) = merged.lookup("OTEL_EXPORTER_OTLP_HEADERS") {
+        parts.push(format!("headers ({source})"));
+    }
+    if let Some((value, source)) = merged.lookup("OTEL_RESOURCE_ATTRIBUTES") {
+        let keys: Vec<&str> = value
+            .split(',')
+            .filter_map(|kv| kv.split_once('=').map(|(k, _)| k.trim()))
+            .collect();
+        parts.push(format!("resource {} ({source})", keys.join(", ")));
+    }
+    Ok(parts.join("; "))
 }
 
 /// The environment's resource, named `service` unless it names itself, with
@@ -627,6 +786,36 @@ mod tests {
         ] {
             assert!(parse(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn describe_names_each_signals_own_endpoint_and_why_logs_are_refused() {
+        let config: TelemetryConfig = toml::from_str("logs = true").unwrap();
+        let env = [
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "http://t:4318/v1/traces",
+            ),
+            ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://l:4318/v1/logs"),
+            ("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "grpc"),
+        ];
+        let described = describe_in(&config, true, |name| {
+            env.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        })
+        .unwrap();
+        assert!(
+            described.contains(
+                "traces on to http://t:4318/v1/traces (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)"
+            ),
+            "{described}"
+        );
+        assert!(described.contains("metrics off"), "{described}");
+        assert!(
+            described.contains("logs off: OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=grpc"),
+            "{described}"
+        );
     }
 
     #[test]

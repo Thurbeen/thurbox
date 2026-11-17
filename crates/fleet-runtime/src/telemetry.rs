@@ -77,11 +77,12 @@ impl Call {
     }
 }
 
-/// Give the runtime program the current span as its `TRACEPARENT`, and none
-/// of Fleet's own identity.
+/// Give the runtime program the current span as its `TRACEPARENT`, the
+/// telemetry of Fleet's config file, and none of Fleet's own identity.
 pub(crate) fn carry(spec: &mut Spec) {
     spec.env_remove
         .extend(NOT_INHERITED.iter().map(|v| v.to_string()));
+    spec.env.extend(otel_env::child_env());
     if let Some(parent) = otel_env::traceparent() {
         spec.env.push((otel_env::TRACEPARENT.to_string(), parent));
     }

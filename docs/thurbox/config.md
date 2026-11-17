@@ -436,7 +436,7 @@ longer read, and a save from the settings panel removes it.
 | --- | --- |
 | `multiplexer` | Fleet's runtime runs every session's terminal. |
 | `[remote]` | thurbox lists no sessions through other hosts. |
-| `[telemetry]` | The standard `OTEL_*` variables configure telemetry. |
+| An older `[telemetry]` table: one with `enabled`, `export_diagnostic_logs`, `export_session_events`, `export_thurbox_metrics`, `per_session`, `configure_agents`, or `headers` that name no `file` | The table has new keys ([`[telemetry]`](#telemetry--the-interfaces-opentelemetry-export)). thurbox reads nothing of the older table, so it never turns export on. |
 | `[fleet]` | The Fleets are listed as `[fleets.<name>]`. |
 | `audit_retention_days`, `deleted_retention_days` | thurbox keeps no session database to prune. |
 | `features.soft_delete` | Fleet deletes a session at once. |
@@ -796,12 +796,34 @@ a place.
 
 Read at startup only.
 
-### OpenTelemetry
+### `[telemetry]` — the interface's OpenTelemetry export
 
-`settings.toml` has no telemetry table. The standard `OTEL_*` environment
-variables turn on the interface's export, the same way as for every other
-program ([Observability](../observability.md)). A `[telemetry]` table left
-from an older file is reported as no longer read.
+The `[telemetry]` table turns on the interface's own export. It has the
+same keys as the `[telemetry]` table of Fleet's config file
+([Config files](../observability.md#config-files)):
+
+```toml
+[telemetry]
+endpoint = "http://localhost:4318"
+logs = true                                  # the interface's WARN lines; off by default
+resource = { "deployment.environment.name" = "local" }
+```
+
+- An `OTEL_*` variable set where thurbox starts wins over the table's value
+  for that variable ([Precedence](../observability.md#precedence)).
+- The table configures the interface only. The `fleet` commands that the
+  interface runs, and the sessions, export as Fleet's own config file says.
+  thurbox does not read Fleet's config file for telemetry.
+- An older table is not read. That is a table with `enabled`,
+  `export_diagnostic_logs`, `export_session_events`,
+  `export_thurbox_metrics`, `per_session` or `configure_agents`, or with
+  `headers` that name no `file`. thurbox reports it as no longer read, and
+  a save from the settings panel removes it. Write the table again with the
+  keys above.
+- A table that breaks a rule fails `thurbox-cli config validate`, and turns
+  the interface's export off with the reason in the log file.
+
+Read at startup only.
 
 ### `[notifications]` — OS notification settings
 

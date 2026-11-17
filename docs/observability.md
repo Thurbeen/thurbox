@@ -1,9 +1,16 @@
 # Observability
 
-Every program in this repository exports OpenTelemetry the same way. The
-standard `OTEL_*` environment variables turn export on and configure it.
-No program has a telemetry setting of its own: `fleet.toml` has no
-telemetry section, and thurbox's `settings.toml` has none.
+Every program in this repository exports OpenTelemetry the same way. Two
+sources configure the export:
+
+- The `[telemetry]` table of a config file: Fleet's `config.toml` for Fleet
+  and each program and session that Fleet starts, and thurbox's
+  `settings.toml` for the interface ([Config files](#config-files)).
+- The standard `OTEL_*` environment variables
+  ([Variables](#variables)).
+
+An `OTEL_*` variable that is set wins over the file's value for that
+variable ([Precedence](#precedence)).
 
 This page owns the telemetry interface of the whole system: the variables,
 the spans, the metrics, the logs, and how trace context crosses from one
@@ -23,7 +30,15 @@ program to the next. The `otel-env` crate implements it
    [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) that
    forwards each signal to your backend.
 
-2. Set the endpoint where you start thurbox or Fleet:
+2. Set the endpoint in Fleet's `config.toml` and in thurbox's
+   `settings.toml`:
+
+   ```toml
+   [telemetry]
+   endpoint = "http://localhost:4318"
+   ```
+
+   Or set the variable where you start thurbox or Fleet:
 
    ```sh
    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
@@ -38,6 +53,91 @@ starts inherits the variables, so one `export` before `thurbox` or
 `fleet up` turns on the whole chain: thurbox, the `fleet` commands it runs,
 the `runtime-mux` calls Fleet makes, and the `workspace-git` calls
 `runtime-mux` makes.
+
+A variable reaches only the processes started below the place where you set
+it. A `fleet` command in another shell, or a thurbox started from a desktop
+launcher, does not get it. The config file reaches each of them: each
+`fleet` command reads Fleet's `config.toml`, and the interface reads its
+`settings.toml`.
+
+## Config files
+
+Fleet's `config.toml` and thurbox's `settings.toml` each have a
+`[telemetry]` table with the same keys. Fleet's table configures `fleet up`,
+each `fleet` command, the `runtime-mux` and `workspace-git` calls that Fleet
+makes, and the telemetry of each agent that Fleet starts
+([Coding agents](#coding-agents)). thurbox's table configures the interface
+only. thurbox never reads Fleet's table, and Fleet never reads thurbox's.
+
+```toml
+[telemetry]
+endpoint = "http://localhost:4318"
+protocol = "http/protobuf"
+headers = { file = "/run/user/1000/otel-headers" }
+traces = true
+metrics = true
+logs = false
+resource = { "service.namespace" = "fleet", "deployment.environment.name" = "local" }
+```
+
+| Key | Default | Variable it stands for | Meaning |
+| --- | --- | --- | --- |
+| `endpoint` | Absent: nothing is exported | `OTEL_EXPORTER_OTLP_ENDPOINT` | The collector's base URL. It must start with `http://`. |
+| `protocol` | `http/protobuf` | `OTEL_EXPORTER_OTLP_PROTOCOL` | Must be `http/protobuf`. |
+| `headers` | Absent | `OTEL_EXPORTER_OTLP_HEADERS` | `{ file = "<absolute path>" }`: a file that holds the headers, as `key=value` pairs separated by commas. The program reads the file at each start. |
+| `traces` | `true` | `OTEL_TRACES_EXPORTER` | `false` turns traces off. |
+| `metrics` | `true` | `OTEL_METRICS_EXPORTER` | `false` turns metrics off. |
+| `logs` | `false` | `OTEL_LOGS_EXPORTER` | `true` turns on the log export of thurbox. Only thurbox records logs. |
+| `resource` | Absent | `OTEL_RESOURCE_ATTRIBUTES` | More resource attributes, as a table of strings. |
+
+Rules:
+
+- Put no secret in the table. Put a header that holds a secret in the
+  headers file, and give the file mode `0600`. A secret manager can write
+  the file, for example `systemd-creds` or `sops`.
+- `resource` cannot set `service.name`. Each program keeps its own name.
+  Use `service.namespace` to group the programs of one deployment.
+- A key or value in `resource` holds no `,`. A key holds no `=` and has
+  no space at its start or end.
+- Fleet refuses a config whose table breaks a rule or has an unknown key.
+  The command fails and names the key. A command that does not read the
+  whole config, such as `fleet version`, runs, exports nothing, and writes
+  one `warning: telemetry is off:` line that names the key. The
+  `OTEL_*` variables do not turn export on in that case.
+- thurbox reports an unknown key at startup, and
+  `thurbox-cli config validate` fails on it. A table that breaks a rule
+  turns the interface's export off, and the interface writes the reason to
+  its log file.
+- An unreadable headers file turns the program's export off, also when an
+  `OTEL_*` variable names an endpoint. The programs and sessions that it
+  starts export nothing either. The program writes one
+  `warning: telemetry is off:` line.
+- A program reads the table at start. A change applies at the next start
+  of the program. `fleet up` gives a session the values in force at each
+  start of the session.
+
+`fleet doctor` shows Fleet's export in force, and where each value comes
+from: `config file`, a variable's name, or `default`. `thurbox-cli doctor`
+shows the interface's export the same way. Neither shows a header's value.
+
+```text
+ok    telemetry    export       endpoint http://localhost:4318 (config file); traces on (default); metrics on (default); headers (config file); resource service.namespace (config file)
+```
+
+### Precedence
+
+- An `OTEL_*` variable that is set and not empty wins over the file's value
+  for that variable. The other values of the file stay in force.
+- The file's headers go only to the file's endpoint. When a variable sets
+  `OTEL_EXPORTER_OTLP_ENDPOINT` or the endpoint of one signal, the program
+  does not use the file's headers.
+- `OTEL_RESOURCE_ATTRIBUTES` replaces the whole `resource` table.
+- `OTEL_SDK_DISABLED=true` turns all export off, also when the file sets an
+  endpoint.
+
+Fleet gives each program that it starts the file's values that are in
+force, as variables. These are `runtime-mux` and the `workspace-git` that
+`runtime-mux` starts. These programs read no config file of their own.
 
 ## Variables
 
@@ -244,8 +344,9 @@ how to turn on the agent's telemetry
 Fleet turns on an agent's telemetry when all of these are true:
 
 - Fleet exports traces or metrics ([Variables](#variables)).
-- `OTEL_EXPORTER_OTLP_ENDPOINT` is set. A signal's own endpoint does not
-  name a collector for the agent.
+- Fleet has a base endpoint: `endpoint` in its `[telemetry]` table, or
+  `OTEL_EXPORTER_OTLP_ENDPOINT`. A signal's own endpoint does not name a
+  collector for the agent.
 - The harness profile has a `[telemetry]` table.
 - The Task, or its TaskConfig, does not set `agentTelemetry` to `false`.
 - The Task's environment names no collector of its own: no variable whose
@@ -256,9 +357,11 @@ Fleet turns on an agent's telemetry when all of these are true:
 
 Fleet gives the agent:
 
-- the collector's base URL, from `OTEL_EXPORTER_OTLP_ENDPOINT`;
+- the collector's base URL, from `OTEL_EXPORTER_OTLP_ENDPOINT` or the
+  table's `endpoint`;
 - the protocol `http/protobuf`, when the agent reads one;
-- the headers, from `OTEL_EXPORTER_OTLP_HEADERS`, as a variable only;
+- the headers, from `OTEL_EXPORTER_OTLP_HEADERS` or the table's headers
+  file, as a variable only;
 - the resource attributes `service.name=<harness>`,
   `fleet.task=<Task name>` and `fleet.uid=<Task uid>`, through
   `OTEL_RESOURCE_ATTRIBUTES`.
@@ -357,7 +460,8 @@ Fleet's ([Privacy](#privacy)).
 
 ## Turn it off
 
-Unset `OTEL_EXPORTER_OTLP_ENDPOINT` and the signal endpoints, or set
+Remove `endpoint` from the `[telemetry]` table. Unset
+`OTEL_EXPORTER_OTLP_ENDPOINT` and the signal endpoints, or set
 `OTEL_SDK_DISABLED=true`. Set `OTEL_TRACES_EXPORTER=none` or
 `OTEL_METRICS_EXPORTER=none` to turn off one signal. Logs are off unless
 `OTEL_LOGS_EXPORTER=otlp` is set.

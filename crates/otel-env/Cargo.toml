@@ -17,6 +17,10 @@ publish = false
 opentelemetry = { workspace = true, features = ["logs"] }
 opentelemetry_sdk = { workspace = true, features = ["logs"] }
 opentelemetry-otlp = { workspace = true, features = ["logs"] }
+serde.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
 
 [lints]
 workspace = true

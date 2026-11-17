@@ -908,6 +908,72 @@ fn diagnostic_logs_reach_the_collector_at_warn_and_above_only() {
     );
 }
 
+/// The `[telemetry]` table of `settings.toml` turns the interface's export
+/// on with no `OTEL_*` variable set, with its resource attributes; an
+/// `OTEL_*` variable set where thurbox starts wins over the file's value.
+#[test]
+fn the_settings_telemetry_table_alone_exports_and_an_otel_variable_wins_over_it() {
+    let collector = otlp_collector::Collector::start();
+    let table = format!(
+        "stray_key = 1\n[telemetry]\nendpoint = \"{}\"\ntraces = false\nmetrics = false\nlogs = true\nresource = {{ \"deployment.environment.name\" = \"from-file\" }}\n",
+        collector.endpoint()
+    );
+    let start = |profile: &Profile, logs_exporter: Option<&str>| {
+        let settings = profile.path("config/settings.toml");
+        let mut seeded = std::fs::read_to_string(&settings).expect("read settings");
+        seeded.insert_str(0, &table);
+        std::fs::write(&settings, seeded).expect("write settings");
+        let logs_exporter = logs_exporter.map(str::to_string);
+        Tui::spawn_with(profile, 24, 80, move |cmd| {
+            for (key, _) in std::env::vars() {
+                if key.starts_with("OTEL_") {
+                    cmd.env_remove(key);
+                }
+            }
+            if let Some(v) = &logs_exporter {
+                cmd.env("OTEL_LOGS_EXPORTER", v);
+            }
+        })
+    };
+
+    let profile = Profile::new();
+    let mut tui = start(&profile, None);
+    tui.wait_for("No sessions yet");
+    let mut requests = Vec::new();
+    let deadline = Instant::now() + WAIT;
+    while otlp_collector::logs(&requests).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "no log record reached the collector\n--- thurbox.log ---\n{}",
+            tui.log_tail()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        requests.extend(collector.take());
+    }
+    assert!(tui.quit().success());
+    let resources = otlp_collector::log_resources(&requests);
+    assert!(
+        resources
+            .iter()
+            .all(
+                |r| r.get("deployment.environment.name").map(String::as_str) == Some("from-file")
+                    && r.get("service.name").map(String::as_str) == Some("thurbox")
+            ),
+        "{resources:?}"
+    );
+
+    let profile = Profile::new();
+    let mut tui = start(&profile, Some("none"));
+    tui.wait_for("No sessions yet");
+    assert!(tui.quit().success());
+    let logs = otlp_collector::logs(&collector.take());
+    assert!(
+        logs.is_empty(),
+        "OTEL_LOGS_EXPORTER=none wins: {} sent",
+        logs.len()
+    );
+}
+
 /// Log records carry text, so an endpoint alone sends none of them: the
 /// interface exports logs only when `OTEL_LOGS_EXPORTER=otlp` is set.
 #[test]

@@ -51,6 +51,55 @@ pub struct Config {
     /// starts carries. An unreadable brief refuses the config.
     #[serde(skip)]
     pub gateway_briefs: BTreeMap<String, String>,
+    /// The `[telemetry]` section: what Fleet exports, and what it gives the
+    /// programs and sessions it starts (docs/observability.md).
+    #[serde(default)]
+    pub telemetry: Option<otel_env::TelemetryConfig>,
+}
+
+/// The `[telemetry]` table of the config file at `path`, for the export a
+/// command starts before it loads the whole config. `None` when there is no
+/// file or no table. An error when the file cannot be read as TOML or the
+/// table breaks a rule: the caller exports nothing, since what the table
+/// turns off is unknown.
+pub fn telemetry(path: &Path) -> Result<Option<otel_env::TelemetryConfig>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read config {}: {e}", path.display())),
+    };
+    let fail = |e: String| format!("config {}: {e}", path.display());
+    let table: toml::Table = toml::from_str(&text).map_err(|e| fail(e.to_string()))?;
+    let Some(telemetry) = table.get("telemetry") else {
+        return Ok(None);
+    };
+    check_telemetry_keys(telemetry).map_err(fail)?;
+    let config: otel_env::TelemetryConfig = telemetry
+        .clone()
+        .try_into()
+        .map_err(|e: toml::de::Error| fail(format!("telemetry: {e}")))?;
+    config.validate().map_err(fail)?;
+    Ok(Some(config))
+}
+
+fn check_telemetry_keys(table: &toml::Value) -> Result<(), String> {
+    let Some(table) = table.as_table() else {
+        return Ok(());
+    };
+    for key in table.keys() {
+        if !otel_env::TelemetryConfig::KEYS.contains(&key.as_str()) {
+            return Err(format!(
+                "telemetry.{key} is not a key; use one of {}",
+                otel_env::TelemetryConfig::KEYS.join(", ")
+            ));
+        }
+    }
+    if let Some(headers) = table.get("headers").and_then(toml::Value::as_table)
+        && let Some(key) = headers.keys().find(|k| k.as_str() != "file")
+    {
+        return Err(format!("telemetry.headers.{key} is not a key; use file"));
+    }
+    Ok(())
 }
 
 /// The `[forge]` section: the forges ChangeRequests are mirrored from, the
@@ -256,6 +305,17 @@ impl Config {
                 config.gateway_briefs.insert(name.clone(), brief);
             }
         }
+        if let Some(telemetry) = &config.telemetry {
+            let raw: toml::Table =
+                toml::from_str(text).map_err(|e| format!("config {}: {e}", path.display()))?;
+            if let Some(table) = raw.get("telemetry") {
+                check_telemetry_keys(table)
+                    .map_err(|e| format!("config {}: {e}", path.display()))?;
+            }
+            telemetry
+                .validate()
+                .map_err(|e| format!("config {}: {e}", path.display()))?;
+        }
         for (name, plugin) in &config.plugins {
             fleet_api::validate::validate_name(name).map_err(|e| e.to_string())?;
             if !Path::new(&plugin.program).is_absolute()
@@ -386,6 +446,7 @@ impl Config {
             plugins: BTreeMap::new(),
             gateway: None,
             gateway_briefs: BTreeMap::new(),
+            telemetry: None,
         }
     }
 }

@@ -181,8 +181,8 @@ from the JSON [Task](resources/task.md),
 store.
 `fleet apply` takes no TOML as input, and `--config` applies no resources.
 There is no `[taskConfig]`, `[envProvider]` or task-template section in TOML.
-There is no telemetry section either: the standard `OTEL_*` variables
-configure [OpenTelemetry export](../observability.md).
+The `[telemetry]` section configures
+[OpenTelemetry export](#the-telemetry-section).
 
 ### File selection and paths
 
@@ -782,11 +782,29 @@ for an existing execution; there is no background refresh.
 
 ## OpenTelemetry export
 
-The standard `OTEL_*` environment variables turn on OpenTelemetry export.
-[Observability](../observability.md) owns the variables, the spans, the
-metrics and the guarantees of the export, for Fleet and every other
-program.
+The `[telemetry]` section and the standard `OTEL_*` environment variables
+turn on OpenTelemetry export. An `OTEL_*` variable that is set wins over the
+section's value for that variable.
+[Observability](../observability.md) owns the keys, the variables, the
+spans, the metrics and the guarantees of the export, for Fleet and every
+other program.
+
+### The `[telemetry]` section
+
+```toml
+[telemetry]
+endpoint = "http://localhost:4318"
+headers = { file = "/run/user/1000/otel-headers" }   # holds key=value,...; never the secret here
+resource = { "service.namespace" = "fleet", "deployment.environment.name" = "local" }
+```
+
+Each `fleet` command reads the section: `fleet up`, `fleet reconcile`, and a
+one-shot command that an agent's hook or a shell runs. Fleet gives the
+values in force to each `runtime-mux` call and to each agent that it
+starts ([coding agents](../observability.md#coding-agents)). The keys and
+their rules are in [Config files](../observability.md#config-files).
+`fleet doctor` shows the export in force, and where each value comes from.
 
 ```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 fleet up
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 fleet up   # a variable wins over the section
 ```

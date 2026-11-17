@@ -297,8 +297,8 @@ governed = ["agent", "config", "update"]
 # row someone else's runtime. The host model, the hyperlink table and
 # `SessionId` are the runtime's, which `session` re-exports.
 session = { use = [], external = [
-  "chrono", "chrono_tz", "cron", "runtime_mux", "serde", "serde_json", "toml",
-  "toml_edit", "unicode_width", "uuid",
+  "chrono", "chrono_tz", "cron", "otel_env", "runtime_mux", "serde", "serde_json",
+  "toml", "toml_edit", "unicode_width", "uuid",
 ] }
 # The downloads plugins and the updater make, and keyboard input. Never a
 # session backend: the multiplexer runtime (`backend`) is reached through its

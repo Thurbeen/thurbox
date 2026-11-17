@@ -5445,3 +5445,35 @@ fn a_task_dispatched_beside_running_tasks_is_briefed_and_attachable_about_as_soo
         env.get("t1")["status"]["conditions"]
     );
 }
+
+/// The `[telemetry]` table of Fleet's config, with no `OTEL_*` variable set,
+/// reaches `runtime-mux`: its span arrives at the file's collector, under
+/// its own name, with the file's resource attributes.
+#[test]
+fn runtime_mux_exports_to_the_collector_fleets_config_file_names() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("otel-file");
+    let collector = support::otlp::Collector::start();
+    let env = mux_env("runtime-mux-otel-file", &program, &sockets);
+    let mut text = fs::read_to_string(&env.config).expect("config");
+    text.push_str(&format!(
+        "\n[telemetry]\nendpoint = \"{}\"\nresource = {{ \"deployment.environment.name\" = \"from-file\" }}\n",
+        collector.endpoint
+    ));
+    fs::write(&env.config, text).expect("config");
+
+    env.fleet(&["doctor"]);
+
+    let spans = collector.spans();
+    let manifest = spans
+        .iter()
+        .find(|s| s.name == "runtime-mux manifest")
+        .unwrap_or_else(|| panic!("no runtime-mux span in {spans:#?}"));
+    assert_eq!(manifest.resource["service.name"], "runtime-mux");
+    assert_eq!(
+        manifest.resource["deployment.environment.name"],
+        "from-file"
+    );
+}

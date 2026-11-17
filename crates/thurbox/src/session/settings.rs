@@ -73,6 +73,11 @@ pub struct Settings {
     /// listed: the one on this machine, [`IMPLIED_FLEET`] ([`Self::fleets`]).
     #[serde(default, deserialize_with = "fleet_names")]
     pub fleets: BTreeMap<String, FleetDef>,
+    /// The interface's own OpenTelemetry export (`[telemetry]` table); an
+    /// `OTEL_*` variable wins over each of its values. Fleet's export is
+    /// Fleet's config file's (docs/observability.md).
+    #[serde(default)]
+    pub telemetry: otel_env::TelemetryConfig,
 }
 
 /// Keys an older `settings.toml` may hold that thurbox no longer reads, each
@@ -86,10 +91,6 @@ pub const RETIRED_KEYS: &[(&str, &str)] = &[
     ),
     ("remote", "thurbox lists no sessions through other hosts"),
     ("features.soft_delete", "Fleet deletes a session at once"),
-    (
-        "telemetry",
-        "the standard OTEL_* environment variables configure telemetry",
-    ),
     (
         "audit_retention_days",
         "thurbox keeps no session database to prune",
@@ -625,6 +626,7 @@ pub const FIELDS: &[Field] = &[
     field!(Live, clipboard),
     // The engine's source and executor are chosen once, at boot (ADR-41).
     field!(NextLaunch, fleets),
+    field!(NextLaunch, telemetry),
 ];
 
 impl Settings {
@@ -661,6 +663,7 @@ impl Default for Settings {
             notifications: NotificationSettings::default(),
             clipboard: ClipboardSettings::default(),
             fleets: BTreeMap::new(),
+            telemetry: otel_env::TelemetryConfig::default(),
         }
     }
 }
@@ -953,7 +956,8 @@ mod tests {
              perf_hud = false\nmouse = false\nnotifications = false\n\
              version_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
-             [fleets.box]\nprogram = \"/opt/fleet\"\n",
+             [fleets.box]\nprogram = \"/opt/fleet\"\n\
+             [telemetry]\nendpoint = \"http://c:4318\"\n",
         )
         .unwrap();
         let adopted = base.with_live_from(&other);

@@ -123,6 +123,10 @@ pub fn run(settings: &crate::session::settings::Settings) -> Result<CommandOutpu
     if listed.iter().any(|(_, def)| def.transport.is_local()) {
         findings.push(multiplexer_finding());
     }
+    findings.push(telemetry_finding(otel_env::describe(
+        &settings.telemetry,
+        true,
+    )));
 
     let verdict = findings.iter().map(|f| f.level).max().unwrap_or(Level::Ok);
     let human = render(&findings, verdict);
@@ -299,6 +303,22 @@ fn automation_timer_finding(state: Option<&str>) -> Option<Finding> {
              from ~/.config/systemd/user"
         ))
     })
+}
+
+fn telemetry_finding(described: Result<String, String>) -> Finding {
+    match described {
+        Ok(detail) => Finding::new(
+            "telemetry",
+            Level::Ok,
+            format!("interface export: {detail}"),
+        ),
+        Err(why) => Finding::new(
+            "telemetry",
+            Level::Warn,
+            format!("the interface exports nothing: {why}"),
+        )
+        .fix("fix [telemetry] in settings.toml or the OTEL_* variables"),
+    }
 }
 
 /// Whether the multiplexer every local session's window is made of is there.
@@ -975,6 +995,25 @@ mod tests {
                 .contains("speaks fleet/v2; thurbox writes fleet/v1alpha1"),
             "{}",
             findings[0].detail
+        );
+    }
+
+    /// The interface's export is reported from its own table, with where
+    /// each value comes from; a table against the rules warns.
+    #[test]
+    fn doctor_reports_the_interfaces_telemetry_table() {
+        let table: otel_env::TelemetryConfig =
+            toml::from_str("endpoint = \"http://127.0.0.1:9\"\nlogs = true\n").unwrap();
+        let ok = telemetry_finding(Ok(otel_env::describe(&table, true).unwrap()));
+        assert_eq!(ok.level, Level::Ok, "{}", ok.detail);
+        assert!(ok.detail.contains("(config file)"), "{}", ok.detail);
+        let grpc: otel_env::TelemetryConfig = toml::from_str("protocol = \"grpc\"\n").unwrap();
+        let warn = telemetry_finding(otel_env::describe(&grpc, true));
+        assert_eq!(warn.level, Level::Warn);
+        assert!(
+            warn.detail.contains("telemetry.protocol"),
+            "{}",
+            warn.detail
         );
     }
 
