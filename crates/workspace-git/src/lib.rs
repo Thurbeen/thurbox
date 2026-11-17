@@ -229,7 +229,9 @@ pub fn make(cfg: &Config, key: &str, urls: &[String]) -> Result<Answer, String> 
 
 /// Release the key's workspace: work that exists nowhere else is preserved,
 /// then its worktrees go. A directory it did not make is left as it is, and
-/// no branch is deleted. A key with no workspace is released already.
+/// no branch is deleted. A key with no workspace is released already. A
+/// worktree an earlier attempt began removing has lost its `.git`: that
+/// attempt preserved its work, so what is left goes without git.
 pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
     check_key(key)?;
     let dir = cfg.root.join(key);
@@ -241,7 +243,7 @@ pub fn release(cfg: &Config, key: &str) -> Result<(), String> {
         // A make or a retention on the same repository waits for this one.
         let _lock = lock_repository(cfg, source)?;
         let path = Path::new(&tree.path);
-        if path.is_dir() {
+        if is_worktree(path) {
             preserve(path, key, &tree.name)?;
         }
         remove_worktree(source, path)?;
@@ -319,14 +321,20 @@ fn rollback(cfg: &Config, key: &str) -> Result<(), String> {
     remove_dir(&dir)
 }
 
+fn is_worktree(path: &Path) -> bool {
+    path.join(".git").exists()
+}
+
 fn remove_worktree(source: &Path, path: &Path) -> Result<(), String> {
-    if path.exists() {
+    if is_worktree(path) {
         let path = path.display().to_string();
         git(
             source,
             &["worktree", "remove", "--force", "--force", &path],
             &[],
         )?;
+    } else {
+        remove_dir(path)?;
     }
     git(source, &["worktree", "prune"], &[]).map(|_| ())
 }

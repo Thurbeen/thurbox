@@ -1947,6 +1947,62 @@ fn a_deleted_task_whose_agent_last_said_working_is_released_after_the_grace() {
     );
 }
 
+/// A release whose `git worktree remove` stopped part way, as one does when
+/// a process still writes the build output, leaves the worktree's
+/// directory without its `.git`. The next attempt removes what is left and
+/// keeps the work the first attempt preserved.
+#[test]
+fn a_release_finishes_a_worktree_an_earlier_attempt_half_removed() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    if uid() == "0" {
+        eprintln!("skipping: root removes a read-only directory's files");
+        return;
+    }
+    let sockets = Sockets::new("half-removed");
+    let (env, src) =
+        git_url_task_on_runtime_mux("runtime-mux-half-removed", &program, &sockets, CLAUDE);
+    reconcile_until(&env, "briefed in its worktree", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let dir = PathBuf::from(
+        env.get("t1")["status"]["workspace"]["dirs"][0]
+            .as_str()
+            .expect("a workspace")
+            .to_string(),
+    );
+    fs::write(dir.join("notes.txt"), "kept\n").expect("work");
+    let build = dir.join("target").join("debug");
+    fs::create_dir_all(&build).expect("build output");
+    fs::write(build.join("thurbox"), "binary").expect("build output");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&build, fs::Permissions::from_mode(0o555)).expect("chmod");
+
+    env.fleet(&["delete", "task", "t1"]).ok();
+    reconcile_until(&env, "the first release fails part way", |env| {
+        env.get("t1")["status"]["releaseAttempts"].as_u64() > Some(0)
+    });
+    if dir.join(".git").exists() {
+        fs::remove_file(dir.join(".git")).expect("git removes in directory order");
+    }
+    fs::set_permissions(&build, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while env.fleet(&["get", "task", "t1"]).code == Some(0) {
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1")["status"]);
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert!(!dir.exists(), "the release removed what was left");
+    let refs = preserved_refs(&src);
+    assert_eq!(refs.len(), 1, "one preserved ref: {refs:?}");
+    assert_eq!(
+        git(&src, &["show", &format!("{}:notes.txt", refs[0])]),
+        "kept\n"
+    );
+}
+
 fn uid() -> String {
     let out = Command::new("id").arg("-u").output().expect("id -u");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
