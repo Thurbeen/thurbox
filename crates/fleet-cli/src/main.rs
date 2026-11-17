@@ -656,9 +656,7 @@ fn fail(message: impl Into<String>) -> Failure {
     }
 }
 
-/// A refusal no retry can fix. `fleet up` exits with its own code, on which
-/// a supervisor stops restarting it.
-fn refusal(command: &Command, message: String) -> Failure {
+fn refusal_no_retry_fixes(command: &Command, message: String) -> Failure {
     match command {
         Command::Up { .. } => Failure {
             code: exit::CONFIG,
@@ -843,7 +841,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .map_err(|e| fail(format!("cannot read config {}: {e}", p.display())))?;
-            Config::parse(&text, p).map_err(|why| refusal(&cli.command, why))?
+            Config::parse(&text, p).map_err(|why| refusal_no_retry_fixes(&cli.command, why))?
         }
         None => Config::empty(),
     };
@@ -1025,7 +1023,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
     let file_store = FileStore::open(&data_dir)
         .map_err(|e| match e {
-            StoreError::Unsupported(why) => refusal(&cli.command, why),
+            StoreError::Unsupported(why) => refusal_no_retry_fixes(&cli.command, why),
             e => e.into(),
         })?
         .with_plugins(&registrations)?;
