@@ -1,6 +1,6 @@
 //! thurbox on Fleet (ADR-41): the snapshot reads the Tasks through `fleet
 //! watch`, the commands act through `fleet apply`, `send` and `delete`, and
-//! thurbox keeps a `fleet up` running. The real `fleet` binary against an
+//! thurbox starts no `fleet up`. The real `fleet` binary against an
 //! isolated store and Fleet's fake runtime; thurbox links no Fleet crate, so
 //! the binary is found beside `thurbox-cli`, as a workspace build leaves it.
 //!
@@ -202,6 +202,20 @@ impl Fleet {
         (run.code == Some(0)).then(|| serde_json::from_str(&run.stdout).expect("JSON"))
     }
 
+    fn up(&self) {
+        use std::os::unix::process::CommandExt;
+        let mut manager = Process::new(&self.program)
+            .arg("up")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("fleet up");
+        std::thread::spawn(move || manager.wait());
+        until("a manager holds the lease", || self.manager().is_some());
+    }
+
     /// The pid of the `fleet up` holding the lease, if one does.
     fn manager(&self) -> Option<u32> {
         let lease: Value =
@@ -218,8 +232,6 @@ impl Fleet {
 
 impl Drop for Fleet {
     fn drop(&mut self) {
-        // A manager thurbox started outlives it on purpose; this one ends
-        // with its test.
         if let Some(pid) = self.manager() {
             let _ = Process::new("kill").arg(pid.to_string()).status();
         }
@@ -860,33 +872,33 @@ fn a_fleet_row_elsewhere_is_not_diffed_here() {
 }
 
 #[test]
-fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
+fn thurbox_starts_no_fleet_up_and_says_which_command_does() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::initialized(bin);
-    assert_eq!(fleet.manager(), None);
-
+    std::env::set_var("FLEET_CONFIG", fleet.root.path().join("fleet.toml"));
     fleet.apply(json!([task("alpha")]));
-    let mut store = store_of(FleetWatch::with_manager(link(&fleet.program)));
-    // The `fleet up` thurbox starts reconciles the Tasks it finds.
-    until("a manager holds the lease", || fleet.manager().is_some());
+    let mut store = store_of(FleetWatch::spawn(link(&fleet.program)));
     until("the Task is a row", || {
         names(&mut store).contains(&"alpha".to_string())
     });
-    let first = fleet.manager();
-    let phase = || fleet.get("alpha").map(|t| t["status"]["phase"].clone());
-    until("the manager reconciles", || {
-        phase().is_some_and(|p| p.is_string())
-    });
-
-    // A second interface finds the lease held, and leaves that manager be.
-    let mut second = store_of(FleetWatch::with_manager(link(&fleet.program)));
-    until("the second store reads the Tasks", || {
-        names(&mut second).contains(&"alpha".to_string())
+    until("the Fleet says how to start its manager", || {
+        store.refresh_if_due();
+        store.current().fleets.first().is_some_and(|f| {
+            f.state == thurbox::kernel::snapshot::FleetState::Down
+                && f.why.as_deref()
+                    == Some("Fleet not running · systemctl --user start fleet.service")
+        })
     });
     std::thread::sleep(Duration::from_secs(2));
-    second.refresh_if_due();
-    assert_eq!(second.current().error, None);
-    assert_eq!(fleet.manager(), first);
+    assert_eq!(fleet.manager(), None);
+
+    fleet.up();
+    until("the Fleet is up", || {
+        store.refresh_if_due();
+        store.current().fleets.first().is_some_and(|f| {
+            f.state == thurbox::kernel::snapshot::FleetState::Up && f.why.is_none()
+        })
+    });
 }
 
 /// A private `TMUX_TMPDIR`, short enough for a socket path, whose server dies
@@ -1064,7 +1076,8 @@ fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() 
         t1,
     ]));
 
-    let mut store = store_of(FleetWatch::with_manager(link(&fleet.program)));
+    fleet.up();
+    let mut store = store_of(FleetWatch::spawn(link(&fleet.program)));
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let _entered = runtime.enter();
     let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
@@ -2343,10 +2356,7 @@ fn a_fleet_thurbox_cannot_speak_to_is_refused() {
     );
     let source = FleetWatches::new(
         "box",
-        vec![
-            FleetWatch::with_manager(link.clone()),
-            FleetWatch::spawn(gpu),
-        ],
+        vec![FleetWatch::spawn(link.clone()), FleetWatch::spawn(gpu)],
     );
     let mut store = SnapshotStore::with_source(Box::new(source), &Default::default());
     until("box is shown incompatible, gpu unreachable", || {
@@ -2377,11 +2387,6 @@ fn a_fleet_thurbox_cannot_speak_to_is_refused() {
     );
 }
 
-/// An update replaces `fleet` on disk, and a running `fleet up` keeps the
-/// program it started from. The update restarts it on the new one, against
-/// the same store: its Tasks, their inboxes and their sessions stay. The real
-/// `thurbox-cli update` runs from an install directory of its own, and a
-/// stand-in `curl` serves a release whose archive ships the same `fleet`.
 #[cfg(target_os = "linux")]
 mod an_update {
     use super::*;
@@ -2579,14 +2584,8 @@ mod an_update {
                 .ok()
         }
 
-        /// `fleet up` from the installed `fleet`, as thurbox or a person starts it.
         fn start_manager(&mut self) -> u32 {
-            self.start_manager_from(&self.fleet())
-        }
-
-        /// `fleet up` from `program`.
-        fn start_manager_from(&mut self, program: &Path) -> u32 {
-            let mut command = Process::new(program);
+            let mut command = Process::new(self.fleet());
             self.env(&mut command);
             let child = command
                 .arg("up")
@@ -2610,15 +2609,6 @@ mod an_update {
                 .stdin(Stdio::null())
                 .output()
                 .expect("thurbox-cli update")
-        }
-
-        /// Every file the fake runtime keeps its sessions in, as one text.
-        fn runtime_state(&self) -> String {
-            std::fs::read_dir(self.path("fake"))
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path()).ok())
-                .collect()
         }
 
         /// The `fleet up` processes running the program now installed.
@@ -2662,75 +2652,23 @@ mod an_update {
         })
     }
 
-    fn exe_of(pid: u32) -> String {
-        std::fs::read_link(format!("/proc/{pid}/exe"))
-            .map(|exe| exe.display().to_string())
-            .unwrap_or_else(|e| format!("<{e}>"))
-    }
-
     #[test]
-    fn restarts_the_running_fleet_up_on_the_new_fleet() {
+    fn leaves_the_running_fleet_up_and_names_the_command_that_restarts_it() {
         let Some(bin) = fleet_bin() else { return };
         let mut install = Install::new(&bin);
-        install.fleet_run(&["apply", "-f", "-"], Some(&alpha().to_string()));
         let old = install.start_manager();
-        until("the old manager gives alpha its session", || {
-            install.task("alpha")["status"]["session"]["key"].is_string()
-        });
-        install.fleet_run(&["send", "alpha", "kept across the update"], None);
-        let before = install.task("alpha");
 
         let updated = install.update();
+        let stdout = String::from_utf8_lossy(&updated.stdout);
         assert!(
             updated.status.success(),
-            "update: {}\n{}",
-            String::from_utf8_lossy(&updated.stdout),
+            "update: {stdout}\n{}",
             String::from_utf8_lossy(&updated.stderr)
         );
-
-        let holder = install.holder();
+        assert_eq!(install.holder(), Some(old), "{stdout}");
         assert!(
-            holder.is_some_and(|pid| pid != old),
-            "the running fleet up is still the old binary, or is left stopped: \
-             lease holder {holder:?} (old {old}, running {})",
-            exe_of(old)
-        );
-        let new = holder.unwrap();
-        assert_eq!(
-            exe_of(new),
-            install.fleet().display().to_string(),
-            "the new manager runs the installed fleet"
-        );
-        let old_status = install
-            .manager
-            .as_mut()
-            .expect("the old manager")
-            .try_wait()
-            .expect("wait");
-        assert_eq!(
-            old_status.map(|s| s.code()),
-            Some(Some(0)),
-            "the old manager stopped gracefully"
-        );
-        assert_eq!(
-            install.managers_on_installed_fleet(),
-            [new],
-            "one engine, not two"
-        );
-
-        let after = install.task("alpha");
-        assert_eq!(
-            after["status"]["session"]["key"], before["status"]["session"]["key"],
-            "{after:#}"
-        );
-        assert_eq!(after["metadata"]["uid"], before["metadata"]["uid"]);
-        until("the inbox message is delivered to the same session", || {
-            install.runtime_state().contains("kept across the update")
-        });
-        assert!(
-            !install.runtime_state().contains("\"gone\":true"),
-            "{}",
-            install.runtime_state()
+            stdout.contains("systemctl --user restart fleet.service"),
+            "{stdout}"
         );
     }
 
@@ -2749,79 +2687,11 @@ mod an_update {
         );
         assert_eq!(install.holder(), None);
         assert!(install.managers_on_installed_fleet().is_empty());
-        assert!(install.task("alpha")["metadata"]["uid"].is_string());
-    }
-
-    /// A Fleet whose `program` is a `fleet` the update did not replace keeps
-    /// its manager: restarting it would run the same old binary, and the
-    /// update says so instead of claiming a restart on the new release.
-    #[test]
-    fn leaves_a_fleet_whose_program_it_did_not_replace() {
-        let Some(bin) = fleet_bin() else { return };
-        let mut install = Install::new(&bin);
-        let elsewhere = install.path("elsewhere");
-        std::fs::create_dir_all(&elsewhere).expect("elsewhere");
-        let other = elsewhere.join("fleet");
-        std::fs::copy(&bin, &other).expect("another fleet");
-        std::fs::write(
-            install.path("thurbox-config/settings.toml"),
-            format!("[fleets.laptop]\nprogram = '{}'\n", other.display()),
-        )
-        .expect("settings");
-        let old = install.start_manager_from(&other);
-
-        let updated = install.update();
-        let stdout = String::from_utf8_lossy(&updated.stdout);
         assert!(
-            updated.status.success(),
-            "update: {stdout}\n{}",
-            String::from_utf8_lossy(&updated.stderr)
+            !String::from_utf8_lossy(&updated.stdout).contains("restart fleet.service"),
+            "{}",
+            String::from_utf8_lossy(&updated.stdout)
         );
-        assert_eq!(
-            install.holder(),
-            Some(old),
-            "a manager on a fleet the update did not replace was restarted: {stdout}"
-        );
-        assert!(stdout.contains("did not replace"), "{stdout}");
-        assert!(!stdout.contains("restarted on the new release"), "{stdout}");
-    }
-
-    /// A relative `PATH` entry ahead of the install directory names another
-    /// `fleet`, which `fleet up` started by name would run. The restart
-    /// starts the `fleet` it checked, never another copy `PATH` finds first.
-    #[test]
-    fn restarts_on_the_installed_fleet_whatever_path_lists_first() {
-        let Some(bin) = fleet_bin() else { return };
-        let mut install = Install::new(&bin);
-        std::fs::create_dir_all(install.path("elsewhere")).expect("elsewhere");
-        std::fs::copy(&bin, install.path("elsewhere/fleet")).expect("another fleet");
-        let old = install.start_manager();
-
-        let mut command = Process::new(install.path("install/thurbox-cli"));
-        install.env(&mut command);
-        let updated = command
-            .args(["update", "--force"])
-            .env(
-                "PATH",
-                format!(
-                    "{}:elsewhere:{}:/usr/bin:/bin",
-                    install.path("fakebin").display(),
-                    install.path("install").display()
-                ),
-            )
-            .current_dir(install.root.path())
-            .stdin(Stdio::null())
-            .output()
-            .expect("thurbox-cli update");
-        let stdout = String::from_utf8_lossy(&updated.stdout);
-        assert!(updated.status.success(), "update: {stdout}");
-
-        let new = install.holder().expect("a manager holds the lease");
-        assert_ne!(new, old, "{stdout}");
-        assert_eq!(
-            exe_of(new),
-            install.fleet().display().to_string(),
-            "the restart ran another fleet: {stdout}"
-        );
+        assert!(install.task("alpha")["metadata"]["uid"].is_string());
     }
 }

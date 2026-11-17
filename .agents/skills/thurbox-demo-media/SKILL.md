@@ -57,7 +57,8 @@ becomes the poster, since Doom flashes the whole view red when the player is hit
 step of `docs/thurbox/tutorial.md`, taken by driving the real TUI through the
 creation flow. The profile starts with **zero sessions, an empty repo
 memory and no Fleet config**, because the tutorial's subject is a first launch:
-the first frame shows the notice of the `fleet init` thurbox ran itself.
+the recorder runs `fleet init` and starts the sandbox's `fleet up` first, the
+steps the tutorial asks of a reader, since thurbox never sets up Fleet.
 `TEXT_DIR=<dir>` also keeps each frame as plain text, to check a re-record
 against the prose without opening the PNGs. thurbox runs in a
 detached tmux session, `tmux send-keys` presses the real chords, and each still

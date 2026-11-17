@@ -11,9 +11,9 @@
 #   * The profile starts with ZERO sessions and an EMPTY repo memory. The
 #     tutorial's subject is the first launch, and a seeded list would show a
 #     screen the reader cannot have yet.
-#   * Fleet has NO config: the first `thurbox` runs `fleet init` itself, which
-#     is what a reader's first launch does, and the first screenshot shows the
-#     notice it leaves. The agent step lists the harnesses Fleet ships; when
+#   * Fleet starts with NO config: the recorder runs `fleet init` and starts
+#     `fleet up`, the two steps the tutorial asks of a reader before the first
+#     launch. The agent step lists the harnesses Fleet ships; when
 #     `claude` is not installed, a stand-in `claude` that runs a shell is put on
 #     PATH, so the session still starts.
 #   * thurbox runs in a detached tmux session, `tmux send-keys` presses the
@@ -154,14 +154,14 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
 # screenshots in the wrong theme, with nothing failing.
 CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
 mkdir -p "$CFG_DIR"
-# runtime-mux's workspaces inside the sandbox. No Fleet config: the first
-# launch writes it, at the per-user path under the sandbox's XDG_CONFIG_HOME.
+# runtime-mux's workspaces inside the sandbox. No Fleet config: `fleet init`
+# writes it below, at the per-user path under the sandbox's XDG_CONFIG_HOME.
 tbx_sandbox_runtime
 unset FLEET_CONFIG
 
-# The teardown runs before the link goes: it stops the `fleet up` the first
-# launch started, which it knows as the sandbox's by an XDG_CONFIG_HOME that
-# resolves through that link.
+# The teardown runs before the link goes: it stops the sandbox's `fleet up`,
+# which it knows as the sandbox's by an XDG_CONFIG_HOME that resolves through
+# that link.
 cleanup() {
     tmux -L "$SOCK" kill-server >/dev/null 2>&1 || true
     tbx_sandbox_teardown
@@ -247,12 +247,14 @@ printf '{"theme": "%s"}\n' "$THEME" > "$CFG_DIR/interface.json"
 
 # Tripwire: the sessions must live in this sandbox. Fleet's config is found
 # under XDG_CONFIG_HOME; one that resolves outside the sandbox means the
-# isolation broke and the first launch would set up, or read, a real Fleet.
+# isolation broke and `fleet init` would set up, or read, a real Fleet.
 case "$(readlink -f "$XDG_CONFIG_HOME")" in
     "$(readlink -f "$TBX_SANDBOX_ROOT")"/*) ;;
     *) die "XDG_CONFIG_HOME ($XDG_CONFIG_HOME) is outside the sandbox — aborting" ;;
 esac
 [ -z "${FLEET_CONFIG:-}" ] || die "FLEET_CONFIG is set — aborting"
+fleet init >/dev/null || die "fleet init failed"
+tbx_sandbox_fleet_up
 
 # --- The recording terminal --------------------------------------------------
 # `status off` because the pane has to own every row it was given, and

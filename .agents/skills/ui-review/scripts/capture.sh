@@ -107,6 +107,7 @@ CFG_DIR="$XDG_CONFIG_HOME/thurbox-dev"
 mkdir -p "$CFG_DIR"
 # The sessions are this sandbox's Fleet Tasks (exports FLEET_CONFIG).
 tbx_sandbox_fleet
+tbx_sandbox_fleet_up
 
 cleanup() { tbx_sandbox_teardown; }
 trap cleanup EXIT INT TERM

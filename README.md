@@ -147,13 +147,16 @@ the AUR, Nix, winget, Chocolatey and uninstalling are on the
 ## First steps
 
 ```bash
-thurbox-cli doctor   # checks each Fleet, its runtime and its agents
+fleet init                            # writes Fleet's config
+systemctl --user start fleet.service  # Fleet's manager, `fleet up`
+thurbox-cli doctor                    # checks each Fleet, its runtime and its agents
 thurbox
 ```
 
-On a machine with no Fleet config, the first `thurbox` runs `fleet init`. It
-starts Fleet's manager when none runs, then draws the session list on the left
-and an agent terminal on the right.
+thurbox never starts, restarts or sets up Fleet's manager: a user service runs
+`fleet up` ([the unit](docs/where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
+While none runs, the status line says which command starts it. thurbox draws
+the session list on the left and an agent terminal on the right.
 
 1. **`Ctrl+N`** opens the new-session flow: a place, a repository (with
    `Alt+W` for a worktree of its own), a name and a branch, then an agent.

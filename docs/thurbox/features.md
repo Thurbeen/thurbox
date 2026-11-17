@@ -1068,9 +1068,9 @@ network — see *Feature Flags*) cover staying current:
   a zip, and a running `thurbox.exe` cannot be renamed over, so the swap
   there moves each old program aside (`.thurbox.exe.old`) first, and puts
   back every program already swapped if one fails — see `[features]` in
-  `docs/thurbox/config.md`. Both restart a running `fleet up` on the new
-  `fleet` after an install, against the same store: Tasks, inboxes and
-  sessions stay.
+  `docs/thurbox/config.md`. Neither restarts a running `fleet up`: after an
+  install, each names the command that restarts it on the new `fleet`
+  (`systemctl --user restart fleet.service`).
 
 Both are on by default for 1.0 so a fresh install stays current on its
 own; set them to `false` if you'd rather make no network calls or have

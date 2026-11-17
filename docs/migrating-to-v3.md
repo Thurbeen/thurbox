@@ -175,8 +175,8 @@ Before you enable a service:
 4. Start the service. Check that `fleet version --json` shows the service's
    process as the holder.
 
-thurbox starts `fleet up` itself when no manager runs. On a machine with a
-service, start the service first.
+thurbox never starts `fleet up`. While no manager runs, its status line says
+which command starts one.
 
 ### The service unit
 

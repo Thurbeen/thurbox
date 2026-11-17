@@ -49,8 +49,8 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **`tests/fleet_engine_e2e.rs`** — the Fleet engine against
   the real `fleet` binary, found beside `thurbox-cli` (or `FLEET_BIN`), with
   Fleet's fake runtime: Tasks as rows through `fleet watch`, create, send,
-  delete and confirmed delete through its command line, and the `fleet up`
-  thurbox keeps running; and, on `runtime-mux` with tmux, a Task's pane through
+  delete and confirmed delete through its command line, that thurbox starts
+  no `fleet up` and names the command that does; and, on `runtime-mux` with tmux, a Task's pane through
   `fleet attach`. Skips when a binary is not built (`cargo build -p fleet-cli
   -p runtime-mux`), except under `CI`, where a missing binary fails the test:
   the Nextest job builds `fleet` before its run, since it excludes Fleet's
@@ -128,8 +128,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   Every profile puts a stand-in `fleet` first on `PATH` (no Tasks, no
   manager), so no interface under test ever reaches a real Fleet store; `Profile::real_fleet` swaps in
   the real binary on a store, config and tmux directory of the profile's own,
-  with `claude` running `sh`, and `Profile::fleet_session` applies and
-  reconciles an interactive Task. `just smoke` drives the same harness.
+  with `claude` running `sh`, and starts that Fleet's `fleet up` when the
+  first interface spawns (thurbox never starts one); `Profile::fleet_session`
+  applies and reconciles an interactive Task. `just smoke` drives the same harness.
   Keyboard negotiation covers responsive legacy, kitty and silent terminals;
   `docs/thurbox/development.md` records the reply invariant and execution measurements.
 - **`tests/self_update_scratch.rs`** (unix) — the real update CLI with private

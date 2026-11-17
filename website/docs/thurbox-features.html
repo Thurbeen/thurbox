@@ -216,9 +216,9 @@ transport = { wsl = "Ubuntu" }</code></pre>
               and <code>fleet shell</code> name, over the link to the session's Fleet.
             </li>
             <li>
-              thurbox starts <code>fleet up</code> for a Fleet on this machine when no manager
-              runs. It never starts one on another machine: run it there as a service
-              (<a href="fleet-install.html#service">Keep fleet up running</a>).
+              thurbox never starts, restarts or sets up <code>fleet up</code>: run it as a service
+              (<a href="fleet-install.html#service">Keep fleet up running</a>). While none runs, the
+              status line names the command that starts it.
             </li>
             <li>
               <code>thurbox-cli doctor</code> checks each listed Fleet and says which one cannot be

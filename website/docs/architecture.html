@@ -126,8 +126,8 @@ agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
             thurbox can follow several Fleets, listed under <code>[fleets.&lt;name&gt;]</code> in
             <code>settings.toml</code>. The session list follows every listed Fleet as one list. A
             Fleet that cannot be reached keeps its rows, marked unreachable. Each command goes to its
-            session's own Fleet. thurbox starts <code>fleet up</code> for a Fleet on this machine when
-            no manager runs; on another machine, a user systemd unit runs it. See
+            session's own Fleet. thurbox never starts <code>fleet up</code>: a user systemd unit runs
+            it, and thurbox says which command starts a manager that does not run. See
             <a href="configuration.html">Configuration</a> for the <code>[fleets]</code> table.
           </p>
 
@@ -204,7 +204,6 @@ agent   &mdash;fleet signal / fleet result&rarr;                   Fleet</pre>
             </div>
             <div class="terminal-body">
               <pre>tokio::main &rarr; load config + settings
-  &rarr; start fleet up on this machine if no manager runs
   &rarr; follow fleet watch, once per listed Fleet
   &rarr; resolve ui/ &rarr; build the Lua host
   &rarr; init terminal

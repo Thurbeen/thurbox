@@ -6,9 +6,10 @@
 //! replaces files on disk). When the flag is off, `update` prints a one-line
 //! hint on how to enable it instead of reaching the network. `--force`
 //! re-downloads and replaces even when up to date or on a development build,
-//! and still never installs another major. After an install, the `fleet up`
-//! of each Fleet on this machine is restarted on the new `fleet`
-//! ([`crate::kernel::snapshot::fleet::restart_manager`]).
+//! and still never installs another major. After an install, it names the
+//! command that restarts each Fleet manager on this machine still running the
+//! old release ([`crate::kernel::snapshot::fleet::stale_managers`]); thurbox
+//! never restarts one.
 
 use clap::Args;
 use serde_json::json;
@@ -54,7 +55,7 @@ pub fn run(
             to,
             next_major,
         }) => {
-            let fleet = crate::kernel::snapshot::fleet::restart_managers(fleets);
+            let fleet = crate::kernel::snapshot::fleet::stale_managers(fleets);
             let mut fields = vec![
                 ("from", from.clone()),
                 ("to", to.clone()),

@@ -87,9 +87,14 @@ Status: implemented.
 1. Run the installer, `scripts/install.sh` (`install.ps1` on Windows). It
    installs thurbox, `fleet` and `runtime-mux` together. Also install a
    multiplexer and a coding agent.
-2. Start thurbox. On a machine with no Fleet config, it runs `fleet init`
-   first, which writes the multiplexer runtime and its `local` place.
-   thurbox then starts `fleet up` when no manager runs.
+2. Run `fleet init`. It writes the multiplexer runtime and its `local`
+   place.
+3. Install the user systemd unit that runs `fleet up`
+   ([setup 2](#2-laptop-thurbox-fleet-on-a-remote-box) shows it), and start
+   it: `systemctl --user start fleet.service`.
+4. Start thurbox. thurbox never starts, restarts or sets up a manager. While
+   none runs, its status line says `Fleet not running · systemctl --user
+   start fleet.service`, or `no Fleet config · fleet init` before step 2.
 
 Each session runs on `local`: the laptop.
 
@@ -108,7 +113,7 @@ when the laptop sleeps.
 1. On box, install `fleet`, `runtime-mux`, `tmux` and a coding agent.
 2. On box, run `fleet init`.
 3. On box, install a user systemd unit that runs `fleet up`.
-   thurbox never starts `fleet up` on a remote Fleet. A user service does not
+   thurbox never starts `fleet up`, on any Fleet. A user service does not
    read your login `PATH`: set `Environment=PATH` to the directories that hold
    `fleet`, `runtime-mux`, `workspace-git`, `tmux`, `git` and your coding
    agents. `fleet up` starts

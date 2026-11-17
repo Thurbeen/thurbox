@@ -30,8 +30,8 @@ const PALETTES = {
 const TITLE = 'thurbox: one interface, several Fleets';
 const DESC =
   'thurbox lists the sessions of every Fleet in settings.toml; Ctrl+N picks a Fleet, a place and a ' +
-  'repository. Fleet laptop runs on this machine, where thurbox starts fleet up. Fleet box runs on ' +
-  'another machine, reached over ssh or WSL, where a systemd unit runs fleet up. Each Fleet starts a ' +
+  'repository. Fleet laptop runs on this machine, and Fleet box on another machine, reached over ssh ' +
+  'or WSL; on each, a systemd unit runs fleet up, never thurbox. Each Fleet starts a ' +
   'runtime (runtime-mux, or yours), which runs a workspace provider (workspace-git, or yours) and ' +
   'runs sessions at a place: Fleet laptop at local (the laptop) and mux/devbox over ssh, Fleet box ' +
   'at local (box itself) and mux/wsl-dev. A session is a Task of one Fleet: it keeps running when ' +
@@ -53,7 +53,7 @@ const LANES = [
   {
     fleet: 'Fleet laptop',
     where: 'on this machine',
-    how: 'thurbox starts',
+    how: 'a systemd unit runs',
     link: 'fleet',
     places: [
       ['local', 'the laptop'],

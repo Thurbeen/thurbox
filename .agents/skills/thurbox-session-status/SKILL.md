@@ -75,6 +75,19 @@ made after it fails, or `START_WAIT` (90 s) passes; a refused `start` command
 fails it with Fleet's error. While one is pending, the animation clock runs and
 the pane draws `theme.spinner_frame` and `Starting <name>…`.
 
+## A Fleet's own state
+
+A Fleet's row (`thurbox.fleets[i].state`) comes from its `fleet version
+--json`: `up` while a manager holds the lease, `down` while none does
+(`probe` in `src/kernel/snapshot/fleet.rs`). thurbox never starts, restarts
+or sets up a manager. For a Fleet on this machine that is `down`,
+`FleetLink::not_running` writes the command to run into `why`:
+`Fleet not running · systemctl --user start fleet.service`, or `no Fleet
+config · fleet init` before its config exists. The message band shows that
+`why` at error level while no transient message is up
+(`fleet_down_notice` in `src/coordinator/draw.rs`), and `thurbox-cli doctor`
+names the same fix.
+
 ## The vocabulary
 
 `SessionState` is the one vocabulary every surface prints. Five words are an

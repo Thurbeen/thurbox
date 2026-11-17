@@ -132,29 +132,19 @@ impl FleetLink {
         Some((base.join("fleet/config.toml"), "the per-user file"))
     }
 
-    /// First run: a Fleet on this machine with no config file gets one from
-    /// `fleet init`, so the `fleet up` thurbox then starts has the
-    /// multiplexer runtime and its `local` place rather than no runtime at
-    /// all. `None` when there is nothing to set up: a remote Fleet, or a
-    /// config already there. Otherwise the config written, or why not.
-    pub fn set_up(&self) -> Option<Result<std::path::PathBuf, String>> {
+    /// What a Fleet on this machine whose manager holds no lease tells the
+    /// user to run: [`NO_CONFIG`] before `fleet init` wrote its config,
+    /// otherwise [`START_MANAGER`]. `None` for a Fleet on another machine.
+    pub fn not_running(&self) -> Option<String> {
         if !self.is_local() {
             return None;
         }
-        let (path, _) = self.local_config()?;
-        if path.exists() {
-            return None;
-        }
-        Some(
-            self.bounded_output(&["init"], self.probe_timeout())
-                .and_then(|out| {
-                    if out.status.success() {
-                        Ok(path)
-                    } else {
-                        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-                    }
-                }),
-        )
+        let configured = self.local_config().is_none_or(|(path, _)| path.exists());
+        Some(if configured {
+            format!("Fleet not running · {START_MANAGER}")
+        } else {
+            NO_CONFIG.to_string()
+        })
     }
 
     /// How the Fleet is reached, as the creation flow shows it: `local
@@ -483,6 +473,15 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The API version thurbox writes its Tasks in: a Fleet that does not speak
 /// it is refused (M6).
+/// The command that starts the manager of a Fleet on this machine.
+pub const START_MANAGER: &str = "systemctl --user start fleet.service";
+
+/// The command that restarts it on the release an update installed.
+pub const RESTART_MANAGER: &str = "systemctl --user restart fleet.service";
+
+/// What thurbox says of a Fleet on this machine with no config yet.
+pub const NO_CONFIG: &str = "no Fleet config · fleet init";
+
 pub const TASK_API: &str = "fleet/v1alpha1";
 
 /// Why thurbox cannot speak to the Fleet whose `fleet version --json`

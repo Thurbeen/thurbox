@@ -292,4 +292,4 @@ if [ "$want_big" = "1" ]; then
     fi
 fi
 
-log "seeded. repositories under $REPOS; the sessions start with the TUI's \`fleet up\`"
+log "seeded. repositories under $REPOS; the sessions start with the sandbox's \`fleet up\`"

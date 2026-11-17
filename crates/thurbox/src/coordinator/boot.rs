@@ -189,25 +189,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Hoisted out of the struct literal below so each phase can be timed
     // separately; the construction order is unchanged.
     let phase = Instant::now();
-    // The engine (ADR-41): the Tasks of every listed Fleet through its
-    // command line, as one list, with a `fleet up` kept running for each
-    // Fleet on this machine. A command goes to its session's own Fleet, a
-    // creation to the Fleet in force.
     let fleets = thurbox::fleet_link::Fleets::of(&startup_settings);
-    // Before any watch starts `fleet up`, which on a machine never set up
-    // would run with no runtime at all.
-    for link in fleets.all() {
-        match link.set_up() {
-            Some(Ok(path)) => startup_notices.push(format!(
-                "Fleet set up: {}. Press ctrl+n to start a session.",
-                path.display()
-            )),
-            Some(Err(why)) => startup_notices.push(format!(
-                "Fleet is not set up ({why}). Run `fleet init`, then `thurbox-cli doctor`."
-            )),
-            None => {}
-        }
-    }
     let fleet = fleets.in_force().clone();
     let links = fleets.all().to_vec();
     let snapshots = SnapshotStore::with_source(
@@ -216,7 +198,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             links
                 .iter()
                 .cloned()
-                .map(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager)
+                .map(thurbox::kernel::snapshot::fleet::FleetWatch::spawn)
                 .collect(),
         )),
         &startup_settings,

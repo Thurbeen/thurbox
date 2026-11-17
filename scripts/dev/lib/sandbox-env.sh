@@ -130,8 +130,8 @@ tbx_sandbox_init_full() {
 }
 
 # tbx_sandbox_fleet — give the sandbox a Fleet of its own (ADR-41): every
-# session is a Fleet Task, and thurbox reads them through `fleet watch` and
-# starts `fleet up` itself. Without this, `fleet` would read the operator's own
+# session is a Fleet Task, and thurbox reads them through `fleet watch`.
+# thurbox never starts `fleet up`: tbx_sandbox_fleet_up does. Without this, `fleet` would read the operator's own
 # config — their real Tasks in a sandbox's interface. Exports FLEET_CONFIG and
 # writes the config under the sandbox root on every run: the file is generated,
 # so a profile made by an older checkout never keeps a section the current
@@ -189,7 +189,7 @@ tbx_fleet_task_name() {
 # given name in the `thurbox.dev/name` label. <harness> defaults to
 # claude-code; Fleet runs any other name (or an absolute path) as the program,
 # with no hooks. Skips a Task that already exists. Nothing spawns until a
-# `fleet up` (thurbox starts one) or a `fleet reconcile` runs. <name> and <dir>
+# `fleet up` (tbx_sandbox_fleet_up) or a `fleet reconcile` runs. <name> and <dir>
 # go into JSON as they are: keep quotes and backslashes out of them.
 tbx_fleet_session() {
     task="$(tbx_fleet_task_name "$1")"
@@ -209,8 +209,7 @@ tbx_fleet_session() {
 # the caller's `fleet up` check is all there is.
 # A manager is this sandbox's when its config is: the sandbox's FLEET_CONFIG,
 # or, with none set, the per-user file under an XDG_CONFIG_HOME inside the
-# sandbox (what the first launch's `fleet init` writes, as the tutorial
-# recorder runs it). Resolved, since that home can be a symlink into the root.
+# sandbox (what the tutorial recorder's `fleet init` writes). Resolved, since that home can be a symlink into the root.
 _tbx_fleet_is_ours() { # <pid> <root>
     [ -r "/proc/$1/environ" ] || return 0
     _tbx_env=$(tr '\0' '\n' < "/proc/$1/environ")
@@ -228,26 +227,24 @@ _tbx_fleet_is_ours() { # <pid> <root>
     esac
 }
 
-# _tbx_stop_fleet <root> — stop the `fleet up` thurbox started for the sandbox
-# under <root>. It runs in a process group of its own and outlives the TUI, so
-# nothing else ends it. thurbox names its log after it, `fleet-up-<pid>.log` in
-# its data directory: that file names the process, rather than a search for
-# one. SIGTERM finishes its sweep and releases the lease.
+tbx_sandbox_fleet_up() {
+    _tbx_stop_fleet "$TBX_SANDBOX_ROOT"
+    mkdir -p "$TBX_SANDBOX_ROOT/fleet"
+    nohup fleet up >"$TBX_SANDBOX_ROOT/fleet/up.log" 2>&1 </dev/null &
+    echo "$!" >"$TBX_SANDBOX_ROOT/fleet/up.pid"
+}
+
 _tbx_stop_fleet() {
-    find "$1" -name 'fleet-up-*.log' 2>/dev/null | while read -r log; do
-        pid="${log##*/fleet-up-}"
-        pid="${pid%.log}"
-        case "$pid" in
-            *[!0-9]*|"") ;; # named before its manager started: no manager
-            # A log can outlive its manager and the pid be reused: signal it
-            # only while it is still a `fleet up`, and, where /proc shows its
-            # environment, this sandbox's.
-            *) case "$(ps -p "$pid" -o args= 2>/dev/null)" in
-                   *fleet" up") _tbx_fleet_is_ours "$pid" "$1" \
-                       && kill "$pid" 2>/dev/null || true ;;
-               esac ;;
-        esac
-    done
+    pid_file="$1/fleet/up.pid"
+    [ -f "$pid_file" ] || return 0
+    pid=$(cat "$pid_file")
+    rm -f "$pid_file"
+    case "$pid" in
+        *[!0-9]*|"") return 0 ;;
+    esac
+    case "$(ps -p "$pid" -o args= 2>/dev/null)" in
+        *fleet" up") _tbx_fleet_is_ours "$pid" "$1" && kill "$pid" 2>/dev/null || true ;;
+    esac
 }
 
 # _tbx_kill_servers — kill the tmux servers of the private TMUX_TMPDIR in
