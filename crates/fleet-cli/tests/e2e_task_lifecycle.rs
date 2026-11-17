@@ -1269,16 +1269,15 @@ fn a_reboot_revives_only_work_in_flight_or_feedback() {
         .ok();
     env.reconcile().ok();
     assert_eq!((env.calls("revive"), env.calls("spawn")), (1, 1));
-    // The note that it was restarted goes first; the feedback follows it.
+    // A plain resume: the feedback is the only text the revive brings.
     let texts = env
         .host()
         .session(&env.session_key("done"))
         .unwrap()
         .unwrap()
         .texts;
-    assert_eq!(texts.len(), 3, "{texts:#?}");
-    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
-    assert_eq!(texts[2], "Review: rename the flag.");
+    assert_eq!(texts.len(), 2, "{texts:#?}");
+    assert_eq!(texts[1], "Review: rename the flag.");
     assert_eq!(env.status("done")["phase"], "Concluded");
 }
 
