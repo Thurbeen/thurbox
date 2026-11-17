@@ -137,7 +137,10 @@ conditions (`kernel::snapshot::fleet::state_why`, published as `state_why`):
 `s` on the session list, or Start in its menu, starts a stopped session again
 through Fleet's own contract: thurbox runs `fleet attach --wake --json
 <task>`, which asks the Task's controller to resume the agent on its
-conversation and waits for it to run. A Fleet older than
+conversation and waits for it to run. The interface does not attach a
+stopped row's pane; the pane says that the session is paused. The first
+frame that reads the row running again attaches the pane, whatever resumed
+it: Start, a message, or `fleet attach --wake` from a shell. A Fleet older than
 `fleet attach --wake` refuses it, and the message band says so. Fleet has no
 verb that stops a session on request, so thurbox offers no stop.
 

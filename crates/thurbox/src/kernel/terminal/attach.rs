@@ -81,6 +81,8 @@ pub(super) struct Attached {
 /// process, because the candidate pane never changes.
 pub(super) const ATTACH_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
+pub(super) const PAUSED: &str = "the session is paused: start it to resume its agent";
+
 impl Terminals {
     /// Start an attach for every row that is neither live nor attaching, unless
     /// the same attempt just failed or its backend is still being opened.
@@ -165,7 +167,10 @@ impl Terminals {
 
     /// Attach a Fleet session's pane on a worker, through the stream `fleet
     /// attach` names ([`super::fleet`]). A row whose Task has no session yet
-    /// (no key) has nothing to attach to; a failed attempt is made again
+    /// (no key) has nothing to attach to. A paused row is not attached, and
+    /// its failure names no pane: a resume keeps the session's key, so the
+    /// first frame that reads the row running again attaches it, whatever
+    /// resumed it. Any other failed attempt is made again
     /// after `retry_after` ([`ATTACH_RETRY_INTERVAL`]), and a stream that ended is attached
     /// afresh, since `drop_lost_panes` drops a pane whose output ended.
     fn attach_fleet(&mut self, row: &crate::kernel::snapshot::SessionRow, rows: u16, cols: u16) {
@@ -179,6 +184,17 @@ impl Terminals {
             self.fail(&row.id, None, "session has no pane yet".to_string());
             return;
         };
+        if row.stopped {
+            if self
+                .attach
+                .failed
+                .get(&row.id)
+                .is_none_or(|failure| failure.pane.is_some())
+            {
+                self.fail(&row.id, None, PAUSED.to_string());
+            }
+            return;
+        }
         if self.attach.failed.get(&row.id).is_some_and(|failure| {
             failure.pane.as_deref() == Some(key.as_str())
                 && failure.at.elapsed() < self.attach.retry_after

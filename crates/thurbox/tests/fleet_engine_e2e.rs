@@ -1001,6 +1001,139 @@ fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
     });
 }
 
+const PAUSING_CLAUDE: &str = r#"#!/bin/bash
+case " $* " in
+  *" --resume "*) echo resumed-marker; fleet signal working ;;
+  *) echo fresh-marker; fleet signal idle ;;
+esac
+while IFS= read -r line; do
+  text=$line
+  while IFS= read -r -t 0.5 more; do text=$text$'\n'$more; done
+  text=$(printf '%s' "$text" | tr -d '\033' | sed 's/\[20[01]~//g')
+  json=$(printf '%s' "$text" | awk 'BEGIN { ORS = "" } { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); if (NR > 1) print "\\n"; print }')
+  fleet signal prompt "{\"prompt\":\"$json\",\"session_id\":\"conv-1\"}"
+  fleet signal idle
+done
+"#;
+
+const START_TO_PANE: Duration = Duration::from_secs(5);
+
+#[test]
+fn starting_a_paused_session_shows_its_resumed_agent_in_the_running_interface() {
+    use thurbox::session::SessionState;
+    let Some(bin) = fleet_bin() else { return };
+    let runtime_mux = bin.with_file_name("runtime-mux");
+    if !runtime_mux.is_file() || !bin.with_file_name("workspace-git").is_file() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "no runtime-mux or workspace-git binary beside fleet in CI, where this test must run"
+        );
+        eprintln!(
+            "skipping: build runtime-mux and workspace-git (`cargo build -p runtime-mux -p workspace-git`)"
+        );
+        return;
+    }
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let sockets = Sockets::new();
+    let fleet = Fleet::with(
+        bin.clone(),
+        &format!(
+            "[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n",
+            runtime_mux.display()
+        ),
+        &format!("TMUX_TMPDIR='{}'", sockets.0.display()),
+    );
+    let bin_dir = fleet.root.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin");
+    std::os::unix::fs::symlink(&bin, bin_dir.join("fleet")).expect("fleet on the agent's PATH");
+    std::fs::write(bin_dir.join("claude"), PAUSING_CLAUDE).expect("harness");
+    make_executable(&bin_dir.join("claude"));
+    let work = fleet.root.path().join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    let mut t1 = task("t1");
+    t1["spec"]["harness"] = json!("claude");
+    t1["spec"]["workspace"] = json!([format!("file://{}", work.display())]);
+    t1["spec"]["dispatch"] = json!(true);
+    t1["spec"]["configRef"] = json!({"name": "pausing"});
+    fleet.apply(json!([
+        {"apiVersion": "fleet/v1alpha1", "kind": "TaskConfig",
+         "metadata": {"name": "pausing"}, "spec": {"pauseAfterMs": 1}},
+        t1,
+    ]));
+
+    let mut store = store_of(FleetWatch::with_manager(link(&fleet.program)));
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let _entered = runtime.enter();
+    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::local_only(&Default::default())),
+        &Default::default(),
+    );
+    terminals.attach_fleet_through(link(&fleet.program));
+    let mut frame = |terminals: &mut thurbox::kernel::terminal::Terminals| {
+        store.refresh_if_due();
+        terminals.sync(store.current(), 24, 80);
+        let row = store.current().session("local:t1").cloned();
+        (row, terminals.visible_text("local:t1").unwrap_or_default())
+    };
+    let deadline = Instant::now() + BOUND;
+    while !frame(&mut terminals)
+        .0
+        .is_some_and(|row| row.status == SessionState::Stopped)
+        || terminals.failure("local:t1").is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "never paused with its pane saying why: {:?}; Task status: {:#}",
+            terminals.failure("local:t1"),
+            fleet.get("t1").map(|t| t["status"].clone()).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let started = Instant::now();
+    let program = fleet.program.clone();
+    let start = std::thread::spawn(move || {
+        run_command(
+            &mut fleet_bus(&program),
+            Command::Start {
+                session: "t1".into(),
+            },
+        )
+    });
+    let mut running = None;
+    let mut start_returned = None;
+    let shown = loop {
+        let (row, text) = frame(&mut terminals);
+        if running.is_none() && row.is_some_and(|row| row.status != SessionState::Stopped) {
+            running = Some(started.elapsed());
+        }
+        if start_returned.is_none() && start.is_finished() {
+            start_returned = Some(started.elapsed());
+        }
+        if text.contains("resumed-marker") {
+            break started.elapsed();
+        }
+        assert!(
+            started.elapsed() < BOUND,
+            "the resumed agent never reached the pane: {:?}; Task status: {:#}",
+            terminals.failure("local:t1"),
+            fleet.get("t1").expect("the Task")["status"]
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    start.join().unwrap().expect("start");
+    eprintln!(
+        "start returned after {start_returned:?}, the row ran after {running:?}, the pane showed the resumed agent after {shown:?}"
+    );
+    assert!(
+        shown < START_TO_PANE,
+        "the pane showed the resumed agent {shown:?} after Start, past {START_TO_PANE:?}: start returned after {start_returned:?}, the row ran after {running:?}"
+    );
+}
+
 /// An interactive session's row follows what its agent's hooks report:
 /// `fleet signal idle` makes it idle, `working` working, and idle again.
 #[test]
