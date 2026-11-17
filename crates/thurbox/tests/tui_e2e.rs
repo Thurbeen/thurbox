@@ -7419,37 +7419,34 @@ fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
 }
 
 /// A `fleet` that records each verb it is called with in `calls`, answers
-/// `version` with no manager holding the lease, and holds a `watch` open.
-fn fleet_with_no_manager(profile: &Profile, calls: &Path) {
+/// `version` with no manager holding the lease and `supervisor` as the unit
+/// that runs one, and holds a `watch` open.
+fn fleet_with_no_manager(profile: &Profile, calls: &Path, supervisor: &str) {
     write_script(
         &profile.bin.join("fleet"),
         &format!(
-            "#!/bin/sh\necho \"$1\" >> '{calls}'\ncase \"$1\" in\n  version) echo '{{\"version\":\"9.9.9\",\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude-code\"],\"manager\":{{\"held\":false}}}}' ;;\n  watch) while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) sleep 30 ;;\n  *) echo \"error: no Fleet in this profile\" >&2; exit 1 ;;\nesac\n",
+            "#!/bin/sh\necho \"$1\" >> '{calls}'\ncase \"$1\" in\n  version) echo '{{\"version\":\"9.9.9\",\"apiVersions\":[\"fleet/v1alpha1\"],\"harnesses\":[\"claude-code\"],\"manager\":{{\"held\":false,\"supervisor\":{supervisor}}}}}' ;;\n  watch) while kill -0 $PPID 2>/dev/null; do sleep 1; done ;;\n  up) sleep 30 ;;\n  *) echo \"error: no Fleet in this profile\" >&2; exit 1 ;;\nesac\n",
             calls = calls.display(),
         ),
     );
 }
 
 #[test]
-fn a_local_thurbox_with_no_manager_starts_none_and_says_how_to_start_one() {
+fn a_local_thurbox_with_no_manager_starts_none_and_names_the_unit_fleet_reports() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
     let profile = Profile::new();
     let calls = profile.path("fleet-calls");
-    fleet_with_no_manager(&profile, &calls);
-    write_script(
-        &profile.path("home/.config/systemd/user/fleet.service"),
-        "[Service]\nExecStart=fleet up\n",
+    fleet_with_no_manager(
+        &profile,
+        &calls,
+        r#"{"kind":"systemd","unit":"engine.service"}"#,
     );
 
     let mut tui = Tui::spawn(&profile, 40, 160);
-    tui.wait_for(if cfg!(target_os = "linux") {
-        "Fleet not running · systemctl --user start fleet.service"
-    } else {
-        "Fleet not running · fleet up"
-    });
+    tui.wait_for("Fleet not running · systemctl --user start engine.service");
     assert!(tui.quit().success());
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
@@ -7463,17 +7460,25 @@ fn a_local_thurbox_with_no_manager_starts_none_and_says_how_to_start_one() {
 }
 
 #[test]
-fn a_local_thurbox_with_no_manager_unit_names_fleet_up() {
+fn a_local_thurbox_whose_fleet_reports_no_unit_names_fleet_service_install() {
     if !have_tmux() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
     let profile = Profile::new();
     let calls = profile.path("fleet-calls");
-    fleet_with_no_manager(&profile, &calls);
+    fleet_with_no_manager(&profile, &calls, "null");
+    write_script(
+        &profile.path("home/.config/systemd/user/fleet.service"),
+        "[Service]\nExecStart=fleet up\n",
+    );
 
     let mut tui = Tui::spawn(&profile, 40, 160);
-    tui.wait_for("Fleet not running · fleet up");
+    tui.wait_for(if cfg!(target_os = "linux") {
+        "Fleet not running · fleet service install --now"
+    } else {
+        "Fleet not running · fleet up"
+    });
     assert!(tui.quit().success());
     let calls = std::fs::read_to_string(&calls).unwrap_or_default();
     assert!(
@@ -7492,7 +7497,7 @@ fn a_local_thurbox_with_no_fleet_config_writes_none_and_names_fleet_init() {
     let config = profile.path("home/.config/fleet/config.toml");
     std::fs::remove_file(&config).expect("no Fleet config yet");
     let calls = profile.path("fleet-calls");
-    fleet_with_no_manager(&profile, &calls);
+    fleet_with_no_manager(&profile, &calls, "null");
 
     let mut tui = Tui::spawn(&profile, 40, 160);
     tui.wait_for("no Fleet config · fleet init");

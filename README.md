@@ -147,14 +147,15 @@ the AUR, Nix, winget, Chocolatey and uninstalling are on the
 ## First steps
 
 ```bash
-fleet init                            # writes Fleet's config
-systemctl --user start fleet.service  # Fleet's manager, `fleet up`
-thurbox-cli doctor                    # checks each Fleet, its runtime and its agents
+fleet init                    # writes Fleet's config
+fleet service install --now   # Fleet's manager, `fleet up`, as a user service
+thurbox-cli doctor            # checks each Fleet, its runtime and its agents
 thurbox
 ```
 
-thurbox never starts, restarts or sets up Fleet's manager: a user service runs
-`fleet up` ([the unit](docs/where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
+On Linux the install script runs the first two. thurbox never starts,
+restarts or sets up Fleet's manager: a user service runs `fleet up`
+([the unit](docs/where-sessions-run.md#2-laptop-thurbox-fleet-on-a-remote-box)).
 While none runs, the status line says which command starts it. thurbox draws
 the session list on the left and an agent terminal on the right.
 
@@ -170,7 +171,7 @@ the session list on the left and an agent terminal on the right.
 The [tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html) walks through it
 with screenshots.
 
-To follow a Fleet on another machine, run `fleet up` there as a user service and
+To follow a Fleet on another machine, run `fleet service install --now` there and
 list it in `~/.config/thurbox/settings.toml`:
 
 ```toml
@@ -183,7 +184,7 @@ program = "/home/me/.local/bin/fleet"   # ssh does not read your login PATH
 ```
 
 [Where sessions run](docs/where-sessions-run.md) explains Fleets and places and
-gives the systemd unit. [`[fleets]`](docs/thurbox/config.md#fleets--the-fleets-that-manage-sessions)
+shows how to set up the user service. [`[fleets]`](docs/thurbox/config.md#fleets--the-fleets-that-manage-sessions)
 lists every key, the WSL form included.
 
 ## Make it yours

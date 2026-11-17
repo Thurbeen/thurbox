@@ -65,7 +65,7 @@ config_version = 1
 # `thurbox-cli update` does the same
 # binary update on demand. Set either to `false` to opt out. An update never
 # restarts a running Fleet manager: it names the command that does
-# (`systemctl --user restart fleet.service` where that unit is installed).
+# (`systemctl --user restart <unit>` for the unit Fleet names).
 #
 # Neither crosses a MAJOR version: a 3.x install only ever takes 3.x releases,
 # and is told when a newer major exists. Moving to one is a reinstall; no flag
@@ -105,8 +105,9 @@ config_version = 1
 # The Fleets that manage sessions. Every session is a Task of a Fleet: the
 # interface follows them with `fleet watch`, creates, sends to and deletes
 # them with `fleet apply`, `send` and `delete`. thurbox never starts, restarts
-# or sets up a Fleet's manager: a user systemd unit runs `fleet up`, and a
-# Fleet on this machine with none says which command starts it.
+# or sets up a Fleet's manager: `fleet service install` writes the user unit
+# that runs `fleet up`, and a Fleet on this machine with none says which
+# command starts it.
 # Restart-only.
 #
 # No [fleets] table: `fleet` on this machine. Once one is listed, only the

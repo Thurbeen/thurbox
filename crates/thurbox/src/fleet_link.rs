@@ -136,44 +136,47 @@ impl FleetLink {
     /// user to run: [`Self::no_config`] before `fleet init` wrote its config,
     /// otherwise [`Self::start_manager`]. `None` for a Fleet on another
     /// machine.
-    pub fn not_running(&self) -> Option<String> {
+    pub fn not_running(&self, manager: &serde_json::Value) -> Option<String> {
         if !self.is_local() {
             return None;
         }
         Some(
             self.no_config()
-                .unwrap_or_else(|| format!("Fleet not running · {}", self.start_manager())),
+                .unwrap_or_else(|| format!("Fleet not running · {}", self.start_manager(manager))),
         )
     }
 
-    /// The command that starts this Fleet's manager: its user unit where one
-    /// is installed ([`manager_unit_installed`]), otherwise its own `fleet
-    /// up`, with the program and config `settings.toml` names.
-    pub fn start_manager(&self) -> String {
-        self.manager_command(manager_unit_installed())
+    /// The command that starts this Fleet's manager, from the `manager` of
+    /// its `fleet version --json`: the unit its `supervisor` names, else
+    /// `fleet service install --now` where Fleet has a service backend,
+    /// else its own `fleet up`.
+    pub fn start_manager(&self, manager: &serde_json::Value) -> String {
+        match supervisor_unit(manager) {
+            Some(unit) => command_line(&["systemctl", "--user", "start", unit]),
+            None if cfg!(target_os = "linux") => {
+                self.fleet_command(&["service", "install", "--now"])
+            }
+            None => self.fleet_command(&["up"]),
+        }
     }
 
     /// The command that restarts it on the release an update installed.
-    pub fn restart_manager(&self) -> String {
-        if manager_unit_installed() {
-            "systemctl --user restart fleet.service".to_string()
-        } else {
-            format!(
+    pub fn restart_manager(&self, manager: &serde_json::Value) -> String {
+        match supervisor_unit(manager) {
+            Some(unit) => command_line(&["systemctl", "--user", "restart", unit]),
+            None => format!(
                 "stop its `{}` and run it again",
-                self.manager_command(false)
-            )
+                self.fleet_command(&["up"])
+            ),
         }
     }
 
-    fn manager_command(&self, unit_installed: bool) -> String {
-        if unit_installed {
-            return "systemctl --user start fleet.service".to_string();
-        }
+    fn fleet_command(&self, verb: &[&str]) -> String {
         let mut words = vec![self.program()];
         if let Some(config) = self.config() {
             words.extend(["--config", config]);
         }
-        words.push("up");
+        words.extend(verb);
         command_line(&words)
     }
 
@@ -520,23 +523,10 @@ impl Reading {
 /// How long a probe of a Fleet on this machine may take.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The API version thurbox writes its Tasks in: a Fleet that does not speak
-/// it is refused (M6).
-/// The user systemd unit that runs a Fleet's `fleet up`
-/// (docs/where-sessions-run.md).
-const MANAGER_UNIT: &str = "fleet.service";
-
-/// Whether the user systemd unit that runs `fleet up` is installed where
-/// docs/where-sessions-run.md puts it: only Linux has one.
-pub fn manager_unit_installed() -> bool {
-    cfg!(target_os = "linux")
-        && std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|d| !d.is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-            })
-            .is_some_and(|config| config.join("systemd/user").join(MANAGER_UNIT).is_file())
+/// The unit that runs `fleet up`, as `fleet version --json` names it in
+/// `manager.supervisor`.
+pub fn supervisor_unit(manager: &serde_json::Value) -> Option<&str> {
+    manager["supervisor"]["unit"].as_str()
 }
 
 /// `words` as a command the user's shell runs as typed: PowerShell on
@@ -866,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn the_manager_command_is_the_unit_or_this_fleets_own_fleet_up() {
+    fn the_manager_command_is_the_unit_fleet_names_or_this_fleets_own_command() {
         let link = FleetLink::of(
             "laptop",
             &FleetDef {
@@ -877,17 +867,31 @@ mod tests {
         );
         let quoted = "'/opt/My Fleet/fleet' --config '/srv/fleet b/config.toml' up";
         assert_eq!(
-            link.manager_command(false),
+            link.fleet_command(&["up"]),
             if cfg!(windows) {
                 format!("& {quoted}")
             } else {
                 quoted.to_string()
             }
         );
-        assert_eq!(FleetLink::local("fleet").manager_command(false), "fleet up");
+        let none = serde_json::json!({"held": false, "supervisor": null});
         assert_eq!(
-            link.manager_command(true),
-            "systemctl --user start fleet.service"
+            FleetLink::local("fleet").start_manager(&none),
+            if cfg!(target_os = "linux") {
+                "fleet service install --now"
+            } else {
+                "fleet up"
+            }
+        );
+        let named =
+            serde_json::json!({"supervisor": {"kind": "systemd", "unit": "engine.service"}});
+        assert_eq!(
+            link.start_manager(&named),
+            "systemctl --user start engine.service"
+        );
+        assert_eq!(
+            link.restart_manager(&named),
+            "systemctl --user restart engine.service"
         );
     }
 

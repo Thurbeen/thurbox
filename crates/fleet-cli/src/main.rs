@@ -5,6 +5,7 @@
 
 mod bootstrap;
 mod config;
+mod service;
 mod supervisor;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -292,11 +293,59 @@ enum Command {
         #[command(subcommand)]
         command: IntegrationCommand,
     },
+    /// The systemd user unit that runs `fleet up` for this store: Fleet
+    /// writes it and drives it.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     /// Check this machine: each installed integration, each harness's
     /// program on PATH, and each host's runtime. Exits 1 only on a fail.
     Doctor {
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceCommand {
+    /// Write the unit for the config, adopting a unit of the same name and
+    /// keeping its drop-ins, and enable it. Refuses a second unit for the
+    /// same store (exit 5).
+    Install {
+        /// The unit's name, without `.service`.
+        #[arg(long, default_value = service::DEFAULT_NAME)]
+        name: String,
+        /// Start it now too.
+        #[arg(long)]
+        now: bool,
+    },
+    /// Start the store's unit.
+    Start {
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Stop the store's unit; the sessions keep running.
+    Stop {
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Restart the store's unit.
+    Restart {
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// What systemd says of the store's unit; exits as `systemctl status`
+    /// does (0 active, 3 not running).
+    Status {
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Stop and disable the store's unit and remove its file; its drop-ins
+    /// stay.
+    Uninstall {
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -971,6 +1020,15 @@ fn run(cli: Cli) -> Result<(), Failure> {
             fail("no data directory: pass --data-dir or set data.dir in the config file")
         })?;
     // Before the store opens: a doctor writes nothing.
+    if let Command::Service { command } = &cli.command {
+        if cli.data_dir.is_some() {
+            return Err(fail(
+                "fleet service runs fleet up with the config alone: persist data.dir in the config instead of passing --data-dir",
+            ));
+        }
+        let data_dir = bootstrap::absolute(&data_dir).map_err(fail)?;
+        return cmd_service(command, config_path.as_deref(), &config, &data_dir);
+    }
     if let Command::Doctor { json } = &cli.command {
         return cmd_doctor(&config, &profiles, &data_dir, *json);
     }
@@ -1274,6 +1332,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         | Command::Runtime { .. }
         | Command::Integration { .. }
         | Command::Doctor { .. }
+        | Command::Service { .. }
         | Command::TermBridge { .. } => unreachable_version(),
     }
 }
@@ -1880,6 +1939,146 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
     Ok(())
 }
 
+fn cmd_service(
+    command: &ServiceCommand,
+    config_path: Option<&Path>,
+    config: &Config,
+    data_dir: &Path,
+) -> Result<(), Failure> {
+    let stop_timeout = std::time::Duration::from_millis(service_stop_ms(config)?);
+    let stop_bound = stop_timeout + std::time::Duration::from_secs(30);
+    let target = |name: &Option<String>| service::target(name.as_deref(), data_dir);
+    let outcome = match command {
+        ServiceCommand::Install { name, now } => {
+            let config_path = config_path
+                .filter(|p| p.is_file())
+                .ok_or_else(|| fail("no config file; run fleet init first"))?;
+            let exe = std::env::current_exe().map_err(|e| fail(e.to_string()))?;
+            if exe.to_string_lossy().ends_with(" (deleted)") {
+                return Err(fail(format!(
+                    "{}: this fleet binary was replaced; run the installed one",
+                    exe.display()
+                )));
+            }
+            service::install(&service::Install {
+                name,
+                exe: &exe,
+                config: config_path,
+                data_dir,
+                path_env: std::env::var_os("PATH").unwrap_or_default(),
+                stop_timeout,
+                now: *now,
+            })
+            .map(|unit| {
+                let verb = if *now {
+                    "enabled and starting"
+                } else {
+                    "enabled"
+                };
+                println!("{} {verb} ({})", unit.name, unit.path.display());
+            })
+        }
+        ServiceCommand::Start { name } => {
+            target(name).and_then(|u| service::drive(&u, service::Verb::Start, stop_bound))
+        }
+        ServiceCommand::Stop { name } => {
+            target(name).and_then(|u| service::drive(&u, service::Verb::Stop, stop_bound))
+        }
+        ServiceCommand::Restart { name } => {
+            target(name).and_then(|u| service::drive(&u, service::Verb::Restart, stop_bound))
+        }
+        ServiceCommand::Status { name } => {
+            let unit = target(name).map_err(service_failure)?;
+            let (text, code) = service::status(&unit).map_err(service_failure)?;
+            print!("{text}");
+            return match code {
+                0 => Ok(()),
+                code => Err(Failure {
+                    code: u8::try_from(code).unwrap_or(exit::ERROR),
+                    message: format!("{} is not running", unit.name),
+                    hint: None,
+                }),
+            };
+        }
+        ServiceCommand::Uninstall { name } => target(name).and_then(|u| {
+            service::uninstall(&u, stop_bound)
+                .map(|()| println!("{} removed ({})", u.name, u.path.display()))
+        }),
+    };
+    outcome.map_err(service_failure)
+}
+
+fn service_stop_ms(config: &Config) -> Result<u64, Failure> {
+    let runtime = if config.runtimes.is_empty() {
+        0
+    } else {
+        let mut hosts = BTreeMap::new();
+        for place in config.places() {
+            hosts.insert(place.id, exec_program(config, &place.runtime));
+        }
+        ExecRuntime::new(hosts).operation_bound()
+    };
+    let plugins = fleet_plugin::StdioPlugins::new(config.plugins.clone());
+    let bound = runtime
+        .max(open_forge(config)?.map_or(0, |f| f.operation_bound()))
+        .max(open_gateway(config)?.map_or(0, |g| g.operation_bound()))
+        .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
+    lease_for(bound, None)
+}
+
+fn service_failure(refusal: service::Refusal) -> Failure {
+    use service::Refusal;
+    let (code, message, hint) = match refusal {
+        Refusal::Unsupported => (
+            exit::ERROR,
+            "fleet service drives systemd user units, on Linux only".to_string(),
+            Some("run fleet up under this system's own service manager".to_string()),
+        ),
+        Refusal::Invalid(why) | Refusal::Io(why) => (exit::ERROR, why, None),
+        Refusal::Taken(unit) => (
+            exit::CONFLICT,
+            format!(
+                "{} already runs this store ({})",
+                unit.name,
+                unit.path.display()
+            ),
+            Some(format!(
+                "install with --name {} to rewrite it, or fleet service uninstall first",
+                unit.name.trim_end_matches(".service")
+            )),
+        ),
+        Refusal::Foreign { unit, store } => (
+            exit::CONFLICT,
+            format!("{unit} runs another store ({store})"),
+            Some("install this store's unit under another --name".to_string()),
+        ),
+        Refusal::NotInstalled => (
+            exit::NOT_FOUND,
+            "no unit runs this store".to_string(),
+            Some("fleet service install".to_string()),
+        ),
+        Refusal::Systemctl(why) => (exit::ERROR, format!("systemctl --user {why}"), None),
+        Refusal::StillRunning(why) => (
+            exit::TIMEOUT,
+            why,
+            Some("fleet service status says where it is".to_string()),
+        ),
+    };
+    Failure {
+        code,
+        message,
+        hint,
+    }
+}
+
+/// The unit that runs `fleet up` for the store, for `version`, or `null`.
+fn supervisor(data_dir: &Path) -> Value {
+    match service::store_unit(data_dir) {
+        Ok(Some(unit)) => json!({"kind": "systemd", "unit": unit.name}),
+        _ => Value::Null,
+    }
+}
+
 /// The manager lease, for `version`: `held` while it is unexpired and its
 /// holder is not proven dead, `false` when none is recorded, it expired or
 /// its holder is dead, `null` with `why` when it cannot be
@@ -1890,7 +2089,7 @@ fn version(json: bool, config: Option<PathBuf>, data_dir: Option<PathBuf>) -> Re
 fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf>) -> Value {
     let unknown = |why: String| {
         json!({"held": null, "holder": null, "expiresAt": null, "why": why,
-            "state": null, "version": null, "exe": null, "config": null})
+            "state": null, "version": null, "exe": null, "config": null, "supervisor": null})
     };
     let data_dir = match data_dir {
         Some(dir) => Some(dir),
@@ -1932,6 +2131,7 @@ fn manager_lease(config: Option<&Path>, explicit: bool, data_dir: Option<PathBuf
     manager["version"] = json!(known.as_ref().map(|r| &r.version));
     manager["exe"] = json!(known.as_ref().map(|r| &r.exe));
     manager["config"] = json!(known.as_ref().map(|r| &r.config));
+    manager["supervisor"] = supervisor(&data_dir);
     if let Err(e) = record {
         manager["why"] = json!(e.to_string());
     }

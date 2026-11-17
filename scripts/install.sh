@@ -203,6 +203,13 @@ do_install() {
   done
 }
 
+start_service() {
+  [ -z "${THURBOX_NO_SERVICE:-}" ] && [ -f "$1/fleet" ] && [ "$(uname -s)" = Linux ] \
+    && systemctl --user show-environment > /dev/null 2>&1 || return 0
+  if "$1/fleet" init > /dev/null && "$1/fleet" service install --now >&2; then FLEET_SERVICE=1
+  else warn "Fleet's user service did not start: ${C_BOLD}fleet service install --now${C_RESET}"; fi
+}
+
 # Show success message
 show_success() {
   printf '\n' >&2
@@ -218,17 +225,21 @@ show_success() {
   printf '\n%b\n' "${C_BOLD}${C_MAGENTA}Next steps${C_RESET}" >&2
   step "• Install tmux >= 3.2"
   step "• Install a coding-agent CLI (claude, codex, antigravity, opencode, aider, …)"
-  if [ -n "$FLEET_ONLY" ]; then
+  if [ -n "${FLEET_SERVICE:-}" ]; then
+    step "• Fleet runs as a user service: ${C_CYAN}fleet service status${C_RESET}"
+  elif [ -n "$FLEET_ONLY" ]; then
     step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
-    step "• Check the setup:   ${C_CYAN}fleet doctor${C_RESET}"
     step "• Run it:            ${C_CYAN}fleet up${C_RESET}"
+  fi
+  if [ -n "$FLEET_ONLY" ]; then
+    step "• Check the setup:   ${C_CYAN}fleet doctor${C_RESET}"
     step "• Hand it a Task:    ${C_CYAN}fleet apply -f task.json${C_RESET}"
     # A shell that kept the variable from an earlier install must not skip thurbox silently.
     [ -n "${FLEET_FLAG:-}" ] || warn "THURBOX_FLEET_ONLY is set, so thurbox was not installed. Unset it for a full install."
     return
   fi
   if [ -f "$1/fleet" ]; then
-    step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
+    [ -n "${FLEET_SERVICE:-}" ] || step "• Set up Fleet:      ${C_CYAN}fleet init${C_RESET}"
   else
     warn "This release has no Fleet. thurbox v3 needs a 3.x release: VERSION=v3.x.y"
   fi
@@ -264,6 +275,7 @@ main() {
   binary=$(get_binary "$version" "$target" "$TEMP_DIR") || return 1
 
   do_install "$binary" "$INSTALL_DIR"
+  start_service "$INSTALL_DIR"
 
   show_success "$INSTALL_DIR"
   printf '\n' >&2

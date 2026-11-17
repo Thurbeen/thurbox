@@ -481,6 +481,12 @@ impl FleetFacts {
                 }),
         };
         let config = link.local_config();
+        let no_manager = serde_json::Value::Null;
+        let manager = version
+            .as_ref()
+            .map_or(&no_manager, |v: &serde_json::Value| &v["manager"]);
+        let start_manager = link.start_manager(manager);
+        let restart_manager = link.restart_manager(manager);
         Self {
             name: link.name().to_string(),
             program: program.to_string(),
@@ -489,8 +495,8 @@ impl FleetFacts {
             version,
             config,
             hosts,
-            start_manager: link.start_manager(),
-            restart_manager: link.restart_manager(),
+            start_manager,
+            restart_manager,
         }
     }
 
@@ -655,8 +661,10 @@ impl FleetFacts {
                     .fix(self.start_manager.clone())
             }
             Some(false) => Finding::new("fleet-manager", broken, "manager not running".into()).fix(
-                "systemctl --user enable --now fleet.service on that machine (the unit is in \
-                 docs/where-sessions-run.md)",
+                match crate::fleet_link::supervisor_unit(manager) {
+                    Some(unit) => format!("systemctl --user start {unit} on that machine"),
+                    None => "fleet service install --now on that machine (Linux), or fleet up under its own service manager".to_string(),
+                },
             ),
             None => Finding::new(
                 "fleet-manager",
