@@ -30,9 +30,10 @@ pub(crate) struct Record(PathBuf);
 
 impl Record {
     pub(crate) fn intend() -> io::Result<Option<Record>> {
-        let Some(dir) = DIR.get() else {
-            return Ok(None);
-        };
+        DIR.get().map(|dir| Record::intend_in(dir)).transpose()
+    }
+
+    fn intend_in(dir: &Path) -> io::Result<Record> {
         loop {
             let path = dir.join(SEQ.fetch_add(1, Ordering::Relaxed).to_string());
             match fs::OpenOptions::new()
@@ -40,7 +41,7 @@ impl Record {
                 .create_new(true)
                 .open(&path)
             {
-                Ok(_) => return Ok(Some(Record(path))),
+                Ok(_) => return Ok(Record(path)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
             }
@@ -226,9 +227,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("0"), "4242 7").unwrap();
-        record_in(&dir).unwrap();
 
-        let record = Record::intend().unwrap().unwrap();
+        let record = Record::intend_in(&dir).unwrap();
         record.started(std::process::id()).unwrap();
         let left = fs::read_to_string(dir.join("0")).unwrap();
         drop(record);
@@ -236,5 +236,25 @@ mod tests {
         assert_eq!(left, "4242 7");
         assert!(dir.join("0").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_caught_before_its_group_was_recorded_is_never_stopped_as_done() {
+        let dir = std::env::temp_dir().join(format!("fleet-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("0"), "").unwrap();
+
+        let stopped = stop_recorded(&dir);
+
+        let kept = dir.join("0").exists();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            stopped
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("a run whose group is unknown")),
+            "{stopped:?}"
+        );
+        assert!(kept, "the record of a run whose group is unknown stays");
     }
 }
