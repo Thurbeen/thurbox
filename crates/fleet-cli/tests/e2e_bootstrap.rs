@@ -1171,9 +1171,6 @@ fn init_writes_a_default_task_config_that_pauses_an_idle_session_after_thirty_mi
     assert!(after("other").is_null(), "{:#}", env.status("other"));
 }
 
-/// A manager runs its own release's `runtime-mux`, the one beside its
-/// binary, before any other on `PATH`: after an update, an old manager
-/// never execs a new release's runtime.
 #[cfg(unix)]
 #[test]
 fn a_manager_calls_the_runtime_beside_it_before_one_on_path() {

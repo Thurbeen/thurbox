@@ -2122,9 +2122,6 @@ fn open_runtime(config: &Config, signals: &FileSignals) -> Result<Box<dyn Runtim
     }
 }
 
-/// The program `[runtimes.<name>]` names, as every call to it is made. A
-/// bare name is the file beside this executable when there is one, so a
-/// manager runs its own release's runtime, else the name for `PATH`.
 fn exec_program(config: &Config, name: &str) -> ExecProgram {
     let p = &config.runtimes[name];
     let program = std::env::current_exe()

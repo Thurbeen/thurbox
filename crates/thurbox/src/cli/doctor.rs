@@ -434,7 +434,6 @@ pub(super) struct FleetFacts {
     pub(super) config: Option<(std::path::PathBuf, &'static str)>,
     /// The command that starts its manager ([`crate::fleet_link::FleetLink::start_manager`]).
     start_manager: String,
-    /// The command that restarts it ([`crate::fleet_link::FleetLink::restart_manager`]).
     restart_manager: String,
     /// `fleet runtime hosts --json`: the places a session can run in, or why
     /// they could not be read.
