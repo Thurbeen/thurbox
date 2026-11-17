@@ -2440,7 +2440,12 @@ mod an_update {
 
         /// `fleet up` from the installed `fleet`, as thurbox or a person starts it.
         fn start_manager(&mut self) -> u32 {
-            let mut command = Process::new(self.fleet());
+            self.start_manager_from(&self.fleet())
+        }
+
+        /// `fleet up` from `program`.
+        fn start_manager_from(&mut self, program: &Path) -> u32 {
+            let mut command = Process::new(program);
             self.env(&mut command);
             let child = command
                 .arg("up")
@@ -2604,5 +2609,39 @@ mod an_update {
         assert_eq!(install.holder(), None);
         assert!(install.managers_on_installed_fleet().is_empty());
         assert!(install.task("alpha")["metadata"]["uid"].is_string());
+    }
+
+    /// A Fleet whose `program` is a `fleet` the update did not replace keeps
+    /// its manager: restarting it would run the same old binary, and the
+    /// update says so instead of claiming a restart on the new release.
+    #[test]
+    fn leaves_a_fleet_whose_program_it_did_not_replace() {
+        let Some(bin) = fleet_bin() else { return };
+        let mut install = Install::new(&bin);
+        let elsewhere = install.path("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+        let other = elsewhere.join("fleet");
+        std::fs::copy(&bin, &other).expect("another fleet");
+        std::fs::write(
+            install.path("thurbox-config/settings.toml"),
+            format!("[fleets.laptop]\nprogram = '{}'\n", other.display()),
+        )
+        .expect("settings");
+        let old = install.start_manager_from(&other);
+
+        let updated = install.update();
+        let stdout = String::from_utf8_lossy(&updated.stdout);
+        assert!(
+            updated.status.success(),
+            "update: {stdout}\n{}",
+            String::from_utf8_lossy(&updated.stderr)
+        );
+        assert_eq!(
+            install.holder(),
+            Some(old),
+            "a manager on a fleet the update did not replace was restarted: {stdout}"
+        );
+        assert!(stdout.contains("did not replace"), "{stdout}");
+        assert!(!stdout.contains("restarted on the new release"), "{stdout}");
     }
 }

@@ -521,12 +521,17 @@ Fleet on this machine (`restart_manager` in `src/kernel/snapshot/fleet.rs`):
 
 1. `fleet version --json` names the process that holds the manager lease. When
    no process holds it, thurbox starts no manager.
-2. thurbox sends that process SIGTERM, as Ctrl-C stops it. It finishes its
+2. The Fleet's `program` must resolve to the `fleet` the update installed
+   beside thurbox. When it resolves to another file, thurbox leaves the
+   manager running and the status line names that program.
+3. thurbox sends the process SIGTERM, as Ctrl-C stops it. It finishes its
    sweep, releases the lease and keeps every session, Task and inbox.
-3. thurbox waits for the lease to be released, then 2 s more. A service
+4. thurbox waits for the lease to be released, with no time limit of its own:
+   Fleet's call timeouts bound the sweep, and a workspace call can take
+   minutes. Then thurbox waits 2 s more. A service
    supervisor or another interface that starts `fleet up` in that time keeps
    the lease.
-4. Otherwise thurbox starts `fleet up` with the same command line and
+5. Otherwise thurbox starts `fleet up` with the same command line and
    environment it starts one with at launch. The lease admits one manager, so
    two engines never run.
 

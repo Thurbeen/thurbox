@@ -1006,9 +1006,11 @@ fn start_manager(link: &FleetLink, dir: &Path) -> Result<StartedManager, String>
     Ok(StartedManager { child, reader, log })
 }
 
-/// How long a stopped `fleet up` may take to finish its sweep and release
-/// the lease, and a new one to take it.
-const RESTART_BOUND: Duration = Duration::from_secs(60);
+/// How long a new `fleet up` may take to take the lease.
+const START_BOUND: Duration = Duration::from_secs(60);
+
+/// How often the lease is read while a restart waits on it.
+const LEASE_POLL: Duration = Duration::from_millis(100);
 
 /// How long a released lease is left for another starter to take before
 /// thurbox starts a manager itself: a service supervisor that restarts
@@ -1020,25 +1022,42 @@ const TAKEOVER_GRACE: Duration = Duration::from_secs(2);
 pub enum Restart {
     /// No `fleet up` held the lease, and none was started.
     NotRunning,
+    /// A `fleet up` runs, but the `program` it would restart on is not the
+    /// `fleet` the update installed: it is left running.
+    NotReplaced { program: String },
     /// The `fleet up` that held the lease stopped, and `started` holds it.
     Restarted { stopped: u32, started: u32 },
 }
 
 /// Restart the `fleet up` that holds the lease of the Fleet on this machine
-/// `link` reaches, so it runs the `fleet` installed now. The old one is
-/// stopped as Ctrl-C stops it (SIGTERM): it finishes its sweep, releases the
-/// lease and leaves every session running. The new one starts as
+/// `link` reaches, so it runs `installed`, the `fleet` an update just
+/// replaced. A Fleet whose `program` resolves to another file is left alone:
+/// restarting it would run the same binary again.
+///
+/// The old manager is stopped as Ctrl-C stops it (SIGTERM): it finishes its
+/// sweep, releases the lease and leaves every session running. That sweep is
+/// bounded by Fleet's own call timeouts, which run to minutes, so the wait
+/// follows the lease rather than a clock of thurbox's. The new one starts as
 /// the interface starts one, with the same `fleet` command line and
 /// environment, unless another starter takes the lease first. A Fleet with
 /// no manager running is left without one.
-pub fn restart_manager(link: &FleetLink) -> Result<Restart, String> {
+pub fn restart_manager(link: &FleetLink, installed: &Path) -> Result<Restart, String> {
     let Some(stopped) = lease_holder(link)? else {
         return Ok(Restart::NotRunning);
     };
+    if !starts(link, installed) {
+        return Ok(Restart::NotReplaced {
+            program: link.program().to_string(),
+        });
+    }
     terminate(stopped)?;
-    let released = |holder: &Option<u32>| *holder != Some(stopped);
-    let holder = poll_lease(link, RESTART_BOUND, released)?
-        .ok_or_else(|| format!("fleet up {stopped} did not release the lease"))?;
+    let holder = loop {
+        let holder = lease_holder(link)?;
+        if holder != Some(stopped) {
+            break holder;
+        }
+        std::thread::sleep(LEASE_POLL);
+    };
     let taken = match holder {
         Some(started) => Some(started),
         None => poll_lease(link, TAKEOVER_GRACE, Option::is_some)?.flatten(),
@@ -1053,7 +1072,7 @@ pub fn restart_manager(link: &FleetLink) -> Result<Restart, String> {
     std::thread::spawn(move || {
         let _ = tx.send(manager.wait());
     });
-    let deadline = std::time::Instant::now() + RESTART_BOUND;
+    let deadline = std::time::Instant::now() + START_BOUND;
     loop {
         if let Some(started) = lease_holder(link)? {
             return Ok(Restart::Restarted { stopped, started });
@@ -1072,8 +1091,24 @@ pub fn restart_manager(link: &FleetLink) -> Result<Restart, String> {
         if std::time::Instant::now() >= deadline {
             return Err("the new fleet up did not take the lease".to_string());
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(LEASE_POLL);
     }
+}
+
+/// Whether the `fleet up` `link` starts runs the file `installed`: its
+/// `program` as a path, or as a name found on `PATH`.
+fn starts(link: &FleetLink, installed: &Path) -> bool {
+    let program = link.program();
+    let resolved = if Path::new(program).components().count() > 1 {
+        Some(PathBuf::from(program))
+    } else {
+        crate::paths::resolve_on_path(program).or_else(|| {
+            crate::paths::resolve_on_path(&format!("{program}{}", std::env::consts::EXE_SUFFIX))
+        })
+    };
+    let canonical = |path: &Path| std::fs::canonicalize(path).ok();
+    resolved
+        .is_some_and(|path| canonical(&path).is_some() && canonical(&path) == canonical(installed))
 }
 
 /// The lease holder each `fleet version --json` names, until `done` holds
@@ -1092,7 +1127,7 @@ fn poll_lease(
         if std::time::Instant::now() >= deadline {
             return Ok(None);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(LEASE_POLL);
     }
 }
 
@@ -1138,15 +1173,27 @@ fn terminate(pid: u32) -> Result<(), String> {
     }
 }
 
-/// Restart the manager of each Fleet on this machine among `links`
-/// ([`restart_manager`]), and say what came of it: what a finished update
-/// reports. Empty when no manager ran.
+/// Restart the manager of each Fleet on this machine among `links` on the
+/// `fleet` an update just installed beside thurbox ([`restart_manager`]),
+/// and say what came of it: what a finished update reports. Empty when no
+/// manager ran.
 pub fn restart_managers(links: &[FleetLink]) -> String {
+    match crate::update::self_update::installed_fleet() {
+        Ok(installed) => restart_managers_on(links, &installed),
+        Err(why) => format!("Restart any running `fleet up` to apply: {why}."),
+    }
+}
+
+fn restart_managers_on(links: &[FleetLink], installed: &Path) -> String {
     links
         .iter()
         .filter(|link| link.is_local())
-        .filter_map(|link| match restart_manager(link) {
+        .filter_map(|link| match restart_manager(link, installed) {
             Ok(Restart::NotRunning) => None,
+            Ok(Restart::NotReplaced { program }) => Some(format!(
+                "Fleet {}'s `fleet up` keeps running {program}, which this update did not replace.",
+                link.name()
+            )),
             Ok(Restart::Restarted { .. }) => Some(format!(
                 "Fleet {}'s `fleet up` restarted on the new release.",
                 link.name()
@@ -2189,6 +2236,41 @@ mod tests {
         .expect_err("it failed");
         assert_eq!(why, "fleet up: no starter");
         assert_eq!(logs(data.path()), Vec::<String>::new());
+    }
+
+    /// A manager that was stopped (exit 0), as an update's restart stops
+    /// it, is no error: the interface says nothing while it is replaced.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_manager_is_no_error() {
+        let bin = tempfile::tempdir().expect("bin");
+        let data = tempfile::tempdir().expect("data");
+        let _paths = crate::paths::TestPathGuard::new(data.path());
+        let program = fake_fleet(bin.path(), "exit 0");
+        let (tx, rx) = channel();
+        let link = FleetLink::local(program.to_string_lossy());
+        std::thread::spawn(move || keep_manager(&link, &tx, Duration::from_millis(50)));
+        let reports: Vec<Option<String>> = (0..4)
+            .map(|_| match rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(Update::Manager(report)) => report,
+                Ok(_) => Some("not a manager report".into()),
+                Err(e) => Some(format!("no report: {e}")),
+            })
+            .collect();
+        assert_eq!(reports, [None, None, None, None]);
+    }
+
+    /// Only a running `fleet` is ever signalled: a pid the lease names that
+    /// is another program is refused and keeps running.
+    #[cfg(unix)]
+    #[test]
+    fn terminate_refuses_a_process_that_is_not_fleet() {
+        let mut other = Command::new("sleep").arg("30").spawn().expect("sleep");
+        let why = terminate(other.id()).expect_err("not a fleet");
+        assert!(why.contains("does not run here"), "{why}");
+        assert_eq!(other.try_wait().expect("wait"), None, "it was signalled");
+        let _ = other.kill();
+        let _ = other.wait();
     }
 
     /// A log whose process is gone is cleared at the next start; one whose
